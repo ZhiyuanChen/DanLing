@@ -15,8 +15,9 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as data
-from danling.utils import catch
 from torch.utils.tensorboard import SummaryWriter
+
+from danling.utils import catch
 
 
 class BaseRunner(object):
@@ -26,7 +27,6 @@ class BaseRunner(object):
     id: str
     name: str
     seed: int = 616
-    directory: str
     device: torch.device
 
     distributed: bool = False
@@ -46,10 +46,10 @@ class BaseRunner(object):
 
     accelerator: accelerate.Accelerator
 
-    epochs: int
     epoch: int = 0
-    start_epoch: int = 0
-    is_best_epoch: bool = False
+    epoch_start: int = 0
+    epoch_end: int
+    epoch_is_best: bool = False
 
     results: List[dict]
     result_best: dict = None
@@ -70,11 +70,11 @@ class BaseRunner(object):
         self.id = config.id
         self.name = config.name
         self.deterministic = config.deterministic
-        self.epochs = config.epochs
+        self.epoch_end = config.epoch_end
         self.log = config.log
         self.tensorboard = config.tensorboard
-        self.directory = os.path.join(config.experiments_root, self.id)
-        self.checkpoint_dir = os.path.join(self.directory, config.checkpoint_dir)
+        self.dir = os.path.join(config.experiment_dir, self.id)
+        self.checkpoint_dir = os.path.join(self.dir, config.checkpoint_dir_name)
 
         # self.init_distributed()
         self.accelerator = accelerate.Accelerator()
@@ -90,13 +90,13 @@ class BaseRunner(object):
             self.init_deterministic()
 
         if self.is_main_process:
-            os.makedirs(self.directory, exist_ok=True)
+            os.makedirs(self.dir, exist_ok=True)
             if config.train:
                 os.makedirs(self.checkpoint_dir, exist_ok=True)
             if self.log:
                 self.init_logger()
             if self.tensorboard:
-                self.writer = SummaryWriter(self.directory)
+                self.writer = SummaryWriter(self.dir)
         elif config.nni:
             config.nni = False
 
@@ -156,7 +156,7 @@ class BaseRunner(object):
                     'level': 'DEBUG',
                     'formatter': 'standard',
                     'class': 'logging.FileHandler',
-                    'filename': os.path.join(self.directory, 'run.log'),
+                    'filename': os.path.join(self.dir, 'run.log'),
                     'mode': 'a',
                 }
             },
@@ -195,15 +195,15 @@ class BaseRunner(object):
 
         __builtin__.print = print
 
-    def scale_lr(self, scale_factor: Optional[float] = None, batch_size_base: Optional[int] = None):
+    def scale_lr(self, lr_scale_factor: Optional[float] = None, batch_size_base: Optional[int] = None):
         if batch_size_base is None:
             batch_size_base = self.config.batch_size_base
-        if scale_factor is None:
+        if lr_scale_factor is None:
             batch_size_actual = self.config.batch_size * self.world_size * self.config.accum_steps
-            scale_factor = batch_size_actual / batch_size_base
-        self.config.scale_factor = scale_factor
-        self.config.lr = self.config.lr * self.config.scale_factor
-        self.config.lr_final = self.config.lr_final * self.config.scale_factor
+            lr_scale_factor = batch_size_actual / batch_size_base
+        self.config.lr_scale_factor = lr_scale_factor
+        self.config.lr = self.config.lr * self.config.lr_scale_factor
+        self.config.lr_final = self.config.lr_final * self.config.lr_scale_factor
 
     @catch()
     def save_checkpoint(self):
@@ -239,11 +239,11 @@ class BaseRunner(object):
         """
         ret = {'id': self.id, 'name': self.name}
         ret.update(self.result_last)  # This is slower but ensure id in the first
-        last_path = os.path.join(self.directory, 'last.json')
+        last_path = os.path.join(self.dir, 'last.json')
         with open(last_path, 'w') as f:
             json.dump(ret, f, indent=4)
         if self.is_best_epoch:
-            best_path = os.path.join(self.directory, 'best.json')
+            best_path = os.path.join(self.dir, 'best.json')
             shutil.copy(last_path, best_path)
 
     def load_checkpoint(self, checkpoint: str):
