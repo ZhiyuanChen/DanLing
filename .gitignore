@@ -331,6 +331,7 @@ __pycache__/
 # Python Packages
 build/
 *.egg-info/
+dist/
 
 # Cake - Uncomment if you are using it
 # tools/**
