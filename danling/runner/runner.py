@@ -4,6 +4,7 @@ import logging
 import os
 import random
 import shutil
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
 import accelerate
@@ -36,7 +37,7 @@ class BaseRunner(object):
     is_main_process: bool = True
     is_local_main_process: bool = True
 
-    dataloaders: Dict[str, data.DataLoader] = {}
+    dataloaders: OrderedDict[str, data.DataLoader] = {}
 
     model: nn.Module
     optimizer: optim.Optimizer
@@ -206,7 +207,7 @@ class BaseRunner(object):
         self.config.lr_final = self.config.lr_final * self.config.lr_scale_factor
 
     @catch()
-    def save_checkpoint(self):
+    def save(self):
         """
         Save checkpoint to checkpoint_dir
         """
@@ -246,7 +247,7 @@ class BaseRunner(object):
             best_path = os.path.join(self.dir, 'best.json')
             shutil.copy(last_path, best_path)
 
-    def load_checkpoint(self, checkpoint: str):
+    def load(self, checkpoint: str):
         """
         Load checkpoint from checkpoint
         """
@@ -254,7 +255,7 @@ class BaseRunner(object):
             raise FileNotFoundError('checkpoint does not exist')
         print(f'=> loading checkpoint "{checkpoint}"')
         checkpoint = torch.load(checkpoint)
-        if 'model' in checkpoint:
+        if self.model is not None and 'model' in checkpoint:
             self.model.load_state_dict(checkpoint['model'])
         if self.optimizer is not None and 'optimizer' in checkpoint.keys():
             self.optimizer.load_state_dict(checkpoint['optimizer'])
