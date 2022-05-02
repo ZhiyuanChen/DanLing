@@ -9,7 +9,7 @@ class ArgumentParser(_ArgumentParser):
         if args is None:
             args = sys.argv[1:]
         for arg in args:
-            if arg.startswith('--') and arg not in self._option_string_actions:
+            if arg.startswith('--') and args != '--' and arg not in self._option_string_actions:
                 self.add_argument(arg)
         if namespace is None:
             namespace = Config()
