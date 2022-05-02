@@ -18,7 +18,7 @@ import torch.optim as optim
 import torch.utils.data as data
 from torch.utils.tensorboard import SummaryWriter
 
-from danling.utils import catch
+from danling.utils import Config, catch
 
 
 class BaseRunner(object):
@@ -37,7 +37,7 @@ class BaseRunner(object):
     is_main_process: bool = True
     is_local_main_process: bool = True
 
-    dataloaders: OrderedDict[str, data.DataLoader] = {}
+    dataloaders: OrderedDict[str, data.DataLoader] = OrderedDict()
 
     model: nn.Module
     optimizer: optim.Optimizer
@@ -52,9 +52,9 @@ class BaseRunner(object):
     epoch_end: int
     epoch_is_best: bool = False
 
-    results: List[dict]
-    result_best: dict = None
-    result_last: dict = None
+    results: List[dict] = []
+    result_best: dict = {}
+    result_last: dict = {}
     score_best: float = 0
     score_last: float = 0
 
@@ -187,12 +187,12 @@ class BaseRunner(object):
         builtin_print = __builtin__.print
 
         @catch()
-        def print(*config, end='\n', file=None, flush=False, force=False, **kwconfig):
+        def print(*args, force=False, end='\n', file=None, flush=False, **kwargs):
             if self.rank == process or force:
                 if self.log:
-                    logger.info(*config, **kwconfig)
+                    logger.info(*args, **kwargs)
                 else:
-                    builtin_print(*config, end='\n', file=None, flush=False, force=False, **kwconfig)
+                    builtin_print(*args, end=end, file=file, flush=flush, **kwargs)
 
         __builtin__.print = print
 
@@ -215,10 +215,9 @@ class BaseRunner(object):
         if self.distributed:
             self.accelerator.wait_for_everyone()
             model = self.accelerator.unwrap_model(self.model)
-
         state_dict = {
             'epoch': self.epoch,
-            'config': self.config,
+            'config': self.config.dict(),
             'model': model.state_dict(),
             'optimizer': self.optimizer.state_dict() if self.optimizer else None,
             'scheduler': self.scheduler.state_dict() if self.scheduler else None,
@@ -255,17 +254,17 @@ class BaseRunner(object):
             raise FileNotFoundError('checkpoint does not exist')
         print(f'=> loading checkpoint "{checkpoint}"')
         checkpoint = torch.load(checkpoint)
-        if self.model is not None and 'model' in checkpoint:
-            self.model.load_state_dict(checkpoint['model'])
-        if self.optimizer is not None and 'optimizer' in checkpoint.keys():
-            self.optimizer.load_state_dict(checkpoint['optimizer'])
-        if self.scheduler is not None and 'scheduler' in checkpoint.keys():
-            self.scheduler.load_state_dict(checkpoint['scheduler'])
-        if 'config' in checkpoint.keys():
-            self.config = checkpoint['config']
-        if 'epoch' in checkpoint.keys():
+        if 'epoch' in checkpoint:
             self.start_epoch = checkpoint['epoch']
-        if 'result' in checkpoint.keys():
+        if 'config' in checkpoint:
+            self.config = Config(**checkpoint['config'])
+        if 'model' in checkpoint:
+            self.model.load_state_dict(checkpoint['model'])
+        if self.optimizer is not None and 'optimizer' in checkpoint:
+            self.optimizer.load_state_dict(checkpoint['optimizer'])
+        if self.scheduler is not None and 'scheduler' in checkpoint:
+            self.scheduler.load_state_dict(checkpoint['scheduler'])
+        if 'result' in checkpoint:
             self.result_best = checkpoint['result']
         print(f'=> loaded  checkpoint "{checkpoint}"')
 
