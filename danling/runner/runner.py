@@ -228,7 +228,7 @@ class BaseRunner(object):
         if (self.epoch + 1) % self.config.save_freq == 0:
             save_path = os.path.join(self.checkpoint_dir, f'epoch-{self.epoch}.pth')
             shutil.copy(last_path, save_path)
-        if self.is_best_epoch:
+        if self.epoch_is_best:
             best_path = os.path.join(self.checkpoint_dir, 'best.pth')
             shutil.copy(last_path, best_path)
 
@@ -242,7 +242,7 @@ class BaseRunner(object):
         last_path = os.path.join(self.dir, 'last.json')
         with open(last_path, 'w') as f:
             json.dump(ret, f, indent=4)
-        if self.is_best_epoch:
+        if self.epoch_is_best:
             best_path = os.path.join(self.dir, 'best.json')
             shutil.copy(last_path, best_path)
 
