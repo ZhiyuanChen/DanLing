@@ -1,9 +1,10 @@
 from argparse import Namespace
 from ast import literal_eval
+from collections import OrderedDict
 
 
 class Config(Namespace):
-    def __setattr__(self, name, value):
+    def __setattr__(self, name, value) -> None:
         try:
             value = literal_eval(value)
         except ValueError:
@@ -16,8 +17,8 @@ class Config(Namespace):
         else:
             super().__setattr__(name, value)
 
-    def dict(self):
-        dict = {}
+    def dict(self) -> OrderedDict:
+        dict = OrderedDict()
         for k, v in self.__dict__.items():
             if isinstance(v, Config):
                 dict[k] = v.dict()
