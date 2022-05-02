@@ -44,7 +44,7 @@ class MultiHeadAttention(nn.Module):
                  add_bias_kv: Optional[bool] = False,
                  add_zero_attn: Optional[bool] = False,
                  k_dim: Optional[int] = None, v_dim: Optional[int] = None,
-                 batch_first: Optional[bool] = False,
+                 batch_first: Optional[bool] = True,
                  **kwargs: Optional[Dict[str, Any]]) -> None:
         super(MultiHeadAttention, self).__init__()
         self.embed_dim = embed_dim
@@ -149,12 +149,12 @@ class MultiHeadAttention(nn.Module):
         - attn_output_weights: :math:`(N, L, S)` where N is the batch size,
             L is the target sequence length, S is the source sequence length.
         """
-        if not self.batch_first:
-            query, key, value = [x.transpose(1, 0) for x in (query, key, value)]
+        if self.batch_first:
+            query, key, value = [x.transpose(0, 1) for x in (query, key, value)]
 
         # set up shape vars
-        batch_size, target_len, embed_dim = query.shape
-        _, source_len, _ = key.shape
+        target_len, batch_size, embed_dim = query.shape
+        source_len, _, _ = key.shape
         if not key.shape[:2] == value.shape[:2]:
             raise ValueError(f"key's sequence and batch dims {key.shape[:2]} do not match value's {value.shape[:2]}")
 
@@ -200,10 +200,10 @@ class MultiHeadAttention(nn.Module):
             assert self.bias_v is None
 
         # reshape q, k, v for multihead attention and make em batch first
-        q = q.reshape(batch_size * self.num_heads, target_len, self.head_dim)
-        k = k.reshape(batch_size * self.num_heads, -1, self.head_dim) if static_k is None else static_k
-        v = v.reshape(batch_size * self.num_heads, -1, self.head_dim) if static_v is None else static_v
-        
+        q = q.reshape(target_len, batch_size * self.num_heads, self.head_dim).transpose(0, 1)
+        k = k.reshape(-1, batch_size * self.num_heads, self.head_dim).transpose(0, 1) if static_k is None else static_k
+        v = v.reshape(-1, batch_size * self.num_heads, self.head_dim).transpose(0, 1) if static_v is None else static_v
+
         if static_k is not None:
             correct_shape = (batch_size * self.num_heads, static_k.shape[1], self.head_dim)
             if static_k.shape != correct_shape:
@@ -228,8 +228,8 @@ class MultiHeadAttention(nn.Module):
 
         # merge key padding and attention masks
         if key_padding_mask is not None:
-            assert key_padding_mask.shape == (batch_size, source_len), \
-                f"expecting key_padding_mask shape of {(batch_size, source_len)}, but got {key_padding_mask.shape}"
+            if key_padding_mask.shape != (batch_size, source_len):
+                raise ValueError(f"key_padding_mask should have shape {(batch_size, source_len)}, but got {key_padding_mask.shape}")
             key_padding_mask = key_padding_mask.view(batch_size, 1, 1, source_len).   \
                 expand(-1, self.num_heads, -1, -1).reshape(batch_size * self.num_heads, 1, source_len)
             if attn_mask is None:
@@ -252,8 +252,8 @@ class MultiHeadAttention(nn.Module):
 
         attn_output_weights = attn_output_weights.view(batch_size, self.num_heads, target_len, source_len) if need_weights else torch.zeros(0, requires_grad=False)
 
-        if not self.batch_first:
-            return attn_output.transpose(1, 0), attn_output_weights
+        if self.batch_first:
+            return attn_output.transpose(0, 1), attn_output_weights
         else:
             return attn_output, attn_output_weights
 
