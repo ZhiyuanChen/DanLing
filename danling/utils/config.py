@@ -7,7 +7,7 @@ class Config(Namespace):
     def __setattr__(self, name, value) -> None:
         try:
             value = literal_eval(value)
-        except ValueError:
+        except (ValueError, SyntaxError):
             pass
         if '.' in name:
             name = name.split('.')

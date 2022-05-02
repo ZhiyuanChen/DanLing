@@ -37,6 +37,8 @@ class BaseRunner(object):
     is_main_process: bool = True
     is_local_main_process: bool = True
 
+    datasets: OrderedDict[str, data.DataLoader] = OrderedDict()
+    datasamplers: OrderedDict[str, data.DataLoader] = OrderedDict()
     dataloaders: OrderedDict[str, data.DataLoader] = OrderedDict()
 
     model: nn.Module
