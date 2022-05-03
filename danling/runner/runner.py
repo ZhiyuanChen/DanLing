@@ -82,10 +82,10 @@ class BaseRunner(object):
         # self.init_distributed()
         self.accelerator = accelerate.Accelerator()
         self.device = self.accelerator.device
-        self.seed = self.accelerator.gather(torch.tensor(config.seed).cuda())[0].item()
         self.is_main_process = self.accelerator.is_main_process
         self.is_local_main_process = self.accelerator.is_local_main_process
 
+        self.seed = self.accelerator.gather(torch.tensor(config.seed).cuda()).unsqueeze(0).flatten()[0]
         if self.seed is not None:
             self.init_seed()
 
