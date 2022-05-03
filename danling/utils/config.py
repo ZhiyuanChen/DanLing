@@ -4,6 +4,19 @@ from collections import OrderedDict
 
 
 class Config(Namespace):
+    """
+    Basic Config for all experiments
+    """
+
+    id: str
+    name: str
+
+    experiment_dir: str = 'experiments'
+    checkpoint_dir_name: str = 'checkpoints'
+
+    log: bool = True
+    tensorboard: bool = False
+
     def __setattr__(self, name, value) -> None:
         try:
             value = literal_eval(value)

@@ -30,8 +30,10 @@ class BaseRunner(object):
 
     id: str
     name: str
-    seed: int = 616
     device: torch.device
+
+    seed: int = 616
+    deterministic: bool = False
 
     distributed: bool = False
     world_size: int = 1
@@ -39,23 +41,21 @@ class BaseRunner(object):
     local_rank: int = 0
     is_main_process: bool = True
     is_local_main_process: bool = True
+    accelerator: accelerate.Accelerator = None
 
-    datasets: OrderedDict[str, data.DataLoader] = OrderedDict()
-    datasamplers: OrderedDict[str, data.DataLoader] = OrderedDict()
-    dataloaders: OrderedDict[str, data.DataLoader] = OrderedDict()
+    train: bool = False
+    val: bool = False
+    test: bool = False
 
     model: nn.Module = None
     optimizer: optim.Optimizer = None
     scheduler: optim.lr_scheduler._LRScheduler = None
 
+    datasets: OrderedDict[str, data.DataLoader] = OrderedDict()
+    datasamplers: OrderedDict[str, data.DataLoader] = OrderedDict()
+    dataloaders: OrderedDict[str, data.DataLoader] = OrderedDict()
+
     criterions: Tuple[nn.Module] = None
-
-    accelerator: accelerate.Accelerator = None
-
-    epoch: int = 0
-    epoch_start: int = 0
-    epoch_end: int = 0
-    epoch_is_best: bool = False
 
     results: List[Dict[str, Any]] = []
     result_best: Dict[str, Any] = {}
@@ -63,47 +63,37 @@ class BaseRunner(object):
     score_best: float = 0
     score_last: float = 0
 
-    log: bool = True
+    epoch: int = 0
+    epoch_start: int = 0
+    epoch_end: int = 0
+    epoch_is_best: bool = False
+
     logger: logging.Logger = None
-    tensorboard: bool = True
     writer: SummaryWriter = None
 
     def __init__(self, config) -> None:
         self.config = config
-        self.id = config.id
-        self.name = config.name
-        self.deterministic = config.deterministic
-        self.epoch_end = config.epoch_end
-        self.log = config.log
-        self.tensorboard = config.tensorboard
-        self.dir = os.path.join(config.experiment_dir, self.id)
-        self.checkpoint_dir = os.path.join(self.dir, config.checkpoint_dir_name)
+        self.dir = os.path.join(self.experiment_dir, self.id)
+        self.checkpoint_dir = os.path.join(self.dir, self.checkpoint_dir_name)
 
         # self.init_distributed()
         self.accelerator = accelerate.Accelerator()
-        self.device = self.accelerator.device
-        self.is_main_process = self.accelerator.is_main_process
-        self.is_local_main_process = self.accelerator.is_local_main_process
 
-        self.seed = self.accelerator.gather(torch.tensor(config.seed).cuda()).unsqueeze(0).flatten()[0]
-        if self.seed is not None:
-            self.init_seed()
+        self.init_seed()
 
         if self.deterministic:
             self.init_deterministic()
 
         if self.is_main_process:
             os.makedirs(self.dir, exist_ok=True)
-            if config.train:
+            if self.train:
                 os.makedirs(self.checkpoint_dir, exist_ok=True)
             if self.log:
                 self.init_logger()
             if self.tensorboard:
                 self.writer = SummaryWriter(self.dir)
-        elif config.nni:
-            config.nni = False
 
-        if config.log:
+        if self.log:
             self.init_print()
 
         print(config)
@@ -117,6 +107,21 @@ class BaseRunner(object):
         self.rank = dist.get_rank()
         self.world_size = dist.get_world_size()
         torch.cuda.set_device(self.local_rank)
+        self.is_main_process = self.rank == 0
+        self.is_local_main_process = self.local_rank == 0
+
+    def init_lr(self, lr_scale_factor: Optional[float] = None, batch_size_base: Optional[int] = None) -> None:
+        """
+        Set up learning rate
+        """
+        if lr_scale_factor is None:
+            if batch_size_base is None:
+                batch_size_base = self.batch_size_base
+            batch_size_actual = self.batch_size * self.world_size * self.accum_steps
+            lr_scale_factor = batch_size_actual / batch_size_base
+        self.config.lr_scale_factor = lr_scale_factor
+        self.config.lr = self.lr * self.lr_scale_factor
+        self.config.lr_final = self.lr_final * self.lr_scale_factor
 
     def init_deterministic(self) -> None:
         """
@@ -129,6 +134,9 @@ class BaseRunner(object):
         """
         Set up random seed
         """
+        if self.seed is None:
+            self.seed = random.randint(0, 100000)
+            self.seed = self.accelerator.gather(torch.tensor(self.seed).cuda()).unsqueeze(0).flatten()[0]
         torch.manual_seed(self.rank + self.seed)
         torch.cuda.manual_seed(self.rank + self.seed)
         np.random.seed(self.rank + self.seed)
@@ -198,36 +206,14 @@ class BaseRunner(object):
 
         __builtin__.print = print
 
-    def scale_lr(self, lr_scale_factor: Optional[float] = None, batch_size_base: Optional[int] = None) -> None:
-        if batch_size_base is None:
-            batch_size_base = self.config.batch_size_base
-        if lr_scale_factor is None:
-            batch_size_actual = self.config.batch_size * self.world_size * self.config.accum_steps
-            lr_scale_factor = batch_size_actual / batch_size_base
-        self.config.lr_scale_factor = lr_scale_factor
-        self.config.lr = self.config.lr * self.config.lr_scale_factor
-        self.config.lr_final = self.config.lr_final * self.config.lr_scale_factor
-
     @catch()
     def save(self) -> None:
         """
         Save checkpoint to checkpoint_dir
         """
-        model = self.model
-        if self.distributed:
-            self.accelerator.wait_for_everyone()
-            model = self.accelerator.unwrap_model(self.model)
-        state_dict = {
-            'epoch': self.epoch,
-            'config': self.config.dict(),
-            'model': model.state_dict(),
-            'optimizer': self.optimizer.state_dict() if self.optimizer else None,
-            'scheduler': self.scheduler.state_dict() if self.scheduler else None,
-            'result': self.result_last
-        }
         last_path = os.path.join(self.checkpoint_dir, 'last.pth')
-        self.accelerator.save(state_dict, last_path)
-        if (self.epoch + 1) % self.config.save_freq == 0:
+        self.accelerator.save(self.dict(), last_path)
+        if (self.epoch + 1) % self.save_freq == 0:
             save_path = os.path.join(self.checkpoint_dir, f'epoch-{self.epoch}.pth')
             shutil.copy(last_path, save_path)
         if self.epoch_is_best:
@@ -270,12 +256,36 @@ class BaseRunner(object):
             self.result_best = checkpoint['result']
         print(f'=> loaded  checkpoint "{checkpoint}"')
 
+    def dict(self) -> OrderedDict:
+        """
+        Return dict of all attributes for checkpoint
+        """
+        model = self.model
+        if self.distributed:
+            self.accelerator.wait_for_everyone()
+            model = self.accelerator.unwrap_model(self.model)
+        return OrderedDict(
+            epoch=self.epoch,
+            config=self.config.dict(),
+            model=model.state_dict(),
+            optimizer=self.optimizer.state_dict() if self.optimizer else None,
+            scheduler=self.scheduler.state_dict() if self.scheduler else None,
+            result=self.result_last
+        )
+
     def print_result(self) -> None:
         """
         Print best and last result
         """
         print(f'best result: {self.result_best}')
         print(f'last result: {self.result_last}')
+
+    def __getattr__(self, name) -> Any:
+        if (attr := getattr(self.config, name, None)) is not None:
+            return attr
+        if (attr := getattr(self.accelerator, name, None)) is not None:
+            return attr
+        raise AttributeError(f"'Runner' object has no attribute '{name}'")
 
     def __repr__(self) -> str:
         return self.id
