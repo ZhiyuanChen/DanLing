@@ -57,9 +57,9 @@ class BaseRunner(object):
     epoch_end: int = 0
     epoch_is_best: bool = False
 
-    results: List[dict] = []
-    result_best: dict = {}
-    result_last: dict = {}
+    results: List[Dict[str, Any]] = []
+    result_best: Dict[str, Any] = {}
+    result_last: Dict[str, Any] = {}
     score_best: float = 0
     score_last: float = 0
 
@@ -68,7 +68,7 @@ class BaseRunner(object):
     tensorboard: bool = True
     writer: SummaryWriter = None
 
-    def __init__(self, config):
+    def __init__(self, config) -> None:
         self.config = config
         self.id = config.id
         self.name = config.name
@@ -109,7 +109,7 @@ class BaseRunner(object):
         print(config)
         atexit.register(self.print_result)
 
-    def init_distributed(self):
+    def init_distributed(self) -> None:
         """
         Set up distributed training
         """
@@ -118,14 +118,14 @@ class BaseRunner(object):
         self.world_size = dist.get_world_size()
         torch.cuda.set_device(self.local_rank)
 
-    def init_deterministic(self):
+    def init_deterministic(self) -> None:
         """
         Set up deterministic
         """
         cudnn.benchmark = False
         cudnn.deterministic = True
 
-    def init_seed(self):
+    def init_seed(self) -> None:
         """
         Set up random seed
         """
@@ -134,7 +134,7 @@ class BaseRunner(object):
         np.random.seed(self.rank + self.seed)
         random.seed(self.rank + self.seed)
 
-    def init_logger(self):
+    def init_logger(self) -> None:
         """
         Set up logger
         """
@@ -175,7 +175,7 @@ class BaseRunner(object):
         self.logger = logging.getLogger('runner')
         self.logger.flush = lambda: [h.flush() for h in self.logger.handlers]
 
-    def init_print(self, process: Optional[int] = 0, precision: Optional[int] = 10):
+    def init_print(self, process: Optional[int] = 0, precision: Optional[int] = 10) -> None:
         """
         Set up print
         Only print from a specific process or force indicated
@@ -198,7 +198,7 @@ class BaseRunner(object):
 
         __builtin__.print = print
 
-    def scale_lr(self, lr_scale_factor: Optional[float] = None, batch_size_base: Optional[int] = None):
+    def scale_lr(self, lr_scale_factor: Optional[float] = None, batch_size_base: Optional[int] = None) -> None:
         if batch_size_base is None:
             batch_size_base = self.config.batch_size_base
         if lr_scale_factor is None:
@@ -209,7 +209,7 @@ class BaseRunner(object):
         self.config.lr_final = self.config.lr_final * self.config.lr_scale_factor
 
     @catch()
-    def save(self):
+    def save(self) -> None:
         """
         Save checkpoint to checkpoint_dir
         """
@@ -235,7 +235,7 @@ class BaseRunner(object):
             shutil.copy(last_path, best_path)
 
     @catch()
-    def save_result(self):
+    def save_result(self) -> None:
         """
         Save result
         """
@@ -248,7 +248,7 @@ class BaseRunner(object):
             best_path = os.path.join(self.dir, 'best.json')
             shutil.copy(last_path, best_path)
 
-    def load(self, checkpoint: str):
+    def load(self, checkpoint: str) -> None:
         """
         Load checkpoint from checkpoint
         """
@@ -257,7 +257,7 @@ class BaseRunner(object):
         print(f'=> loading checkpoint "{checkpoint}"')
         checkpoint = torch.load(checkpoint)
         if 'epoch' in checkpoint:
-            self.start_epoch = checkpoint['epoch']
+            self.epoch_start = checkpoint['epoch']
         if 'config' in checkpoint:
             self.config = Config(**checkpoint['config'])
         if 'model' in checkpoint:
@@ -270,12 +270,15 @@ class BaseRunner(object):
             self.result_best = checkpoint['result']
         print(f'=> loaded  checkpoint "{checkpoint}"')
 
-    def print_result(self):
+    def print_result(self) -> None:
+        """
+        Print best and last result
+        """
         print(f'best result: {self.result_best}')
         print(f'last result: {self.result_last}')
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return self.id
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.name
