@@ -86,11 +86,12 @@ class BaseRunner(object):
         Set up distributed training
         """
         dist.init_process_group(backend='nccl')
-        self.rank = dist.get_rank()
-        self.world_size = dist.get_world_size()
-        torch.cuda.set_device(self.local_rank)
-        self.is_main_process = self.rank == 0
-        self.is_local_main_process = self.local_rank == 0
+        self.process_index = dist.get_rank()
+        self.num_processes = dist.get_world_size()
+        self.local_process_index = int(os.environ.get("LOCAL_RANK", -1))
+        torch.cuda.set_device(self.local_process_index)
+        self.is_main_process = self.process_index == 0
+        self.is_local_main_process = self.local_process_index == 0
 
     def init_deterministic(self) -> None:
         """
@@ -107,10 +108,10 @@ class BaseRunner(object):
             self.config.seed = random.randint(0, 100000)
             if self.num_processes > 1:
                 self.config.seed = self.accelerator.gather(torch.tensor(self.seed).cuda()).unsqueeze(0).flatten()[0]
-        torch.manual_seed(self.rank + self.seed)
-        torch.cuda.manual_seed(self.rank + self.seed)
-        np.random.seed(self.rank + self.seed)
-        random.seed(self.rank + self.seed)
+        torch.manual_seed(self.seed + self.process_index)
+        torch.cuda.manual_seed(self.seed + self.process_index)
+        np.random.seed(self.seed + self.process_index)
+        random.seed(self.seed + self.process_index)
 
     def init_logger(self) -> None:
         """
@@ -168,7 +169,7 @@ class BaseRunner(object):
 
         @catch()
         def print(*args, force=False, end='\n', file=None, flush=False, **kwargs):
-            if self.rank == process or force:
+            if self.process_index == process or force:
                 if self.log:
                     logger.info(*args, **kwargs)
                 else:
