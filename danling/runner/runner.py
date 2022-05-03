@@ -116,8 +116,8 @@ class BaseRunner(object):
         Set up random seed
         """
         if self.seed is None:
-            self.seed = random.randint(0, 100000)
-            self.seed = self.accelerator.gather(torch.tensor(self.seed).cuda()).unsqueeze(0).flatten()[0]
+            self.config.seed = random.randint(0, 100000)
+            self.config.seed = self.accelerator.gather(torch.tensor(self.seed).cuda()).unsqueeze(0).flatten()[0]
         torch.manual_seed(self.rank + self.seed)
         torch.cuda.manual_seed(self.rank + self.seed)
         np.random.seed(self.rank + self.seed)
