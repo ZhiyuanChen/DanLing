@@ -54,13 +54,14 @@ class BaseRunner(object):
 
     def __init__(self, config) -> None:
         self.config = config
+        self.init_seed()
+        if self.id is None:
+            self.config.id = f'{self.name}-{self.seed}'
         self.dir = os.path.join(self.experiment_dir, self.id)
         self.checkpoint_dir = os.path.join(self.dir, self.checkpoint_dir_name)
 
         # self.init_distributed()
         self.accelerator = accelerate.Accelerator()
-
-        self.init_seed()
 
         if self.deterministic:
             self.init_deterministic()
@@ -91,19 +92,6 @@ class BaseRunner(object):
         self.is_main_process = self.rank == 0
         self.is_local_main_process = self.local_rank == 0
 
-    def init_lr(self, lr_scale_factor: Optional[float] = None, batch_size_base: Optional[int] = None) -> None:
-        """
-        Set up learning rate
-        """
-        if lr_scale_factor is None:
-            if batch_size_base is None:
-                batch_size_base = self.batch_size_base
-            batch_size_actual = self.batch_size * self.world_size * self.accum_steps
-            lr_scale_factor = batch_size_actual / batch_size_base
-        self.config.lr_scale_factor = lr_scale_factor
-        self.config.lr = self.lr * self.lr_scale_factor
-        self.config.lr_final = self.lr_final * self.lr_scale_factor
-
     def init_deterministic(self) -> None:
         """
         Set up deterministic
@@ -117,7 +105,8 @@ class BaseRunner(object):
         """
         if self.seed is None:
             self.config.seed = random.randint(0, 100000)
-            self.config.seed = self.accelerator.gather(torch.tensor(self.seed).cuda()).unsqueeze(0).flatten()[0]
+            if self.num_processes > 1:
+                self.config.seed = self.accelerator.gather(torch.tensor(self.seed).cuda()).unsqueeze(0).flatten()[0]
         torch.manual_seed(self.rank + self.seed)
         torch.cuda.manual_seed(self.rank + self.seed)
         np.random.seed(self.rank + self.seed)
@@ -186,6 +175,19 @@ class BaseRunner(object):
                     builtin_print(*args, end=end, file=file, flush=flush, **kwargs)
 
         __builtin__.print = print
+
+    def init_lr(self, lr_scale_factor: Optional[float] = None, batch_size_base: Optional[int] = None) -> None:
+        """
+        Set up learning rate
+        """
+        if lr_scale_factor is None:
+            if batch_size_base is None:
+                batch_size_base = self.batch_size_base
+            batch_size_actual = self.batch_size * self.world_size * self.accum_steps
+            lr_scale_factor = batch_size_actual / batch_size_base
+        self.config.lr_scale_factor = lr_scale_factor
+        self.config.lr = self.lr * self.lr_scale_factor
+        self.config.lr_final = self.lr_final * self.lr_scale_factor
 
     @catch()
     def save(self) -> None:

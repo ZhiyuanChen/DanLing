@@ -8,8 +8,8 @@ class Config(Namespace):
     Basic Config for all experiments
     """
 
-    id: str
-    name: str
+    id: str = None
+    name: str = 'danling'
 
     experiment_dir: str = 'experiments'
     checkpoint_dir_name: str = 'checkpoints'
