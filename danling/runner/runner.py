@@ -22,6 +22,9 @@ from danling.utils import Config, catch
 
 
 class BaseRunner(object):
+    """
+    Set up everything for running a job
+    """
 
     config: Any
 
@@ -41,17 +44,17 @@ class BaseRunner(object):
     datasamplers: OrderedDict[str, data.DataLoader] = OrderedDict()
     dataloaders: OrderedDict[str, data.DataLoader] = OrderedDict()
 
-    model: nn.Module
-    optimizer: optim.Optimizer
-    scheduler: optim.lr_scheduler._LRScheduler
+    model: nn.Module = None
+    optimizer: optim.Optimizer = None
+    scheduler: optim.lr_scheduler._LRScheduler = None
 
-    criterions: Tuple[nn.Module]
+    criterions: Tuple[nn.Module] = None
 
-    accelerator: accelerate.Accelerator
+    accelerator: accelerate.Accelerator = None
 
     epoch: int = 0
     epoch_start: int = 0
-    epoch_end: int
+    epoch_end: int = 0
     epoch_is_best: bool = False
 
     results: List[dict] = []
@@ -61,14 +64,11 @@ class BaseRunner(object):
     score_last: float = 0
 
     log: bool = True
-    logger: logging.Logger
+    logger: logging.Logger = None
     tensorboard: bool = True
-    writer: SummaryWriter
+    writer: SummaryWriter = None
 
     def __init__(self, config):
-        """
-        Set up everything for running
-        """
         self.config = config
         self.id = config.id
         self.name = config.name
@@ -82,7 +82,7 @@ class BaseRunner(object):
         # self.init_distributed()
         self.accelerator = accelerate.Accelerator()
         self.device = self.accelerator.device
-        self.seed = self.accelerator.gather(torch.tensor(config.seed)).item()
+        self.seed = self.accelerator.gather(torch.tensor(config.seed).cuda())[0].item()
         self.is_main_process = self.accelerator.is_main_process
         self.is_local_main_process = self.accelerator.is_local_main_process
 
@@ -226,7 +226,7 @@ class BaseRunner(object):
             'result': self.result_last
         }
         last_path = os.path.join(self.checkpoint_dir, 'last.pth')
-        accelerate.save(state_dict, last_path)
+        self.accelerator.save(state_dict, last_path)
         if (self.epoch + 1) % self.config.save_freq == 0:
             save_path = os.path.join(self.checkpoint_dir, f'epoch-{self.epoch}.pth')
             shutil.copy(last_path, save_path)
