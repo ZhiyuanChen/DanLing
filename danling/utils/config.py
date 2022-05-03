@@ -12,7 +12,8 @@ class Config(Namespace):
         if '.' in name:
             name = name.split('.')
             name, rest = name[0], '.'.join(name[1:])
-            setattr(self, name, type(self)())
+            if not hasattr(self, name):
+                setattr(self, name, type(self)())
             setattr(getattr(self, name), rest, value)
         else:
             super().__setattr__(name, value)
