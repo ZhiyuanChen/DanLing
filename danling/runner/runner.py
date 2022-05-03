@@ -28,24 +28,7 @@ class BaseRunner(object):
 
     config: Any
 
-    id: str
-    name: str
-    device: torch.device
-
-    seed: int = 616
-    deterministic: bool = False
-
-    distributed: bool = False
-    world_size: int = 1
-    rank: int = 0
-    local_rank: int = 0
-    is_main_process: bool = True
-    is_local_main_process: bool = True
     accelerator: accelerate.Accelerator = None
-
-    train: bool = False
-    val: bool = False
-    test: bool = False
 
     model: nn.Module = None
     optimizer: optim.Optimizer = None
@@ -64,8 +47,6 @@ class BaseRunner(object):
     score_last: float = 0
 
     epoch: int = 0
-    epoch_start: int = 0
-    epoch_end: int = 0
     epoch_is_best: bool = False
 
     logger: logging.Logger = None
