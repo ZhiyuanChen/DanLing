@@ -1,6 +1,7 @@
 import atexit
 import json
 import logging
+import logging.config
 import os
 import random
 import shutil
@@ -54,16 +55,19 @@ class BaseRunner(object):
 
     def __init__(self, config) -> None:
         self.config = config
+
+        # self.init_distributed()
+        self.accelerator = accelerate.Accelerator(kwargs_handlers=[accelerate.DistributedDataParallelKwargs(find_unused_parameters=True)])
+        self.distributed = self.num_processes > 1
+
         self.init_seed()
-        if self.id is None:
+
+        if getattr(self, 'id', None) is None:
             self.config.id = f'{self.name}-{self.seed}'
         self.dir = os.path.join(self.experiment_dir, self.id)
         self.checkpoint_dir = os.path.join(self.dir, self.checkpoint_dir_name)
 
-        # self.init_distributed()
-        self.accelerator = accelerate.Accelerator()
-
-        if self.deterministic:
+        if getattr(self, 'deterministic', None):
             self.init_deterministic()
 
         if self.is_main_process:
@@ -106,7 +110,7 @@ class BaseRunner(object):
         """
         if self.seed is None:
             self.config.seed = random.randint(0, 100000)
-            if self.num_processes > 1:
+            if self.distributed:
                 self.config.seed = self.accelerator.gather(torch.tensor(self.seed).cuda()).unsqueeze(0).flatten()[0]
         torch.manual_seed(self.seed + self.process_index)
         torch.cuda.manual_seed(self.seed + self.process_index)
