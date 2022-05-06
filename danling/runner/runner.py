@@ -6,7 +6,8 @@ import os
 import random
 import shutil
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Tuple
+from collections.abc import MutableMapping
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import accelerate
 # import click
@@ -19,7 +20,8 @@ import torch.optim as optim
 import torch.utils.data as data
 from torch.utils.tensorboard import SummaryWriter
 
-from danling.utils import Config, catch
+from danling.config import Config
+from danling.utils import catch
 
 
 class BaseRunner(object):
@@ -27,7 +29,7 @@ class BaseRunner(object):
     Set up everything for running a job
     """
 
-    config: Any
+    config: Any = None
 
     accelerator: accelerate.Accelerator = None
 
@@ -47,8 +49,11 @@ class BaseRunner(object):
     score_best: float = 0
     score_last: float = 0
 
-    epoch: int = 0
-    epoch_is_best: bool = False
+    iters: int = 0
+    steps: int = 0
+    epochs: int = 0
+    progress: float = 0.
+    is_best: bool = False
 
     logger: logging.Logger = None
     writer: SummaryWriter = None
@@ -59,6 +64,7 @@ class BaseRunner(object):
         # self.init_distributed()
         self.accelerator = accelerate.Accelerator(kwargs_handlers=[accelerate.DistributedDataParallelKwargs(find_unused_parameters=True)])
         self.distributed = self.num_processes > 1
+        self.batch_size_actual = self.batch_size * self.num_processes * getattr(self, 'accum_steps', 1)
 
         self.init_seed()
 
@@ -78,6 +84,7 @@ class BaseRunner(object):
                 self.init_logger()
             if self.tensorboard:
                 self.writer = SummaryWriter(self.dir)
+            self.config.yaml(os.path.join(self.dir, 'config.yaml'))
 
         if self.log:
             self.init_print()
@@ -188,8 +195,7 @@ class BaseRunner(object):
         if lr_scale_factor is None:
             if batch_size_base is None:
                 batch_size_base = self.batch_size_base
-            batch_size_actual = self.batch_size * self.world_size * self.accum_steps
-            lr_scale_factor = batch_size_actual / batch_size_base
+            lr_scale_factor = self.batch_size_actual / batch_size_base
         self.config.lr_scale_factor = lr_scale_factor
         self.config.lr = self.lr * self.lr_scale_factor
         self.config.lr_final = self.lr_final * self.lr_scale_factor
@@ -202,9 +208,9 @@ class BaseRunner(object):
         last_path = os.path.join(self.checkpoint_dir, 'last.pth')
         self.accelerator.save(self.dict(), last_path)
         if (self.epoch + 1) % self.save_freq == 0:
-            save_path = os.path.join(self.checkpoint_dir, f'epoch-{self.epoch}.pth')
+            save_path = os.path.join(self.checkpoint_dir, f'epoch-{self.epochs}.pth')
             shutil.copy(last_path, save_path)
-        if self.epoch_is_best:
+        if self.is_best:
             best_path = os.path.join(self.checkpoint_dir, 'best.pth')
             shutil.copy(last_path, best_path)
 
@@ -218,7 +224,7 @@ class BaseRunner(object):
         last_path = os.path.join(self.dir, 'last.json')
         with open(last_path, 'w') as f:
             json.dump(ret, f, indent=4)
-        if self.epoch_is_best:
+        if self.is_best:
             best_path = os.path.join(self.dir, 'best.json')
             shutil.copy(last_path, best_path)
 
@@ -230,8 +236,10 @@ class BaseRunner(object):
             raise FileNotFoundError('checkpoint does not exist')
         print(f'=> loading checkpoint "{checkpoint}"')
         checkpoint = torch.load(checkpoint)
-        if 'epoch' in checkpoint:
-            self.epoch_start = checkpoint['epoch']
+        if 'epochs' in checkpoint:
+            self.epochs = checkpoint['epochs']
+        if 'steps' in checkpoint:
+            self.steps = checkpoint['steps']
         if 'config' in checkpoint:
             self.config = Config(**checkpoint['config'])
         if 'model' in checkpoint:
@@ -244,7 +252,7 @@ class BaseRunner(object):
             self.result_best = checkpoint['result']
         print(f'=> loaded  checkpoint "{checkpoint}"')
 
-    def dict(self) -> OrderedDict:
+    def dict(self, cls: Callable = OrderedDict) -> MutableMapping:
         """
         Return dict of all attributes for checkpoint
         """
@@ -252,8 +260,9 @@ class BaseRunner(object):
         if self.distributed:
             self.accelerator.wait_for_everyone()
             model = self.accelerator.unwrap_model(self.model)
-        return OrderedDict(
-            epoch=self.epoch,
+        return cls(
+            epochs=self.epoch,
+            steps=self.steps,
             config=self.config.dict(),
             model=model.state_dict(),
             optimizer=self.optimizer.state_dict() if self.optimizer else None,
@@ -261,17 +270,32 @@ class BaseRunner(object):
             result=self.result_last
         )
 
+    def step(self) -> None:
+        """
+        step optimizer and scheduler
+        """
+        if self.gradient_clip:
+            nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip)
+        if self.optimizer is not None:
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+        if self.scheduler is not None:
+            self.scheduler.step()
+        self.steps += 1
+        self.iters += self.batch_size_actual
+        self.progress = self.iters / self.iter_end
+
     def print_result(self) -> None:
         """
-        Print best and last result
+        Print last and best result
         """
-        print(f'best result: {self.result_best}')
         print(f'last result: {self.result_last}')
+        print(f'best result: {self.result_best}')
 
     def __getattr__(self, name) -> Any:
-        if (attr := getattr(self.config, name, None)) is not None:
-            return attr
         if (attr := getattr(self.accelerator, name, None)) is not None:
+            return attr
+        if self.config is not None and (attr := getattr(self.config, name, None)) is not None:
             return attr
         raise AttributeError(f"'Runner' object has no attribute '{name}'")
 

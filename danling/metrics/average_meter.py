@@ -27,3 +27,6 @@ class AverageMeter:
         self.sum += val * batch_size
         self.count += batch_size
         self.avg = self.sum / self.count
+
+    def __repr__(self):
+        return repr(self.avg)

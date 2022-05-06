@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name='danling',
-    version='0.0.1a0',
+    version='0.0.1a1',
     description='danling',
     author='Zhiyuan Chen',
     author_email='this@zyc.ai',
