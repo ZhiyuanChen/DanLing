@@ -21,7 +21,7 @@ class TransformerEncoderLayer(nn.Module):
     Args:
         embed_dim: the number of expected features in the input (required).
         num_heads: the number of heads in the multi head attention models (required).
-        feedforward_size: the dimension of the feedforward network model (default=2048).
+        ffn_dim: the dimension of the feedforward network model (default=2048).
         dropout: the dropout value (default=0.1).
         activation: the activation function of intermediate layer, relu or gelu (default=relu).
         layer_norm_eps: the eps value in layer normalization components (default=1e-5).
@@ -41,7 +41,7 @@ class TransformerEncoderLayer(nn.Module):
     __constants__ = ['batch_first', 'norm_first']
 
     def __init__(self, embed_dim: int, num_heads: int,
-                 feedforward_size: Optional[int] = 2048,
+                 ffn_dim: Optional[int] = 2048,
                  dropout: Optional[float] = 0.1,
                  attention_dropout: Optional[float] = 0.1,
                  feedforward_dropout: Optional[float] = 0.1,
@@ -64,7 +64,7 @@ class TransformerEncoderLayer(nn.Module):
             add_zero_attn=add_zero_attn, batch_first=batch_first, **kwargs)
         self.norm1 = nn.LayerNorm(embed_dim, eps=layer_norm_eps)
         self.feedforward = FeedForwardNetwork(
-            embed_dim, feedforward_size, activation, feedforward_dropout, **kwargs)
+            embed_dim, ffn_dim, activation, feedforward_dropout, **kwargs)
         self.norm2 = nn.LayerNorm(embed_dim, eps=layer_norm_eps)
         self.dropout = nn.Dropout(dropout)
 
