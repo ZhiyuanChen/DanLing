@@ -16,8 +16,7 @@ def catch(error=Exception, exclude=None):
         @wraps(func)
         def wrapper(*args, **kwargs):
             try:
-                result = func(*args, **kwargs)
-                return result
+                return func(*args, **kwargs)
             except error as e:
                 if exclude is not None and isinstance(e, exclude):
                     raise e
@@ -60,3 +59,14 @@ def load(path: str, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
     else:
         raise ValueError(f'Tying to load {path} with unsupported extension')
     return result
+
+
+def is_serializable(obj: Any) -> bool:
+    """
+    Check if obj is serializable
+    """
+    try:
+        json.dumps(obj)
+        return True
+    except (TypeError, OverflowError):
+        return False

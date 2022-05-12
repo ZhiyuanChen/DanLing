@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import atexit
 import json
 import logging
@@ -7,10 +9,10 @@ import random
 import shutil
 from collections import OrderedDict
 from collections.abc import MutableMapping
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from functools import wraps
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import accelerate
-# import click
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
@@ -18,18 +20,48 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as data
+from chanfig import Config
 from torch.utils.tensorboard import SummaryWriter
 
-from danling.config import Config
-from danling.utils import catch
+from danling.utils import catch, is_serializable
 
 
-class BaseRunner(object):
+def on_main_process(func):
+    """
+    Run func on main process
+    """
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        if self.is_main_process or not self.distributed:
+            return func(self, *args, **kwargs)
+    return wrapper
+
+
+def on_local_main_process(func):
+    """
+    Run func on local main process
+    """
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        if self.is_local_main_process or not self.distributed:
+            return func(self, *args, **kwargs)
+    return wrapper
+
+
+class BaseRunner(Config):
     """
     Set up everything for running a job
     """
 
-    config: Any = None
+    id: str = None
+    name: str = 'danling'
+    seed: int = 0
+
+    experiment_dir: str = 'experiments'
+    checkpoint_dir_name: str = 'checkpoints'
+
+    steps: int = 0
+    epochs: int = 0
 
     accelerator: accelerate.Accelerator = None
 
@@ -40,6 +72,7 @@ class BaseRunner(object):
     datasets: OrderedDict[str, data.DataLoader] = OrderedDict()
     datasamplers: OrderedDict[str, data.DataLoader] = OrderedDict()
     dataloaders: OrderedDict[str, data.DataLoader] = OrderedDict()
+    batch_size: int = 1
 
     criterions: Tuple[nn.Module] = None
 
@@ -49,47 +82,39 @@ class BaseRunner(object):
     score_best: float = 0
     score_last: float = 0
 
-    iters: int = 0
-    steps: int = 0
-    epochs: int = 0
-    progress: float = 0.
-    is_best: bool = False
-
+    log: bool = True
     logger: logging.Logger = None
+    tensorboard: bool = False
     writer: SummaryWriter = None
 
-    def __init__(self, config) -> None:
-        self.config = config
-
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
         # self.init_distributed()
         self.accelerator = accelerate.Accelerator(kwargs_handlers=[accelerate.DistributedDataParallelKwargs(find_unused_parameters=True)])
-        self.distributed = self.num_processes > 1
-        self.batch_size_actual = self.batch_size * self.num_processes * getattr(self, 'accum_steps', 1)
 
         self.init_seed()
 
-        if getattr(self, 'id', None) is None:
-            self.config.id = f'{self.name}-{self.seed}'
+        if hasattr(self, 'deterministic'):
+            self.init_deterministic()
+
+        if not hasattr(self, 'id'):
+            self.id = f'{self.name}-{self.seed}'
+
         self.dir = os.path.join(self.experiment_dir, self.id)
         self.checkpoint_dir = os.path.join(self.dir, self.checkpoint_dir_name)
 
-        if getattr(self, 'deterministic', None):
-            self.init_deterministic()
-
         if self.is_main_process:
             os.makedirs(self.dir, exist_ok=True)
-            if self.train:
-                os.makedirs(self.checkpoint_dir, exist_ok=True)
             if self.log:
                 self.init_logger()
             if self.tensorboard:
                 self.writer = SummaryWriter(self.dir)
-            self.config.yaml(os.path.join(self.dir, 'config.yaml'))
+            self.yaml(os.path.join(self.dir, 'runner.yaml'))
 
         if self.log:
             self.init_print()
 
-        print(config)
+        print(self.dict())
         atexit.register(self.print_result)
 
     def init_distributed(self) -> None:
@@ -116,9 +141,9 @@ class BaseRunner(object):
         Set up random seed
         """
         if self.seed is None:
-            self.config.seed = random.randint(0, 100000)
+            self.seed = random.randint(0, 100000)
             if self.distributed:
-                self.config.seed = self.accelerator.gather(torch.tensor(self.seed).cuda()).unsqueeze(0).flatten()[0]
+                self.seed = self.accelerator.gather(torch.tensor(self.seed).cuda()).unsqueeze(0).flatten()[0]
         torch.manual_seed(self.seed + self.process_index)
         torch.cuda.manual_seed(self.seed + self.process_index)
         np.random.seed(self.seed + self.process_index)
@@ -196,18 +221,20 @@ class BaseRunner(object):
             if batch_size_base is None:
                 batch_size_base = self.batch_size_base
             lr_scale_factor = self.batch_size_actual / batch_size_base
-        self.config.lr_scale_factor = lr_scale_factor
-        self.config.lr = self.lr * self.lr_scale_factor
-        self.config.lr_final = self.lr_final * self.lr_scale_factor
+        self.lr_scale_factor = lr_scale_factor
+        self.lr = self.lr * self.lr_scale_factor
+        self.lr_final = self.lr_final * self.lr_scale_factor
 
     @catch()
+    @on_main_process
     def save(self) -> None:
         """
         Save checkpoint to checkpoint_dir
         """
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
         last_path = os.path.join(self.checkpoint_dir, 'last.pth')
         self.accelerator.save(self.dict(), last_path)
-        if (self.epoch + 1) % self.save_freq == 0:
+        if (self.epochs + 1) % self.save_freq == 0:
             save_path = os.path.join(self.checkpoint_dir, f'epoch-{self.epochs}.pth')
             shutil.copy(last_path, save_path)
         if self.is_best:
@@ -215,6 +242,7 @@ class BaseRunner(object):
             shutil.copy(last_path, best_path)
 
     @catch()
+    @on_main_process
     def save_result(self) -> None:
         """
         Save result
@@ -228,31 +256,34 @@ class BaseRunner(object):
             best_path = os.path.join(self.dir, 'best.json')
             shutil.copy(last_path, best_path)
 
-    def load(self, checkpoint: str) -> None:
+    def load(self, checkpoint: Union[MutableMapping, str]) -> None:
         """
-        Load checkpoint from checkpoint
+        Load runner from checkpoint
         """
-        if not os.path.isfile(checkpoint):
-            raise FileNotFoundError('checkpoint does not exist')
         print(f'=> loading checkpoint "{checkpoint}"')
-        checkpoint = torch.load(checkpoint)
-        if 'epochs' in checkpoint:
-            self.epochs = checkpoint['epochs']
-        if 'steps' in checkpoint:
-            self.steps = checkpoint['steps']
-        if 'config' in checkpoint:
-            self.config = Config(**checkpoint['config'])
+        if isinstance(checkpoint, str):
+            if not os.path.isfile(checkpoint):
+                raise FileNotFoundError(f"checkpoint at {checkpoint} is not a file")
+            checkpoint = torch.load(checkpoint)
+        super().__init__(**checkpoint['runner'])
         if 'model' in checkpoint:
             self.model.load_state_dict(checkpoint['model'])
         if self.optimizer is not None and 'optimizer' in checkpoint:
             self.optimizer.load_state_dict(checkpoint['optimizer'])
         if self.scheduler is not None and 'scheduler' in checkpoint:
             self.scheduler.load_state_dict(checkpoint['scheduler'])
-        if 'result' in checkpoint:
-            self.result_best = checkpoint['result']
         print(f'=> loaded  checkpoint "{checkpoint}"')
 
-    def dict(self, cls: Callable = OrderedDict) -> MutableMapping:
+    def dict(self, cls: Callable = dict) -> MutableMapping:
+        dict = cls()
+        for k, v in self.__dict__.items():
+            if isinstance(v, Config):
+                dict[k] = v.dict(cls)
+            elif is_serializable(v):
+                dict[k] = v
+        return dict
+
+    def state_dict(self, cls: Callable = OrderedDict) -> MutableMapping:
         """
         Return dict of all attributes for checkpoint
         """
@@ -261,13 +292,10 @@ class BaseRunner(object):
             self.accelerator.wait_for_everyone()
             model = self.accelerator.unwrap_model(self.model)
         return cls(
-            epochs=self.epoch,
-            steps=self.steps,
-            config=self.config.dict(),
+            runner=self.dict(),
             model=model.state_dict(),
             optimizer=self.optimizer.state_dict() if self.optimizer else None,
             scheduler=self.scheduler.state_dict() if self.scheduler else None,
-            result=self.result_last
         )
 
     def step(self) -> None:
@@ -282,8 +310,6 @@ class BaseRunner(object):
         if self.scheduler is not None:
             self.scheduler.step()
         self.steps += 1
-        self.iters += self.batch_size_actual
-        self.progress = self.iters / self.iter_end
 
     def print_result(self) -> None:
         """
@@ -295,8 +321,6 @@ class BaseRunner(object):
     def __getattr__(self, name) -> Any:
         if (attr := getattr(self.accelerator, name, None)) is not None:
             return attr
-        if self.config is not None and (attr := getattr(self.config, name, None)) is not None:
-            return attr
         raise AttributeError(f"'Runner' object has no attribute '{name}'")
 
     def __repr__(self) -> str:
@@ -304,3 +328,44 @@ class BaseRunner(object):
 
     def __str__(self) -> str:
         return self.name
+
+    @property
+    def distributed(self):
+        """
+        If runner is in distributed mode
+        """
+        return self.num_processes > 1
+
+    @property
+    def iters(self) -> int:
+        """
+        Number of iterations
+        """
+        return self.steps * self.batch_size_actual
+
+    @property
+    def progress(self) -> float:
+        """
+        Training Progress
+        """
+        if hasattr(self, 'iter_end'):
+            return self.iters / self.iter_end
+        elif hasattr(self, 'step_end'):
+            return self.steps / self.step_end
+        elif hasattr(self, 'epoch_end'):
+            return self.epochs / self.epoch_end
+        return 0
+
+    @property
+    def batch_size_actual(self) -> int:
+        """
+        Actual batch size
+        """
+        return self.batch_size * self.num_processes * getattr(self, 'accum_steps', 1)
+
+    @property
+    def is_best(self) -> bool:
+        """
+        If current result is best
+        """
+        return self.score_last > self.score_best
