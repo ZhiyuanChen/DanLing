@@ -9,7 +9,6 @@ import random
 import shutil
 from collections import OrderedDict
 from collections.abc import MutableMapping
-from functools import wraps
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import accelerate
@@ -21,31 +20,11 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as data
 from chanfig import Config
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard.writer import SummaryWriter
 
 from danling.utils import catch, is_serializable
 
-
-def on_main_process(func):
-    """
-    Run func on main process
-    """
-    @wraps(func)
-    def wrapper(self, *args, **kwargs):
-        if self.is_main_process or not self.distributed:
-            return func(self, *args, **kwargs)
-    return wrapper
-
-
-def on_local_main_process(func):
-    """
-    Run func on local main process
-    """
-    @wraps(func)
-    def wrapper(self, *args, **kwargs):
-        if self.is_local_main_process or not self.distributed:
-            return func(self, *args, **kwargs)
-    return wrapper
+from .utils import ensure_dir, on_local_main_process, on_main_process
 
 
 class BaseRunner(Config):
@@ -55,7 +34,7 @@ class BaseRunner(Config):
 
     id: str = None
     name: str = 'danling'
-    seed: int = 0
+    seed: int = 1031
 
     experiment_dir: str = 'experiments'
     checkpoint_dir_name: str = 'checkpoints'
@@ -100,11 +79,7 @@ class BaseRunner(Config):
         if not hasattr(self, 'id'):
             self.id = f'{self.name}-{self.seed}'
 
-        self.dir = os.path.join(self.experiment_dir, self.id)
-        self.checkpoint_dir = os.path.join(self.dir, self.checkpoint_dir_name)
-
         if self.is_main_process:
-            os.makedirs(self.dir, exist_ok=True)
             if self.log:
                 self.init_logger()
             if self.tensorboard:
@@ -199,7 +174,7 @@ class BaseRunner(Config):
         torch.set_printoptions(precision=precision)
 
         logger = logging.getLogger('print')
-        logger.flush = lambda: [h.flush() for h in logger.handlers]
+        logger.flush = lambda: [h.flush for h in logger.handlers]
         import builtins as __builtin__
         builtin_print = __builtin__.print
 
@@ -231,7 +206,6 @@ class BaseRunner(Config):
         """
         Save checkpoint to checkpoint_dir
         """
-        os.makedirs(self.checkpoint_dir, exist_ok=True)
         last_path = os.path.join(self.checkpoint_dir, 'last.pth')
         self.accelerator.save(self.dict(), last_path)
         if (self.epochs + 1) % self.save_freq == 0:
@@ -369,3 +343,13 @@ class BaseRunner(Config):
         If current result is best
         """
         return self.score_last > self.score_best
+
+    @property
+    @ensure_dir
+    def dir(self) -> str:
+        return os.path.join(self.experiment_dir, self.id)
+
+    @property
+    @ensure_dir
+    def checkpoint_dir(self) -> str:
+        return os.path.join(self.dir, self.checkpoint_dir_name)
