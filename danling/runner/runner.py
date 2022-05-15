@@ -73,7 +73,7 @@ class BaseRunner(Config):
 
         self.init_seed()
 
-        if hasattr(self, 'deterministic'):
+        if getattr(self, 'deterministic', False):
             self.init_deterministic()
 
         if not hasattr(self, 'id'):
