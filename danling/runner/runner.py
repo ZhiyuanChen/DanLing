@@ -20,7 +20,6 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as data
 from chanfig import Config
-from torch.utils.tensorboard.writer import SummaryWriter
 
 from danling.utils import catch, is_serializable
 
@@ -32,7 +31,7 @@ class BaseRunner(Config):
     Set up everything for running a job
     """
 
-    id: str = None
+    id: str
     name: str = 'danling'
     seed: int = 1031
 
@@ -42,18 +41,18 @@ class BaseRunner(Config):
     steps: int = 0
     epochs: int = 0
 
-    accelerator: accelerate.Accelerator = None
+    accelerator: accelerate.Accelerator
 
-    model: nn.Module = None
-    optimizer: optim.Optimizer = None
-    scheduler: optim.lr_scheduler._LRScheduler = None
+    model: nn.Module
+    optimizer: optim.Optimizer
+    scheduler: optim.lr_scheduler._LRScheduler
 
     datasets: OrderedDict[str, data.DataLoader] = OrderedDict()
     datasamplers: OrderedDict[str, data.DataLoader] = OrderedDict()
     dataloaders: OrderedDict[str, data.DataLoader] = OrderedDict()
     batch_size: int = 1
 
-    criterions: Tuple[nn.Module] = None
+    criterions: Tuple[nn.Module]
 
     results: List[Dict[str, Any]] = []
     result_best: Dict[str, Any] = {}
@@ -62,9 +61,9 @@ class BaseRunner(Config):
     score_last: float = 0
 
     log: bool = True
-    logger: logging.Logger = None
+    logger: logging.Logger
     tensorboard: bool = False
-    writer: SummaryWriter = None
+    writer: Callable
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -79,15 +78,15 @@ class BaseRunner(Config):
         if not hasattr(self, 'id'):
             self.id = f'{self.name}-{self.seed}'
 
-        if self.is_main_process:
-            if self.log:
-                self.init_logger()
-            if self.tensorboard:
-                self.writer = SummaryWriter(self.dir)
-            self.yaml(os.path.join(self.dir, 'runner.yaml'))
-
-        if self.log:
+        if getattr(self, 'log', False):
+            self.init_logger()
             self.init_print()
+
+        if getattr(self, 'tensorboard', False):
+            self.writer = self.init_tensorboard()
+
+        if self.is_main_process:
+            self.yaml(os.path.join(self.dir, 'runner.yaml'))
 
         print(self.dict())
         atexit.register(self.print_result)
@@ -124,6 +123,7 @@ class BaseRunner(Config):
         np.random.seed(self.seed + self.process_index)
         random.seed(self.seed + self.process_index)
 
+    @on_main_process
     def init_logger(self) -> None:
         """
         Set up logger
@@ -187,6 +187,11 @@ class BaseRunner(Config):
                     builtin_print(*args, end=end, file=file, flush=flush, **kwargs)
 
         __builtin__.print = print
+
+    @on_main_process
+    def init_tensorboard(self, *args, **kwargs):
+        from torch.utils.tensorboard.writer import SummaryWriter
+        return SummaryWriter(*args, **kwargs)
 
     def init_lr(self, lr_scale_factor: Optional[float] = None, batch_size_base: Optional[int] = None) -> None:
         """
