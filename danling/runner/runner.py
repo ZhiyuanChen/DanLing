@@ -9,7 +9,8 @@ import random
 import shutil
 from collections import OrderedDict
 from collections.abc import MutableMapping
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from os import PathLike as _PathLike
+from typing import Any, Callable, Dict, IO, List, Optional, Tuple, Union
 
 import accelerate
 import numpy as np
@@ -24,6 +25,9 @@ from chanfig import Config
 from danling.utils import catch, is_serializable
 
 from .utils import ensure_dir, on_local_main_process, on_main_process
+
+PathLike = Union[str, _PathLike]
+File = Union[PathLike, IO]
 
 
 class BaseRunner(Config):
@@ -199,7 +203,7 @@ class BaseRunner(Config):
         """
         if lr_scale_factor is None:
             if batch_size_base is None:
-                batch_size_base = self.batch_size_base
+                batch_size_base = getattr(self, 'batch_size_base', 1)
             lr_scale_factor = self.batch_size_actual / batch_size_base
         self.lr_scale_factor = lr_scale_factor
         self.lr = self.lr * self.lr_scale_factor
@@ -207,12 +211,20 @@ class BaseRunner(Config):
 
     @catch()
     @on_main_process
-    def save(self) -> None:
+    def save(self, obj: Any, f: File) -> None:
+        """
+        Save object to a path or file
+        """
+        self.accelerator.save(obj, f)
+
+    @catch()
+    @on_main_process
+    def save_checkpoint(self) -> None:
         """
         Save checkpoint to checkpoint_dir
         """
         last_path = os.path.join(self.checkpoint_dir, 'last.pth')
-        self.accelerator.save(self.dict(), last_path)
+        self.save(self.dict(), last_path)
         if (self.epochs + 1) % self.save_freq == 0:
             save_path = os.path.join(self.checkpoint_dir, f'epoch-{self.epochs}.pth')
             shutil.copy(last_path, save_path)
@@ -224,7 +236,7 @@ class BaseRunner(Config):
     @on_main_process
     def save_result(self) -> None:
         """
-        Save result
+        Save result to dir
         """
         ret = {'id': self.id, 'name': self.name}
         ret.update(self.result_last)  # This is slower but ensure id in the first
@@ -281,8 +293,8 @@ class BaseRunner(Config):
         """
         step optimizer and scheduler
         """
-        if self.gradient_clip:
-            nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip)
+        if (gradient_clip := getattr(self, 'gradient_clip')) is not None:
+            nn.utils.clip_grad_norm_(self.model.parameters(), gradient_clip)
         if self.optimizer is not None:
             self.optimizer.step()
             self.optimizer.zero_grad()
