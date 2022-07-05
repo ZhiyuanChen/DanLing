@@ -46,6 +46,7 @@ class BaseRunner(Config):
     epochs: int = 0
 
     accelerator: accelerate.Accelerator
+    accelerate_kwargs: list = []
 
     model: nn.Module
     optimizer: optim.Optimizer
@@ -72,7 +73,7 @@ class BaseRunner(Config):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         # self.init_distributed()
-        self.accelerator = accelerate.Accelerator(kwargs_handlers=[accelerate.DistributedDataParallelKwargs(find_unused_parameters=True)])
+        self.accelerator = accelerate.Accelerator(kwargs_handlers=self.accelerate_kwargs)
 
         self.init_seed()
 
