@@ -1,4 +1,3 @@
-from .scheduler import Scheduler
-from .utils import catch, load, is_serializable
+from .utils import catch, load, is_json_serializable
 
-__all__ = ['Scheduler', 'catch', 'load', 'is_serializable']
+__all__ = ['Scheduler', 'catch', 'load', 'is_json_serializable']

@@ -61,9 +61,9 @@ def load(path: str, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
     return result
 
 
-def is_serializable(obj: Any) -> bool:
+def is_json_serializable(obj: Any) -> bool:
     """
-    Check if obj is serializable
+    Check if obj is JSON serializable
     """
     try:
         json.dumps(obj)
