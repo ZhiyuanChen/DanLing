@@ -11,9 +11,9 @@ from .attention import MultiHeadAttention
 from .ffn import FullyConnectedNetwork
 
 
-class TransformerEncoderLayer(nn.Module):
-    r"""TransformerEncoderLayer is made up of self-attn and feedforward network.
-    This standard encoder layer is based on the paper "Attention Is All You Need".
+class TransformerDecoderLayer(nn.Module):
+    r"""TransformerDecoderLayer is made up of self-attn and feedforward network.
+    This standard decoder layer is based on the paper "Attention Is All You Need".
     Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez,
     Lukasz Kaiser, and Illia Polosukhin. 2017. Attention is all you need. In Advances in
     Neural Information Processing Systems, pages 6000-6010. Users may modify or implement
@@ -30,13 +30,13 @@ class TransformerEncoderLayer(nn.Module):
         norm_first: if ``True``, layer norm is done prior to attention and feedforward
             operations, respectivaly. Otherwise it's done after. Default: ``False`` (after).
     Examples::
-        >>> encoder_layer = nn.TransformerEncoderLayer(embed_dim=512, num_heads=8)
+        >>> decoder_layer = nn.TransformerDecoderLayer(embed_dim=512, num_heads=8)
         >>> src = torch.rand(10, 32, 512)
-        >>> out = encoder_layer(src)
+        >>> out = decoder_layer(src)
     Alternatively, when ``batch_first`` is ``True``:
-        >>> encoder_layer = nn.TransformerEncoderLayer(embed_dim=512, num_heads=8, batch_first=True)
+        >>> decoder_layer = nn.TransformerDecoderLayer(embed_dim=512, num_heads=8, batch_first=True)
         >>> src = torch.rand(32, 10, 512)
-        >>> out = encoder_layer(src)
+        >>> out = decoder_layer(src)
     """
     __constants__ = ["batch_first", "norm_first"]
 
@@ -60,9 +60,20 @@ class TransformerEncoderLayer(nn.Module):
         FeedForwardNetwork: Optional[nn.Module] = FullyConnectedNetwork,
         **kwargs: Optional[Dict[str, Any]]
     ) -> None:
-        super(TransformerEncoderLayer, self).__init__()
+        super(TransformerDecoderLayer, self).__init__()
         self.norm_first = norm_first
-        self.attn = Attention(
+        self.self_attn = Attention(
+            embed_dim,
+            num_heads,
+            attn_dropout=attn_dropout,
+            scale_factor=scale_factor,
+            bias=bias,
+            add_bias_kv=add_bias_kv,
+            add_zero_attn=add_zero_attn,
+            batch_first=batch_first,
+            **kwargs
+        )
+        self.cross_attn = Attention(
             embed_dim,
             num_heads,
             attn_dropout=attn_dropout,
@@ -82,15 +93,19 @@ class TransformerEncoderLayer(nn.Module):
 
     def forward(
         self,
-        src: Tensor,
-        attn_bias: Optional[Tensor] = None,
-        attn_mask: Optional[Tensor] = None,
-        key_padding_mask: Optional[Tensor] = None,
+        tgt: Tensor,
+        mem: Tensor,
+        tgt_bias: Optional[Tensor] = None,
+        tgt_mask: Optional[Tensor] = None,
+        tgt_key_padding_mask: Optional[Tensor] = None,
+        mem_bias: Optional[Tensor] = None,
+        mem_mask: Optional[Tensor] = None,
+        mem_key_padding_mask: Optional[Tensor] = None,
         need_weights: Optional[bool] = False,
     ) -> Tensor:
-        r"""Pass the input through the encoder layer.
+        r"""Pass the input through the decoder layer.
         Args:
-            src: the sequence to the encoder layer (required).
+            src: the sequence to the decoder layer (required).
             attn_mask: the mask for the src sequence (optional).
             key_padding_mask: the mask for the src keys per batch (optional).
         Shape:
@@ -98,19 +113,29 @@ class TransformerEncoderLayer(nn.Module):
         """
 
         if self.norm_first:
-            src = self.norm1(src)
+            tgt = self.norm1(tgt)
 
-        attn, weights = self.attn(
-            src,
-            src,
-            src,
-            attn_bias=attn_bias,
-            attn_mask=attn_mask,
-            key_padding_mask=key_padding_mask,
+        self_attn, weights = self.self_attn(
+            tgt,
+            tgt,
+            tgt,
+            attn_bias=tgt_bias,
+            attn_mask=tgt_mask,
+            key_padding_mask=tgt_key_padding_mask,
             need_weights=need_weights,
         )
-        attn = src + self.dropout(attn)
-        attn = self.norm1(attn) if not self.norm_first else self.norm2(attn)
+        self_attn = tgt + self.dropout(self_attn)
+        cross_attn, weights = self.cross_attn(
+            self_attn,
+            mem,
+            mem,
+            attn_bias=mem_bias,
+            attn_mask=mem_mask,
+            key_padding_mask=mem_key_padding_mask,
+            need_weights=need_weights,
+        )
+        cross_attn = self_attn + self.dropout(cross_attn)
+        attn = self.norm1(cross_attn) if not self.norm_first else self.norm2(cross_attn)
 
         ffn = self.ffn(attn)
         ffn = attn + self.dropout(ffn)
@@ -121,48 +146,52 @@ class TransformerEncoderLayer(nn.Module):
         return ffn, weights
 
 
-class TransformerEncoder(nn.Module):
-    r"""TransformerEncoder is a stack of N encoder layers
+class TransformerDecoder(nn.Module):
+    r"""TransformerDecoder is a stack of N decoder layers
     Args:
-        num_layers: the number of sub-encoder-layers in the encoder (required).
-        layer: the sub-encoder-layer in the encoder (default=TransformerEncoderLayer).
+        num_layers: the number of sub-decoder-layers in the decoder (required).
+        layer: the sub-decoder-layer in the decoder (default=TransformerDecoderLayer).
         drop_layer: the drop layer rate (default=0.0).
     Examples::
-        >>> transformer_encoder = dl.model.TransformerEncoder(num_layers=6)
+        >>> transformer_decoder = dl.model.TransformerDecoder(num_layers=6)
         >>> src = torch.rand(10, 32, 512)
-        >>> out = transformer_encoder(src)
+        >>> out = transformer_decoder(src)
     """
     __constants__ = ["norm"]
 
     def __init__(
         self,
-        layer: TransformerEncoderLayer,
+        layer: TransformerDecoderLayer,
         num_layers: Optional[int] = 6,
         **kwargs: Optional[Dict[str, Any]]
     ) -> None:
-        super(TransformerEncoder, self).__init__()
+        super(TransformerDecoder, self).__init__()
         self.num_layers = num_layers
         self.layers = nn.ModuleList([])
         self.layers.extend([layer for _ in range(self.num_layers)])
 
     def forward(
         self,
-        src: Tensor,
-        attn_bias: Optional[Tensor] = None,
-        attn_mask: Optional[Tensor] = None,
-        key_padding_mask: Optional[Tensor] = None,
+        tgt: Tensor,
+        mem: Tensor,
+        tgt_bias: Optional[Tensor] = None,
+        tgt_mask: Optional[Tensor] = None,
+        tgt_key_padding_mask: Optional[Tensor] = None,
+        mem_bias: Optional[Tensor] = None,
+        mem_mask: Optional[Tensor] = None,
+        mem_key_padding_mask: Optional[Tensor] = None,
         need_weights: Optional[bool] = False,
         gradient_checkpoint: Optional[bool] = False,
     ) -> Tensor:
-        r"""Pass the input through the encoder layers in turn.
+        r"""Pass the input through the decoder layers in turn.
         Args:
-            src: the sequence to the encoder (required).
+            src: the sequence to the decoder (required).
             attn_mask: the mask for the src sequence (optional).
             key_padding_mask: the mask for the src keys per batch (optional).
         Shape:
             see the docs in Transformer class.
         """
-        output = src
+        output = tgt
         attn_weights = [] if need_weights else torch.zeros(0, requires_grad=False)
 
         for layer in self.layers:
@@ -170,7 +199,15 @@ class TransformerEncoder(nn.Module):
                 layer = partial(checkpoint, layer)
                 need_weights = torch.tensor(need_weights)
             output, weights = layer(
-                output, attn_bias, attn_mask, key_padding_mask, need_weights
+                output,
+                mem,
+                tgt_bias,
+                tgt_mask,
+                tgt_key_padding_mask,
+                mem_bias,
+                mem_mask,
+                mem_key_padding_mask,
+                need_weights,
             )
             if need_weights:
                 attn_weights.append(weights)
