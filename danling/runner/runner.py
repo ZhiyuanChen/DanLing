@@ -22,7 +22,7 @@ import torch.optim as optim
 import torch.utils.data as data
 from chanfig import Config
 
-from danling.utils import catch, is_serializable
+from danling.utils import catch, is_json_serializable
 
 from .utils import ensure_dir, on_local_main_process, on_main_process
 
@@ -271,7 +271,7 @@ class BaseRunner(Config):
         for k, v in self.__dict__.items():
             if isinstance(v, Config):
                 dict[k] = v.dict(cls)
-            elif is_serializable(v):
+            elif is_json_serializable(v):
                 dict[k] = v
         return dict
 
