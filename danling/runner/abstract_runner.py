@@ -39,11 +39,13 @@ class AbstractRunner(NestedDict):
 
     criterion: Tuple[nn.Module]
 
+    metric: str
     results: List[Dict[str, Any]]
     result_best: Dict[str, Any]
     result_latest: Dict[str, Any]
     score_best: float
     score_latest: float
+    is_best: bool
 
     log: bool
     logger: logging.Logger
@@ -76,11 +78,13 @@ class AbstractRunner(NestedDict):
 
         self.criterion = None
 
+        self.metric = 'loss'
         self.results = []
         self.result_best = {}
         self.result_latest = {}
         self.score_best = 0
         self.score_latest = 0
+        self.is_best = False
 
         self.log = False
         self.tensorboard = False

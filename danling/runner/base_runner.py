@@ -286,6 +286,19 @@ class BaseRunner(AbstractRunner):
         print(f"latest result: {self.result_latest}")
         print(f"best result: {self.result_best}")
 
+    def append_result(self, result) -> None:
+        """
+        Add latest result and update best result
+        """
+        self.is_best = False
+        self.results.append(result)
+        self.result_latest = result
+        self.score_latest = result['metric']
+        if self.score_latest > self.score_best:
+            self.is_best = True
+            self.score_best = self.score_latest
+            self.result_best = self.score_best
+
     def __getattr__(self, name) -> Any:
         try:
             return super().get(name)
@@ -306,13 +319,6 @@ class BaseRunner(AbstractRunner):
         If runner is in distributed mode
         """
         return self.num_processes > 1
-
-    @property
-    def is_best(self) -> bool:
-        """
-        If current result is best
-        """
-        return self.score_latest > self.score_best
 
     @property
     @ensure_dir

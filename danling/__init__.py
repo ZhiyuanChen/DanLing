@@ -6,7 +6,7 @@ from .models import (
     TransformerEncoderLayer,
     UnitedPositionEmbedding,
 )
-from .runner import BaseRunner
+from .runner import BaseRunner, EpochRunner, StepRunner
 from .utils import catch, load
 
 __all__ = [
@@ -18,6 +18,8 @@ __all__ = [
     "UnitedPositionEmbedding",
     "FullyConnectedNetwork",
     "BaseRunner",
+    "EpochRunner",
+    "StepRunner",
     "catch",
     "load",
 ]
