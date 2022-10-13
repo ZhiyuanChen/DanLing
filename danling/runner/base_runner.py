@@ -334,8 +334,6 @@ class BaseRunner(AbstractRunner):
         """
         step optimizer and scheduler
         """
-        if (gradient_clip := getattr(self, "gradient_clip")) is not None:
-            nn.utils.clip_grad_norm_(self.model.parameters(), gradient_clip)
         if self.optimizer is not None:
             self.optimizer.step()
             self.optimizer.zero_grad()
