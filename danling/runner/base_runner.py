@@ -33,9 +33,8 @@ class BaseRunner(AbstractRunner):
     """
     Set up everything for running a job
     """
-    def __init__(self, config) -> None:
-        super().__init__(**config)
-        self.config = config
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
 
         self.accelerator = accelerate.Accelerator(
             kwargs_handlers=self.accelerate_kwargs
@@ -57,7 +56,7 @@ class BaseRunner(AbstractRunner):
             self.writer = self.init_tensorboard()
 
         if self.is_main_process:
-            self.yaml(os.path.join(self.dir, "config.yaml"))
+            self.yaml(os.path.join(self.dir, "runner.yaml"))
 
         print(self.yamls())
         atexit.register(self.print_result)
@@ -214,14 +213,14 @@ class BaseRunner(AbstractRunner):
         """
         Save checkpoint to checkpoint_dir
         """
-        last_path = os.path.join(self.checkpoint_dir, "last.pth")
-        self.save(self.state_dict(), last_path)
+        latest_path = os.path.join(self.checkpoint_dir, "latest.pth")
+        self.save(self.state_dict(), latest_path)
         if (self.epochs + 1) % self.save_freq == 0:
             save_path = os.path.join(self.checkpoint_dir, f"epoch-{self.epochs}.pth")
-            shutil.copy(last_path, save_path)
+            shutil.copy(latest_path, save_path)
         if self.is_best:
             best_path = os.path.join(self.checkpoint_dir, "best.pth")
-            shutil.copy(last_path, best_path)
+            shutil.copy(latest_path, best_path)
 
     @catch()
     @on_main_process
@@ -230,13 +229,13 @@ class BaseRunner(AbstractRunner):
         Save result to dir
         """
         ret = {"id": self.id, "name": self.name}
-        ret.update(self.result_last)  # This is slower but ensure id in the first
-        last_path = os.path.join(self.dir, "last.json")
-        with open(last_path, "w") as f:
+        ret.update(self.result_latest)  # This is slower but ensure id in the first
+        latest_path = os.path.join(self.dir, "latest.json")
+        with open(latest_path, "w") as f:
             json.dump(ret, f, indent=4)
         if self.is_best:
             best_path = os.path.join(self.dir, "best.json")
-            shutil.copy(last_path, best_path)
+            shutil.copy(latest_path, best_path)
 
     def load(self, path) -> None:
         """
@@ -253,7 +252,7 @@ class BaseRunner(AbstractRunner):
             self.optimizer.load_state_dict(checkpoint["optimizer"])
         if self.scheduler is not None and "scheduler" in checkpoint:
             self.scheduler.load_state_dict(checkpoint["scheduler"])
-        print(f'=> loaded  checkpoint "{checkpoint}"')
+        print(f'=> loaded checkpoint "{checkpoint}"')
 
     def dict(self, cls: Callable = dict) -> MutableMapping:
         dict = cls()
@@ -282,9 +281,9 @@ class BaseRunner(AbstractRunner):
 
     def print_result(self) -> None:
         """
-        Print last and best result
+        Print latest and best result
         """
-        print(f"last result: {self.result_last}")
+        print(f"latest result: {self.result_latest}")
         print(f"best result: {self.result_best}")
 
     def __getattr__(self, name) -> Any:
@@ -313,7 +312,7 @@ class BaseRunner(AbstractRunner):
         """
         If current result is best
         """
-        return self.score_last > self.score_best
+        return self.score_latest > self.score_best
 
     @property
     @ensure_dir

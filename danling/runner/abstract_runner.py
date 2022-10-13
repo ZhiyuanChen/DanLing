@@ -41,9 +41,9 @@ class AbstractRunner(NestedDict):
 
     results: List[Dict[str, Any]]
     result_best: Dict[str, Any]
-    result_last: Dict[str, Any]
+    result_latest: Dict[str, Any]
     score_best: float
-    score_last: float
+    score_latest: float
 
     log: bool
     logger: logging.Logger
@@ -78,9 +78,9 @@ class AbstractRunner(NestedDict):
 
         self.results = []
         self.result_best = {}
-        self.result_last = {}
+        self.result_latest = {}
         self.score_best = 0
-        self.score_last = 0
+        self.score_latest = 0
 
         self.log = False
         self.tensorboard = False
