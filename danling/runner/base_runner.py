@@ -289,14 +289,19 @@ class BaseRunner(AbstractRunner):
         """
         Add latest result and update best result
         """
-        self.is_best = False
         self.results.append(result)
         self.result_latest = result
-        self.score_latest = result[self.metric]
+
+    def update_score(self, score) -> None:
+        """
+        Add latest result and update best result
+        """
+        self.is_best = False
+        self.score_latest = score
         if self.score_latest > self.score_best:
             self.is_best = True
             self.score_best = self.score_latest
-            self.result_best = self.score_best
+            self.result_best = self.result_latest
 
     def __getattr__(self, name) -> Any:
         try:
