@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import logging.config
-from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Tuple
 
 import accelerate
@@ -86,7 +85,7 @@ class AbstractRunner(NestedDict):
         self.score_latest = 0
         self.is_best = False
 
-        self.log = False
+        self.log = True
         self.tensorboard = False
         for key, value in args:
             self.set(key, value, convert_mapping=True)

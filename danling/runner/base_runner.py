@@ -102,7 +102,6 @@ class BaseRunner(AbstractRunner):
         """
         Set up logger
         """
-        # TODO consider move stream output out of stderr
         # Why is setting up proper logging so !@?#! ugly?
         logging.config.dictConfig(
             {
@@ -114,11 +113,11 @@ class BaseRunner(AbstractRunner):
                     },
                 },
                 "handlers": {
-                    "stderr": {
+                    "stdout": {
                         "level": "INFO",
                         "formatter": "standard",
                         "class": "logging.StreamHandler",
-                        "stream": "ext://sys.stderr",
+                        "stream": "ext://sys.stdout",
                     },
                     "logfile": {
                         "level": "DEBUG",
@@ -130,7 +129,7 @@ class BaseRunner(AbstractRunner):
                 },
                 "loggers": {
                     "": {
-                        "handlers": ["stderr", "logfile"],
+                        "handlers": ["stdout", "logfile"],
                         "level": "DEBUG",
                         "propagate": True,
                     },
@@ -293,7 +292,7 @@ class BaseRunner(AbstractRunner):
         self.is_best = False
         self.results.append(result)
         self.result_latest = result
-        self.score_latest = result['metric']
+        self.score_latest = result[self.metric]
         if self.score_latest > self.score_best:
             self.is_best = True
             self.score_best = self.score_latest
@@ -303,7 +302,7 @@ class BaseRunner(AbstractRunner):
         try:
             return super().get(name)
         except AttributeError:
-            if attr := getattr(self.accelerator, name, None) is not None:
+            if (attr := getattr(self.accelerator, name, None)) is not None:
                 return attr
         raise AttributeError(f'"Runner" object has no attribute "{name}"')
 
