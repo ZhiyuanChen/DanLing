@@ -8,9 +8,9 @@ import os
 import random
 import shutil
 from collections import OrderedDict
-from collections.abc import MutableMapping
+from collections.abc import Mapping
 from os import PathLike as _PathLike
-from typing import Any, Callable, Dict, IO, List, Optional, Tuple, Union
+from typing import Any, Callable, IO, List, Optional, Tuple, Union
 
 import accelerate
 import numpy as np
@@ -58,7 +58,7 @@ class BaseRunner(AbstractRunner):
         if self.is_main_process:
             self.yaml(os.path.join(self.dir, "runner.yaml"))
 
-        print(self.yamls())
+        print(self)
         atexit.register(self.print_result)
 
     def init_distributed(self) -> None:
@@ -253,7 +253,7 @@ class BaseRunner(AbstractRunner):
             self.scheduler.load_state_dict(checkpoint["scheduler"])
         print(f'=> loaded checkpoint "{checkpoint}"')
 
-    def dict(self, cls: Callable = dict) -> MutableMapping:
+    def dict(self, cls: Callable = dict) -> Mapping:
         dict = cls()
         for k, v in self._storage.items():
             if isinstance(v, NestedDict):
@@ -262,7 +262,7 @@ class BaseRunner(AbstractRunner):
                 dict[k] = v
         return dict
 
-    def state_dict(self, cls: Callable = OrderedDict) -> MutableMapping:
+    def state_dict(self, cls: Callable = OrderedDict) -> Mapping:
         """
         Return dict of all attributes for checkpoint
         """
@@ -309,12 +309,6 @@ class BaseRunner(AbstractRunner):
             if (attr := getattr(self.accelerator, name, None)) is not None:
                 return attr
         raise AttributeError(f'"Runner" object has no attribute "{name}"')
-
-    def __repr__(self) -> str:
-        return self.id
-
-    def __str__(self) -> str:
-        return self.name
 
     @property
     def distributed(self):

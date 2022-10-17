@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import logging
 import logging.config
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, List, Tuple
 
 import accelerate
 import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as data
-from chanfig import NestedDict
+from chanfig import Dict, NestedDict
 
 class AbstractRunner(NestedDict):
 
@@ -30,18 +30,18 @@ class AbstractRunner(NestedDict):
     optimizer: optim.Optimizer
     scheduler: optim.lr_scheduler._LRScheduler
 
-    datasets: NestedDict
-    datasamplers: NestedDict
-    dataloaders: NestedDict
+    datasets: Dict[str, data.Dataset]
+    datasamplers: Dict[str, data.Sampler]
+    dataloaders: Dict[str, data.DataLoader]
 
     batch_size: int
 
     criterion: Tuple[nn.Module]
 
     metric: str
-    results: List[Dict[str, Any]]
-    result_best: Dict[str, Any]
-    result_latest: Dict[str, Any]
+    results: List[Dict[str, any]]
+    result_best: Dict[str, any]
+    result_latest: Dict[str, any]
     score_best: float
     score_latest: float
     is_best: bool
@@ -69,9 +69,9 @@ class AbstractRunner(NestedDict):
         self.optimizer: optim.Optimizer = None
         self.scheduler: optim.lr_scheduler._LRScheduler = None
 
-        self.datasets = NestedDict()
-        self.datasamplers = NestedDict()
-        self.dataloaders = NestedDict()
+        self.datasets = Dict()
+        self.datasamplers = Dict()
+        self.dataloaders = Dict()
 
         self.batch_size = 1
 
@@ -79,8 +79,8 @@ class AbstractRunner(NestedDict):
 
         self.metric = 'loss'
         self.results = []
-        self.result_best = {}
-        self.result_latest = {}
+        self.result_best = Dict()
+        self.result_latest = Dict()
         self.score_best = 0
         self.score_latest = 0
         self.is_best = False
