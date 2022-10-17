@@ -269,7 +269,7 @@ class BaseRunner(AbstractRunner):
         if self.model is None:
             raise ValueError("Model must be defined when calling state_dict")
         self.accelerator.wait_for_everyone()
-        model = self.accelerator.unwrap_model(model)
+        model = self.accelerator.unwrap_model(self.model)
         return cls(
             runner=self.dict(),
             model=model.state_dict(),
