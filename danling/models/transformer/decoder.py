@@ -21,7 +21,7 @@ class TransformerDecoderLayer(nn.Module):
     Args:
         embed_dim: the number of expected features in the input (required).
         num_heads: the number of heads in the multi head attention models (required).
-        ffn_dim: the dimension of the feedforward network model (default=2048).
+        ffn_dim: the dimension of the feedforward network model (default=embed_dim*4).
         dropout: the dropout value (default=0.1).
         activation: the activation function of intermediate layer, relu or gelu (default=relu).
         layer_norm_eps: the eps value in layer normalization components (default=1e-5).
@@ -44,7 +44,7 @@ class TransformerDecoderLayer(nn.Module):
         self,
         embed_dim: int,
         num_heads: int,
-        ffn_dim: Optional[int] = 2048,
+        ffn_dim: Optional[int] = None,
         dropout: Optional[float] = 0.1,
         attn_dropout: Optional[float] = 0.1,
         ffn_dropout: Optional[float] = 0.1,
@@ -61,6 +61,8 @@ class TransformerDecoderLayer(nn.Module):
         **kwargs: Optional[Dict[str, Any]]
     ) -> None:
         super(TransformerDecoderLayer, self).__init__()
+        if ffn_dim is None:
+            ffn_dim = embed_dim * 4
         self.norm_first = norm_first
         self.self_attn = Attention(
             embed_dim,
