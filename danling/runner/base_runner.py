@@ -214,7 +214,7 @@ class BaseRunner(AbstractRunner):
         """
         latest_path = os.path.join(self.checkpoint_dir, "latest.pth")
         self.save(self.state_dict(), latest_path)
-        if (self.epochs + 1) % self.save_freq == 0:
+        if hasattr(self, "save_freq") and (self.epochs + 1) % self.save_freq == 0:
             save_path = os.path.join(self.checkpoint_dir, f"epoch-{self.epochs}.pth")
             shutil.copy(latest_path, save_path)
         if self.is_best:
