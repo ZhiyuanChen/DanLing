@@ -255,8 +255,8 @@ class BaseRunner(AbstractRunner):
 
     def dict(self, cls: Callable = dict) -> Mapping:
         dict = cls()
-        for k, v in self._storage.items():
-            if isinstance(v, NestedDict):
+        for k, v in self.all_items():
+            if isinstance(v, OrderedDict):
                 dict[k] = v.dict(cls)
             elif is_json_serializable(v):
                 dict[k] = v
@@ -305,7 +305,7 @@ class BaseRunner(AbstractRunner):
     def __getattr__(self, name) -> Any:
         try:
             return super().get(name)
-        except AttributeError:
+        except KeyError:
             if (attr := getattr(self.accelerator, name, None)) is not None:
                 return attr
         raise AttributeError(f'"Runner" object has no attribute "{name}"')
