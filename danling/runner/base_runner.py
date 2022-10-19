@@ -7,7 +7,6 @@ import logging.config
 import os
 import random
 import shutil
-from collections import OrderedDict
 from collections.abc import Mapping
 from os import PathLike as _PathLike
 from typing import Any, Callable, IO, List, Optional, Tuple, Union
@@ -18,7 +17,7 @@ import torch
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.nn as nn
-from chanfig import NestedDict
+from chanfig import NestedDict, OrderedDict
 
 from danling.utils import catch, is_json_serializable
 
@@ -228,7 +227,10 @@ class BaseRunner(AbstractRunner):
         Save result to dir
         """
         ret = {"id": self.id, "name": self.name}
-        ret.update(self.result_latest)  # This is slower but ensure id in the first
+        result = self.result_latest
+        if isinstance(result, OrderedDict):
+            result = result.dict()
+        ret.update(result)  # This is slower but ensure id in the first
         latest_path = os.path.join(self.dir, "latest.json")
         with open(latest_path, "w") as f:
             json.dump(ret, f, indent=4)
@@ -253,16 +255,18 @@ class BaseRunner(AbstractRunner):
             self.scheduler.load_state_dict(checkpoint["scheduler"])
         print(f'=> loaded checkpoint "{checkpoint}"')
 
-    def dict(self, cls: Callable = dict) -> Mapping:
-        dict = cls()
-        for k, v in self.all_items():
+    def convert(self, cls: Callable = dict) -> Mapping:
+        ret = cls()
+        for k, v in self.items():
             if isinstance(v, OrderedDict):
-                dict[k] = v.dict(cls)
-            elif is_json_serializable(v):
-                dict[k] = v
-        return dict
+                v = v.dict(cls)
+            if is_json_serializable(v):
+                ret[k] = v
+        return ret
 
-    def state_dict(self, cls: Callable = OrderedDict) -> Mapping:
+    to = convert
+
+    def state_dict(self, cls: Callable = dict) -> Mapping:
         """
         Return dict of all attributes for checkpoint
         """
@@ -271,7 +275,7 @@ class BaseRunner(AbstractRunner):
         self.accelerator.wait_for_everyone()
         model = self.accelerator.unwrap_model(self.model)
         return cls(
-            runner=self.dict(),
+            runner=self.to(dict),
             model=model.state_dict(),
             optimizer=self.optimizer.state_dict() if self.optimizer else None,
             scheduler=self.scheduler.state_dict() if self.scheduler else None,

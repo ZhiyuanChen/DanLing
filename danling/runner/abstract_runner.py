@@ -39,9 +39,9 @@ class AbstractRunner(NestedDict):
     criterion: Tuple[nn.Module]
 
     metric: str
-    results: List[OrderedDict[str, any]]
-    result_best: OrderedDict[str, any]
-    result_latest: OrderedDict[str, any]
+    results: List[NestedDict[str, any]]
+    result_best: NestedDict[str, any]
+    result_latest: NestedDict[str, any]
     score_best: float
     score_latest: float
     is_best: bool
@@ -79,8 +79,8 @@ class AbstractRunner(NestedDict):
 
         self.metric = 'loss'
         self.results = []
-        self.result_best = OrderedDict()
-        self.result_latest = OrderedDict()
+        self.result_best = NestedDict()
+        self.result_latest = NestedDict()
         self.score_best = 0
         self.score_latest = 0
         self.is_best = False
