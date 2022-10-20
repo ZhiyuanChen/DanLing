@@ -168,7 +168,7 @@ class BaseRunner(AbstractRunner):
     def init_tensorboard(self, *args, **kwargs):
         from torch.utils.tensorboard.writer import SummaryWriter
 
-        return SummaryWriter(*args, **kwargs)
+        return SummaryWriter(log_dir=self.dir, *args, **kwargs)
 
     def init_lr(
         self,

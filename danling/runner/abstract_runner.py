@@ -87,6 +87,7 @@ class AbstractRunner(NestedDict):
 
         self.log = True
         self.tensorboard = False
+        self.writer = None
         for key, value in args:
             self.set(key, value, convert_mapping=True)
         for key, value in kwargs.items():
