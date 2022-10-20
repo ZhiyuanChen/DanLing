@@ -57,7 +57,6 @@ class BaseRunner(AbstractRunner):
         if self.is_main_process:
             self.yaml(os.path.join(self.dir, "runner.yaml"))
 
-        print(self)
         atexit.register(self.print_result)
 
     def init_distributed(self) -> None:
