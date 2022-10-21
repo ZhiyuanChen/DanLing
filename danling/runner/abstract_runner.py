@@ -10,6 +10,7 @@ import torch.optim as optim
 import torch.utils.data as data
 from chanfig import OrderedDict, NestedDict
 
+
 class AbstractRunner(NestedDict):
 
     id: str
@@ -77,7 +78,7 @@ class AbstractRunner(NestedDict):
 
         self.criterion = None
 
-        self.metric = 'loss'
+        self.metric = "loss"
         self.results = []
         self.result_best = NestedDict()
         self.result_latest = NestedDict()

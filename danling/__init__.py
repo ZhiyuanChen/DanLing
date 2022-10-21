@@ -10,6 +10,7 @@ from .logging import AverageMeter
 from .optim import LRScheduler
 from .runner import BaseRunner, EpochRunner, StepRunner
 from .utils import catch, load
+from .registry import Registry, GlobalRegistry
 
 __all__ = [
     "AverageMeter",
@@ -23,6 +24,8 @@ __all__ = [
     "BaseRunner",
     "EpochRunner",
     "StepRunner",
+    "Registry",
+    "GlobalRegistry",
     "catch",
     "load",
 ]

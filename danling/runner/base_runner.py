@@ -32,6 +32,7 @@ class BaseRunner(AbstractRunner):
     """
     Set up everything for running a job
     """
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
@@ -154,7 +155,7 @@ class BaseRunner(AbstractRunner):
 
         builtin_print = __builtin__.print
 
-        @catch()
+        @catch
         def print(*args, force=False, end="\n", file=None, flush=False, **kwargs):
             if self.process_index == process or force:
                 if self.log:
@@ -196,7 +197,7 @@ class BaseRunner(AbstractRunner):
         """
         return self.batch_size * self.num_processes * getattr(self, "accum_steps", 1)
 
-    @catch()
+    @catch
     @on_main_process
     def save(self, obj: Any, f: File) -> None:
         """
@@ -204,7 +205,7 @@ class BaseRunner(AbstractRunner):
         """
         self.accelerator.save(obj, f)
 
-    @catch()
+    @catch
     @on_main_process
     def save_checkpoint(self) -> None:
         """
@@ -219,7 +220,7 @@ class BaseRunner(AbstractRunner):
             best_path = os.path.join(self.checkpoint_dir, "best.pth")
             shutil.copy(latest_path, best_path)
 
-    @catch()
+    @catch
     @on_main_process
     def save_result(self) -> None:
         """
@@ -258,7 +259,7 @@ class BaseRunner(AbstractRunner):
         ret = cls()
         for k, v in self.items():
             if isinstance(v, OrderedDict):
-                v = v.dict(cls)
+                v = v.convert(cls)
             if is_json_serializable(v):
                 ret[k] = v
         return ret
@@ -359,4 +360,4 @@ class BaseRunner(AbstractRunner):
         elif hasattr(self, "epoch_end"):
             return self.epochs / self.epoch_end
         return 0
-    
+
