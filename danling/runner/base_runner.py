@@ -36,9 +36,7 @@ class BaseRunner(AbstractRunner):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-        self.accelerator = accelerate.Accelerator(
-            kwargs_handlers=self.accelerate_kwargs
-        )
+        self.accelerator = accelerate.Accelerator(**self.accelerate)
 
         self.init_seed()
 
@@ -238,22 +236,22 @@ class BaseRunner(AbstractRunner):
             best_path = os.path.join(self.dir, "best.json")
             shutil.copy(latest_path, best_path)
 
-    def load(self, path) -> None:
+    def load(self, path, *args, **kwargs) -> None:
         """
         Load runner from checkpoint
         """
         print(f'=> loading checkpoint "{path}"')
         if not os.path.isfile(path):
             raise FileNotFoundError(f"checkpoint at {path} is not a file")
-        checkpoint = torch.load(path)
-        super().__init__(**checkpoint["runner"])
+        checkpoint = torch.load(path, *args, **kwargs)
+        self.config.update(checkpoint["runner"])
         if "model" in checkpoint:
             self.model.load_state_dict(checkpoint["model"])
         if self.optimizer is not None and "optimizer" in checkpoint:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
         if self.scheduler is not None and "scheduler" in checkpoint:
             self.scheduler.load_state_dict(checkpoint["scheduler"])
-        print(f'=> loaded checkpoint "{checkpoint}"')
+        print(f'=> loaded checkpoint "{path}"')
 
     def convert(self, cls: Callable = dict) -> Mapping:
         ret = cls()

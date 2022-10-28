@@ -25,7 +25,7 @@ class AbstractRunner(NestedDict):
     epochs: int
 
     accelerator: accelerate.Accelerator
-    accelerate_kwargs: list
+    accelerate: NestedDict[str, Any]
 
     model: nn.Module
     optimizer: optim.Optimizer
@@ -53,7 +53,7 @@ class AbstractRunner(NestedDict):
     writer: Callable
 
     def __init__(self, *args, **kwargs):
-        super().__init__()
+        super().__init__(*args, **kwargs)
         self.id = None
         self.name = "danling"
         self.seed = 1031
@@ -64,7 +64,7 @@ class AbstractRunner(NestedDict):
 
         self.steps = 0
         self.epochs = 0
-        self.accelerate_kwargs = []
+        self.accelerate = {}
 
         self.model: nn.Module = None
         self.optimizer: optim.Optimizer = None
@@ -89,7 +89,4 @@ class AbstractRunner(NestedDict):
         self.log = True
         self.tensorboard = False
         self.writer = None
-        for key, value in args:
-            self.set(key, value, convert_mapping=True)
-        for key, value in kwargs.items():
-            self.set(key, value, convert_mapping=True)
+
