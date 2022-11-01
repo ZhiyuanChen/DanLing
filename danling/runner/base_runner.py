@@ -9,29 +9,68 @@ import random
 import shutil
 from collections.abc import Mapping
 from os import PathLike as _PathLike
-from typing import Any, Callable, IO, List, Optional, Tuple, Union
+from typing import IO, Any, Callable, Dict, List, Optional, Tuple, Union
 
 import accelerate
 import numpy as np
 import torch
-import torch.backends.cudnn as cudnn
 import torch.distributed as dist
-import torch.nn as nn
 from chanfig import NestedDict, OrderedDict
+from torch import nn, optim
+from torch.backends import cudnn
+from torch.utils.tensorboard import SummaryWriter
 
 from danling.utils import catch, is_json_serializable
 
-from .abstract_runner import AbstractRunner
 from .utils import ensure_dir, on_local_main_process, on_main_process
 
 PathLike = Union[str, _PathLike]
 File = Union[PathLike, IO]
 
 
-class BaseRunner(AbstractRunner):
+class BaseRunner(NestedDict):
     """
     Set up everything for running a job
     """
+
+    id: str = None
+    name: str = "danling"
+    seed: int = 1031
+    deterministic: bool = False
+
+    experiment_dir: str = "experiments"
+    checkpoint_dir_name: str = "checkpoints"
+
+    steps: int = 0
+    epochs: int = 0
+
+    accelerator: accelerate.Accelerator = None
+    accelerate_kwargs: list = []
+
+    model: nn.Module
+    optimizer: optim.Optimizer
+    scheduler: optim.lr_scheduler._LRScheduler
+
+    datasets: NestedDict = NestedDict()
+    datasamplers: NestedDict = NestedDict()
+    dataloaders: NestedDict = NestedDict()
+
+    batch_size: int = 0
+
+    criterion: Tuple[nn.Module] = tuple()
+
+    metric: str = "loss"
+    results: List[NestedDict] = []
+    result_best: NestedDict = NestedDict()
+    result_latest: NestedDict = NestedDict()
+    score_best: float = 0
+    score_latest: float = 0
+    is_best: bool = False
+
+    log: bool = False
+    logger: logging.Logger
+    tensorboard: bool = False
+    writer: SummaryWriter
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -70,7 +109,8 @@ class BaseRunner(AbstractRunner):
         self.is_main_process = self.process_index == 0
         self.is_local_main_process = self.local_process_index == 0
 
-    def init_deterministic(self) -> None:
+    @staticmethod
+    def init_deterministic() -> None:
         """
         Set up deterministic
         """
@@ -84,11 +124,7 @@ class BaseRunner(AbstractRunner):
         if self.seed is None:
             self.seed = random.randint(0, 100000)
             if self.distributed:
-                self.seed = (
-                    self.accelerator.gather(torch.tensor(self.seed).cuda())
-                    .unsqueeze(0)
-                    .flatten()[0]
-                )
+                self.seed = self.accelerator.gather(torch.tensor(self.seed).cuda()).unsqueeze(0).flatten()[0]
         torch.manual_seed(self.seed + self.process_index)
         torch.cuda.manual_seed(self.seed + self.process_index)
         np.random.seed(self.seed + self.process_index)
@@ -105,9 +141,7 @@ class BaseRunner(AbstractRunner):
                 "version": 1,
                 "disable_existing_loggers": False,
                 "formatters": {
-                    "standard": {
-                        "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-                    },
+                    "standard": {"format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s"},
                 },
                 "handlers": {
                     "stdout": {
@@ -137,9 +171,7 @@ class BaseRunner(AbstractRunner):
         self.logger = logging.getLogger("runner")
         self.logger.flush = lambda: [h.flush() for h in self.logger.handlers]
 
-    def init_print(
-        self, process: Optional[int] = 0, precision: Optional[int] = 10
-    ) -> None:
+    def init_print(self, process: Optional[int] = 0, precision: Optional[int] = 10) -> None:
         """
         Set up print
         Only print from a specific process or force indicated
@@ -180,9 +212,7 @@ class BaseRunner(AbstractRunner):
         if lr_scale_factor is None:
             if batch_size_base is None:
                 if batch_size_base := getattr(self, "batch_size_base", None) is None:
-                    raise ValueError(
-                        "batch_size_base must be specified to auto scale lr"
-                    )
+                    raise ValueError("batch_size_base must be specified to auto scale lr")
             lr_scale_factor = self.batch_size_actual / batch_size_base
         self.lr_scale_factor = lr_scale_factor
         self.lr = self.lr * self.lr_scale_factor
@@ -358,4 +388,3 @@ class BaseRunner(AbstractRunner):
         elif hasattr(self, "epoch_end"):
             return self.epochs / self.epoch_end
         return 0
-

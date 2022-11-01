@@ -87,9 +87,7 @@ class TransformerDecoderLayer(nn.Module):
             **kwargs
         )
         self.norm1 = nn.LayerNorm(embed_dim, eps=layer_norm_eps)
-        self.ffn = FeedForwardNetwork(
-            embed_dim, ffn_dim, activation, ffn_dropout, **kwargs
-        )
+        self.ffn = FeedForwardNetwork(embed_dim, ffn_dim, activation, ffn_dropout, **kwargs)
         self.norm2 = nn.LayerNorm(embed_dim, eps=layer_norm_eps)
         self.dropout = nn.Dropout(dropout)
 
@@ -162,10 +160,7 @@ class TransformerDecoder(nn.Module):
     __constants__ = ["norm"]
 
     def __init__(
-        self,
-        layer: TransformerDecoderLayer,
-        num_layers: Optional[int] = 6,
-        **kwargs: Optional[Dict[str, Any]]
+        self, layer: TransformerDecoderLayer, num_layers: Optional[int] = 6, **kwargs: Optional[Dict[str, Any]]
     ) -> None:
         super(TransformerDecoder, self).__init__()
         self.num_layers = num_layers

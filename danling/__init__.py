@@ -1,16 +1,11 @@
-from .models import (
-    FullyConnectedNetwork,
-    MultiHeadAttention,
-    SelfAttention,
-    TransformerEncoder,
-    TransformerEncoderLayer,
-    UnitedPositionEmbedding,
-)
 from .logging import AverageMeter
+from .models import (FullyConnectedNetwork, MultiHeadAttention, SelfAttention,
+                     TransformerEncoder, TransformerEncoderLayer,
+                     UnitedPositionEmbedding)
 from .optim import LRScheduler
+from .registry import GlobalRegistry, Registry
 from .runner import BaseRunner, EpochRunner, StepRunner
 from .utils import catch, load
-from .registry import Registry, GlobalRegistry
 
 __all__ = [
     "AverageMeter",

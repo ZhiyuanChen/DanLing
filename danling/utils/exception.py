@@ -33,9 +33,7 @@ def catch(error=Exception, exclude=None):
             except error as e:
                 if exclude is not None and isinstance(e, exclude):
                     raise e
-                trace = traceback.format_exception(
-                    etype=type(e), value=e, tb=e.__traceback__
-                )
+                trace = traceback.format_exception(etype=type(e), value=e, tb=e.__traceback__)
                 print("".join(trace), force=True)
                 print(
                     f"encoutered when calling {func} with args {args} and kwargs {kwargs}",
