@@ -37,8 +37,8 @@ class StepRunner(BaseRunner):
     step_begin: int
     step_end: int
 
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(self, config, *args, **kwargs) -> None:
+        super().__init__(config, *args, **kwargs)
 
         if "step_begin" not in self:
             self.step_begin = 0

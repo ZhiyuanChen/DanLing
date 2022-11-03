@@ -1,22 +1,8 @@
+import logging
 import traceback
 from functools import wraps
 
 from .decorator import flexible_decorator
-
-
-def flexible_decorator(maybe_decorator=None):
-    def decorator(func):
-        @wraps(decorator)
-        def wrapper(*args, **kwargs):
-            if len(args) == 1 and callable(args[0]):
-                return func(**kwargs)(args[0])
-            return func(*args, **kwargs)
-
-        return wrapper
-
-    if maybe_decorator is None:
-        return decorator
-    return decorator(maybe_decorator)
 
 
 @flexible_decorator
@@ -34,11 +20,9 @@ def catch(error=Exception, exclude=None):
                 if exclude is not None and isinstance(e, exclude):
                     raise e
                 trace = traceback.format_exception(etype=type(e), value=e, tb=e.__traceback__)
-                print("".join(trace), force=True)
-                print(
-                    f"encoutered when calling {func} with args {args} and kwargs {kwargs}",
-                    force=True,
-                )
+                logger = logging.getLogger("Exception")
+                logger.error("".join(trace))
+                logger.error(f"encountered when calling {func} with args {args} and kwargs {kwargs}")
 
         return wrapper
 

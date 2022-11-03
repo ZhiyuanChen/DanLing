@@ -37,8 +37,8 @@ class EpochRunner(BaseRunner):
     epoch_begin: int
     epoch_end: int
 
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(self, config, *args, **kwargs) -> None:
+        super().__init__(config, *args, **kwargs)
 
         if "epoch_begin" not in self:
             self.epoch_begin = 0

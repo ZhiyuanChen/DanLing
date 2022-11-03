@@ -8,7 +8,8 @@ import os
 import random
 import shutil
 from collections.abc import Mapping
-from os import PathLike as _PathLike
+from json import dumps as json_dumps
+from os import PathLike
 from typing import IO, Any, Callable, Dict, List, Optional, Tuple, Union
 
 import accelerate
@@ -19,16 +20,16 @@ from chanfig import NestedDict, OrderedDict
 from torch import nn, optim
 from torch.backends import cudnn
 from torch.utils.tensorboard import SummaryWriter
+from yaml import dump as yaml_dump
 
 from danling.utils import catch, is_json_serializable
 
-from .utils import ensure_dir, on_local_main_process, on_main_process
+from .utils import ensure_dir, on_main_process
 
-PathLike = Union[str, _PathLike]
-File = Union[PathLike, IO]
+PathStr = Union[PathLike, str, bytes]
+File = Union[PathStr, IO]
 
-
-class BaseRunner(NestedDict):
+class BaseRunner:
     """
     Set up everything for running a job
     """
@@ -72,8 +73,9 @@ class BaseRunner(NestedDict):
     tensorboard: bool = False
     writer: SummaryWriter
 
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(self, config, *args, **kwargs) -> None:
+        super().__init__()
+        self.__dict__ = config
 
         self.accelerator = accelerate.Accelerator(**self.accelerate)
 
@@ -101,6 +103,7 @@ class BaseRunner(NestedDict):
         """
         Set up distributed training
         """
+
         dist.init_process_group(backend="nccl")
         self.process_index = dist.get_rank()
         self.num_processes = dist.get_world_size()
@@ -114,6 +117,7 @@ class BaseRunner(NestedDict):
         """
         Set up deterministic
         """
+
         cudnn.benchmark = False
         cudnn.deterministic = True
 
@@ -121,6 +125,7 @@ class BaseRunner(NestedDict):
         """
         Set up random seed
         """
+
         if self.seed is None:
             self.seed = random.randint(0, 100000)
             if self.distributed:
@@ -135,6 +140,7 @@ class BaseRunner(NestedDict):
         """
         Set up logger
         """
+
         # Why is setting up proper logging so !@?#! ugly?
         logging.config.dictConfig(
             {
@@ -177,6 +183,7 @@ class BaseRunner(NestedDict):
         Only print from a specific process or force indicated
         Replace default print function with logging.info
         """
+
         torch.set_printoptions(precision=precision)
 
         logger = logging.getLogger("print")
@@ -209,6 +216,7 @@ class BaseRunner(NestedDict):
         """
         Set up learning rate according to linear scaling rule
         """
+
         if lr_scale_factor is None:
             if batch_size_base is None:
                 if batch_size_base := getattr(self, "batch_size_base", None) is None:
@@ -223,6 +231,7 @@ class BaseRunner(NestedDict):
         """
         Actual batch size
         """
+
         return self.batch_size * self.num_processes * getattr(self, "accum_steps", 1)
 
     @catch
@@ -231,7 +240,23 @@ class BaseRunner(NestedDict):
         """
         Save object to a path or file
         """
+
         self.accelerator.save(obj, f)
+
+    def state_dict(self, cls: Callable = dict) -> Mapping:
+        """
+        Return dict of all attributes for checkpoint
+        """
+
+        if self.model is None:
+            raise ValueError("Model must be defined when calling state_dict")
+        model = self.accelerator.unwrap_model(self.model)
+        return cls(
+            runner=self.to(dict),
+            model=model.state_dict(),
+            optimizer=self.optimizer.state_dict() if self.optimizer else None,
+            scheduler=self.scheduler.state_dict() if self.scheduler else None,
+        )
 
     @catch
     @on_main_process
@@ -239,6 +264,7 @@ class BaseRunner(NestedDict):
         """
         Save checkpoint to checkpoint_dir
         """
+
         latest_path = os.path.join(self.checkpoint_dir, "latest.pth")
         self.save(self.state_dict(), latest_path)
         if hasattr(self, "save_freq") and (self.epochs + 1) % self.save_freq == 0:
@@ -248,28 +274,11 @@ class BaseRunner(NestedDict):
             best_path = os.path.join(self.checkpoint_dir, "best.pth")
             shutil.copy(latest_path, best_path)
 
-    @catch
-    @on_main_process
-    def save_result(self) -> None:
-        """
-        Save result to dir
-        """
-        ret = {"id": self.id, "name": self.name}
-        result = self.result_latest
-        if isinstance(result, OrderedDict):
-            result = result.dict()
-        ret.update(result)  # This is slower but ensure id in the first
-        latest_path = os.path.join(self.dir, "latest.json")
-        with open(latest_path, "w") as f:
-            json.dump(ret, f, indent=4)
-        if self.is_best:
-            best_path = os.path.join(self.dir, "best.json")
-            shutil.copy(latest_path, best_path)
-
-    def load(self, path, *args, **kwargs) -> None:
+    def load_checkpoint(self, path, *args, **kwargs) -> None:
         """
         Load runner from checkpoint
         """
+
         print(f'=> loading checkpoint "{path}"')
         if not os.path.isfile(path):
             raise FileNotFoundError(f"checkpoint at {path} is not a file")
@@ -283,35 +292,30 @@ class BaseRunner(NestedDict):
             self.scheduler.load_state_dict(checkpoint["scheduler"])
         print(f'=> loaded checkpoint "{path}"')
 
-    def convert(self, cls: Callable = dict) -> Mapping:
-        ret = cls()
-        for k, v in self.items():
-            if isinstance(v, OrderedDict):
-                v = v.convert(cls)
-            if is_json_serializable(v):
-                ret[k] = v
-        return ret
-
-    to = convert
-
-    def state_dict(self, cls: Callable = dict) -> Mapping:
+    @catch
+    @on_main_process
+    def save_result(self) -> None:
         """
-        Return dict of all attributes for checkpoint
+        Save result to dir
         """
-        if self.model is None:
-            raise ValueError("Model must be defined when calling state_dict")
-        model = self.accelerator.unwrap_model(self.model)
-        return cls(
-            runner=self.to(dict),
-            model=model.state_dict(),
-            optimizer=self.optimizer.state_dict() if self.optimizer else None,
-            scheduler=self.scheduler.state_dict() if self.scheduler else None,
-        )
+
+        ret = {"id": self.id, "name": self.name}
+        result = self.result_latest
+        if isinstance(result, OrderedDict):
+            result = result.dict()
+        ret.update(result)  # This is slower but ensure id in the first
+        latest_path = os.path.join(self.dir, "latest.json")
+        with open(latest_path, "w") as f:
+            json.dump(ret, f, indent=4)
+        if self.is_best:
+            best_path = os.path.join(self.dir, "best.json")
+            shutil.copy(latest_path, best_path)
 
     def print_result(self) -> None:
         """
         Print latest and best result
         """
+
         print(f"latest result: {self.result_latest}")
         print(f"best result: {self.result_best}")
 
@@ -319,6 +323,7 @@ class BaseRunner(NestedDict):
         """
         Add latest result and update best result
         """
+
         self.results.append(result)
         self.result_latest = result
 
@@ -326,6 +331,7 @@ class BaseRunner(NestedDict):
         """
         Add latest result and update best result
         """
+
         self.is_best = False
         self.score_latest = score
         if self.score_latest > self.score_best:
@@ -334,11 +340,9 @@ class BaseRunner(NestedDict):
             self.result_best = self.result_latest
 
     def __getattr__(self, name) -> Any:
-        try:
-            return super().get(name)
-        except KeyError:
-            if (attr := getattr(self.accelerator, name, None)) is not None:
-                return attr
+        attr = getattr(self.accelerator, name, None)
+        if attr is not None:
+            return attr
         raise AttributeError(f'"Runner" object has no attribute "{name}"')
 
     @property
@@ -346,6 +350,7 @@ class BaseRunner(NestedDict):
         """
         If runner is in distributed mode
         """
+
         return self.num_processes > 1
 
     @property
@@ -362,6 +367,7 @@ class BaseRunner(NestedDict):
         """
         step optimizer and scheduler
         """
+
         if self.optimizer is not None:
             self.optimizer.step()
             self.optimizer.zero_grad()
@@ -374,6 +380,7 @@ class BaseRunner(NestedDict):
         """
         Number of iterations
         """
+
         return self.steps * self.batch_size_actual
 
     @property
@@ -381,6 +388,7 @@ class BaseRunner(NestedDict):
         """
         Training Progress
         """
+
         if hasattr(self, "iter_end"):
             return self.iters / self.iter_end
         elif hasattr(self, "step_end"):
@@ -388,3 +396,50 @@ class BaseRunner(NestedDict):
         elif hasattr(self, "epoch_end"):
             return self.epochs / self.epoch_end
         return 0
+
+    def to(self, cls: Callable = dict) -> Mapping:
+        ret = cls()
+        for k, v in self.__dict__.items():
+            if isinstance(v, OrderedDict):
+                v = v.convert(cls)
+            if is_json_serializable(v):
+                ret[k] = v
+        return ret
+
+    convert = to
+
+    def json(self, file: File, *args, **kwargs) -> None:
+        """
+        Dump Runner to json file
+        """
+
+        with NestedDict.open(file, mode="w") as fp:
+            fp.write(self.jsons(*args, **kwargs))
+
+    def jsons(self, *args, **kwargs) -> str:
+        """
+        Dump Runner to json string
+        """
+
+        return json_dumps(self.to(dict), *args, **kwargs)
+
+    def yaml(self, file: File, *args, **kwargs) -> None:
+        """
+        Dump Runner to yaml file
+        """
+
+        with NestedDict.open(file, mode="w") as fp:
+            self.yamls(fp, *args, **kwargs)
+
+    def yamls(self, *args, **kwargs) -> str:
+        """
+        Dump Runner to yaml string
+        """
+
+        return yaml_dump(self.to(dict), *args, **kwargs)  # type: ignore
+
+    def __contains__(self, name) -> bool:
+        return name in self.__dict__
+
+    def __repr__(self) -> str:
+        return repr(self.__dict__)
