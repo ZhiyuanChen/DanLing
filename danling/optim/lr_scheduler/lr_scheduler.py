@@ -2,7 +2,7 @@ import math
 from typing import Optional
 
 import numpy as np
-from torch.optim import lr_scheduler, Optimizer
+from torch.optim import Optimizer, lr_scheduler
 
 
 class LRScheduler(lr_scheduler._LRScheduler):
@@ -17,10 +17,7 @@ class LRScheduler(lr_scheduler._LRScheduler):
         last_epoch: Optional[int] = -1,
     ):
         if strategy not in ("constant", "cosine", "linear"):
-            raise ValueError(
-                "Only 'constant' or 'linear' warmup_method accepted"
-                "got {}".format(strategy)
-            )
+            raise ValueError("Only 'constant' or 'linear' warmup_method accepted" "got {}".format(strategy))
         self.steps = steps
         self.final_lr = final_lr
         self.min_lr = min_lr
@@ -29,9 +26,7 @@ class LRScheduler(lr_scheduler._LRScheduler):
         super(LRScheduler, self).__init__(optimizer, last_epoch)
 
     def get_lr(self):
-        progress = (self._step_count - self.warmup_steps) / float(
-            self.steps - self.warmup_steps
-        )
+        progress = (self._step_count - self.warmup_steps) / float(self.steps - self.warmup_steps)
         progress = np.clip(progress, 0.0, 1.0)
         ratio = getattr(self, self.strategy)(progress)
         if self.warmup_steps:

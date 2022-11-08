@@ -63,13 +63,9 @@ class MultiHeadAttention(nn.Module):
         self.head_dim = self.embed_dim // self.num_heads
         self.scaling = float(self.head_dim * self.scale_factor) ** -0.5
         if not self.head_dim * self.num_heads == self.embed_dim:
-            raise ValueError(
-                f"embed_dim {self.embed_dim} not divisible by num_heads {self.num_heads}"
-            )
+            raise ValueError(f"embed_dim {self.embed_dim} not divisible by num_heads {self.num_heads}")
 
-        self.in_proj = nn.Linear(
-            self.embed_dim, self.embed_dim + self.k_dim + self.v_dim, bias=bias
-        )
+        self.in_proj = nn.Linear(self.embed_dim, self.embed_dim + self.k_dim + self.v_dim, bias=bias)
         self.dropout = nn.Dropout(attn_dropout)
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=bias)
 
@@ -170,9 +166,7 @@ class MultiHeadAttention(nn.Module):
         target_len, batch_size, embed_dim = query.shape
         source_len, _, _ = key.shape
         if not key.shape[:2] == value.shape[:2]:
-            raise ValueError(
-                f"key's sequence and batch dims {key.shape[:2]} do not match value's {value.shape[:2]}"
-            )
+            raise ValueError(f"key's sequence and batch dims {key.shape[:2]} do not match value's {value.shape[:2]}")
 
         q, k, v = self.in_projection(query, key, value)
 
@@ -184,27 +178,19 @@ class MultiHeadAttention(nn.Module):
                 )
                 attn_mask = attn_mask.to(torch.bool)
             elif not (attn_mask.is_floating_point() or attn_mask.dtype == torch.bool):
-                raise ValueError(
-                    f"attn_mask should have type float or bool, but got {attn_mask.dtype}."
-                )
+                raise ValueError(f"attn_mask should have type float or bool, but got {attn_mask.dtype}.")
             # ensure attn_mask's dim is 3
             if attn_mask.dim() == 2:
                 correct_shape = (target_len, source_len)
                 if attn_mask.shape != correct_shape:
-                    raise ValueError(
-                        f"attn_mask should have shape {correct_shape}, but got {attn_mask.shape}."
-                    )
+                    raise ValueError(f"attn_mask should have shape {correct_shape}, but got {attn_mask.shape}.")
                 attn_mask = attn_mask.unsqueeze(0)
             elif attn_mask.dim() == 3:
                 correct_shape = (batch_size * self.num_heads, target_len, source_len)
                 if attn_mask.shape != correct_shape:
-                    raise ValueError(
-                        f"attn_mask should have shape {correct_shape}, but got {attn_mask.shape}."
-                    )
+                    raise ValueError(f"attn_mask should have shape {correct_shape}, but got {attn_mask.shape}.")
             else:
-                raise RuntimeError(
-                    f"attn_mask should have dimension 2 or 3, bug got {attn_mask.dim()}."
-                )
+                raise RuntimeError(f"attn_mask should have dimension 2 or 3, bug got {attn_mask.dim()}.")
 
         # prep key padding mask
         if key_padding_mask is not None and key_padding_mask.dtype == torch.uint8:
@@ -228,19 +214,9 @@ class MultiHeadAttention(nn.Module):
             assert self.bias_v is None
 
         # reshape q, k, v for multihead attention and make em batch first
-        q = q.reshape(target_len, batch_size * self.num_heads, self.head_dim).transpose(
-            0, 1
-        )
-        k = (
-            k.reshape(-1, batch_size * self.num_heads, self.head_dim).transpose(0, 1)
-            if static_k is None
-            else static_k
-        )
-        v = (
-            v.reshape(-1, batch_size * self.num_heads, self.head_dim).transpose(0, 1)
-            if static_v is None
-            else static_v
-        )
+        q = q.reshape(target_len, batch_size * self.num_heads, self.head_dim).transpose(0, 1)
+        k = k.reshape(-1, batch_size * self.num_heads, self.head_dim).transpose(0, 1) if static_k is None else static_k
+        v = v.reshape(-1, batch_size * self.num_heads, self.head_dim).transpose(0, 1) if static_v is None else static_v
 
         if static_k is not None:
             correct_shape = (
@@ -249,9 +225,7 @@ class MultiHeadAttention(nn.Module):
                 self.head_dim,
             )
             if static_k.shape != correct_shape:
-                raise ValueError(
-                    f"static_k should have shape {correct_shape}, but got {static_k.shape}."
-                )
+                raise ValueError(f"static_k should have shape {correct_shape}, but got {static_k.shape}.")
         if static_v is not None:
             correct_shape = (
                 batch_size * self.num_heads,
@@ -259,19 +233,13 @@ class MultiHeadAttention(nn.Module):
                 self.head_dim,
             )
             if static_v.shape != correct_shape:
-                raise ValueError(
-                    f"static_v should have shape {correct_shape}, but got {static_v.shape}."
-                )
+                raise ValueError(f"static_v should have shape {correct_shape}, but got {static_v.shape}.")
 
         # add zero attention along batch dimension (now first)
         if self.add_zero_attn:
             zero_attn_shape = (batch_size * self.num_heads, 1, self.head_dim)
-            k = torch.cat(
-                [k, torch.zeros(zero_attn_shape, dtype=k.dtype, device=k.device)], dim=1
-            )
-            v = torch.cat(
-                [v, torch.zeros(zero_attn_shape, dtype=v.dtype, device=v.device)], dim=1
-            )
+            k = torch.cat([k, torch.zeros(zero_attn_shape, dtype=k.dtype, device=k.device)], dim=1)
+            v = torch.cat([v, torch.zeros(zero_attn_shape, dtype=v.dtype, device=v.device)], dim=1)
             if attn_mask is not None:
                 attn_mask = F.pad(attn_mask, (0, 1))
             if key_padding_mask is not None:
@@ -306,9 +274,7 @@ class MultiHeadAttention(nn.Module):
 
         # (deep breath) calculate attention and out projection
         attn_output, attn_output_weights = self.attention(q, k, v, attn_bias, attn_mask)
-        attn_output = attn_output.transpose(0, 1).reshape(
-            target_len, batch_size, embed_dim
-        )
+        attn_output = attn_output.transpose(0, 1).reshape(target_len, batch_size, embed_dim)
         attn_output = self.out_projection(attn_output)
 
         attn_output_weights = (
@@ -344,32 +310,20 @@ class MultiHeadAttention(nn.Module):
         if k is v:
             # self-attention
             if q is k:
-                return self.in_proj(q).split(
-                    (self.embed_dim, self.k_dim, self.v_dim), dim=-1
-                )
+                return self.in_proj(q).split((self.embed_dim, self.k_dim, self.v_dim), dim=-1)
             # encoder-decoder attention
             else:
-                w_q, w_kv = self.in_proj.weight.split(
-                    [self.embed_dim, self.k_dim + self.v_dim]
-                )
+                w_q, w_kv = self.in_proj.weight.split([self.embed_dim, self.k_dim + self.v_dim])
                 b_q, b_kv = (
                     None
                     if self.in_proj.bias is None
-                    else self.in_proj.bias.split(
-                        [self.embed_dim, self.k_dim + self.v_dim]
-                    )
+                    else self.in_proj.bias.split([self.embed_dim, self.k_dim + self.v_dim])
                 )
-                return (F.linear(q, w_q, b_q),) + F.linear(k, w_kv, b_kv).split(
-                    (self.k_dim, self.v_dim), dim=-1
-                )
+                return (F.linear(q, w_q, b_q),) + F.linear(k, w_kv, b_kv).split((self.k_dim, self.v_dim), dim=-1)
         else:
-            w_q, w_k, w_v = self.in_proj.weight.split(
-                [self.embed_dim, self.k_dim, self.v_dim]
-            )
+            w_q, w_k, w_v = self.in_proj.weight.split([self.embed_dim, self.k_dim, self.v_dim])
             b_q, b_k, b_v = (
-                None
-                if self.in_proj.bias is None
-                else self.in_proj.bias.split([self.embed_dim, self.k_dim, self.v_dim])
+                None if self.in_proj.bias is None else self.in_proj.bias.split([self.embed_dim, self.k_dim, self.v_dim])
             )
             return F.linear(q, w_q, b_q), F.linear(k, w_k, b_k), F.linear(v, w_v, b_v)
 

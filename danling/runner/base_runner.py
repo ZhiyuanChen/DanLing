@@ -8,8 +8,7 @@ import os
 import random
 import shutil
 from collections.abc import Mapping
-from os import PathLike as _PathLike
-from typing import Any, Callable, IO, List, Optional, Tuple, Union
+from typing import IO, Any, Callable, List, Optional, Tuple, Union
 
 import accelerate
 import numpy as np
@@ -17,15 +16,12 @@ import torch
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.nn as nn
-from chanfig import NestedDict, OrderedDict
+from chanfig import Config, OrderedDict
 
 from danling.utils import catch, is_json_serializable
 
 from .abstract_runner import AbstractRunner
-from .utils import ensure_dir, on_local_main_process, on_main_process
-
-PathLike = Union[str, _PathLike]
-File = Union[PathLike, IO]
+from .utils import on_main_process
 
 
 class BaseRunner(AbstractRunner):
@@ -33,12 +29,13 @@ class BaseRunner(AbstractRunner):
     Set up everything for running a job
     """
 
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(self, config: Optional[Config] = None, *args, **kwargs) -> None:
+        super().__init__(config, *args, **kwargs)
 
         self.accelerator = accelerate.Accelerator(**self.accelerate)
 
-        self.init_seed()
+        if self.seed is not None:
+            self.init_seed()
 
         if self.deterministic:
             self.init_deterministic()
@@ -84,11 +81,7 @@ class BaseRunner(AbstractRunner):
         if self.seed is None:
             self.seed = random.randint(0, 100000)
             if self.distributed:
-                self.seed = (
-                    self.accelerator.gather(torch.tensor(self.seed).cuda())
-                    .unsqueeze(0)
-                    .flatten()[0]
-                )
+                self.seed = self.accelerator.gather(torch.tensor(self.seed).cuda()).unsqueeze(0).flatten()[0]
         torch.manual_seed(self.seed + self.process_index)
         torch.cuda.manual_seed(self.seed + self.process_index)
         np.random.seed(self.seed + self.process_index)
@@ -105,9 +98,7 @@ class BaseRunner(AbstractRunner):
                 "version": 1,
                 "disable_existing_loggers": False,
                 "formatters": {
-                    "standard": {
-                        "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-                    },
+                    "standard": {"format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s"},
                 },
                 "handlers": {
                     "stdout": {
@@ -137,9 +128,7 @@ class BaseRunner(AbstractRunner):
         self.logger = logging.getLogger("runner")
         self.logger.flush = lambda: [h.flush() for h in self.logger.handlers]
 
-    def init_print(
-        self, process: Optional[int] = 0, precision: Optional[int] = 10
-    ) -> None:
+    def init_print(self, process: Optional[int] = 0, precision: Optional[int] = 10) -> None:
         """
         Set up print
         Only print from a specific process or force indicated
@@ -180,28 +169,11 @@ class BaseRunner(AbstractRunner):
         if lr_scale_factor is None:
             if batch_size_base is None:
                 if batch_size_base := getattr(self, "batch_size_base", None) is None:
-                    raise ValueError(
-                        "batch_size_base must be specified to auto scale lr"
-                    )
+                    raise ValueError("batch_size_base must be specified to auto scale lr")
             lr_scale_factor = self.batch_size_actual / batch_size_base
         self.lr_scale_factor = lr_scale_factor
         self.lr = self.lr * self.lr_scale_factor
         self.lr_final = self.lr_final * self.lr_scale_factor
-
-    @property
-    def batch_size_actual(self) -> int:
-        """
-        Actual batch size
-        """
-        return self.batch_size * self.num_processes * getattr(self, "accum_steps", 1)
-
-    @catch
-    @on_main_process
-    def save(self, obj: Any, f: File) -> None:
-        """
-        Save object to a path or file
-        """
-        self.accelerator.save(obj, f)
 
     @catch
     @on_main_process
@@ -217,6 +189,37 @@ class BaseRunner(AbstractRunner):
         if self.is_best:
             best_path = os.path.join(self.checkpoint_dir, "best.pth")
             shutil.copy(latest_path, best_path)
+
+    def load_checkpoint(self, path, *args, **kwargs) -> None:
+        """
+        Load runner from checkpoint
+        """
+        print(f'=> loading checkpoint "{path}"')
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"checkpoint at {path} is not a file")
+        checkpoint = torch.load(path, *args, **kwargs)
+        self.config.update(checkpoint["runner"])
+        if "model" in checkpoint:
+            self.model.load_state_dict(checkpoint["model"])
+        if self.optimizer is not None and "optimizer" in checkpoint:
+            self.optimizer.load_state_dict(checkpoint["optimizer"])
+        if self.scheduler is not None and "scheduler" in checkpoint:
+            self.scheduler.load_state_dict(checkpoint["scheduler"])
+        print(f'=> loaded checkpoint "{path}"')
+
+    def state_dict(self, cls: Callable = dict) -> Mapping:
+        """
+        Return dict of all attributes for checkpoint
+        """
+        if self.model is None:
+            raise ValueError("Model must be defined when calling state_dict")
+        model = self.accelerator.unwrap_model(self.model)
+        return cls(
+            runner=self.to(dict),
+            model=model.state_dict(),
+            optimizer=self.optimizer.state_dict() if self.optimizer else None,
+            scheduler=self.scheduler.state_dict() if self.scheduler else None,
+        )
 
     @catch
     @on_main_process
@@ -235,48 +238,6 @@ class BaseRunner(AbstractRunner):
         if self.is_best:
             best_path = os.path.join(self.dir, "best.json")
             shutil.copy(latest_path, best_path)
-
-    def load(self, path, *args, **kwargs) -> None:
-        """
-        Load runner from checkpoint
-        """
-        print(f'=> loading checkpoint "{path}"')
-        if not os.path.isfile(path):
-            raise FileNotFoundError(f"checkpoint at {path} is not a file")
-        checkpoint = torch.load(path, *args, **kwargs)
-        self.config.update(checkpoint["runner"])
-        if "model" in checkpoint:
-            self.model.load_state_dict(checkpoint["model"])
-        if self.optimizer is not None and "optimizer" in checkpoint:
-            self.optimizer.load_state_dict(checkpoint["optimizer"])
-        if self.scheduler is not None and "scheduler" in checkpoint:
-            self.scheduler.load_state_dict(checkpoint["scheduler"])
-        print(f'=> loaded checkpoint "{path}"')
-
-    def convert(self, cls: Callable = dict) -> Mapping:
-        ret = cls()
-        for k, v in self.items():
-            if isinstance(v, OrderedDict):
-                v = v.convert(cls)
-            if is_json_serializable(v):
-                ret[k] = v
-        return ret
-
-    to = convert
-
-    def state_dict(self, cls: Callable = dict) -> Mapping:
-        """
-        Return dict of all attributes for checkpoint
-        """
-        if self.model is None:
-            raise ValueError("Model must be defined when calling state_dict")
-        model = self.accelerator.unwrap_model(self.model)
-        return cls(
-            runner=self.to(dict),
-            model=model.state_dict(),
-            optimizer=self.optimizer.state_dict() if self.optimizer else None,
-            scheduler=self.scheduler.state_dict() if self.scheduler else None,
-        )
 
     def print_result(self) -> None:
         """
@@ -303,31 +264,6 @@ class BaseRunner(AbstractRunner):
             self.score_best = self.score_latest
             self.result_best = self.result_latest
 
-    def __getattr__(self, name) -> Any:
-        try:
-            return super().get(name)
-        except KeyError:
-            if (attr := getattr(self.accelerator, name, None)) is not None:
-                return attr
-        raise AttributeError(f'"Runner" object has no attribute "{name}"')
-
-    @property
-    def distributed(self):
-        """
-        If runner is in distributed mode
-        """
-        return self.num_processes > 1
-
-    @property
-    @ensure_dir
-    def dir(self) -> str:
-        return os.path.join(self.experiment_dir, self.id)
-
-    @property
-    @ensure_dir
-    def checkpoint_dir(self) -> str:
-        return os.path.join(self.dir, self.checkpoint_dir_name)
-
     def step(self) -> None:
         """
         step optimizer and scheduler
@@ -338,24 +274,3 @@ class BaseRunner(AbstractRunner):
         if self.scheduler is not None:
             self.scheduler.step()
         self.steps += 1
-
-    @property
-    def iters(self) -> int:
-        """
-        Number of iterations
-        """
-        return self.steps * self.batch_size_actual
-
-    @property
-    def progress(self) -> float:
-        """
-        Training Progress
-        """
-        if hasattr(self, "iter_end"):
-            return self.iters / self.iter_end
-        elif hasattr(self, "step_end"):
-            return self.steps / self.step_end
-        elif hasattr(self, "epoch_end"):
-            return self.epochs / self.epoch_end
-        return 0
-

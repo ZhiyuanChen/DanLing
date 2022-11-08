@@ -76,9 +76,7 @@ class TransformerEncoderLayer(nn.Module):
             **kwargs
         )
         self.norm1 = nn.LayerNorm(embed_dim, eps=layer_norm_eps)
-        self.ffn = FeedForwardNetwork(
-            embed_dim, ffn_dim, activation, ffn_dropout, **kwargs
-        )
+        self.ffn = FeedForwardNetwork(embed_dim, ffn_dim, activation, ffn_dropout, **kwargs)
         self.norm2 = nn.LayerNorm(embed_dim, eps=layer_norm_eps)
         self.dropout = nn.Dropout(dropout)
 
@@ -137,10 +135,7 @@ class TransformerEncoder(nn.Module):
     __constants__ = ["norm"]
 
     def __init__(
-        self,
-        layer: TransformerEncoderLayer,
-        num_layers: Optional[int] = 6,
-        **kwargs: Optional[Dict[str, Any]]
+        self, layer: TransformerEncoderLayer, num_layers: Optional[int] = 6, **kwargs: Optional[Dict[str, Any]]
     ) -> None:
         super(TransformerEncoder, self).__init__()
         self.num_layers = num_layers
@@ -171,9 +166,7 @@ class TransformerEncoder(nn.Module):
             if gradient_checkpoint and self.training:
                 layer = partial(checkpoint, layer)
                 need_weights = torch.tensor(need_weights)
-            output, weights = layer(
-                output, attn_bias, attn_mask, key_padding_mask, need_weights
-            )
+            output, weights = layer(output, attn_bias, attn_mask, key_padding_mask, need_weights)
             if need_weights:
                 attn_weights.append(weights)
 

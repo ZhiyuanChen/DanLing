@@ -10,7 +10,7 @@ import shutil
 from collections import OrderedDict
 from collections.abc import MutableMapping
 from os import PathLike as _PathLike
-from typing import Any, Callable, Dict, IO, List, Optional, Tuple, Union
+from typing import IO, Any, Callable, Dict, List, Optional, Tuple, Union
 
 import accelerate
 import numpy as np
