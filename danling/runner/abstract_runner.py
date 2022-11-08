@@ -157,13 +157,13 @@ class AbstractRunner:
         return os.path.join(self.dir, self.checkpoint_dir_name)
 
     @catch
-    @on_main_process
-    def save(self, obj: Any, f: File) -> None:
+    def save(self, obj: Any, f: File, on_main_process: bool = True) -> None:
         """
         Save object to a path or file
         """
 
-        self.accelerator.save(obj, f)
+        if on_main_process and self.is_main_process or not on_main_process:
+            self.accelerator.save(obj, f)
 
     def __getattr__(self, name) -> Any:
         if name in self.config:
@@ -223,13 +223,15 @@ class AbstractRunner:
 
     convert = to
 
-    def json(self, file: File, *args, **kwargs) -> None:
+    @catch
+    def json(self, file: File, on_main_process: bool = True, *args, **kwargs) -> None:
         """
         Dump Runner to json file
         """
 
-        with NestedDict.open(file, mode="w") as fp:
-            fp.write(self.jsons(*args, **kwargs))
+        if on_main_process and self.is_main_process or not on_main_process:
+            with NestedDict.open(file, mode="w") as fp:
+                fp.write(self.jsons(*args, **kwargs))
 
     def jsons(self, *args, **kwargs) -> str:
         """
@@ -238,13 +240,15 @@ class AbstractRunner:
 
         return json_dumps(self.to(dict), *args, **kwargs)
 
-    def yaml(self, file: File, *args, **kwargs) -> None:
+    @catch
+    def yaml(self, file: File, on_main_process: bool = True, *args, **kwargs) -> None:
         """
         Dump Runner to yaml file
         """
 
-        with NestedDict.open(file, mode="w") as fp:
-            self.yamls(fp, *args, **kwargs)
+        if on_main_process and self.is_main_process or not on_main_process:
+            with NestedDict.open(file, mode="w") as fp:
+                self.yamls(fp, *args, **kwargs)
 
     def yamls(self, *args, **kwargs) -> str:
         """
