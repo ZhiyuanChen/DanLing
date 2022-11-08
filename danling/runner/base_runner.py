@@ -10,17 +10,19 @@ import shutil
 from collections.abc import Mapping
 from json import dumps as json_dumps
 from os import PathLike
-from typing import IO, Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import IO, TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
-import accelerate
 import numpy as np
 import torch
 import torch.distributed as dist
-from chanfig import NestedDict, OrderedDict
+from accelerate import Accelerator
+from chanfig import Config, NestedDict, OrderedDict
 from torch import nn, optim
 from torch.backends import cudnn
-from torch.utils.tensorboard import SummaryWriter
 from yaml import dump as yaml_dump
+
+if TYPE_CHECKING:
+    from torch.utils.tensorboard import SummaryWriter
 
 from danling.utils import catch, is_json_serializable
 
@@ -29,13 +31,16 @@ from .utils import ensure_dir, on_main_process
 PathStr = Union[PathLike, str, bytes]
 File = Union[PathStr, IO]
 
+
 class BaseRunner:
     """
     Set up everything for running a job
     """
 
+    config: Config
     id: str = None
     name: str = "danling"
+
     seed: int = 1031
     deterministic: bool = False
 
@@ -45,8 +50,8 @@ class BaseRunner:
     steps: int = 0
     epochs: int = 0
 
-    accelerator: accelerate.Accelerator = None
-    accelerate_kwargs: list = []
+    accelerator: Accelerator
+    accelerate: Dict = {}
 
     model: nn.Module
     optimizer: optim.Optimizer
@@ -68,24 +73,24 @@ class BaseRunner:
     score_latest: float = 0
     is_best: bool = False
 
-    log: bool = False
-    logger: logging.Logger
+    log: bool = True
+    logger: Optional[logging.Logger] = None
     tensorboard: bool = False
-    writer: SummaryWriter
+    writer: Optional[SummaryWriter] = None
 
-    def __init__(self, config, *args, **kwargs) -> None:
+    def __init__(self, config: Optional[Config] = None, *args, **kwargs) -> None:
         super().__init__()
-        self.__dict__ = config
+        if config.id is None:
+            config.id = f"{self.name}-{self.seed}"
+       self.config = config or Config()
 
-        self.accelerator = accelerate.Accelerator(**self.accelerate)
+        self.accelerator = Accelerator(**self.accelerate)
 
-        self.init_seed()
+        if self.seed is not None:
+            self.init_seed()
 
         if self.deterministic:
             self.init_deterministic()
-
-        if self.id is None:
-            self.id = f"{self.name}-{self.seed}"
 
         if self.log:
             self.init_logger()
@@ -339,12 +344,6 @@ class BaseRunner:
             self.score_best = self.score_latest
             self.result_best = self.result_latest
 
-    def __getattr__(self, name) -> Any:
-        attr = getattr(self.accelerator, name, None)
-        if attr is not None:
-            return attr
-        raise AttributeError(f'"Runner" object has no attribute "{name}"')
-
     @property
     def distributed(self):
         """
@@ -438,8 +437,49 @@ class BaseRunner:
 
         return yaml_dump(self.to(dict), *args, **kwargs)  # type: ignore
 
-    def __contains__(self, name) -> bool:
-        return name in self.__dict__
+    def __getattr__(self, name) -> Any:
+        if name in self.config:
+            return self.config[name]
+        if hasattr(self.accelerator, name):
+            return getattr(self.accelerator, name)
+        raise AttributeError(f'"Runner" object has no attribute "{name}"')
 
-    def __repr__(self) -> str:
-        return repr(self.__dict__)
+    def __contains__(self, name) -> bool:
+        return name in self.__dict__ or name in self.config
+
+    def __repr__(self):
+        r"""
+        Representation of OrderedDict.
+
+        Example:
+        ```python
+        >>> d = OrderedDict(a=1, b=2, c=3)
+        >>> repr(d)
+        'OrderedDict(\n  (a): 1\n  (b): 2\n  (c): 3\n)'
+
+        ```
+        """
+
+        lines = []
+        for key, value in self.__dict__.items():
+            value_str = repr(value)
+            value_str = self._add_indent(value_str)
+            lines.append("(" + key + "): " + value_str)
+
+        main_str = self.__class__.__name__ + "("
+        if lines:
+            main_str += "\n  " + "\n  ".join(lines) + "\n"
+
+        main_str += ")"
+        return main_str
+
+    def _add_indent(self, s):
+        st = s.split("\n")
+        # don't do anything for single-line stuff
+        if len(st) == 1:
+            return s
+        first = st.pop(0)
+        st = [(2 * " ") + line for line in st]  # hardcode indent to 2
+        st = "\n".join(st)
+        st = first + "\n" + st
+        return st

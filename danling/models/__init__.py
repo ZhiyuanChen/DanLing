@@ -1,5 +1,4 @@
-from .transformer import (FullyConnectedNetwork, MultiHeadAttention,
-                          SelfAttention, TransformerEncoder,
+from .transformer import (FullyConnectedNetwork, MultiHeadAttention, SelfAttention, TransformerEncoder,
                           TransformerEncoderLayer, UnitedPositionEmbedding)
 
 __all__ = [

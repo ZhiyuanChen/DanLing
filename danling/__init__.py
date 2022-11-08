@@ -1,7 +1,6 @@
 from .logging import AverageMeter
-from .models import (FullyConnectedNetwork, MultiHeadAttention, SelfAttention,
-                     TransformerEncoder, TransformerEncoderLayer,
-                     UnitedPositionEmbedding)
+from .models import (FullyConnectedNetwork, MultiHeadAttention, SelfAttention, TransformerEncoder,
+                     TransformerEncoderLayer, UnitedPositionEmbedding)
 from .optim import LRScheduler
 from .registry import GlobalRegistry, Registry
 from .runner import BaseRunner, EpochRunner, StepRunner
