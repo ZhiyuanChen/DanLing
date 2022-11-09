@@ -4,6 +4,7 @@ from .models import (FullyConnectedNetwork, MultiHeadAttention, SelfAttention, T
 from .optim import LRScheduler
 from .registry import GlobalRegistry, Registry
 from .runner import BaseRunner, EpochRunner, StepRunner
+from .tensors import NestedTensor
 from .utils import catch, load
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "StepRunner",
     "Registry",
     "GlobalRegistry",
+    "NestedTensor",
     "catch",
     "load",
 ]
