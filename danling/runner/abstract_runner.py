@@ -54,13 +54,9 @@ class AbstractRunner:
 
     criterion: Tuple[nn.Module] = None
 
-    metric: str = "loss"
     results: List[NestedDict[str, any]] = []
-    result_best: NestedDict[str, any] = NestedDict()
-    result_latest: NestedDict[str, any] = NestedDict()
-    score_best: float = 0
-    score_latest: float = 0
-    is_best: bool = False
+    metric_set: Optional[str] = None
+    metric: str = "loss"
 
     log: bool = True
     logger: Optional[logging.Logger] = None
@@ -88,6 +84,33 @@ class AbstractRunner:
         """
 
         return self.batch_size * self.num_processes * getattr(self, "accum_steps", 1)
+
+    @property
+    def best_result(self) -> NestedDict:
+        return self.results[reversed(self.scores).index(self.best_score)] if self.results else None
+
+    @property
+    def latest_result(self) -> NestedDict:
+        return self.results[-1] if self.results else None
+
+    @property
+    def scores(self) -> List[float]:
+        if not self.results:
+            return []
+        metric_set = self.metric_set or next(reversed(self.results[-1]))
+        return [r[metric_set][self.metric] for r in self.results]
+
+    @property
+    def best_score(self) -> float:
+        return max(self.scores) if self.results else None
+
+    @property
+    def latest_score(self) -> float:
+        return self.scores[-1] if self.results else None
+
+    @property
+    def is_best(self) -> bool:
+        return self.latest_score == self.best_score
 
     @property
     def iters(self) -> int:
@@ -179,7 +202,7 @@ class AbstractRunner:
         ret = cls()
         for k, v in self.__dict__.items():
             if isinstance(v, OrderedDict):
-                v = v.convert(cls)
+                v = v.to(cls)
             if is_json_serializable(v):
                 ret[k] = v
         return ret

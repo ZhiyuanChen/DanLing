@@ -228,7 +228,7 @@ class BaseRunner(AbstractRunner):
         Save result to dir
         """
         ret = {"id": self.id, "name": self.name}
-        result = self.result_latest
+        result = self.latest_result
         if isinstance(result, OrderedDict):
             result = result.dict()
         ret.update(result)  # This is slower but ensure id in the first
@@ -243,26 +243,14 @@ class BaseRunner(AbstractRunner):
         """
         Print latest and best result
         """
-        print(f"latest result: {self.result_latest}")
-        print(f"best result: {self.result_best}")
+        print(f"latest result: {self.latest_result}")
+        print(f"best result: {self.best_result}")
 
     def append_result(self, result) -> None:
         """
         Add latest result and update best result
         """
         self.results.append(result)
-        self.result_latest = result
-
-    def update_score(self, score) -> None:
-        """
-        Add latest result and update best result
-        """
-        self.is_best = False
-        self.score_latest = score
-        if self.score_latest > self.score_best:
-            self.is_best = True
-            self.score_best = self.score_latest
-            self.result_best = self.result_latest
 
     def step(self) -> None:
         """
