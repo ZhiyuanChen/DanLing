@@ -3,7 +3,11 @@ import os
 import pickle
 from typing import Any, Dict, List
 
-import torch
+JSON = ("json",)
+PYTORCH = ("pt", "pth")
+CSV = ("csv",)
+NUMPY = ("numpy", "npy", "npz")
+PICKLE = ("pickle", "pkl")
 
 
 def load(path: str, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
@@ -12,35 +16,27 @@ def load(path: str, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
     """
     if not os.path.isfile(path):
         raise ValueError(f"Trying to load {path} but it is not a file.")
-    extension = os.path.splitext(path)[-1].lower()
-    if extension == ".json":
-        with open(path, "r") as f:
-            result = json.load(f, *args, **kwargs)
-    elif extension == ".csv":
-        import pandas as pd
+    extension = os.path.splitext(path)[-1].lower()[1:]
+    if extension in PYTORCH:
+        from torch import load
 
-        result = pd.read_csv(path, *args, **kwargs)
-    elif extension == ".pth":
-        result = torch.load(path)
-    elif extension == ".npy" or extension == ".npz":
+        return load(path)
+    elif extension in NUMPY:
         import numpy as np
 
-        result = np.load(path, allow_pickle=True)
-    elif extension == ".pkl":
-        try:
-            try:
-                with open(path, "r") as f:
-                    result = pickle.load(f, *args, **kwargs)
-            except UnicodeDecodeError:
-                with open(path, "rb") as f:
-                    result = pickle.load(f, *args, **kwargs)
-        except:
-            import pandas as pd
+        return np.load(path, allow_pickle=True)
+    elif extension in CSV:
+        from pandas import read_csv
 
-            result = pd.read_pickle(path, *args, **kwargs)
+        return read_csv(path, *args, **kwargs)
+    elif extension in JSON:
+        with open(path, "r") as f:
+            return json.load(f, *args, **kwargs)
+    elif extension in PICKLE:
+        with open(path, "rb") as f:
+            return pickle.load(f, *args, **kwargs)
     else:
-        raise ValueError(f"Tying to load {path} with unsupported extension")
-    return result
+        raise ValueError(f"Tying to load {path} with unsupported extension={extension}")
 
 
 def is_json_serializable(obj: Any) -> bool:
