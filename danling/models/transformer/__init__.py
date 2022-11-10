@@ -11,6 +11,6 @@ __all__ = [
     "TransformerDecoderLayer",
     "MultiHeadAttention",
     "SelfAttention",
-    "UnitedPositionEmbedding",
     "FullyConnectedNetwork",
+    "UnitedPositionEmbedding",
 ]

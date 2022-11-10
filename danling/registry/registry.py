@@ -34,5 +34,10 @@ class Registry(NestedDict):
 
     lookup = NestedDict.get
 
+    def build(self, name: str, *args, **kwargs):
+        if not isinstance(name, str):
+            raise TypeError(f"name={name} should be a str, but got {type(name)}")
+        return self.get(name)(*args, **kwargs)
+
 
 GlobalRegistry = Registry("Global")
