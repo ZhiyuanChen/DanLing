@@ -29,8 +29,8 @@ class BaseRunner(AbstractRunner):
     Set up everything for running a job
     """
 
-    def __init__(self, config: Optional[Config] = None, *args, **kwargs) -> None:
-        super().__init__(config, *args, **kwargs)
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
 
         self.accelerator = accelerate.Accelerator(**self.accelerate)
 

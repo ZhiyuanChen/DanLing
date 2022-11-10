@@ -5,14 +5,17 @@ import logging.config
 import os
 from collections import Mapping
 from json import dumps as json_dumps
-from typing import IO, Any, Callable, List, Optional, Tuple, Union
+from typing import IO, TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as data
 from accelerate import Accelerator
-from chanfig import Config, NestedDict, OrderedDict
+from chanfig import NestedDict, OrderedDict
 from yaml import dump as yaml_dump
+
+if TYPE_CHECKING:
+    from torch.utils.tensorboard import SummaryWriter
 
 from danling.utils import catch, is_json_serializable
 
@@ -24,89 +27,51 @@ File = Union[PathStr, IO]
 
 class AbstractRunner:
 
-    config: Config
+    id: str = None
+    name: str = "danling"
 
-    id: str
-    name: str
+    seed: int = 1031
+    deterministic: bool = False
 
-    seed: int
-    deterministic: bool
+    experiment_dir: str = "experiments"
+    checkpoint_dir_name: str = "checkpoints"
 
-    experiment_dir: str
-    checkpoint_dir_name: str
-
-    steps: int
-    epochs: int
+    steps: int = 0
+    epochs: int = 0
 
     accelerator: Accelerator
-    accelerate: NestedDict[str, Any]
+    accelerate: Dict[str, Any] = {}
 
-    model: nn.Module
-    optimizer: optim.Optimizer
-    scheduler: optim.lr_scheduler._LRScheduler
+    model: Optional[nn.Module] = None
+    optimizer: Optional[optim.Optimizer] = None
+    scheduler: Optional[optim.lr_scheduler._LRScheduler] = None
 
-    datasets: OrderedDict[str, data.Dataset]
-    datasamplers: OrderedDict[str, data.Sampler]
-    dataloaders: OrderedDict[str, data.DataLoader]
+    datasets: OrderedDict[str, data.Dataset] = OrderedDict()
+    datasamplers: OrderedDict[str, data.Sampler] = OrderedDict()
+    dataloaders: OrderedDict[str, data.DataLoader] = OrderedDict()
 
-    batch_size: int
+    batch_size: int = 1
 
-    criterion: Tuple[nn.Module]
+    criterion: Tuple[nn.Module] = None
 
-    metric: str
-    results: List[NestedDict[str, any]]
-    result_best: NestedDict[str, any]
-    result_latest: NestedDict[str, any]
-    score_best: float
-    score_latest: float
-    is_best: bool
+    metric: str = "loss"
+    results: List[NestedDict[str, any]] = []
+    result_best: NestedDict[str, any] = NestedDict()
+    result_latest: NestedDict[str, any] = NestedDict()
+    score_best: float = 0
+    score_latest: float = 0
+    is_best: bool = False
 
-    log: bool
-    logger: logging.Logger
-    tensorboard: bool
-    writer: Callable
+    log: bool = True
+    logger: Optional[logging.Logger] = None
+    tensorboard: bool = False
+    writer: Optional[SummaryWriter] = None
 
-    def __init__(self, config: Optional[Config] = None, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__()
-        config = config or Config()
-        super().__setattr__("config", config)
-        self.id = None
-        self.name = "danling"
-        self.seed = 1031
-        self.deterministic = False
-
-        self.experiment_dir = "experiments"
-        self.checkpoint_dir_name = "checkpoints"
-
-        self.steps = 0
-        self.epochs = 0
-        self.accelerate = {}
-
-        self.model: nn.Module = None
-        self.optimizer: optim.Optimizer = None
-        self.scheduler: optim.lr_scheduler._LRScheduler = None
-
-        self.datasets = OrderedDict()
-        self.datasamplers = OrderedDict()
-        self.dataloaders = OrderedDict()
-
-        self.batch_size = 1
-
-        self.criterion = None
-
-        self.metric = "loss"
-        self.results = []
-        self.result_best = NestedDict()
-        self.result_latest = NestedDict()
-        self.score_best = 0
-        self.score_latest = 0
-        self.is_best = False
-
-        self.log = True
-        self.tensorboard = False
-        self.writer = None
-        self.config.update(args)
-        self.config.update(kwargs)
+        self.__dict__ = NestedDict()
+        self.__dict__.update(args)
+        self.__dict__.update(kwargs)
 
     @property
     def distributed(self):
@@ -166,14 +131,12 @@ class AbstractRunner:
             self.accelerator.save(obj, f)
 
     def __getattr__(self, name) -> Any:
-        if name in self.config:
-            return self.config[name]
         if hasattr(self.accelerator, name):
             return getattr(self.accelerator, name)
         raise AttributeError(f'"Runner" object has no attribute "{name}"')
 
     def __contains__(self, name) -> bool:
-        return name in self.config
+        return name in self.__dict__
 
     def __repr__(self):
         r"""
