@@ -50,9 +50,6 @@ class BaseRunner(AbstractRunner):
         if self.tensorboard:
             self.writer = self.init_tensorboard()
 
-        if self.is_main_process:
-            self.yaml(os.path.join(self.dir, "runner.yaml"))
-
         atexit.register(self.print_result)
 
     def init_distributed(self) -> None:

@@ -1,7 +1,7 @@
 from functools import wraps
 from typing import Callable, Optional
 
-from chanfig import NestedDict
+from chanfig import NestedDict, OrderedDict
 
 
 class Registry(NestedDict):
@@ -35,6 +35,9 @@ class Registry(NestedDict):
     lookup = NestedDict.get
 
     def build(self, name: str, *args, **kwargs):
+        if isinstance(name, OrderedDict) and not args and not kwargs:
+            name = name.pop("name")
+            kwargs = name
         if not isinstance(name, str):
             raise TypeError(f"name={name} should be a str, but got {type(name)}")
         return self.get(name)(*args, **kwargs)

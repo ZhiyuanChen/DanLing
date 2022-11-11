@@ -65,6 +65,8 @@ class AbstractRunner:
 
     def __init__(self, *args, **kwargs):
         super().__init__()
+        if len(args) == 1 and isinstance(args[0], OrderedDict) and not kwargs:
+            args, kwargs = (), args[0]
         self.__dict__ = NestedDict()
         self.__dict__.update(args)
         self.__dict__.update(kwargs)
