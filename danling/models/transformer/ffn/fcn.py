@@ -1,9 +1,6 @@
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch import Tensor
+from torch import Tensor, nn
 
 
 class FullyConnectedNetwork(nn.Module):

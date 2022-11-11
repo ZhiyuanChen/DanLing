@@ -3,29 +3,28 @@ from __future__ import annotations
 import logging
 import logging.config
 import os
-from collections import Mapping
+from collections.abc import Mapping
 from json import dumps as json_dumps
 from typing import IO, TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
-import torch.nn as nn
-import torch.optim as optim
-import torch.utils.data as data
 from accelerate import Accelerator
 from chanfig import NestedDict, OrderedDict
+from torch import nn, optim
+from torch.utils import data
 from yaml import dump as yaml_dump
-
-if TYPE_CHECKING:
-    from torch.utils.tensorboard import SummaryWriter
 
 from danling.utils import catch, is_json_serializable
 
-from .utils import ensure_dir, on_main_process
+from .utils import ensure_dir
+
+if TYPE_CHECKING:
+    from torch.utils.tensorboard import SummaryWriter
 
 PathStr = Union[os.PathLike, str, bytes]
 File = Union[PathStr, IO]
 
 
-class AbstractRunner:
+class Runner:
 
     id: str = None
     name: str = "danling"
@@ -70,6 +69,7 @@ class AbstractRunner:
         self.__dict__ = NestedDict()
         self.__dict__.update(args)
         self.__dict__.update(kwargs)
+        self.accelerator = Accelerator(**self.accelerate)
 
     @property
     def distributed(self):
@@ -89,7 +89,7 @@ class AbstractRunner:
 
     @property
     def best_result(self) -> NestedDict:
-        return self.results[reversed(self.scores).index(self.best_score)] if self.results else None
+        return self.results[list(reversed(self.scores)).index(self.best_score)] if self.results else None
 
     @property
     def latest_result(self) -> NestedDict:
@@ -156,6 +156,8 @@ class AbstractRunner:
             self.accelerator.save(obj, f)
 
     def __getattr__(self, name) -> Any:
+        if "accelerator" not in self:
+            raise RuntimeError(f"{self.__class__.__name__} is not properly initialised")
         if hasattr(self.accelerator, name):
             return getattr(self.accelerator, name)
         raise AttributeError(f'"Runner" object has no attribute "{name}"')

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import atexit
 import json
 import logging
@@ -8,31 +6,27 @@ import os
 import random
 import shutil
 from collections.abc import Mapping
-from typing import IO, Any, Callable, List, Optional, Tuple, Union
+from typing import Callable, Optional
 
-import accelerate
 import numpy as np
 import torch
-import torch.backends.cudnn as cudnn
-import torch.distributed as dist
-import torch.nn as nn
-from chanfig import Config, OrderedDict
+from chanfig import OrderedDict
+from torch import distributed as dist
+from torch.backends import cudnn
 
-from danling.utils import catch, is_json_serializable
+from danling.utils import catch
 
-from .abstract_runner import AbstractRunner
+from .runner import Runner
 from .utils import on_main_process
 
 
-class BaseRunner(AbstractRunner):
+class BaseRunner(Runner):
     """
     Set up everything for running a job
     """
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-
-        self.accelerator = accelerate.Accelerator(**self.accelerate)
 
         if self.seed is not None:
             self.init_seed()
