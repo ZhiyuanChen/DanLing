@@ -55,8 +55,8 @@ class Runner:
     criterion: Tuple[nn.Module] = None
 
     results: List[NestedDict[str, any]] = []
-    metric_set: Optional[str] = None
-    metric: str = "loss"
+    index_set: Optional[str] = None
+    index: str = "loss"
 
     log: bool = True
     logger: Optional[logging.Logger] = None
@@ -100,8 +100,8 @@ class Runner:
     def scores(self) -> List[float]:
         if not self.results:
             return []
-        metric_set = self.metric_set or next(reversed(self.results[-1]))
-        return [r[metric_set][self.metric] for r in self.results]
+        index_set = self.index_set or next(reversed(self.results[-1]))
+        return [r[index_set][self.index] for r in self.results]
 
     @staticmethod
     def best_fn(scores: Sequence[float]) -> float:
