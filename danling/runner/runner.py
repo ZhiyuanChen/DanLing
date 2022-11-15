@@ -5,7 +5,7 @@ import logging.config
 import os
 from collections.abc import Mapping
 from json import dumps as json_dumps
-from typing import IO, TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import IO, TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from accelerate import Accelerator
 from chanfig import NestedDict, OrderedDict
@@ -89,7 +89,7 @@ class Runner:
 
     @property
     def best_result(self) -> NestedDict:
-        return self.results[list(reversed(self.scores)).index(self.best_score)] if self.results else None
+        return self.results[-1 - self.scores[::-1].index(self.best_score)] if self.results else None
 
     @property
     def latest_result(self) -> NestedDict:
@@ -102,9 +102,13 @@ class Runner:
         metric_set = self.metric_set or next(reversed(self.results[-1]))
         return [r[metric_set][self.metric] for r in self.results]
 
+    @staticmethod
+    def best_fn(scores: Sequence[float]) -> float:
+        return max(scores)
+
     @property
     def best_score(self) -> float:
-        return max(self.scores) if self.results else None
+        return self.best_fn(self.scores) if self.results else None
 
     @property
     def latest_score(self) -> float:
