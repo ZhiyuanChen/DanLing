@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from json import dumps as json_dumps
 from typing import IO, TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
+import torch
 from accelerate import Accelerator
 from chanfig import NestedDict, OrderedDict
 from torch import nn, optim
@@ -158,6 +159,15 @@ class Runner:
 
         if on_main_process and self.is_main_process or not on_main_process:
             self.accelerator.save(obj, f)
+        return f
+
+    @catch
+    def load(self, f: File, *args, **kwargs) -> None:
+        """
+        Load object from a path or file
+        """
+
+        return torch.load(f, *args, **kwargs)
 
     def __getattr__(self, name) -> Any:
         if "accelerator" not in self:
