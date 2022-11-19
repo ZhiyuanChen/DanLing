@@ -51,6 +51,12 @@ class NestedTensor(object):
     def size(self):
         return torch.Size([len(self.storage), max(t.shape[0] for t in self.storage)])
 
+    def cat(self):
+        return torch.cat(self.storage)
+
+    def sum(self):
+        return torch.sum(self.cat())
+
     def __getattr__(self, name):
         ret = [getattr(i, name) for i in self.storage]
         elem = ret[0]
