@@ -7,23 +7,19 @@ from torch.nn.utils.rnn import pad_sequence
 
 class NestedTensor(object):
 
-    values: Sequence[Tensor]
-    batch_first: bool
+    storage: Sequence[Tensor]
+    batch_first: bool = True
 
     def __init__(self, values, batch_first: bool = True):
         if not isinstance(values, Sequence):
-            raise ValueError("NestedTensor should be initialized with a list of tensors")
+            raise ValueError(f"NestedTensor should be initialised with a list of tensors, bug got {type(values)}")
         if not isinstance(values[0], Tensor):
             values = [Tensor(value) for value in values]
-        self.values = values
+        self.storage = values
         self.batch_first = batch_first
 
-    def to(self, placement):
-        values = [value.to(placement) for value in self.values]
-        return NestedTensor(values)
-
     def __getitem__(self, index) -> Tensor:
-        ret = self.values[index]
+        ret = self.storage[index]
         if isinstance(ret, Tensor):
             return ret, torch.ones_like(ret)
         else:
@@ -33,17 +29,56 @@ class NestedTensor(object):
             return tensor, mask
 
     def __len__(self):
-        return len(self.values)
+        return len(self.storage)
 
     @property
     def tensor(self):
-        return pad_sequence(self.values, batch_first=self.batch_first)
+        return pad_sequence(self.storage, batch_first=self.batch_first)
 
     @property
     def mask(self):
-        lens = torch.tensor([len(t) for t in self.values])
-        return (torch.arange(max(lens))[None, :] < lens[:, None]).to(self.values[0].device)
+        lens = torch.tensor([len(t) for t in self.storage])
+        return (torch.arange(max(lens))[None, :] < lens[:, None]).to(self.storage[0].device)
+
+    @property
+    def device(self):
+        return self.storage[0].device
 
     @property
     def shape(self):
-        return torch.Size([len(self.values), max([t.shape[0] for t in self.values])])
+        return self.size()
+
+    def size(self):
+        return torch.Size([len(self.storage), max(t.shape[0] for t in self.storage)])
+
+    def __getattr__(self, name):
+        ret = [getattr(i, name) for i in self.storage]
+        elem = ret[0]
+        if isinstance(elem, Tensor):
+            return NestedTensor(ret)
+        elif callable(elem):
+            return TensorFuncWrapper(ret)
+        elif len(set(ret)) == 1:
+            return elem
+        else:
+            return ret
+
+
+class TensorFuncWrapper:
+
+    def __init__(self, values):
+        if not isinstance(values, Sequence):
+            raise ValueError(f"TensorFuncWrapper should be initialised with a list of tensors, bug got {type(values)}")
+        if not callable(values[0]):
+            raise ValueError(f"Elements in TensorFuncWrapper must be Callable, bug got {type(values[0])}")
+        self.storage = values
+
+    def __call__(self, *args, **kwargs):
+        ret = [call(*args, **kwargs) for call in self.storage]
+        elem = ret[0]
+        if isinstance(elem, Tensor):
+            return NestedTensor(ret)
+        elif len(set(ret)) == 1:
+            return elem
+        else:
+            return ret
