@@ -24,7 +24,7 @@ class NestedTensor(object):
             return ret, torch.ones_like(ret)
         else:
             tensor = pad_sequence(ret, batch_first=self.batch_first)
-            lens = torch.tensor([len(t) for t in ret])
+            lens = Tensor([len(t) for t in ret])
             mask = torch.arange(max(lens))[None, :] < lens[:, None]
             return tensor, mask
 
@@ -37,7 +37,7 @@ class NestedTensor(object):
 
     @property
     def mask(self):
-        lens = torch.tensor([len(t) for t in self.storage])
+        lens = Tensor([len(t) for t in self.storage])
         return (torch.arange(max(lens))[None, :] < lens[:, None]).to(self.storage[0].device)
 
     @property
@@ -71,7 +71,6 @@ class NestedTensor(object):
 
 
 class TensorFuncWrapper:
-
     def __init__(self, values):
         if not isinstance(values, Sequence):
             raise ValueError(f"TensorFuncWrapper should be initialised with a list of tensors, bug got {type(values)}")

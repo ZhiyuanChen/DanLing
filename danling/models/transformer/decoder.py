@@ -192,7 +192,7 @@ class TransformerDecoder(nn.Module):
         for layer in self.layers:
             if gradient_checkpoint and self.training:
                 layer = partial(checkpoint, layer)
-                need_weights = torch.tensor(need_weights)
+                need_weights = Tensor(need_weights)
             output, weights = layer(
                 output,
                 mem,

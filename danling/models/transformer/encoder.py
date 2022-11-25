@@ -163,7 +163,7 @@ class TransformerEncoder(nn.Module):
         for layer in self.layers:
             if gradient_checkpoint and self.training:
                 layer = partial(checkpoint, layer)
-                need_weights = torch.tensor(need_weights)
+                need_weights = Tensor(need_weights)
             output, weights = layer(output, attn_bias, attn_mask, key_padding_mask, need_weights)
             if need_weights:
                 attn_weights.append(weights)

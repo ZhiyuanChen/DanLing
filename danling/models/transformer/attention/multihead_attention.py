@@ -33,8 +33,8 @@ class MultiHeadAttention(nn.Module):
         >>> attn_output, attn_output_weights = multihead_attn(query, key, value)
     """
     __constants__ = ["batch_first"]
-    bias_k: Optional[torch.Tensor]
-    bias_v: Optional[torch.Tensor]
+    bias_k: Optional[Tensor]
+    bias_v: Optional[Tensor]
 
     def __init__(
         self,

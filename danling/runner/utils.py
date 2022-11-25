@@ -1,6 +1,7 @@
 from functools import wraps
 from os import makedirs
 from os.path import abspath
+from typing import Any, Optional
 
 
 def on_main_process(func):
@@ -9,9 +10,10 @@ def on_main_process(func):
     """
 
     @wraps(func)
-    def wrapper(self, *args, **kwargs):
+    def wrapper(self, *args, **kwargs) -> Optional[Any]:
         if self.is_main_process or not self.distributed:
             return func(self, *args, **kwargs)
+        return None
 
     return wrapper
 
@@ -22,9 +24,10 @@ def on_local_main_process(func):
     """
 
     @wraps(func)
-    def wrapper(self, *args, **kwargs):
+    def wrapper(self, *args, **kwargs) -> Optional[Any]:
         if self.is_local_main_process or not self.distributed:
             return func(self, *args, **kwargs)
+        return None
 
     return wrapper
 

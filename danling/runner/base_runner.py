@@ -6,11 +6,12 @@ import os
 import random
 import shutil
 from collections.abc import Mapping
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 import numpy as np
 import torch
 from chanfig import OrderedDict
+from torch import Tensor
 from torch import distributed as dist
 from torch.backends import cudnn
 
@@ -50,6 +51,9 @@ class BaseRunner(Runner):
         """
         Set up distributed training
         """
+
+        # pylint: disable=W0201
+
         dist.init_process_group(backend="nccl")
         self.process_index = dist.get_rank()
         self.num_processes = dist.get_world_size()
@@ -62,6 +66,7 @@ class BaseRunner(Runner):
         """
         Set up deterministic
         """
+
         cudnn.benchmark = False
         cudnn.deterministic = True
 
@@ -69,10 +74,11 @@ class BaseRunner(Runner):
         """
         Set up random seed
         """
+
         if self.seed is None:
             self.seed = random.randint(0, 100000)
             if self.distributed:
-                self.seed = self.accelerator.gather(torch.tensor(self.seed).cuda()).unsqueeze(0).flatten()[0]
+                self.seed = self.accelerator.gather(Tensor(self.seed).cuda()).unsqueeze(0).flatten()[0]
         torch.manual_seed(self.seed + self.process_index)
         torch.cuda.manual_seed(self.seed + self.process_index)
         np.random.seed(self.seed + self.process_index)
@@ -83,6 +89,7 @@ class BaseRunner(Runner):
         """
         Set up logger
         """
+
         # Why is setting up proper logging so !@?#! ugly?
         logging.config.dictConfig(
             {
@@ -125,16 +132,17 @@ class BaseRunner(Runner):
         Only print from a specific process or force indicated
         Replace default print function with logging.info
         """
+
         torch.set_printoptions(precision=precision)
 
         logger = logging.getLogger("print")
         logger.flush = lambda: [h.flush for h in logger.handlers]
-        import builtins as __builtin__
+        import builtins as __builtin__  # pylint: disable=C0415
 
         builtin_print = __builtin__.print
 
         @catch
-        def print(*args, force=False, end="\n", file=None, flush=False, **kwargs):
+        def print(*args, force=False, end="\n", file=None, flush=False, **kwargs):  # pylint: disable=W0622
             if self.process_index == process or force:
                 if self.log:
                     logger.info(*args, **kwargs)
@@ -145,7 +153,7 @@ class BaseRunner(Runner):
 
     @on_main_process
     def init_tensorboard(self, *args, **kwargs):
-        from torch.utils.tensorboard.writer import SummaryWriter
+        from torch.utils.tensorboard.writer import SummaryWriter  # pylint: disable=C0415
 
         return SummaryWriter(log_dir=self.dir, *args, **kwargs)
 
@@ -157,6 +165,9 @@ class BaseRunner(Runner):
         """
         Set up learning rate according to linear scaling rule
         """
+
+        # pylint: disable=W0201
+
         if lr_scale_factor is None:
             if batch_size_base is None:
                 if batch_size_base := getattr(self, "batch_size_base", None) is None:
@@ -181,22 +192,35 @@ class BaseRunner(Runner):
             best_path = os.path.join(self.checkpoint_dir, "best.pth")
             shutil.copy(latest_path, best_path)
 
-    def load_checkpoint(self, path, *args, **kwargs) -> None:
+    def load_checkpoint(
+        self, checkpoint: Union[Mapping, str], override_config: bool = True, *args, **kwargs
+    ) -> None:  # pylint: disable=W1113
         """
         Load runner from checkpoint
         """
-        print(f'=> loading checkpoint "{path}"')
-        if not os.path.isfile(path):
-            raise FileNotFoundError(f"checkpoint at {path} is not a file")
-        checkpoint = torch.load(path, *args, **kwargs)
-        self.config.update(checkpoint["runner"])
-        if "model" in checkpoint:
+        if isinstance(checkpoint, str):
+            if not os.path.isfile(checkpoint):
+                raise FileNotFoundError(f"checkpoint at {checkpoint} is not a file")
+            checkpoint = self.load(checkpoint, *args, **kwargs)
+        if override_config:
+            self.__dict__.update(checkpoint["runner"])
+        if self.model is not None and "model" in checkpoint:
             self.model.load_state_dict(checkpoint["model"])
         if self.optimizer is not None and "optimizer" in checkpoint:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
         if self.scheduler is not None and "scheduler" in checkpoint:
             self.scheduler.load_state_dict(checkpoint["scheduler"])
-        print(f'=> loaded checkpoint "{path}"')
+
+    @classmethod
+    def from_checkpoint(cls, checkpoint, map_location="cpu", *args, **kwargs) -> Runner:
+        """
+        Load Runner from checkpoint
+        """
+
+        checkpoint = cls.load(checkpoint, *args, map_location=map_location, **kwargs)
+        runner = cls(**checkpoint["runner"])
+        runner.load_checkpoint(checkpoint, override_config=False)
+        return runner
 
     def state_dict(self, cls: Callable = dict) -> Mapping:
         """
