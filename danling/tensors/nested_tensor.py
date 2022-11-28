@@ -7,7 +7,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 class NestedTensor(object):
 
-    storage: Sequence[Tensor]
+    storage: Sequence[Tensor] = []
     batch_first: bool = True
 
     def __init__(self, values, batch_first: bool = True):
@@ -58,6 +58,8 @@ class NestedTensor(object):
         return torch.sum(self.cat())
 
     def __getattr__(self, name):
+        if not self.storage:
+            raise ValueError(f"Unable to get {name} from an empty {self.__class__.__name__}")
         ret = [getattr(i, name) for i in self.storage]
         elem = ret[0]
         if isinstance(elem, Tensor):
@@ -68,6 +70,12 @@ class NestedTensor(object):
             return elem
         else:
             return ret
+
+    def __setstate__(self, storage):
+        self.storage = storage
+
+    def __getstate__(self):
+        return self.storage
 
 
 class TensorFuncWrapper:
