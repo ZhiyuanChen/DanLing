@@ -10,7 +10,7 @@ from typing import Callable, Optional, Union
 
 import numpy as np
 import torch
-from chanfig import OrderedDict
+from chanfig import Config, OrderedDict
 from torch import Tensor
 from torch import distributed as dist
 from torch.backends import cudnn
@@ -212,13 +212,16 @@ class BaseRunner(Runner):
             self.scheduler.load_state_dict(checkpoint["scheduler"])
 
     @classmethod
-    def from_checkpoint(cls, checkpoint, map_location="cpu", *args, **kwargs) -> Runner:
+    def from_checkpoint(
+        cls, checkpoint, map_location: str = "cpu", convert_mapping: bool = True, *args, **kwargs
+    ) -> Runner:
         """
         Load Runner from checkpoint
         """
 
         checkpoint = cls.load(checkpoint, *args, map_location=map_location, **kwargs)
-        runner = cls(**checkpoint["runner"])
+        config = Config(**checkpoint["runner"]) if convert_mapping else checkpoint["runner"]
+        runner = cls(**config)
         runner.load_checkpoint(checkpoint, override_config=False)
         return runner
 
