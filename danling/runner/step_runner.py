@@ -1,13 +1,10 @@
-from .base_runner import BaseRunner
+from .runner import Runner
 
 
-class StepRunner(BaseRunner):
+class StepRunner(Runner):
     """
     Set up everything for running a job
     """
-
-    step_begin: int
-    step_end: int
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)

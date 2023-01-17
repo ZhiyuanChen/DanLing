@@ -1,13 +1,10 @@
-from .base_runner import BaseRunner
+from .runner import Runner
 
 
-class EpochRunner(BaseRunner):
+class EpochRunner(Runner):
     """
     Set up everything for running a job
     """
-
-    epoch_begin: int
-    epoch_end: int
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)

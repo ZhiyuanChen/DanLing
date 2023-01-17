@@ -1,4 +1,4 @@
-from typing import Sequence
+from typing import Sequence, Tuple
 
 import torch
 from torch import Tensor
@@ -18,7 +18,7 @@ class NestedTensor(object):
         self.storage = values
         self.batch_first = batch_first
 
-    def __getitem__(self, index) -> Tensor:
+    def __getitem__(self, index) -> Tuple[Tensor, Tensor]:
         ret = self.storage[index]
         if isinstance(ret, Tensor):
             return ret, torch.ones_like(ret)
