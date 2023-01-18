@@ -8,8 +8,8 @@ class FullyConnectedNetwork(nn.Module):
         self,
         embed_dim: int,
         ffn_dim: int,
-        activation: Optional[str] = "GELU",
-        ffn_dropout: Optional[float] = 0.0,
+        activation: str = "GELU",
+        ffn_dropout: float = 0.0,
         **kwargs: Optional[Dict[str, Any]]
     ) -> None:
         super(FullyConnectedNetwork, self).__init__()

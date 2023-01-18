@@ -8,14 +8,14 @@ from torch import Tensor, nn
 # this is from T5
 def relative_position_bucket(
     seq_len_max: int,
-    bidirectional: Optional[bool] = True,
-    num_buckets: Optional[int] = 32,
-    max_distance: Optional[int] = 128,
+    bidirectional: bool = True,
+    num_buckets: int = 32,
+    max_distance: int = 128,
 ):
     context_position = torch.arange(seq_len_max, dtype=torch.long)[:, None]
     memory_position = torch.arange(seq_len_max, dtype=torch.long)[None, :]
     relative_position = memory_position - context_position
-    ret = 0
+    ret = torch.tensor(0)
     n = -relative_position
     if bidirectional:
         num_buckets //= 2
@@ -71,11 +71,11 @@ class UnitedPositionEmbedding(nn.Module):
         embed_dim: int,
         num_heads: int,
         seq_len_max: int,
-        rel_pos_embed: Optional[bool] = False,
-        rel_pos_embed_buckets: Optional[int] = 32,
-        rel_pos_embed_max: Optional[int] = 128,
-        pos_embed_dropout: Optional[float] = 0.0,
-        pos_scale_factor: Optional[int] = 1,
+        rel_pos_embed: bool = False,
+        rel_pos_embed_buckets: int = 32,
+        rel_pos_embed_max: int = 128,
+        pos_embed_dropout: float = 0.0,
+        pos_scale_factor: int = 1,
         has_cls_token: bool = True,
     ) -> None:
         super().__init__()
@@ -92,8 +92,8 @@ class UnitedPositionEmbedding(nn.Module):
         self.in_proj = nn.Linear(self.embed_dim, self.embed_dim * 2)
         self.scaling = (embed_dim / num_heads * pos_scale_factor) ** -0.5
 
-        self.rel_pos_embed = rel_pos_embed
-        if self.rel_pos_embed:
+        self.rel_pos_embed = None
+        if rel_pos_embed:
             assert rel_pos_embed_buckets % 2 == 0
             self.rel_pos_embed_buckets = rel_pos_embed_buckets
             self.rel_pos_embed_max = rel_pos_embed_max

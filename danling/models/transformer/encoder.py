@@ -43,22 +43,22 @@ class TransformerEncoderLayer(nn.Module):
         embed_dim: int,
         num_heads: int,
         ffn_dim: Optional[int] = None,
-        dropout: Optional[float] = 0.1,
-        attn_dropout: Optional[float] = 0.1,
-        ffn_dropout: Optional[float] = 0.1,
-        activation: Optional[str] = "GELU",
-        layer_norm_eps: Optional[float] = 1e-5,
-        scale_factor: Optional[float] = 1.0,
-        bias: Optional[bool] = True,
-        add_bias_kv: Optional[bool] = False,
-        add_zero_attn: Optional[bool] = False,
-        batch_first: Optional[bool] = True,
-        norm_first: Optional[bool] = False,
-        Attention: Optional[nn.Module] = MultiHeadAttention,
-        FeedForwardNetwork: Optional[nn.Module] = FullyConnectedNetwork,
+        dropout: float = 0.1,
+        attn_dropout: float = 0.1,
+        ffn_dropout: float = 0.1,
+        activation: str = "GELU",
+        layer_norm_eps: float = 1e-5,
+        scale_factor: float = 1.0,
+        bias: bool = True,
+        add_bias_kv: bool = False,
+        add_zero_attn: bool = False,
+        batch_first: bool = True,
+        norm_first: bool = False,
+        Attention: nn.Module = MultiHeadAttention,
+        FeedForwardNetwork: nn.Module = FullyConnectedNetwork,
         **kwargs: Optional[Dict[str, Any]]
     ) -> None:
-        super(TransformerEncoderLayer, self).__init__()
+        super().__init__()
         if ffn_dim is None:
             ffn_dim = embed_dim * 4
         self.norm_first = norm_first
@@ -84,7 +84,7 @@ class TransformerEncoderLayer(nn.Module):
         attn_bias: Optional[Tensor] = None,
         attn_mask: Optional[Tensor] = None,
         key_padding_mask: Optional[Tensor] = None,
-        need_weights: Optional[bool] = False,
+        need_weights: bool = False,
     ) -> Tensor:
         r"""Pass the input through the encoder layer.
         Args:
@@ -132,10 +132,8 @@ class TransformerEncoder(nn.Module):
     """
     __constants__ = ["norm"]
 
-    def __init__(
-        self, layer: TransformerEncoderLayer, num_layers: Optional[int] = 6, **kwargs: Optional[Dict[str, Any]]
-    ) -> None:
-        super(TransformerEncoder, self).__init__()
+    def __init__(self, layer: TransformerEncoderLayer, num_layers: int = 6, **kwargs: Optional[Dict[str, Any]]) -> None:
+        super().__init__()
         self.num_layers = num_layers
         self.layers = nn.ModuleList([])
         self.layers.extend([layer for _ in range(self.num_layers)])
@@ -146,8 +144,8 @@ class TransformerEncoder(nn.Module):
         attn_bias: Optional[Tensor] = None,
         attn_mask: Optional[Tensor] = None,
         key_padding_mask: Optional[Tensor] = None,
-        need_weights: Optional[bool] = False,
-        gradient_checkpoint: Optional[bool] = False,
+        need_weights: bool = False,
+        gradient_checkpoint: bool = False,
     ) -> Tensor:
         r"""Pass the input through the encoder layers in turn.
         Args:
@@ -158,17 +156,18 @@ class TransformerEncoder(nn.Module):
             see the docs in Transformer class.
         """
         output = src
-        attn_weights = [] if need_weights else torch.zeros(0, requires_grad=False)
+        # attn_weights is set to torch.empty(0, requires_grad=False) to avoid errors in DDP
+        attn_weights = [] if need_weights else torch.empty(0, requires_grad=False)
 
         for layer in self.layers:
             if gradient_checkpoint and self.training:
                 layer = partial(checkpoint, layer)
-                need_weights = Tensor(need_weights)
+                need_weights = torch.tensor(need_weights)
             output, weights = layer(output, attn_bias, attn_mask, key_padding_mask, need_weights)
             if need_weights:
-                attn_weights.append(weights)
+                attn_weights.append(weights)  # type: ignore
 
         if need_weights:
-            attn_weights = torch.stack(attn_weights).cpu().detach()
+            attn_weights = torch.stack(attn_weights).cpu().detach()  # type: ignore
 
         return output, attn_weights

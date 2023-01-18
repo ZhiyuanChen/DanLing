@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="danling",
-    version="0.0.1a10",
+    version="0.0.1b0",
     description="danling",
     keywords="deep learning",
     maintainer="Zhiyuan Chen",

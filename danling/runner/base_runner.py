@@ -1,414 +1,329 @@
 from __future__ import annotations
 
+import atexit
+import json
 import logging
 import logging.config
 import os
-from collections.abc import Mapping
-from json import dumps as json_dumps
-from random import randint
-from typing import IO, TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+import random
+import shutil
+from typing import Callable, Mapping, Optional, Union
 
-import torch
-from accelerate import Accelerator
-from chanfig import Config, FlatDict, NestedDict
-from chanfig.utils import JsonEncoder, YamlDumper
-from torch import nn, optim
-from yaml import dump as yaml_dump
+import numpy as np
+from chanfig import FlatDict
 
-from danling.utils import catch, is_json_serializable
+from danling.utils import catch
 
-from .utils import ensure_dir
-
-if TYPE_CHECKING:
-    from torch.utils.tensorboard.writer import SummaryWriter
-
-PathStr = Union[os.PathLike, str, bytes]
-File = Union[PathStr, IO]
+from .bases import RunnerBase
+from .utils import on_main_process
 
 
-class BaseRunner:
-
+class BaseRunner(RunnerBase):
     r"""
-    Base class for all runners.
-
-    Attributes
-    ----------
-    id: str = f"{self.name}-{self.seed}"
-    name: str = "danling"
-
-    seed: int = randint(0, 2 ** 32 - 1)
-    deterministic: bool = False
-
-    accelerator: Accelerator
-    accelerate: Dict[str, Any] = {}
-        keyword arguments for :class:`accelerate`.
-
-    steps: int = 0
-        Current running steps.
-    epochs: int = 0
-        Current running epochs.
-    step_begin: int = 0
-        End running steps.
-    epoch_begin: int = 0
-        End running epochs.
-    step_end: int = 0
-        End running steps.
-    epoch_end: int = 0
-        End running epochs.
-
-    model: Optional[nn.Module] = None
-    criterion: Optional[Tuple[nn.Module]] = None
-    optimizer: Optional[optim.Optimizer] = None
-    scheduler: Optional[optim.lr_scheduler._LRScheduler] = None
-
-    datasets: FlatDict
-        All datasets, should be in the form of ``{subset: dataset}``.
-    datasamplers: FlatDict
-        All datasamplers, should be in the form of ``{subset: datasampler}``.
-    dataloaders: FlatDict
-        All dataloaders, should be in the form of ``{subset: dataloader}``.
-
-    batch_size: int = 1
-
-    results: List[NestedDict] = []
-        All results, should be in the form of ``[{subset: {index: score}}]``.
-    index_set: Optional[str] = 'val'
-        The subset to calculate the core score.
-    index: str = 'loss'
-        The index to calculate the core score.
-
-    experiments_root: str = "experiments"
-        The root directory to save all experiments.
-    checkpoint_dir_name: str = "checkpoints"
-        The name of the directory under run_dir to save checkpoints.
-
-    log: bool = True
-        Whether to log the results.
-    logger: Optional[logging.Logger] = None
-    tensorboard: bool = False
-        Whether to use tensorboard.
-    writer: Optional[SummaryWriter] = None
+    Set up everything for running a job.
     """
 
-    id: str = ""
-    name: str = "DanLing"
+    # pylint: disable=R0902
 
-    seed: int
-    deterministic: bool = False
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        if self.seed is not None:
+            self.set_seed()
+        if self.deterministic:
+            self.set_deterministic()
+        if self.log:
+            self.init_logging()
+        self.init_print()
+        if self.tensorboard:
+            self.init_tensorboard()
 
-    accelerator: Accelerator
-    accelerate: Dict[str, Any] = {}
+        atexit.register(self.print_result)
 
-    steps: int = 0
-    epochs: int = 0
-    step_begin: int
-    epoch_begin: int
-    step_end: int
-    epoch_end: int
-    """step_begin, epoch_begin, step_end, epoch_end may not present in some runners, so they are not initialised."""
-
-    model: Optional[nn.Module] = None
-    criterion: Optional[Tuple[nn.Module]] = None
-    optimizer: Optional[optim.Optimizer] = None
-    scheduler: Optional[optim.lr_scheduler._LRScheduler] = None
-
-    datasets: FlatDict
-    datasamplers: FlatDict
-    dataloaders: FlatDict
-
-    batch_size: int = 1
-
-    results: List[NestedDict] = []
-    index_set: Optional[str] = None
-    index: str = "loss"
-
-    experiments_root: str = "experiments"
-    checkpoint_dir_name: str = "checkpoints"
-    log: bool = True
-    logger: Optional[logging.Logger] = None
-    tensorboard: bool = False
-    writer: Optional[SummaryWriter] = None
-
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        if len(args) == 1 and isinstance(args[0], FlatDict) and not kwargs:
-            args, kwargs = (), args[0]
-        self.__dict__ = NestedDict(*args, **kwargs)
-        if "seed" not in self:
-            self.seed = randint(0, 2**32 - 1)
-        if not self.id:
-            self.id = f"{self.name}-{self.seed}"
-        self.accelerator = Accelerator(**self.accelerate)
-        self.datasets = FlatDict()
-        self.datasamplers = FlatDict()
-        self.dataloaders = FlatDict()
-
-    @property
-    def distributed(self):
-        """
-        If runner is in distributed mode
+    @on_main_process
+    def init_logging(self) -> None:
+        r"""
+        Set up logging.
         """
 
-        return self.num_processes > 1
+        # Why is setting up proper logging so !@?#! ugly?
+        logging.config.dictConfig(
+            {
+                "version": 1,
+                "disable_existing_loggers": False,
+                "formatters": {
+                    "standard": {"format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s"},
+                },
+                "handlers": {
+                    "stdout": {
+                        "level": "INFO",
+                        "formatter": "standard",
+                        "class": "logging.StreamHandler",
+                        "stream": "ext://sys.stdout",
+                    },
+                    "logfile": {
+                        "level": "DEBUG",
+                        "formatter": "standard",
+                        "class": "logging.FileHandler",
+                        "filename": self.log_path,
+                        "mode": "a",
+                    },
+                },
+                "loggers": {
+                    "": {
+                        "handlers": ["stdout", "logfile"],
+                        "level": "DEBUG",
+                        "propagate": True,
+                    },
+                },
+            }
+        )
+        logging.captureWarnings(True)
+        self.logger = logging.getLogger("runner")
+        self.logger.flush = lambda: [h.flush() for h in self.logger.handlers]  # type: ignore
 
-    @property
-    def batch_size_actual(self) -> int:
-        """
-        Actual batch size
-        """
+    def init_print(self, process: int = 0) -> None:
+        r"""
+        Set up print.
 
-        return self.batch_size * self.num_processes * getattr(self, "accum_steps", 1)
+        Only print on a specific process or when force is indicated.
 
-    @property
-    def best_result(self) -> Optional[NestedDict]:
-        """
-        Best result
-        """
+        Parameters
+        ----------
+        process: int, optional
+            The process to print on.
 
-        return self.results[-1 - self.scores[::-1].index(self.best_score)] if self.results else None
-
-    @property
-    def latest_result(self) -> Optional[NestedDict]:
-        """
-        Latest Results
-        """
-
-        return self.results[-1] if self.results else None
-
-    @property
-    def scores(self) -> List[float]:
-        """
-        Scores
-        """
-
-        if not self.results:
-            return []
-        index_set = self.index_set or next(reversed(self.results[-1]))
-        return [r[index_set][self.index] for r in self.results]
-
-    @property
-    def best_score(self) -> Optional[float]:
-        """
-        Actual batch size
-        """
-
-        return self.best_fn(self.scores) if self.results else None
-
-    @property
-    def latest_score(self) -> Optional[float]:
-        """
-        Actual batch size
-        """
-
-        return self.scores[-1] if self.results else None
-
-    @staticmethod
-    def best_fn(scores: Sequence[float]) -> float:
-        """
-        Function to determine best score from a list of scores
+        Notes
+        -----
+        If `self.log = True`, the default `print` function will be override by `logging.info`.
         """
 
-        return max(scores)
+        logger = logging.getLogger("print")
+        logger.flush = lambda: [h.flush for h in logger.handlers]  # type: ignore
+        import builtins as __builtin__  # pylint: disable=C0415
 
-    @property
-    def is_best(self) -> bool:
-        """
-        If current epoch is the best epoch
-        """
+        builtin_print = __builtin__.print
 
-        return self.latest_score == self.best_score
+        @catch
+        def print(*args, force=False, end="\n", file=None, flush=False, **kwargs):  # pylint: disable=W0622
+            if self.rank == process or force:
+                if self.log:
+                    logger.info(*args, **kwargs)
+                else:
+                    builtin_print(*args, end=end, file=file, flush=flush, **kwargs)
 
-    @property
-    def iters(self) -> int:
-        """
-        Number of iterations
-        """
+        __builtin__.print = print
 
-        return self.steps * self.batch_size_actual
-
-    @property
-    def progress(self) -> float:
-        """
-        Training Progress
+    def set_deterministic(self) -> None:
+        r"""
+        Set up deterministic.
         """
 
-        if hasattr(self, "iter_end"):
-            return self.iters / self.iter_end
-        if hasattr(self, "step_end"):
-            return self.steps / self.step_end
-        if hasattr(self, "epoch_end"):
-            return self.epochs / self.epoch_end
-        return 0
+        raise NotImplementedError
 
-    @property
-    @ensure_dir
-    def dir(self) -> str:
-        """
-        Directory of experiment
-        """
+    def set_seed(self, bias: Optional[int] = None) -> None:
+        r"""
+        Set up random seed.
 
-        return os.path.join(self.experiments_root, self.id)
-
-    @property
-    def log_path(self) -> str:
-        """
-        Path of log file
+        Parameters
+        ----------
+        bias: Optional[int] = self.rank
+            Make the seed different for each processes.
+            This avoids same data augmentation are applied on every processes.
+            Set to `False` to disable this feature.
         """
 
-        return os.path.join(self.dir, "run.log")
+        if bias is None:
+            bias = self.rank
+        seed = self.seed + bias if bias else self.seed
+        np.random.seed(seed)
+        random.seed(seed)
 
-    @property
-    @ensure_dir
-    def checkpoint_dir(self) -> str:
-        """
-        Directory of checkpoints
+    def scale_lr(
+        self,
+        lr_scale_factor: Optional[float] = None,
+        batch_size_base: Optional[int] = None,
+    ) -> None:
+        r"""
+        Scale learning rate according to [linear scaling rule](https://arxiv.org/abs/1706.02677).
         """
 
-        return os.path.join(self.dir, self.checkpoint_dir_name)
+        # pylint: disable=W0201
+
+        if lr_scale_factor is None:
+            if batch_size_base is None:
+                if batch_size_base := getattr(self, "batch_size_base", None) is None:
+                    raise ValueError("batch_size_base must be specified to auto scale lr")
+            lr_scale_factor = self.batch_size_equivalent / batch_size_base
+        self.lr_scale_factor = lr_scale_factor
+        self.lr = self.lr * self.lr_scale_factor  # type: float  # pylint: disable=C0103
+        self.lr_final = self.lr_final * self.lr_scale_factor  # type: float
+
+    def step(self, zero_grad: bool = True) -> None:
+        r"""
+        Step optimizer and scheduler.
+
+        This method also increment the `self.steps` attribute.
+
+        Parameters
+        ----------
+        zero_grad: bool, optional
+            Whether to zero the gradients.
+        """
+
+        if self.optimizer is not None:
+            self.optimizer.step()
+            if zero_grad:
+                self.optimizer.zero_grad()
+        if self.scheduler is not None:
+            self.scheduler.step()
+        self.steps += 1
+        # TODO: Support `drop_last = False`
+        self.iters += self.batch_size_equivalent
+
+    def state_dict(self, cls: Callable = dict) -> Mapping:
+        r"""
+        Return dict of all attributes for checkpoint.
+        """
+
+        if self.model is None:
+            raise ValueError("Model must be defined when calling state_dict")
+        model = self.accelerator.unwrap_model(self.model)
+        return cls(
+            runner=self.dict(),
+            model=model.state_dict(),
+            optimizer=self.optimizer.state_dict() if self.optimizer else None,
+            scheduler=self.scheduler.state_dict() if self.scheduler else None,
+        )
 
     @catch
-    def save(self, obj: Any, f: File, on_main_process: bool = True) -> File:
-        """
-        Save object to a path or file
-        """
+    @on_main_process
+    def save_checkpoint(self) -> None:
+        r"""
+        Save checkpoint to `runner.checkpoint_dir`.
 
-        if on_main_process and self.is_main_process or not on_main_process:
-            self.accelerator.save(obj, f)
-        return f
+        The checkpoint will be saved to `runner.checkpoint_dir/latest.pth`.
 
-    @staticmethod
-    def load(f: File, *args, **kwargs) -> Any:
-        """
-        Load object from a path or file
+        If `save_freq` is specified and `self.epochs + 1` is a multiple of `save_freq`,
+        the checkpoint will also be copied to `runner.checkpoint_dir/epoch-{self.epochs}.pth`.
+
+        If `self.is_best` is `True`, the checkpoint will also be copied to `runner.checkpoint_dir/best.pth`.
         """
 
-        return torch.load(f, *args, **kwargs)
+        latest_path = os.path.join(self.checkpoint_dir, "latest.pth")
+        self.save(self.state_dict(), latest_path)
+        if hasattr(self, "save_freq") and (self.epochs + 1) % self.save_freq == 0:
+            save_path = os.path.join(self.checkpoint_dir, f"epoch-{self.epochs}.pth")
+            shutil.copy(latest_path, save_path)
+        if self.is_best:
+            best_path = os.path.join(self.checkpoint_dir, "best.pth")
+            shutil.copy(latest_path, best_path)
 
-    def __getattr__(self, name) -> Any:
-        if "accelerator" not in self:
-            raise RuntimeError(f"{self.__class__.__name__} is not properly initialised")
-        if hasattr(self.accelerator, name):
-            return getattr(self.accelerator, name)
-        raise AttributeError(f"{self.__class__.__name__} object has no attribute {name}")
-
-    def __contains__(self, name) -> bool:
-        return name in self.__dict__
-
-    def dict(self, cls: Callable = dict) -> Mapping:
+    def load_checkpoint(  # pylint: disable=W1113
+        self, checkpoint: Optional[Union[Mapping, str]] = None, override_config: bool = True, *args, **kwargs
+    ) -> None:
         """
-        Convert config to `cls`
+        Load info from checkpoint.
+
+        Parameters
+        ----------
+        checkpoint: Optional[Union[Mapping, str]] = latest_checkpoint
+            Checkpoint (or its path) to load.
+        override_config: bool = True
+            If True, override runner config with checkpoint config.
+        *args, **kwargs
+            Additional arguments to pass to `runner.load`.
+
+        Raises
+        ------
+        FileNotFoundError
+            If `checkpoint` does not exists.
+
+        See also
+        --------
+        from_checkpoint: Build runner from checkpoint.
         """
 
-        # pylint: disable=C0103
+        if checkpoint is None:
+            checkpoint = os.path.join(self.checkpoint_dir, "latest.pth")
+        # TODO: Support loading checkpoints in other format
+        if isinstance(checkpoint, str):
+            if not os.path.exists(checkpoint):
+                raise FileNotFoundError(f"checkpoint is set to {checkpoint} but does not exist.")
+            state_dict = self.load(checkpoint, *args, **kwargs)
+        # TODO: Wrap state_dict in a dataclass
+        if override_config:
+            self.__dict__.update(state_dict["runner"])  # type: ignore
+        if self.model is not None and "model" in state_dict:  # type: ignore
+            self.model.load_state_dict(state_dict["model"])  # type: ignore
+        if self.optimizer is not None and "optimizer" in state_dict:  # type: ignore
+            self.optimizer.load_state_dict(state_dict["optimizer"])  # type: ignore
+        if self.scheduler is not None and "scheduler" in state_dict:  # type: ignore
+            self.scheduler.load_state_dict(state_dict["scheduler"])  # type: ignore
+        self.checkpoint = checkpoint  # pylint: disable=W0201
 
-        ret = cls()
-        for k, v in self.__dict__.items():
-            if isinstance(v, FlatDict):
-                v = v.dict(cls)
-            if is_json_serializable(v):
-                ret[k] = v
-        return ret
+    @classmethod
+    def from_checkpoint(cls, checkpoint: Union[Mapping, str], *args, **kwargs) -> BaseRunner:
+        r"""
+        Build BaseRunner from checkpoint.
+
+        Parameters
+        ----------
+        checkpoint: Optional[Union[Mapping, str]] = latest_checkpoint
+            Checkpoint (or its path) to load.
+        *args, **kwargs
+            Additional arguments to pass to `runner.load`.
+
+        Returns
+        -------
+        BaseRunner
+        """
+
+        if isinstance(checkpoint, str):
+            checkpoint = cls.load(checkpoint, *args, **kwargs)
+        runner = cls(**checkpoint["runner"])  # type: ignore
+        runner.load_checkpoint(checkpoint, override_config=False)
+        return runner
+
+    def append_result(self, result) -> None:
+        r"""
+        Append result to `self.results`.
+
+        Warnings
+        --------
+        `self.results` is heavily relied upon for computing metrics.
+
+        Failed to use this method may lead to unexpected behavior.
+        """
+
+        self.results.append(result)
+
+    def print_result(self) -> None:
+        r"""
+        Print latest and best result.
+        """
+
+        print(f"latest result: {self.latest_result}")
+        print(f"best result: {self.best_result}")
 
     @catch
-    def json(self, file: File, on_main_process: bool = True, *args, **kwargs) -> None:
-        """
-        Dump Runner to json file
-        """
-
-        if on_main_process and self.is_main_process or not on_main_process:
-            with FlatDict.open(file, mode="w") as fp:
-                fp.write(self.jsons(*args, **kwargs))
-
-    @classmethod
-    def from_json(cls, file: File, *args, **kwargs) -> BaseRunner:
+    @on_main_process
+    def save_result(self) -> None:
         r"""
-        Construct Runner from json file.
+        Save result to `runner.dir`.
 
-        This function calls `self.from_jsons()` to construct object from json string.
-        You may overwrite `from_jsons` in case something is not json serializable.
-
+        This method will save latest and best result to
+        `runner.dir/latest.json` and `runner.dir/best.json` respectively.
         """
 
-        with FlatDict.open(file) as fp:
-            return cls.from_jsons(fp.read(), *args, **kwargs)
-
-    def jsons(self, *args, **kwargs) -> str:
-        """
-        Dump Runner to json string
-        """
-
-        if "cls" not in kwargs:
-            kwargs["cls"] = JsonEncoder
-        return json_dumps(self.dict(), *args, **kwargs)
-
-    @classmethod
-    def from_jsons(cls, string: str, *args, **kwargs) -> BaseRunner:
-        r"""
-        Construct Runner from json string.
-        """
-
-        return cls(**Config.from_jsons(string, *args, **kwargs))
-
-    @catch
-    def yaml(self, file: File, on_main_process: bool = True, *args, **kwargs) -> None:
-        """
-        Dump Runner to yaml file
-        """
-
-        if on_main_process and self.is_main_process or not on_main_process:
-            with FlatDict.open(file, mode="w") as fp:
-                self.yamls(fp, *args, **kwargs)
-
-    @classmethod
-    def from_yaml(cls, file: File, *args, **kwargs) -> BaseRunner:
-        r"""
-        Construct Runner from yaml file.
-
-        This function calls `self.from_yamls()` to construct object from yaml string.
-        You may overwrite `from_yamls` in case something is not yaml serializable.
-        """
-
-        with FlatDict.open(file) as fp:
-            return cls.from_yamls(fp.read(), *args, **kwargs)
-
-    def yamls(self, *args, **kwargs) -> str:
-        """
-        Dump Runner to yaml string
-        """
-
-        if "Dumper" not in kwargs:
-            kwargs["Dumper"] = YamlDumper
-        return yaml_dump(self.dict(), *args, **kwargs)  # type: ignore
-
-    @classmethod
-    def from_yamls(cls, string: str, *args, **kwargs) -> BaseRunner:
-        r"""
-        Construct Runner from yaml string.
-        """
-
-        return cls(**Config.from_yamls(string, *args, **kwargs))
-
-    def _add_indent(self, s):
-        st = s.split("\n")
-        # don't do anything for single-line stuff
-        if len(st) == 1:
-            return s
-        first = st.pop(0)
-        st = [(2 * " ") + line for line in st]  # hardcode indent to 2
-        st = "\n".join(st)
-        st = first + "\n" + st
-        return st
-
-    def __repr__(self):
-        lines = []
-        for key, value in self.__dict__.items():
-            value_str = repr(value)
-            value_str = self._add_indent(value_str)
-            lines.append("(" + key + "): " + value_str)
-
-        main_str = self.__class__.__name__ + "("
-        if lines:
-            main_str += "\n  " + "\n  ".join(lines) + "\n"
-
-        main_str += ")"
-        return main_str
+        ret = {"id": self.id, "name": self.name}
+        result = self.latest_result  # type: ignore
+        if isinstance(result, FlatDict):
+            result = result.dict()  # type: ignore
+        # This is slower but ensure id is the first key
+        ret.update(result)  # type: ignore
+        latest_path = os.path.join(self.dir, "latest.json")
+        with FlatDict.open(latest_path, "w") as f:  # pylint: disable=C0103
+            json.dump(ret, f, indent=4)
+        if self.is_best:
+            best_path = os.path.join(self.dir, "best.json")
+            shutil.copy(latest_path, best_path)

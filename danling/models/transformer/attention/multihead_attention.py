@@ -1,5 +1,5 @@
 import warnings
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -40,17 +40,17 @@ class MultiHeadAttention(nn.Module):
         self,
         embed_dim: int,
         num_heads: int,
-        attn_dropout: Optional[float] = 0.0,
-        scale_factor: Optional[float] = 1.0,
-        bias: Optional[bool] = True,
-        add_bias_kv: Optional[bool] = False,
-        add_zero_attn: Optional[bool] = False,
+        attn_dropout: float = 0.0,
+        scale_factor: float = 1.0,
+        bias: bool = True,
+        add_bias_kv: bool = False,
+        add_zero_attn: bool = False,
         k_dim: Optional[int] = None,
         v_dim: Optional[int] = None,
-        batch_first: Optional[bool] = True,
+        batch_first: bool = True,
         **kwargs: Optional[Dict[str, Any]],
     ) -> None:
-        super(MultiHeadAttention, self).__init__()
+        super().__init__()
         self.embed_dim = embed_dim
         self.k_dim = k_dim if k_dim is not None else self.embed_dim
         self.v_dim = v_dim if v_dim is not None else self.embed_dim
@@ -102,7 +102,7 @@ class MultiHeadAttention(nn.Module):
         attn_bias: Optional[Tensor] = None,
         attn_mask: Optional[Tensor] = None,
         key_padding_mask: Optional[Tensor] = None,
-        need_weights: Optional[bool] = False,
+        need_weights: bool = False,
         static_k: Optional[Tensor] = None,
         static_v: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Optional[Tensor]]:
@@ -185,7 +185,7 @@ class MultiHeadAttention(nn.Module):
                     raise ValueError(f"attn_mask should have shape {correct_shape}, but got {attn_mask.shape}.")
                 attn_mask = attn_mask.unsqueeze(0)
             elif attn_mask.dim() == 3:
-                correct_shape = (batch_size * self.num_heads, target_len, source_len)
+                correct_shape = (batch_size * self.num_heads, target_len, source_len)  # type: ignore
                 if attn_mask.shape != correct_shape:
                     raise ValueError(f"attn_mask should have shape {correct_shape}, but got {attn_mask.shape}.")
             else:
@@ -218,7 +218,7 @@ class MultiHeadAttention(nn.Module):
         v = v.reshape(-1, batch_size * self.num_heads, self.head_dim).transpose(0, 1) if static_v is None else static_v
 
         if static_k is not None:
-            correct_shape = (
+            correct_shape = (  # type: ignore
                 batch_size * self.num_heads,
                 static_k.shape[1],
                 self.head_dim,
@@ -226,7 +226,7 @@ class MultiHeadAttention(nn.Module):
             if static_k.shape != correct_shape:
                 raise ValueError(f"static_k should have shape {correct_shape}, but got {static_k.shape}.")
         if static_v is not None:
-            correct_shape = (
+            correct_shape = (  # type: ignore
                 batch_size * self.num_heads,
                 static_v.shape[1],
                 self.head_dim,
@@ -276,10 +276,11 @@ class MultiHeadAttention(nn.Module):
         attn_output = attn_output.transpose(0, 1).reshape(target_len, batch_size, embed_dim)
         attn_output = self.out_projection(attn_output)
 
+        # attn_output_weights is set to torch.empty(0, requires_grad=False) to avoid errors in DDP
         attn_output_weights = (
             attn_output_weights.view(batch_size, self.num_heads, target_len, source_len)
             if need_weights
-            else torch.zeros(0, requires_grad=False)
+            else torch.empty(0, requires_grad=False)
         )
 
         if self.batch_first:
@@ -287,7 +288,7 @@ class MultiHeadAttention(nn.Module):
         else:
             return attn_output, attn_output_weights
 
-    def in_projection(self, q: Tensor, k: Tensor, v: Tensor) -> List[Tensor]:
+    def in_projection(self, q: Tensor, k: Tensor, v: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         r"""
         Performs the in-projection step of the attention operation, using packed weights.
         Output is a triple containing projection tensors for query, key and value.
