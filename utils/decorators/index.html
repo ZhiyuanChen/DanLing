@@ -27,7 +27,7 @@
         <meta name="author" content="DanLing Contributors">
       
       
-        <link rel="canonical" href="https://danling.org/utils/decorator/">
+        <link rel="canonical" href="https://danling.org/utils/decorators/">
       
       
         
@@ -724,16 +724,16 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#danling.utils.decorator" class="md-nav__link">
+  <a href="#danling.utils.decorators" class="md-nav__link">
     <span class="md-ellipsis">
-      danling.utils.decorator
+      danling.utils.decorators
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#danling.utils.decorator.catch" class="md-nav__link">
+  <a href="#danling.utils.decorators.catch" class="md-nav__link">
     <span class="md-ellipsis">
       catch()
     </span>
@@ -742,7 +742,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#danling.utils.decorator.ensure_dir" class="md-nav__link">
+  <a href="#danling.utils.decorators.ensure_dir" class="md-nav__link">
     <span class="md-ellipsis">
       ensure_dir()
     </span>
@@ -751,7 +751,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#danling.utils.decorator.flexible_decorator" class="md-nav__link">
+  <a href="#danling.utils.decorators.flexible_decorator" class="md-nav__link">
     <span class="md-ellipsis">
       flexible_decorator()
     </span>
@@ -760,7 +760,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#danling.utils.decorator.method_cache" class="md-nav__link">
+  <a href="#danling.utils.decorators.method_cache" class="md-nav__link">
     <span class="md-ellipsis">
       method_cache()
     </span>
@@ -844,7 +844,7 @@
 
 
 
-  <a href="https://github.com/ZhiyuanChen/DanLing/edit/master/docs/utils/decorator.md" title="ç¼è¾æ­¤é¡µ" class="md-content__button md-icon">
+  <a href="https://github.com/ZhiyuanChen/DanLing/edit/master/docs/utils/decorators.md" title="ç¼è¾æ­¤é¡µ" class="md-content__button md-icon">
     
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20.71 7.04c.39-.39.39-1.04 0-1.41l-2.34-2.34c-.37-.39-1.02-.39-1.41 0l-1.84 1.83 3.75 3.75M3 17.25V21h3.75L17.81 9.93l-3.75-3.75L3 17.25Z"/></svg>
   </a>
@@ -856,7 +856,7 @@
 <div class="doc doc-object doc-module">
 
 
-<a id="danling.utils.decorator"></a>
+<a id="danling.utils.decorators"></a>
   <div class="doc doc-contents first">
 
   
@@ -875,10 +875,10 @@
 
 
 
-<h2 id="danling.utils.decorator.catch" class="doc doc-heading">
+<h2 id="danling.utils.decorators.catch" class="doc doc-heading">
 <code class="highlight language-python"><span class="n">catch</span><span class="p">(</span><span class="n">error</span><span class="o">=</span><span class="ne">Exception</span><span class="p">,</span> <span class="n">exclude</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">print_args</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span></code>
 
-<a href="#danling.utils.decorator.catch" class="headerlink" title="Permanent link">&para;</a></h2>
+<a href="#danling.utils.decorators.catch" class="headerlink" title="Permanent link">&para;</a></h2>
 
 
   <div class="doc doc-contents ">
@@ -933,7 +933,7 @@ For example, <code>Runner</code> by de</p>
   </table>
 
       <details class="quote">
-        <summary>Source code in <code>danling/utils/decorator.py</code></summary>
+        <summary>Source code in <code>danling/utils/decorators.py</code></summary>
         <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-47">47</a></span>
 <span class="normal"><a href="#__codelineno-0-48">48</a></span>
 <span class="normal"><a href="#__codelineno-0-49">49</a></span>
@@ -1011,10 +1011,10 @@ For example, <code>Runner</code> by de</p>
 
 
 
-<h2 id="danling.utils.decorator.ensure_dir" class="doc doc-heading">
+<h2 id="danling.utils.decorators.ensure_dir" class="doc doc-heading">
 <code class="highlight language-python"><span class="n">ensure_dir</span><span class="p">(</span><span class="n">func</span><span class="p">)</span></code>
 
-<a href="#danling.utils.decorator.ensure_dir" class="headerlink" title="Permanent link">&para;</a></h2>
+<a href="#danling.utils.decorators.ensure_dir" class="headerlink" title="Permanent link">&para;</a></h2>
 
 
   <div class="doc doc-contents ">
@@ -1022,7 +1022,7 @@ For example, <code>Runner</code> by de</p>
       <p>Decorator to ensure a directory property exists.</p>
 
       <details class="quote">
-        <summary>Source code in <code>danling/utils/decorator.py</code></summary>
+        <summary>Source code in <code>danling/utils/decorators.py</code></summary>
         <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-113">113</a></span>
 <span class="normal"><a href="#__codelineno-0-114">114</a></span>
 <span class="normal"><a href="#__codelineno-0-115">115</a></span>
@@ -1056,10 +1056,10 @@ For example, <code>Runner</code> by de</p>
 
 
 
-<h2 id="danling.utils.decorator.flexible_decorator" class="doc doc-heading">
+<h2 id="danling.utils.decorators.flexible_decorator" class="doc doc-heading">
 <code class="highlight language-python"><span class="n">flexible_decorator</span><span class="p">(</span><span class="n">maybe_decorator</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
-<a href="#danling.utils.decorator.flexible_decorator" class="headerlink" title="Permanent link">&para;</a></h2>
+<a href="#danling.utils.decorators.flexible_decorator" class="headerlink" title="Permanent link">&para;</a></h2>
 
 
   <div class="doc doc-contents ">
@@ -1083,7 +1083,7 @@ For example, <code>Runner</code> by de</p>
 </code></pre></div>
 
       <details class="quote">
-        <summary>Source code in <code>danling/utils/decorator.py</code></summary>
+        <summary>Source code in <code>danling/utils/decorators.py</code></summary>
         <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-11">11</a></span>
 <span class="normal"><a href="#__codelineno-0-12">12</a></span>
 <span class="normal"><a href="#__codelineno-0-13">13</a></span>
@@ -1161,10 +1161,10 @@ For example, <code>Runner</code> by de</p>
 
 
 
-<h2 id="danling.utils.decorator.method_cache" class="doc doc-heading">
+<h2 id="danling.utils.decorators.method_cache" class="doc doc-heading">
 <code class="highlight language-python"><span class="n">method_cache</span><span class="p">(</span><span class="o">*</span><span class="n">cache_args</span><span class="p">,</span> <span class="o">**</span><span class="n">lru_kwargs</span><span class="p">)</span></code>
 
-<a href="#danling.utils.decorator.method_cache" class="headerlink" title="Permanent link">&para;</a></h2>
+<a href="#danling.utils.decorators.method_cache" class="headerlink" title="Permanent link">&para;</a></h2>
 
 
   <div class="doc doc-contents ">
@@ -1176,7 +1176,7 @@ which will make the instance immortal and break the garbage collection.</p>
 <p><a href="https://rednafi.github.io/reflections/dont-wrap-instance-methods-with-functoolslru_cache-decorator-in-python.html">https://rednafi.github.io/reflections/dont-wrap-instance-methods-with-functoolslru_cache-decorator-in-python.html</a></p>
 
       <details class="quote">
-        <summary>Source code in <code>danling/utils/decorator.py</code></summary>
+        <summary>Source code in <code>danling/utils/decorators.py</code></summary>
         <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-83"> 83</a></span>
 <span class="normal"><a href="#__codelineno-0-84"> 84</a></span>
 <span class="normal"><a href="#__codelineno-0-85"> 85</a></span>
