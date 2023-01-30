@@ -464,6 +464,8 @@
       
         
       
+        
+      
     
     
     <li class="md-nav__item md-nav__item--active md-nav__item--nested">
@@ -558,6 +560,28 @@
   
   <span class="md-ellipsis">
     TorchRunner
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="utils/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Utilities
     
   </span>
   
@@ -778,11 +802,12 @@ such as <code>init_logging</code>, <code>append_result</code>, <code>print_resul
 <h3 id="runnerdanlingrunnertorchrunner">[<code>Runner</code>][danling.runner.TorchRunner].<a class="headerlink" href="#runnerdanlingrunnertorchrunner" title="Permanent link">&para;</a></h3>
 <p><code>Runner</code> should only contain platform-specific features.
 Currently, only [<code>TorchRunner</code>][danling.runner.TorchRunner] is supported.</p>
-<h2 id="philosophy">Philosophy<a class="headerlink" href="#philosophy" title="Permanent link">&para;</a></h2>
+<h2 id="experiments-management">Experiments Management<a class="headerlink" href="#experiments-management" title="Permanent link">&para;</a></h2>
 <p>DanLing Runner is designed for a 3.5-level experiments management system: <strong>Project</strong>, <strong>Group</strong>, <strong>Experiment</strong>, and, <strong>Run</strong>.</p>
 <h3 id="project">Project<a class="headerlink" href="#project" title="Permanent link">&para;</a></h3>
 <p>Project corresponds to your project.</p>
 <p>Generally speaking, there should be only one project for each repository.</p>
+<p><code>Runner.experiments_root</code> is the root directory of all experiments of a project, and should be consistent across the project.</p>
 <h3 id="group">Group<a class="headerlink" href="#group" title="Permanent link">&para;</a></h3>
 <p>A group groups multiple experiments with similar characteristics.</p>
 <p>For example, if you run multiple experiments on learning rate, you may want to group them into a group.</p>
@@ -793,116 +818,12 @@ Currently, only [<code>TorchRunner</code>][danling.runner.TorchRunner] is suppor
 <h3 id="run">Run<a class="headerlink" href="#run" title="Permanent link">&para;</a></h3>
 <p>Run is the basic unit of running.</p>
 <p>Run corresponds to a single run of an experiment, each run may have different hyperparameters.</p>
-<h2 id="attributes-properties">Attributes &amp; Properties<a class="headerlink" href="#attributes-properties" title="Permanent link">&para;</a></h2>
-<h3 id="general">General<a class="headerlink" href="#general" title="Permanent link">&para;</a></h3>
-<ul>
-<li>id</li>
-<li>name</li>
-<li>seed</li>
-<li>deterministic</li>
-</ul>
-<h3 id="progress">Progress<a class="headerlink" href="#progress" title="Permanent link">&para;</a></h3>
-<ul>
-<li>iters</li>
-<li>steps</li>
-<li>epochs</li>
-<li>iter_end</li>
-<li>step_end</li>
-<li>epoch_end</li>
-<li>progress</li>
-</ul>
-<p>Note that generally you should only use one of <code>iter</code>, <code>step</code>, <code>epoch</code> to indicate the progress.</p>
-<h3 id="model">Model<a class="headerlink" href="#model" title="Permanent link">&para;</a></h3>
-<ul>
-<li>model</li>
-<li>criterion</li>
-<li>optimizer</li>
-<li>scheduler</li>
-</ul>
-<h3 id="data">Data<a class="headerlink" href="#data" title="Permanent link">&para;</a></h3>
-<ul>
-<li>datasets</li>
-<li>datasamplers</li>
-<li>dataloaders</li>
-<li>batch_size</li>
-<li>batch_size_equivalent</li>
-</ul>
-<p><code>datasets</code>, <code>datasamplers</code>, <code>dataloaders</code> should be a dict with the same keys.
-Their keys should be <code>split</code> (e.g. <code>train</code>, <code>val</code>, <code>test</code>).</p>
-<h3 id="results">Results<a class="headerlink" href="#results" title="Permanent link">&para;</a></h3>
-<ul>
-<li>results</li>
-<li>latest_result</li>
-<li>best_result</li>
-<li>scores</li>
-<li>latest_score</li>
-<li>best_score</li>
-<li>index_set</li>
-<li>index</li>
-<li>is_best</li>
-</ul>
-<p><code>results</code> should be a list of <code>result</code>.
-<code>result</code> should be a dict with the same <code>split</code> as keys, like <code>dataloaders</code>.
-A typical <code>result</code> might look like this:
-<div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-1"> 1</a></span>
-<span class="normal"><a href="#__codelineno-0-2"> 2</a></span>
-<span class="normal"><a href="#__codelineno-0-3"> 3</a></span>
-<span class="normal"><a href="#__codelineno-0-4"> 4</a></span>
-<span class="normal"><a href="#__codelineno-0-5"> 5</a></span>
-<span class="normal"><a href="#__codelineno-0-6"> 6</a></span>
-<span class="normal"><a href="#__codelineno-0-7"> 7</a></span>
-<span class="normal"><a href="#__codelineno-0-8"> 8</a></span>
-<span class="normal"><a href="#__codelineno-0-9"> 9</a></span>
-<span class="normal"><a href="#__codelineno-0-10">10</a></span>
-<span class="normal"><a href="#__codelineno-0-11">11</a></span>
-<span class="normal"><a href="#__codelineno-0-12">12</a></span>
-<span class="normal"><a href="#__codelineno-0-13">13</a></span>
-<span class="normal"><a href="#__codelineno-0-14">14</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1"></a><span class="p">{</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2"></a>    <span class="s2">&quot;train&quot;</span><span class="p">:</span> <span class="p">{</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3"></a>        <span class="s2">&quot;loss&quot;</span><span class="p">:</span> <span class="mf">0.1</span><span class="p">,</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4"></a>        <span class="s2">&quot;accuracy&quot;</span><span class="p">:</span> <span class="mf">0.9</span><span class="p">,</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5"></a>    <span class="p">},</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6"></a>    <span class="s2">&quot;val&quot;</span><span class="p">:</span> <span class="p">{</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7"></a>        <span class="s2">&quot;loss&quot;</span><span class="p">:</span> <span class="mf">0.2</span><span class="p">,</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8"></a>        <span class="s2">&quot;accuracy&quot;</span><span class="p">:</span> <span class="mf">0.8</span><span class="p">,</span>
-<a id="__codelineno-0-9" name="__codelineno-0-9"></a>    <span class="p">},</span>
-<a id="__codelineno-0-10" name="__codelineno-0-10"></a>    <span class="s2">&quot;test&quot;</span><span class="p">:</span> <span class="p">{</span>
-<a id="__codelineno-0-11" name="__codelineno-0-11"></a>        <span class="s2">&quot;loss&quot;</span><span class="p">:</span> <span class="mf">0.3</span><span class="p">,</span>
-<a id="__codelineno-0-12" name="__codelineno-0-12"></a>        <span class="s2">&quot;accuracy&quot;</span><span class="p">:</span> <span class="mf">0.7</span><span class="p">,</span>
-<a id="__codelineno-0-13" name="__codelineno-0-13"></a>    <span class="p">},</span>
-<a id="__codelineno-0-14" name="__codelineno-0-14"></a><span class="p">}</span>
-</code></pre></div></td></tr></table></div></p>
-<p><code>scores</code> are usually a list of <code>float</code>, and are dynamically extracted from <code>results</code> by <code>index_set</code> and <code>index</code>.
-If <code>index_set = "val"</code>, <code>index = "accuracy"</code>, then <code>scores = 0.9</code>.</p>
-<h3 id="ddp">DDP<a class="headerlink" href="#ddp" title="Permanent link">&para;</a></h3>
-<ul>
-<li>world_size</li>
-<li>rank</li>
-<li>local_rank</li>
-<li>distributed</li>
-<li>is_main_process</li>
-<li>is_local_main_process</li>
-</ul>
-<h3 id="io">IO<a class="headerlink" href="#io" title="Permanent link">&para;</a></h3>
-<ul>
-<li>experiments_root</li>
-<li>dir</li>
-<li>checkpoint_dir</li>
-<li>log_path</li>
-<li>checkpoint_dir_name</li>
-</ul>
-<p><code>experiments_root</code> is the root directory of all experiments, and should be consistent across the <strong>Project</strong>.</p>
-<p><code>dir</code> is the directory of a certain <strong>Run</strong>.</p>
+<p>Each run of an experiment must have a unique <code>Runner.id</code>.
+Although the best practice is to ensure <code>Runner.id</code> is unique across the entire project.</p>
+<p><code>Runner.dir</code> is the directory of a certain <strong>Run</strong>.
+All run files should be under this directory.</p>
+<p>In particular, <code>Runner.checkpoint_dir</code>, which is generated by <code>os.path.join(Runner.dir, Runner.checkpoint_dir_name)</code> contains all checkpoint files.</p>
 <p>There is no attributes/properties for <strong>Group</strong> and <strong>Experiment</strong>.</p>
-<p><code>checkpoint_dir_name</code> is relative to <code>dir</code>, and is passed to generate <code>checkpoint_dir</code> (<code>checkpoint_dir = os.path.join(dir, checkpoint_dir_name)</code>).
-In practice, <code>checkpoint_dir_name</code> is rarely called.</p>
-<h3 id="logging">logging<a class="headerlink" href="#logging" title="Permanent link">&para;</a></h3>
-<ul>
-<li>log</li>
-<li>logger</li>
-<li>tensorboard</li>
-<li>writer</li>
-</ul>
 
   
     
