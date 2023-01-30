@@ -12,21 +12,28 @@ def flexible_decorator(maybe_decorator: Optional[Callable] = None):
     """
     Decorator to allow bracket-less when no arguments are passed.
 
-    Examples
-    --------
+    Examples:
     For decorator defined as follows:
+
+    ```python
     >>> @flexible_decorator
     >>> def decorator(*args, **kwargs):
     ...     pass
+    ```
 
     The following two are equivalent:
+
+    ```python
     >>> @decorator
     >>> def func(*args, **kwargs):
     ...     pass
+    ```
 
+    ```python
     >>> @decorator()
     >>> def func(*args, **kwargs):
     ...     pass
+    ```
 
     """
 
@@ -48,17 +55,16 @@ def flexible_decorator(maybe_decorator: Optional[Callable] = None):
 def catch(error: Exception = Exception, exclude: Optional[Exception] = None, print_args: bool = False):
     """
     Decorator to catch `error` except for `exclude`.
-    Detailed traceback will be printed to `stdout`.
+    Detailed traceback will be printed to `stderr`.
 
     `catch` is extremely useful for unfatal errors.
-    For example, `Runner` by de
+    For example, `Runner` saves checkpoint regularly, however, this might break running if the space is full.
+    Decorating `save` method with `catch` will allow you to catch these errors and continue your running.
 
-    Parameters
-    ----------
-    error: Exception
-    exclude: Optional[Exception] = None
-    print_args: bool = False
-        Whether to print the arguments passed to the function.
+    Args:
+        error:
+        exclude:
+        print_args: Whether to print the arguments passed to the function.
     """
 
     def decorator(func, error: Exception = Exception, exclude: Optional[Exception] = None, print_args: bool = False):

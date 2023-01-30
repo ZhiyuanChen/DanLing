@@ -9,8 +9,8 @@ from danling import utils as utils
 
 from .registry import GlobalRegistry, Registry
 from .runner import BaseRunner, TorchRunner
-from .tensors import NestedTensor
-from .utils import catch, ensure_dir, flexible_decorator, is_json_serializable, load, method_cache
+from .tensors import NestedTensor, PNTensor
+from .utils import catch, ensure_dir, flexible_decorator, is_json_serializable, load, method_cache, save
 
 __all__ = [
     "metrics",
@@ -26,6 +26,8 @@ __all__ = [
     "Registry",
     "GlobalRegistry",
     "NestedTensor",
+    "PNTensor",
+    "save",
     "load",
     "catch",
     "flexible_decorator",

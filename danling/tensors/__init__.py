@@ -1,3 +1,3 @@
-from .nested_tensor import NestedTensor
+from .nested_tensor import NestedTensor, PNTensor
 
-__all__ = ["NestedTensor"]
+__all__ = ["NestedTensor", "PNTensor"]

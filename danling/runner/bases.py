@@ -11,7 +11,7 @@ from chanfig import Config, FlatDict, NestedDict
 from chanfig.utils import JsonEncoder, YamlDumper
 from yaml import dump as yaml_dump
 
-from danling.utils import catch, ensure_dir, is_json_serializable
+from danling.utils import catch, ensure_dir, is_json_serializable, load, save
 
 PathStr = Union[os.PathLike, str, bytes]
 File = Union[PathStr, IO]
@@ -27,70 +27,124 @@ class RunnerBase:
 
     `RunnerBase` also defines basic IO operations such as `save`, `load`, `json`, `yaml`, etc.
 
-    Attributes
-    ----------
-    id: str = f"{self.name}-{self.seed}"
-    name: str = "danling"
-    seed: int = randint(0, 2**32 - 1)
-    deterministic: bool = False
-        Ensure [deterministic](https://pytorch.org/docs/stable/notes/randomness.html) operations.
-    iters: int = 0
-        Current running iters.
-        Iters refers to the number of data samples processed.
-        Iters equals to steps when batch size is 1.
-    steps: int = 0
-        Current running steps.
-        Steps refers to the number of `step` calls.
-    epochs: int = 0
-        Current running epochs.
-        Epochs refers to the number of complete passes over the datasets.
-    iter_end: int
-        End running iters.
-        Note that `step_end` not initialised since this variable may not apply to some Runners.
-    step_end: int
-        End running steps.
-        Note that `step_end` not initialised since this variable may not apply to some Runners.
-    epoch_end: int
-        End running epochs.
-        Note that `epoch_end` not initialised since this variable may not apply to some Runners.
-    model: Optional = None
-    criterion: Optional = None
-    optimizer: Optional = None
-    scheduler: Optional = None
-    datasets: FlatDict
-        All datasets, should be in the form of ``{subset: dataset}``.
-    datasamplers: FlatDict
-        All datasamplers, should be in the form of ``{subset: datasampler}``.
-    dataloaders: FlatDict
-        All dataloaders, should be in the form of ``{subset: dataloader}``.
-    batch_size: int = 1
-    results: List[NestedDict] = []
-        All results, should be in the form of ``[{subset: {index: score}}]``.
-    index_set: str = 'val'
-        The subset to calculate the core score.
-    index: str = 'loss'
-        The index to calculate the core score.
-    experiments_root: str = "experiments"
-        The root directory for all experiments.
-    checkpoint_dir_name: str = "checkpoints"
-        The name of the directory under `runner.dir` to save checkpoints.
-    log: bool = True
-        Whether to log the results.
-    logger: Optional[logging.Logger] = None
-    tensorboard: bool = False
-        Whether to use tensorboard.
-    writer: Optional[SummaryWriter] = None
+    Attributes: General:
+        id: Defaults to `f"{self.name}-{self.seed}"`.
+        name: Defaults to `"DanLing"`.
+        seed (int): Defaults to `randint(0, 2**32 - 1)`.
+        deterministic (bool): Ensure [deterministic](https://pytorch.org/docs/stable/notes/randomness.html) operations.
+            Defaults to `False`.
 
-    Notes
-    -----
-    The `RunnerBase` class is not intended to be used directly, nor to be directly inherit from.
+    Attributes: Progress:
+        iters (int): The number of data samples processed.
+            equals to `steps` when `batch_size = 1`.
+        steps (int): The number of `step` calls.
+        epochs (int): The number of complete passes over the datasets.
+        iter_end (int): End running iters.
+            Note that `step_end` not initialised since this variable may not apply to some Runners.
+        step_end (int): End running steps.
+            Note that `step_end` not initialised since this variable may not apply to some Runners.
+        epoch_end (int): End running epochs.
+            Note that `epoch_end` not initialised since this variable may not apply to some Runners.
+        progress (float, property): Running Progress, in `range(0, 1)`.
 
-    This is because `RunnerBase` is designed as a "dataclass",
-    and is meant for demonstrating all attributes and properties only.
+    Note that generally you should only use one of `iter_end`, `step_end`, `epoch_end` to indicate the length of running.
 
-    See Also
-    --------
-    [`BaseRunner`][danling.base_runner.BaseRunner]: The base runner class.
+    Attributes: Model:
+        model:
+        criterion:
+        optimizer:
+        scheduler:
+
+    Attributes: Data:
+        datasets (FlatDict): All datasets, should be in the form of ``{subset: dataset}``.
+        datasamplers (FlatDict): All datasamplers, should be in the form of ``{subset: datasampler}``.
+        dataloaders (FlatDict): All dataloaders, should be in the form of ``{subset: dataloader}``.
+        batch_size (int): Number of samples per batch.
+        batch_size_equivalent (int, property): Total batch_size (`batch_size * world_size * accum_steps`).
+
+    `datasets`, `datasamplers`, `dataloaders` should be a dict with the same keys.
+    Their keys should be `split` (e.g. `train`, `val`, `test`).
+
+    Attributes: Results:
+        results (List[NestedDict]): All results, should be in the form of ``[{subset: {index: score}}]``.
+        latest_result (NestedDict, property): Most recent results,
+            should be in the form of ``{subset: {index: score}}``.
+        Best_result (NestedDict, property): Best recent results, should be in the form of ``{subset: {index: score}}``.
+        scores (List[float], property): All scores.
+        latest_score (float, property): Most recent score.
+        best_score (float, property): Best score.
+        index_set (Optional[str]): The subset to calculate the core score.
+            If is `None`, will use the last set of the result.
+        index (str): The index to calculate the core score.
+            Defaults to `"loss"`.
+        is_best (bool, property): If `latest_score == best_score`.
+
+    `results` should be a list of `result`.
+    `result` should be a dict with the same `split` as keys, like `dataloaders`.
+    A typical `result` might look like this:
+    ```python
+    {
+        "train": {
+            "loss": 0.1,
+            "accuracy": 0.9,
+        },
+        "val": {
+            "loss": 0.2,
+            "accuracy": 0.8,
+        },
+        "test": {
+            "loss": 0.3,
+            "accuracy": 0.7,
+        },
+    }
+    ```
+
+    `scores` are usually a list of `float`, and are dynamically extracted from `results` by `index_set` and `index`.
+    If `index_set = "val"`, `index = "accuracy"`, then `scores = 0.9`.
+
+    Attributes: Parallel Training:
+        world_size (int, property): Number of processes.
+        rank (int, property): Process index of all processes.
+        local_rank (int, property): Process index of local processes.
+        distributed (bool, property): If runner is running in distributed mode.
+        is_main_process (bool, property): If current process is the main process of all processes.
+        is_local_main_process (bool, property): If current process is the main process of local processes.
+
+    Attributes: IO:
+        experiments_root (str): The root directory for all experiments.
+            Defaults to `"experiments"`.
+        dir (str, property): Directory of the run.
+        checkpoint_dir (str, property): Directory of checkpoints.
+        log_path (str, property):  Path of log file.
+        checkpoint_dir_name (str): The name of the directory under `runner.dir` to save checkpoints.
+            Defaults to `"checkpoints"`.
+
+    `experiments_root` is the root directory of all **Experiments**, and should be consistent across the **Project**.
+
+    `dir` is the directory of a certain **Run**.
+
+    There is no attributes/properties for **Group** and **Experiment**.
+
+    `checkpoint_dir_name` is relative to `dir`, and is passed to generate `checkpoint_dir`
+    (`checkpoint_dir = os.path.join(dir, checkpoint_dir_name)`).
+    In practice, `checkpoint_dir_name` is rarely called.
+
+    Attributes: logging:
+        log (bool): Whether to log the outputs.
+            Defaults to `True`.
+        logger:
+        tensorboard (bool): Whether to use `tensorboard`.
+            Defaults to `False`.
+        writer:
+
+    Notes:
+        The `RunnerBase` class is not intended to be used directly, nor to be directly inherit from.
+
+        This is because `RunnerBase` is designed as a "dataclass",
+        and is meant for demonstrating all attributes and properties only.
+
+    See Also:
+        [`BaseRunner`][danling.runner.BaseRunner]: The base runner class.
     """
 
     # pylint: disable=R0902, R0904
@@ -148,11 +202,12 @@ class RunnerBase:
         self.dataloaders = FlatDict()
         self.index_set = None
         self.index = "loss"
+        self.log = True
+        self.tensorboard = False
         if len(args) == 1 and isinstance(args[0], FlatDict) and not kwargs:
             args, kwargs = (), args[0]
-        self.__dict__ = NestedDict(**self.__dict__)
-        self.__dict__.update(args)
-        self.__dict__.update(kwargs)
+        self.__dict__.update(NestedDict(*args, **kwargs))
+        self.__dict__.update(NestedDict(**self.__dict__))
         if not self.id:
             self.id = f"{self.name}-{self.seed}"  # pylint: disable=C0103
 
@@ -161,14 +216,11 @@ class RunnerBase:
         r"""
         Training Progress.
 
-        Returns
-        -------
-        float
+        Returns:
+            (float):
 
-        Raises
-        ------
-        RuntimeError
-            If no terminal is defined.
+        Raises:
+            RuntimeError: If no terminal is defined.
         """
 
         if hasattr(self, "iter_end"):
@@ -193,10 +245,6 @@ class RunnerBase:
     def latest_result(self) -> Optional[NestedDict]:
         r"""
         Latest result.
-
-        Returns
-        -------
-        Optional[NestedDict]
         """
 
         return self.results[-1] if self.results else None
@@ -205,10 +253,6 @@ class RunnerBase:
     def best_result(self) -> Optional[NestedDict]:
         r"""
         Best result.
-
-        Returns
-        -------
-        Optional[NestedDict]
         """
 
         return self.results[-1 - self.scores[::-1].index(self.best_score)] if self.results else None  # type: ignore
@@ -226,10 +270,6 @@ class RunnerBase:
 
         Scores are considered as the index of the performance of the model.
         It is useful to determine the best model and the best hyper-parameters.
-
-        Returns
-        -------
-        List[float]
         """
 
         if not self.results:
@@ -241,10 +281,6 @@ class RunnerBase:
     def latest_score(self) -> Optional[float]:
         r"""
         Latest score.
-
-        Returns
-        -------
-        Optional[float]
         """
 
         return self.scores[-1] if self.results else None
@@ -253,10 +289,6 @@ class RunnerBase:
     def best_score(self) -> Optional[float]:
         r"""
         Best score.
-
-        Returns
-        -------
-        Optional[float]
         """
 
         return self.best_fn(self.scores) if self.results else None
@@ -268,17 +300,12 @@ class RunnerBase:
 
         Subclass can override this method to accommodate needs, such as `min(scores)`.
 
-        Parameters
-        ----------
-        scores: Sequence[float]
-            List of scores.
-        fn: Callable = max
-            Function to determine the best score from a list of scores.
+        Args:
+            scores: List of scores.
+            fn: Function to determine the best score from a list of scores.
 
-        Returns
-        -------
-        best_score: float
-            The best score from a list of scores.
+        Returns:
+            best_score: The best score from a list of scores.
         """
 
         return fn(scores)
@@ -287,23 +314,15 @@ class RunnerBase:
     def is_best(self) -> bool:
         r"""
         If current epoch is the best epoch.
-
-        Returns
-        -------
-        bool
         """
 
-        return abs(self.latest_score - self.best_score) < 1e-7
+        return self.results and abs(self.latest_score - self.best_score) < 1e-7
         # return self.latest_score == self.best_score
 
     @property
     def world_size(self) -> int:
         r"""
-        Number of Processes.
-
-        Returns
-        -------
-        int
+        Number of processes.
         """
 
         return 1
@@ -311,11 +330,7 @@ class RunnerBase:
     @property
     def rank(self) -> int:
         r"""
-        Process index in all processes.
-
-        Returns
-        -------
-        int
+        Process index of all processes.
         """
 
         return 0
@@ -323,11 +338,7 @@ class RunnerBase:
     @property
     def local_rank(self) -> int:
         r"""
-        Process index in local processes.
-
-        Returns
-        -------
-        int
+        Process index of local processes.
         """
 
         return 0
@@ -343,11 +354,7 @@ class RunnerBase:
     @property
     def is_main_process(self) -> bool:
         r"""
-        If current process is the main process.
-
-        Returns
-        -------
-        bool
+        If current process is the main process of all processes.
         """
 
         return self.rank == 0
@@ -355,11 +362,7 @@ class RunnerBase:
     @property
     def is_local_main_process(self) -> bool:
         r"""
-        If current process is the main process in local.
-
-        Returns
-        -------
-        bool
+        If current process is the main process of local processes.
         """
 
         return self.local_rank == 0
@@ -368,11 +371,7 @@ class RunnerBase:
     @ensure_dir
     def dir(self) -> str:
         r"""
-        Directory of the experiment.
-
-        Returns
-        -------
-        str
+        Directory of the run.
         """
 
         return os.path.join(self.experiments_root, self.id)
@@ -381,10 +380,6 @@ class RunnerBase:
     def log_path(self) -> str:
         r"""
         Path of log file.
-
-        Returns
-        -------
-        str
         """
 
         return os.path.join(self.dir, "run.log")
@@ -394,37 +389,35 @@ class RunnerBase:
     def checkpoint_dir(self) -> str:
         r"""
         Directory of checkpoints.
-
-        Returns
-        -------
-        str
         """
 
         return os.path.join(self.dir, self.checkpoint_dir_name)
 
     @catch
-    def save(self, obj: Any, f: File, main_process_only: bool = True) -> File:  # pylint: disable=C0103
+    def save(
+        self, obj: Any, file: File, main_process_only: bool = True, *args, **kwargs
+    ) -> PathStr:  # pylint: disable=C0103
         r"""
-        Save object to a path or file.
+        Save any file with supported extensions.
 
-        Returns
-        -------
-        File
+        `Runner.save` internally calls `dl.save`,
+        but with additional arguments to allow it save only on the main process.
+        Moreover, any error raised by `Runner.save` will be caught and logged.
         """
 
-        raise NotImplementedError
+        if main_process_only and self.is_main_process or not main_process_only:
+            save(obj, file, *args, **kwargs)
+        return file
 
     @staticmethod
-    def load(f: File, *args, **kwargs) -> Any:  # pylint: disable=C0103
+    def load(file: File, *args, **kwargs) -> Any:  # pylint: disable=C0103
         r"""
-        Load object from a path or file.
+        Load any file with supported extensions.
 
-        Returns
-        -------
-        Any
+        `Runner.load` is identical to `dl.save`.
         """
 
-        raise NotImplementedError
+        return load(file, *args, **kwargs)
 
     def dict(self, cls: Callable = dict, only_json_serializable: bool = True) -> Mapping:
         r"""
@@ -432,16 +425,9 @@ class RunnerBase:
 
         Note that all non-json-serializable objects will be removed.
 
-        Parameters
-        ----------
-        cls : Callable = dict
-            Class to convert to.
-        only_json_serializable : bool = True
-            If only json serializable objects should be kept.
-
-        Returns
-        -------
-        Mapping
+        Args:
+            cls: Target `clc to convert to.
+            only_json_serializable: If only json serializable objects should be kept.
         """
 
         # pylint: disable=C0103
@@ -471,10 +457,6 @@ class RunnerBase:
 
         This function calls `self.from_jsons()` to construct object from json string.
         You may overwrite `from_jsons` in case something is not json serializable.
-
-        Returns
-        -------
-        RunnerBase
         """
 
         with FlatDict.open(file) as fp:  # pylint: disable=C0103
@@ -483,10 +465,6 @@ class RunnerBase:
     def jsons(self, *args, **kwargs) -> str:
         r"""
         Dump Runner to json string.
-
-        Returns
-        -------
-        json: str
         """
 
         if "cls" not in kwargs:
@@ -497,10 +475,6 @@ class RunnerBase:
     def from_jsons(cls, string: str, *args, **kwargs) -> RunnerBase:
         r"""
         Construct Runner from json string.
-
-        Returns
-        -------
-        RunnerBase
         """
 
         return cls(**Config.from_jsons(string, *args, **kwargs))
@@ -522,10 +496,6 @@ class RunnerBase:
 
         This function calls `self.from_yamls()` to construct object from yaml string.
         You may overwrite `from_yamls` in case something is not yaml serializable.
-
-        Returns
-        -------
-        RunnerBase
         """
 
         with FlatDict.open(file) as fp:  # pylint: disable=C0103
@@ -534,10 +504,6 @@ class RunnerBase:
     def yamls(self, *args, **kwargs) -> str:
         r"""
         Dump Runner to yaml string.
-
-        Returns
-        -------
-        yaml: str
         """
 
         if "Dumper" not in kwargs:
@@ -548,10 +514,6 @@ class RunnerBase:
     def from_yamls(cls, string: str, *args, **kwargs) -> RunnerBase:
         r"""
         Construct Runner from yaml string.
-
-        Returns
-        -------
-        RunnerBase
         """
 
         return cls(**Config.from_yamls(string, *args, **kwargs))

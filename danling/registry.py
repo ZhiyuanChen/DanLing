@@ -8,17 +8,14 @@ class Registry(NestedDict):
     """
     `Registry` for components.
 
-    Notes
-    -----
+    Notes:
+        `Registry` inherits from [`NestedDict`](https://chanfig.danling.org/nested_dict/).
 
-    `Registry` inherits from [`NestedDict`](https://chanfig.danling.org/nested_dict/).
+        Therefore, `Registry` comes in a nested structure by nature.
+        You could create a sub-registry by simply calling `registry.sub_registry = Registry`,
+        and access through `registry.sub_registry.register()`.
 
-    Therefore, `Registry` comes in a nested structure by nature.
-    You could create a sub-registry by simply calling `registry.sub_registry = Registry`,
-    and access through `registry.sub_registry.register()`.
-
-    Examples
-    --------
+    Examples:
     ```python
     >>> registry = Registry("test")
     >>> @registry.register
@@ -59,25 +56,17 @@ class Registry(NestedDict):
         r"""
         Register a new component
 
-        Parameters
-        ----------
-        component: Optional[Callable] = None
-            The component to register.
-        name: Optional[str] = component.__name__
-            The name of the component.
+        Args:
+            component: The component to register.
+            name: The name of the component.
 
-        Returns
-        -------
-        component: Callable
-            The registered component.
+        Returns:
+            component: The registered component.
 
-        Raises
-        ------
-        ValueError
-            If the component with the same name already exists and `Registry.override=False`.
+        Raises:
+            ValueError: If the component with the same name already exists and `Registry.override=False`.
 
-        Examples
-        --------
+        Examples:
         ```python
         >>> registry = Registry("test")
         >>> @registry.register
@@ -122,22 +111,16 @@ class Registry(NestedDict):
         r"""
         Lookup for a component.
 
-        Parameters
-        ----------
-        name: str
-            The name of the component.
+        Args:
+            name:
 
-        Returns
-        -------
-        value: Any
+        Returns:
+            (Any): The component.
 
-        Raises
-        ------
-        KeyError
-            If the component is not registered.
+        Raises:
+            KeyError: If the component is not registered.
 
-        Examples
-        --------
+        Examples:
         ```python
         >>> registry = Registry("test")
         >>> @registry.register
@@ -153,30 +136,22 @@ class Registry(NestedDict):
 
         return self.get(name)
 
-    def build(self, name: str, *args, **kwargs):
+    def build(self, name: str, *args, **kwargs) -> Any:
         r"""
         Build a component.
 
-        Parameters
-        ----------
-        name: str
-            The name of the component.
-        *args
-            The arguments to pass to the component.
-        **kwargs
-            The keyword arguments to pass to the component.
+        Args:
+            name:
+            *args: The arguments to pass to the component.
+            **kwargs: The keyword arguments to pass to the component.
 
-        Returns
-        -------
-        component: Callable
+        Returns:
+            (Any):
 
-        Raises
-        ------
-        KeyError
-            If the component is not registered.
+        Raises:
+            KeyError: If the component is not registered.
 
-        Examples
-        --------
+        Examples:
         ```python
         >>> registry = Registry("test")
         >>> @registry.register

@@ -14,8 +14,10 @@ nav:
       - RunnerBase: runner/bases.md
       - BaseRunner: runner/base_runner.md
       - TorchRunner: runner/torch_runner.md
+      - Utilities: runner/utils.md
   - Tensors:
     - NestedTensor: tensors/nested_tensor.md
+    - PNTensor: tensors/pn_tensor.md
   - Registry: registry.md
   - Metrics:
     - AverageMeter: metrics/average_meter.md
@@ -165,10 +167,6 @@ plugins:
   - git-committers
   - mkdocstrings:
       default_handler: python
-      handlers:
-        python:
-          selection:
-            docstring_style: numpy
       watch:
         - danling/
   - i18n:

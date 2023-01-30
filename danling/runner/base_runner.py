@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import atexit
-import json
 import logging
 import logging.config
 import os
@@ -10,7 +9,7 @@ import shutil
 from typing import Callable, Mapping, Optional, Union
 
 import numpy as np
-from chanfig import FlatDict
+from chanfig import FlatDict, NestedDict
 
 from danling.utils import catch
 
@@ -20,7 +19,13 @@ from .utils import on_main_process
 
 class BaseRunner(RunnerBase):
     r"""
-    Set up everything for running a job.
+    Base class for running a neural network.
+
+    `BaseRunner` sets up basic running environment, including `seed`, `deterministic`, and `logging`.
+
+    `BaseRunner` also provides some basic methods, such as, `step`, `state_dict`, `save_checkpoint`, `load_checkpoint`.
+
+    All runners should inherit `BaseRunner`.
     """
 
     # pylint: disable=R0902
@@ -83,14 +88,12 @@ class BaseRunner(RunnerBase):
 
     def init_print(self, process: int = 0) -> None:
         r"""
-        Set up print.
+        Set up `print`.
 
-        Only print on a specific process or when force is indicated.
+        Only print on a specific `process` or when `force = True`.
 
-        Parameters
-        ----------
-        process: int, optional
-            The process to print on.
+        Args:
+            process: The process to `print` on.
 
         Notes
         -----
@@ -124,12 +127,14 @@ class BaseRunner(RunnerBase):
         r"""
         Set up random seed.
 
-        Parameters
-        ----------
-        bias: Optional[int] = self.rank
-            Make the seed different for each processes.
-            This avoids same data augmentation are applied on every processes.
-            Set to `False` to disable this feature.
+        Args:
+            bias: Make the seed different for each processes.
+
+                This avoids same data augmentation are applied on every processes.
+
+                Defaults to `self.rank`.
+
+                Set to `False` to disable this feature.
         """
 
         if bias is None:
@@ -164,10 +169,8 @@ class BaseRunner(RunnerBase):
 
         This method also increment the `self.steps` attribute.
 
-        Parameters
-        ----------
-        zero_grad: bool, optional
-            Whether to zero the gradients.
+        Args:
+            zero_grad: Whether to zero the gradients.
         """
 
         if self.optimizer is not None:
@@ -224,23 +227,18 @@ class BaseRunner(RunnerBase):
         """
         Load info from checkpoint.
 
-        Parameters
-        ----------
-        checkpoint: Optional[Union[Mapping, str]] = latest_checkpoint
-            Checkpoint (or its path) to load.
-        override_config: bool = True
-            If True, override runner config with checkpoint config.
-        *args, **kwargs
-            Additional arguments to pass to `runner.load`.
+        Args:
+            checkpoint: Checkpoint (or its path) to load.
+                Defaults to `runner.checkpoint_dir/latest.pth`.
+            override_config: If True, override runner config with checkpoint config.
+            *args: Additional arguments to pass to `runner.load`.
+            **kwargs: Additional keyword arguments to pass to `runner.load`.
 
-        Raises
-        ------
-        FileNotFoundError
-            If `checkpoint` does not exists.
+        Raises:
+            FileNotFoundError: If `checkpoint` does not exists.
 
-        See also
-        --------
-        from_checkpoint: Build runner from checkpoint.
+        See Also:
+            [`from_checkpoint`][danling.BaseRunner.from_checkpoint]: Build runner from checkpoint.
         """
 
         if checkpoint is None:
@@ -252,7 +250,7 @@ class BaseRunner(RunnerBase):
             state_dict = self.load(checkpoint, *args, **kwargs)
         # TODO: Wrap state_dict in a dataclass
         if override_config:
-            self.__dict__.update(state_dict["runner"])  # type: ignore
+            self.__dict__.update(NestedDict(**state_dict["runner"]))  # type: ignore
         if self.model is not None and "model" in state_dict:  # type: ignore
             self.model.load_state_dict(state_dict["model"])  # type: ignore
         if self.optimizer is not None and "optimizer" in state_dict:  # type: ignore
@@ -266,16 +264,14 @@ class BaseRunner(RunnerBase):
         r"""
         Build BaseRunner from checkpoint.
 
-        Parameters
-        ----------
-        checkpoint: Optional[Union[Mapping, str]] = latest_checkpoint
-            Checkpoint (or its path) to load.
-        *args, **kwargs
-            Additional arguments to pass to `runner.load`.
+        Args:
+            checkpoint: Checkpoint (or its path) to load.
+                Defaults to `runner.checkpoint_dir/latest.pth`.
+            *args: Additional arguments to pass to `runner.load`.
+            **kwargs: Additional keyword arguments to pass to `runner.load`.
 
-        Returns
-        -------
-        BaseRunner
+        Returns:
+            (BaseRunner):
         """
 
         if isinstance(checkpoint, str):
@@ -288,11 +284,10 @@ class BaseRunner(RunnerBase):
         r"""
         Append result to `self.results`.
 
-        Warnings
-        --------
-        `self.results` is heavily relied upon for computing metrics.
+        Warnings:
+            `self.results` is heavily relied upon for computing metrics.
 
-        Failed to use this method may lead to unexpected behavior.
+            Failed to use this method may lead to unexpected behavior.
         """
 
         self.results.append(result)
@@ -320,10 +315,10 @@ class BaseRunner(RunnerBase):
         if isinstance(result, FlatDict):
             result = result.dict()  # type: ignore
         # This is slower but ensure id is the first key
-        ret.update(result)  # type: ignore
+        if result is not None:
+            ret.update(result)  # type: ignore
         latest_path = os.path.join(self.dir, "latest.json")
-        with FlatDict.open(latest_path, "w") as f:  # pylint: disable=C0103
-            json.dump(ret, f, indent=4)
+        self.save(ret, latest_path, indent=4)
         if self.is_best:
             best_path = os.path.join(self.dir, "best.json")
             shutil.copy(latest_path, best_path)

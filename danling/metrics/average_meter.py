@@ -2,19 +2,13 @@ class AverageMeter:
     r"""
     Computes and stores the average and current value.
 
-    Attributes
-    ----------
-    val: int
-        Current value.
-    avg: float
-        Average value.
-    sum: float
-        Sum of values.
-    count: int
-        Number of values.
+    Attributes:
+        val: Current value.
+        avg: Average value.
+        sum: Sum of values.
+        count: Number of values.
 
-    Examples
-    --------
+    Examples:
     ```python
     >>> meter = AverageMeter()
     >>> meter.update(0.7)
@@ -52,8 +46,7 @@ class AverageMeter:
         r"""
         Resets the meter.
 
-        Examples
-        --------
+        Examples:
         ```python
         >>> meter = AverageMeter()
         >>> meter.update(0.7)
@@ -79,15 +72,11 @@ class AverageMeter:
         r"""
         Updates the average and current value in the meter.
 
-        Parameters
-        ----------
-        val: int
-            Value to be added to the average.
-        n: int = 1
-            Number of values to be added.
+        Args:
+            val: Value to be added to the average.
+            n: Number of values to be added.
 
-        Examples
-        --------
+        Examples:
         ```python
         >>> meter = AverageMeter()
         >>> meter.update(0.7)

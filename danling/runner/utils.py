@@ -4,7 +4,7 @@ from typing import Any, Optional
 
 def on_main_process(func):
     """
-    Run func on main process
+    Decorator to run func only on main process.
     """
 
     @wraps(func)
@@ -18,7 +18,7 @@ def on_main_process(func):
 
 def on_local_main_process(func):
     """
-    Run func on local main process
+    Decorator to run func only on local main process.
     """
 
     @wraps(func)

@@ -6,6 +6,23 @@ from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 
 
+class PNTensor(Tensor):
+    r"""
+    Wrapper for tensors to be converted to `NestedTensor`.
+
+    `PNTensor` is a subclass of `torch.Tensor` and is identical to `torch.Tensor`.
+
+    Although it is possible to construct `NestedTensor` in dataset,
+    the best practice is to do so in `collate_fn`.
+    However, it is hard to tell if a batch of `Tensor` should be stacked or converted to `NestedTensor`.
+
+    `PNTensor` is introduced overcome this limitation.
+
+    Convert tensors that will be converted to `NestedTensor` to a `PNTensor`,
+    and all you need to do is to convert `PNTensor` to `NestedTensor` in `collate_fn`.
+    """
+
+
 class NestedTensor:
     r"""
     Wrap a sequence of tensors into a single tensor with a mask.
@@ -16,38 +33,30 @@ class NestedTensor:
     NestedTensor allows to store a sequence of tensors of different lengths in a single object.
     It also provides a mask that can be used to retrieve the original sequence of tensors.
 
-    Attributes
-    ----------
-    storage: Sequence[torch.Tensor]
-        The sequence of tensors.
-    batch_first: bool = True
-        Whether the first dimension of the tensors is the batch dimension.
+    Attributes:
 
-        If `True`, the first dimension is the batch dimension, i.e., `B, N, *`.
+        storage: The sequence of tensors.
+        batch_first:  Whether the first dimension of the tensors is the batch dimension.
 
-        If `False`, the first dimension is the sequence dimension, i.e., `N, B, *`
+            If `True`, the first dimension is the batch dimension, i.e., `B, N, *`.
 
-    Parameters
-    ----------
-    tensors: Sequence[torch.Tensor]
-    batch_first: bool = True
+            If `False`, the first dimension is the sequence dimension, i.e., `N, B, *`
 
-    Raises
-    ------
-    ValueError
-        If `tensors` is not a sequence.
+    Args:
+        tensors:
+        batch_first:
 
-        If `tensors` is empty.
+    Raises:
+        ValueError: If `tensors` is not a sequence.
+        ValueError: If `tensors` is empty.
 
-    Notes
-    -----
-    We have rewritten the `__getattr__` function to support as much native tensor operations as possible.
-    However, not all operations are tested.
+    Notes:
+        We have rewritten the `__getattr__` function to support as much native tensor operations as possible.
+        However, not all operations are tested.
 
-    Please file an issue if you find any bugs.
+        Please file an issue if you find any bugs.
 
-    Examples
-    --------
+    Examples:
     ```python
     >>> from danling.tensors import NestedTensor
     >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
@@ -91,12 +100,10 @@ class NestedTensor:
         r"""
         Return a single tensor by padding all the tensors.
 
-        Returns
-        -------
-        torch.Tensor
+        Returns:
+            (torch.Tensor):
 
-        Examples
-        --------
+        Examples:
         ```python
         >>> from danling.tensors import NestedTensor
         >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
@@ -114,12 +121,10 @@ class NestedTensor:
         r"""
         Padding mask of `tensor`.
 
-        Returns
-        -------
-        torch.Tensor
+        Returns:
+            (torch.Tensor):
 
-        Examples
-        --------
+        Examples:
         ```python
         >>> from danling.tensors import NestedTensor
         >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
@@ -137,12 +142,10 @@ class NestedTensor:
         r"""
         Device of the NestedTensor.
 
-        Returns
-        -------
-        torch.Tensor
+        Returns:
+            (torch.Tensor):
 
-        Examples
-        --------
+        Examples:
         ```python
         >>> from danling.tensors import NestedTensor
         >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
@@ -159,12 +162,10 @@ class NestedTensor:
         r"""
         Alias for `size`.
 
-        Returns
-        -------
-        torch.Size
+        Returns:
+            (torch.Size):
 
-        Examples
-        --------
+        Examples:
         ```python
         >>> from danling.tensors import NestedTensor
         >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
@@ -183,12 +184,10 @@ class NestedTensor:
         r"""
         Shape of the NestedTensor.
 
-        Returns
-        -------
-        torch.Size
+        Returns:
+            (torch.Size):
 
-        Examples
-        --------
+        Examples:
         ```python
         >>> from danling.tensors import NestedTensor
         >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
@@ -224,6 +223,10 @@ class NestedTensor:
 
     def __len__(self) -> int:
         return len(self.storage)
+
+    @property  # type: ignore
+    def __class__(self) -> type:
+        return self.storage[0].__class__
 
     def __setstate__(self, storage) -> None:
         self.storage = storage
