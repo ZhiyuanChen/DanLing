@@ -89,6 +89,14 @@
          
     </url>
     <url>
+         <loc>https://danling.org/tensors/pn_tensor/</loc>
+         <lastmod>2023-02-01</lastmod>
+         <changefreq>daily</changefreq>
+         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/en/tensors/pn_tensor/"/>
+         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/tensors/pn_tensor/"/>
+         
+    </url>
+    <url>
          <loc>https://danling.org/utils/decorators/</loc>
          <lastmod>2023-02-01</lastmod>
          <changefreq>daily</changefreq>
