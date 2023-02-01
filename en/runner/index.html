@@ -799,8 +799,8 @@
 <h3 id="baserunnerdanlingrunnerbaserunner">[<code>BaseRunner</code>][danling.runner.BaseRunner]<a class="headerlink" href="#baserunnerdanlingrunnerbaserunner" title="Permanent link">&para;</a></h3>
 <p>[<code>BaseRunner</code>][danling.runner.BaseRunner] contains core methods of general basic functionality,
 such as <code>init_logging</code>, <code>append_result</code>, <code>print_result</code>.</p>
-<h3 id="runnerdanlingrunnertorchrunner">[<code>Runner</code>][danling.runner.TorchRunner].<a class="headerlink" href="#runnerdanlingrunnertorchrunner" title="Permanent link">&para;</a></h3>
-<p><code>Runner</code> should only contain platform-specific features.
+<h3 id="runnerdanlingrunnertorchrunner">[<code>Runner</code>][danling.runner.TorchRunner]<a class="headerlink" href="#runnerdanlingrunnertorchrunner" title="Permanent link">&para;</a></h3>
+<p>[<code>Runner</code>][danling.runner.TorchRunner] should only contain platform-specific features.
 Currently, only [<code>TorchRunner</code>][danling.runner.TorchRunner] is supported.</p>
 <h2 id="experiments-management">Experiments Management<a class="headerlink" href="#experiments-management" title="Permanent link">&para;</a></h2>
 <p>DanLing Runner is designed for a 3.5-level experiments management system: <strong>Project</strong>, <strong>Group</strong>, <strong>Experiment</strong>, and, <strong>Run</strong>.</p>
@@ -811,7 +811,7 @@ Currently, only [<code>TorchRunner</code>][danling.runner.TorchRunner] is suppor
 <h3 id="group">Group<a class="headerlink" href="#group" title="Permanent link">&para;</a></h3>
 <p>A group groups multiple experiments with similar characteristics.</p>
 <p>For example, if you run multiple experiments on learning rate, you may want to group them into a group.</p>
-<p>Note that Group is a virtual level (which is why it only counts 0.5) and does not corresponds to anything.</p>
+<p>Note that Group is a virtual level (which is why it only counts 0.5) and does not correspond to anything.</p>
 <h3 id="experiment">Experiment<a class="headerlink" href="#experiment" title="Permanent link">&para;</a></h3>
 <p>Experiment is the basic unit of experiments.</p>
 <p>Experiment usually corresponds to a commit, which means the code should be consistent across the experiment.</p>
