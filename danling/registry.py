@@ -27,9 +27,9 @@ class Registry(NestedDict):
     >>> module = registry.register(Module, "Module2")
     >>> registry
     Registry(
-      (Module1): <class 'danling.registry.registry.Module'>
-      (Module): <class 'danling.registry.registry.Module'>
-      (Module2): <class 'danling.registry.registry.Module'>
+      ('Module1'): <class 'danling.registry.registry.Module'>
+      ('Module'): <class 'danling.registry.registry.Module'>
+      ('Module2'): <class 'danling.registry.registry.Module'>
     )
     >>> registry.lookup("Module")
     <class 'danling.registry.registry.Module'>
@@ -54,7 +54,7 @@ class Registry(NestedDict):
 
     def register(self, component: Optional[Callable] = None, name: Optional[str] = None) -> Callable:
         r"""
-        Register a new component
+        Register a new component.
 
         Args:
             component: The component to register.
@@ -78,16 +78,16 @@ class Registry(NestedDict):
         >>> module = registry.register(Module, "Module2")
         >>> registry
         Registry(
-          (Module1): <class 'danling.registry.registry.Module'>
-          (Module): <class 'danling.registry.registry.Module'>
-          (Module2): <class 'danling.registry.registry.Module'>
+          ('Module1'): <class 'danling.registry.registry.Module'>
+          ('Module'): <class 'danling.registry.registry.Module'>
+          ('Module2'): <class 'danling.registry.registry.Module'>
         )
 
         ```
         """
 
-        if isinstance(name, str) and name in self and not self.override:
-            raise ValueError(f"Component with name {name} already exists")
+        if name in self and not self.override:
+            raise ValueError(f"Component with name {name} already registered.")
 
         # Registry.register()
         if name is not None:

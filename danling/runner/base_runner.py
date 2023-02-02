@@ -32,6 +32,9 @@ class BaseRunner(RunnerBase):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self.init()
+
+    def init(self):
         if self.seed is not None:
             self.set_seed()
         if self.deterministic:
@@ -183,6 +186,14 @@ class BaseRunner(RunnerBase):
         # TODO: Support `drop_last = False`
         self.iters += self.batch_size_equivalent
 
+    def prepare(self, *args, device_placement: Optional[List[bool]] = None) -> None:
+        r"""
+        Prepare all objects passed in `args` for distributed training and mixed precision,
+        then return them in the same order.
+        """
+
+        return self.accelerator.prepare(*args, device_placement=device_placement)
+
     def state_dict(self, cls: Callable = dict) -> Mapping:
         r"""
         Return dict of all attributes for checkpoint.
@@ -322,3 +333,11 @@ class BaseRunner(RunnerBase):
         if self.is_best:
             best_path = os.path.join(self.dir, "best.json")
             shutil.copy(latest_path, best_path)
+
+    @property
+    def device(self) -> int:
+        r"""
+        Device of runner.
+        """
+
+        return torch.device("cpu")

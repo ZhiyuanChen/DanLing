@@ -149,7 +149,7 @@ class RunnerBase:
 
     # pylint: disable=R0902, R0904
 
-    id: str = ""
+    id: str
     name: str = "DanLing"
 
     seed: int
@@ -208,7 +208,7 @@ class RunnerBase:
             args, kwargs = (), args[0]
         self.__dict__.update(NestedDict(*args, **kwargs))
         self.__dict__.update(NestedDict(**self.__dict__))
-        if not self.id:
+        if "id" not in self:
             self.id = f"{self.name}-{self.seed}"  # pylint: disable=C0103
 
     @property
@@ -318,6 +318,14 @@ class RunnerBase:
 
         return self.results and abs(self.latest_score - self.best_score) < 1e-7
         # return self.latest_score == self.best_score
+
+    @property
+    def device(self) -> int:
+        r"""
+        Device of runner.
+        """
+
+        raise NotImplementedError
 
     @property
     def world_size(self) -> int:
@@ -519,10 +527,8 @@ class RunnerBase:
         return cls(**Config.from_yamls(string, *args, **kwargs))
 
     def __getattr__(self, name) -> Any:
-        if "accelerator" not in self:
+        if "id" not in self:
             raise RuntimeError(f"{self.__class__.__name__} is not properly initialised")
-        if hasattr(self.accelerator, name):
-            return getattr(self.accelerator, name)
         raise AttributeError(f"{self.__class__.__name__} does not contain {name}")
 
     def __contains__(self, name) -> bool:

@@ -29,9 +29,9 @@ class TorchRunner(BaseRunner):
     accelerator: Accelerator
     accelerate: Dict[str, Any] = {}
 
-    def __init__(self, *args, **kwargs) -> None:
+    def init(self):
         self.accelerator = Accelerator(**self.accelerate)
-        super().__init__(*args, **kwargs)
+        super().init()
 
     @on_main_process
     def init_tensorboard(self, *args, **kwargs) -> None:
@@ -103,6 +103,21 @@ class TorchRunner(BaseRunner):
         torch.cuda.set_device(self.local_rank)
         self.is_main_process = self.rank == 0
         self.is_local_main_process = self.local_rank == 0
+
+    def reduce(self, tensor, reduction: str = "sum" ) -> torch.Tensor:
+        r"""
+        Reduce tensor.
+        """
+
+        return self.accelerator.reduce(tensor, reduction=reduction)
+
+    @property
+    def device(self) -> int:
+        r"""
+        Device of runner.
+        """
+
+        return self.accelerator.device
 
     @property
     def world_size(self) -> int:
