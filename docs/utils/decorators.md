@@ -7,11 +7,3 @@ date: 2022-05-04
 # Decorator
 
 ::: danling.utils.decorators
-    options:
-      memembers:
-        - catch
-        - flexible_decorator
-        - method_cache
-        - ensure_dir
-      show_root_heading: false
-      show_source: true

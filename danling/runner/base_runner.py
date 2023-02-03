@@ -9,6 +9,7 @@ import shutil
 from typing import Callable, Mapping, Optional, Union
 
 import numpy as np
+import torch
 from chanfig import FlatDict, NestedDict
 
 from danling.utils import catch
@@ -32,9 +33,7 @@ class BaseRunner(RunnerBase):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.init()
-
-    def init(self):
+        self.init_distributed()
         if self.seed is not None:
             self.set_seed()
         if self.deterministic:
@@ -119,11 +118,11 @@ class BaseRunner(RunnerBase):
 
         __builtin__.print = print
 
-    def set_deterministic(self) -> None:
+    @on_main_process
+    def init_tensorboard(self, *args, **kwargs) -> None:
         r"""
-        Set up deterministic.
+        Set up Tensoraoard SummaryWriter.
         """
-
         raise NotImplementedError
 
     def set_seed(self, bias: Optional[int] = None) -> None:
@@ -145,6 +144,13 @@ class BaseRunner(RunnerBase):
         seed = self.seed + bias if bias else self.seed
         np.random.seed(seed)
         random.seed(seed)
+
+    def set_deterministic(self) -> None:
+        r"""
+        Set up deterministic.
+        """
+
+        raise NotImplementedError
 
     def scale_lr(
         self,
@@ -186,28 +192,12 @@ class BaseRunner(RunnerBase):
         # TODO: Support `drop_last = False`
         self.iters += self.batch_size_equivalent
 
-    def prepare(self, *args, device_placement: Optional[List[bool]] = None) -> None:
-        r"""
-        Prepare all objects passed in `args` for distributed training and mixed precision,
-        then return them in the same order.
-        """
-
-        return self.accelerator.prepare(*args, device_placement=device_placement)
-
     def state_dict(self, cls: Callable = dict) -> Mapping:
         r"""
         Return dict of all attributes for checkpoint.
         """
 
-        if self.model is None:
-            raise ValueError("Model must be defined when calling state_dict")
-        model = self.accelerator.unwrap_model(self.model)
-        return cls(
-            runner=self.dict(),
-            model=model.state_dict(),
-            optimizer=self.optimizer.state_dict() if self.optimizer else None,
-            scheduler=self.scheduler.state_dict() if self.scheduler else None,
-        )
+        raise NotImplementedError
 
     @catch
     @on_main_process
@@ -340,4 +330,4 @@ class BaseRunner(RunnerBase):
         Device of runner.
         """
 
-        return torch.device("cpu")
+        return torch.device("cpu")  # pylint: disable=E1101

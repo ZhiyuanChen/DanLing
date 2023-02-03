@@ -18,6 +18,7 @@ nav:
   - Tensors:
     - NestedTensor: tensors/nested_tensor.md
     - PNTensor: tensors/pn_tensor.md
+    - TorchFuncRegistry: tensors/torch_func_registry.md
   - Registry: registry.md
   - Metrics:
     - AverageMeter: metrics/average_meter.md
@@ -166,7 +167,10 @@ plugins:
   #     post_url_format: "{slug}"
   - git-committers
   - mkdocstrings:
-      default_handler: python
+      handlers:
+        python:
+          rendering:
+            members_order: source
       watch:
         - danling/
   - i18n:

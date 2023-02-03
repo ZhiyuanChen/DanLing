@@ -64,7 +64,7 @@ class Registry(NestedDict):
             component: The registered component.
 
         Raises:
-            ValueError: If the component with the same name already exists and `Registry.override=False`.
+            ValueError: If the component with the same name already registered and `Registry.override=False`.
 
         Examples:
         ```python

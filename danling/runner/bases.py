@@ -47,7 +47,7 @@ class RunnerBase:
             Note that `epoch_end` not initialised since this variable may not apply to some Runners.
         progress (float, property): Running Progress, in `range(0, 1)`.
 
-    Note that generally you should only use one of `iter_end`, `step_end`, `epoch_end` to indicate the length of running.
+    In general you should only use one of `iter_end`, `step_end`, `epoch_end` to indicate the length of running.
 
     Attributes: Model:
         model:
@@ -241,6 +241,23 @@ class RunnerBase:
 
         return self.batch_size * self.world_size * getattr(self, "accum_steps", 1)
 
+    @staticmethod
+    def best_fn(scores: Sequence[float], fn: Callable = max) -> float:  # pylint: disable=C0103
+        r"""
+        Function to determine the best score from a list of scores.
+
+        Subclass can override this method to accommodate needs, such as `min(scores)`.
+
+        Args:
+            scores: List of scores.
+            fn: Function to determine the best score from a list of scores.
+
+        Returns:
+            best_score: The best score from a list of scores.
+        """
+
+        return fn(scores)
+
     @property
     def latest_result(self) -> Optional[NestedDict]:
         r"""
@@ -292,23 +309,6 @@ class RunnerBase:
         """
 
         return self.best_fn(self.scores) if self.results else None
-
-    @staticmethod
-    def best_fn(scores: Sequence[float], fn: Callable = max) -> float:  # pylint: disable=C0103
-        r"""
-        Function to determine the best score from a list of scores.
-
-        Subclass can override this method to accommodate needs, such as `min(scores)`.
-
-        Args:
-            scores: List of scores.
-            fn: Function to determine the best score from a list of scores.
-
-        Returns:
-            best_score: The best score from a list of scores.
-        """
-
-        return fn(scores)
 
     @property
     def is_best(self) -> bool:
@@ -402,9 +402,9 @@ class RunnerBase:
         return os.path.join(self.dir, self.checkpoint_dir_name)
 
     @catch
-    def save(
+    def save(  # pylint: disable=W1113
         self, obj: Any, file: File, main_process_only: bool = True, *args, **kwargs
-    ) -> PathStr:  # pylint: disable=C0103
+    ) -> PathStr:
         r"""
         Save any file with supported extensions.
 

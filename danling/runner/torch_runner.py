@@ -1,12 +1,15 @@
-import os
 import random
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, List, Mapping, Optional
 
 import numpy as np
 import torch
-from accelerate import Accelerator
-from torch import distributed as dist
+from torch import nn
 from torch.backends import cudnn
+
+try:
+    from accelerate import Accelerator
+except ImportError:
+    Accelerator = None
 
 from .base_runner import BaseRunner
 from .utils import on_main_process
@@ -22,16 +25,25 @@ class TorchRunner(BaseRunner):
     Attributes:
         accelerator (Accelerator):
         accelerate: Defaults to `{}`.
+            if is `None`, will not use `accelerate`.
     """
 
     # pylint: disable=R0902
 
-    accelerator: Accelerator
-    accelerate: Dict[str, Any] = {}
+    accelerator: Accelerator = None
+    accelerate: Mapping[str, Any] = None
 
-    def init(self):
-        self.accelerator = Accelerator(**self.accelerate)
-        super().init()
+    def __init__(self, *args, **kwargs) -> None:
+        self.accelerate = {}
+        super().__init__(*args, **kwargs)
+
+    def prepare(self, *args, device_placement: Optional[List[bool]] = None) -> None:
+        r"""
+        Prepare all objects passed in `args` for distributed training and mixed precision,
+        then return them in the same order.
+        """
+
+        return self.accelerator.prepare(*args, device_placement=device_placement)
 
     @on_main_process
     def init_tensorboard(self, *args, **kwargs) -> None:
@@ -61,11 +73,7 @@ class TorchRunner(BaseRunner):
 
         if self.distributed:
             # TODO: use broadcast_object instead.
-            self.seed = (
-                self.accelerator.gather(torch.tensor(self.seed).cuda())
-                .unsqueeze(0)
-                .flatten()[0]  # pylint: disable=E1101
-            )
+            self.seed = self.gather(torch.tensor(self.seed).cuda()).unsqueeze(0).flatten()[0]  # pylint: disable=E1101
         if bias is None:
             bias = self.rank
         seed = self.seed + bias if bias else self.seed
@@ -84,32 +92,51 @@ class TorchRunner(BaseRunner):
         if torch.__version__ >= "1.8.0":
             torch.use_deterministic_algorithms(True)
 
-    def init_distributed(self) -> None:
+    def state_dict(self, cls: Callable = dict) -> Mapping:
         r"""
-        Set up distributed training.
-
-        Initialise process group and set up DDP variables.
-
-        .. deprecated:: 0.1.0
-            `init_distributed` is deprecated in favor of `Accelerator()`.
+        Return dict of all attributes for checkpoint.
         """
 
-        # pylint: disable=W0201
+        if self.model is None:
+            raise ValueError("Model must be defined when calling state_dict")
+        model = self.accelerator.unwrap_model(self.model)
+        return cls(
+            runner=self.dict(),
+            model=model.state_dict(),
+            optimizer=self.optimizer.state_dict() if self.optimizer else None,
+            scheduler=self.scheduler.state_dict() if self.scheduler else None,
+        )
 
-        dist.init_process_group(backend="nccl")
-        self.rank = dist.get_rank()
-        self.world_size = dist.get_world_size()
-        self.local_rank = int(os.environ.get("LOCAL_RANK", -1))
-        torch.cuda.set_device(self.local_rank)
-        self.is_main_process = self.rank == 0
-        self.is_local_main_process = self.local_rank == 0
+    def gather(self, tensor) -> torch.Tensor:
+        r"""
+        Gather tensor.
+        """
 
-    def reduce(self, tensor, reduction: str = "sum" ) -> torch.Tensor:
+        return self.accelerator.gather(tensor)
+
+    def reduce(self, tensor, reduction: str = "sum") -> torch.Tensor:
         r"""
         Reduce tensor.
         """
 
         return self.accelerator.reduce(tensor, reduction=reduction)
+
+    def unwrap_model(self, model: Optional[nn.Module] = None) -> nn.Module:
+        r"""
+        Unwrap DDP model.
+
+        Args:
+            model (Optional[nn.Module]):
+                Defaults to `self.model`.
+        """
+
+        if model is not None:
+            model = self.model
+        if self.accelerator is not None:
+            return self.accelerator.unwrap_model(model)
+        if self.distributed:
+            return model.module
+        return model
 
     @property
     def device(self) -> int:
@@ -142,3 +169,19 @@ class TorchRunner(BaseRunner):
         """
 
         return self.accelerator.local_process_index
+
+    def init_distributed(self) -> None:
+        r"""
+        Set up distributed training.
+
+        Initialise process group and set up DDP variables.
+        """
+
+        # pylint: disable=W0201
+
+        self.accelerator = Accelerator(**self.accelerate)
+
+    def __getattr__(self, name: str) -> Any:
+        if self.accelerator is not None:
+            return getattr(self.accelerator, name)
+        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
