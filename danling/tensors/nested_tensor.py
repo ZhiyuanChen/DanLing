@@ -481,10 +481,6 @@ class NestedTensor:
     def __eq__(self, other) -> bool:
         return self.storage == other.storage
 
-    @property  # type: ignore
-    def __class__(self) -> type:
-        return self.storage[0].__class__
-
     def __getstate__(self) -> Iterable[Tensor]:
         return self.storage
 
