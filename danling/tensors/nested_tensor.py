@@ -482,10 +482,10 @@ class NestedTensor:
         return self.storage == other.storage
 
     def __getstate__(self) -> Iterable[Tensor]:
-        return self.storage
+        return self.__dict__
 
-    def __setstate__(self, storage) -> None:
-        self.storage = storage
+    def __setstate__(self, states) -> None:
+        self.__dict__ = states
 
     @staticmethod
     @lru_cache(maxsize=None)
