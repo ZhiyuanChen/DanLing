@@ -236,27 +236,24 @@ class RunnerBase:
         r"""
         Actual batch size.
 
-        `batch_size` * `world_size` * `accum_steps`
+        Returns:
+            (int): `batch_size` * `world_size` * `accum_steps`
         """
 
         return self.batch_size * self.world_size * getattr(self, "accum_steps", 1)
 
-    @staticmethod
-    def best_fn(scores: Sequence[float], fn: Callable = max) -> float:  # pylint: disable=C0103
+    @property
+    def best_fn(self) -> Callable:  # pylint: disable=C0103
         r"""
         Function to determine the best score from a list of scores.
 
-        Subclass can override this method to accommodate needs, such as `min(scores)`.
-
-        Args:
-            scores: List of scores.
-            fn: Function to determine the best score from a list of scores.
+        Subclass can override this method to accommodate needs, such as `min`.
 
         Returns:
-            best_score: The best score from a list of scores.
+            (callable): `max`
         """
 
-        return fn(scores)
+        return max
 
     @property
     def latest_result(self) -> Optional[NestedDict]:
