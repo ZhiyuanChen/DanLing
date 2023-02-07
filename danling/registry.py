@@ -1,5 +1,5 @@
 from functools import wraps
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Union
 
 from chanfig import NestedDict
 
@@ -27,17 +27,17 @@ class Registry(NestedDict):
     >>> module = registry.register(Module, "Module2")
     >>> registry
     Registry(
-      ('Module1'): <class 'danling.registry.registry.Module'>
-      ('Module'): <class 'danling.registry.registry.Module'>
-      ('Module2'): <class 'danling.registry.registry.Module'>
+      ('Module1'): <class 'danling.registry.Module'>
+      ('Module'): <class 'danling.registry.Module'>
+      ('Module2'): <class 'danling.registry.Module'>
     )
     >>> registry.lookup("Module")
-    <class 'danling.registry.registry.Module'>
+    <class 'danling.registry.Module'>
     >>> config = {"module": {"name": "Module", "a": 1, "b": 2}}
     >>> # registry.register(Module)
     >>> module = registry.build(config["module"])
     >>> type(module)
-    <class 'danling.registry.registry.Module'>
+    <class 'danling.registry.Module'>
     >>> module.a
     1
     >>> module.b
@@ -78,9 +78,9 @@ class Registry(NestedDict):
         >>> module = registry.register(Module, "Module2")
         >>> registry
         Registry(
-          ('Module1'): <class 'danling.registry.registry.Module'>
-          ('Module'): <class 'danling.registry.registry.Module'>
-          ('Module2'): <class 'danling.registry.registry.Module'>
+          ('Module1'): <class 'danling.registry.Module'>
+          ('Module'): <class 'danling.registry.Module'>
+          ('Module2'): <class 'danling.registry.Module'>
         )
 
         ```
@@ -129,19 +129,21 @@ class Registry(NestedDict):
         ...         self.a = a
         ...         self.b = b
         >>> registry.lookup("Module")
-        <class 'danling.registry.registry.Module'>
+        <class 'danling.registry.Module'>
 
         ```
         """
 
         return self.get(name)
 
-    def build(self, name: str, *args, **kwargs) -> Any:
+    def build(self, name: Union[str, Mapping], *args, **kwargs) -> Any:
         r"""
         Build a component.
 
         Args:
-            name:
+            name (str | Mapping):
+                If its a `Mapping`, it must contain `"name"` as a member, the rest will be treated as `**kwargs`.
+                Note that values in `kwargs` will override values in `name` if its a `Mapping`.
             *args: The arguments to pass to the component.
             **kwargs: The keyword arguments to pass to the component.
 
@@ -161,20 +163,23 @@ class Registry(NestedDict):
         ...         self.b = b
         >>> config = {"module": {"name": "Module", "a": 1, "b": 2}}
         >>> # registry.register(Module)
-        >>> module = registry.build(config["module"])
+        >>> module = registry.build(**config["module"])
         >>> type(module)
-        <class 'danling.registry.registry.Module'>
+        <class 'danling.registry.Module'>
         >>> module.a
         1
         >>> module.b
+        2
+        >>> module = registry.build(config["module"], a=2)
+        >>> module.a
         2
 
         ```
         """
 
-        if isinstance(name, Mapping) and not args and not kwargs:
-            name, kwargs = name.pop("name"), name  # type: ignore
-        return self.get(name)(*args, **kwargs)
+        if isinstance(name, Mapping):
+            name, kwargs = name.pop("name"), dict(name, **kwargs)  # type: ignore
+        return self.get(name)(*args, **kwargs)  # type: ignore
 
     def __wrapped__(self):
         pass
