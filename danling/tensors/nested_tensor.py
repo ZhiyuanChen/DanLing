@@ -463,7 +463,7 @@ class NestedTensor:
             return NestedTensor(ret)
         if callable(elem):
             return NestedTensorFuncWrapper(ret)
-        if len(set(ret)) == 1:
+        if elem.__hash__ is not None and len(set(ret)) == 1:
             return elem
         return ret
 
@@ -587,6 +587,6 @@ class NestedTensorFuncWrapper:
         elem = ret[0]
         if isinstance(elem, Tensor):
             return NestedTensor(ret)
-        if len(set(ret)) == 1:
+        if elem.__hash__ is not None and len(set(ret)) == 1:
             return elem
         return ret
