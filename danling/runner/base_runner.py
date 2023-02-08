@@ -139,9 +139,11 @@ class BaseRunner(RunnerBase):
                 Set to `False` to disable this feature.
         """
 
+        seed = self.seed
         if bias is None:
             bias = self.rank
-        seed = self.seed + bias if bias else self.seed
+        if bias:
+            seed += bias
         np.random.seed(seed)
         random.seed(seed)
 

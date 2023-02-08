@@ -71,12 +71,14 @@ class TorchRunner(BaseRunner):
                 Set to `False` to disable this feature.
         """
 
+        seed = self.seed
         if self.distributed:
             # TODO: use broadcast_object instead.
-            self.seed = self.gather(torch.tensor(self.seed).cuda()).unsqueeze(0).flatten()[0]  # pylint: disable=E1101
+            seed = self.gather(torch.tensor(seed).cuda()).unsqueeze(0).flatten()[0]  # pylint: disable=E1101
         if bias is None:
             bias = self.rank
-        seed = self.seed + bias if bias else self.seed
+        if bias:
+            seed += bias
         torch.manual_seed(seed)
         torch.cuda.manual_seed(seed)
         np.random.seed(seed)
