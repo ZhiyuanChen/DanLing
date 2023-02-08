@@ -1,4 +1,4 @@
-from typing import List
+from typing import Optional, List
 
 import numpy as np
 from torch.optim import Optimizer, lr_scheduler

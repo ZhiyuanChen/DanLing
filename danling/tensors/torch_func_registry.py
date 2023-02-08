@@ -27,11 +27,11 @@ class TorchFuncRegistry(Registry):
         >>> import torch
         >>> registry = TorchFuncRegistry("test")
         >>> @registry.implement(torch.mean)  # pylint: disable=E1101
-        ... def stack(input):
+        ... def mean(input):
         ...     raise input.mean()
         >>> registry  # doctest: +ELLIPSIS
         TorchFuncRegistry(
-          (<built-in method mean of type object at ...>): <function stack at ...>
+          (<built-in method mean of type object at ...>): <function mean at ...>
         )
 
         ```
