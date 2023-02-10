@@ -184,6 +184,6 @@ class TorchRunner(BaseRunner):
         self.accelerator = Accelerator(**self.accelerate)
 
     def __getattr__(self, name: str) -> Any:
-        if self.accelerator is not None:
+        if self.accelerator is not None and hasattr(self.accelerator, name):
             return getattr(self.accelerator, name)
         raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
