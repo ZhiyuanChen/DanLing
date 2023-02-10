@@ -7,7 +7,7 @@ from json import dumps as json_dumps
 from random import randint
 from typing import IO, Any, Callable, List, Mapping, Optional, Sequence, Union
 
-from chanfig import Config, FlatDict, NestedDict
+from chanfig import Config, FlatDict, NestedDict, Variable
 from chanfig.utils import JsonEncoder, YamlDumper
 from yaml import dump as yaml_dump
 
@@ -207,7 +207,7 @@ class RunnerBase:
         if len(args) == 1 and isinstance(args[0], FlatDict) and not kwargs:
             args, kwargs = (), args[0]
         self.__dict__.update(NestedDict(*args, **kwargs))
-        self.__dict__.update(NestedDict(**self.__dict__))
+        # self.__dict__.update(NestedDict(**self.__dict__))
         if "id" not in self:
             self.id = f"{self.name}-{self.seed}"  # pylint: disable=C0103
 
@@ -527,6 +527,12 @@ class RunnerBase:
         if "id" not in self:
             raise RuntimeError(f"{self.__class__.__name__} is not properly initialised")
         raise AttributeError(f"{self.__class__.__name__} does not contain {name}")
+
+    def __setattr__(self, name, value) -> None:
+        if name in self.__dict__ and isinstance(self.__dict__[name], Variable):
+            self.__dict__[name].set(value)
+        else:
+            self.__dict__[name] = value
 
     def __contains__(self, name) -> bool:
         return name in self.__dict__
