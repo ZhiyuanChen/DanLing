@@ -313,7 +313,7 @@ class RunnerBase:
         If current epoch is the best epoch.
         """
 
-        return self.results and abs(self.latest_score - self.best_score) < 1e-7
+        return bool(self.results) and abs(self.latest_score - self.best_score) < 1e-7
         # return self.latest_score == self.best_score
 
     @property
