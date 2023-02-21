@@ -242,6 +242,7 @@ class BaseRunner(RunnerBase):
 
         See Also:
             [`from_checkpoint`][danling.BaseRunner.from_checkpoint]: Build runner from checkpoint.
+            [`load_pretrained`][danling.BaseRunner.load_pretrained]: Load parameters from pretrained checkpoint.
         """
 
         if checkpoint is None:
@@ -250,17 +251,45 @@ class BaseRunner(RunnerBase):
         if isinstance(checkpoint, str):
             if not os.path.exists(checkpoint):
                 raise FileNotFoundError(f"checkpoint is set to {checkpoint} but does not exist.")
-            state_dict = self.load(checkpoint, *args, **kwargs)
+            self.checkpoint = checkpoint
+            checkpoint = self.load(checkpoint, *args, **kwargs)
         # TODO: Wrap state_dict in a dataclass
         if override_config:
-            self.__dict__.update(NestedDict(**state_dict["runner"]))  # type: ignore
-        if self.model is not None and "model" in state_dict:  # type: ignore
-            self.model.load_state_dict(state_dict["model"])  # type: ignore
-        if self.optimizer is not None and "optimizer" in state_dict:  # type: ignore
-            self.optimizer.load_state_dict(state_dict["optimizer"])  # type: ignore
-        if self.scheduler is not None and "scheduler" in state_dict:  # type: ignore
-            self.scheduler.load_state_dict(state_dict["scheduler"])  # type: ignore
-        self.checkpoint = checkpoint  # pylint: disable=W0201
+            self.__dict__.update(NestedDict(**checkpoint["runner"]))
+        if self.model is not None and "model" in state_dict:
+            self.model.load_state_dict(checkpoint["model"])
+        if self.optimizer is not None and "optimizer" in checkpoint:
+            self.optimizer.load_state_dict(checkpoint["optimizer"])
+        if self.scheduler is not None and "scheduler" in checkpoint:
+            self.scheduler.load_state_dict(checkpoint["scheduler"])
+
+    def load_pretrained(self, checkpoint: Optional[Union[Mapping, str]], *args, **kwargs) -> None:
+        """
+        Load parameters from pretrained checkpoint.
+
+        Args:
+            checkpoint: Pretrained checkpoint (or its path) to load.
+            *args: Additional arguments to pass to `runner.load`.
+            **kwargs: Additional keyword arguments to pass to `runner.load`.
+
+        Raises:
+            FileNotFoundError: If `checkpoint` does not exists.
+
+        See Also:
+            [`load_checkpoint`][danling.BaseRunner.load_checkpoint]: Load info from checkpoint.
+        """
+
+        # TODO: Support loading checkpoints in other format
+        if isinstance(checkpoint, str):
+            if not os.path.exists(checkpoint):
+                raise FileNotFoundError(f"pretrained is set to {checkpoint} but does not exist.")
+            self.checkpoint = checkpoint
+            checkpoint = self.load(checkpoint, *args, **kwargs)
+        if "model" in checkpoint:
+            checkpoint = checkpoint["model"]
+        if "state_dict" in checkpoint:
+            checkpoint = checkpoint["state_dict"]
+        self.model.load_state_dict(checkpoint)
 
     @classmethod
     def from_checkpoint(cls, checkpoint: Union[Mapping, str], *args, **kwargs) -> BaseRunner:
