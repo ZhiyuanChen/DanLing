@@ -68,11 +68,11 @@ def load(file: File, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
     if extension in PYTORCH:
         if torch_load is None:
             raise ImportError(f"Trying to load {file} but torch is not installed.")
-        return torch_load(file)
+        return torch_load(file, *args, **kwargs)
     if extension in NUMPY:
         if numpy_load is None:
             raise ImportError(f"Trying to load {file} but numpy is not installed.")
-        return numpy_load(file, allow_pickle=True)
+        return numpy_load(file, *args, **kwargs)
     if extension in CSV:
         if read_csv is None:
             raise ImportError(f"Trying to load {file} but pandas is not installed.")
