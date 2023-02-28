@@ -1,5 +1,5 @@
 import random
-from typing import TYPE_CHECKING, Any, Callable, List, Mapping, Optional
+from typing import Any, Callable, List, Mapping, Optional
 
 import numpy as np
 import torch
@@ -13,9 +13,6 @@ except ImportError:
 
 from .base_runner import BaseRunner
 from .utils import on_main_process
-
-if TYPE_CHECKING:
-    from torch.utils.tensorboard.writer import SummaryWriter
 
 
 class TorchRunner(BaseRunner):

@@ -5,7 +5,7 @@ import logging.config
 import os
 from json import dumps as json_dumps
 from random import randint
-from typing import IO, Any, Callable, List, Mapping, Optional, Sequence, Union
+from typing import IO, Any, Callable, List, Mapping, Optional, Union
 
 from chanfig import Config, FlatDict, NestedDict, Variable
 from chanfig.utils import JsonEncoder, YamlDumper
@@ -69,7 +69,7 @@ class RunnerBase:
         results (List[NestedDict]): All results, should be in the form of ``[{subset: {index: score}}]``.
         latest_result (NestedDict, property): Most recent results,
             should be in the form of ``{subset: {index: score}}``.
-        Best_result (NestedDict, property): Best recent results, should be in the form of ``{subset: {index: score}}``.
+        best_result (NestedDict, property): Best recent results, should be in the form of ``{subset: {index: score}}``.
         scores (List[float], property): All scores.
         latest_score (float, property): Most recent score.
         best_score (float, property): Best score.

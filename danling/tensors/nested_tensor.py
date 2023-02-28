@@ -520,11 +520,11 @@ NestedTensorFunc = TorchFuncRegistry()
 
 @NestedTensorFunc.implement(torch.mean)  # pylint: disable=E1101
 def mean(
-    input,
+    input,  # pylint: disable=W0622
     dim: Optional[int] = None,
     keepdim: bool = False,
     *,
-    dtype: Optional[torch.dtype] = None,  # pylint: disable=W0622
+    dtype: Optional[torch.dtype] = None,
 ):
     return input.mean(dim=dim, keepdim=keepdim, dtype=dtype)
 

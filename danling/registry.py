@@ -181,7 +181,7 @@ class Registry(NestedDict):
             name, kwargs = name.pop("name"), dict(name, **kwargs)  # type: ignore
         return self.get(name)(*args, **kwargs)  # type: ignore
 
-    def __wrapped__(self):
+    def __wrapped__(self, *args, **kwargs):
         pass
 
 

@@ -1,11 +1,15 @@
-from typing import Optional, List
+from typing import List, Optional
 
 import numpy as np
 from torch.optim import Optimizer, lr_scheduler
 
 
-class LRScheduler(lr_scheduler._LRScheduler):
-    def __init__(
+class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
+    r"""
+    General learning rate scheduler.
+    """
+
+    def __init__(  # pylint: disable=R0913
         self,
         optimizer: Optimizer,
         steps: int,
@@ -32,11 +36,11 @@ class LRScheduler(lr_scheduler._LRScheduler):
             ratio = ratio * np.minimum(1.0, self._step_count / self.warmup_steps)
         return [max(self.min_lr, lr * ratio) for lr in self.base_lrs]
 
-    def linear(self, progress) -> float:
+    def linear(self, progress) -> float:  # pylint: disable=C0116
         return self.final_lr + (1 - self.final_lr) * (1.0 - progress)
 
-    def cosine(self, progress) -> float:
+    def cosine(self, progress) -> float:  # pylint: disable=C0116
         return 0.5 * (1.0 + np.cos(np.pi * progress))
 
-    def constant(self, progress) -> float:  # pylint: disable=W0613
+    def constant(self, progress) -> float:  # pylint: disable=W0613, C0116
         return 1.0

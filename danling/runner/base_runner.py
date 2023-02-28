@@ -251,12 +251,12 @@ class BaseRunner(RunnerBase):
         if isinstance(checkpoint, str):
             if not os.path.exists(checkpoint):
                 raise FileNotFoundError(f"checkpoint is set to {checkpoint} but does not exist.")
-            self.checkpoint = checkpoint
+            self.checkpoint = checkpoint  # pylint: disable=W0201
             checkpoint = self.load(checkpoint, *args, **kwargs)
         # TODO: Wrap state_dict in a dataclass
         if override_config:
             self.__dict__.update(NestedDict(**checkpoint["runner"]))
-        if self.model is not None and "model" in state_dict:
+        if self.model is not None and "model" in checkpoint:
             self.model.load_state_dict(checkpoint["model"])
         if self.optimizer is not None and "optimizer" in checkpoint:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
@@ -283,7 +283,7 @@ class BaseRunner(RunnerBase):
         if isinstance(checkpoint, str):
             if not os.path.exists(checkpoint):
                 raise FileNotFoundError(f"pretrained is set to {checkpoint} but does not exist.")
-            self.checkpoint = checkpoint
+            self.checkpoint = checkpoint  # pylint: disable=W0201
             checkpoint = self.load(checkpoint, *args, **kwargs)
         if "model" in checkpoint:
             checkpoint = checkpoint["model"]
