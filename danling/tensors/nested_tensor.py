@@ -1,8 +1,8 @@
 # pylint: disable=C0116
 from __future__ import annotations
 
-from functools import lru_cache  # for backward compatibility with Python 3.6
-from typing import Any, Callable, Iterable, Optional, Tuple
+from functools import lru_cache
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, Tuple
 
 import torch
 from torch import Tensor
@@ -131,12 +131,12 @@ class NestedTensor:
 
     # pylint: disable=C0103
 
-    storage: Iterable[Tensor] = []
+    storage: Sequence[Tensor] = []
     batch_first: bool = True
 
     def __init__(self, tensors: Iterable[Tensor], batch_first: bool = True) -> None:
         if not isinstance(tensors, Iterable):
-            raise ValueError(f"NestedTensor must be initialised with a Iterable, bug got {type(tensors)}.")
+            raise ValueError(f"NestedTensor must be initialised with an Iterable, bug got {type(tensors)}.")
         tensors = list(tensors)
         if len(tensors) == 0:
             raise ValueError("NestedTensor must be initialised with a non-empty Iterable.")
@@ -267,11 +267,11 @@ class NestedTensor:
         """
 
         if isinstance(condition, NestedTensor) and isinstance(other, NestedTensor):
-            return NestedTensor(x.where(c, y) for x, c, y in zip(self.storage, condition, other))
+            return NestedTensor(x.where(c, y) for x, c, y in zip(self.storage, condition.storage, other.storage))
         if isinstance(condition, NestedTensor):
-            return NestedTensor(x.where(c, other) for x, c in zip(self.storage, condition))
+            return NestedTensor(x.where(c, other) for x, c in zip(self.storage, condition.storage))
         if isinstance(other, NestedTensor):
-            return NestedTensor(x.where(condition, y) for x, y in zip(self.storage, other))
+            return NestedTensor(x.where(condition, y) for x, y in zip(self.storage, other.storage))
         return NestedTensor(x.where(condition, other) for x in self.storage)
 
     def __abs__(self):
@@ -481,11 +481,11 @@ class NestedTensor:
     def __eq__(self, other) -> bool:
         return self.storage == other.storage
 
-    def __getstate__(self) -> Iterable[Tensor]:
+    def __getstate__(self) -> Mapping:
         return self.__dict__
 
-    def __setstate__(self, states) -> None:
-        self.__dict__ = states
+    def __setstate__(self, states: Mapping) -> None:
+        self.__dict__.update(states)
 
     @staticmethod
     @lru_cache(maxsize=None)
@@ -569,20 +569,20 @@ class NestedTensorFuncWrapper:
 
     # pylint: disable=R0903
 
-    storage: Iterable[Callable] = []
+    storage: Sequence[Callable] = []
 
     def __init__(self, callables) -> None:
-        if not isinstance(callables, Iterable):
-            raise ValueError(f"NestedTensorFuncWrapper must be initialised with a Iterable, bug got {type(callables)}")
+        if not isinstance(callables, Sequence):
+            raise ValueError(f"NestedTensorFuncWrapper must be initialised with a Sequence, bug got {type(callables)}")
         if len(callables) == 0:
-            raise ValueError("NestedTensorFuncWrapper must be initialised with a non-empty Iterable.")
+            raise ValueError("NestedTensorFuncWrapper must be initialised with a non-empty Sequence.")
         if not callable(callables[0]):
             raise ValueError(
-                f"NestedTensorFuncWrapper must be initialised with a Iterable of Callable, bug got {type(callables[0])}"
+                f"NestedTensorFuncWrapper must be initialised with a Sequence of Callable, bug got {type(callables[0])}"
             )
         self.storage = callables
 
-    def __call__(self, *args, **kwargs) -> Iterable:
+    def __call__(self, *args, **kwargs) -> Sequence[Tensor]:
         ret = [call(*args, **kwargs) for call in self.storage]
         elem = ret[0]
         if isinstance(elem, Tensor):
