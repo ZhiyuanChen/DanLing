@@ -1,3 +1,4 @@
+from copy import deepcopy
 from functools import wraps
 from typing import Any, Callable, Mapping, Optional, Union
 
@@ -178,6 +179,7 @@ class Registry(NestedDict):
         """
 
         if isinstance(name, Mapping):
+            name = deepcopy(name)
             name, kwargs = name.pop("name"), dict(name, **kwargs)  # type: ignore
         return self.get(name)(*args, **kwargs)  # type: ignore
 
