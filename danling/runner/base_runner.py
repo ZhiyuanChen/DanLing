@@ -329,6 +329,7 @@ class BaseRunner(RunnerBase):
         Print latest and best result.
         """
 
+        print(f"results: {self.results}")
         print(f"latest result: {self.latest_result}")
         print(f"best result: {self.best_result}")
 
@@ -342,6 +343,8 @@ class BaseRunner(RunnerBase):
         `runner.dir/latest.json` and `runner.dir/best.json` respectively.
         """
 
+        results_path = os.path.join(self.dir, "results.json")
+        self.save({"id": self.id, "name": self.name, "results": self.results}, results_path, indent=4)
         ret = {"id": self.id, "name": self.name}
         result = self.latest_result  # type: ignore
         if isinstance(result, FlatDict):
@@ -356,7 +359,7 @@ class BaseRunner(RunnerBase):
             shutil.copy(latest_path, best_path)
 
     @property
-    def device(self) -> int:
+    def device(self) -> torch.device:
         r"""
         Device of runner.
         """

@@ -50,8 +50,8 @@ class RunnerBase:
     In general you should only use one of `iter_end`, `step_end`, `epoch_end` to indicate the length of running.
 
     Attributes: Model:
-        model:
-        criterion:
+        model (Callable):
+        criterion (Callable):
         optimizer:
         scheduler:
 
@@ -165,8 +165,8 @@ class RunnerBase:
     step_end: int
     epoch_end: int
 
-    model: Optional = None
-    criterion: Optional = None
+    model: Optional[Callable] = None
+    criterion: Optional[Callable] = None
     optimizer: Optional = None
     scheduler: Optional = None
 
