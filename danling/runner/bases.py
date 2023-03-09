@@ -197,15 +197,15 @@ class RunnerBase:
 
     batch_size: int
 
-    results: List[NestedDict] = []
+    results: List[NestedDict]
     index_set: Optional[str]
     index: str
 
     project_root: str = "experiments"
     checkpoint_dir_name: str = "checkpoints"
-    log: bool
+    log: bool = True
     logger: Optional[logging.Logger] = None
-    tensorboard: bool
+    tensorboard: bool = False
     writer: Optional = None
 
     def __init__(self, *args, **kwargs):
@@ -226,10 +226,9 @@ class RunnerBase:
         self.datasets = FlatDict()
         self.datasamplers = FlatDict()
         self.dataloaders = FlatDict()
+        self.results = []
         self.index_set = None
         self.index = "loss"
-        self.log = True
-        self.tensorboard = False
         if len(args) == 1 and isinstance(args[0], FlatDict) and not kwargs:
             args, kwargs = (), args[0]
         self.__dict__.update(NestedDict(*args, **kwargs))
