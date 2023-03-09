@@ -1,10 +1,10 @@
+import json
 import os
-from json import dump as json_dump
-from json import dumps as json_dumps
-from json import load as json_load
-from pickle import dump as pickle_dump
-from pickle import load as pickle_load
+import pickle
 from typing import Any, Dict, List
+
+import yaml
+from chanfig import FlatDict
 
 from danling.typing import File
 
@@ -26,6 +26,7 @@ except ImportError:
     read_csv = None
 
 JSON = ("json",)
+YAML = ("yaml", "yml")
 PYTORCH = ("pt", "pth")
 CSV = ("csv",)
 NUMPY = ("numpy", "npy", "npz")
@@ -48,11 +49,20 @@ def save(obj: Any, file: File, *args: List[Any], **kwargs: Dict[str, Any]) -> Fi
     elif extension in CSV:
         obj.to_csv(file, *args, **kwargs)
     elif extension in JSON:
-        with open(file, "w") as fp:  # pylint: disable=W1514, C0103
-            json_dump(obj, fp, *args, **kwargs)  # type: ignore
+        if isinstance(obj, FlatDict):
+            obj = obj.json(file)
+        else:
+            with open(file, "w") as fp:  # pylint: disable=W1514, C0103
+                json.dump(obj, fp, *args, **kwargs)  # type: ignore
+    elif extension in YAML:
+        if isinstance(obj, FlatDict):
+            obj = obj.yaml(file)
+        else:
+            with open(file, "w") as fp:  # pylint: disable=W1514, C0103
+                yaml.dump(obj, fp, *args, **kwargs)  # type: ignore
     elif extension in PICKLE:
         with open(file, "wb") as fp:  # pylint: disable=C0103
-            pickle_dump(obj, fp, *args, **kwargs)  # type: ignore
+            pickle.dump(obj, fp, *args, **kwargs)  # type: ignore
     else:
         raise ValueError(f"Tying to save {obj} to {file} with unsupported extension={extension}")
     return file
@@ -79,10 +89,13 @@ def load(file: File, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
         return read_csv(file, *args, **kwargs)
     if extension in JSON:
         with open(file, "r") as fp:  # pylint: disable=W1514, C0103
-            return json_load(fp, *args, **kwargs)  # type: ignore
+            return json.load(fp, *args, **kwargs)  # type: ignore
+    if extension in YAML:
+        with open(file, "r") as fp:  # pylint: disable=W1514, C0103
+            return yaml.load(fp, *args, **kwargs)  # type: ignore
     if extension in PICKLE:
         with open(file, "rb") as fp:  # pylint: disable=C0103
-            return pickle_load(fp, *args, **kwargs)  # type: ignore
+            return pickle.load(fp, *args, **kwargs)  # type: ignore
     raise ValueError(f"Tying to load {file} with unsupported extension={extension}")
 
 
@@ -91,7 +104,7 @@ def is_json_serializable(obj: Any) -> bool:
     Check if `obj` is JSON serializable.
     """
     try:
-        json_dumps(obj)
+        json.dumps(obj)
         return True
     except (TypeError, OverflowError):
         return False
