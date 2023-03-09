@@ -409,3 +409,6 @@ FodyWeavers.xsd
 
 # mkdocs
 site/
+
+# version
+danling/_version.py

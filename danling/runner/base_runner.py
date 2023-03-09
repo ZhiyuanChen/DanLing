@@ -167,7 +167,8 @@ class BaseRunner(RunnerBase):
 
         if lr_scale_factor is None:
             if batch_size_base is None:
-                if batch_size_base := getattr(self, "batch_size_base", None) is None:
+                batch_size_base = getattr(self, "batch_size_base", None)
+                if batch_size_base is None:
                     raise ValueError("batch_size_base must be specified to auto scale lr")
             lr_scale_factor = self.batch_size_equivalent / batch_size_base
         self.lr_scale_factor = lr_scale_factor

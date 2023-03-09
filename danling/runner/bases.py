@@ -6,15 +6,21 @@ import os
 from json import dumps as json_dumps
 from random import randint
 from typing import IO, Any, Callable, List, Mapping, Optional, Union
+from uuid import UUID, uuid4, uuid5
 
 from chanfig import Config, FlatDict, NestedDict, Variable
 from chanfig.utils import JsonEncoder, YamlDumper
+from git.exc import InvalidGitRepositoryError
+from git.repo import Repo
 from yaml import dump as yaml_dump
 
 from danling.utils import catch, ensure_dir, is_json_serializable, load, save
 
 PathStr = Union[os.PathLike, str, bytes]
 File = Union[PathStr, IO]
+
+DEFAULT_EXPERIMENT_NAME = "DanLing"
+DEFAULT_EXPERIMENT_ID = "xxxxxxxxxxxxxxxx"
 
 
 class RunnerBase:
@@ -28,8 +34,17 @@ class RunnerBase:
     `RunnerBase` also defines basic IO operations such as `save`, `load`, `json`, `yaml`, etc.
 
     Attributes: General:
-        id: Defaults to `f"{self.name}-{self.seed}"`.
-        name: Defaults to `"DanLing"`.
+        id: `f"{self.experiment_id:.4}{self.run_id:.4}{self.uuid.hex:.4}"`.
+        uuid: `uuid4()`.
+        name: `f"{self.experiment_name}-{self.run_name}"`.
+        experiment_id: git hash of the current HEAD.
+            Defaults to `"xxxxxxxxxxxxxxxx"` if Runner not under a git repo.
+        experiment_uuid: UUID of `self.experiment_id`.
+            Defaults to `UUID('78787878-7878-7878-7878-787878787878')` if Runner not under a git repo.
+        experiment_name: Defaults to `"DanLing"`.
+        run_id: hex of `self.run_uuid`.
+        run_uuid: `uuid5(self.experiment_id, config.jsons())`.
+        run_name: Defaults to `"DanLing"`.
         seed (int): Defaults to `randint(0, 2**32 - 1)`.
         deterministic (bool): Ensure [deterministic](https://pytorch.org/docs/stable/notes/randomness.html) operations.
             Defaults to `False`.
@@ -111,15 +126,16 @@ class RunnerBase:
         is_local_main_process (bool, property): If current process is the main process of local processes.
 
     Attributes: IO:
-        experiments_root (str): The root directory for all experiments.
+        project_root (str): The root directory for all experiments.
             Defaults to `"experiments"`.
         dir (str, property): Directory of the run.
+            Defaults to `os.path.join(self.project_root, f"{self.name}-{self.id}")`.
         checkpoint_dir (str, property): Directory of checkpoints.
         log_path (str, property):  Path of log file.
         checkpoint_dir_name (str): The name of the directory under `runner.dir` to save checkpoints.
             Defaults to `"checkpoints"`.
 
-    `experiments_root` is the root directory of all **Experiments**, and should be consistent across the **Project**.
+    `project_root` is the root directory of all **Experiments**, and should be consistent across the **Project**.
 
     `dir` is the directory of a certain **Run**.
 
@@ -148,9 +164,14 @@ class RunnerBase:
     """
 
     # pylint: disable=R0902, R0904
+    # DO NOT set default value in class, as they won't be stored in `__dict__`.
 
-    id: str
-    name: str = "DanLing"
+    run_id: str
+    run_uuid: UUID
+    run_name: str = "Run"
+    experiment_id: str = DEFAULT_EXPERIMENT_ID
+    experiment_uuid: UUID
+    experiment_name: str = DEFAULT_EXPERIMENT_NAME
 
     seed: int
     deterministic: bool
@@ -180,7 +201,7 @@ class RunnerBase:
     index_set: Optional[str]
     index: str
 
-    experiments_root: str = "experiments"
+    project_root: str = "experiments"
     checkpoint_dir_name: str = "checkpoints"
     log: bool
     logger: Optional[logging.Logger] = None
@@ -191,6 +212,11 @@ class RunnerBase:
         super().__init__()
         # Init attributes that should be kept in checkpoint inside `__init__`.
         # Note that attributes should be init before redefine `self.__dict__`.
+        try:
+            self.experiment_id = Repo(search_parent_directories=True).head.object.hexsha
+        except InvalidGitRepositoryError:
+            pass
+        self.experiment_uuid = UUID(bytes=bytes(self.experiment_id.ljust(16, "x")[:16], encoding="ascii"))
         self.deterministic = False
         self.iters = 0
         self.steps = 0
@@ -207,9 +233,18 @@ class RunnerBase:
         if len(args) == 1 and isinstance(args[0], FlatDict) and not kwargs:
             args, kwargs = (), args[0]
         self.__dict__.update(NestedDict(*args, **kwargs))
+        self.run_uuid = uuid5(self.experiment_uuid, self.jsons())
+        self.run_id = self.run_uuid.hex
+        self.uuid = uuid4()
         # self.__dict__.update(NestedDict(**self.__dict__))
-        if "id" not in self:
-            self.id = f"{self.name}-{self.seed}"  # pylint: disable=C0103
+
+    @property
+    def id(self) -> str:
+        return f"{self.experiment_id:.4}{self.run_id:.4}{self.uuid.hex:.4}"
+
+    @property
+    def name(self) -> str:
+        return f"{self.experiment_name}-{self.run_name}"
 
     @property
     def progress(self) -> float:
@@ -379,7 +414,7 @@ class RunnerBase:
         Directory of the run.
         """
 
-        return os.path.join(self.experiments_root, self.id)
+        return os.path.join(self.project_root, f"{self.name}-{self.id}")
 
     @property
     def log_path(self) -> str:
@@ -524,7 +559,7 @@ class RunnerBase:
         return cls(**Config.from_yamls(string, *args, **kwargs))
 
     def __getattr__(self, name) -> Any:
-        if "id" not in self:
+        if "uuid" not in self:
             raise RuntimeError(f"{self.__class__.__name__} is not properly initialised")
         raise AttributeError(f"{self.__class__.__name__} does not contain {name}")
 
