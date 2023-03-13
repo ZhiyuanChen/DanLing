@@ -12,35 +12,53 @@ def relative_position_bucket(
     num_buckets: int = 32,
     max_distance: int = 128,
 ):
+    r"""Creates a bucketized version of the relative position indices.
+
+      The relative position index is computed as:
+
+    .. math::
+          \text{rel_pos} = \text{rel_pos_0} + \ldots + \text{rel_pos_N-1},
+
+      where :math:`\text{rel_pos_i}` is the ith relative position in the range
+      :math:`[0, \text{seq\_len} - 1]`, :math:`\text{rel_pos_0}` is the first relative
+      position, and :math:`\text{rel_pos_N-1}` is the last relative position.
+
+      Args:
+          seq_len_max (int): The maximum sequence length.
+          bidirectional (bool, optional): Whether the model is bidirectional.
+              Defaults to True.
+          num_buckets (int, optional): The number of buckets. Defaults to 32.
+          max_distance (int, optional): The maximum distance. Defaults to 128.
+    """
+    # pylint: disable=E1101
+
     context_position = torch.arange(seq_len_max, dtype=torch.long)[:, None]
     memory_position = torch.arange(seq_len_max, dtype=torch.long)[None, :]
     relative_position = memory_position - context_position
     ret = torch.tensor(0)
-    n = -relative_position
+    negatives = -relative_position
     if bidirectional:
         num_buckets //= 2
-        ret = (n < 0).long() * num_buckets  # mtf.to_int32(mtf.less(n, 0)) * num_buckets
-        n = torch.abs(n)
+        ret = (negatives < 0).long() * num_buckets  # mtf.to_int32(mtf.less(negatives, 0)) * num_buckets
+        negatives = torch.abs(negatives)
     else:
-        n = torch.max(n, torch.zeros_like(n))
-    # now n is in the range [0, inf)
+        negatives = torch.max(negatives, torch.zeros_like(negatives))
+    # now negatives is in the range [0, inf)
 
     # half of the buckets are for exact increments in positions
     max_exact = num_buckets // 2
-    is_small = n < max_exact
+    is_small = negatives < max_exact
 
     # The other half of the buckets are for logarithmically bigger bins in positions up to max_distance
-    val_if_large = (
-        max_exact
-        + (torch.log(n.float() / max_exact) / math.log(max_distance / max_exact) * (num_buckets - max_exact)).long()
-    )
+    val_if_large = torch.log(negatives.float() / max_exact) / math.log(max_distance / max_exact)
+    val_if_large = max_exact + (val_if_large * (num_buckets - max_exact)).long()
     val_if_large = torch.min(val_if_large, torch.full_like(val_if_large, num_buckets - 1))
 
-    ret += torch.where(is_small, n, val_if_large)
+    ret += torch.where(is_small, negatives, val_if_large)
     return nn.Parameter(ret, requires_grad=False)
 
 
-class UnitedPositionEmbedding(nn.Module):
+class UnitedPositionEmbedding(nn.Module):  # pylint: disable=R0902
     r"""United Position Embedding
     See `Rethinking Positional Encoding in Language Pre-training <https://arxiv.org/abs/2006.15595>`_
     .. math::
@@ -66,7 +84,7 @@ class UnitedPositionEmbedding(nn.Module):
         >>> attn_output, attn_output_weights = multihead_attn(query, key, value)
     """
 
-    def __init__(
+    def __init__(  # pylint: disable=R0913
         self,
         embed_dim: int,
         num_heads: int,
@@ -87,8 +105,8 @@ class UnitedPositionEmbedding(nn.Module):
         if self.has_cls_token:
             # make room for [CLS]-to-others and others-to-[CLS]
             self.seq_len_max += 2
-        self.abs_pos_embed = nn.Parameter(torch.randn(self.seq_len_max, self.embed_dim))
-        self.ln = nn.LayerNorm(self.embed_dim)
+        self.abs_pos_embed = nn.Parameter(torch.randn(self.seq_len_max, self.embed_dim))  # pylint: disable=E1101
+        self.norm = nn.LayerNorm(self.embed_dim)
         self.in_proj = nn.Linear(self.embed_dim, self.embed_dim * 2)
         self.scaling = (embed_dim / num_heads * pos_scale_factor) ** -0.5
 
@@ -105,13 +123,15 @@ class UnitedPositionEmbedding(nn.Module):
             )
 
     def forward(self, src: Tensor, cls_token_index: Optional[Tensor] = None) -> Tensor:
+        # pylint: disable=C0103, C0116, E1101
+
         B, N, C = src.shape
         # 0 is for others-to-[CLS] 1 is for [CLS]-to-others
         # Assume the input is ordered. If your input token is permuted, you may need to update this accordingly
         if self.has_cls_token:
             # only plus 1 here since because [CLS] already plused 1
             N += 1
-        weight = self.ln(self.abs_pos_embed[:N, :])
+        weight = self.norm(self.abs_pos_embed[:N, :])
         q, k = self.in_proj(weight).reshape(N, 2, self.num_heads, C // self.num_heads).permute(1, 2, 0, 3)
         q = q * self.scaling
         pos_embed = torch.bmm(q, k.transpose(1, 2))

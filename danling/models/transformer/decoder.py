@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple, Type
 
 import torch
 from torch import Tensor, nn
@@ -10,35 +10,9 @@ from .ffn import FullyConnectedNetwork
 
 
 class TransformerDecoderLayer(nn.Module):
-    r"""TransformerDecoderLayer is made up of self-attn and feedforward network.
-    This standard decoder layer is based on the paper "Attention Is All You Need".
-    Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez,
-    Lukasz Kaiser, and Illia Polosukhin. 2017. Attention is all you need. In Advances in
-    Neural Information Processing Systems, pages 6000-6010. Users may modify or implement
-    in a different way during application.
-    Args:
-        embed_dim: the number of expected features in the input (required).
-        num_heads: the number of heads in the multi head attention models (required).
-        ffn_dim: the dimension of the feedforward network model (default=embed_dim*4).
-        dropout: the dropout value (default=0.1).
-        activation: the activation function of intermediate layer, relu or gelu (default=relu).
-        layer_norm_eps: the eps value in layer normalization components (default=1e-5).
-        batch_first: If ``True``, then the input and output tensors are provided
-            as (batch, seq, feature). Default: ``False``.
-        norm_first: if ``True``, layer norm is done prior to attention and feedforward
-            operations, respectivaly. Otherwise it's done after. Default: ``False`` (after).
-    Examples::
-        >>> decoder_layer = nn.TransformerDecoderLayer(embed_dim=512, num_heads=8)
-        >>> src = torch.rand(10, 32, 512)
-        >>> out = decoder_layer(src)
-    Alternatively, when ``batch_first`` is ``True``:
-        >>> decoder_layer = nn.TransformerDecoderLayer(embed_dim=512, num_heads=8, batch_first=True)
-        >>> src = torch.rand(32, 10, 512)
-        >>> out = decoder_layer(src)
-    """
     __constants__ = ["batch_first", "norm_first"]
 
-    def __init__(
+    def __init__(  # pylint: disable=R0913, R0914
         self,
         embed_dim: int,
         num_heads: int,
@@ -54,15 +28,15 @@ class TransformerDecoderLayer(nn.Module):
         add_zero_attn: bool = False,
         batch_first: bool = True,
         norm_first: bool = False,
-        Attention: nn.Module = MultiHeadAttention,
-        FeedForwardNetwork: nn.Module = FullyConnectedNetwork,
+        Attention: Type[nn.Module] = MultiHeadAttention,
+        FeedForwardNetwork: Type[nn.Module] = FullyConnectedNetwork,
         **kwargs: Optional[Dict[str, Any]]
     ) -> None:
         super().__init__()
         if ffn_dim is None:
             ffn_dim = embed_dim * 4
         self.norm_first = norm_first
-        self.self_attn = Attention(
+        self.self_attn = Attention(  # type: ignore
             embed_dim,
             num_heads,
             attn_dropout=attn_dropout,
@@ -73,7 +47,7 @@ class TransformerDecoderLayer(nn.Module):
             batch_first=batch_first,
             **kwargs
         )
-        self.cross_attn = Attention(
+        self.cross_attn = Attention(  # type: ignore
             embed_dim,
             num_heads,
             attn_dropout=attn_dropout,
@@ -85,11 +59,11 @@ class TransformerDecoderLayer(nn.Module):
             **kwargs
         )
         self.norm1 = nn.LayerNorm(embed_dim, eps=layer_norm_eps)
-        self.ffn = FeedForwardNetwork(embed_dim, ffn_dim, activation, ffn_dropout, **kwargs)
+        self.ffn = FeedForwardNetwork(embed_dim, ffn_dim, activation, ffn_dropout, **kwargs)  # type: ignore
         self.norm2 = nn.LayerNorm(embed_dim, eps=layer_norm_eps)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(
+    def forward(  # pylint: disable=R0913
         self,
         tgt: Tensor,
         mem: Tensor,
@@ -100,15 +74,7 @@ class TransformerDecoderLayer(nn.Module):
         mem_mask: Optional[Tensor] = None,
         mem_key_padding_mask: Optional[Tensor] = None,
         need_weights: bool = False,
-    ) -> Tensor:
-        r"""Pass the input through the decoder layer.
-        Args:
-            src: the sequence to the decoder layer (required).
-            attn_mask: the mask for the src sequence (optional).
-            key_padding_mask: the mask for the src keys per batch (optional).
-        Shape:
-            see the docs in Transformer class.
-        """
+    ) -> Tuple[Tensor, Tensor]:
 
         if self.norm_first:
             tgt = self.norm1(tgt)
@@ -145,25 +111,15 @@ class TransformerDecoderLayer(nn.Module):
 
 
 class TransformerDecoder(nn.Module):
-    r"""TransformerDecoder is a stack of N decoder layers
-    Args:
-        num_layers: the number of sub-decoder-layers in the decoder (required).
-        layer: the sub-decoder-layer in the decoder (default=TransformerDecoderLayer).
-        drop_layer: the drop layer rate (default=0.0).
-    Examples::
-        >>> transformer_decoder = dl.model.TransformerDecoder(num_layers=6)
-        >>> src = torch.rand(10, 32, 512)
-        >>> out = transformer_decoder(src)
-    """
     __constants__ = ["norm"]
 
-    def __init__(self, layer: TransformerDecoderLayer, num_layers: int = 6, **kwargs: Optional[Dict[str, Any]]) -> None:
+    def __init__(self, layer: TransformerDecoderLayer, num_layers: int = 6) -> None:
         super().__init__()
         self.num_layers = num_layers
         self.layers = nn.ModuleList([])
         self.layers.extend([layer for _ in range(self.num_layers)])
 
-    def forward(
+    def forward(  # pylint: disable=R0913
         self,
         tgt: Tensor,
         mem: Tensor,
@@ -175,15 +131,9 @@ class TransformerDecoder(nn.Module):
         mem_key_padding_mask: Optional[Tensor] = None,
         need_weights: bool = False,
         gradient_checkpoint: bool = False,
-    ) -> Tensor:
-        r"""Pass the input through the decoder layers in turn.
-        Args:
-            src: the sequence to the decoder (required).
-            attn_mask: the mask for the src sequence (optional).
-            key_padding_mask: the mask for the src keys per batch (optional).
-        Shape:
-            see the docs in Transformer class.
-        """
+    ) -> Tuple[Tensor, Tensor]:
+        # pylint: disable=E1101
+
         output = tgt
         # attn_weights is set to torch.empty(0, requires_grad=False) to avoid errors in DDP
         attn_weights = [] if need_weights else torch.empty(0, requires_grad=False)
@@ -191,7 +141,7 @@ class TransformerDecoder(nn.Module):
         for layer in self.layers:
             if gradient_checkpoint and self.training:
                 layer = partial(checkpoint, layer)
-                need_weights = torch.tensor(need_weights)
+                need_weights = torch.tensor(need_weights)  # type: ignore
             output, weights = layer(
                 output,
                 mem,
@@ -209,4 +159,4 @@ class TransformerDecoder(nn.Module):
         if need_weights:
             attn_weights = torch.stack(attn_weights).cpu().detach()  # type: ignore
 
-        return output, attn_weights
+        return output, attn_weights  # type: ignore

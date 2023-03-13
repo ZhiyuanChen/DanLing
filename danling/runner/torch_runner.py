@@ -3,6 +3,7 @@ from typing import Any, Callable, List, Mapping, Optional
 
 import numpy as np
 import torch
+from torch import distributed as dist
 from torch import nn
 from torch.backends import cudnn
 
@@ -27,8 +28,8 @@ class TorchRunner(BaseRunner):
 
     # pylint: disable=R0902
 
-    accelerator: Accelerator = None
-    accelerate: Mapping[str, Any] = None
+    accelerator: Accelerator
+    accelerate: Mapping[str, Any]
 
     def __init__(self, *args, **kwargs) -> None:
         self.accelerate = {}
@@ -70,8 +71,9 @@ class TorchRunner(BaseRunner):
 
         seed = self.seed
         if self.distributed:
-            # TODO: use broadcast_object instead.
-            seed = self.gather(torch.tensor(seed).cuda()).unsqueeze(0).flatten()[0]  # pylint: disable=E1101
+            object_list = [seed]
+            dist.broadcast_object_list(object_list)
+            seed = object_list[0]
         if bias is None:
             bias = self.rank
         if bias:
@@ -130,15 +132,15 @@ class TorchRunner(BaseRunner):
         """
 
         if model is not None:
-            model = self.model
+            model = self.model  # type: ignore
         if self.accelerator is not None:
             return self.accelerator.unwrap_model(model)
         if self.distributed:
-            return model.module
-        return model
+            return model.module  # type: ignore
+        return model  # type: ignore
 
     @property
-    def device(self) -> int:
+    def device(self) -> torch.device:  # pylint: disable=E1101
         r"""
         Device of runner.
         """

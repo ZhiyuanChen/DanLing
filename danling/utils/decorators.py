@@ -4,7 +4,7 @@ from os import makedirs
 from os.path import abspath
 from sys import stderr
 from traceback import format_exc
-from typing import Callable, Optional
+from typing import Callable, Optional, Type
 from weakref import ref
 
 
@@ -52,7 +52,7 @@ def flexible_decorator(maybe_decorator: Optional[Callable] = None):
 
 
 @flexible_decorator
-def catch(error: Exception = Exception, exclude: Optional[Exception] = None, print_args: bool = False):
+def catch(error: Type[Exception] = Exception, exclude: Optional[Type[Exception]] = None, print_args: bool = False):
     """
     Decorator to catch `error` except for `exclude`.
     Detailed traceback will be printed to `stderr`.
@@ -67,7 +67,9 @@ def catch(error: Exception = Exception, exclude: Optional[Exception] = None, pri
         print_args: Whether to print the arguments passed to the function.
     """
 
-    def decorator(func, error: Exception = Exception, exclude: Optional[Exception] = None, print_args: bool = False):
+    def decorator(
+        func, error: Type[Exception] = Exception, exclude: Optional[Type[Exception]] = None, print_args: bool = False
+    ):
         @wraps(func)
         def wrapper(*args, **kwargs):  # pylint: disable=R1710
             try:
@@ -78,7 +80,7 @@ def catch(error: Exception = Exception, exclude: Optional[Exception] = None, pri
                 message = format_exc()
                 message += f"\nencoutered when calling {func}"
                 if print_args:
-                    message += (f"with args {args} and kwargs {kwargs}",)
+                    message += f"with args {args} and kwargs {kwargs}"
                 print(message, file=stderr, force=True)
 
         return wrapper

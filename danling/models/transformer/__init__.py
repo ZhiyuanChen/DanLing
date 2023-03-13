@@ -1,4 +1,4 @@
-from .attention import MultiHeadAttention, SelfAttention
+from .attention import MultiHeadAttention, SimpleAttention
 from .decoder import TransformerDecoder, TransformerDecoderLayer
 from .encoder import TransformerEncoder, TransformerEncoderLayer
 from .ffn import FullyConnectedNetwork
@@ -10,7 +10,7 @@ __all__ = [
     "TransformerDecoder",
     "TransformerDecoderLayer",
     "MultiHeadAttention",
-    "SelfAttention",
+    "SimpleAttention",
     "FullyConnectedNetwork",
     "UnitedPositionEmbedding",
 ]

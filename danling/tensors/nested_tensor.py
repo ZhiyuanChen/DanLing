@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, Tuple, Union
 
 import torch
 from torch import Tensor
@@ -582,7 +582,7 @@ class NestedTensorFuncWrapper:
             )
         self.storage = callables
 
-    def __call__(self, *args, **kwargs) -> Sequence[Tensor]:
+    def __call__(self, *args, **kwargs) -> Union[NestedTensor, Sequence[Tensor]]:
         ret = [call(*args, **kwargs) for call in self.storage]
         elem = ret[0]
         if isinstance(elem, Tensor):

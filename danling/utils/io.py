@@ -1,29 +1,31 @@
 import json
 import os
 import pickle
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 import yaml
 from chanfig import FlatDict
 
-from danling.typing import File
+from danling.typing import File, PathStr
+
+TORCH_AVAILABLE = True
+NUMPY_AVAILABLE = True
+PANDAS_AVAILABLE = True
 
 try:
-    from torch import load as torch_load
-    from torch import save as torch_save
+    import torch
 except ImportError:
-    torch_save = None
-    torch_load = None
+    TORCH_AVAILABLE = False
+
 try:
-    from numpy import load as numpy_load
-    from numpy import save as numpy_save
+    import numpy
 except ImportError:
-    numpy_save = None
-    numpy_load = None
+    NUMPY_AVAILABLE = False
+
 try:
-    from pandas import read_csv
+    import pandas
 except ImportError:
-    read_csv = None
+    PANDAS_AVAILABLE = False
 
 JSON = ("json",)
 YAML = ("yaml", "yml")
@@ -33,21 +35,24 @@ NUMPY = ("numpy", "npy", "npz")
 PICKLE = ("pickle", "pkl")
 
 
-def save(obj: Any, file: File, *args: List[Any], **kwargs: Dict[str, Any]) -> File:
+def save(obj: Any, file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) -> File:  # pylint: disable=R0912
     r"""
     Save any file with supported extensions.
     """
-    extension = os.path.splitext(file)[-1].lower()[1:]
+    extension = os.path.splitext(file)[-1].lower()[1:]  # type: ignore
     if extension in PYTORCH:
-        if torch_save is None:
-            raise ImportError(f"Trying to save {obj} to {file} but torch is not installed.")
-        torch_save(obj, file, *args, **kwargs)
+        if not TORCH_AVAILABLE:
+            raise ImportError(f"Trying to save {obj} to {file!r} but torch is not installed.")
+        torch.save(obj, file, *args, **kwargs)  # type: ignore
     elif extension in NUMPY:
-        if numpy_save is None:
-            raise ImportError(f"Trying to save {obj} to {file} but numpy is not installed.")
-        numpy_save(file, obj, *args, **kwargs)
+        if not NUMPY_AVAILABLE:
+            raise ImportError(f"Trying to save {obj} to {file!r} but numpy is not installed.")
+        numpy.save(file, obj, *args, **kwargs)
     elif extension in CSV:
-        obj.to_csv(file, *args, **kwargs)
+        if isinstance(obj, pandas.DataFrame):
+            obj.to_csv(file, *args, **kwargs)  # type: ignore
+        else:
+            raise NotImplementedError(f"Trying to save {obj} to {file!r} but is not supported")
     elif extension in JSON:
         if isinstance(obj, FlatDict):
             obj = obj.json(file)
@@ -64,29 +69,29 @@ def save(obj: Any, file: File, *args: List[Any], **kwargs: Dict[str, Any]) -> Fi
         with open(file, "wb") as fp:  # pylint: disable=C0103
             pickle.dump(obj, fp, *args, **kwargs)  # type: ignore
     else:
-        raise ValueError(f"Tying to save {obj} to {file} with unsupported extension={extension}")
+        raise ValueError(f"Tying to save {obj} to {file!r} with unsupported extension={extension!r}")
     return file
 
 
-def load(file: File, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
+def load(file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
     r"""
     Load any file with supported extensions.
     """
     if not os.path.isfile(file):
-        raise ValueError(f"Trying to load {file} but it is not a file.")
-    extension = os.path.splitext(file)[-1].lower()[1:]
+        raise ValueError(f"Trying to load {file!r} but it is not a file.")
+    extension = os.path.splitext(file)[-1].lower()[1:]  # type: ignore
     if extension in PYTORCH:
-        if torch_load is None:
-            raise ImportError(f"Trying to load {file} but torch is not installed.")
-        return torch_load(file, *args, **kwargs)
+        if not TORCH_AVAILABLE:
+            raise ImportError(f"Trying to load {file!r} but torch is not installed.")
+        return torch.load(file, *args, **kwargs)  # type: ignore
     if extension in NUMPY:
-        if numpy_load is None:
-            raise ImportError(f"Trying to load {file} but numpy is not installed.")
-        return numpy_load(file, *args, **kwargs)
+        if not NUMPY_AVAILABLE:
+            raise ImportError(f"Trying to load {file!r} but numpy is not installed.")
+        return numpy.load(file, *args, **kwargs)
     if extension in CSV:
-        if read_csv is None:
-            raise ImportError(f"Trying to load {file} but pandas is not installed.")
-        return read_csv(file, *args, **kwargs)
+        if not PANDAS_AVAILABLE:
+            raise ImportError(f"Trying to load {file!r} but pandas is not installed.")
+        return pandas.read_csv(file, *args, **kwargs)  # type: ignore
     if extension in JSON:
         with open(file, "r") as fp:  # pylint: disable=W1514, C0103
             return json.load(fp, *args, **kwargs)  # type: ignore
@@ -96,7 +101,7 @@ def load(file: File, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
     if extension in PICKLE:
         with open(file, "rb") as fp:  # pylint: disable=C0103
             return pickle.load(fp, *args, **kwargs)  # type: ignore
-    raise ValueError(f"Tying to load {file} with unsupported extension={extension}")
+    raise ValueError(f"Tying to load {file!r} with unsupported extension={extension!r}")
 
 
 def is_json_serializable(obj: Any) -> bool:

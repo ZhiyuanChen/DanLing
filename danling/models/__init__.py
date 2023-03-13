@@ -1,4 +1,4 @@
-from .transformer import (FullyConnectedNetwork, MultiHeadAttention, SelfAttention, TransformerDecoder,
+from .transformer import (FullyConnectedNetwork, MultiHeadAttention, SimpleAttention, TransformerDecoder,
                           TransformerDecoderLayer, TransformerEncoder, TransformerEncoderLayer, UnitedPositionEmbedding)
 
 __all__ = [
@@ -7,7 +7,7 @@ __all__ = [
     "TransformerDecoder",
     "TransformerDecoderLayer",
     "MultiHeadAttention",
-    "SelfAttention",
+    "SimpleAttention",
     "FullyConnectedNetwork",
     "UnitedPositionEmbedding",
 ]

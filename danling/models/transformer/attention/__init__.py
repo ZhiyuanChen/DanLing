@@ -1,4 +1,4 @@
 from .multihead_attention import MultiHeadAttention
-from .self_attention import SelfAttention
+from .simple_attention import SimpleAttention
 
-__all__ = ["MultiHeadAttention", "SelfAttention"]
+__all__ = ["MultiHeadAttention", "SimpleAttention"]

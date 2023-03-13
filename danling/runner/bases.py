@@ -188,8 +188,8 @@ class RunnerBase:
 
     model: Optional[Callable] = None
     criterion: Optional[Callable] = None
-    optimizer: Optional = None
-    scheduler: Optional = None
+    optimizer: Optional[Any] = None
+    scheduler: Optional[Any] = None
 
     datasets: FlatDict
     datasamplers: FlatDict
@@ -206,7 +206,7 @@ class RunnerBase:
     log: bool = True
     logger: Optional[logging.Logger] = None
     tensorboard: bool = False
-    writer: Optional = None
+    writer: Optional[Any] = None
 
     def __init__(self, *args, **kwargs):
         super().__init__()
@@ -238,11 +238,25 @@ class RunnerBase:
         # self.__dict__.update(NestedDict(**self.__dict__))
 
     @property
-    def id(self) -> str:
+    def id(self) -> str:  # pylint: disable=C0103
+        r"""
+        ID of Run.
+
+        Returns:
+            (str):
+        """
+
         return f"{self.experiment_id:.4}{self.run_id:.4}{self.uuid.hex:.4}"
 
     @property
     def name(self) -> str:
+        r"""
+        Name of Run.
+
+        Returns:
+            (str):
+        """
+
         return f"{self.experiment_name}-{self.run_name}"
 
     @property
@@ -347,11 +361,13 @@ class RunnerBase:
         If current epoch is the best epoch.
         """
 
-        return bool(self.results) and abs(self.latest_score - self.best_score) < 1e-7
-        # return self.latest_score == self.best_score
+        try:
+            return abs(self.latest_score - self.best_score) < 1e-7  # type: ignore
+        except TypeError:
+            return True
 
     @property
-    def device(self) -> int:
+    def device(self) -> Any:
         r"""
         Device of runner.
         """
@@ -434,8 +450,8 @@ class RunnerBase:
 
     @catch
     def save(  # pylint: disable=W1113
-        self, obj: Any, file: File, main_process_only: bool = True, *args, **kwargs
-    ) -> PathStr:
+        self, obj: Any, file: PathStr, main_process_only: bool = True, *args, **kwargs
+    ) -> File:
         r"""
         Save any file with supported extensions.
 
@@ -445,11 +461,11 @@ class RunnerBase:
         """
 
         if main_process_only and self.is_main_process or not main_process_only:
-            save(obj, file, *args, **kwargs)
+            return save(obj, file, *args, **kwargs)
         return file
 
     @staticmethod
-    def load(file: File, *args, **kwargs) -> Any:  # pylint: disable=C0103
+    def load(file: PathStr, *args, **kwargs) -> Any:  # pylint: disable=C0103
         r"""
         Load any file with supported extensions.
 

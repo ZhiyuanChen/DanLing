@@ -6,11 +6,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 
-class MultiHeadAttention(nn.Module):  # pylint: disable=R0902
-
-    bias_k: Optional[Tensor]
-    bias_v: Optional[Tensor]
-
+class SimpleAttention(nn.Module):  # pylint: disable=R0902
     def __init__(  # pylint: disable=R0913
         self,
         embed_dim: int,
@@ -18,20 +14,10 @@ class MultiHeadAttention(nn.Module):  # pylint: disable=R0902
         attn_dropout: float = 0.0,
         scale_factor: float = 1.0,
         bias: bool = True,
-        add_bias_kv: bool = False,
-        add_zero_attn: bool = False,
-        k_dim: Optional[int] = None,
-        v_dim: Optional[int] = None,
         batch_first: bool = True,
     ) -> None:
-        # pylint: disable=E1101
-
         super().__init__()
         self.embed_dim = embed_dim
-        self.k_dim = k_dim if k_dim is not None else self.embed_dim
-        self.v_dim = v_dim if v_dim is not None else self.embed_dim
-        self._qkv_same_embed_dim = self.embed_dim == self.k_dim == self.v_dim
-
         self.num_heads = num_heads
         self.scale_factor = scale_factor
         self.batch_first = batch_first
@@ -40,17 +26,9 @@ class MultiHeadAttention(nn.Module):  # pylint: disable=R0902
         if not self.head_dim * self.num_heads == self.embed_dim:
             raise ValueError(f"embed_dim {self.embed_dim} not divisible by num_heads {self.num_heads}")
 
-        self.in_proj = nn.Linear(self.embed_dim, self.embed_dim + self.k_dim + self.v_dim, bias=bias)
+        self.in_proj = nn.Linear(self.embed_dim, self.embed_dim * 3, bias=bias)
         self.dropout = nn.Dropout(attn_dropout)
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=bias)
-
-        if add_bias_kv:
-            self.bias_k = nn.Parameter(torch.empty((1, 1, self.embed_dim)))
-            self.bias_v = nn.Parameter(torch.empty((1, 1, self.embed_dim)))
-        else:
-            self.bias_k = self.bias_v = None
-
-        self.add_zero_attn = add_zero_attn
 
         self._reset_parameters()
 
@@ -59,10 +37,6 @@ class MultiHeadAttention(nn.Module):  # pylint: disable=R0902
         if self.in_proj.bias is not None:
             nn.init.constant_(self.in_proj.bias, 0.0)
             nn.init.constant_(self.out_proj.bias, 0.0)
-        if self.bias_k is not None:
-            nn.init.xavier_normal_(self.bias_k)
-        if self.bias_v is not None:
-            nn.init.xavier_normal_(self.bias_v)
 
     def forward(  # pylint: disable=R0912, R0913, R0914, R0915
         self,
@@ -73,10 +47,8 @@ class MultiHeadAttention(nn.Module):  # pylint: disable=R0902
         attn_mask: Optional[Tensor] = None,
         key_padding_mask: Optional[Tensor] = None,
         need_weights: bool = False,
-        static_k: Optional[Tensor] = None,
-        static_v: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Optional[Tensor]]:
-        # pylint: disable=C0103, E1101
+        # pylint: disable=C0103, E1101, R0801
 
         if self.batch_first:
             query, key, value = [x.transpose(0, 1) for x in (query, key, value)]
@@ -118,54 +90,10 @@ class MultiHeadAttention(nn.Module):  # pylint: disable=R0902
             )
             key_padding_mask = key_padding_mask.to(torch.bool)
 
-        # add bias along batch dimension (currently second)
-        if self.bias_k is not None and self.bias_v is not None:
-            assert static_k is None, "bias cannot be added to static key."
-            assert static_v is None, "bias cannot be added to static value."
-            k = torch.cat([k, self.bias_k.repeat(1, batch_size, 1)])
-            v = torch.cat([v, self.bias_v.repeat(1, batch_size, 1)])
-            if attn_mask is not None:
-                attn_mask = F.pad(attn_mask, (0, 1))
-            if key_padding_mask is not None:
-                key_padding_mask = F.pad(key_padding_mask, (0, 1))
-        else:
-            assert self.bias_k is None
-            assert self.bias_v is None
-
         # reshape q, k, v for multihead attention and make em batch first
         q = q.reshape(target_len, batch_size * self.num_heads, self.head_dim).transpose(0, 1)
-        k = k.reshape(-1, batch_size * self.num_heads, self.head_dim).transpose(0, 1) if static_k is None else static_k
-        v = v.reshape(-1, batch_size * self.num_heads, self.head_dim).transpose(0, 1) if static_v is None else static_v
-
-        if static_k is not None:
-            correct_shape = (  # type: ignore
-                batch_size * self.num_heads,
-                static_k.shape[1],
-                self.head_dim,
-            )
-            if static_k.shape != correct_shape:
-                raise ValueError(f"static_k should have shape {correct_shape}, but got {static_k.shape}.")
-        if static_v is not None:
-            correct_shape = (  # type: ignore
-                batch_size * self.num_heads,
-                static_v.shape[1],
-                self.head_dim,
-            )
-            if static_v.shape != correct_shape:
-                raise ValueError(f"static_v should have shape {correct_shape}, but got {static_v.shape}.")
-
-        # add zero attention along batch dimension (now first)
-        if self.add_zero_attn:
-            zero_attn_shape = (batch_size * self.num_heads, 1, self.head_dim)
-            k = torch.cat([k, torch.zeros(zero_attn_shape, dtype=k.dtype, device=k.device)], dim=1)
-            v = torch.cat([v, torch.zeros(zero_attn_shape, dtype=v.dtype, device=v.device)], dim=1)
-            if attn_mask is not None:
-                attn_mask = F.pad(attn_mask, (0, 1))
-            if key_padding_mask is not None:
-                key_padding_mask = F.pad(key_padding_mask, (0, 1))
-
-        # update source sequence length after adjustments
-        source_len = k.shape[1]
+        k = k.reshape(-1, batch_size * self.num_heads, self.head_dim).transpose(0, 1)
+        v = v.reshape(-1, batch_size * self.num_heads, self.head_dim).transpose(0, 1)
 
         # merge key padding and attention masks
         if key_padding_mask is not None:
@@ -214,19 +142,19 @@ class MultiHeadAttention(nn.Module):  # pylint: disable=R0902
         if k is v:
             # self-attention
             if q is k:
-                return self.in_proj(q).split((self.embed_dim, self.k_dim, self.v_dim), dim=-1)
+                return self.in_proj(q).chunk(3, dim=-1)
             # encoder-decoder attention
             else:
-                w_q, w_kv = self.in_proj.weight.split((self.embed_dim, self.k_dim + self.v_dim))
+                w_q, w_kv = self.in_proj.weight.split(self.embed_dim)
                 b_q, b_kv = None, None
                 if self.in_proj.bias is not None:
-                    b_q, b_kv = self.in_proj.bias.split((self.embed_dim, self.k_dim + self.v_dim))
-                return (F.linear(q, w_q, b_q),) + F.linear(k, w_kv, b_kv).split((self.k_dim, self.v_dim), dim=-1)
+                    b_q, b_kv = self.in_proj.bias.split((self.embed_dim, self.embed_dim * 2))
+                return (F.linear(q, w_q, b_q),) + tuple(F.linear(k, w_kv, b_kv).chunk(2, dim=-1))  # type: ignore
         else:
-            w_q, w_k, w_v = self.in_proj.weight.split((self.embed_dim, self.k_dim, self.v_dim))
+            w_q, w_k, w_v = self.in_proj.weight.chunk(3, -1)
             b_q, b_k, b_v = None, None, None
             if self.in_proj.bias is not None:
-                b_q, b_k, b_v = self.in_proj.bias.split((self.embed_dim, self.k_dim, self.v_dim))
+                b_q, b_k, b_v = self.in_proj.bias.chunk(3)
             return F.linear(q, w_q, b_q), F.linear(k, w_k, b_k), F.linear(v, w_v, b_v)
 
     def attention(  # pylint: disable=R0913
@@ -237,7 +165,7 @@ class MultiHeadAttention(nn.Module):  # pylint: disable=R0902
         attn_bias: Optional[Tensor] = None,
         attn_mask: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
-        # pylint: disable=C0103, E1101
+        # pylint: disable=C0103, E1101, R0801
 
         q *= self.scaling
         # (B, Nt, E) x (B, E, Ns) -> (B, Nt, Ns)

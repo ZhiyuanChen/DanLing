@@ -9,7 +9,6 @@ import shutil
 from typing import Callable, Mapping, Optional, Union
 
 import numpy as np
-import torch
 from chanfig import FlatDict, NestedDict
 
 from danling.utils import catch
@@ -247,24 +246,24 @@ class BaseRunner(RunnerBase):
         """
 
         if checkpoint is None:
-            checkpoint = os.path.join(self.checkpoint_dir, "latest.pth")
+            checkpoint = os.path.join(self.checkpoint_dir, "latest.pth")  # type: ignore
         # TODO: Support loading checkpoints in other format
         if isinstance(checkpoint, str):
             if not os.path.exists(checkpoint):
                 raise FileNotFoundError(f"checkpoint is set to {checkpoint} but does not exist.")
             self.checkpoint = checkpoint  # pylint: disable=W0201
-            checkpoint = self.load(checkpoint, *args, **kwargs)
+            checkpoint: Mapping = self.load(checkpoint, *args, **kwargs)  # type: ignore
         # TODO: Wrap state_dict in a dataclass
         if override_config:
-            self.__dict__.update(NestedDict(**checkpoint["runner"]))
+            self.__dict__.update(NestedDict(**checkpoint["runner"]))  # type: ignore
         if self.model is not None and "model" in checkpoint:
-            self.model.load_state_dict(checkpoint["model"])
+            self.model.load_state_dict(checkpoint["model"])  # type: ignore
         if self.optimizer is not None and "optimizer" in checkpoint:
-            self.optimizer.load_state_dict(checkpoint["optimizer"])
+            self.optimizer.load_state_dict(checkpoint["optimizer"])  # type: ignore
         if self.scheduler is not None and "scheduler" in checkpoint:
-            self.scheduler.load_state_dict(checkpoint["scheduler"])
+            self.scheduler.load_state_dict(checkpoint["scheduler"])  # type: ignore
 
-    def load_pretrained(self, checkpoint: Optional[Union[Mapping, str]], *args, **kwargs) -> None:
+    def load_pretrained(self, checkpoint: Union[Mapping, str], *args, **kwargs) -> None:
         """
         Load parameters from pretrained checkpoint.
 
@@ -284,13 +283,12 @@ class BaseRunner(RunnerBase):
         if isinstance(checkpoint, str):
             if not os.path.exists(checkpoint):
                 raise FileNotFoundError(f"pretrained is set to {checkpoint} but does not exist.")
-            self.checkpoint = checkpoint  # pylint: disable=W0201
-            checkpoint = self.load(checkpoint, *args, **kwargs)
+            checkpoint: Mapping = self.load(checkpoint, *args, **kwargs)  # type: ignore
         if "model" in checkpoint:
-            checkpoint = checkpoint["model"]
+            checkpoint = checkpoint["model"]  # type: ignore
         if "state_dict" in checkpoint:
-            checkpoint = checkpoint["state_dict"]
-        self.model.load_state_dict(checkpoint)
+            checkpoint = checkpoint["state_dict"]  # type: ignore
+        self.model.load_state_dict(checkpoint)  # type: ignore
 
     @classmethod
     def from_checkpoint(cls, checkpoint: Union[Mapping, str], *args, **kwargs) -> BaseRunner:
@@ -358,11 +356,3 @@ class BaseRunner(RunnerBase):
         if self.is_best:
             best_path = os.path.join(self.dir, "best.json")
             shutil.copy(latest_path, best_path)
-
-    @property
-    def device(self) -> torch.device:
-        r"""
-        Device of runner.
-        """
-
-        return torch.device("cpu")  # pylint: disable=E1101
