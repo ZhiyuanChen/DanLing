@@ -3,14 +3,10 @@ from typing import Any, Callable, List, Mapping, Optional
 
 import numpy as np
 import torch
+from accelerate import Accelerator
 from torch import distributed as dist
 from torch import nn
 from torch.backends import cudnn
-
-try:
-    from accelerate import Accelerator
-except ImportError:
-    Accelerator = None
 
 from .base_runner import BaseRunner
 from .utils import on_main_process
@@ -42,6 +38,13 @@ class TorchRunner(BaseRunner):
         """
 
         return self.accelerator.prepare(*args, device_placement=device_placement)
+
+    def backward(self, loss) -> None:
+        r"""
+        Backward loss to compute gradients.
+        """
+
+        return self.accelerator.backward(loss)
 
     @on_main_process
     def init_tensorboard(self, *args, **kwargs) -> None:
@@ -177,8 +180,6 @@ class TorchRunner(BaseRunner):
 
         Initialise process group and set up DDP variables.
         """
-
-        # pylint: disable=W0201
 
         self.accelerator = Accelerator(**self.accelerate)
 

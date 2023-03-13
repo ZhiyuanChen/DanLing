@@ -60,7 +60,6 @@ class TransformerEncoderLayer(nn.Module):
         key_padding_mask: Optional[Tensor] = None,
         need_weights: bool = False,
     ) -> Tuple[Tensor, Tensor]:
-
         if self.norm_first:
             src = self.norm1(src)
 

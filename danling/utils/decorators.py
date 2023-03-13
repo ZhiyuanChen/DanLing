@@ -17,22 +17,27 @@ def flexible_decorator(maybe_decorator: Optional[Callable] = None):
 
     ```python
     >>> @flexible_decorator
-    >>> def decorator(*args, **kwargs):
-    ...     pass
+    ... def decorator(*args, **kwargs):
+    ...     def wrapper(func, *args, **kwargs):
+    ...         pass
+    ...     return wrapper
+
     ```
 
     The following two are equivalent:
 
     ```python
     >>> @decorator
-    >>> def func(*args, **kwargs):
+    ... def func(*args, **kwargs):
     ...     pass
+
     ```
 
     ```python
     >>> @decorator()
-    >>> def func(*args, **kwargs):
+    ... def func(*args, **kwargs):
     ...     pass
+
     ```
 
     """

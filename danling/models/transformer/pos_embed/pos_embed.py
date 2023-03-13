@@ -64,6 +64,7 @@ class UnitedPositionEmbedding(nn.Module):  # pylint: disable=R0902
     .. math::
         \text{MultiHead}(Q, K, V) = \text{Concat}(head_1,\dots,head_h)W^O
     where :math:`head_i = \text{Attention}(QW_i^Q, KW_i^K, VW_i^V)`.
+
     Args:
         embed_dim: total dimension of the model.
         num_heads: parallel attention heads.
@@ -79,9 +80,15 @@ class UnitedPositionEmbedding(nn.Module):  # pylint: disable=R0902
     Note that if :attr:`k_dim` and :attr:`v_dim` are None, they will be set
     to :attr:`embed_dim` such that query, key, and value have the same
     number of features.
-    Examples::
-        >>> multihead_attn = nn.MultiheadAttention(embed_dim, num_heads)
-        >>> attn_output, attn_output_weights = multihead_attn(query, key, value)
+
+    Examples:
+
+    ```python
+    >>> query, key, value = torch.rand(8, 32, 192).chunk(3, dim=-1)
+    >>> multihead_attn = nn.MultiheadAttention(64, 8)
+    >>> attn_output, attn_output_weights = multihead_attn(query, key, value)
+
+    ```
     """
 
     def __init__(  # pylint: disable=R0913

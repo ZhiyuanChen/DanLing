@@ -29,6 +29,19 @@ dependencies = [
 ]
 dynamic = ["version"]
 
+[project.optional-dependencies]
+torch = [
+    "torch",
+    "accelerate",
+]
+jax = [
+    "jax",
+    "flax",
+]
+tensorflow = [
+    "tensorflow",
+]
+
 [project.urls]
 homepage = "https://danling.org"
 repository = "https://github.com/ZhiyuanChen/DanLing"

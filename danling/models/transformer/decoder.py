@@ -75,7 +75,6 @@ class TransformerDecoderLayer(nn.Module):
         mem_key_padding_mask: Optional[Tensor] = None,
         need_weights: bool = False,
     ) -> Tuple[Tensor, Tensor]:
-
         if self.norm_first:
             tgt = self.norm1(tgt)
 

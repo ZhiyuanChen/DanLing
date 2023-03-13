@@ -7,7 +7,6 @@ from torch import Tensor, nn
 
 
 class MultiHeadAttention(nn.Module):  # pylint: disable=R0902
-
     bias_k: Optional[Tensor]
     bias_v: Optional[Tensor]
 

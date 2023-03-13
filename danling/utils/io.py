@@ -1,7 +1,7 @@
 import json
 import os
 import pickle
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List
 
 import yaml
 from chanfig import FlatDict
