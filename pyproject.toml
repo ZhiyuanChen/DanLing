@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "danling"
+description = "Scaffold for experienced Machine Learning Researchers"
+readme = "README.md"
+license = {file = "LICENSE"}
+keywords = ["Artificial Intelligence", "Machine Learning", "Deep Learning"]
+maintainers = [
+    {name = "Zhiyuan Chen", email = "this@zyc.ai"},
+]
+authors = [
+    {name = "Zhiyuan Chen", email = "this@zyc.ai"},
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3"
+dependencies = [
+    "chanfig",
+    "gitpython",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+torch = [
+    "torch",
+    "accelerate",
+]
+jax = [
+    "jax",
+    "flax",
+]
+tensorflow = [
+    "tensorflow",
+]
+
+[project.urls]
+homepage = "https://danling.org"
+repository = "https://github.com/ZhiyuanChen/DanLing"
+documentation = "https://danling.org"
+
+[tool.setuptools]
+packages = ["danling"]
+
+[tool.setuptools_scm]
+write_to = "danling/_version.py"
