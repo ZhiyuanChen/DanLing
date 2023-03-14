@@ -47,7 +47,7 @@ def save(obj: Any, file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) ->
     elif extension in NUMPY:
         if not NUMPY_AVAILABLE:
             raise ImportError(f"Trying to save {obj} to {file!r} but numpy is not installed.")
-        numpy.save(file, obj, *args, **kwargs)
+        numpy.save(file, obj, *args, **kwargs)  # type: ignore
     elif extension in CSV:
         if isinstance(obj, pandas.DataFrame):
             obj.to_csv(file, *args, **kwargs)  # type: ignore
@@ -87,7 +87,7 @@ def load(file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
     if extension in NUMPY:
         if not NUMPY_AVAILABLE:
             raise ImportError(f"Trying to load {file!r} but numpy is not installed.")
-        return numpy.load(file, *args, **kwargs)
+        return numpy.load(file, *args, **kwargs)  # type: ignore
     if extension in CSV:
         if not PANDAS_AVAILABLE:
             raise ImportError(f"Trying to load {file!r} but pandas is not installed.")

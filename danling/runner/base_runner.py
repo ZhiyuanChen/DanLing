@@ -171,8 +171,8 @@ class BaseRunner(RunnerBase):
                     raise ValueError("batch_size_base must be specified to auto scale lr")
             lr_scale_factor = self.batch_size_equivalent / batch_size_base
         self.lr_scale_factor = lr_scale_factor
-        self.lr = self.lr * self.lr_scale_factor  # type: float  # pylint: disable=C0103
-        self.lr_final = self.lr_final * self.lr_scale_factor  # type: float
+        self.lr = self.lr * self.lr_scale_factor  # type: float  # pylint: disable=C0103, E1101
+        self.lr_final = self.lr_final * self.lr_scale_factor  # type: float # pylint: disable=E1101
 
     def step(self, zero_grad: bool = True) -> None:
         r"""

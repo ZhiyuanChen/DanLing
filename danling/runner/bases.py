@@ -235,29 +235,9 @@ class RunnerBase:
         self.run_uuid = uuid5(self.experiment_uuid, self.jsons())
         self.run_id = self.run_uuid.hex
         self.uuid = uuid4()
+        self.id = f"{self.experiment_id:.4}{self.run_id:.4}{self.uuid.hex:.4}"  # pylint: disable=C0103
+        self.name = f"{self.experiment_name}-{self.run_name}"
         # self.__dict__.update(NestedDict(**self.__dict__))
-
-    @property
-    def id(self) -> str:  # pylint: disable=C0103
-        r"""
-        ID of Run.
-
-        Returns:
-            (str):
-        """
-
-        return f"{self.experiment_id:.4}{self.run_id:.4}{self.uuid.hex:.4}"
-
-    @property
-    def name(self) -> str:
-        r"""
-        Name of Run.
-
-        Returns:
-            (str):
-        """
-
-        return f"{self.experiment_name}-{self.run_name}"
 
     @property
     def progress(self) -> float:
