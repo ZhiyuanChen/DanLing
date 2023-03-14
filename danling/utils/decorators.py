@@ -57,7 +57,12 @@ def flexible_decorator(maybe_decorator: Optional[Callable] = None):
 
 
 @flexible_decorator
-def catch(error: Type[Exception] = Exception, exclude: Optional[Type[Exception]] = None, print_args: bool = False):
+def catch(
+    error: Type[Exception] = Exception,
+    exclude: Optional[Type[Exception]] = None,
+    verbose: bool = True,
+    print_args: bool = False,
+):
     """
     Decorator to catch `error` except for `exclude`.
     Detailed traceback will be printed to `stderr`.
@@ -82,11 +87,12 @@ def catch(error: Type[Exception] = Exception, exclude: Optional[Type[Exception]]
             except error as exc:  # pylint: disable=W0703
                 if exclude is not None and isinstance(exc, exclude):
                     raise exc
-                message = format_exc()
-                message += f"\nencoutered when calling {func}"
-                if print_args:
-                    message += f"with args {args} and kwargs {kwargs}"
-                print(message, file=stderr, force=True)
+                if verbose:
+                    message = format_exc()
+                    message += f"\nencoutered when calling {func}"
+                    if print_args:
+                        message += f"with args {args} and kwargs {kwargs}"
+                    print(message, file=stderr, force=True)
 
         return wrapper
 

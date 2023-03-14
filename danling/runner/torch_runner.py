@@ -8,6 +8,8 @@ from torch import distributed as dist
 from torch import nn
 from torch.backends import cudnn
 
+from danling.utils import catch
+
 from .base_runner import BaseRunner
 from .utils import on_main_process
 
@@ -57,6 +59,7 @@ class TorchRunner(BaseRunner):
             kwargs["log_dir"] = self.dir
 
         self.writer = SummaryWriter(*args, **kwargs)
+        self.writer.add_scalar = catch(OSError, verbose=False)(self.writer.add_scalar)
 
     def set_seed(self, bias: Optional[int] = None) -> None:
         r"""
