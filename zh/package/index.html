@@ -2602,7 +2602,7 @@ and all you need to do is to convert <code>PNTensor</code> to <code>NestedTensor
 
   <div class="doc doc-contents ">
       <p class="doc doc-class-bases">
-        Bases: <code><a class="autorefs autorefs-internal" title="danling.runner.base_runner.BaseRunner" href="../../package/#danling.BaseRunner">BaseRunner</a></code></p>
+        Bases: <code><a class="autorefs autorefs-internal" title="danling.runner.base_runner.BaseRunner" href="../../runner/base_runner/#danling.runner.BaseRunner">BaseRunner</a></code></p>
 
   
       <p>Set up everything for running a job.</p>
@@ -4092,8 +4092,8 @@ then return them in the same order.</p>
 <a id="__codelineno-0-171" name="__codelineno-0-171"></a>                    <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;batch_size_base must be specified to auto scale lr&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-172" name="__codelineno-0-172"></a>            <span class="n">lr_scale_factor</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">batch_size_equivalent</span> <span class="o">/</span> <span class="n">batch_size_base</span>
 <a id="__codelineno-0-173" name="__codelineno-0-173"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">lr_scale_factor</span> <span class="o">=</span> <span class="n">lr_scale_factor</span>
-<a id="__codelineno-0-174" name="__codelineno-0-174"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">lr</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">lr</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">lr_scale_factor</span>  <span class="c1"># type: float  # pylint: disable=C0103</span>
-<a id="__codelineno-0-175" name="__codelineno-0-175"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">lr_final</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">lr_final</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">lr_scale_factor</span>  <span class="c1"># type: float</span>
+<a id="__codelineno-0-174" name="__codelineno-0-174"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">lr</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">lr</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">lr_scale_factor</span>  <span class="c1"># type: float  # pylint: disable=C0103, E1101</span>
+<a id="__codelineno-0-175" name="__codelineno-0-175"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">lr_final</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">lr_final</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">lr_scale_factor</span>  <span class="c1"># type: float # pylint: disable=E1101</span>
 <a id="__codelineno-0-176" name="__codelineno-0-176"></a>
 <a id="__codelineno-0-177" name="__codelineno-0-177"></a>    <span class="k">def</span> <span class="nf">step</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">zero_grad</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <a id="__codelineno-0-178" name="__codelineno-0-178"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
@@ -4710,8 +4710,8 @@ then return them in the same order.</p>
 <a id="__codelineno-0-171" name="__codelineno-0-171"></a>                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;batch_size_base must be specified to auto scale lr&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-172" name="__codelineno-0-172"></a>        <span class="n">lr_scale_factor</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">batch_size_equivalent</span> <span class="o">/</span> <span class="n">batch_size_base</span>
 <a id="__codelineno-0-173" name="__codelineno-0-173"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">lr_scale_factor</span> <span class="o">=</span> <span class="n">lr_scale_factor</span>
-<a id="__codelineno-0-174" name="__codelineno-0-174"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">lr</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">lr</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">lr_scale_factor</span>  <span class="c1"># type: float  # pylint: disable=C0103</span>
-<a id="__codelineno-0-175" name="__codelineno-0-175"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">lr_final</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">lr_final</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">lr_scale_factor</span>  <span class="c1"># type: float</span>
+<a id="__codelineno-0-174" name="__codelineno-0-174"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">lr</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">lr</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">lr_scale_factor</span>  <span class="c1"># type: float  # pylint: disable=C0103, E1101</span>
+<a id="__codelineno-0-175" name="__codelineno-0-175"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">lr_final</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">lr_final</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">lr_scale_factor</span>  <span class="c1"># type: float # pylint: disable=E1101</span>
 </code></pre></div></td></tr></table></div>
       </details>
   </div>
@@ -5286,7 +5286,7 @@ Defaults to <code>runner.checkpoint_dir/latest.pth</code>.</p></td>
     <tbody>
         <tr>
           <td>
-                <code><a class="autorefs autorefs-internal" title="danling.runner.base_runner.BaseRunner" href="../../package/#danling.BaseRunner">BaseRunner</a></code>
+                <code><a class="autorefs autorefs-internal" title="danling.runner.base_runner.BaseRunner" href="../../runner/base_runner/#danling.runner.BaseRunner">BaseRunner</a></code>
           </td>
           <td></td>
         </tr>
@@ -6878,7 +6878,7 @@ However, not all operations are tested.</p>
     <tbody>
         <tr>
           <td>
-                <code><a class="autorefs autorefs-internal" title="danling.tensors.nested_tensor.NestedTensor" href="../../package/#danling.NestedTensor">NestedTensor</a></code>
+                <code><a class="autorefs autorefs-internal" title="danling.tensors.nested_tensor.NestedTensor" href="../../tensors/nested_tensor/#danling.tensors.NestedTensor">NestedTensor</a></code>
           </td>
           <td></td>
         </tr>
@@ -7171,7 +7171,7 @@ However, not all operations are tested.</p>
 <a id="__codelineno-0-47" name="__codelineno-0-47"></a>    <span class="k">elif</span> <span class="n">extension</span> <span class="ow">in</span> <span class="n">NUMPY</span><span class="p">:</span>
 <a id="__codelineno-0-48" name="__codelineno-0-48"></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">NUMPY_AVAILABLE</span><span class="p">:</span>
 <a id="__codelineno-0-49" name="__codelineno-0-49"></a>            <span class="k">raise</span> <span class="ne">ImportError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Trying to save </span><span class="si">{</span><span class="n">obj</span><span class="si">}</span><span class="s2"> to </span><span class="si">{</span><span class="n">file</span><span class="si">!r}</span><span class="s2"> but numpy is not installed.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-50" name="__codelineno-0-50"></a>        <span class="n">numpy</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="n">obj</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+<a id="__codelineno-0-50" name="__codelineno-0-50"></a>        <span class="n">numpy</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="n">obj</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
 <a id="__codelineno-0-51" name="__codelineno-0-51"></a>    <span class="k">elif</span> <span class="n">extension</span> <span class="ow">in</span> <span class="n">CSV</span><span class="p">:</span>
 <a id="__codelineno-0-52" name="__codelineno-0-52"></a>        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">pandas</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">):</span>
 <a id="__codelineno-0-53" name="__codelineno-0-53"></a>            <span class="n">obj</span><span class="o">.</span><span class="n">to_csv</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
@@ -7398,7 +7398,7 @@ Decorating <code>save</code> method with <code>catch</code> will allow you to ca
 <a id="__codelineno-0-87" name="__codelineno-0-87"></a>    <span class="k">if</span> <span class="n">extension</span> <span class="ow">in</span> <span class="n">NUMPY</span><span class="p">:</span>
 <a id="__codelineno-0-88" name="__codelineno-0-88"></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">NUMPY_AVAILABLE</span><span class="p">:</span>
 <a id="__codelineno-0-89" name="__codelineno-0-89"></a>            <span class="k">raise</span> <span class="ne">ImportError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Trying to load </span><span class="si">{</span><span class="n">file</span><span class="si">!r}</span><span class="s2"> but numpy is not installed.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-90" name="__codelineno-0-90"></a>        <span class="k">return</span> <span class="n">numpy</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+<a id="__codelineno-0-90" name="__codelineno-0-90"></a>        <span class="k">return</span> <span class="n">numpy</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
 <a id="__codelineno-0-91" name="__codelineno-0-91"></a>    <span class="k">if</span> <span class="n">extension</span> <span class="ow">in</span> <span class="n">CSV</span><span class="p">:</span>
 <a id="__codelineno-0-92" name="__codelineno-0-92"></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">PANDAS_AVAILABLE</span><span class="p">:</span>
 <a id="__codelineno-0-93" name="__codelineno-0-93"></a>            <span class="k">raise</span> <span class="ne">ImportError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Trying to load </span><span class="si">{</span><span class="n">file</span><span class="si">!r}</span><span class="s2"> but pandas is not installed.&quot;</span><span class="p">)</span>
