@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import logging.config
 import os
+from datetime import datetime
 from json import dumps as json_dumps
 from random import randint
 from typing import IO, Any, Callable, List, Mapping, Optional, Union
@@ -235,7 +236,8 @@ class RunnerBase:
         self.run_uuid = uuid5(self.experiment_uuid, self.jsons())
         self.run_id = self.run_uuid.hex
         self.uuid = uuid4()
-        self.id = f"{self.experiment_id:.4}{self.run_id:.4}{self.uuid.hex:.4}"  # pylint: disable=C0103
+        time = datetime.now().strftime('%m%d%H%M')
+        self.id = f"{self.experiment_id:.4}{self.run_id:.4}{time}"  # pylint: disable=C0103
         self.name = f"{self.experiment_name}-{self.run_name}"
         # self.__dict__.update(NestedDict(**self.__dict__))
 
