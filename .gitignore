@@ -412,3 +412,7 @@ site/
 
 # version
 danling/_version.py
+
+# pytest
+data
+examples

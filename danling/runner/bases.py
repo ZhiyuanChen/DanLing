@@ -7,7 +7,7 @@ from datetime import datetime
 from json import dumps as json_dumps
 from random import randint
 from typing import IO, Any, Callable, List, Mapping, Optional, Union
-from uuid import UUID, uuid4, uuid5
+from uuid import UUID, uuid5
 
 from chanfig import Config, FlatDict, NestedDict, Variable
 from chanfig.utils import JsonEncoder, YamlDumper
@@ -15,7 +15,7 @@ from git.exc import InvalidGitRepositoryError
 from git.repo import Repo
 from yaml import dump as yaml_dump
 
-from danling.utils import catch, ensure_dir, is_json_serializable, load, save
+from danling.utils import base62, catch, ensure_dir, is_json_serializable, load, save
 
 NUMPY_AVAILABLE = True
 try:
@@ -41,8 +41,8 @@ class RunnerBase:
     `RunnerBase` also defines basic IO operations such as `save`, `load`, `json`, `yaml`, etc.
 
     Attributes: General:
-        id: `f"{self.experiment_id:.4}{self.run_id:.4}{self.uuid.hex:.4}"`.
-        uuid: `uuid4()`.
+        id: `f"{self.experiment_id:.4}{self.run_id:.4}{time_str}"`.
+        uuid: `uuid5(self.run_id, self.id)`.
         name: `f"{self.experiment_name}-{self.run_name}"`.
         experiment_id: git hash of the current HEAD.
             Defaults to `"xxxxxxxxxxxxxxxx"` if Runner not under a git repo.
@@ -239,11 +239,13 @@ class RunnerBase:
         if len(args) == 1 and isinstance(args[0], FlatDict) and not kwargs:
             args, kwargs = (), args[0]
         self.__dict__.update(NestedDict(*args, **kwargs))
-        self.run_uuid = uuid5(self.experiment_uuid, self.jsons())
+        self.run_uuid = uuid5(self.experiment_uuid, self.yamls())
         self.run_id = self.run_uuid.hex
-        self.uuid = uuid4()
-        time = datetime.now().strftime("%m%d%H%M")
-        self.id = f"{self.experiment_id:.4}{self.run_id:.4}{time}"  # pylint: disable=C0103
+        time = datetime.now()
+        time_tuple = time.isocalendar()[1:] + (time.hour, time.minute, time.second, time.microsecond)
+        time_str = "".join(base62.encode(i) for i in time_tuple)
+        self.id = f"{self.experiment_id:.5}{self.run_id:.4}{time_str}"  # pylint: disable=C0103
+        self.uuid = uuid5(self.run_uuid, self.id)
         self.name = f"{self.experiment_name}-{self.run_name}"
         # self.__dict__.update(NestedDict(**self.__dict__))
 

@@ -25,6 +25,7 @@ nav:
   - Utils:
       - Decorator: utils/decorators.md
       - IO: utils/io.md
+      - basex: utils/basex.md
   - package: package.md
   # - Blog: blog/index.md
 
