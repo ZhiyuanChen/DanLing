@@ -17,6 +17,12 @@ from yaml import dump as yaml_dump
 
 from danling.utils import catch, ensure_dir, is_json_serializable, load, save
 
+NUMPY_AVAILABLE = True
+try:
+    import numpy as np
+except ImportError:
+    NUMPY_AVAILABLE = False
+
 PathStr = Union[os.PathLike, str, bytes]
 File = Union[PathStr, IO]
 
@@ -473,6 +479,11 @@ class RunnerBase:
         for k, v in self.__dict__.items():
             if isinstance(v, FlatDict):
                 v = v.dict(cls)
+            if NUMPY_AVAILABLE:
+                if isinstance(v, np.integer):
+                    v = int(v)
+                elif isinstance(v, np.floating):
+                    v = float(v)
             if not only_json_serializable or is_json_serializable(v):
                 ret[k] = v
         return ret
