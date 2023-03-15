@@ -105,6 +105,14 @@
          
     </url>
     <url>
+         <loc>https://danling.org/utils/basex/</loc>
+         <lastmod>2023-03-15</lastmod>
+         <changefreq>daily</changefreq>
+         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/en/utils/basex/"/>
+         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/utils/basex/"/>
+         
+    </url>
+    <url>
          <loc>https://danling.org/utils/decorators/</loc>
          <lastmod>2023-03-15</lastmod>
          <changefreq>daily</changefreq>
