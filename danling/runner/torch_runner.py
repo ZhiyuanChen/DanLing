@@ -59,7 +59,7 @@ class TorchRunner(BaseRunner):
             kwargs["log_dir"] = self.dir
 
         self.writer = SummaryWriter(*args, **kwargs)
-        self.writer.add_scalar = catch(OSError, verbose=False)(self.writer.add_scalar)
+        self.writer.add_scalar = catch(OSError, verbose=False)(self.writer.add_scalar)  # type: ignore
 
     def set_seed(self, bias: Optional[int] = None) -> None:
         r"""

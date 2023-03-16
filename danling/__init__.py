@@ -1,5 +1,5 @@
 from danling import metrics as metrics
-from danling import models as models
+from danling import modules as modules
 from danling import optim as optim
 from danling import registry as registry
 from danling import runner as runner
@@ -14,7 +14,7 @@ from .utils import catch, ensure_dir, flexible_decorator, is_json_serializable, 
 
 __all__ = [
     "metrics",
-    "models",
+    "modules",
     "optim",
     "registry",
     "runner",

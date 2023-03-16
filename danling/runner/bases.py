@@ -242,7 +242,7 @@ class RunnerBase:
         self.run_uuid = uuid5(self.experiment_uuid, self.jsons())
         self.run_id = self.run_uuid.hex
         self.uuid = uuid4()
-        time = datetime.now().strftime('%m%d%H%M')
+        time = datetime.now().strftime("%m%d%H%M")
         self.id = f"{self.experiment_id:.4}{self.run_id:.4}{time}"  # pylint: disable=C0103
         self.name = f"{self.experiment_name}-{self.run_name}"
         # self.__dict__.update(NestedDict(**self.__dict__))
