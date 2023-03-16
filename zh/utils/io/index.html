@@ -944,13 +944,13 @@
 <a id="__codelineno-0-55" name="__codelineno-0-55"></a>            <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Trying to save </span><span class="si">{</span><span class="n">obj</span><span class="si">}</span><span class="s2"> to </span><span class="si">{</span><span class="n">file</span><span class="si">!r}</span><span class="s2"> but is not supported&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-56" name="__codelineno-0-56"></a>    <span class="k">elif</span> <span class="n">extension</span> <span class="ow">in</span> <span class="n">JSON</span><span class="p">:</span>
 <a id="__codelineno-0-57" name="__codelineno-0-57"></a>        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">FlatDict</span><span class="p">):</span>
-<a id="__codelineno-0-58" name="__codelineno-0-58"></a>            <span class="n">obj</span> <span class="o">=</span> <span class="n">obj</span><span class="o">.</span><span class="n">json</span><span class="p">(</span><span class="n">file</span><span class="p">)</span>
+<a id="__codelineno-0-58" name="__codelineno-0-58"></a>            <span class="n">obj</span><span class="o">.</span><span class="n">json</span><span class="p">(</span><span class="n">file</span><span class="p">)</span>
 <a id="__codelineno-0-59" name="__codelineno-0-59"></a>        <span class="k">else</span><span class="p">:</span>
 <a id="__codelineno-0-60" name="__codelineno-0-60"></a>            <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="s2">&quot;w&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">fp</span><span class="p">:</span>  <span class="c1"># pylint: disable=W1514, C0103</span>
 <a id="__codelineno-0-61" name="__codelineno-0-61"></a>                <span class="n">json</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">fp</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
 <a id="__codelineno-0-62" name="__codelineno-0-62"></a>    <span class="k">elif</span> <span class="n">extension</span> <span class="ow">in</span> <span class="n">YAML</span><span class="p">:</span>
 <a id="__codelineno-0-63" name="__codelineno-0-63"></a>        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">FlatDict</span><span class="p">):</span>
-<a id="__codelineno-0-64" name="__codelineno-0-64"></a>            <span class="n">obj</span> <span class="o">=</span> <span class="n">obj</span><span class="o">.</span><span class="n">yaml</span><span class="p">(</span><span class="n">file</span><span class="p">)</span>
+<a id="__codelineno-0-64" name="__codelineno-0-64"></a>            <span class="n">obj</span><span class="o">.</span><span class="n">yaml</span><span class="p">(</span><span class="n">file</span><span class="p">)</span>
 <a id="__codelineno-0-65" name="__codelineno-0-65"></a>        <span class="k">else</span><span class="p">:</span>
 <a id="__codelineno-0-66" name="__codelineno-0-66"></a>            <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="s2">&quot;w&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">fp</span><span class="p">:</span>  <span class="c1"># pylint: disable=W1514, C0103</span>
 <a id="__codelineno-0-67" name="__codelineno-0-67"></a>                <span class="n">yaml</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">fp</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
@@ -1097,7 +1097,7 @@
   <small>
     
       最后更新:
-      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-03-15 15:16:34</span>
+      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-03-16 14:40:30</span>
       
     
   </small>
