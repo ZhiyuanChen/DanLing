@@ -55,13 +55,13 @@ def save(obj: Any, file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) ->
             raise NotImplementedError(f"Trying to save {obj} to {file!r} but is not supported")
     elif extension in JSON:
         if isinstance(obj, FlatDict):
-            obj = obj.json(file)
+            obj.json(file)
         else:
             with open(file, "w") as fp:  # pylint: disable=W1514, C0103
                 json.dump(obj, fp, *args, **kwargs)  # type: ignore
     elif extension in YAML:
         if isinstance(obj, FlatDict):
-            obj = obj.yaml(file)
+            obj.yaml(file)
         else:
             with open(file, "w") as fp:  # pylint: disable=W1514, C0103
                 yaml.dump(obj, fp, *args, **kwargs)  # type: ignore

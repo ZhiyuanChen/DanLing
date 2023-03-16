@@ -21,7 +21,7 @@ class BaseX:
 
     def decode(self, string: str) -> int:
         decoded = 0
-        for i, a in enumerate(reversed(string)):
+        for i, a in enumerate(reversed(string)):  # pylint: disable=C0103
             decoded += (self.num_alphabets**i) * self.alphabet_dict[a]
         return decoded
 
