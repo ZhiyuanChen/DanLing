@@ -124,11 +124,14 @@ class BaseRunner(RunnerBase):
         """
         raise NotImplementedError
 
-    def set_seed(self, bias: Optional[int] = None) -> None:
+    def set_seed(self, seed: Optional[int] = None, bias: Optional[int] = None) -> None:
         r"""
         Set up random seed.
 
         Args:
+            seed: Random seed to set.
+                Defaults to `self.seed` (`config.seed`).
+
             bias: Make the seed different for each processes.
 
                 This avoids same data augmentation are applied on every processes.

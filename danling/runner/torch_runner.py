@@ -61,11 +61,14 @@ class TorchRunner(BaseRunner):
         self.writer = SummaryWriter(*args, **kwargs)
         self.writer.add_scalar = catch(OSError, verbose=False)(self.writer.add_scalar)  # type: ignore
 
-    def set_seed(self, bias: Optional[int] = None) -> None:
+    def set_seed(self, seed: Optional[int] = None, bias: Optional[int] = None) -> None:
         r"""
         Set up random seed.
 
         Args:
+            seed: Random seed to set.
+                Defaults to `self.seed` (`config.seed`).
+
             bias: Make the seed different for each processes.
 
                 This avoids same data augmentation are applied on every processes.
@@ -75,7 +78,8 @@ class TorchRunner(BaseRunner):
                 Set to `False` to disable this feature.
         """
 
-        seed = self.seed
+        if seed is None:
+            seed = self.seed
         if self.distributed:
             object_list = [seed]
             dist.broadcast_object_list(object_list)
@@ -84,6 +88,7 @@ class TorchRunner(BaseRunner):
             bias = self.rank
         if bias:
             seed += bias
+        self.seed = seed
         torch.manual_seed(seed)
         torch.cuda.manual_seed(seed)
         np.random.seed(seed)
@@ -185,6 +190,10 @@ class TorchRunner(BaseRunner):
         """
 
         self.accelerator = Accelerator(**self.accelerate)
+        if self.distributed:
+            object_list = [self.id, self.uuid]
+            dist.broadcast_object_list(object_list)
+            self.id, self.uuid = object_list[0], object_list[1]
 
     def __getattr__(self, name: str) -> Any:
         if self.accelerator is not None and hasattr(self.accelerator, name):
