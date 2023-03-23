@@ -33,20 +33,18 @@ class TorchRunner(BaseRunner):
         self.accelerate = {}
         super().__init__(*args, **kwargs)
 
-    def prepare(self, *args, device_placement: Optional[List[bool]] = None) -> None:
+    def init_distributed(self) -> None:
         r"""
-        Prepare all objects passed in `args` for distributed training and mixed precision,
-        then return them in the same order.
+        Set up distributed training.
+
+        Initialise process group and set up DDP variables.
         """
 
-        return self.accelerator.prepare(*args, device_placement=device_placement)
-
-    def backward(self, loss) -> None:
-        r"""
-        Backward loss to compute gradients.
-        """
-
-        return self.accelerator.backward(loss)
+        self.accelerator = Accelerator(**self.accelerate)
+        if self.distributed:
+            object_list = [self.id, self.uuid]
+            dist.broadcast_object_list(object_list)
+            self.id, self.uuid = object_list[0], object_list[1]
 
     @on_main_process
     def init_tensorboard(self, *args, **kwargs) -> None:
@@ -119,19 +117,27 @@ class TorchRunner(BaseRunner):
             scheduler=self.scheduler.state_dict() if self.scheduler else None,
         )
 
-    def gather(self, tensor) -> torch.Tensor:
+    def prepare(self, *args, device_placement: Optional[List[bool]] = None) -> None:
         r"""
-        Gather tensor.
+        Prepare all objects passed in `args` for distributed training and mixed precision,
+        then return them in the same order.
         """
 
-        return self.accelerator.gather(tensor)
+        return self.accelerator.prepare(*args, device_placement=device_placement)
 
-    def reduce(self, tensor, reduction: str = "sum") -> torch.Tensor:
+    def autocast(self):
         r"""
-        Reduce tensor.
+        Context manager that enables autocasting for the forward pass (and maybe backward pass).
         """
 
-        return self.accelerator.reduce(tensor, reduction=reduction)
+        return self.accelerator.autocast()
+
+    def backward(self, loss) -> None:
+        r"""
+        Backward loss to compute gradients.
+        """
+
+        return self.accelerator.backward(loss)
 
     def unwrap_model(self, model: Optional[nn.Module] = None) -> nn.Module:
         r"""
@@ -182,18 +188,19 @@ class TorchRunner(BaseRunner):
 
         return self.accelerator.local_process_index
 
-    def init_distributed(self) -> None:
+    def gather(self, tensor) -> torch.Tensor:
         r"""
-        Set up distributed training.
-
-        Initialise process group and set up DDP variables.
+        Gather tensor.
         """
 
-        self.accelerator = Accelerator(**self.accelerate)
-        if self.distributed:
-            object_list = [self.id, self.uuid]
-            dist.broadcast_object_list(object_list)
-            self.id, self.uuid = object_list[0], object_list[1]
+        return self.accelerator.gather(tensor)
+
+    def reduce(self, tensor, reduction: str = "sum") -> torch.Tensor:
+        r"""
+        Reduce tensor.
+        """
+
+        return self.accelerator.reduce(tensor, reduction=reduction)
 
     def __getattr__(self, name: str) -> Any:
         if self.accelerator is not None and hasattr(self.accelerator, name):
