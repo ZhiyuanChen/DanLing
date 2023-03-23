@@ -2625,7 +2625,7 @@ and all you need to do is to convert <code>PNTensor</code> to <code>NestedTensor
 
   <div class="doc doc-contents ">
       <p class="doc doc-class-bases">
-        Bases: <code><a class="autorefs autorefs-internal" title="danling.runner.base_runner.BaseRunner" href="../../package/#danling.BaseRunner">BaseRunner</a></code></p>
+        Bases: <code><a class="autorefs autorefs-internal" title="danling.runner.base_runner.BaseRunner" href="../../runner/base_runner/#danling.runner.BaseRunner">BaseRunner</a></code></p>
 
   
       <p>Set up everything for running a job.</p>
@@ -4062,7 +4062,14 @@ then return them in the same order.</p>
 <span class="normal"><a href="#__codelineno-0-358">358</a></span>
 <span class="normal"><a href="#__codelineno-0-359">359</a></span>
 <span class="normal"><a href="#__codelineno-0-360">360</a></span>
-<span class="normal"><a href="#__codelineno-0-361">361</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-20" name="__codelineno-0-20"></a><span class="k">class</span> <span class="nc">BaseRunner</span><span class="p">(</span><span class="n">RunnerBase</span><span class="p">):</span>
+<span class="normal"><a href="#__codelineno-0-361">361</a></span>
+<span class="normal"><a href="#__codelineno-0-362">362</a></span>
+<span class="normal"><a href="#__codelineno-0-363">363</a></span>
+<span class="normal"><a href="#__codelineno-0-364">364</a></span>
+<span class="normal"><a href="#__codelineno-0-365">365</a></span>
+<span class="normal"><a href="#__codelineno-0-366">366</a></span>
+<span class="normal"><a href="#__codelineno-0-367">367</a></span>
+<span class="normal"><a href="#__codelineno-0-368">368</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-20" name="__codelineno-0-20"></a><span class="k">class</span> <span class="nc">BaseRunner</span><span class="p">(</span><span class="n">RunnerBase</span><span class="p">):</span>
 <a id="__codelineno-0-21" name="__codelineno-0-21"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
 <a id="__codelineno-0-22" name="__codelineno-0-22"></a><span class="sd">    Base class for running a neural network.</span>
 <a id="__codelineno-0-23" name="__codelineno-0-23"></a>
@@ -4251,7 +4258,7 @@ then return them in the same order.</p>
 <a id="__codelineno-0-206" name="__codelineno-0-206"></a>
 <a id="__codelineno-0-207" name="__codelineno-0-207"></a>    <span class="nd">@catch</span>
 <a id="__codelineno-0-208" name="__codelineno-0-208"></a>    <span class="nd">@on_main_process</span>
-<a id="__codelineno-0-209" name="__codelineno-0-209"></a>    <span class="k">def</span> <span class="nf">save_checkpoint</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-209" name="__codelineno-0-209"></a>    <span class="k">def</span> <span class="nf">save_checkpoint</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">interval</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;epoch&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <a id="__codelineno-0-210" name="__codelineno-0-210"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
 <a id="__codelineno-0-211" name="__codelineno-0-211"></a><span class="sd">        Save checkpoint to `runner.checkpoint_dir`.</span>
 <a id="__codelineno-0-212" name="__codelineno-0-212"></a>
@@ -4265,145 +4272,152 @@ then return them in the same order.</p>
 <a id="__codelineno-0-220" name="__codelineno-0-220"></a>
 <a id="__codelineno-0-221" name="__codelineno-0-221"></a>        <span class="n">latest_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;latest.pth&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-222" name="__codelineno-0-222"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span> <span class="n">latest_path</span><span class="p">)</span>
-<a id="__codelineno-0-223" name="__codelineno-0-223"></a>        <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s2">&quot;save_freq&quot;</span><span class="p">)</span> <span class="ow">and</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">epochs</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">save_freq</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-<a id="__codelineno-0-224" name="__codelineno-0-224"></a>            <span class="n">save_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;epoch-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">epochs</span><span class="si">}</span><span class="s2">.pth&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-225" name="__codelineno-0-225"></a>            <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">save_path</span><span class="p">)</span>
-<a id="__codelineno-0-226" name="__codelineno-0-226"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_best</span><span class="p">:</span>
-<a id="__codelineno-0-227" name="__codelineno-0-227"></a>            <span class="n">best_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;best.pth&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-228" name="__codelineno-0-228"></a>            <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">best_path</span><span class="p">)</span>
-<a id="__codelineno-0-229" name="__codelineno-0-229"></a>
-<a id="__codelineno-0-230" name="__codelineno-0-230"></a>    <span class="k">def</span> <span class="nf">load_checkpoint</span><span class="p">(</span>  <span class="c1"># pylint: disable=W1113</span>
-<a id="__codelineno-0-231" name="__codelineno-0-231"></a>        <span class="bp">self</span><span class="p">,</span> <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Union</span><span class="p">[</span><span class="n">Mapping</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">override_config</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span>
-<a id="__codelineno-0-232" name="__codelineno-0-232"></a>    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-233" name="__codelineno-0-233"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-234" name="__codelineno-0-234"></a><span class="sd">        Load info from checkpoint.</span>
-<a id="__codelineno-0-235" name="__codelineno-0-235"></a>
-<a id="__codelineno-0-236" name="__codelineno-0-236"></a><span class="sd">        Args:</span>
-<a id="__codelineno-0-237" name="__codelineno-0-237"></a><span class="sd">            checkpoint: Checkpoint (or its path) to load.</span>
-<a id="__codelineno-0-238" name="__codelineno-0-238"></a><span class="sd">                Defaults to `runner.checkpoint_dir/latest.pth`.</span>
-<a id="__codelineno-0-239" name="__codelineno-0-239"></a><span class="sd">            override_config: If True, override runner config with checkpoint config.</span>
-<a id="__codelineno-0-240" name="__codelineno-0-240"></a><span class="sd">            *args: Additional arguments to pass to `runner.load`.</span>
-<a id="__codelineno-0-241" name="__codelineno-0-241"></a><span class="sd">            **kwargs: Additional keyword arguments to pass to `runner.load`.</span>
+<a id="__codelineno-0-223" name="__codelineno-0-223"></a>        <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s2">&quot;save_freq&quot;</span><span class="p">):</span>
+<a id="__codelineno-0-224" name="__codelineno-0-224"></a>            <span class="k">if</span> <span class="n">interval</span> <span class="o">==</span> <span class="s2">&quot;epoch&quot;</span> <span class="ow">and</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">epochs</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">save_freq</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+<a id="__codelineno-0-225" name="__codelineno-0-225"></a>                <span class="n">save_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;epoch-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">epochs</span><span class="si">}</span><span class="s2">.pth&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-226" name="__codelineno-0-226"></a>            <span class="k">elif</span> <span class="n">interval</span> <span class="o">==</span> <span class="s2">&quot;step&quot;</span> <span class="ow">and</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">steps</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">save_freq</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+<a id="__codelineno-0-227" name="__codelineno-0-227"></a>                <span class="n">save_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;step-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">steps</span><span class="si">}</span><span class="s2">.pth&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-228" name="__codelineno-0-228"></a>            <span class="k">elif</span> <span class="n">interval</span> <span class="o">==</span> <span class="s2">&quot;iter&quot;</span> <span class="ow">and</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">iters</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">save_freq</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+<a id="__codelineno-0-229" name="__codelineno-0-229"></a>                <span class="n">save_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;iter-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">iters</span><span class="si">}</span><span class="s2">.pth&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-230" name="__codelineno-0-230"></a>            <span class="k">else</span><span class="p">:</span>
+<a id="__codelineno-0-231" name="__codelineno-0-231"></a>                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;`interval` must be &#39;epoch&#39;, &#39;step&#39; or &#39;iter&#39;, but got </span><span class="si">{</span><span class="n">interval</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-232" name="__codelineno-0-232"></a>            <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">save_path</span><span class="p">)</span>
+<a id="__codelineno-0-233" name="__codelineno-0-233"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_best</span><span class="p">:</span>
+<a id="__codelineno-0-234" name="__codelineno-0-234"></a>            <span class="n">best_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;best.pth&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-235" name="__codelineno-0-235"></a>            <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">best_path</span><span class="p">)</span>
+<a id="__codelineno-0-236" name="__codelineno-0-236"></a>
+<a id="__codelineno-0-237" name="__codelineno-0-237"></a>    <span class="k">def</span> <span class="nf">load_checkpoint</span><span class="p">(</span>  <span class="c1"># pylint: disable=W1113</span>
+<a id="__codelineno-0-238" name="__codelineno-0-238"></a>        <span class="bp">self</span><span class="p">,</span> <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Union</span><span class="p">[</span><span class="n">Mapping</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">override_config</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span>
+<a id="__codelineno-0-239" name="__codelineno-0-239"></a>    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-240" name="__codelineno-0-240"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-241" name="__codelineno-0-241"></a><span class="sd">        Load info from checkpoint.</span>
 <a id="__codelineno-0-242" name="__codelineno-0-242"></a>
-<a id="__codelineno-0-243" name="__codelineno-0-243"></a><span class="sd">        Raises:</span>
-<a id="__codelineno-0-244" name="__codelineno-0-244"></a><span class="sd">            FileNotFoundError: If `checkpoint` does not exists.</span>
-<a id="__codelineno-0-245" name="__codelineno-0-245"></a>
-<a id="__codelineno-0-246" name="__codelineno-0-246"></a><span class="sd">        See Also:</span>
-<a id="__codelineno-0-247" name="__codelineno-0-247"></a><span class="sd">            [`from_checkpoint`][danling.BaseRunner.from_checkpoint]: Build runner from checkpoint.</span>
-<a id="__codelineno-0-248" name="__codelineno-0-248"></a><span class="sd">            [`load_pretrained`][danling.BaseRunner.load_pretrained]: Load parameters from pretrained checkpoint.</span>
-<a id="__codelineno-0-249" name="__codelineno-0-249"></a><span class="sd">        &quot;&quot;&quot;</span>
-<a id="__codelineno-0-250" name="__codelineno-0-250"></a>
-<a id="__codelineno-0-251" name="__codelineno-0-251"></a>        <span class="k">if</span> <span class="n">checkpoint</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-252" name="__codelineno-0-252"></a>            <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;latest.pth&quot;</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-253" name="__codelineno-0-253"></a>        <span class="c1"># TODO: Support loading checkpoints in other format</span>
-<a id="__codelineno-0-254" name="__codelineno-0-254"></a>        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
-<a id="__codelineno-0-255" name="__codelineno-0-255"></a>            <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">):</span>
-<a id="__codelineno-0-256" name="__codelineno-0-256"></a>                <span class="k">raise</span> <span class="ne">FileNotFoundError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;checkpoint is set to </span><span class="si">{</span><span class="n">checkpoint</span><span class="si">}</span><span class="s2"> but does not exist.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-257" name="__codelineno-0-257"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">checkpoint</span> <span class="o">=</span> <span class="n">checkpoint</span>  <span class="c1"># pylint: disable=W0201</span>
-<a id="__codelineno-0-258" name="__codelineno-0-258"></a>            <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Mapping</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-259" name="__codelineno-0-259"></a>        <span class="c1"># TODO: Wrap state_dict in a dataclass</span>
-<a id="__codelineno-0-260" name="__codelineno-0-260"></a>        <span class="k">if</span> <span class="n">override_config</span><span class="p">:</span>
-<a id="__codelineno-0-261" name="__codelineno-0-261"></a>            <span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">NestedDict</span><span class="p">(</span><span class="o">**</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;runner&quot;</span><span class="p">]))</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-262" name="__codelineno-0-262"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">model</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="s2">&quot;model&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
-<a id="__codelineno-0-263" name="__codelineno-0-263"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;model&quot;</span><span class="p">])</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-264" name="__codelineno-0-264"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">optimizer</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="s2">&quot;optimizer&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
-<a id="__codelineno-0-265" name="__codelineno-0-265"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">optimizer</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;optimizer&quot;</span><span class="p">])</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-266" name="__codelineno-0-266"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="s2">&quot;scheduler&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
-<a id="__codelineno-0-267" name="__codelineno-0-267"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;scheduler&quot;</span><span class="p">])</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-268" name="__codelineno-0-268"></a>
-<a id="__codelineno-0-269" name="__codelineno-0-269"></a>    <span class="k">def</span> <span class="nf">load_pretrained</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n">Mapping</span><span class="p">,</span> <span class="nb">str</span><span class="p">],</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-270" name="__codelineno-0-270"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-271" name="__codelineno-0-271"></a><span class="sd">        Load parameters from pretrained checkpoint.</span>
-<a id="__codelineno-0-272" name="__codelineno-0-272"></a>
-<a id="__codelineno-0-273" name="__codelineno-0-273"></a><span class="sd">        Args:</span>
-<a id="__codelineno-0-274" name="__codelineno-0-274"></a><span class="sd">            checkpoint: Pretrained checkpoint (or its path) to load.</span>
-<a id="__codelineno-0-275" name="__codelineno-0-275"></a><span class="sd">            *args: Additional arguments to pass to `runner.load`.</span>
-<a id="__codelineno-0-276" name="__codelineno-0-276"></a><span class="sd">            **kwargs: Additional keyword arguments to pass to `runner.load`.</span>
-<a id="__codelineno-0-277" name="__codelineno-0-277"></a>
-<a id="__codelineno-0-278" name="__codelineno-0-278"></a><span class="sd">        Raises:</span>
-<a id="__codelineno-0-279" name="__codelineno-0-279"></a><span class="sd">            FileNotFoundError: If `checkpoint` does not exists.</span>
-<a id="__codelineno-0-280" name="__codelineno-0-280"></a>
-<a id="__codelineno-0-281" name="__codelineno-0-281"></a><span class="sd">        See Also:</span>
-<a id="__codelineno-0-282" name="__codelineno-0-282"></a><span class="sd">            [`load_checkpoint`][danling.BaseRunner.load_checkpoint]: Load info from checkpoint.</span>
-<a id="__codelineno-0-283" name="__codelineno-0-283"></a><span class="sd">        &quot;&quot;&quot;</span>
+<a id="__codelineno-0-243" name="__codelineno-0-243"></a><span class="sd">        Args:</span>
+<a id="__codelineno-0-244" name="__codelineno-0-244"></a><span class="sd">            checkpoint: Checkpoint (or its path) to load.</span>
+<a id="__codelineno-0-245" name="__codelineno-0-245"></a><span class="sd">                Defaults to `runner.checkpoint_dir/latest.pth`.</span>
+<a id="__codelineno-0-246" name="__codelineno-0-246"></a><span class="sd">            override_config: If True, override runner config with checkpoint config.</span>
+<a id="__codelineno-0-247" name="__codelineno-0-247"></a><span class="sd">            *args: Additional arguments to pass to `runner.load`.</span>
+<a id="__codelineno-0-248" name="__codelineno-0-248"></a><span class="sd">            **kwargs: Additional keyword arguments to pass to `runner.load`.</span>
+<a id="__codelineno-0-249" name="__codelineno-0-249"></a>
+<a id="__codelineno-0-250" name="__codelineno-0-250"></a><span class="sd">        Raises:</span>
+<a id="__codelineno-0-251" name="__codelineno-0-251"></a><span class="sd">            FileNotFoundError: If `checkpoint` does not exists.</span>
+<a id="__codelineno-0-252" name="__codelineno-0-252"></a>
+<a id="__codelineno-0-253" name="__codelineno-0-253"></a><span class="sd">        See Also:</span>
+<a id="__codelineno-0-254" name="__codelineno-0-254"></a><span class="sd">            [`from_checkpoint`][danling.BaseRunner.from_checkpoint]: Build runner from checkpoint.</span>
+<a id="__codelineno-0-255" name="__codelineno-0-255"></a><span class="sd">            [`load_pretrained`][danling.BaseRunner.load_pretrained]: Load parameters from pretrained checkpoint.</span>
+<a id="__codelineno-0-256" name="__codelineno-0-256"></a><span class="sd">        &quot;&quot;&quot;</span>
+<a id="__codelineno-0-257" name="__codelineno-0-257"></a>
+<a id="__codelineno-0-258" name="__codelineno-0-258"></a>        <span class="k">if</span> <span class="n">checkpoint</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-259" name="__codelineno-0-259"></a>            <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;latest.pth&quot;</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-260" name="__codelineno-0-260"></a>        <span class="c1"># TODO: Support loading checkpoints in other format</span>
+<a id="__codelineno-0-261" name="__codelineno-0-261"></a>        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
+<a id="__codelineno-0-262" name="__codelineno-0-262"></a>            <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">):</span>
+<a id="__codelineno-0-263" name="__codelineno-0-263"></a>                <span class="k">raise</span> <span class="ne">FileNotFoundError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;checkpoint is set to </span><span class="si">{</span><span class="n">checkpoint</span><span class="si">}</span><span class="s2"> but does not exist.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-264" name="__codelineno-0-264"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">checkpoint</span> <span class="o">=</span> <span class="n">checkpoint</span>  <span class="c1"># pylint: disable=W0201</span>
+<a id="__codelineno-0-265" name="__codelineno-0-265"></a>            <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Mapping</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-266" name="__codelineno-0-266"></a>        <span class="c1"># TODO: Wrap state_dict in a dataclass</span>
+<a id="__codelineno-0-267" name="__codelineno-0-267"></a>        <span class="k">if</span> <span class="n">override_config</span><span class="p">:</span>
+<a id="__codelineno-0-268" name="__codelineno-0-268"></a>            <span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">NestedDict</span><span class="p">(</span><span class="o">**</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;runner&quot;</span><span class="p">]))</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-269" name="__codelineno-0-269"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">model</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="s2">&quot;model&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
+<a id="__codelineno-0-270" name="__codelineno-0-270"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;model&quot;</span><span class="p">])</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-271" name="__codelineno-0-271"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">optimizer</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="s2">&quot;optimizer&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
+<a id="__codelineno-0-272" name="__codelineno-0-272"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">optimizer</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;optimizer&quot;</span><span class="p">])</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-273" name="__codelineno-0-273"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="s2">&quot;scheduler&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
+<a id="__codelineno-0-274" name="__codelineno-0-274"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;scheduler&quot;</span><span class="p">])</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-275" name="__codelineno-0-275"></a>
+<a id="__codelineno-0-276" name="__codelineno-0-276"></a>    <span class="k">def</span> <span class="nf">load_pretrained</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n">Mapping</span><span class="p">,</span> <span class="nb">str</span><span class="p">],</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-277" name="__codelineno-0-277"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-278" name="__codelineno-0-278"></a><span class="sd">        Load parameters from pretrained checkpoint.</span>
+<a id="__codelineno-0-279" name="__codelineno-0-279"></a>
+<a id="__codelineno-0-280" name="__codelineno-0-280"></a><span class="sd">        Args:</span>
+<a id="__codelineno-0-281" name="__codelineno-0-281"></a><span class="sd">            checkpoint: Pretrained checkpoint (or its path) to load.</span>
+<a id="__codelineno-0-282" name="__codelineno-0-282"></a><span class="sd">            *args: Additional arguments to pass to `runner.load`.</span>
+<a id="__codelineno-0-283" name="__codelineno-0-283"></a><span class="sd">            **kwargs: Additional keyword arguments to pass to `runner.load`.</span>
 <a id="__codelineno-0-284" name="__codelineno-0-284"></a>
-<a id="__codelineno-0-285" name="__codelineno-0-285"></a>        <span class="c1"># TODO: Support loading checkpoints in other format</span>
-<a id="__codelineno-0-286" name="__codelineno-0-286"></a>        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
-<a id="__codelineno-0-287" name="__codelineno-0-287"></a>            <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">):</span>
-<a id="__codelineno-0-288" name="__codelineno-0-288"></a>                <span class="k">raise</span> <span class="ne">FileNotFoundError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;pretrained is set to </span><span class="si">{</span><span class="n">checkpoint</span><span class="si">}</span><span class="s2"> but does not exist.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-289" name="__codelineno-0-289"></a>            <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Mapping</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-290" name="__codelineno-0-290"></a>        <span class="k">if</span> <span class="s2">&quot;model&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
-<a id="__codelineno-0-291" name="__codelineno-0-291"></a>            <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;model&quot;</span><span class="p">]</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-292" name="__codelineno-0-292"></a>        <span class="k">if</span> <span class="s2">&quot;state_dict&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
-<a id="__codelineno-0-293" name="__codelineno-0-293"></a>            <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;state_dict&quot;</span><span class="p">]</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-294" name="__codelineno-0-294"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-295" name="__codelineno-0-295"></a>
-<a id="__codelineno-0-296" name="__codelineno-0-296"></a>    <span class="nd">@classmethod</span>
-<a id="__codelineno-0-297" name="__codelineno-0-297"></a>    <span class="k">def</span> <span class="nf">from_checkpoint</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n">Mapping</span><span class="p">,</span> <span class="nb">str</span><span class="p">],</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">BaseRunner</span><span class="p">:</span>
-<a id="__codelineno-0-298" name="__codelineno-0-298"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-299" name="__codelineno-0-299"></a><span class="sd">        Build BaseRunner from checkpoint.</span>
-<a id="__codelineno-0-300" name="__codelineno-0-300"></a>
-<a id="__codelineno-0-301" name="__codelineno-0-301"></a><span class="sd">        Args:</span>
-<a id="__codelineno-0-302" name="__codelineno-0-302"></a><span class="sd">            checkpoint: Checkpoint (or its path) to load.</span>
-<a id="__codelineno-0-303" name="__codelineno-0-303"></a><span class="sd">                Defaults to `runner.checkpoint_dir/latest.pth`.</span>
-<a id="__codelineno-0-304" name="__codelineno-0-304"></a><span class="sd">            *args: Additional arguments to pass to `runner.load`.</span>
-<a id="__codelineno-0-305" name="__codelineno-0-305"></a><span class="sd">            **kwargs: Additional keyword arguments to pass to `runner.load`.</span>
-<a id="__codelineno-0-306" name="__codelineno-0-306"></a>
-<a id="__codelineno-0-307" name="__codelineno-0-307"></a><span class="sd">        Returns:</span>
-<a id="__codelineno-0-308" name="__codelineno-0-308"></a><span class="sd">            (BaseRunner):</span>
-<a id="__codelineno-0-309" name="__codelineno-0-309"></a><span class="sd">        &quot;&quot;&quot;</span>
-<a id="__codelineno-0-310" name="__codelineno-0-310"></a>
-<a id="__codelineno-0-311" name="__codelineno-0-311"></a>        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
-<a id="__codelineno-0-312" name="__codelineno-0-312"></a>            <span class="n">checkpoint</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
-<a id="__codelineno-0-313" name="__codelineno-0-313"></a>        <span class="n">runner</span> <span class="o">=</span> <span class="bp">cls</span><span class="p">(</span><span class="o">**</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;runner&quot;</span><span class="p">])</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-314" name="__codelineno-0-314"></a>        <span class="n">runner</span><span class="o">.</span><span class="n">load_checkpoint</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="n">override_config</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-<a id="__codelineno-0-315" name="__codelineno-0-315"></a>        <span class="k">return</span> <span class="n">runner</span>
-<a id="__codelineno-0-316" name="__codelineno-0-316"></a>
-<a id="__codelineno-0-317" name="__codelineno-0-317"></a>    <span class="k">def</span> <span class="nf">append_result</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">result</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-318" name="__codelineno-0-318"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-319" name="__codelineno-0-319"></a><span class="sd">        Append result to `self.results`.</span>
-<a id="__codelineno-0-320" name="__codelineno-0-320"></a>
-<a id="__codelineno-0-321" name="__codelineno-0-321"></a><span class="sd">        Warnings:</span>
-<a id="__codelineno-0-322" name="__codelineno-0-322"></a><span class="sd">            `self.results` is heavily relied upon for computing metrics.</span>
+<a id="__codelineno-0-285" name="__codelineno-0-285"></a><span class="sd">        Raises:</span>
+<a id="__codelineno-0-286" name="__codelineno-0-286"></a><span class="sd">            FileNotFoundError: If `checkpoint` does not exists.</span>
+<a id="__codelineno-0-287" name="__codelineno-0-287"></a>
+<a id="__codelineno-0-288" name="__codelineno-0-288"></a><span class="sd">        See Also:</span>
+<a id="__codelineno-0-289" name="__codelineno-0-289"></a><span class="sd">            [`load_checkpoint`][danling.BaseRunner.load_checkpoint]: Load info from checkpoint.</span>
+<a id="__codelineno-0-290" name="__codelineno-0-290"></a><span class="sd">        &quot;&quot;&quot;</span>
+<a id="__codelineno-0-291" name="__codelineno-0-291"></a>
+<a id="__codelineno-0-292" name="__codelineno-0-292"></a>        <span class="c1"># TODO: Support loading checkpoints in other format</span>
+<a id="__codelineno-0-293" name="__codelineno-0-293"></a>        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
+<a id="__codelineno-0-294" name="__codelineno-0-294"></a>            <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">):</span>
+<a id="__codelineno-0-295" name="__codelineno-0-295"></a>                <span class="k">raise</span> <span class="ne">FileNotFoundError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;pretrained is set to </span><span class="si">{</span><span class="n">checkpoint</span><span class="si">}</span><span class="s2"> but does not exist.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-296" name="__codelineno-0-296"></a>            <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Mapping</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-297" name="__codelineno-0-297"></a>        <span class="k">if</span> <span class="s2">&quot;model&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
+<a id="__codelineno-0-298" name="__codelineno-0-298"></a>            <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;model&quot;</span><span class="p">]</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-299" name="__codelineno-0-299"></a>        <span class="k">if</span> <span class="s2">&quot;state_dict&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
+<a id="__codelineno-0-300" name="__codelineno-0-300"></a>            <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;state_dict&quot;</span><span class="p">]</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-301" name="__codelineno-0-301"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-302" name="__codelineno-0-302"></a>
+<a id="__codelineno-0-303" name="__codelineno-0-303"></a>    <span class="nd">@classmethod</span>
+<a id="__codelineno-0-304" name="__codelineno-0-304"></a>    <span class="k">def</span> <span class="nf">from_checkpoint</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n">Mapping</span><span class="p">,</span> <span class="nb">str</span><span class="p">],</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">BaseRunner</span><span class="p">:</span>
+<a id="__codelineno-0-305" name="__codelineno-0-305"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-306" name="__codelineno-0-306"></a><span class="sd">        Build BaseRunner from checkpoint.</span>
+<a id="__codelineno-0-307" name="__codelineno-0-307"></a>
+<a id="__codelineno-0-308" name="__codelineno-0-308"></a><span class="sd">        Args:</span>
+<a id="__codelineno-0-309" name="__codelineno-0-309"></a><span class="sd">            checkpoint: Checkpoint (or its path) to load.</span>
+<a id="__codelineno-0-310" name="__codelineno-0-310"></a><span class="sd">                Defaults to `runner.checkpoint_dir/latest.pth`.</span>
+<a id="__codelineno-0-311" name="__codelineno-0-311"></a><span class="sd">            *args: Additional arguments to pass to `runner.load`.</span>
+<a id="__codelineno-0-312" name="__codelineno-0-312"></a><span class="sd">            **kwargs: Additional keyword arguments to pass to `runner.load`.</span>
+<a id="__codelineno-0-313" name="__codelineno-0-313"></a>
+<a id="__codelineno-0-314" name="__codelineno-0-314"></a><span class="sd">        Returns:</span>
+<a id="__codelineno-0-315" name="__codelineno-0-315"></a><span class="sd">            (BaseRunner):</span>
+<a id="__codelineno-0-316" name="__codelineno-0-316"></a><span class="sd">        &quot;&quot;&quot;</span>
+<a id="__codelineno-0-317" name="__codelineno-0-317"></a>
+<a id="__codelineno-0-318" name="__codelineno-0-318"></a>        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
+<a id="__codelineno-0-319" name="__codelineno-0-319"></a>            <span class="n">checkpoint</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+<a id="__codelineno-0-320" name="__codelineno-0-320"></a>        <span class="n">runner</span> <span class="o">=</span> <span class="bp">cls</span><span class="p">(</span><span class="o">**</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;runner&quot;</span><span class="p">])</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-321" name="__codelineno-0-321"></a>        <span class="n">runner</span><span class="o">.</span><span class="n">load_checkpoint</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="n">override_config</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<a id="__codelineno-0-322" name="__codelineno-0-322"></a>        <span class="k">return</span> <span class="n">runner</span>
 <a id="__codelineno-0-323" name="__codelineno-0-323"></a>
-<a id="__codelineno-0-324" name="__codelineno-0-324"></a><span class="sd">            Failed to use this method may lead to unexpected behavior.</span>
-<a id="__codelineno-0-325" name="__codelineno-0-325"></a><span class="sd">        &quot;&quot;&quot;</span>
-<a id="__codelineno-0-326" name="__codelineno-0-326"></a>
-<a id="__codelineno-0-327" name="__codelineno-0-327"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">results</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
-<a id="__codelineno-0-328" name="__codelineno-0-328"></a>
-<a id="__codelineno-0-329" name="__codelineno-0-329"></a>    <span class="k">def</span> <span class="nf">print_result</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-330" name="__codelineno-0-330"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-331" name="__codelineno-0-331"></a><span class="sd">        Print latest and best result.</span>
+<a id="__codelineno-0-324" name="__codelineno-0-324"></a>    <span class="k">def</span> <span class="nf">append_result</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">result</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-325" name="__codelineno-0-325"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-326" name="__codelineno-0-326"></a><span class="sd">        Append result to `self.results`.</span>
+<a id="__codelineno-0-327" name="__codelineno-0-327"></a>
+<a id="__codelineno-0-328" name="__codelineno-0-328"></a><span class="sd">        Warnings:</span>
+<a id="__codelineno-0-329" name="__codelineno-0-329"></a><span class="sd">            `self.results` is heavily relied upon for computing metrics.</span>
+<a id="__codelineno-0-330" name="__codelineno-0-330"></a>
+<a id="__codelineno-0-331" name="__codelineno-0-331"></a><span class="sd">            Failed to use this method may lead to unexpected behavior.</span>
 <a id="__codelineno-0-332" name="__codelineno-0-332"></a><span class="sd">        &quot;&quot;&quot;</span>
 <a id="__codelineno-0-333" name="__codelineno-0-333"></a>
-<a id="__codelineno-0-334" name="__codelineno-0-334"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;results: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">results</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-335" name="__codelineno-0-335"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;latest result: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">latest_result</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-336" name="__codelineno-0-336"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;best result: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">best_result</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-337" name="__codelineno-0-337"></a>
-<a id="__codelineno-0-338" name="__codelineno-0-338"></a>    <span class="nd">@catch</span>
-<a id="__codelineno-0-339" name="__codelineno-0-339"></a>    <span class="nd">@on_main_process</span>
-<a id="__codelineno-0-340" name="__codelineno-0-340"></a>    <span class="k">def</span> <span class="nf">save_result</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-341" name="__codelineno-0-341"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-342" name="__codelineno-0-342"></a><span class="sd">        Save result to `runner.dir`.</span>
-<a id="__codelineno-0-343" name="__codelineno-0-343"></a>
-<a id="__codelineno-0-344" name="__codelineno-0-344"></a><span class="sd">        This method will save latest and best result to</span>
-<a id="__codelineno-0-345" name="__codelineno-0-345"></a><span class="sd">        `runner.dir/latest.json` and `runner.dir/best.json` respectively.</span>
-<a id="__codelineno-0-346" name="__codelineno-0-346"></a><span class="sd">        &quot;&quot;&quot;</span>
-<a id="__codelineno-0-347" name="__codelineno-0-347"></a>
-<a id="__codelineno-0-348" name="__codelineno-0-348"></a>        <span class="n">results_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;results.json&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-349" name="__codelineno-0-349"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">save</span><span class="p">({</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="s2">&quot;results&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">results</span><span class="p">},</span> <span class="n">results_path</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
-<a id="__codelineno-0-350" name="__codelineno-0-350"></a>        <span class="n">ret</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="p">}</span>
-<a id="__codelineno-0-351" name="__codelineno-0-351"></a>        <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">latest_result</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-352" name="__codelineno-0-352"></a>        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">FlatDict</span><span class="p">):</span>
-<a id="__codelineno-0-353" name="__codelineno-0-353"></a>            <span class="n">result</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">dict</span><span class="p">()</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-354" name="__codelineno-0-354"></a>        <span class="c1"># This is slower but ensure id is the first key</span>
-<a id="__codelineno-0-355" name="__codelineno-0-355"></a>        <span class="k">if</span> <span class="n">result</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-356" name="__codelineno-0-356"></a>            <span class="n">ret</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-357" name="__codelineno-0-357"></a>        <span class="n">latest_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;latest.json&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-358" name="__codelineno-0-358"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">ret</span><span class="p">,</span> <span class="n">latest_path</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
-<a id="__codelineno-0-359" name="__codelineno-0-359"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_best</span><span class="p">:</span>
-<a id="__codelineno-0-360" name="__codelineno-0-360"></a>            <span class="n">best_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;best.json&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-361" name="__codelineno-0-361"></a>            <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">best_path</span><span class="p">)</span>
+<a id="__codelineno-0-334" name="__codelineno-0-334"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">results</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
+<a id="__codelineno-0-335" name="__codelineno-0-335"></a>
+<a id="__codelineno-0-336" name="__codelineno-0-336"></a>    <span class="k">def</span> <span class="nf">print_result</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-337" name="__codelineno-0-337"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-338" name="__codelineno-0-338"></a><span class="sd">        Print latest and best result.</span>
+<a id="__codelineno-0-339" name="__codelineno-0-339"></a><span class="sd">        &quot;&quot;&quot;</span>
+<a id="__codelineno-0-340" name="__codelineno-0-340"></a>
+<a id="__codelineno-0-341" name="__codelineno-0-341"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;results: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">results</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-342" name="__codelineno-0-342"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;latest result: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">latest_result</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-343" name="__codelineno-0-343"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;best result: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">best_result</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-344" name="__codelineno-0-344"></a>
+<a id="__codelineno-0-345" name="__codelineno-0-345"></a>    <span class="nd">@catch</span>
+<a id="__codelineno-0-346" name="__codelineno-0-346"></a>    <span class="nd">@on_main_process</span>
+<a id="__codelineno-0-347" name="__codelineno-0-347"></a>    <span class="k">def</span> <span class="nf">save_result</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-348" name="__codelineno-0-348"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-349" name="__codelineno-0-349"></a><span class="sd">        Save result to `runner.dir`.</span>
+<a id="__codelineno-0-350" name="__codelineno-0-350"></a>
+<a id="__codelineno-0-351" name="__codelineno-0-351"></a><span class="sd">        This method will save latest and best result to</span>
+<a id="__codelineno-0-352" name="__codelineno-0-352"></a><span class="sd">        `runner.dir/latest.json` and `runner.dir/best.json` respectively.</span>
+<a id="__codelineno-0-353" name="__codelineno-0-353"></a><span class="sd">        &quot;&quot;&quot;</span>
+<a id="__codelineno-0-354" name="__codelineno-0-354"></a>
+<a id="__codelineno-0-355" name="__codelineno-0-355"></a>        <span class="n">results_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;results.json&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-356" name="__codelineno-0-356"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">save</span><span class="p">({</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="s2">&quot;results&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">results</span><span class="p">},</span> <span class="n">results_path</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
+<a id="__codelineno-0-357" name="__codelineno-0-357"></a>        <span class="n">ret</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="p">}</span>
+<a id="__codelineno-0-358" name="__codelineno-0-358"></a>        <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">latest_result</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-359" name="__codelineno-0-359"></a>        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">FlatDict</span><span class="p">):</span>
+<a id="__codelineno-0-360" name="__codelineno-0-360"></a>            <span class="n">result</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">dict</span><span class="p">()</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-361" name="__codelineno-0-361"></a>        <span class="c1"># This is slower but ensure id is the first key</span>
+<a id="__codelineno-0-362" name="__codelineno-0-362"></a>        <span class="k">if</span> <span class="n">result</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-363" name="__codelineno-0-363"></a>            <span class="n">ret</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-364" name="__codelineno-0-364"></a>        <span class="n">latest_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;latest.json&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-365" name="__codelineno-0-365"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">ret</span><span class="p">,</span> <span class="n">latest_path</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
+<a id="__codelineno-0-366" name="__codelineno-0-366"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_best</span><span class="p">:</span>
+<a id="__codelineno-0-367" name="__codelineno-0-367"></a>            <span class="n">best_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;best.json&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-368" name="__codelineno-0-368"></a>            <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">best_path</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
         </details>
 
@@ -4984,7 +4998,7 @@ Defaults to <code>self.seed</code> (<code>config.seed</code>).</p></td>
 
 
 <h3 id="danling.runner.base_runner.BaseRunner.save_checkpoint" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">save_checkpoint</span><span class="p">()</span></code>
+<code class="highlight language-python"><span class="n">save_checkpoint</span><span class="p">(</span><span class="n">interval</span><span class="o">=</span><span class="s1">&#39;epoch&#39;</span><span class="p">)</span></code>
 
 <a href="#danling.runner.base_runner.BaseRunner.save_checkpoint" class="headerlink" title="Permanent link">&para;</a></h3>
 
@@ -5020,9 +5034,16 @@ the checkpoint will also be copied to <code>runner.checkpoint_dir/epoch-{self.ep
 <span class="normal"><a href="#__codelineno-0-225">225</a></span>
 <span class="normal"><a href="#__codelineno-0-226">226</a></span>
 <span class="normal"><a href="#__codelineno-0-227">227</a></span>
-<span class="normal"><a href="#__codelineno-0-228">228</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-207" name="__codelineno-0-207"></a><span class="nd">@catch</span>
+<span class="normal"><a href="#__codelineno-0-228">228</a></span>
+<span class="normal"><a href="#__codelineno-0-229">229</a></span>
+<span class="normal"><a href="#__codelineno-0-230">230</a></span>
+<span class="normal"><a href="#__codelineno-0-231">231</a></span>
+<span class="normal"><a href="#__codelineno-0-232">232</a></span>
+<span class="normal"><a href="#__codelineno-0-233">233</a></span>
+<span class="normal"><a href="#__codelineno-0-234">234</a></span>
+<span class="normal"><a href="#__codelineno-0-235">235</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-207" name="__codelineno-0-207"></a><span class="nd">@catch</span>
 <a id="__codelineno-0-208" name="__codelineno-0-208"></a><span class="nd">@on_main_process</span>
-<a id="__codelineno-0-209" name="__codelineno-0-209"></a><span class="k">def</span> <span class="nf">save_checkpoint</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-209" name="__codelineno-0-209"></a><span class="k">def</span> <span class="nf">save_checkpoint</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">interval</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;epoch&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <a id="__codelineno-0-210" name="__codelineno-0-210"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
 <a id="__codelineno-0-211" name="__codelineno-0-211"></a><span class="sd">    Save checkpoint to `runner.checkpoint_dir`.</span>
 <a id="__codelineno-0-212" name="__codelineno-0-212"></a>
@@ -5036,12 +5057,19 @@ the checkpoint will also be copied to <code>runner.checkpoint_dir/epoch-{self.ep
 <a id="__codelineno-0-220" name="__codelineno-0-220"></a>
 <a id="__codelineno-0-221" name="__codelineno-0-221"></a>    <span class="n">latest_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;latest.pth&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-222" name="__codelineno-0-222"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span> <span class="n">latest_path</span><span class="p">)</span>
-<a id="__codelineno-0-223" name="__codelineno-0-223"></a>    <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s2">&quot;save_freq&quot;</span><span class="p">)</span> <span class="ow">and</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">epochs</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">save_freq</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-<a id="__codelineno-0-224" name="__codelineno-0-224"></a>        <span class="n">save_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;epoch-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">epochs</span><span class="si">}</span><span class="s2">.pth&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-225" name="__codelineno-0-225"></a>        <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">save_path</span><span class="p">)</span>
-<a id="__codelineno-0-226" name="__codelineno-0-226"></a>    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_best</span><span class="p">:</span>
-<a id="__codelineno-0-227" name="__codelineno-0-227"></a>        <span class="n">best_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;best.pth&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-228" name="__codelineno-0-228"></a>        <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">best_path</span><span class="p">)</span>
+<a id="__codelineno-0-223" name="__codelineno-0-223"></a>    <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s2">&quot;save_freq&quot;</span><span class="p">):</span>
+<a id="__codelineno-0-224" name="__codelineno-0-224"></a>        <span class="k">if</span> <span class="n">interval</span> <span class="o">==</span> <span class="s2">&quot;epoch&quot;</span> <span class="ow">and</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">epochs</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">save_freq</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+<a id="__codelineno-0-225" name="__codelineno-0-225"></a>            <span class="n">save_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;epoch-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">epochs</span><span class="si">}</span><span class="s2">.pth&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-226" name="__codelineno-0-226"></a>        <span class="k">elif</span> <span class="n">interval</span> <span class="o">==</span> <span class="s2">&quot;step&quot;</span> <span class="ow">and</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">steps</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">save_freq</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+<a id="__codelineno-0-227" name="__codelineno-0-227"></a>            <span class="n">save_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;step-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">steps</span><span class="si">}</span><span class="s2">.pth&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-228" name="__codelineno-0-228"></a>        <span class="k">elif</span> <span class="n">interval</span> <span class="o">==</span> <span class="s2">&quot;iter&quot;</span> <span class="ow">and</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">iters</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">save_freq</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+<a id="__codelineno-0-229" name="__codelineno-0-229"></a>            <span class="n">save_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;iter-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">iters</span><span class="si">}</span><span class="s2">.pth&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-230" name="__codelineno-0-230"></a>        <span class="k">else</span><span class="p">:</span>
+<a id="__codelineno-0-231" name="__codelineno-0-231"></a>            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;`interval` must be &#39;epoch&#39;, &#39;step&#39; or &#39;iter&#39;, but got </span><span class="si">{</span><span class="n">interval</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-232" name="__codelineno-0-232"></a>        <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">save_path</span><span class="p">)</span>
+<a id="__codelineno-0-233" name="__codelineno-0-233"></a>    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_best</span><span class="p">:</span>
+<a id="__codelineno-0-234" name="__codelineno-0-234"></a>        <span class="n">best_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;best.pth&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-235" name="__codelineno-0-235"></a>        <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">best_path</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
       </details>
   </div>
@@ -5140,14 +5168,7 @@ Defaults to <code>runner.checkpoint_dir/latest.pth</code>.</p></td>
 </details>
       <details class="quote">
         <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-230">230</a></span>
-<span class="normal"><a href="#__codelineno-0-231">231</a></span>
-<span class="normal"><a href="#__codelineno-0-232">232</a></span>
-<span class="normal"><a href="#__codelineno-0-233">233</a></span>
-<span class="normal"><a href="#__codelineno-0-234">234</a></span>
-<span class="normal"><a href="#__codelineno-0-235">235</a></span>
-<span class="normal"><a href="#__codelineno-0-236">236</a></span>
-<span class="normal"><a href="#__codelineno-0-237">237</a></span>
+        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-237">237</a></span>
 <span class="normal"><a href="#__codelineno-0-238">238</a></span>
 <span class="normal"><a href="#__codelineno-0-239">239</a></span>
 <span class="normal"><a href="#__codelineno-0-240">240</a></span>
@@ -5177,44 +5198,51 @@ Defaults to <code>runner.checkpoint_dir/latest.pth</code>.</p></td>
 <span class="normal"><a href="#__codelineno-0-264">264</a></span>
 <span class="normal"><a href="#__codelineno-0-265">265</a></span>
 <span class="normal"><a href="#__codelineno-0-266">266</a></span>
-<span class="normal"><a href="#__codelineno-0-267">267</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-230" name="__codelineno-0-230"></a><span class="k">def</span> <span class="nf">load_checkpoint</span><span class="p">(</span>  <span class="c1"># pylint: disable=W1113</span>
-<a id="__codelineno-0-231" name="__codelineno-0-231"></a>    <span class="bp">self</span><span class="p">,</span> <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Union</span><span class="p">[</span><span class="n">Mapping</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">override_config</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span>
-<a id="__codelineno-0-232" name="__codelineno-0-232"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-233" name="__codelineno-0-233"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-234" name="__codelineno-0-234"></a><span class="sd">    Load info from checkpoint.</span>
-<a id="__codelineno-0-235" name="__codelineno-0-235"></a>
-<a id="__codelineno-0-236" name="__codelineno-0-236"></a><span class="sd">    Args:</span>
-<a id="__codelineno-0-237" name="__codelineno-0-237"></a><span class="sd">        checkpoint: Checkpoint (or its path) to load.</span>
-<a id="__codelineno-0-238" name="__codelineno-0-238"></a><span class="sd">            Defaults to `runner.checkpoint_dir/latest.pth`.</span>
-<a id="__codelineno-0-239" name="__codelineno-0-239"></a><span class="sd">        override_config: If True, override runner config with checkpoint config.</span>
-<a id="__codelineno-0-240" name="__codelineno-0-240"></a><span class="sd">        *args: Additional arguments to pass to `runner.load`.</span>
-<a id="__codelineno-0-241" name="__codelineno-0-241"></a><span class="sd">        **kwargs: Additional keyword arguments to pass to `runner.load`.</span>
+<span class="normal"><a href="#__codelineno-0-267">267</a></span>
+<span class="normal"><a href="#__codelineno-0-268">268</a></span>
+<span class="normal"><a href="#__codelineno-0-269">269</a></span>
+<span class="normal"><a href="#__codelineno-0-270">270</a></span>
+<span class="normal"><a href="#__codelineno-0-271">271</a></span>
+<span class="normal"><a href="#__codelineno-0-272">272</a></span>
+<span class="normal"><a href="#__codelineno-0-273">273</a></span>
+<span class="normal"><a href="#__codelineno-0-274">274</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-237" name="__codelineno-0-237"></a><span class="k">def</span> <span class="nf">load_checkpoint</span><span class="p">(</span>  <span class="c1"># pylint: disable=W1113</span>
+<a id="__codelineno-0-238" name="__codelineno-0-238"></a>    <span class="bp">self</span><span class="p">,</span> <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Union</span><span class="p">[</span><span class="n">Mapping</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">override_config</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span>
+<a id="__codelineno-0-239" name="__codelineno-0-239"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-240" name="__codelineno-0-240"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-241" name="__codelineno-0-241"></a><span class="sd">    Load info from checkpoint.</span>
 <a id="__codelineno-0-242" name="__codelineno-0-242"></a>
-<a id="__codelineno-0-243" name="__codelineno-0-243"></a><span class="sd">    Raises:</span>
-<a id="__codelineno-0-244" name="__codelineno-0-244"></a><span class="sd">        FileNotFoundError: If `checkpoint` does not exists.</span>
-<a id="__codelineno-0-245" name="__codelineno-0-245"></a>
-<a id="__codelineno-0-246" name="__codelineno-0-246"></a><span class="sd">    See Also:</span>
-<a id="__codelineno-0-247" name="__codelineno-0-247"></a><span class="sd">        [`from_checkpoint`][danling.BaseRunner.from_checkpoint]: Build runner from checkpoint.</span>
-<a id="__codelineno-0-248" name="__codelineno-0-248"></a><span class="sd">        [`load_pretrained`][danling.BaseRunner.load_pretrained]: Load parameters from pretrained checkpoint.</span>
-<a id="__codelineno-0-249" name="__codelineno-0-249"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-250" name="__codelineno-0-250"></a>
-<a id="__codelineno-0-251" name="__codelineno-0-251"></a>    <span class="k">if</span> <span class="n">checkpoint</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-252" name="__codelineno-0-252"></a>        <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;latest.pth&quot;</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-253" name="__codelineno-0-253"></a>    <span class="c1"># TODO: Support loading checkpoints in other format</span>
-<a id="__codelineno-0-254" name="__codelineno-0-254"></a>    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
-<a id="__codelineno-0-255" name="__codelineno-0-255"></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">):</span>
-<a id="__codelineno-0-256" name="__codelineno-0-256"></a>            <span class="k">raise</span> <span class="ne">FileNotFoundError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;checkpoint is set to </span><span class="si">{</span><span class="n">checkpoint</span><span class="si">}</span><span class="s2"> but does not exist.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-257" name="__codelineno-0-257"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">checkpoint</span> <span class="o">=</span> <span class="n">checkpoint</span>  <span class="c1"># pylint: disable=W0201</span>
-<a id="__codelineno-0-258" name="__codelineno-0-258"></a>        <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Mapping</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-259" name="__codelineno-0-259"></a>    <span class="c1"># TODO: Wrap state_dict in a dataclass</span>
-<a id="__codelineno-0-260" name="__codelineno-0-260"></a>    <span class="k">if</span> <span class="n">override_config</span><span class="p">:</span>
-<a id="__codelineno-0-261" name="__codelineno-0-261"></a>        <span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">NestedDict</span><span class="p">(</span><span class="o">**</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;runner&quot;</span><span class="p">]))</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-262" name="__codelineno-0-262"></a>    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">model</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="s2">&quot;model&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
-<a id="__codelineno-0-263" name="__codelineno-0-263"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;model&quot;</span><span class="p">])</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-264" name="__codelineno-0-264"></a>    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">optimizer</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="s2">&quot;optimizer&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
-<a id="__codelineno-0-265" name="__codelineno-0-265"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">optimizer</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;optimizer&quot;</span><span class="p">])</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-266" name="__codelineno-0-266"></a>    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="s2">&quot;scheduler&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
-<a id="__codelineno-0-267" name="__codelineno-0-267"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;scheduler&quot;</span><span class="p">])</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-243" name="__codelineno-0-243"></a><span class="sd">    Args:</span>
+<a id="__codelineno-0-244" name="__codelineno-0-244"></a><span class="sd">        checkpoint: Checkpoint (or its path) to load.</span>
+<a id="__codelineno-0-245" name="__codelineno-0-245"></a><span class="sd">            Defaults to `runner.checkpoint_dir/latest.pth`.</span>
+<a id="__codelineno-0-246" name="__codelineno-0-246"></a><span class="sd">        override_config: If True, override runner config with checkpoint config.</span>
+<a id="__codelineno-0-247" name="__codelineno-0-247"></a><span class="sd">        *args: Additional arguments to pass to `runner.load`.</span>
+<a id="__codelineno-0-248" name="__codelineno-0-248"></a><span class="sd">        **kwargs: Additional keyword arguments to pass to `runner.load`.</span>
+<a id="__codelineno-0-249" name="__codelineno-0-249"></a>
+<a id="__codelineno-0-250" name="__codelineno-0-250"></a><span class="sd">    Raises:</span>
+<a id="__codelineno-0-251" name="__codelineno-0-251"></a><span class="sd">        FileNotFoundError: If `checkpoint` does not exists.</span>
+<a id="__codelineno-0-252" name="__codelineno-0-252"></a>
+<a id="__codelineno-0-253" name="__codelineno-0-253"></a><span class="sd">    See Also:</span>
+<a id="__codelineno-0-254" name="__codelineno-0-254"></a><span class="sd">        [`from_checkpoint`][danling.BaseRunner.from_checkpoint]: Build runner from checkpoint.</span>
+<a id="__codelineno-0-255" name="__codelineno-0-255"></a><span class="sd">        [`load_pretrained`][danling.BaseRunner.load_pretrained]: Load parameters from pretrained checkpoint.</span>
+<a id="__codelineno-0-256" name="__codelineno-0-256"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-257" name="__codelineno-0-257"></a>
+<a id="__codelineno-0-258" name="__codelineno-0-258"></a>    <span class="k">if</span> <span class="n">checkpoint</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-259" name="__codelineno-0-259"></a>        <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;latest.pth&quot;</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-260" name="__codelineno-0-260"></a>    <span class="c1"># TODO: Support loading checkpoints in other format</span>
+<a id="__codelineno-0-261" name="__codelineno-0-261"></a>    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
+<a id="__codelineno-0-262" name="__codelineno-0-262"></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">):</span>
+<a id="__codelineno-0-263" name="__codelineno-0-263"></a>            <span class="k">raise</span> <span class="ne">FileNotFoundError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;checkpoint is set to </span><span class="si">{</span><span class="n">checkpoint</span><span class="si">}</span><span class="s2"> but does not exist.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-264" name="__codelineno-0-264"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">checkpoint</span> <span class="o">=</span> <span class="n">checkpoint</span>  <span class="c1"># pylint: disable=W0201</span>
+<a id="__codelineno-0-265" name="__codelineno-0-265"></a>        <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Mapping</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-266" name="__codelineno-0-266"></a>    <span class="c1"># TODO: Wrap state_dict in a dataclass</span>
+<a id="__codelineno-0-267" name="__codelineno-0-267"></a>    <span class="k">if</span> <span class="n">override_config</span><span class="p">:</span>
+<a id="__codelineno-0-268" name="__codelineno-0-268"></a>        <span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">NestedDict</span><span class="p">(</span><span class="o">**</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;runner&quot;</span><span class="p">]))</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-269" name="__codelineno-0-269"></a>    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">model</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="s2">&quot;model&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
+<a id="__codelineno-0-270" name="__codelineno-0-270"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;model&quot;</span><span class="p">])</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-271" name="__codelineno-0-271"></a>    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">optimizer</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="s2">&quot;optimizer&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
+<a id="__codelineno-0-272" name="__codelineno-0-272"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">optimizer</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;optimizer&quot;</span><span class="p">])</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-273" name="__codelineno-0-273"></a>    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="s2">&quot;scheduler&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
+<a id="__codelineno-0-274" name="__codelineno-0-274"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;scheduler&quot;</span><span class="p">])</span>  <span class="c1"># type: ignore</span>
 </code></pre></div></td></tr></table></div>
       </details>
   </div>
@@ -5301,14 +5329,7 @@ Defaults to <code>runner.checkpoint_dir/latest.pth</code>.</p></td>
 </details>
       <details class="quote">
         <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-269">269</a></span>
-<span class="normal"><a href="#__codelineno-0-270">270</a></span>
-<span class="normal"><a href="#__codelineno-0-271">271</a></span>
-<span class="normal"><a href="#__codelineno-0-272">272</a></span>
-<span class="normal"><a href="#__codelineno-0-273">273</a></span>
-<span class="normal"><a href="#__codelineno-0-274">274</a></span>
-<span class="normal"><a href="#__codelineno-0-275">275</a></span>
-<span class="normal"><a href="#__codelineno-0-276">276</a></span>
+        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-276">276</a></span>
 <span class="normal"><a href="#__codelineno-0-277">277</a></span>
 <span class="normal"><a href="#__codelineno-0-278">278</a></span>
 <span class="normal"><a href="#__codelineno-0-279">279</a></span>
@@ -5326,32 +5347,39 @@ Defaults to <code>runner.checkpoint_dir/latest.pth</code>.</p></td>
 <span class="normal"><a href="#__codelineno-0-291">291</a></span>
 <span class="normal"><a href="#__codelineno-0-292">292</a></span>
 <span class="normal"><a href="#__codelineno-0-293">293</a></span>
-<span class="normal"><a href="#__codelineno-0-294">294</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-269" name="__codelineno-0-269"></a><span class="k">def</span> <span class="nf">load_pretrained</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n">Mapping</span><span class="p">,</span> <span class="nb">str</span><span class="p">],</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-270" name="__codelineno-0-270"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-271" name="__codelineno-0-271"></a><span class="sd">    Load parameters from pretrained checkpoint.</span>
-<a id="__codelineno-0-272" name="__codelineno-0-272"></a>
-<a id="__codelineno-0-273" name="__codelineno-0-273"></a><span class="sd">    Args:</span>
-<a id="__codelineno-0-274" name="__codelineno-0-274"></a><span class="sd">        checkpoint: Pretrained checkpoint (or its path) to load.</span>
-<a id="__codelineno-0-275" name="__codelineno-0-275"></a><span class="sd">        *args: Additional arguments to pass to `runner.load`.</span>
-<a id="__codelineno-0-276" name="__codelineno-0-276"></a><span class="sd">        **kwargs: Additional keyword arguments to pass to `runner.load`.</span>
-<a id="__codelineno-0-277" name="__codelineno-0-277"></a>
-<a id="__codelineno-0-278" name="__codelineno-0-278"></a><span class="sd">    Raises:</span>
-<a id="__codelineno-0-279" name="__codelineno-0-279"></a><span class="sd">        FileNotFoundError: If `checkpoint` does not exists.</span>
-<a id="__codelineno-0-280" name="__codelineno-0-280"></a>
-<a id="__codelineno-0-281" name="__codelineno-0-281"></a><span class="sd">    See Also:</span>
-<a id="__codelineno-0-282" name="__codelineno-0-282"></a><span class="sd">        [`load_checkpoint`][danling.BaseRunner.load_checkpoint]: Load info from checkpoint.</span>
-<a id="__codelineno-0-283" name="__codelineno-0-283"></a><span class="sd">    &quot;&quot;&quot;</span>
+<span class="normal"><a href="#__codelineno-0-294">294</a></span>
+<span class="normal"><a href="#__codelineno-0-295">295</a></span>
+<span class="normal"><a href="#__codelineno-0-296">296</a></span>
+<span class="normal"><a href="#__codelineno-0-297">297</a></span>
+<span class="normal"><a href="#__codelineno-0-298">298</a></span>
+<span class="normal"><a href="#__codelineno-0-299">299</a></span>
+<span class="normal"><a href="#__codelineno-0-300">300</a></span>
+<span class="normal"><a href="#__codelineno-0-301">301</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-276" name="__codelineno-0-276"></a><span class="k">def</span> <span class="nf">load_pretrained</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n">Mapping</span><span class="p">,</span> <span class="nb">str</span><span class="p">],</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-277" name="__codelineno-0-277"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-278" name="__codelineno-0-278"></a><span class="sd">    Load parameters from pretrained checkpoint.</span>
+<a id="__codelineno-0-279" name="__codelineno-0-279"></a>
+<a id="__codelineno-0-280" name="__codelineno-0-280"></a><span class="sd">    Args:</span>
+<a id="__codelineno-0-281" name="__codelineno-0-281"></a><span class="sd">        checkpoint: Pretrained checkpoint (or its path) to load.</span>
+<a id="__codelineno-0-282" name="__codelineno-0-282"></a><span class="sd">        *args: Additional arguments to pass to `runner.load`.</span>
+<a id="__codelineno-0-283" name="__codelineno-0-283"></a><span class="sd">        **kwargs: Additional keyword arguments to pass to `runner.load`.</span>
 <a id="__codelineno-0-284" name="__codelineno-0-284"></a>
-<a id="__codelineno-0-285" name="__codelineno-0-285"></a>    <span class="c1"># TODO: Support loading checkpoints in other format</span>
-<a id="__codelineno-0-286" name="__codelineno-0-286"></a>    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
-<a id="__codelineno-0-287" name="__codelineno-0-287"></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">):</span>
-<a id="__codelineno-0-288" name="__codelineno-0-288"></a>            <span class="k">raise</span> <span class="ne">FileNotFoundError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;pretrained is set to </span><span class="si">{</span><span class="n">checkpoint</span><span class="si">}</span><span class="s2"> but does not exist.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-289" name="__codelineno-0-289"></a>        <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Mapping</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-290" name="__codelineno-0-290"></a>    <span class="k">if</span> <span class="s2">&quot;model&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
-<a id="__codelineno-0-291" name="__codelineno-0-291"></a>        <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;model&quot;</span><span class="p">]</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-292" name="__codelineno-0-292"></a>    <span class="k">if</span> <span class="s2">&quot;state_dict&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
-<a id="__codelineno-0-293" name="__codelineno-0-293"></a>        <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;state_dict&quot;</span><span class="p">]</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-294" name="__codelineno-0-294"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-285" name="__codelineno-0-285"></a><span class="sd">    Raises:</span>
+<a id="__codelineno-0-286" name="__codelineno-0-286"></a><span class="sd">        FileNotFoundError: If `checkpoint` does not exists.</span>
+<a id="__codelineno-0-287" name="__codelineno-0-287"></a>
+<a id="__codelineno-0-288" name="__codelineno-0-288"></a><span class="sd">    See Also:</span>
+<a id="__codelineno-0-289" name="__codelineno-0-289"></a><span class="sd">        [`load_checkpoint`][danling.BaseRunner.load_checkpoint]: Load info from checkpoint.</span>
+<a id="__codelineno-0-290" name="__codelineno-0-290"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-291" name="__codelineno-0-291"></a>
+<a id="__codelineno-0-292" name="__codelineno-0-292"></a>    <span class="c1"># TODO: Support loading checkpoints in other format</span>
+<a id="__codelineno-0-293" name="__codelineno-0-293"></a>    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
+<a id="__codelineno-0-294" name="__codelineno-0-294"></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">):</span>
+<a id="__codelineno-0-295" name="__codelineno-0-295"></a>            <span class="k">raise</span> <span class="ne">FileNotFoundError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;pretrained is set to </span><span class="si">{</span><span class="n">checkpoint</span><span class="si">}</span><span class="s2"> but does not exist.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-296" name="__codelineno-0-296"></a>        <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Mapping</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-297" name="__codelineno-0-297"></a>    <span class="k">if</span> <span class="s2">&quot;model&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
+<a id="__codelineno-0-298" name="__codelineno-0-298"></a>        <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;model&quot;</span><span class="p">]</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-299" name="__codelineno-0-299"></a>    <span class="k">if</span> <span class="s2">&quot;state_dict&quot;</span> <span class="ow">in</span> <span class="n">checkpoint</span><span class="p">:</span>
+<a id="__codelineno-0-300" name="__codelineno-0-300"></a>        <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;state_dict&quot;</span><span class="p">]</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-301" name="__codelineno-0-301"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
 </code></pre></div></td></tr></table></div>
       </details>
   </div>
@@ -5430,7 +5458,7 @@ Defaults to <code>runner.checkpoint_dir/latest.pth</code>.</p></td>
     <tbody>
         <tr>
           <td>
-                <code><a class="autorefs autorefs-internal" title="danling.runner.base_runner.BaseRunner" href="../../package/#danling.BaseRunner">BaseRunner</a></code>
+                <code><a class="autorefs autorefs-internal" title="danling.runner.base_runner.BaseRunner" href="../../runner/base_runner/#danling.runner.BaseRunner">BaseRunner</a></code>
           </td>
           <td></td>
         </tr>
@@ -5439,14 +5467,7 @@ Defaults to <code>runner.checkpoint_dir/latest.pth</code>.</p></td>
 
       <details class="quote">
         <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-296">296</a></span>
-<span class="normal"><a href="#__codelineno-0-297">297</a></span>
-<span class="normal"><a href="#__codelineno-0-298">298</a></span>
-<span class="normal"><a href="#__codelineno-0-299">299</a></span>
-<span class="normal"><a href="#__codelineno-0-300">300</a></span>
-<span class="normal"><a href="#__codelineno-0-301">301</a></span>
-<span class="normal"><a href="#__codelineno-0-302">302</a></span>
-<span class="normal"><a href="#__codelineno-0-303">303</a></span>
+        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-303">303</a></span>
 <span class="normal"><a href="#__codelineno-0-304">304</a></span>
 <span class="normal"><a href="#__codelineno-0-305">305</a></span>
 <span class="normal"><a href="#__codelineno-0-306">306</a></span>
@@ -5458,26 +5479,33 @@ Defaults to <code>runner.checkpoint_dir/latest.pth</code>.</p></td>
 <span class="normal"><a href="#__codelineno-0-312">312</a></span>
 <span class="normal"><a href="#__codelineno-0-313">313</a></span>
 <span class="normal"><a href="#__codelineno-0-314">314</a></span>
-<span class="normal"><a href="#__codelineno-0-315">315</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-296" name="__codelineno-0-296"></a><span class="nd">@classmethod</span>
-<a id="__codelineno-0-297" name="__codelineno-0-297"></a><span class="k">def</span> <span class="nf">from_checkpoint</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n">Mapping</span><span class="p">,</span> <span class="nb">str</span><span class="p">],</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">BaseRunner</span><span class="p">:</span>
-<a id="__codelineno-0-298" name="__codelineno-0-298"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-299" name="__codelineno-0-299"></a><span class="sd">    Build BaseRunner from checkpoint.</span>
-<a id="__codelineno-0-300" name="__codelineno-0-300"></a>
-<a id="__codelineno-0-301" name="__codelineno-0-301"></a><span class="sd">    Args:</span>
-<a id="__codelineno-0-302" name="__codelineno-0-302"></a><span class="sd">        checkpoint: Checkpoint (or its path) to load.</span>
-<a id="__codelineno-0-303" name="__codelineno-0-303"></a><span class="sd">            Defaults to `runner.checkpoint_dir/latest.pth`.</span>
-<a id="__codelineno-0-304" name="__codelineno-0-304"></a><span class="sd">        *args: Additional arguments to pass to `runner.load`.</span>
-<a id="__codelineno-0-305" name="__codelineno-0-305"></a><span class="sd">        **kwargs: Additional keyword arguments to pass to `runner.load`.</span>
-<a id="__codelineno-0-306" name="__codelineno-0-306"></a>
-<a id="__codelineno-0-307" name="__codelineno-0-307"></a><span class="sd">    Returns:</span>
-<a id="__codelineno-0-308" name="__codelineno-0-308"></a><span class="sd">        (BaseRunner):</span>
-<a id="__codelineno-0-309" name="__codelineno-0-309"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-310" name="__codelineno-0-310"></a>
-<a id="__codelineno-0-311" name="__codelineno-0-311"></a>    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
-<a id="__codelineno-0-312" name="__codelineno-0-312"></a>        <span class="n">checkpoint</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
-<a id="__codelineno-0-313" name="__codelineno-0-313"></a>    <span class="n">runner</span> <span class="o">=</span> <span class="bp">cls</span><span class="p">(</span><span class="o">**</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;runner&quot;</span><span class="p">])</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-314" name="__codelineno-0-314"></a>    <span class="n">runner</span><span class="o">.</span><span class="n">load_checkpoint</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="n">override_config</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-<a id="__codelineno-0-315" name="__codelineno-0-315"></a>    <span class="k">return</span> <span class="n">runner</span>
+<span class="normal"><a href="#__codelineno-0-315">315</a></span>
+<span class="normal"><a href="#__codelineno-0-316">316</a></span>
+<span class="normal"><a href="#__codelineno-0-317">317</a></span>
+<span class="normal"><a href="#__codelineno-0-318">318</a></span>
+<span class="normal"><a href="#__codelineno-0-319">319</a></span>
+<span class="normal"><a href="#__codelineno-0-320">320</a></span>
+<span class="normal"><a href="#__codelineno-0-321">321</a></span>
+<span class="normal"><a href="#__codelineno-0-322">322</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-303" name="__codelineno-0-303"></a><span class="nd">@classmethod</span>
+<a id="__codelineno-0-304" name="__codelineno-0-304"></a><span class="k">def</span> <span class="nf">from_checkpoint</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">checkpoint</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n">Mapping</span><span class="p">,</span> <span class="nb">str</span><span class="p">],</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">BaseRunner</span><span class="p">:</span>
+<a id="__codelineno-0-305" name="__codelineno-0-305"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-306" name="__codelineno-0-306"></a><span class="sd">    Build BaseRunner from checkpoint.</span>
+<a id="__codelineno-0-307" name="__codelineno-0-307"></a>
+<a id="__codelineno-0-308" name="__codelineno-0-308"></a><span class="sd">    Args:</span>
+<a id="__codelineno-0-309" name="__codelineno-0-309"></a><span class="sd">        checkpoint: Checkpoint (or its path) to load.</span>
+<a id="__codelineno-0-310" name="__codelineno-0-310"></a><span class="sd">            Defaults to `runner.checkpoint_dir/latest.pth`.</span>
+<a id="__codelineno-0-311" name="__codelineno-0-311"></a><span class="sd">        *args: Additional arguments to pass to `runner.load`.</span>
+<a id="__codelineno-0-312" name="__codelineno-0-312"></a><span class="sd">        **kwargs: Additional keyword arguments to pass to `runner.load`.</span>
+<a id="__codelineno-0-313" name="__codelineno-0-313"></a>
+<a id="__codelineno-0-314" name="__codelineno-0-314"></a><span class="sd">    Returns:</span>
+<a id="__codelineno-0-315" name="__codelineno-0-315"></a><span class="sd">        (BaseRunner):</span>
+<a id="__codelineno-0-316" name="__codelineno-0-316"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-317" name="__codelineno-0-317"></a>
+<a id="__codelineno-0-318" name="__codelineno-0-318"></a>    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
+<a id="__codelineno-0-319" name="__codelineno-0-319"></a>        <span class="n">checkpoint</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+<a id="__codelineno-0-320" name="__codelineno-0-320"></a>    <span class="n">runner</span> <span class="o">=</span> <span class="bp">cls</span><span class="p">(</span><span class="o">**</span><span class="n">checkpoint</span><span class="p">[</span><span class="s2">&quot;runner&quot;</span><span class="p">])</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-321" name="__codelineno-0-321"></a>    <span class="n">runner</span><span class="o">.</span><span class="n">load_checkpoint</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="n">override_config</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<a id="__codelineno-0-322" name="__codelineno-0-322"></a>    <span class="k">return</span> <span class="n">runner</span>
 </code></pre></div></td></tr></table></div>
       </details>
   </div>
@@ -5505,27 +5533,27 @@ Defaults to <code>runner.checkpoint_dir/latest.pth</code>.</p></td>
 </details>
       <details class="quote">
         <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-317">317</a></span>
-<span class="normal"><a href="#__codelineno-0-318">318</a></span>
-<span class="normal"><a href="#__codelineno-0-319">319</a></span>
-<span class="normal"><a href="#__codelineno-0-320">320</a></span>
-<span class="normal"><a href="#__codelineno-0-321">321</a></span>
-<span class="normal"><a href="#__codelineno-0-322">322</a></span>
-<span class="normal"><a href="#__codelineno-0-323">323</a></span>
-<span class="normal"><a href="#__codelineno-0-324">324</a></span>
+        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-324">324</a></span>
 <span class="normal"><a href="#__codelineno-0-325">325</a></span>
 <span class="normal"><a href="#__codelineno-0-326">326</a></span>
-<span class="normal"><a href="#__codelineno-0-327">327</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-317" name="__codelineno-0-317"></a><span class="k">def</span> <span class="nf">append_result</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">result</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-318" name="__codelineno-0-318"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-319" name="__codelineno-0-319"></a><span class="sd">    Append result to `self.results`.</span>
-<a id="__codelineno-0-320" name="__codelineno-0-320"></a>
-<a id="__codelineno-0-321" name="__codelineno-0-321"></a><span class="sd">    Warnings:</span>
-<a id="__codelineno-0-322" name="__codelineno-0-322"></a><span class="sd">        `self.results` is heavily relied upon for computing metrics.</span>
-<a id="__codelineno-0-323" name="__codelineno-0-323"></a>
-<a id="__codelineno-0-324" name="__codelineno-0-324"></a><span class="sd">        Failed to use this method may lead to unexpected behavior.</span>
-<a id="__codelineno-0-325" name="__codelineno-0-325"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-326" name="__codelineno-0-326"></a>
-<a id="__codelineno-0-327" name="__codelineno-0-327"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">results</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
+<span class="normal"><a href="#__codelineno-0-327">327</a></span>
+<span class="normal"><a href="#__codelineno-0-328">328</a></span>
+<span class="normal"><a href="#__codelineno-0-329">329</a></span>
+<span class="normal"><a href="#__codelineno-0-330">330</a></span>
+<span class="normal"><a href="#__codelineno-0-331">331</a></span>
+<span class="normal"><a href="#__codelineno-0-332">332</a></span>
+<span class="normal"><a href="#__codelineno-0-333">333</a></span>
+<span class="normal"><a href="#__codelineno-0-334">334</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-324" name="__codelineno-0-324"></a><span class="k">def</span> <span class="nf">append_result</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">result</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-325" name="__codelineno-0-325"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-326" name="__codelineno-0-326"></a><span class="sd">    Append result to `self.results`.</span>
+<a id="__codelineno-0-327" name="__codelineno-0-327"></a>
+<a id="__codelineno-0-328" name="__codelineno-0-328"></a><span class="sd">    Warnings:</span>
+<a id="__codelineno-0-329" name="__codelineno-0-329"></a><span class="sd">        `self.results` is heavily relied upon for computing metrics.</span>
+<a id="__codelineno-0-330" name="__codelineno-0-330"></a>
+<a id="__codelineno-0-331" name="__codelineno-0-331"></a><span class="sd">        Failed to use this method may lead to unexpected behavior.</span>
+<a id="__codelineno-0-332" name="__codelineno-0-332"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-333" name="__codelineno-0-333"></a>
+<a id="__codelineno-0-334" name="__codelineno-0-334"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">results</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
       </details>
   </div>
@@ -5548,21 +5576,21 @@ Defaults to <code>runner.checkpoint_dir/latest.pth</code>.</p></td>
 
       <details class="quote">
         <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-329">329</a></span>
-<span class="normal"><a href="#__codelineno-0-330">330</a></span>
-<span class="normal"><a href="#__codelineno-0-331">331</a></span>
-<span class="normal"><a href="#__codelineno-0-332">332</a></span>
-<span class="normal"><a href="#__codelineno-0-333">333</a></span>
-<span class="normal"><a href="#__codelineno-0-334">334</a></span>
-<span class="normal"><a href="#__codelineno-0-335">335</a></span>
-<span class="normal"><a href="#__codelineno-0-336">336</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-329" name="__codelineno-0-329"></a><span class="k">def</span> <span class="nf">print_result</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-330" name="__codelineno-0-330"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-331" name="__codelineno-0-331"></a><span class="sd">    Print latest and best result.</span>
-<a id="__codelineno-0-332" name="__codelineno-0-332"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-333" name="__codelineno-0-333"></a>
-<a id="__codelineno-0-334" name="__codelineno-0-334"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;results: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">results</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-335" name="__codelineno-0-335"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;latest result: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">latest_result</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-336" name="__codelineno-0-336"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;best result: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">best_result</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-336">336</a></span>
+<span class="normal"><a href="#__codelineno-0-337">337</a></span>
+<span class="normal"><a href="#__codelineno-0-338">338</a></span>
+<span class="normal"><a href="#__codelineno-0-339">339</a></span>
+<span class="normal"><a href="#__codelineno-0-340">340</a></span>
+<span class="normal"><a href="#__codelineno-0-341">341</a></span>
+<span class="normal"><a href="#__codelineno-0-342">342</a></span>
+<span class="normal"><a href="#__codelineno-0-343">343</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-336" name="__codelineno-0-336"></a><span class="k">def</span> <span class="nf">print_result</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-337" name="__codelineno-0-337"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-338" name="__codelineno-0-338"></a><span class="sd">    Print latest and best result.</span>
+<a id="__codelineno-0-339" name="__codelineno-0-339"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-340" name="__codelineno-0-340"></a>
+<a id="__codelineno-0-341" name="__codelineno-0-341"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;results: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">results</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-342" name="__codelineno-0-342"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;latest result: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">latest_result</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-343" name="__codelineno-0-343"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;best result: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">best_result</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
       </details>
   </div>
@@ -5587,14 +5615,7 @@ Defaults to <code>runner.checkpoint_dir/latest.pth</code>.</p></td>
 
       <details class="quote">
         <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-338">338</a></span>
-<span class="normal"><a href="#__codelineno-0-339">339</a></span>
-<span class="normal"><a href="#__codelineno-0-340">340</a></span>
-<span class="normal"><a href="#__codelineno-0-341">341</a></span>
-<span class="normal"><a href="#__codelineno-0-342">342</a></span>
-<span class="normal"><a href="#__codelineno-0-343">343</a></span>
-<span class="normal"><a href="#__codelineno-0-344">344</a></span>
-<span class="normal"><a href="#__codelineno-0-345">345</a></span>
+        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-345">345</a></span>
 <span class="normal"><a href="#__codelineno-0-346">346</a></span>
 <span class="normal"><a href="#__codelineno-0-347">347</a></span>
 <span class="normal"><a href="#__codelineno-0-348">348</a></span>
@@ -5610,30 +5631,37 @@ Defaults to <code>runner.checkpoint_dir/latest.pth</code>.</p></td>
 <span class="normal"><a href="#__codelineno-0-358">358</a></span>
 <span class="normal"><a href="#__codelineno-0-359">359</a></span>
 <span class="normal"><a href="#__codelineno-0-360">360</a></span>
-<span class="normal"><a href="#__codelineno-0-361">361</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-338" name="__codelineno-0-338"></a><span class="nd">@catch</span>
-<a id="__codelineno-0-339" name="__codelineno-0-339"></a><span class="nd">@on_main_process</span>
-<a id="__codelineno-0-340" name="__codelineno-0-340"></a><span class="k">def</span> <span class="nf">save_result</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-341" name="__codelineno-0-341"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-342" name="__codelineno-0-342"></a><span class="sd">    Save result to `runner.dir`.</span>
-<a id="__codelineno-0-343" name="__codelineno-0-343"></a>
-<a id="__codelineno-0-344" name="__codelineno-0-344"></a><span class="sd">    This method will save latest and best result to</span>
-<a id="__codelineno-0-345" name="__codelineno-0-345"></a><span class="sd">    `runner.dir/latest.json` and `runner.dir/best.json` respectively.</span>
-<a id="__codelineno-0-346" name="__codelineno-0-346"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-347" name="__codelineno-0-347"></a>
-<a id="__codelineno-0-348" name="__codelineno-0-348"></a>    <span class="n">results_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;results.json&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-349" name="__codelineno-0-349"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">save</span><span class="p">({</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="s2">&quot;results&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">results</span><span class="p">},</span> <span class="n">results_path</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
-<a id="__codelineno-0-350" name="__codelineno-0-350"></a>    <span class="n">ret</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="p">}</span>
-<a id="__codelineno-0-351" name="__codelineno-0-351"></a>    <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">latest_result</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-352" name="__codelineno-0-352"></a>    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">FlatDict</span><span class="p">):</span>
-<a id="__codelineno-0-353" name="__codelineno-0-353"></a>        <span class="n">result</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">dict</span><span class="p">()</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-354" name="__codelineno-0-354"></a>    <span class="c1"># This is slower but ensure id is the first key</span>
-<a id="__codelineno-0-355" name="__codelineno-0-355"></a>    <span class="k">if</span> <span class="n">result</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-356" name="__codelineno-0-356"></a>        <span class="n">ret</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
-<a id="__codelineno-0-357" name="__codelineno-0-357"></a>    <span class="n">latest_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;latest.json&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-358" name="__codelineno-0-358"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">ret</span><span class="p">,</span> <span class="n">latest_path</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
-<a id="__codelineno-0-359" name="__codelineno-0-359"></a>    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_best</span><span class="p">:</span>
-<a id="__codelineno-0-360" name="__codelineno-0-360"></a>        <span class="n">best_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;best.json&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-361" name="__codelineno-0-361"></a>        <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">best_path</span><span class="p">)</span>
+<span class="normal"><a href="#__codelineno-0-361">361</a></span>
+<span class="normal"><a href="#__codelineno-0-362">362</a></span>
+<span class="normal"><a href="#__codelineno-0-363">363</a></span>
+<span class="normal"><a href="#__codelineno-0-364">364</a></span>
+<span class="normal"><a href="#__codelineno-0-365">365</a></span>
+<span class="normal"><a href="#__codelineno-0-366">366</a></span>
+<span class="normal"><a href="#__codelineno-0-367">367</a></span>
+<span class="normal"><a href="#__codelineno-0-368">368</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-345" name="__codelineno-0-345"></a><span class="nd">@catch</span>
+<a id="__codelineno-0-346" name="__codelineno-0-346"></a><span class="nd">@on_main_process</span>
+<a id="__codelineno-0-347" name="__codelineno-0-347"></a><span class="k">def</span> <span class="nf">save_result</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-348" name="__codelineno-0-348"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-349" name="__codelineno-0-349"></a><span class="sd">    Save result to `runner.dir`.</span>
+<a id="__codelineno-0-350" name="__codelineno-0-350"></a>
+<a id="__codelineno-0-351" name="__codelineno-0-351"></a><span class="sd">    This method will save latest and best result to</span>
+<a id="__codelineno-0-352" name="__codelineno-0-352"></a><span class="sd">    `runner.dir/latest.json` and `runner.dir/best.json` respectively.</span>
+<a id="__codelineno-0-353" name="__codelineno-0-353"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-354" name="__codelineno-0-354"></a>
+<a id="__codelineno-0-355" name="__codelineno-0-355"></a>    <span class="n">results_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;results.json&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-356" name="__codelineno-0-356"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">save</span><span class="p">({</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="s2">&quot;results&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">results</span><span class="p">},</span> <span class="n">results_path</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
+<a id="__codelineno-0-357" name="__codelineno-0-357"></a>    <span class="n">ret</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="p">}</span>
+<a id="__codelineno-0-358" name="__codelineno-0-358"></a>    <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">latest_result</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-359" name="__codelineno-0-359"></a>    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">FlatDict</span><span class="p">):</span>
+<a id="__codelineno-0-360" name="__codelineno-0-360"></a>        <span class="n">result</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">dict</span><span class="p">()</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-361" name="__codelineno-0-361"></a>    <span class="c1"># This is slower but ensure id is the first key</span>
+<a id="__codelineno-0-362" name="__codelineno-0-362"></a>    <span class="k">if</span> <span class="n">result</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-363" name="__codelineno-0-363"></a>        <span class="n">ret</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-364" name="__codelineno-0-364"></a>    <span class="n">latest_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;latest.json&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-365" name="__codelineno-0-365"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">ret</span><span class="p">,</span> <span class="n">latest_path</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
+<a id="__codelineno-0-366" name="__codelineno-0-366"></a>    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_best</span><span class="p">:</span>
+<a id="__codelineno-0-367" name="__codelineno-0-367"></a>        <span class="n">best_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;best.json&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-368" name="__codelineno-0-368"></a>        <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">best_path</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
       </details>
   </div>
@@ -7753,7 +7781,7 @@ which will make the instance immortal and break the garbage collection.</p>
   <small>
     
       最后更新:
-      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-03-23 06:12:23</span>
+      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-03-23 07:14:24</span>
       
     
   </small>
