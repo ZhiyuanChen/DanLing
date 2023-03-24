@@ -480,8 +480,14 @@ class NestedTensor:
     def __len__(self) -> int:
         return len(self.storage)
 
-    def __eq__(self, other) -> bool:
-        return self.storage == other.storage
+    def __eq__(self, other) -> Union[bool, Tensor, NestedTensor]:
+        if isinstance(other, NestedTensor):
+            return self.storage == other.storage
+        if isinstance(other, Tensor):
+            return self.tensor == other
+        if isinstance(other, SupportsFloat):
+            return NestedTensor(x == other for x in self.storage)
+        raise NotImplementedError(f"Cannot compare {self.__class__.__name__} with {other.__class__.__name__}")
 
     def __getstate__(self) -> Mapping:
         return self.__dict__
