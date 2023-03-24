@@ -526,6 +526,8 @@ class NestedTensor:
     @staticmethod
     @lru_cache(maxsize=None)
     def _size(storage) -> torch.Size:  # pylint: disable=E1101
+        if storage[0].dim() == 0:
+            return torch.Size([len(storage)])  # pylint: disable=E1101
         return torch.Size(  # pylint: disable=E1101
             [len(storage), max(t.shape[0] for t in storage), *storage[0].shape[1:]]
         )
