@@ -135,7 +135,13 @@ class NestedTensor:
     storage: Sequence[Tensor] = []
     batch_first: bool = True
 
-    def __init__(self, tensors: Iterable[Tensor], batch_first: bool = True, padding_value: SupportsFloat = 0.0) -> None:
+    def __init__(
+        self,
+        tensors: Iterable[Tensor],
+        batch_first: bool = True,
+        padding_value: SupportsFloat = 0.0,
+        mask_value: bool = False,
+    ) -> None:
         if not isinstance(tensors, Iterable):
             raise ValueError(f"NestedTensor must be initialised with an Iterable, bug got {type(tensors)}.")
         tensors = list(tensors)
@@ -146,6 +152,7 @@ class NestedTensor:
         self.storage = tensors
         self.batch_first = batch_first
         self.padding_value = padding_value
+        self.mask_value = mask_value
 
     @property
     def tensor(self) -> Tensor:
@@ -185,7 +192,7 @@ class NestedTensor:
         ```
         """
 
-        return self._mask(tuple(self.storage))
+        return self._mask(tuple(self.storage), self.mask_value)
 
     @property
     def device(self) -> torch.device:  # pylint: disable=E1101
@@ -504,11 +511,12 @@ class NestedTensor:
 
     @staticmethod
     @lru_cache(maxsize=None)
-    def _mask(storage) -> Tensor:
+    def _mask(storage, mask_value: bool = False) -> Tensor:
         if storage[0].dim() == 0:
             return torch.ones(len(storage), dtype=torch.bool)  # pylint: disable=E1101
         lens = torch.tensor([len(t) for t in storage], device=storage[0].device)  # pylint: disable=E1101
-        return torch.arange(max(lens), device=storage[0].device)[None, :] < lens[:, None]  # pylint: disable=E1101
+        arange = torch.arange(max(lens), device=storage[0].device)[None, :]  # pylint: disable=E1101
+        return arange >= lens[:, None] if mask_value else arange < lens[:, None]
 
     @staticmethod
     @lru_cache(maxsize=None)
