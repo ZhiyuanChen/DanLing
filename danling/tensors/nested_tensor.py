@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, SupportsFloat, Tuple, Union
 
 import torch
 from torch import Tensor
@@ -89,6 +89,7 @@ class NestedTensor:
             If `True`, the first dimension is the batch dimension, i.e., `B, N, *`.
 
             If `False`, the first dimension is the sequence dimension, i.e., `N, B, *`
+        padding_value: The value used to pad the tensors.
 
     Args:
         tensors:
@@ -134,7 +135,7 @@ class NestedTensor:
     storage: Sequence[Tensor] = []
     batch_first: bool = True
 
-    def __init__(self, tensors: Iterable[Tensor], batch_first: bool = True) -> None:
+    def __init__(self, tensors: Iterable[Tensor], batch_first: bool = True, padding_value: SupportsFloat = 0.0) -> None:
         if not isinstance(tensors, Iterable):
             raise ValueError(f"NestedTensor must be initialised with an Iterable, bug got {type(tensors)}.")
         tensors = list(tensors)
@@ -144,6 +145,7 @@ class NestedTensor:
             tensors = [torch.tensor(tensor) for tensor in tensors]  # pylint: disable=E1101
         self.storage = tensors
         self.batch_first = batch_first
+        self.padding_value = padding_value
 
     @property
     def tensor(self) -> Tensor:
@@ -163,7 +165,7 @@ class NestedTensor:
         ```
         """
 
-        return self._tensor(tuple(self.storage), self.batch_first)
+        return self._tensor(tuple(self.storage), self.batch_first, float(self.padding_value))
 
     @property
     def mask(self) -> Tensor:
@@ -489,10 +491,10 @@ class NestedTensor:
 
     @staticmethod
     @lru_cache(maxsize=None)
-    def _tensor(storage, batch_first) -> Tensor:
+    def _tensor(storage, batch_first, padding_value: float = 0) -> Tensor:
         if storage[0].dim() == 0:
             return torch.stack(storage, dim=0)  # pylint: disable=E1101
-        return pad_sequence(storage, batch_first=batch_first)
+        return pad_sequence(storage, batch_first=batch_first, padding_value=padding_value)
 
     @staticmethod
     @lru_cache(maxsize=None)
