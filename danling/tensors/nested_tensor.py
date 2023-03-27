@@ -481,7 +481,8 @@ class NestedTensor:
         if kwargs is None:
             kwargs = {}
         if func not in NestedTensorFunc or not all(issubclass(t, (torch.Tensor, NestedTensor)) for t in types):
-            return NotImplemented
+            args = [a.tensor() if hasattr(a, "tensor") else a for a in args]
+            return func(*args, **kwargs)
         return NestedTensorFunc[func](*args, **kwargs)
 
     def __len__(self) -> int:
