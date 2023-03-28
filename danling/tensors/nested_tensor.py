@@ -488,7 +488,7 @@ class NestedTensor:
     def __len__(self) -> int:
         return len(self.storage)
 
-    def __eq__(self, other) -> Union[bool, Tensor, NestedTensor]:
+    def __eq__(self, other) -> Union[bool, Tensor, NestedTensor]:  # type: ignore[override]
         if isinstance(other, NestedTensor):
             return self.storage == other.storage
         if isinstance(other, Tensor):

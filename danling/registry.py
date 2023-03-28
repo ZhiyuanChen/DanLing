@@ -1,6 +1,7 @@
 from copy import deepcopy
 from functools import wraps
 from typing import Any, Callable, Mapping, Optional, Union
+from warnings import warn
 
 from chanfig import NestedDict
 
@@ -52,6 +53,10 @@ class Registry(NestedDict):
     def __init__(self, override: bool = False):
         super().__init__()
         self.setattr("override", override)
+        warn(
+            "DanLing Registry has been deprecated in favor of CHANfiG Registry, and will be removed in 0.2.0.",
+            DeprecationWarning,
+        )
 
     def register(self, component: Optional[Callable] = None, name: Optional[str] = None) -> Callable:
         r"""
