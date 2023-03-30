@@ -503,6 +503,9 @@ class NestedTensor:
     def __setstate__(self, states: Mapping) -> None:
         self.__dict__.update(states)
 
+    def __repr__(self):
+        return self.__class__.__name__ + repr(self.tensor)[len(self.tensor.__class__.__name__) :]  # noqa: E203
+
     @staticmethod
     @lru_cache(maxsize=None)
     def _tensor(storage, batch_first, padding_value: float = 0) -> Tensor:
