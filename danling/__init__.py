@@ -7,7 +7,7 @@ from danling import tensors as tensors
 from danling import typing as typing
 from danling import utils as utils
 
-from .metrics import AverageMeter
+from .metrics import AverageMeter, AverageMeters
 from .registry import GlobalRegistry, Registry
 from .runner import BaseRunner, TorchRunner
 from .tensors import NestedTensor, PNTensor
@@ -27,6 +27,7 @@ __all__ = [
     "Registry",
     "GlobalRegistry",
     "AverageMeter",
+    "AverageMeters",
     "NestedTensor",
     "PNTensor",
     "save",

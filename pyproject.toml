@@ -24,7 +24,7 @@ classifiers = [
 ]
 requires-python = ">=3"
 dependencies = [
-    "chanfig",
+    "chanfig>=0.0.69",
     "gitpython",
 ]
 dynamic = ["version"]

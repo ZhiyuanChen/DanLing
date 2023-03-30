@@ -61,7 +61,9 @@ class MNISTRunner(dl.TorchRunner):
         self.model, self.optimizer = self.prepare(self.model, self.optimizer)
 
         self.criterion = nn.CrossEntropyLoss()
-        self.meters = FlatDict(default_factory=dl.metrics.AverageMeter)
+        self.meters = dl.AverageMeters()
+        self.meters.loss.reset()
+        self.meters.time.reset()
 
     def run(self):
         for self.epochs in range(self.epochs, self.epoch_end):
@@ -74,8 +76,7 @@ class MNISTRunner(dl.TorchRunner):
     def train_epoch(self, split: str = "train"):
         self.model.train()
         loader = self.dataloaders[split]
-        self.meters.loss.reset()
-        self.meters.time.reset()
+        self.meters.reset()
         batch_time = time.time()
         for iteration, (input, target) in enumerate(loader):
             predict = self.model(input)
@@ -99,7 +100,7 @@ class MNISTRunner(dl.TorchRunner):
     @torch.inference_mode()
     def evaluate_epoch(self, split: str = "val"):
         self.model.eval()
-        self.meters.loss.reset()
+        self.meters.reset()
         loader = self.dataloaders[split]
         for iteration, (input, target) in enumerate(loader):
             predict = self.model(input)
