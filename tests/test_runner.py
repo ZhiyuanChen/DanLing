@@ -85,7 +85,7 @@ class MNISTRunner(dl.TorchRunner):
             if self.gradient_clip:
                 nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip)
             self.step()
-            if iteration % self.print_interval == 0:
+            if self.print_interval > 0 and iteration % self.print_interval == 0:
                 if self.device == torch.device("cuda"):  # pylint: disable=E1101
                     torch.cuda.synchronize()
                 reduced_loss = self.reduce(loss).item()

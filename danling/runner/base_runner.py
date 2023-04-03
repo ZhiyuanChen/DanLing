@@ -221,7 +221,7 @@ class BaseRunner(RunnerBase):
 
         The checkpoint will be saved to `runner.checkpoint_dir/latest.pth`.
 
-        If `save_interval` is specified and `self.epochs + 1` is a multiple of `save_interval`,
+        If `save_interval` is positive and `self.epochs + 1` is a multiple of `save_interval`,
         the checkpoint will also be copied to `runner.checkpoint_dir/epoch-{self.epochs}.pth`.
 
         If `self.is_best` is `True`, the checkpoint will also be copied to `runner.checkpoint_dir/best.pth`.
@@ -229,7 +229,7 @@ class BaseRunner(RunnerBase):
 
         latest_path = os.path.join(self.checkpoint_dir, "latest.pth")
         self.save(self.state_dict(), latest_path)
-        if hasattr(self, "save_interval") and (self.epochs + 1) % self.save_interval == 0:
+        if hasattr(self, "save_interval") and self.save_interval > 0 and (self.epochs + 1) % self.save_interval == 0:
             save_path = os.path.join(self.checkpoint_dir, f"epoch-{self.epochs}.pth")
             shutil.copy(latest_path, save_path)
         if self.is_best:
