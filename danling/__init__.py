@@ -1,11 +1,4 @@
-from danling import metrics as metrics
-from danling import modules as modules
-from danling import optim as optim
-from danling import registry as registry
-from danling import runner as runner
-from danling import tensors as tensors
-from danling import typing as typing
-from danling import utils as utils
+from danling import metrics, modules, optim, registry, runner, tensors, typing, utils
 
 from .metrics import AverageMeter, AverageMeters
 from .registry import GlobalRegistry, Registry
