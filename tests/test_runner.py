@@ -28,7 +28,7 @@ class MNISTConfig(Config):
         self.log = False
         self.tensorboard = False
         self.gradient_clip = False
-        self.print_freq = 10
+        self.print_interval = 10
         self.train_iterations_per_epoch = 64
         self.val_iterations_per_epoch = 16
         self.index_set = "val"
@@ -85,12 +85,12 @@ class MNISTRunner(dl.TorchRunner):
             if self.gradient_clip:
                 nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip)
             self.step()
-            if iteration % self.print_freq == 0:
+            if iteration % self.print_interval == 0:
                 if self.device == torch.device("cuda"):  # pylint: disable=E1101
                     torch.cuda.synchronize()
                 reduced_loss = self.reduce(loss).item()
                 self.meters.loss.update(reduced_loss)
-                self.meters.time.update((time.time() - batch_time) / self.print_freq)
+                self.meters.time.update((time.time() - batch_time) / self.print_interval)
                 batch_time = time.time()
             # break early to speed up tests
             if iteration > self.train_iterations_per_epoch:
