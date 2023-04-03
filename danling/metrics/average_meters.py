@@ -62,7 +62,7 @@ class AverageMeters(DefaultDict):
         for meter in self.values():
             meter.reset()
 
-    def update(self, val, n: int = 1) -> None:
+    def update(self, val, n: int = 1) -> None:  # pylint: disable=W0237
         r"""
         Updates the average and current value in all meters.
 

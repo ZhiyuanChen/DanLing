@@ -562,7 +562,7 @@ def mean(
 def cat(tensors, dim: int = 0):
     if dim != 0:
         raise NotImplementedError(f"NestedTensor only supports cat when dim=0, but got {dim}")
-    return NestedTensor([t for tensor in tensors for t in tensor.storage], tensors[0]._state())
+    return NestedTensor([t for tensor in tensors for t in tensor.storage], tensors[0]._state())  # pylint: disable=W0212
 
 
 @NestedTensorFunc.implement(torch.stack)  # pylint: disable=E1101

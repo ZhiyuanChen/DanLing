@@ -7,6 +7,7 @@ from accelerate import Accelerator
 from torch import distributed as dist
 from torch import nn
 from torch.backends import cudnn
+from torch.utils.data import BatchSampler
 
 from danling.utils import catch
 
@@ -155,6 +156,34 @@ class TorchRunner(BaseRunner):
         if self.distributed:
             return model.module  # type: ignore
         return model  # type: ignore
+
+    @property
+    def batch_size(self) -> int:
+        r"""
+        Batch size.
+
+        Notes:
+            If `train` is in `dataloaders`, then `batch_size` is the batch size of `train`.
+            Otherwise, `batch_size` is the batch size of the first dataloader.
+
+        Returns:
+            (int):
+        """
+
+        loader = self.dataloaders["train"] if "train" in self.dataloaders else next(iter(self.dataloaders.values()))
+        batch_sampler = loader.sampler if isinstance(loader.sampler, BatchSampler) else loader.batch_sampler
+        return batch_sampler.batch_size
+
+    @property
+    def accum_steps(self) -> int:
+        r"""
+        Gradient accumulation steps.
+
+        Returns:
+            (int):
+        """
+
+        return self.accelerator.gradient_accumulation_steps
 
     @property
     def device(self) -> torch.device:  # pylint: disable=E1101

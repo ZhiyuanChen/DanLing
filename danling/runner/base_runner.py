@@ -6,7 +6,8 @@ import logging.config
 import os
 import random
 import shutil
-from typing import Callable, Mapping, Optional, Union
+from typing import Callable, Mapping, Optional, Tuple, Union
+from warnings import warn
 
 import numpy as np
 from chanfig import FlatDict, NestedDict
@@ -158,9 +159,11 @@ class BaseRunner(RunnerBase):
 
     def scale_lr(
         self,
+        lr: float,  # pylint: disable=C0103
+        lr_final: float = 1e-6,
         lr_scale_factor: Optional[float] = None,
         batch_size_base: Optional[int] = None,
-    ) -> None:
+    ) -> Tuple[float, float]:
         r"""
         Scale learning rate according to [linear scaling rule](https://arxiv.org/abs/1706.02677).
         """
@@ -173,9 +176,15 @@ class BaseRunner(RunnerBase):
                 if batch_size_base is None:
                     raise ValueError("batch_size_base must be specified to auto scale lr")
             lr_scale_factor = self.batch_size_equivalent / batch_size_base
+        elif batch_size_base is not None:
+            warn(
+                "batch_size_base will be ignored if lr_scale_factor is specified",
+                RuntimeWarning,
+            )
+        lr = lr * lr_scale_factor  # pylint: disable=C0103, E1101
+        lr_final = lr_final * lr_scale_factor  # pylint: disable=E1101
         self.lr_scale_factor = lr_scale_factor
-        self.lr = self.lr * self.lr_scale_factor  # type: float  # pylint: disable=C0103, E1101
-        self.lr_final = self.lr_final * self.lr_scale_factor  # type: float # pylint: disable=E1101
+        return lr, lr_final
 
     def step(self, zero_grad: bool = True) -> None:
         r"""

@@ -81,7 +81,7 @@ class RunnerBase:
         datasets (FlatDict): All datasets, should be in the form of ``{subset: dataset}``.
         datasamplers (FlatDict): All datasamplers, should be in the form of ``{subset: datasampler}``.
         dataloaders (FlatDict): All dataloaders, should be in the form of ``{subset: dataloader}``.
-        batch_size (int): Number of samples per batch.
+        batch_size (int, property): Number of samples per batch in train dataloader or the first dataloader.
         batch_size_equivalent (int, property): Total batch_size (`batch_size * world_size * accum_steps`).
 
     `datasets`, `datasamplers`, `dataloaders` should be a dict with the same keys.
@@ -202,8 +202,6 @@ class RunnerBase:
     datasamplers: FlatDict
     dataloaders: FlatDict
 
-    batch_size: int
-
     results: List[NestedDict]
     index_set: Optional[str]
     index: str
@@ -228,7 +226,6 @@ class RunnerBase:
         self.iters = 0
         self.steps = 0
         self.epochs = 0
-        self.batch_size = 1
         self.seed = randint(0, 2**32 - 1)
         self.datasets = FlatDict()
         self.datasamplers = FlatDict()
@@ -270,6 +267,22 @@ class RunnerBase:
         raise RuntimeError("DanLing cannot determine progress since no terminal is defined.")
 
     @property
+    def batch_size(self) -> int:
+        r"""
+        Batch size.
+
+        Notes:
+            If `train` is in `dataloaders`, then `batch_size` is the batch size of `train`.
+            Otherwise, `batch_size` is the batch size of the first dataloader.
+
+        Returns:
+            (int):
+        """
+
+        loader = self.dataloaders["train"] if "train" in self.dataloaders else next(iter(self.dataloaders.values()))
+        return loader.batch_size
+
+    @property
     def batch_size_equivalent(self) -> int:
         r"""
         Actual batch size.
@@ -279,6 +292,17 @@ class RunnerBase:
         """
 
         return self.batch_size * self.world_size * getattr(self, "accum_steps", 1)
+
+    @property
+    def accum_steps(self) -> int:
+        r"""
+        Accumulated steps.
+
+        Returns:
+            (int):
+        """
+
+        raise AttributeError("accum_steps is not defined.")
 
     @property
     def best_fn(self) -> Callable:  # pylint: disable=C0103
