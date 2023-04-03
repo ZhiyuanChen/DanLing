@@ -1521,7 +1521,7 @@
 <a id="__codelineno-0-221" name="__codelineno-0-221"></a>
 <a id="__codelineno-0-222" name="__codelineno-0-222"></a><span class="sd">        The checkpoint will be saved to `runner.checkpoint_dir/latest.pth`.</span>
 <a id="__codelineno-0-223" name="__codelineno-0-223"></a>
-<a id="__codelineno-0-224" name="__codelineno-0-224"></a><span class="sd">        If `save_interval` is specified and `self.epochs + 1` is a multiple of `save_interval`,</span>
+<a id="__codelineno-0-224" name="__codelineno-0-224"></a><span class="sd">        If `save_interval` is positive and `self.epochs + 1` is a multiple of `save_interval`,</span>
 <a id="__codelineno-0-225" name="__codelineno-0-225"></a><span class="sd">        the checkpoint will also be copied to `runner.checkpoint_dir/epoch-{self.epochs}.pth`.</span>
 <a id="__codelineno-0-226" name="__codelineno-0-226"></a>
 <a id="__codelineno-0-227" name="__codelineno-0-227"></a><span class="sd">        If `self.is_best` is `True`, the checkpoint will also be copied to `runner.checkpoint_dir/best.pth`.</span>
@@ -1529,7 +1529,7 @@
 <a id="__codelineno-0-229" name="__codelineno-0-229"></a>
 <a id="__codelineno-0-230" name="__codelineno-0-230"></a>        <span class="n">latest_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;latest.pth&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-231" name="__codelineno-0-231"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span> <span class="n">latest_path</span><span class="p">)</span>
-<a id="__codelineno-0-232" name="__codelineno-0-232"></a>        <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s2">&quot;save_interval&quot;</span><span class="p">)</span> <span class="ow">and</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">epochs</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">save_interval</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+<a id="__codelineno-0-232" name="__codelineno-0-232"></a>        <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s2">&quot;save_interval&quot;</span><span class="p">)</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">save_interval</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">epochs</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">save_interval</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
 <a id="__codelineno-0-233" name="__codelineno-0-233"></a>            <span class="n">save_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;epoch-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">epochs</span><span class="si">}</span><span class="s2">.pth&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-234" name="__codelineno-0-234"></a>            <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">save_path</span><span class="p">)</span>
 <a id="__codelineno-0-235" name="__codelineno-0-235"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_best</span><span class="p">:</span>
@@ -2273,7 +2273,7 @@ Defaults to <code>self.seed</code> (<code>config.seed</code>).</p></td>
   
       <p>Save checkpoint to <code>runner.checkpoint_dir</code>.</p>
 <p>The checkpoint will be saved to <code>runner.checkpoint_dir/latest.pth</code>.</p>
-<p>If <code>save_interval</code> is specified and <code>self.epochs + 1</code> is a multiple of <code>save_interval</code>,
+<p>If <code>save_interval</code> is positive and <code>self.epochs + 1</code> is a multiple of <code>save_interval</code>,
 the checkpoint will also be copied to <code>runner.checkpoint_dir/epoch-{self.epochs}.pth</code>.</p>
 <p>If <code>self.is_best</code> is <code>True</code>, the checkpoint will also be copied to <code>runner.checkpoint_dir/best.pth</code>.</p>
 
@@ -2308,7 +2308,7 @@ the checkpoint will also be copied to <code>runner.checkpoint_dir/epoch-{self.ep
 <a id="__codelineno-0-221" name="__codelineno-0-221"></a>
 <a id="__codelineno-0-222" name="__codelineno-0-222"></a><span class="sd">    The checkpoint will be saved to `runner.checkpoint_dir/latest.pth`.</span>
 <a id="__codelineno-0-223" name="__codelineno-0-223"></a>
-<a id="__codelineno-0-224" name="__codelineno-0-224"></a><span class="sd">    If `save_interval` is specified and `self.epochs + 1` is a multiple of `save_interval`,</span>
+<a id="__codelineno-0-224" name="__codelineno-0-224"></a><span class="sd">    If `save_interval` is positive and `self.epochs + 1` is a multiple of `save_interval`,</span>
 <a id="__codelineno-0-225" name="__codelineno-0-225"></a><span class="sd">    the checkpoint will also be copied to `runner.checkpoint_dir/epoch-{self.epochs}.pth`.</span>
 <a id="__codelineno-0-226" name="__codelineno-0-226"></a>
 <a id="__codelineno-0-227" name="__codelineno-0-227"></a><span class="sd">    If `self.is_best` is `True`, the checkpoint will also be copied to `runner.checkpoint_dir/best.pth`.</span>
@@ -2316,7 +2316,7 @@ the checkpoint will also be copied to <code>runner.checkpoint_dir/epoch-{self.ep
 <a id="__codelineno-0-229" name="__codelineno-0-229"></a>
 <a id="__codelineno-0-230" name="__codelineno-0-230"></a>    <span class="n">latest_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;latest.pth&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-231" name="__codelineno-0-231"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span> <span class="n">latest_path</span><span class="p">)</span>
-<a id="__codelineno-0-232" name="__codelineno-0-232"></a>    <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s2">&quot;save_interval&quot;</span><span class="p">)</span> <span class="ow">and</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">epochs</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">save_interval</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+<a id="__codelineno-0-232" name="__codelineno-0-232"></a>    <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s2">&quot;save_interval&quot;</span><span class="p">)</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">save_interval</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">epochs</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">save_interval</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
 <a id="__codelineno-0-233" name="__codelineno-0-233"></a>        <span class="n">save_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;epoch-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">epochs</span><span class="si">}</span><span class="s2">.pth&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-234" name="__codelineno-0-234"></a>        <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">save_path</span><span class="p">)</span>
 <a id="__codelineno-0-235" name="__codelineno-0-235"></a>    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_best</span><span class="p">:</span>
@@ -2933,7 +2933,7 @@ Defaults to <code>runner.checkpoint_dir/latest.pth</code>.</p></td>
   <small>
     
       最后更新:
-      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-04-03 08:37:15</span>
+      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-04-03 09:02:17</span>
       
     
   </small>
