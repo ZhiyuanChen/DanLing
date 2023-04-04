@@ -46,9 +46,10 @@ class RunnerBase:
         uuid: `uuid5(self.run_id, self.id)`.
         name: `f"{self.experiment_name}-{self.run_name}"`.
         experiment_id: git hash of the current HEAD.
-            Defaults to `"xxxxxxxxxxxxxxxx"` if Runner not under a git repo.
+            Defaults to `"xxxxxxxxxxxxxxxx"` if Runner not under a git repo or git/gitpython not installed.
         experiment_uuid: UUID of `self.experiment_id`.
-            Defaults to `UUID('78787878-7878-7878-7878-787878787878')` if Runner not under a git repo.
+            Defaults to `UUID('78787878-7878-7878-7878-787878787878')`
+            if Runner not under a git repo or git/gitpython not installed.
         experiment_name: Defaults to `"DanLing"`.
         run_id: hex of `self.run_uuid`.
         run_uuid: `uuid5(self.experiment_id, config.jsons())`.
