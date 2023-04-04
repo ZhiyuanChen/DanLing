@@ -863,13 +863,42 @@ They are unique for each commit and config.</p>
 <p><code>dir</code> is the directory of a certain run, defaults to <code>{dir/name-id}</code>.
 All run files should be under this directory.</p>
 <p>In particular, <code>checkpoint_dir</code>, which defaults to <code>dir/checkpoint_dir_name</code> contains all checkpoint files.</p>
+<p>As a result, your <code>project_root</code> should looks like following:</p>
+<div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Bash</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-1"> 1</a></span>
+<span class="normal"><a href="#__codelineno-0-2"> 2</a></span>
+<span class="normal"><a href="#__codelineno-0-3"> 3</a></span>
+<span class="normal"><a href="#__codelineno-0-4"> 4</a></span>
+<span class="normal"><a href="#__codelineno-0-5"> 5</a></span>
+<span class="normal"><a href="#__codelineno-0-6"> 6</a></span>
+<span class="normal"><a href="#__codelineno-0-7"> 7</a></span>
+<span class="normal"><a href="#__codelineno-0-8"> 8</a></span>
+<span class="normal"><a href="#__codelineno-0-9"> 9</a></span>
+<span class="normal"><a href="#__codelineno-0-10">10</a></span>
+<span class="normal"><a href="#__codelineno-0-11">11</a></span>
+<span class="normal"><a href="#__codelineno-0-12">12</a></span>
+<span class="normal"><a href="#__codelineno-0-13">13</a></span>
+<span class="normal"><a href="#__codelineno-0-14">14</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1"></a>-<span class="w"> </span><span class="o">{</span>project_root<span class="o">}</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2"></a>-<span class="w">     </span><span class="p">|</span>-<span class="w"> </span><span class="o">{</span>name<span class="o">}</span>-<span class="o">{</span>id<span class="o">}</span><span class="w"> </span><span class="o">(</span>equivalents<span class="w"> </span>to<span class="w"> </span><span class="o">{</span>experiment_name<span class="o">}</span>-<span class="o">{</span>run_name<span class="o">}</span>-<span class="o">{</span>experiment_id<span class="o">}</span>-<span class="o">{</span>run_id<span class="o">}</span>-<span class="o">{</span>uuid<span class="o">})</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3"></a>-<span class="w">       </span><span class="p">|</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4"></a>-<span class="w">       </span><span class="p">|</span>-<span class="w"> </span><span class="o">{</span>checkpoint_dir_name<span class="o">}</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5"></a>-<span class="w">       </span><span class="p">|</span><span class="w">    </span><span class="p">|</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6"></a>-<span class="w">       </span><span class="p">|</span><span class="w">    </span><span class="p">|</span>-<span class="w"> </span>best.pth
+<a id="__codelineno-0-7" name="__codelineno-0-7"></a>-<span class="w">       </span><span class="p">|</span><span class="w">    </span><span class="p">|</span>-<span class="w"> </span>latest.pth
+<a id="__codelineno-0-8" name="__codelineno-0-8"></a>-<span class="w">       </span><span class="p">|</span><span class="w">    </span><span class="p">|</span>-<span class="w"> </span>epoch-10.pth
+<a id="__codelineno-0-9" name="__codelineno-0-9"></a>-<span class="w">       </span><span class="p">|</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10"></a>-<span class="w">       </span><span class="p">|</span>-<span class="w"> </span>run.log
+<a id="__codelineno-0-11" name="__codelineno-0-11"></a>-<span class="w">       </span><span class="p">|</span>-<span class="w"> </span>runner.yaml
+<a id="__codelineno-0-12" name="__codelineno-0-12"></a>-<span class="w">       </span><span class="p">|</span>-<span class="w"> </span>results.json
+<a id="__codelineno-0-13" name="__codelineno-0-13"></a>-<span class="w">       </span><span class="p">|</span>-<span class="w"> </span>latest.json
+<a id="__codelineno-0-14" name="__codelineno-0-14"></a>-<span class="w">       </span><span class="p">|</span>-<span class="w"> </span>best.json
+</code></pre></div></td></tr></table></div>
 
   <hr>
 <div class="md-source-file">
   <small>
     
       最后更新:
-      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-04-04 04:13:14</span>
+      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-04-04 08:49:17</span>
       
     
   </small>
