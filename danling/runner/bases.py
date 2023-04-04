@@ -8,6 +8,7 @@ from json import dumps as json_dumps
 from random import randint
 from typing import IO, Any, Callable, List, Mapping, Optional, Union
 from uuid import UUID, uuid5
+from warnings import warn
 
 from chanfig import Config, FlatDict, NestedDict, Variable
 from chanfig.utils import JsonEncoder, YamlDumper
@@ -219,8 +220,10 @@ class RunnerBase:
         # Note that attributes should be init before redefine `self.__dict__`.
         try:
             self.experiment_id = Repo(search_parent_directories=True).head.object.hexsha
+        except ImportError:
+            warn("GitPython is not installed, using default experiment id.")
         except InvalidGitRepositoryError:
-            pass
+            warn("Git reporitory is invalid, using default experiment id.")
         self.experiment_uuid = UUID(bytes=bytes(self.experiment_id.ljust(16, "x")[:16], encoding="ascii"))
         self.deterministic = False
         self.iters = 0
