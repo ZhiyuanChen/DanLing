@@ -80,3 +80,22 @@ To help you manage your experiments, DanLing will automatically generate directo
 All run files should be under this directory.
 
 In particular, `checkpoint_dir`, which defaults to `dir/checkpoint_dir_name` contains all checkpoint files.
+
+As a result, your `project_root` should looks like following:
+
+```bash
+- {project_root}
+-     |- {name}-{id} (equivalents to {experiment_name}-{run_name}-{experiment_id}-{run_id}-{uuid})
+-       |
+-       |- {checkpoint_dir_name}
+-       |    |
+-       |    |- best.pth
+-       |    |- latest.pth
+-       |    |- epoch-10.pth
+-       |
+-       |- run.log
+-       |- runner.yaml
+-       |- results.json
+-       |- latest.json
+-       |- best.json
+```
