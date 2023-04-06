@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import atexit
 import logging
 import logging.config
 import os
@@ -43,8 +42,6 @@ class BaseRunner(RunnerBase):
         self.init_print()
         if self.tensorboard:
             self.init_tensorboard()
-
-        atexit.register(self.print_result)
 
     @on_main_process
     def init_logging(self) -> None:
@@ -142,7 +139,8 @@ class BaseRunner(RunnerBase):
                 Set to `False` to disable this feature.
         """
 
-        seed = self.seed
+        if seed is None:
+            seed = self.seed
         if bias is None:
             bias = self.rank
         if bias:

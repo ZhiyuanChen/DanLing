@@ -27,7 +27,7 @@ class TorchRunner(BaseRunner):
 
     # pylint: disable=R0902
 
-    accelerator: Optional[Accelerator] = None
+    accelerator: Accelerator = None  # type: ignore
     accelerate: Mapping[str, Any]
 
     def __init__(self, *args, **kwargs) -> None:
