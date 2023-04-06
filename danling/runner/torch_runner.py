@@ -27,7 +27,7 @@ class TorchRunner(BaseRunner):
 
     # pylint: disable=R0902
 
-    accelerator: Accelerator
+    accelerator: Optional[Accelerator] = None
     accelerate: Mapping[str, Any]
 
     def __init__(self, *args, **kwargs) -> None:
@@ -234,4 +234,4 @@ class TorchRunner(BaseRunner):
     def __getattr__(self, name: str) -> Any:
         if self.accelerator is not None and hasattr(self.accelerator, name):
             return getattr(self.accelerator, name)
-        return super().__getattr__(name)
+        return super().__getattribute__(name)

@@ -599,7 +599,6 @@ class RunnerBase:
     def __getattr__(self, name) -> Any:
         if "uuid" not in self:
             raise RuntimeError(f"{self.__class__.__name__} is not properly initialised")
-        raise AttributeError(f"{self.__class__.__name__} does not contain {name}")
 
     def __setattr__(self, name, value) -> None:
         if name in self.__dict__ and isinstance(self.__dict__[name], Variable):
