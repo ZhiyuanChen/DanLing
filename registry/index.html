@@ -1240,7 +1240,7 @@ and access through <code>registry.sub_registry.register()</code>.</p>
 <a id="__codelineno-0-108" name="__codelineno-0-108"></a>            <span class="k">return</span> <span class="n">component</span>
 <a id="__codelineno-0-109" name="__codelineno-0-109"></a>
 <a id="__codelineno-0-110" name="__codelineno-0-110"></a>        <span class="c1"># @Registry.register</span>
-<a id="__codelineno-0-111" name="__codelineno-0-111"></a>        <span class="k">if</span> <span class="n">callable</span><span class="p">(</span><span class="n">component</span><span class="p">)</span> <span class="ow">and</span> <span class="n">name</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-111" name="__codelineno-0-111"></a>        <span class="k">if</span> <span class="nb">callable</span><span class="p">(</span><span class="n">component</span><span class="p">)</span> <span class="ow">and</span> <span class="n">name</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
 <a id="__codelineno-0-112" name="__codelineno-0-112"></a>            <span class="k">return</span> <span class="n">register</span><span class="p">(</span><span class="n">component</span><span class="p">)</span>
 <a id="__codelineno-0-113" name="__codelineno-0-113"></a>
 <a id="__codelineno-0-114" name="__codelineno-0-114"></a>        <span class="k">return</span> <span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">register</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">component</span><span class="p">)</span>
@@ -1557,7 +1557,7 @@ and access through <code>registry.sub_registry.register()</code>.</p>
 <a id="__codelineno-0-108" name="__codelineno-0-108"></a>        <span class="k">return</span> <span class="n">component</span>
 <a id="__codelineno-0-109" name="__codelineno-0-109"></a>
 <a id="__codelineno-0-110" name="__codelineno-0-110"></a>    <span class="c1"># @Registry.register</span>
-<a id="__codelineno-0-111" name="__codelineno-0-111"></a>    <span class="k">if</span> <span class="n">callable</span><span class="p">(</span><span class="n">component</span><span class="p">)</span> <span class="ow">and</span> <span class="n">name</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-111" name="__codelineno-0-111"></a>    <span class="k">if</span> <span class="nb">callable</span><span class="p">(</span><span class="n">component</span><span class="p">)</span> <span class="ow">and</span> <span class="n">name</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
 <a id="__codelineno-0-112" name="__codelineno-0-112"></a>        <span class="k">return</span> <span class="n">register</span><span class="p">(</span><span class="n">component</span><span class="p">)</span>
 <a id="__codelineno-0-113" name="__codelineno-0-113"></a>
 <a id="__codelineno-0-114" name="__codelineno-0-114"></a>    <span class="k">return</span> <span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">register</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">component</span><span class="p">)</span>

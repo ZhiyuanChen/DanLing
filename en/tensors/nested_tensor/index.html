@@ -1903,7 +1903,7 @@ However, not all operations are tested.</p>
 <a id="__codelineno-0-474" name="__codelineno-0-474"></a>        <span class="n">elem</span> <span class="o">=</span> <span class="n">ret</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
 <a id="__codelineno-0-475" name="__codelineno-0-475"></a>        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">elem</span><span class="p">,</span> <span class="n">Tensor</span><span class="p">):</span>
 <a id="__codelineno-0-476" name="__codelineno-0-476"></a>            <span class="k">return</span> <span class="n">NestedTensor</span><span class="p">(</span><span class="n">ret</span><span class="p">,</span> <span class="o">**</span><span class="bp">self</span><span class="o">.</span><span class="n">_state</span><span class="p">())</span>
-<a id="__codelineno-0-477" name="__codelineno-0-477"></a>        <span class="k">if</span> <span class="n">callable</span><span class="p">(</span><span class="n">elem</span><span class="p">):</span>
+<a id="__codelineno-0-477" name="__codelineno-0-477"></a>        <span class="k">if</span> <span class="nb">callable</span><span class="p">(</span><span class="n">elem</span><span class="p">):</span>
 <a id="__codelineno-0-478" name="__codelineno-0-478"></a>            <span class="k">return</span> <span class="n">NestedTensorFuncWrapper</span><span class="p">(</span><span class="n">ret</span><span class="p">,</span> <span class="n">state</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_state</span><span class="p">())</span>
 <a id="__codelineno-0-479" name="__codelineno-0-479"></a>        <span class="k">if</span> <span class="n">elem</span><span class="o">.</span><span class="fm">__hash__</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="nb">set</span><span class="p">(</span><span class="n">ret</span><span class="p">))</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
 <a id="__codelineno-0-480" name="__codelineno-0-480"></a>            <span class="k">return</span> <span class="n">elem</span>
@@ -2307,7 +2307,7 @@ However, not all operations are tested.</p>
     <tbody>
         <tr>
           <td>
-                <code><a class="autorefs autorefs-internal" title="danling.tensors.nested_tensor.NestedTensor" href="../../../tensors/nested_tensor/#danling.tensors.NestedTensor">NestedTensor</a></code>
+                <code><a class="autorefs autorefs-internal" title="danling.tensors.nested_tensor.NestedTensor" href="../../../package/#danling.NestedTensor">NestedTensor</a></code>
           </td>
           <td></td>
         </tr>
