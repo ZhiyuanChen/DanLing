@@ -11,7 +11,8 @@ nav:
   - DanLing: index.md
   - Runner:
       - runner/index.md
-      - RunnerBase: runner/bases.md
+      - RunnerState: runner/runner_state.md
+      - RunnerBase: runner/runner_base.md
       - BaseRunner: runner/base_runner.md
       - TorchRunner: runner/torch_runner.md
       - Utilities: runner/utils.md

@@ -28,11 +28,7 @@ class TorchRunner(BaseRunner):
     # pylint: disable=R0902
 
     accelerator: Accelerator = None  # type: ignore
-    accelerate: Mapping[str, Any]
-
-    def __init__(self, *args, **kwargs) -> None:
-        self.accelerate = {}
-        super().__init__(*args, **kwargs)
+    accelerate: Mapping[str, Any] = None  # type: ignore
 
     def init_distributed(self) -> None:
         r"""
@@ -41,11 +37,13 @@ class TorchRunner(BaseRunner):
         Initialise process group and set up DDP variables.
         """
 
+        if self.accelerate is None:
+            self.accelerate = {}
         self.accelerator = Accelerator(**self.accelerate)
         if self.distributed:
-            object_list = [self.id, self.uuid]
+            object_list = [self.state.id]
             dist.broadcast_object_list(object_list)
-            self.id, self.uuid = object_list[0], object_list[1]
+            self.state.id = object_list[0]
 
     @on_main_process
     def init_tensorboard(self, *args, **kwargs) -> None:
@@ -60,7 +58,7 @@ class TorchRunner(BaseRunner):
         self.writer = SummaryWriter(*args, **kwargs)
         self.writer.add_scalar = catch(OSError, verbose=False)(self.writer.add_scalar)  # type: ignore
 
-    def set_seed(self, seed: Optional[int] = None, bias: Optional[int] = None) -> None:
+    def set_seed(self, seed: int = None, bias: Optional[int] = None) -> None:  # type: ignore
         r"""
         Set up random seed.
 
@@ -86,8 +84,8 @@ class TorchRunner(BaseRunner):
         if bias is None:
             bias = self.rank
         if bias:
-            seed += bias
-        self.seed = seed
+            seed += bias  # type: ignore
+        self.state.seed = seed
         torch.manual_seed(seed)
         torch.cuda.manual_seed(seed)
         np.random.seed(seed)
@@ -112,7 +110,7 @@ class TorchRunner(BaseRunner):
             raise ValueError("Model must be defined when calling state_dict")
         model = self.accelerator.unwrap_model(self.model)
         return cls(
-            runner=self.dict(),
+            runner=self.state.dict(),
             model=model.state_dict(),
             optimizer=self.optimizer.state_dict() if self.optimizer else None,
             scheduler=self.scheduler.state_dict() if self.scheduler else None,
@@ -232,6 +230,10 @@ class TorchRunner(BaseRunner):
         return self.accelerator.reduce(tensor, reduction=reduction)
 
     def __getattr__(self, name: str) -> Any:
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            pass
         if self.accelerator is not None and hasattr(self.accelerator, name):
             return getattr(self.accelerator, name)
-        return super().__getattribute__(name)
+        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")

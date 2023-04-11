@@ -13,7 +13,7 @@ from chanfig import FlatDict, NestedDict
 
 from danling.utils import catch
 
-from .bases import RunnerBase
+from .runner_base import RunnerBase
 from .utils import on_main_process
 
 
@@ -200,9 +200,9 @@ class BaseRunner(RunnerBase):
                 self.optimizer.zero_grad()
         if self.scheduler is not None:
             self.scheduler.step()
-        self.steps += 1
+        self.state.steps += 1
         # TODO: Support `drop_last = False`
-        self.iters += self.batch_size_equivalent
+        self.state.iters += self.batch_size_equivalent
 
     def state_dict(self, cls: Callable = dict) -> Mapping:
         r"""

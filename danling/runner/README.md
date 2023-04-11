@@ -4,11 +4,23 @@ The Runner of DanLing sets up the basic environment for running neural networks.
 
 ## Components
 
-For readability and maintainability, there are three levels of Runner:
+For readability and maintainability, there are three levels of Runner + a RunnerState.
 
-### [`RunnerBase`][danling.runner.bases.RunnerBase]
+The RunnerState stores all the information that is critical for a run and is stored in the checkpoint (e.g. `epochs`, `run_id`, etc.).
+With RunnerState and corresponding weights, you can resume a run from any point.
 
-[`RunnerBase`][danling.runner.bases.RunnerBase] gives you a basic instinct on what attributes and properties are provided by the Runner.
+The Runner contains all runtime information that is irrelevant to the checkpoint (e.g. `world_size`, `rank`, etc.).
+
+### [`RunnerState`][danling.runner.runner_state.RunnerState]
+
+[`RunnerState`][danling.runner.runner_state.RunnerState] stores the state of a run.
+
+All attributes stored in `RunnerState` will be saved in the checkpoint, and thus should be json serialisable.
+Except for `@property` of json serialisable attributes.
+
+### [`RunnerBase`][danling.runner.runner_base.RunnerBase]
+
+[`RunnerBase`][danling.runner.abstract_base_runner.RunnerBase] gives you a basic instinct on what attributes and properties are provided by the Runner.
 
 It works in an AbstractBaseClass manner and should neither be used directly nor be inherited from.
 
