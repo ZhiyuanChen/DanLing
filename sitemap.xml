@@ -57,11 +57,19 @@
          
     </url>
     <url>
-         <loc>https://danling.org/runner/bases/</loc>
+         <loc>https://danling.org/runner/runner_base/</loc>
          <lastmod>2023-04-11</lastmod>
          <changefreq>daily</changefreq>
-         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/en/runner/bases/"/>
-         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/bases/"/>
+         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/en/runner/runner_base/"/>
+         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/runner_base/"/>
+         
+    </url>
+    <url>
+         <loc>https://danling.org/runner/runner_state/</loc>
+         <lastmod>2023-04-11</lastmod>
+         <changefreq>daily</changefreq>
+         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/en/runner/runner_state/"/>
+         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/runner_state/"/>
          
     </url>
     <url>

@@ -33,7 +33,7 @@
         <link rel="prev" href="../">
       
       
-        <link rel="next" href="bases/">
+        <link rel="next" href="runner_state/">
       
       <link rel="icon" href="../../assets/images/logo.ico">
       <meta name="generator" content="mkdocs-1.4.2, mkdocs-material-9.1.6">
@@ -426,6 +426,8 @@
         
           
         
+          
+        
       
       
         
@@ -454,7 +456,21 @@
   
   
     <li class="md-nav__item">
-      <a href="bases/" class="md-nav__link">
+      <a href="runner_state/" class="md-nav__link">
+        RunnerState
+      </a>
+    </li>
+  
+
+            
+          
+            
+              
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="runner_base/" class="md-nav__link">
         RunnerBase
       </a>
     </li>
@@ -793,9 +809,16 @@
 <h1 id="runner">Runner<a class="headerlink" href="#runner" title="Permanent link">&para;</a></h1>
 <p>The Runner of DanLing sets up the basic environment for running neural networks.</p>
 <h2 id="components">Components<a class="headerlink" href="#components" title="Permanent link">&para;</a></h2>
-<p>For readability and maintainability, there are three levels of Runner:</p>
-<h3 id="runnerbasedanlingrunnerbasesrunnerbase">[<code>RunnerBase</code>][danling.runner.bases.RunnerBase]<a class="headerlink" href="#runnerbasedanlingrunnerbasesrunnerbase" title="Permanent link">&para;</a></h3>
-<p>[<code>RunnerBase</code>][danling.runner.bases.RunnerBase] gives you a basic instinct on what attributes and properties are provided by the Runner.</p>
+<p>For readability and maintainability, there are three levels of Runner + a RunnerState.</p>
+<p>The RunnerState stores all the information that is critical for a run and is stored in the checkpoint (e.g. <code>epochs</code>, <code>run_id</code>, etc.).
+With RunnerState and corresponding weights, you can resume a run from any point.</p>
+<p>The Runner contains all runtime information that is irrelevant to the checkpoint (e.g. <code>world_size</code>, <code>rank</code>, etc.).</p>
+<h3 id="runnerstatedanlingrunnerrunner_staterunnerstate">[<code>RunnerState</code>][danling.runner.runner_state.RunnerState]<a class="headerlink" href="#runnerstatedanlingrunnerrunner_staterunnerstate" title="Permanent link">&para;</a></h3>
+<p>[<code>RunnerState</code>][danling.runner.runner_state.RunnerState] stores the state of a run.</p>
+<p>All attributes stored in <code>RunnerState</code> will be saved in the checkpoint, and thus should be json serialisable.
+Except for <code>@property</code> of json serialisable attributes.</p>
+<h3 id="runnerbasedanlingrunnerrunner_baserunnerbase">[<code>RunnerBase</code>][danling.runner.runner_base.RunnerBase]<a class="headerlink" href="#runnerbasedanlingrunnerrunner_baserunnerbase" title="Permanent link">&para;</a></h3>
+<p>[<code>RunnerBase</code>][danling.runner.abstract_base_runner.RunnerBase] gives you a basic instinct on what attributes and properties are provided by the Runner.</p>
 <p>It works in an AbstractBaseClass manner and should neither be used directly nor be inherited from.</p>
 <h3 id="baserunnerdanlingrunnerbaserunner">[<code>BaseRunner</code>][danling.runner.BaseRunner]<a class="headerlink" href="#baserunnerdanlingrunnerbaserunner" title="Permanent link">&para;</a></h3>
 <p>[<code>BaseRunner</code>][danling.runner.BaseRunner] contains core methods of general basic functionality,
@@ -872,7 +895,7 @@ All run files should be under this directory.</p>
   <small>
     
       最后更新:
-      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-04-06 08:40:16</span>
+      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-04-11 08:43:56</span>
       
     
   </small>
