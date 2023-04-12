@@ -8,8 +8,13 @@ from uuid import UUID, uuid5
 from warnings import warn
 
 from chanfig import NestedDict
-from git.exc import InvalidGitRepositoryError
-from git.repo import Repo
+
+try:
+    from git.exc import InvalidGitRepositoryError
+    from git.repo import Repo
+except ImportError:
+    warn("gitpython not installed, git hash will not be available")
+    Repo = None
 
 from danling.utils import base62, ensure_dir
 
@@ -169,12 +174,15 @@ class RunnerState(NestedDict):
     tensorboard: bool = False
 
     def __init__(self, *args, **kwargs):
-        try:
-            self.experiment_id = Repo(search_parent_directories=True).head.object.hexsha
-        except ImportError:
+        if Repo is not None:
+            try:
+                self.experiment_id = Repo(search_parent_directories=True).head.object.hexsha
+            except ImportError:
+                warn("GitPython is not installed, using default experiment id.")
+            except InvalidGitRepositoryError:
+                warn("Git reporitory is invalid, using default experiment id.")
+        else:
             warn("GitPython is not installed, using default experiment id.")
-        except InvalidGitRepositoryError:
-            warn("Git reporitory is invalid, using default experiment id.")
         self.deterministic = False
         self.seed = randint(0, 2**32 - 1)
         self.iters = 0
