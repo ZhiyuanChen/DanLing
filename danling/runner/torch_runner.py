@@ -30,6 +30,14 @@ class TorchRunner(BaseRunner):
     accelerator: Accelerator = None  # type: ignore
     accelerate: Mapping[str, Any]
 
+    def __init__(self, *args, **kwargs) -> None:
+        self.accelerate = {}
+        if len(args) == 1 and isinstance(args[0], dict):
+            self.accelerate.update(args[0].pop("accelerate", {}))
+        if "accelerate" in kwargs:
+            self.accelerate.update(kwargs.pop("accelerate"))
+        super().__init__(*args, **kwargs)
+
     def init_distributed(self) -> None:
         r"""
         Set up distributed training.
