@@ -28,7 +28,7 @@ class TorchRunner(BaseRunner):
     # pylint: disable=R0902
 
     accelerator: Accelerator = None  # type: ignore
-    accelerate: Mapping[str, Any] = None  # type: ignore
+    accelerate: Mapping[str, Any]
 
     def init_distributed(self) -> None:
         r"""
@@ -168,9 +168,11 @@ class TorchRunner(BaseRunner):
             (int):
         """
 
-        loader = self.dataloaders["train"] if "train" in self.dataloaders else next(iter(self.dataloaders.values()))
-        batch_sampler = loader.sampler if isinstance(loader.sampler, BatchSampler) else loader.batch_sampler
-        return batch_sampler.batch_size
+        if self.dataloaders:
+            loader = self.dataloaders["train"] if "train" in self.dataloaders else next(iter(self.dataloaders.values()))
+            batch_sampler = loader.sampler if isinstance(loader.sampler, BatchSampler) else loader.batch_sampler
+            return batch_sampler.batch_size
+        raise AttributeError("batch_size could not be inferred, since no dataloaedr found.")
 
     @property
     def accum_steps(self) -> int:

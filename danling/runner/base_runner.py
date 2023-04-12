@@ -184,7 +184,7 @@ class BaseRunner(RunnerBase):
         self.lr_scale_factor = lr_scale_factor
         return lr, lr_final
 
-    def step(self, zero_grad: bool = True) -> None:
+    def step(self, zero_grad: bool = True, batch_size: Optional[int] = None) -> None:
         r"""
         Step optimizer and scheduler.
 
@@ -201,8 +201,10 @@ class BaseRunner(RunnerBase):
         if self.scheduler is not None:
             self.scheduler.step()
         self.state.steps += 1
+        if batch_size is not None:
+            self.state.iters += batch_size
         # TODO: Support `drop_last = False`
-        self.state.iters += self.batch_size_equivalent
+        # self.state.iters += self.batch_size_equivalent
 
     def state_dict(self, cls: Callable = dict) -> Mapping:
         r"""

@@ -104,8 +104,10 @@ class RunnerBase:
             (int):
         """
 
-        loader = self.dataloaders["train"] if "train" in self.dataloaders else next(iter(self.dataloaders.values()))
-        return loader.batch_size
+        if self.dataloaders:
+            loader = self.dataloaders["train"] if "train" in self.dataloaders else next(iter(self.dataloaders.values()))
+            return loader.batch_size
+        raise AttributeError("batch_size could not be inferred, since no dataloaedr found.")
 
     @property
     def batch_size_equivalent(self) -> int:
