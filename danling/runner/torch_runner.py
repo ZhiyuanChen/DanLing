@@ -72,7 +72,7 @@ class TorchRunner(BaseRunner):
 
         Args:
             seed: Random seed to set.
-                Defaults to `self.seed` (`config.seed`).
+                Defaults to `self.state.seed` (`config.seed`).
 
             bias: Make the seed different for each processes.
 
@@ -84,7 +84,7 @@ class TorchRunner(BaseRunner):
         """
 
         if seed is None:
-            seed = self.seed
+            seed = self.state.seed
         if self.distributed:
             object_list = [seed]
             dist.broadcast_object_list(object_list)

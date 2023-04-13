@@ -132,6 +132,10 @@ class RunnerState(NestedDict):
             Defaults to `True`.
         tensorboard (bool): Whether to use `tensorboard`.
             Defaults to `False`.
+        print_interval (int): Interval of printing logs.
+            Defaults to -1.
+        save_interval (int): Interval of saving intermediate checkpoints.
+            Defaults to -1, never save intermediate checkpoints.
 
     Notes:
         `RunnerState` is a `NestedDict`, so you can access its attributes by `state["name"]` or `state.name`.
@@ -172,6 +176,8 @@ class RunnerState(NestedDict):
     checkpoint_dir_name: str = "checkpoints"
     log: bool = True
     tensorboard: bool = False
+    print_interval: int = -1
+    save_interval: int = -1
 
     def __init__(self, *args, **kwargs):
         if Repo is not None:
