@@ -2251,7 +2251,7 @@ and is meant for demonstrating all attributes and properties only.</p>
 <a id="__codelineno-0-369" name="__codelineno-0-369"></a><span class="sd">        &quot;&quot;&quot;</span>
 <a id="__codelineno-0-370" name="__codelineno-0-370"></a>        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">results</span><span class="p">:</span>
 <a id="__codelineno-0-371" name="__codelineno-0-371"></a>            <span class="k">return</span> <span class="kc">None</span>
-<a id="__codelineno-0-372" name="__codelineno-0-372"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">results</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span> <span class="o">-</span> <span class="bp">self</span><span class="o">.</span><span class="n">scores</span><span class="p">[::</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">index</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">best_score</span><span class="p">)]</span>   <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-372" name="__codelineno-0-372"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">results</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span> <span class="o">-</span> <span class="bp">self</span><span class="o">.</span><span class="n">scores</span><span class="p">[::</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">index</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">best_score</span><span class="p">)]</span>  <span class="c1"># type: ignore</span>
 <a id="__codelineno-0-373" name="__codelineno-0-373"></a>
 <a id="__codelineno-0-374" name="__codelineno-0-374"></a>    <span class="nd">@property</span>
 <a id="__codelineno-0-375" name="__codelineno-0-375"></a>    <span class="k">def</span> <span class="nf">scores</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">List</span><span class="p">[</span><span class="nb">float</span><span class="p">]:</span>
@@ -3437,7 +3437,7 @@ You may overwrite <code>from_yamls</code> in case something is not yaml serializ
   <small>
     
       最后更新:
-      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-04-14 16:50:11</span>
+      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-04-14 17:14:39</span>
       
     
   </small>

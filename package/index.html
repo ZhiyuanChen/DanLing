@@ -5673,27 +5673,27 @@ then return them in the same order.</p>
 <a id="__codelineno-0-217" name="__codelineno-0-217"></a>    <span class="nd">@on_main_process</span>
 <a id="__codelineno-0-218" name="__codelineno-0-218"></a>    <span class="k">def</span> <span class="nf">save_checkpoint</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <a id="__codelineno-0-219" name="__codelineno-0-219"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-220" name="__codelineno-0-220"></a><span class="sd">        Save checkpoint to `self.state.checkpoint_dir`.</span>
+<a id="__codelineno-0-220" name="__codelineno-0-220"></a><span class="sd">        Save checkpoint to `self.checkpoint_dir`.</span>
 <a id="__codelineno-0-221" name="__codelineno-0-221"></a>
-<a id="__codelineno-0-222" name="__codelineno-0-222"></a><span class="sd">        The checkpoint will be saved to `self.state.checkpoint_dir/latest.pth`.</span>
+<a id="__codelineno-0-222" name="__codelineno-0-222"></a><span class="sd">        The checkpoint will be saved to `self.checkpoint_dir/latest.pth`.</span>
 <a id="__codelineno-0-223" name="__codelineno-0-223"></a>
 <a id="__codelineno-0-224" name="__codelineno-0-224"></a><span class="sd">        If `self.state.save_interval` is positive and `self.state.epochs + 1` is a multiple of `save_interval`,</span>
-<a id="__codelineno-0-225" name="__codelineno-0-225"></a><span class="sd">        the checkpoint will also be copied to `self.state.checkpoint_dir/epoch-{self.state.epochs}.pth`.</span>
+<a id="__codelineno-0-225" name="__codelineno-0-225"></a><span class="sd">        the checkpoint will also be copied to `self.checkpoint_dir/epoch-{self.state.epochs}.pth`.</span>
 <a id="__codelineno-0-226" name="__codelineno-0-226"></a>
-<a id="__codelineno-0-227" name="__codelineno-0-227"></a><span class="sd">        If `self.state.is_best` is `True`, the checkpoint will also be copied to `self.state.checkpoint_dir/best.pth`.</span>
+<a id="__codelineno-0-227" name="__codelineno-0-227"></a><span class="sd">        If `self.state.is_best` is `True`, the checkpoint will also be copied to `self.checkpoint_dir/best.pth`.</span>
 <a id="__codelineno-0-228" name="__codelineno-0-228"></a><span class="sd">        &quot;&quot;&quot;</span>
 <a id="__codelineno-0-229" name="__codelineno-0-229"></a>
-<a id="__codelineno-0-230" name="__codelineno-0-230"></a>        <span class="n">latest_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;latest.pth&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-230" name="__codelineno-0-230"></a>        <span class="n">latest_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;latest.pth&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-231" name="__codelineno-0-231"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span> <span class="n">latest_path</span><span class="p">)</span>
 <a id="__codelineno-0-232" name="__codelineno-0-232"></a>        <span class="k">if</span> <span class="p">(</span>
 <a id="__codelineno-0-233" name="__codelineno-0-233"></a>            <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s2">&quot;save_interval&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-234" name="__codelineno-0-234"></a>            <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">save_interval</span> <span class="o">&gt;</span> <span class="mi">0</span>
 <a id="__codelineno-0-235" name="__codelineno-0-235"></a>            <span class="ow">and</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">epochs</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">save_interval</span> <span class="o">==</span> <span class="mi">0</span>
 <a id="__codelineno-0-236" name="__codelineno-0-236"></a>        <span class="p">):</span>
-<a id="__codelineno-0-237" name="__codelineno-0-237"></a>            <span class="n">save_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;epoch-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">epochs</span><span class="si">}</span><span class="s2">.pth&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-237" name="__codelineno-0-237"></a>            <span class="n">save_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;epoch-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">epochs</span><span class="si">}</span><span class="s2">.pth&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-238" name="__codelineno-0-238"></a>            <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">save_path</span><span class="p">)</span>
 <a id="__codelineno-0-239" name="__codelineno-0-239"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_best</span><span class="p">:</span>
-<a id="__codelineno-0-240" name="__codelineno-0-240"></a>            <span class="n">best_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;best.pth&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-240" name="__codelineno-0-240"></a>            <span class="n">best_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;best.pth&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-241" name="__codelineno-0-241"></a>            <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">best_path</span><span class="p">)</span>
 <a id="__codelineno-0-242" name="__codelineno-0-242"></a>
 <a id="__codelineno-0-243" name="__codelineno-0-243"></a>    <span class="k">def</span> <span class="nf">load_checkpoint</span><span class="p">(</span>  <span class="c1"># pylint: disable=W1113</span>
@@ -5704,7 +5704,7 @@ then return them in the same order.</p>
 <a id="__codelineno-0-248" name="__codelineno-0-248"></a>
 <a id="__codelineno-0-249" name="__codelineno-0-249"></a><span class="sd">        Args:</span>
 <a id="__codelineno-0-250" name="__codelineno-0-250"></a><span class="sd">            checkpoint: Checkpoint (or its path) to load.</span>
-<a id="__codelineno-0-251" name="__codelineno-0-251"></a><span class="sd">                Defaults to `self.state.checkpoint_dir/latest.pth`.</span>
+<a id="__codelineno-0-251" name="__codelineno-0-251"></a><span class="sd">                Defaults to `self.checkpoint_dir/latest.pth`.</span>
 <a id="__codelineno-0-252" name="__codelineno-0-252"></a><span class="sd">            override_config: If True, override runner config with checkpoint config.</span>
 <a id="__codelineno-0-253" name="__codelineno-0-253"></a><span class="sd">            *args: Additional arguments to pass to `self.load`.</span>
 <a id="__codelineno-0-254" name="__codelineno-0-254"></a><span class="sd">            **kwargs: Additional keyword arguments to pass to `self.load`.</span>
@@ -5718,7 +5718,7 @@ then return them in the same order.</p>
 <a id="__codelineno-0-262" name="__codelineno-0-262"></a><span class="sd">        &quot;&quot;&quot;</span>
 <a id="__codelineno-0-263" name="__codelineno-0-263"></a>
 <a id="__codelineno-0-264" name="__codelineno-0-264"></a>        <span class="k">if</span> <span class="n">checkpoint</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-265" name="__codelineno-0-265"></a>            <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;latest.pth&quot;</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-265" name="__codelineno-0-265"></a>            <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;latest.pth&quot;</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
 <a id="__codelineno-0-266" name="__codelineno-0-266"></a>        <span class="c1"># TODO: Support loading checkpoints in other format</span>
 <a id="__codelineno-0-267" name="__codelineno-0-267"></a>        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
 <a id="__codelineno-0-268" name="__codelineno-0-268"></a>            <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">):</span>
@@ -5769,7 +5769,7 @@ then return them in the same order.</p>
 <a id="__codelineno-0-313" name="__codelineno-0-313"></a>
 <a id="__codelineno-0-314" name="__codelineno-0-314"></a><span class="sd">        Args:</span>
 <a id="__codelineno-0-315" name="__codelineno-0-315"></a><span class="sd">            checkpoint: Checkpoint (or its path) to load.</span>
-<a id="__codelineno-0-316" name="__codelineno-0-316"></a><span class="sd">                Defaults to `self.state.checkpoint_dir/latest.pth`.</span>
+<a id="__codelineno-0-316" name="__codelineno-0-316"></a><span class="sd">                Defaults to `self.checkpoint_dir/latest.pth`.</span>
 <a id="__codelineno-0-317" name="__codelineno-0-317"></a><span class="sd">            *args: Additional arguments to pass to `self.load`.</span>
 <a id="__codelineno-0-318" name="__codelineno-0-318"></a><span class="sd">            **kwargs: Additional keyword arguments to pass to `self.load`.</span>
 <a id="__codelineno-0-319" name="__codelineno-0-319"></a>
@@ -5808,13 +5808,13 @@ then return them in the same order.</p>
 <a id="__codelineno-0-352" name="__codelineno-0-352"></a>    <span class="nd">@on_main_process</span>
 <a id="__codelineno-0-353" name="__codelineno-0-353"></a>    <span class="k">def</span> <span class="nf">save_result</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <a id="__codelineno-0-354" name="__codelineno-0-354"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-355" name="__codelineno-0-355"></a><span class="sd">        Save result to `self.state.dir`.</span>
+<a id="__codelineno-0-355" name="__codelineno-0-355"></a><span class="sd">        Save result to `self.dir`.</span>
 <a id="__codelineno-0-356" name="__codelineno-0-356"></a>
 <a id="__codelineno-0-357" name="__codelineno-0-357"></a><span class="sd">        This method will save latest and best result to</span>
-<a id="__codelineno-0-358" name="__codelineno-0-358"></a><span class="sd">        `self.state.dir/latest.json` and `self.state.dir/best.json` respectively.</span>
+<a id="__codelineno-0-358" name="__codelineno-0-358"></a><span class="sd">        `self.dir/latest.json` and `self.dir/best.json` respectively.</span>
 <a id="__codelineno-0-359" name="__codelineno-0-359"></a><span class="sd">        &quot;&quot;&quot;</span>
 <a id="__codelineno-0-360" name="__codelineno-0-360"></a>
-<a id="__codelineno-0-361" name="__codelineno-0-361"></a>        <span class="n">results_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;results.json&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-361" name="__codelineno-0-361"></a>        <span class="n">results_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;results.json&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-362" name="__codelineno-0-362"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">save</span><span class="p">({</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="s2">&quot;results&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">results</span><span class="p">},</span> <span class="n">results_path</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
 <a id="__codelineno-0-363" name="__codelineno-0-363"></a>        <span class="n">ret</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">name</span><span class="p">}</span>
 <a id="__codelineno-0-364" name="__codelineno-0-364"></a>        <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">latest_result</span>  <span class="c1"># type: ignore</span>
@@ -6434,11 +6434,11 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p></td>
 
   <div class="doc doc-contents ">
   
-      <p>Save checkpoint to <code>self.state.checkpoint_dir</code>.</p>
-<p>The checkpoint will be saved to <code>self.state.checkpoint_dir/latest.pth</code>.</p>
+      <p>Save checkpoint to <code>self.checkpoint_dir</code>.</p>
+<p>The checkpoint will be saved to <code>self.checkpoint_dir/latest.pth</code>.</p>
 <p>If <code>self.state.save_interval</code> is positive and <code>self.state.epochs + 1</code> is a multiple of <code>save_interval</code>,
-the checkpoint will also be copied to <code>self.state.checkpoint_dir/epoch-{self.state.epochs}.pth</code>.</p>
-<p>If <code>self.state.is_best</code> is <code>True</code>, the checkpoint will also be copied to <code>self.state.checkpoint_dir/best.pth</code>.</p>
+the checkpoint will also be copied to <code>self.checkpoint_dir/epoch-{self.state.epochs}.pth</code>.</p>
+<p>If <code>self.state.is_best</code> is <code>True</code>, the checkpoint will also be copied to <code>self.checkpoint_dir/best.pth</code>.</p>
 
       <details class="quote">
         <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
@@ -6471,27 +6471,27 @@ the checkpoint will also be copied to <code>self.state.checkpoint_dir/epoch-{sel
 <a id="__codelineno-0-217" name="__codelineno-0-217"></a><span class="nd">@on_main_process</span>
 <a id="__codelineno-0-218" name="__codelineno-0-218"></a><span class="k">def</span> <span class="nf">save_checkpoint</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <a id="__codelineno-0-219" name="__codelineno-0-219"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-220" name="__codelineno-0-220"></a><span class="sd">    Save checkpoint to `self.state.checkpoint_dir`.</span>
+<a id="__codelineno-0-220" name="__codelineno-0-220"></a><span class="sd">    Save checkpoint to `self.checkpoint_dir`.</span>
 <a id="__codelineno-0-221" name="__codelineno-0-221"></a>
-<a id="__codelineno-0-222" name="__codelineno-0-222"></a><span class="sd">    The checkpoint will be saved to `self.state.checkpoint_dir/latest.pth`.</span>
+<a id="__codelineno-0-222" name="__codelineno-0-222"></a><span class="sd">    The checkpoint will be saved to `self.checkpoint_dir/latest.pth`.</span>
 <a id="__codelineno-0-223" name="__codelineno-0-223"></a>
 <a id="__codelineno-0-224" name="__codelineno-0-224"></a><span class="sd">    If `self.state.save_interval` is positive and `self.state.epochs + 1` is a multiple of `save_interval`,</span>
-<a id="__codelineno-0-225" name="__codelineno-0-225"></a><span class="sd">    the checkpoint will also be copied to `self.state.checkpoint_dir/epoch-{self.state.epochs}.pth`.</span>
+<a id="__codelineno-0-225" name="__codelineno-0-225"></a><span class="sd">    the checkpoint will also be copied to `self.checkpoint_dir/epoch-{self.state.epochs}.pth`.</span>
 <a id="__codelineno-0-226" name="__codelineno-0-226"></a>
-<a id="__codelineno-0-227" name="__codelineno-0-227"></a><span class="sd">    If `self.state.is_best` is `True`, the checkpoint will also be copied to `self.state.checkpoint_dir/best.pth`.</span>
+<a id="__codelineno-0-227" name="__codelineno-0-227"></a><span class="sd">    If `self.state.is_best` is `True`, the checkpoint will also be copied to `self.checkpoint_dir/best.pth`.</span>
 <a id="__codelineno-0-228" name="__codelineno-0-228"></a><span class="sd">    &quot;&quot;&quot;</span>
 <a id="__codelineno-0-229" name="__codelineno-0-229"></a>
-<a id="__codelineno-0-230" name="__codelineno-0-230"></a>    <span class="n">latest_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;latest.pth&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-230" name="__codelineno-0-230"></a>    <span class="n">latest_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;latest.pth&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-231" name="__codelineno-0-231"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span> <span class="n">latest_path</span><span class="p">)</span>
 <a id="__codelineno-0-232" name="__codelineno-0-232"></a>    <span class="k">if</span> <span class="p">(</span>
 <a id="__codelineno-0-233" name="__codelineno-0-233"></a>        <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s2">&quot;save_interval&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-234" name="__codelineno-0-234"></a>        <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">save_interval</span> <span class="o">&gt;</span> <span class="mi">0</span>
 <a id="__codelineno-0-235" name="__codelineno-0-235"></a>        <span class="ow">and</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">epochs</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">save_interval</span> <span class="o">==</span> <span class="mi">0</span>
 <a id="__codelineno-0-236" name="__codelineno-0-236"></a>    <span class="p">):</span>
-<a id="__codelineno-0-237" name="__codelineno-0-237"></a>        <span class="n">save_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;epoch-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">epochs</span><span class="si">}</span><span class="s2">.pth&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-237" name="__codelineno-0-237"></a>        <span class="n">save_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;epoch-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">epochs</span><span class="si">}</span><span class="s2">.pth&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-238" name="__codelineno-0-238"></a>        <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">save_path</span><span class="p">)</span>
 <a id="__codelineno-0-239" name="__codelineno-0-239"></a>    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_best</span><span class="p">:</span>
-<a id="__codelineno-0-240" name="__codelineno-0-240"></a>        <span class="n">best_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;best.pth&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-240" name="__codelineno-0-240"></a>        <span class="n">best_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;best.pth&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-241" name="__codelineno-0-241"></a>        <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">best_path</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
       </details>
@@ -6530,7 +6530,7 @@ the checkpoint will also be copied to <code>self.state.checkpoint_dir/epoch-{sel
                 <code><span title="typing.Optional">Optional</span>[<span title="typing.Union">Union</span>[<span title="typing.Mapping">Mapping</span>, str]]</code>
           </td>
           <td><p>Checkpoint (or its path) to load.
-Defaults to <code>self.state.checkpoint_dir/latest.pth</code>.</p></td>
+Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p></td>
           <td>
                 <code>None</code>
           </td>
@@ -6636,7 +6636,7 @@ Defaults to <code>self.state.checkpoint_dir/latest.pth</code>.</p></td>
 <a id="__codelineno-0-248" name="__codelineno-0-248"></a>
 <a id="__codelineno-0-249" name="__codelineno-0-249"></a><span class="sd">    Args:</span>
 <a id="__codelineno-0-250" name="__codelineno-0-250"></a><span class="sd">        checkpoint: Checkpoint (or its path) to load.</span>
-<a id="__codelineno-0-251" name="__codelineno-0-251"></a><span class="sd">            Defaults to `self.state.checkpoint_dir/latest.pth`.</span>
+<a id="__codelineno-0-251" name="__codelineno-0-251"></a><span class="sd">            Defaults to `self.checkpoint_dir/latest.pth`.</span>
 <a id="__codelineno-0-252" name="__codelineno-0-252"></a><span class="sd">        override_config: If True, override runner config with checkpoint config.</span>
 <a id="__codelineno-0-253" name="__codelineno-0-253"></a><span class="sd">        *args: Additional arguments to pass to `self.load`.</span>
 <a id="__codelineno-0-254" name="__codelineno-0-254"></a><span class="sd">        **kwargs: Additional keyword arguments to pass to `self.load`.</span>
@@ -6650,7 +6650,7 @@ Defaults to <code>self.state.checkpoint_dir/latest.pth</code>.</p></td>
 <a id="__codelineno-0-262" name="__codelineno-0-262"></a><span class="sd">    &quot;&quot;&quot;</span>
 <a id="__codelineno-0-263" name="__codelineno-0-263"></a>
 <a id="__codelineno-0-264" name="__codelineno-0-264"></a>    <span class="k">if</span> <span class="n">checkpoint</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-265" name="__codelineno-0-265"></a>        <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;latest.pth&quot;</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
+<a id="__codelineno-0-265" name="__codelineno-0-265"></a>        <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;latest.pth&quot;</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
 <a id="__codelineno-0-266" name="__codelineno-0-266"></a>    <span class="c1"># TODO: Support loading checkpoints in other format</span>
 <a id="__codelineno-0-267" name="__codelineno-0-267"></a>    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
 <a id="__codelineno-0-268" name="__codelineno-0-268"></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">):</span>
@@ -6844,7 +6844,7 @@ Defaults to <code>self.state.checkpoint_dir/latest.pth</code>.</p></td>
                 <code><span title="typing.Union">Union</span>[<span title="typing.Mapping">Mapping</span>, str]</code>
           </td>
           <td><p>Checkpoint (or its path) to load.
-Defaults to <code>self.state.checkpoint_dir/latest.pth</code>.</p></td>
+Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p></td>
           <td>
               <em>required</em>
           </td>
@@ -6916,7 +6916,7 @@ Defaults to <code>self.state.checkpoint_dir/latest.pth</code>.</p></td>
 <a id="__codelineno-0-313" name="__codelineno-0-313"></a>
 <a id="__codelineno-0-314" name="__codelineno-0-314"></a><span class="sd">    Args:</span>
 <a id="__codelineno-0-315" name="__codelineno-0-315"></a><span class="sd">        checkpoint: Checkpoint (or its path) to load.</span>
-<a id="__codelineno-0-316" name="__codelineno-0-316"></a><span class="sd">            Defaults to `self.state.checkpoint_dir/latest.pth`.</span>
+<a id="__codelineno-0-316" name="__codelineno-0-316"></a><span class="sd">            Defaults to `self.checkpoint_dir/latest.pth`.</span>
 <a id="__codelineno-0-317" name="__codelineno-0-317"></a><span class="sd">        *args: Additional arguments to pass to `self.load`.</span>
 <a id="__codelineno-0-318" name="__codelineno-0-318"></a><span class="sd">        **kwargs: Additional keyword arguments to pass to `self.load`.</span>
 <a id="__codelineno-0-319" name="__codelineno-0-319"></a>
@@ -7032,9 +7032,9 @@ Defaults to <code>self.state.checkpoint_dir/latest.pth</code>.</p></td>
 
   <div class="doc doc-contents ">
   
-      <p>Save result to <code>self.state.dir</code>.</p>
+      <p>Save result to <code>self.dir</code>.</p>
 <p>This method will save latest and best result to
-<code>self.state.dir/latest.json</code> and <code>self.state.dir/best.json</code> respectively.</p>
+<code>self.dir/latest.json</code> and <code>self.dir/best.json</code> respectively.</p>
 
       <details class="quote">
         <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
@@ -7065,13 +7065,13 @@ Defaults to <code>self.state.checkpoint_dir/latest.pth</code>.</p></td>
 <a id="__codelineno-0-352" name="__codelineno-0-352"></a><span class="nd">@on_main_process</span>
 <a id="__codelineno-0-353" name="__codelineno-0-353"></a><span class="k">def</span> <span class="nf">save_result</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <a id="__codelineno-0-354" name="__codelineno-0-354"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-355" name="__codelineno-0-355"></a><span class="sd">    Save result to `self.state.dir`.</span>
+<a id="__codelineno-0-355" name="__codelineno-0-355"></a><span class="sd">    Save result to `self.dir`.</span>
 <a id="__codelineno-0-356" name="__codelineno-0-356"></a>
 <a id="__codelineno-0-357" name="__codelineno-0-357"></a><span class="sd">    This method will save latest and best result to</span>
-<a id="__codelineno-0-358" name="__codelineno-0-358"></a><span class="sd">    `self.state.dir/latest.json` and `self.state.dir/best.json` respectively.</span>
+<a id="__codelineno-0-358" name="__codelineno-0-358"></a><span class="sd">    `self.dir/latest.json` and `self.dir/best.json` respectively.</span>
 <a id="__codelineno-0-359" name="__codelineno-0-359"></a><span class="sd">    &quot;&quot;&quot;</span>
 <a id="__codelineno-0-360" name="__codelineno-0-360"></a>
-<a id="__codelineno-0-361" name="__codelineno-0-361"></a>    <span class="n">results_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;results.json&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-361" name="__codelineno-0-361"></a>    <span class="n">results_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;results.json&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-362" name="__codelineno-0-362"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">save</span><span class="p">({</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="s2">&quot;results&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">results</span><span class="p">},</span> <span class="n">results_path</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
 <a id="__codelineno-0-363" name="__codelineno-0-363"></a>    <span class="n">ret</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">name</span><span class="p">}</span>
 <a id="__codelineno-0-364" name="__codelineno-0-364"></a>    <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">latest_result</span>  <span class="c1"># type: ignore</span>
@@ -8537,7 +8537,7 @@ However, not all operations are tested.</p>
     <tbody>
         <tr>
           <td>
-                <code><a class="autorefs autorefs-internal" title="danling.tensors.nested_tensor.NestedTensor" href="#danling.NestedTensor">NestedTensor</a></code>
+                <code><a class="autorefs autorefs-internal" title="danling.tensors.nested_tensor.NestedTensor" href="../tensors/nested_tensor/#danling.tensors.NestedTensor">NestedTensor</a></code>
           </td>
           <td></td>
         </tr>
@@ -9272,7 +9272,7 @@ which will make the instance immortal and break the garbage collection.</p>
   <small>
     
       最后更新:
-      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-04-14 16:50:11</span>
+      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-04-14 17:14:39</span>
       
     
   </small>
