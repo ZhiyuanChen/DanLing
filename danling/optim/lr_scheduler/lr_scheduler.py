@@ -108,7 +108,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         step_count = step_count or self._step_count  # type: ignore
         progress = progress or np.clip(step_count / self.steps, 0.0, 1.0)
         final_lr = self.final_lr or lr * self.final_lr_ratio
-        lr = self.method(self, progress) * (lr - final_lr) + final_lr
+        lr *= pow(final_lr / lr, self.method(self, progress))
         if self.warmup_steps > step_count > 0:
             warmup_ratio = warmup_ratio or step_count / self.warmup_steps
             lr = warmup_ratio * (lr - self.min_lr) + self.min_lr
@@ -119,11 +119,11 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
 
     @LR_SCHEDULER_STRATEGIES.register
     def linear(self, progress: float) -> float:  # pylint: disable=C0116
-        return 1 - progress
+        return progress
 
     @LR_SCHEDULER_STRATEGIES.register
     def cosine(self, progress: float) -> float:  # pylint: disable=C0116
-        return (1 + np.cos(np.pi * progress)) / 2
+        return 1 - ((1 + np.cos(np.pi * progress)) / 2)
 
     @LR_SCHEDULER_STRATEGIES.register
     def constant(self, progress: float) -> float:  # pylint: disable=W0613, C0116
