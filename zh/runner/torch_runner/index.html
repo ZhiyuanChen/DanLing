@@ -1472,7 +1472,7 @@ if is <code>None</code>, will not use <code>accelerate</code>.</p></td>
 <a id="__codelineno-0-246" name="__codelineno-0-246"></a>            <span class="k">pass</span>
 <a id="__codelineno-0-247" name="__codelineno-0-247"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">accelerator</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">accelerator</span><span class="p">,</span> <span class="n">name</span><span class="p">):</span>
 <a id="__codelineno-0-248" name="__codelineno-0-248"></a>            <span class="k">return</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">accelerator</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span>
-<a id="__codelineno-0-249" name="__codelineno-0-249"></a>        <span class="k">raise</span> <span class="ne">AttributeError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;&#39;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">&#39; object has no attribute &#39;</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">&#39;&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-249" name="__codelineno-0-249"></a>        <span class="k">raise</span> <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__getattribute__</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
         </details>
 
@@ -2219,7 +2219,7 @@ then return them in the same order.</p>
   <small>
     
       最后更新:
-      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-04-13 09:56:54</span>
+      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-04-14 16:50:11</span>
       
     
   </small>
