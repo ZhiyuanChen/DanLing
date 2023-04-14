@@ -28,14 +28,21 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         >>> from danling.optim import LRScheduler
         >>> import torch
         >>> from torch import optim
-        >>> optimizer = optim.SGD([{'params': torch.tensor([1, 2])}], lr=1e-2, momentum=0.9)
-        >>> scheduler = LRScheduler(optimizer, steps=10, final_lr_ratio=0.0001, strategy='linear')
+        >>> optimizer = optim.SGD([{'params': torch.tensor([0])}], lr=1, momentum=0.9)
+        >>> scheduler = LRScheduler(optimizer, steps=5, final_lr_ratio=1e-5, strategy='linear')
         >>> lrs = []
-        >>> for epoch in range(10):
-        ...     lrs.append(scheduler.get_lr())
+        >>> for epoch in range(5):
+        ...     lrs.append(scheduler.get_lr()[0])
         ...     scheduler.step()
-        >>> [round(lr[0], 4) if i < 9 else lr[0] for i, lr in enumerate(lrs)]
-        [0.009, 0.008, 0.007, 0.006, 0.005, 0.004, 0.003, 0.002, 0.0005, 1e-09]
+        >>> [round(lr, 10) for lr in lrs]
+        [0.1, 0.01, 0.001, 0.0001, 1e-09]
+        >>> scheduler = LRScheduler(optimizer, steps=5, final_lr_ratio=1e-5, strategy='cosine')
+        >>> lrs = []
+        >>> for epoch in range(5):
+        ...     lrs.append(scheduler.get_lr()[0])
+        ...     scheduler.step()
+        >>> [round(lr, 10) for lr in lrs]
+        [0.3330753446, 0.0187302031, 0.000533897, 3.00232e-05, 1e-09]
     """
 
     def __init__(  # pylint: disable=R0913
@@ -50,6 +57,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         cooldown_steps: Optional[int] = None,
         last_epoch: int = -1,
         strategies: Optional[Mapping[str, Callable]] = None,
+        method: str = "percentile",
     ):
         if warmup_steps is None:
             warmup_steps = steps // 20
@@ -82,7 +90,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         self.final_lr_ratio = final_lr_ratio if final_lr_ratio < 1 else 1 / final_lr_ratio
         self.min_lr = min_lr
         self.strategy = strategy
-        self.method = self.strategies[self.strategy]
+        self.method = method
         self.warmup_steps = warmup_steps
         self.cooldown_steps = cooldown_steps
         self.cooldown_steps_begin = self.steps - self.cooldown_steps
@@ -90,6 +98,8 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
 
     def get_lr(self) -> List[float]:
         step_count = self._step_count  # type: ignore
+        if step_count > self.steps or step_count < 0:
+            warn(f"Step count {step_count} is out of range [0, {self.steps}]", RuntimeWarning)
         progress = np.clip(step_count / self.steps, 0.0, 1.0)
         warmup_ratio = step_count / self.warmup_steps if self.warmup_steps > 0 else 1.0
         cooldown_ratio = (
@@ -104,11 +114,22 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         progress: Optional[float] = None,
         warmup_ratio: Optional[float] = None,
         cooldown_ratio: Optional[float] = None,
+        method: Optional[str] = None,
     ) -> float:
+        method = method or self.method
         step_count = step_count or self._step_count  # type: ignore
         progress = progress or np.clip(step_count / self.steps, 0.0, 1.0)
         final_lr = self.final_lr or lr * self.final_lr_ratio
-        lr *= pow(final_lr / lr, self.method(self, progress))
+        ratio = self.strategies[self.strategy](self, progress)
+        if ratio > 1 or ratio < 0:
+            unclipped_ratio, ratio = ratio, np.clip(ratio, 0.0, 1.0)
+            warn(f"Ratio {unclipped_ratio} is out of range [0, 1], clipping to {ratio}", RuntimeWarning)
+        if method == "percentile":
+            lr *= pow(final_lr / lr, ratio)
+        elif method == "numerical":
+            lr = (1 - ratio) * (lr - final_lr) + final_lr
+        else:
+            raise ValueError(f"Method must be one of ['percentile', 'numerical'], but got {method}")
         if self.warmup_steps > step_count > 0:
             warmup_ratio = warmup_ratio or step_count / self.warmup_steps
             lr = warmup_ratio * (lr - self.min_lr) + self.min_lr
@@ -127,4 +148,4 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
 
     @LR_SCHEDULER_STRATEGIES.register
     def constant(self, progress: float) -> float:  # pylint: disable=W0613, C0116
-        return 1.0
+        return 0.0
