@@ -68,7 +68,7 @@ class BaseRunner(RunnerBase):
                         "level": "DEBUG",
                         "formatter": "standard",
                         "class": "logging.FileHandler",
-                        "filename": self.state.log_path,
+                        "filename": self.log_path,
                         "mode": "a",
                     },
                 },
@@ -347,8 +347,8 @@ class BaseRunner(RunnerBase):
         """
 
         print(f"results: {self.state.results}")
-        print(f"latest result: {self.state.latest_result}")
-        print(f"best result: {self.state.best_result}")
+        print(f"latest result: {self.latest_result}")
+        print(f"best result: {self.best_result}")
 
     @catch
     @on_main_process
@@ -363,7 +363,7 @@ class BaseRunner(RunnerBase):
         results_path = os.path.join(self.state.dir, "results.json")
         self.save({"id": self.state.id, "name": self.state.name, "results": self.state.results}, results_path, indent=4)
         ret = {"id": self.state.id, "name": self.state.name}
-        result = self.state.latest_result  # type: ignore
+        result = self.latest_result  # type: ignore
         if isinstance(result, FlatDict):
             result = result.dict()  # type: ignore
         # This is slower but ensure id is the first key

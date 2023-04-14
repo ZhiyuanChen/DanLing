@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from random import randint
-from typing import IO, Callable, List, Optional, Union
+from typing import IO, List, Optional, Union
 from uuid import UUID, uuid5
 from warnings import warn
 
@@ -16,7 +16,7 @@ except ImportError:
     warn("gitpython not installed, git hash will not be available")
     Repo = None
 
-from danling.utils import base62, ensure_dir
+from danling.utils import base62
 
 PathStr = Union[os.PathLike, str, bytes]
 File = Union[PathStr, IO]
@@ -66,23 +66,11 @@ class RunnerState(NestedDict):
             Note that `step_end` not initialised since this variable may not apply to some Runners.
         epoch_end (int): End running epochs.
             Note that `epoch_end` not initialised since this variable may not apply to some Runners.
-        progress (float, property): Running Progress, in `range(0, 1)`.
 
     In general you should only use one of `iter_end`, `step_end`, `epoch_end` to indicate the length of running.
 
     Attributes: Results:
         results (List[NestedDict]): All results, should be in the form of ``[{subset: {index: score}}]``.
-        latest_result (NestedDict, property): Most recent results,
-            should be in the form of ``{subset: {index: score}}``.
-        best_result (NestedDict, property): Best recent results, should be in the form of ``{subset: {index: score}}``.
-        scores (List[float], property): All scores.
-        latest_score (float, property): Most recent score.
-        best_score (float, property): Best score.
-        index_set (Optional[str]): The subset to calculate the core score.
-            If is `None`, will use the last set of the result.
-        index (str): The index to calculate the core score.
-            Defaults to `"loss"`.
-        is_best (bool, property): If `latest_score == best_score`.
 
     `results` should be a list of `result`.
     `result` should be a dict with the same `split` as keys, like `dataloaders`.
@@ -110,12 +98,6 @@ class RunnerState(NestedDict):
     Attributes: IO:
         project_root (str): The root directory for all experiments.
             Defaults to `"experiments"`.
-        dir (str, property): Directory of the run.
-            Defaults to `os.path.join(self.project_root, f"{self.name}-{self.id}")`.
-        checkpoint_dir (str, property): Directory of checkpoints.
-        log_path (str, property):  Path of log file.
-        checkpoint_dir_name (str): The name of the directory under `runner.dir` to save checkpoints.
-            Defaults to `"checkpoints"`.
 
     `project_root` is the root directory of all **Experiments**, and should be consistent across the **Project**.
 
@@ -229,128 +211,6 @@ class RunnerState(NestedDict):
         """
 
         return uuid5(self.run_uuid, self.id)
-
-    @property
-    def progress(self) -> float:
-        r"""
-        Training Progress.
-
-        Returns:
-            (float):
-
-        Raises:
-            RuntimeError: If no terminal is defined.
-        """
-
-        if hasattr(self, "iter_end"):
-            return self.iters / self.iter_end
-        if hasattr(self, "step_end"):
-            return self.steps / self.step_end
-        if hasattr(self, "epoch_end"):
-            return self.epochs / self.epoch_end
-        raise RuntimeError("DanLing cannot determine progress since no terminal is defined.")
-
-    @property
-    def best_fn(self) -> Callable:  # pylint: disable=C0103
-        r"""
-        Function to determine the best score from a list of scores.
-
-        Subclass can override this method to accommodate needs, such as `min`.
-
-        Returns:
-            (callable): `max`
-        """
-
-        return max
-
-    @property
-    def latest_result(self) -> Optional[NestedDict]:
-        r"""
-        Latest result.
-        """
-
-        return self.results[-1] if self.results else None
-
-    @property
-    def best_result(self) -> Optional[NestedDict]:
-        r"""
-        Best result.
-        """
-
-        return self.results[-1 - self.scores[::-1].index(self.best_score)] if self.results else None  # type: ignore
-
-    @property
-    def scores(self) -> List[float]:
-        r"""
-        All scores.
-
-        Scores are extracted from results by `index_set` and `runner.index`,
-        following `[r[index_set][self.index] for r in self.results]`.
-
-        By default, `index_set` points to `self.index_set` and is set to `val`,
-        if `self.index_set` is not set, it will be the last key of the last result.
-
-        Scores are considered as the index of the performance of the model.
-        It is useful to determine the best model and the best hyper-parameters.
-        """
-
-        if not self.results:
-            return []
-        index_set = self.index_set or next(reversed(self.results[-1]))
-        return [r[index_set][self.index] for r in self.results]
-
-    @property
-    def latest_score(self) -> Optional[float]:
-        r"""
-        Latest score.
-        """
-
-        return self.scores[-1] if self.results else None
-
-    @property
-    def best_score(self) -> Optional[float]:
-        r"""
-        Best score.
-        """
-
-        return self.best_fn(self.scores) if self.results else None
-
-    @property
-    def is_best(self) -> bool:
-        r"""
-        If current epoch is the best epoch.
-        """
-
-        try:
-            return abs(self.latest_score - self.best_score) < 1e-7  # type: ignore
-        except TypeError:
-            return True
-
-    @property  # type: ignore
-    @ensure_dir
-    def dir(self) -> str:
-        r"""
-        Directory of the run.
-        """
-
-        return os.path.join(self.project_root, f"{self.name}-{self.id}")
-
-    @property
-    def log_path(self) -> str:
-        r"""
-        Path of log file.
-        """
-
-        return os.path.join(self.dir, "run.log")
-
-    @property  # type: ignore
-    @ensure_dir
-    def checkpoint_dir(self) -> str:
-        r"""
-        Directory of checkpoints.
-        """
-
-        return os.path.join(self.dir, self.checkpoint_dir_name)
 
     def __hash__(self) -> int:
         ignored_keys_in_hash = self.getattr("ignored_keys_in_hash", DEFAULT_IGNORED_KEYS_IN_HASH)
