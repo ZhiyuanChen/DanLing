@@ -20,7 +20,8 @@ nav:
     - NestedTensor: tensors/nested_tensor.md
     - PNTensor: tensors/pn_tensor.md
     - TorchFuncRegistry: tensors/torch_func_registry.md
-  - Registry: registry.md
+  - Optim:
+    - LRScheduler: optim/lr_scheduler.md
   - Metrics:
     - AverageMeter: metrics/average_meter.md
   - Utils:

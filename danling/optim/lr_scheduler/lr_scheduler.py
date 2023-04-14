@@ -11,6 +11,31 @@ LR_SCHEDULER_STRATEGIES = Registry()
 class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
     r"""
     General learning rate scheduler.
+
+    Args:
+        optimizer: Wrapped optimizer.
+        steps: Total number of steps.
+        final_lr_ratio: Final learning rate ratio to initial learning rate.
+        final_lr: Final learning rate. Deprecated, use `final_lr_ratio` instead.
+        min_lr: Minimal learning rate.
+        strategy: Scaling strategy.
+        warmup_steps: Number of warmup steps.
+        cooldown_steps: Number of cooldown steps.
+        last_epoch: The index of last epoch.
+        strategies: Custom scaling strategies.
+
+    Examples:
+        >>> from danling.optim import LRScheduler
+        >>> import torch
+        >>> from torch import optim
+        >>> optimizer = optim.SGD([{'params': torch.tensor([1, 2])}], lr=1e-2, momentum=0.9)
+        >>> scheduler = LRScheduler(optimizer, steps=10, final_lr_ratio=0.0001, strategy='linear')
+        >>> lrs = []
+        >>> for epoch in range(10):
+        ...     lrs.append(scheduler.get_lr())
+        ...     scheduler.step()
+        >>> [round(lr[0], 4) if i < 9 else lr[0] for i, lr in enumerate(lrs)]
+        [0.009, 0.008, 0.007, 0.006, 0.005, 0.004, 0.003, 0.002, 0.0005, 1e-09]
     """
 
     def __init__(  # pylint: disable=R0913
@@ -68,7 +93,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         progress = np.clip(step_count / self.steps, 0.0, 1.0)
         warmup_ratio = step_count / self.warmup_steps if self.warmup_steps > 0 else 1.0
         cooldown_ratio = (
-            1 - (step_count - self.cooldown_steps) / self.cooldown_steps if self.cooldown_steps > 0 else 1.0
+            1 - (step_count - self.cooldown_steps_begin) / self.cooldown_steps if self.cooldown_steps > 0 else 1.0
         )
         return [self._get_lr(lr, step_count, progress, warmup_ratio, cooldown_ratio) for lr in self.base_lrs]
 
@@ -84,22 +109,22 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         progress = progress or np.clip(step_count / self.steps, 0.0, 1.0)
         final_lr = self.final_lr or lr * self.final_lr_ratio
         lr = self.method(self, progress) * (lr - final_lr) + final_lr
-        if step_count > self.warmup_steps > 0:
+        if self.warmup_steps > step_count > 0:
             warmup_ratio = warmup_ratio or step_count / self.warmup_steps
             lr = warmup_ratio * (lr - self.min_lr) + self.min_lr
         if step_count > self.cooldown_steps_begin and self.cooldown_steps > 0:
-            cooldown_ratio = cooldown_ratio or (1 - (step_count - self.cooldown_steps)) / self.cooldown_steps
+            cooldown_ratio = cooldown_ratio or 1 - (step_count - self.cooldown_steps_begin) / self.cooldown_steps
             lr = cooldown_ratio * (lr - self.min_lr) + self.min_lr
         return max(self.min_lr, lr)
 
     @LR_SCHEDULER_STRATEGIES.register
-    def linear(self, progress) -> float:  # pylint: disable=C0116
-        return 1.0 - progress
+    def linear(self, progress: float) -> float:  # pylint: disable=C0116
+        return 1 - progress
 
     @LR_SCHEDULER_STRATEGIES.register
-    def cosine(self, progress) -> float:  # pylint: disable=C0116
-        return 1.0 + np.cos(np.pi * progress)
+    def cosine(self, progress: float) -> float:  # pylint: disable=C0116
+        return (1 + np.cos(np.pi * progress)) / 2
 
     @LR_SCHEDULER_STRATEGIES.register
-    def constant(self) -> float:  # pylint: disable=W0613, C0116
+    def constant(self, progress: float) -> float:  # pylint: disable=W0613, C0116
         return 1.0
