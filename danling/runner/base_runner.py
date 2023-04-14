@@ -5,7 +5,7 @@ import logging.config
 import os
 import random
 import shutil
-from typing import Callable, Mapping, Optional, Tuple, Union
+from typing import Callable, Mapping, Optional, Union
 from warnings import warn
 
 import numpy as np
@@ -68,7 +68,7 @@ class BaseRunner(RunnerBase):
                         "level": "DEBUG",
                         "formatter": "standard",
                         "class": "logging.FileHandler",
-                        "filename": self.state.log_path,
+                        "filename": self.log_path,
                         "mode": "a",
                     },
                 },
@@ -158,10 +158,9 @@ class BaseRunner(RunnerBase):
     def scale_lr(
         self,
         lr: float,  # pylint: disable=C0103
-        lr_final: float = 1e-6,
         lr_scale_factor: Optional[float] = None,
         batch_size_base: Optional[int] = None,
-    ) -> Tuple[float, float]:
+    ) -> float:
         r"""
         Scale learning rate according to [linear scaling rule](https://arxiv.org/abs/1706.02677).
         """
@@ -180,9 +179,8 @@ class BaseRunner(RunnerBase):
                 RuntimeWarning,
             )
         lr = lr * lr_scale_factor  # pylint: disable=C0103, E1101
-        lr_final = lr_final * lr_scale_factor  # pylint: disable=E1101
         self.lr_scale_factor = lr_scale_factor
-        return lr, lr_final
+        return lr
 
     def step(self, zero_grad: bool = True, batch_size: Optional[int] = None) -> None:
         r"""
@@ -219,27 +217,27 @@ class BaseRunner(RunnerBase):
     @on_main_process
     def save_checkpoint(self) -> None:
         r"""
-        Save checkpoint to `self.state.checkpoint_dir`.
+        Save checkpoint to `self.checkpoint_dir`.
 
-        The checkpoint will be saved to `self.state.checkpoint_dir/latest.pth`.
+        The checkpoint will be saved to `self.checkpoint_dir/latest.pth`.
 
         If `self.state.save_interval` is positive and `self.state.epochs + 1` is a multiple of `save_interval`,
-        the checkpoint will also be copied to `self.state.checkpoint_dir/epoch-{self.state.epochs}.pth`.
+        the checkpoint will also be copied to `self.checkpoint_dir/epoch-{self.state.epochs}.pth`.
 
-        If `self.state.is_best` is `True`, the checkpoint will also be copied to `self.state.checkpoint_dir/best.pth`.
+        If `self.state.is_best` is `True`, the checkpoint will also be copied to `self.checkpoint_dir/best.pth`.
         """
 
-        latest_path = os.path.join(self.state.checkpoint_dir, "latest.pth")
+        latest_path = os.path.join(self.checkpoint_dir, "latest.pth")
         self.save(self.state_dict(), latest_path)
         if (
             hasattr(self, "save_interval")
             and self.save_interval > 0
             and (self.state.epochs + 1) % self.save_interval == 0
         ):
-            save_path = os.path.join(self.state.checkpoint_dir, f"epoch-{self.state.epochs}.pth")
+            save_path = os.path.join(self.checkpoint_dir, f"epoch-{self.state.epochs}.pth")
             shutil.copy(latest_path, save_path)
         if self.is_best:
-            best_path = os.path.join(self.state.checkpoint_dir, "best.pth")
+            best_path = os.path.join(self.checkpoint_dir, "best.pth")
             shutil.copy(latest_path, best_path)
 
     def load_checkpoint(  # pylint: disable=W1113
@@ -250,7 +248,7 @@ class BaseRunner(RunnerBase):
 
         Args:
             checkpoint: Checkpoint (or its path) to load.
-                Defaults to `self.state.checkpoint_dir/latest.pth`.
+                Defaults to `self.checkpoint_dir/latest.pth`.
             override_config: If True, override runner config with checkpoint config.
             *args: Additional arguments to pass to `self.load`.
             **kwargs: Additional keyword arguments to pass to `self.load`.
@@ -264,7 +262,7 @@ class BaseRunner(RunnerBase):
         """
 
         if checkpoint is None:
-            checkpoint = os.path.join(self.state.checkpoint_dir, "latest.pth")  # type: ignore
+            checkpoint = os.path.join(self.checkpoint_dir, "latest.pth")  # type: ignore
         # TODO: Support loading checkpoints in other format
         if isinstance(checkpoint, str):
             if not os.path.exists(checkpoint):
@@ -315,7 +313,7 @@ class BaseRunner(RunnerBase):
 
         Args:
             checkpoint: Checkpoint (or its path) to load.
-                Defaults to `self.state.checkpoint_dir/latest.pth`.
+                Defaults to `self.checkpoint_dir/latest.pth`.
             *args: Additional arguments to pass to `self.load`.
             **kwargs: Additional keyword arguments to pass to `self.load`.
 
@@ -347,23 +345,23 @@ class BaseRunner(RunnerBase):
         """
 
         print(f"results: {self.state.results}")
-        print(f"latest result: {self.state.latest_result}")
-        print(f"best result: {self.state.best_result}")
+        print(f"latest result: {self.latest_result}")
+        print(f"best result: {self.best_result}")
 
     @catch
     @on_main_process
     def save_result(self) -> None:
         r"""
-        Save result to `self.state.dir`.
+        Save result to `self.dir`.
 
         This method will save latest and best result to
-        `self.state.dir/latest.json` and `self.state.dir/best.json` respectively.
+        `self.dir/latest.json` and `self.dir/best.json` respectively.
         """
 
-        results_path = os.path.join(self.state.dir, "results.json")
+        results_path = os.path.join(self.dir, "results.json")
         self.save({"id": self.state.id, "name": self.state.name, "results": self.state.results}, results_path, indent=4)
         ret = {"id": self.state.id, "name": self.state.name}
-        result = self.state.latest_result  # type: ignore
+        result = self.latest_result  # type: ignore
         if isinstance(result, FlatDict):
             result = result.dict()  # type: ignore
         # This is slower but ensure id is the first key

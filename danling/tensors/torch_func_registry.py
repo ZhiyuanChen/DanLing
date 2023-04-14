@@ -1,7 +1,7 @@
 from functools import wraps
 from typing import Callable
 
-from ..registry import Registry
+from chanfig import Registry
 
 
 class TorchFuncRegistry(Registry):

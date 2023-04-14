@@ -3,11 +3,11 @@ from __future__ import annotations
 import logging
 import logging.config
 import os
-from typing import IO, Any, Callable, Mapping, Optional, Union
+from typing import IO, Any, Callable, List, Mapping, Optional, Union
 
-from chanfig import Config, FlatDict, Variable
+from chanfig import Config, FlatDict, NestedDict, Variable
 
-from danling.utils import catch, load, save
+from danling.utils import catch, ensure_dir, load, save
 
 from .runner_state import RunnerState
 
@@ -43,6 +43,30 @@ class RunnerBase:
 
     `datasets`, `datasamplers`, `dataloaders` should be a dict with the same keys.
     Their keys should be `split` (e.g. `train`, `val`, `test`).
+
+    Attributes: Progress:
+        progress (float, property): Running Progress, in `range(0, 1)`.
+
+    Attributes: Results:
+        latest_result (NestedDict, property): Most recent results,
+            should be in the form of ``{subset: {index: score}}``.
+        best_result (NestedDict, property): Best recent results, should be in the form of ``{subset: {index: score}}``.
+        scores (List[float], property): All scores.
+        latest_score (float, property): Most recent score.
+        best_score (float, property): Best score.
+        index_set (Optional[str]): The subset to calculate the core score.
+            If is `None`, will use the last set of the result.
+        index (str): The index to calculate the core score.
+            Defaults to `"loss"`.
+        is_best (bool, property): If `latest_score == best_score`.
+
+    Attributes: IO:
+        dir (str, property): Directory of the run.
+            Defaults to `os.path.join(self.project_root, f"{self.name}-{self.id}")`.
+        checkpoint_dir (str, property): Directory of checkpoints.
+        log_path (str, property):  Path of log file.
+        checkpoint_dir_name (str): The name of the directory under `runner.dir` to save checkpoints.
+            Defaults to `"checkpoints"`.
 
     Attributes: Parallel Training:
         world_size (int, property): Number of processes.
@@ -297,12 +321,135 @@ class RunnerBase:
 
         return cls(Config.from_yamls(string, *args, **kwargs))
 
+    @property
+    def progress(self) -> float:
+        r"""
+        Training Progress.
+
+        Returns:
+            (float):
+
+        Raises:
+            RuntimeError: If no terminal is defined.
+        """
+
+        if hasattr(self.state, "iter_end"):
+            return self.state.iters / self.state.iter_end
+        if hasattr(self.state, "step_end"):
+            return self.state.steps / self.state.step_end
+        if hasattr(self.state, "epoch_end"):
+            return self.state.epochs / self.state.epoch_end
+        raise RuntimeError("DanLing cannot determine progress since no terminal is defined.")
+
+    @property
+    def best_fn(self) -> Callable:  # pylint: disable=C0103
+        r"""
+        Function to determine the best score from a list of scores.
+
+        Subclass can override this method to accommodate needs, such as `min`.
+
+        Returns:
+            (callable): `max`
+        """
+
+        return max
+
+    @property
+    def latest_result(self) -> Optional[NestedDict]:
+        r"""
+        Latest result.
+        """
+
+        return self.state.results[-1] if self.state.results else None
+
+    @property
+    def best_result(self) -> Optional[NestedDict]:
+        r"""
+        Best result.
+        """
+        if not self.state.results:
+            return None
+        return self.state.results[-1 - self.scores[::-1].index(self.best_score)]  # type: ignore
+
+    @property
+    def scores(self) -> List[float]:
+        r"""
+        All scores.
+
+        Scores are extracted from results by `index_set` and `runner.index`,
+        following `[r[index_set][self.state.index] for r in self.state.results]`.
+
+        By default, `index_set` points to `self.state.index_set` and is set to `val`,
+        if `self.state.index_set` is not set, it will be the last key of the last result.
+
+        Scores are considered as the index of the performance of the model.
+        It is useful to determine the best model and the best hyper-parameters.
+        """
+
+        if not self.state.results:
+            return []
+        index_set = self.state.index_set or next(reversed(self.state.results[-1]))
+        return [r[index_set][self.state.index] for r in self.state.results]
+
+    @property
+    def latest_score(self) -> Optional[float]:
+        r"""
+        Latest score.
+        """
+
+        return self.scores[-1] if self.state.results else None
+
+    @property
+    def best_score(self) -> Optional[float]:
+        r"""
+        Best score.
+        """
+
+        return self.best_fn(self.scores) if self.results else None
+
+    @property
+    def is_best(self) -> bool:
+        r"""
+        If current epoch is the best epoch.
+        """
+
+        try:
+            return abs(self.latest_score - self.best_score) < 1e-7  # type: ignore
+        except TypeError:
+            return True
+
+    @property  # type: ignore
+    @ensure_dir
+    def dir(self) -> str:
+        r"""
+        Directory of the run.
+        """
+
+        return os.path.join(self.project_root, f"{self.name}-{self.id}")
+
+    @property
+    def log_path(self) -> str:
+        r"""
+        Path of log file.
+        """
+
+        return os.path.join(self.dir, "run.log")
+
+    @property  # type: ignore
+    @ensure_dir
+    def checkpoint_dir(self) -> str:
+        r"""
+        Directory of checkpoints.
+        """
+
+        return os.path.join(self.dir, self.checkpoint_dir_name)
+
     def __getattr__(self, name) -> Any:
         if name in self.state:
             return self.state[name]
         if name in dir(self.state):
             return getattr(self.state, name)
-        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+        raise super().__getattribute__(name)
 
     def __setattr__(self, name, value) -> None:
         if name in self.__dict__ and isinstance(self.__dict__[name], Variable):
