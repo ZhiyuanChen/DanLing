@@ -41,6 +41,14 @@
          
     </url>
     <url>
+         <loc>https://danling.org/optim/lr_scheduler/</loc>
+         <lastmod>2023-04-14</lastmod>
+         <changefreq>daily</changefreq>
+         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/en/optim/lr_scheduler/"/>
+         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/optim/lr_scheduler/"/>
+         
+    </url>
+    <url>
          <loc>https://danling.org/runner/</loc>
          <lastmod>2023-04-14</lastmod>
          <changefreq>daily</changefreq>
