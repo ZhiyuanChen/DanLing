@@ -1,28 +1,42 @@
-from typing import Callable, List, Mapping, Optional
+from typing import List, Optional
 from warnings import warn
 
 import numpy as np
-from chanfig import Registry
 from torch.optim import Optimizer, lr_scheduler
-
-LR_SCHEDULER_STRATEGIES = Registry()
 
 
 class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
     r"""
     General learning rate scheduler.
 
+    PyTorch LRScheduler is hard to entend.
+    This class is a wrapper of PyTorch LRScheduler, which provides a more general interface.
+    You only needs to add a new method which calculates a learning rate ratio (range from 0 to 1)
+    with total progress (range from 0 to 1), and everything else will be done automatically.
+
+    Moreover, this class has warmup and cooldown built-in.
+    By default, the first 5% and last 20% of training steps will be warmup and cooldown respectively.
+    You can alternate by passing `warmup_steps` and `cooldown_steps`, or disable them by setting them to 0.
+
     Args:
         optimizer: Wrapped optimizer.
         steps: Total number of steps.
         final_lr_ratio: Final learning rate ratio to initial learning rate.
+            Defaults to 100.
         final_lr: Final learning rate. Deprecated, use `final_lr_ratio` instead.
+            Defaults to None.
         min_lr: Minimal learning rate.
+            Defaults to 1e-9.
         strategy: Scaling strategy.
+            Defaults to "cosine".
         warmup_steps: Number of warmup steps.
+            Defaults to `steps // 20`.
         cooldown_steps: Number of cooldown steps.
+            Defaults to `steps // 5`.
         last_epoch: The index of last epoch.
-        strategies: Custom scaling strategies.
+            Defaults to -1.
+        method: Method to calculate learning rate given ratio, should be one of "percentile" or "linear".
+            Defaults to "percentile".
 
     Examples:
         >>> from danling.optim import LRScheduler
@@ -56,7 +70,6 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         warmup_steps: Optional[int] = None,
         cooldown_steps: Optional[int] = None,
         last_epoch: int = -1,
-        strategies: Optional[Mapping[str, Callable]] = None,
         method: str = "percentile",
     ):
         if warmup_steps is None:
@@ -75,19 +88,18 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
             raise ValueError(f"`final_lr_ratio` must be positive, but got {final_lr_ratio}")
         if min_lr < 0:
             raise ValueError(f"`min_lr` must be positive, but got {min_lr}")
-        if strategies is None:
-            strategies = {}
-        elif not isinstance(strategies, Mapping):
-            raise TypeError(f"`strategies` should be a mapping, but got {type(strategies)}")
-        self.strategies = LR_SCHEDULER_STRATEGIES.clone()
-        self.strategies.update(strategies)
+        self.strategies = {
+            k: v
+            for k, v in self.__class__.__dict__.items()
+            if callable(v) and (not k.startswith("_") or k in "get_lr")
+        }
         if strategy not in self.strategies:
             raise ValueError(f"Scaling strategy must be one of {self.strategies.keys()}, but got {strategy}")
         self.steps = steps
         if final_lr is not None:
             warn("Argument `final_lr` is deprecated, use `final_lr_ratio` instead", DeprecationWarning)
         self.final_lr = final_lr
-        self.final_lr_ratio = final_lr_ratio if final_lr_ratio < 1 else 1 / final_lr_ratio
+        self.final_lr_ratio = final_lr_ratio
         self.min_lr = min_lr
         self.strategy = strategy
         self.method = method
@@ -98,8 +110,8 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
 
     def get_lr(self) -> List[float]:
         step_count = self._step_count  # type: ignore
-        if step_count > self.steps or step_count < 0:
-            warn(f"Step count {step_count} is out of range [0, {self.steps}]", RuntimeWarning)
+        if step_count > self.steps + 1 or step_count < 1:
+            warn(f"Step count {step_count} is out of range [1, {self.steps + 1}]", RuntimeWarning)
         progress = np.clip(step_count / self.steps, 0.0, 1.0)
         warmup_ratio = step_count / self.warmup_steps if self.warmup_steps > 0 else 1.0
         cooldown_ratio = (
@@ -120,10 +132,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         step_count = step_count or self._step_count  # type: ignore
         progress = progress or np.clip(step_count / self.steps, 0.0, 1.0)
         final_lr = self.final_lr or lr * self.final_lr_ratio
-        ratio = self.strategies[self.strategy](self, progress)
-        if ratio > 1 or ratio < 0:
-            unclipped_ratio, ratio = ratio, np.clip(ratio, 0.0, 1.0)
-            warn(f"Ratio {unclipped_ratio} is out of range [0, 1], clipping to {ratio}", RuntimeWarning)
+        ratio = getattr(self, self.strategy)(progress)
         if method == "percentile":
             lr *= pow(final_lr / lr, ratio)
         elif method == "numerical":
@@ -138,14 +147,16 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
             lr = cooldown_ratio * (lr - self.min_lr) + self.min_lr
         return max(self.min_lr, lr)
 
-    @LR_SCHEDULER_STRATEGIES.register
     def linear(self, progress: float) -> float:  # pylint: disable=C0116
         return progress
 
-    @LR_SCHEDULER_STRATEGIES.register
     def cosine(self, progress: float) -> float:  # pylint: disable=C0116
         return 1 - ((1 + np.cos(np.pi * progress)) / 2)
 
-    @LR_SCHEDULER_STRATEGIES.register
     def constant(self, progress: float) -> float:  # pylint: disable=W0613, C0116
         return 0.0
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}({self.strategy}, method={self.method}, " \
+                f"final_lr_ratio={self.final_lr_ratio}, steps={self.steps}, " \
+                f"warmup_steps={self.warmup_steps}, cooldown_steps={self.cooldown_steps})"
