@@ -31,7 +31,8 @@ class TorchRunner(BaseRunner):
     accelerate: Mapping[str, Any]
 
     def __init__(self, *args, **kwargs) -> None:
-        self.accelerate = {}
+        if "accelerate" not in self:
+            self.accelerate = {}
         if len(args) == 1 and isinstance(args[0], dict):
             self.accelerate.update(args[0].pop("accelerate", {}))
         if "accelerate" in kwargs:
