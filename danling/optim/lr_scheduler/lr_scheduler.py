@@ -9,7 +9,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
     r"""
     General learning rate scheduler.
 
-    PyTorch LRScheduler is hard to entend.
+    PyTorch LRScheduler is hard to extend.
     This class is a wrapper of PyTorch LRScheduler, which provides a more general interface.
     You only needs to add a new method which calculates a learning rate ratio (range from 0 to 1)
     with total progress (range from 0 to 1), and everything else will be done automatically.
@@ -108,7 +108,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         self.cooldown_steps_begin = self.steps - self.cooldown_steps
         super().__init__(optimizer, last_epoch)
 
-    def get_lr(self) -> List[float]:
+    def get_lr(self) -> List[float]:  # type: ignore
         step_count = self._step_count  # type: ignore
         if step_count > self.steps + 1 or step_count < 1:
             warn(f"Step count {step_count} is out of range [1, {self.steps + 1}]", RuntimeWarning)

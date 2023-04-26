@@ -14,7 +14,7 @@ try:
     from git.repo import Repo
 except ImportError:
     warn("gitpython not installed, git hash will not be available")
-    Repo = None
+    Repo = None  # type: ignore
 
 from danling.utils import base62
 
