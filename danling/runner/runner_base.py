@@ -7,6 +7,7 @@ from typing import IO, Any, Callable, List, Mapping, Optional, Union
 
 from chanfig import Config, FlatDict, NestedDict, Variable
 
+from danling.metrics import AverageMeters
 from danling.utils import catch, ensure_dir, load, save
 
 from .runner_state import RunnerState
@@ -105,12 +106,14 @@ class RunnerBase:
     datasamplers: FlatDict
     dataloaders: FlatDict
 
+    meters: Optional[AverageMeters] = None
     logger: Optional[logging.Logger] = None
     writer: Optional[Any] = None
 
     def __init__(self, *args, **kwargs):
         super().__init__()
         self.state = RunnerState(*args, **kwargs)
+        self.meters = AverageMeters()
         self.datasets = FlatDict()
         self.datasamplers = FlatDict()
         self.dataloaders = FlatDict()

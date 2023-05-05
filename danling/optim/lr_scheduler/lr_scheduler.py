@@ -89,9 +89,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         if min_lr < 0:
             raise ValueError(f"`min_lr` must be positive, but got {min_lr}")
         self.strategies = {
-            k: v
-            for k, v in self.__class__.__dict__.items()
-            if callable(v) and (not k.startswith("_") or k in "get_lr")
+            k: v for k, v in self.__class__.__dict__.items() if callable(v) and (not k.startswith("_") or k in "get_lr")
         }
         if strategy not in self.strategies:
             raise ValueError(f"Scaling strategy must be one of {self.strategies.keys()}, but got {strategy}")
@@ -157,6 +155,8 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         return 0.0
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}({self.strategy}, method={self.method}, " \
-                f"final_lr_ratio={self.final_lr_ratio}, steps={self.steps}, " \
-                f"warmup_steps={self.warmup_steps}, cooldown_steps={self.cooldown_steps})"
+        return (
+            f"{self.__class__.__name__}({self.strategy}, method={self.method}, "
+            f"final_lr_ratio={self.final_lr_ratio}, steps={self.steps}, "
+            f"warmup_steps={self.warmup_steps}, cooldown_steps={self.cooldown_steps})"
+        )
