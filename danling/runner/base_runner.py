@@ -241,7 +241,7 @@ class BaseRunner(RunnerBase):
             shutil.copy(latest_path, best_path)
 
     def load_checkpoint(  # pylint: disable=W1113
-        self, checkpoint: Optional[Union[Mapping, str]] = None, override_config: bool = True, *args, **kwargs
+        self, checkpoint: Optional[Union[Mapping, str]] = None, override_state: bool = False, *args, **kwargs
     ) -> None:
         """
         Load info from checkpoint.
@@ -249,7 +249,8 @@ class BaseRunner(RunnerBase):
         Args:
             checkpoint: Checkpoint (or its path) to load.
                 Defaults to `self.checkpoint_dir/latest.pth`.
-            override_config: If True, override runner config with checkpoint config.
+            override_state: If True, override runner state with checkpoint state.
+                Defaults to `False`.
             *args: Additional arguments to pass to `self.load`.
             **kwargs: Additional keyword arguments to pass to `self.load`.
 
@@ -270,7 +271,7 @@ class BaseRunner(RunnerBase):
             self.checkpoint = checkpoint  # pylint: disable=W0201
             checkpoint: Mapping = self.load(checkpoint, *args, **kwargs)  # type: ignore
         # TODO: Wrap state_dict in a dataclass
-        if override_config:
+        if override_state:
             self.__dict__.update(NestedDict(**checkpoint["runner"]))  # type: ignore
         if self.model is not None and "model" in checkpoint:
             self.model.load_state_dict(checkpoint["model"])  # type: ignore
@@ -324,7 +325,7 @@ class BaseRunner(RunnerBase):
         if isinstance(checkpoint, str):
             checkpoint = cls.load(checkpoint, *args, **kwargs)
         runner = cls(**checkpoint["runner"])  # type: ignore
-        runner.load_checkpoint(checkpoint, override_config=False)
+        runner.load_checkpoint(checkpoint, override_state=False)
         return runner
 
     def append_result(self, result) -> None:
