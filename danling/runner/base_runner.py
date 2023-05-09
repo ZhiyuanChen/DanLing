@@ -274,7 +274,8 @@ class BaseRunner(RunnerBase):
         if override_state:
             self.__dict__.update(NestedDict(**checkpoint["runner"]))  # type: ignore
         if self.model is not None and "model" in checkpoint:
-            self.model.load_state_dict(checkpoint["model"])  # type: ignore
+            model = self.unwrap_model(self.model)
+            model.load_state_dict(checkpoint["model"])  # type: ignore
         if self.optimizer is not None and "optimizer" in checkpoint:
             self.optimizer.load_state_dict(checkpoint["optimizer"])  # type: ignore
         if self.scheduler is not None and "scheduler" in checkpoint:
