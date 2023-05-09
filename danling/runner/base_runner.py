@@ -306,7 +306,8 @@ class BaseRunner(RunnerBase):
             checkpoint = checkpoint["model"]  # type: ignore
         if "state_dict" in checkpoint:
             checkpoint = checkpoint["state_dict"]  # type: ignore
-        self.model.load_state_dict(checkpoint)  # type: ignore
+        model = self.unwrap_model(self.model)
+        model.load_state_dict(checkpoint)  # type: ignore
 
     @classmethod
     def from_checkpoint(cls, checkpoint: Union[Mapping, str], *args, **kwargs) -> BaseRunner:
