@@ -184,7 +184,7 @@ class RunnerState(NestedDict):
         time = datetime.now()
         time_tuple = time.isocalendar()[1:] + (time.hour, time.minute, time.second, time.microsecond)
         time_str = "".join(base62.encode(i) for i in time_tuple)
-        self.id = f"{self.experiment_id:.5}{self.run_id:.4}{time_str}"  # pylint: disable=C0103
+        self.id = f"{time_str}{self.experiment_id:.5}{self.run_id:.4}"  # pylint: disable=C0103
         self.name = f"{self.experiment_name}-{self.run_name}"
         self.setattr("ignored_keys_in_hash", DEFAULT_IGNORED_KEYS_IN_HASH)
 
