@@ -36,7 +36,7 @@
         <link rel="next" href="../base_runner/">
       
       <link rel="icon" href="../../../assets/images/logo.ico">
-      <meta name="generator" content="mkdocs-1.4.3, mkdocs-material-9.1.13">
+      <meta name="generator" content="mkdocs-1.4.3, mkdocs-material-9.1.14">
     
     
       
@@ -1926,7 +1926,9 @@ and is meant for demonstrating all attributes and properties only.</p>
 <span class="normal"><a href="#__codelineno-0-487">487</a></span>
 <span class="normal"><a href="#__codelineno-0-488">488</a></span>
 <span class="normal"><a href="#__codelineno-0-489">489</a></span>
-<span class="normal"><a href="#__codelineno-0-490">490</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-22" name="__codelineno-0-22"></a><span class="k">class</span> <span class="nc">RunnerBase</span><span class="p">:</span>
+<span class="normal"><a href="#__codelineno-0-490">490</a></span>
+<span class="normal"><a href="#__codelineno-0-491">491</a></span>
+<span class="normal"><a href="#__codelineno-0-492">492</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-22" name="__codelineno-0-22"></a><span class="k">class</span> <span class="nc">RunnerBase</span><span class="p">:</span>
 <a id="__codelineno-0-23" name="__codelineno-0-23"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
 <a id="__codelineno-0-24" name="__codelineno-0-24"></a><span class="sd">    Base class for all runners.</span>
 <a id="__codelineno-0-25" name="__codelineno-0-25"></a>
@@ -2355,46 +2357,48 @@ and is meant for demonstrating all attributes and properties only.</p>
 <a id="__codelineno-0-448" name="__codelineno-0-448"></a>        <span class="k">return</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir_name</span><span class="p">)</span>
 <a id="__codelineno-0-449" name="__codelineno-0-449"></a>
 <a id="__codelineno-0-450" name="__codelineno-0-450"></a>    <span class="k">def</span> <span class="fm">__getattr__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
-<a id="__codelineno-0-451" name="__codelineno-0-451"></a>        <span class="k">if</span> <span class="n">name</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="p">:</span>
-<a id="__codelineno-0-452" name="__codelineno-0-452"></a>            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="p">[</span><span class="n">name</span><span class="p">]</span>
-<a id="__codelineno-0-453" name="__codelineno-0-453"></a>        <span class="k">if</span> <span class="n">name</span> <span class="ow">in</span> <span class="nb">dir</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="p">):</span>
-<a id="__codelineno-0-454" name="__codelineno-0-454"></a>            <span class="k">return</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span>
-<a id="__codelineno-0-455" name="__codelineno-0-455"></a>        <span class="k">raise</span> <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__getattribute__</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
-<a id="__codelineno-0-456" name="__codelineno-0-456"></a>
-<a id="__codelineno-0-457" name="__codelineno-0-457"></a>    <span class="k">def</span> <span class="fm">__setattr__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-458" name="__codelineno-0-458"></a>        <span class="k">if</span> <span class="n">name</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span> <span class="ow">and</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span><span class="p">[</span><span class="n">name</span><span class="p">],</span> <span class="n">Variable</span><span class="p">):</span>
-<a id="__codelineno-0-459" name="__codelineno-0-459"></a>            <span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span><span class="p">[</span><span class="n">name</span><span class="p">]</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
-<a id="__codelineno-0-460" name="__codelineno-0-460"></a>        <span class="k">else</span><span class="p">:</span>
-<a id="__codelineno-0-461" name="__codelineno-0-461"></a>            <span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
-<a id="__codelineno-0-462" name="__codelineno-0-462"></a>
-<a id="__codelineno-0-463" name="__codelineno-0-463"></a>    <span class="k">def</span> <span class="fm">__contains__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<a id="__codelineno-0-464" name="__codelineno-0-464"></a>        <span class="k">return</span> <span class="n">name</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span>
-<a id="__codelineno-0-465" name="__codelineno-0-465"></a>
-<a id="__codelineno-0-466" name="__codelineno-0-466"></a>    <span class="k">def</span> <span class="fm">__repr__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-<a id="__codelineno-0-467" name="__codelineno-0-467"></a>        <span class="n">lines</span> <span class="o">=</span> <span class="p">[]</span>
-<a id="__codelineno-0-468" name="__codelineno-0-468"></a>        <span class="k">for</span> <span class="n">key</span><span class="p">,</span> <span class="n">value</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
-<a id="__codelineno-0-469" name="__codelineno-0-469"></a>            <span class="n">value_str</span> <span class="o">=</span> <span class="nb">repr</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
-<a id="__codelineno-0-470" name="__codelineno-0-470"></a>            <span class="n">value_str</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_add_indent</span><span class="p">(</span><span class="n">value_str</span><span class="p">)</span>
-<a id="__codelineno-0-471" name="__codelineno-0-471"></a>            <span class="n">lines</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;(&quot;</span> <span class="o">+</span> <span class="n">key</span> <span class="o">+</span> <span class="s2">&quot;): &quot;</span> <span class="o">+</span> <span class="n">value_str</span><span class="p">)</span>
-<a id="__codelineno-0-472" name="__codelineno-0-472"></a>
-<a id="__codelineno-0-473" name="__codelineno-0-473"></a>        <span class="n">main_str</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span> <span class="o">+</span> <span class="s2">&quot;(&quot;</span>
-<a id="__codelineno-0-474" name="__codelineno-0-474"></a>        <span class="k">if</span> <span class="n">lines</span><span class="p">:</span>
-<a id="__codelineno-0-475" name="__codelineno-0-475"></a>            <span class="n">main_str</span> <span class="o">+=</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">  &quot;</span> <span class="o">+</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">  &quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">lines</span><span class="p">)</span> <span class="o">+</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span>
-<a id="__codelineno-0-476" name="__codelineno-0-476"></a>
-<a id="__codelineno-0-477" name="__codelineno-0-477"></a>        <span class="n">main_str</span> <span class="o">+=</span> <span class="s2">&quot;)&quot;</span>
-<a id="__codelineno-0-478" name="__codelineno-0-478"></a>        <span class="k">return</span> <span class="n">main_str</span>
-<a id="__codelineno-0-479" name="__codelineno-0-479"></a>
-<a id="__codelineno-0-480" name="__codelineno-0-480"></a>    <span class="k">def</span> <span class="nf">_add_indent</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">text</span><span class="p">):</span>
-<a id="__codelineno-0-481" name="__codelineno-0-481"></a>        <span class="n">lines</span> <span class="o">=</span> <span class="n">text</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-482" name="__codelineno-0-482"></a>        <span class="c1"># don&#39;t do anything for single-line stuff</span>
-<a id="__codelineno-0-483" name="__codelineno-0-483"></a>        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">lines</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
-<a id="__codelineno-0-484" name="__codelineno-0-484"></a>            <span class="k">return</span> <span class="n">text</span>
-<a id="__codelineno-0-485" name="__codelineno-0-485"></a>        <span class="n">first</span> <span class="o">=</span> <span class="n">lines</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
-<a id="__codelineno-0-486" name="__codelineno-0-486"></a>        <span class="c1"># add 2 spaces to each line but the first</span>
-<a id="__codelineno-0-487" name="__codelineno-0-487"></a>        <span class="n">lines</span> <span class="o">=</span> <span class="p">[(</span><span class="mi">2</span> <span class="o">*</span> <span class="s2">&quot; &quot;</span><span class="p">)</span> <span class="o">+</span> <span class="n">line</span> <span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">lines</span><span class="p">]</span>
-<a id="__codelineno-0-488" name="__codelineno-0-488"></a>        <span class="n">lines</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">lines</span><span class="p">)</span>
-<a id="__codelineno-0-489" name="__codelineno-0-489"></a>        <span class="n">lines</span> <span class="o">=</span> <span class="n">first</span> <span class="o">+</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span> <span class="o">+</span> <span class="n">lines</span>
-<a id="__codelineno-0-490" name="__codelineno-0-490"></a>        <span class="k">return</span> <span class="n">lines</span>
+<a id="__codelineno-0-451" name="__codelineno-0-451"></a>        <span class="k">if</span> <span class="s2">&quot;state&quot;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="p">:</span>
+<a id="__codelineno-0-452" name="__codelineno-0-452"></a>            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;Runner is not initialised yet.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-453" name="__codelineno-0-453"></a>        <span class="k">if</span> <span class="n">name</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="p">:</span>
+<a id="__codelineno-0-454" name="__codelineno-0-454"></a>            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="p">[</span><span class="n">name</span><span class="p">]</span>
+<a id="__codelineno-0-455" name="__codelineno-0-455"></a>        <span class="k">if</span> <span class="n">name</span> <span class="ow">in</span> <span class="nb">dir</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="p">):</span>
+<a id="__codelineno-0-456" name="__codelineno-0-456"></a>            <span class="k">return</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span>
+<a id="__codelineno-0-457" name="__codelineno-0-457"></a>        <span class="k">raise</span> <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__getattribute__</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
+<a id="__codelineno-0-458" name="__codelineno-0-458"></a>
+<a id="__codelineno-0-459" name="__codelineno-0-459"></a>    <span class="k">def</span> <span class="fm">__setattr__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-460" name="__codelineno-0-460"></a>        <span class="k">if</span> <span class="n">name</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span> <span class="ow">and</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span><span class="p">[</span><span class="n">name</span><span class="p">],</span> <span class="n">Variable</span><span class="p">):</span>
+<a id="__codelineno-0-461" name="__codelineno-0-461"></a>            <span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span><span class="p">[</span><span class="n">name</span><span class="p">]</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
+<a id="__codelineno-0-462" name="__codelineno-0-462"></a>        <span class="k">else</span><span class="p">:</span>
+<a id="__codelineno-0-463" name="__codelineno-0-463"></a>            <span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+<a id="__codelineno-0-464" name="__codelineno-0-464"></a>
+<a id="__codelineno-0-465" name="__codelineno-0-465"></a>    <span class="k">def</span> <span class="fm">__contains__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<a id="__codelineno-0-466" name="__codelineno-0-466"></a>        <span class="k">return</span> <span class="n">name</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span>
+<a id="__codelineno-0-467" name="__codelineno-0-467"></a>
+<a id="__codelineno-0-468" name="__codelineno-0-468"></a>    <span class="k">def</span> <span class="fm">__repr__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-0-469" name="__codelineno-0-469"></a>        <span class="n">lines</span> <span class="o">=</span> <span class="p">[]</span>
+<a id="__codelineno-0-470" name="__codelineno-0-470"></a>        <span class="k">for</span> <span class="n">key</span><span class="p">,</span> <span class="n">value</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+<a id="__codelineno-0-471" name="__codelineno-0-471"></a>            <span class="n">value_str</span> <span class="o">=</span> <span class="nb">repr</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
+<a id="__codelineno-0-472" name="__codelineno-0-472"></a>            <span class="n">value_str</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_add_indent</span><span class="p">(</span><span class="n">value_str</span><span class="p">)</span>
+<a id="__codelineno-0-473" name="__codelineno-0-473"></a>            <span class="n">lines</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;(&quot;</span> <span class="o">+</span> <span class="n">key</span> <span class="o">+</span> <span class="s2">&quot;): &quot;</span> <span class="o">+</span> <span class="n">value_str</span><span class="p">)</span>
+<a id="__codelineno-0-474" name="__codelineno-0-474"></a>
+<a id="__codelineno-0-475" name="__codelineno-0-475"></a>        <span class="n">main_str</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span> <span class="o">+</span> <span class="s2">&quot;(&quot;</span>
+<a id="__codelineno-0-476" name="__codelineno-0-476"></a>        <span class="k">if</span> <span class="n">lines</span><span class="p">:</span>
+<a id="__codelineno-0-477" name="__codelineno-0-477"></a>            <span class="n">main_str</span> <span class="o">+=</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">  &quot;</span> <span class="o">+</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">  &quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">lines</span><span class="p">)</span> <span class="o">+</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span>
+<a id="__codelineno-0-478" name="__codelineno-0-478"></a>
+<a id="__codelineno-0-479" name="__codelineno-0-479"></a>        <span class="n">main_str</span> <span class="o">+=</span> <span class="s2">&quot;)&quot;</span>
+<a id="__codelineno-0-480" name="__codelineno-0-480"></a>        <span class="k">return</span> <span class="n">main_str</span>
+<a id="__codelineno-0-481" name="__codelineno-0-481"></a>
+<a id="__codelineno-0-482" name="__codelineno-0-482"></a>    <span class="k">def</span> <span class="nf">_add_indent</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">text</span><span class="p">):</span>
+<a id="__codelineno-0-483" name="__codelineno-0-483"></a>        <span class="n">lines</span> <span class="o">=</span> <span class="n">text</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-484" name="__codelineno-0-484"></a>        <span class="c1"># don&#39;t do anything for single-line stuff</span>
+<a id="__codelineno-0-485" name="__codelineno-0-485"></a>        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">lines</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+<a id="__codelineno-0-486" name="__codelineno-0-486"></a>            <span class="k">return</span> <span class="n">text</span>
+<a id="__codelineno-0-487" name="__codelineno-0-487"></a>        <span class="n">first</span> <span class="o">=</span> <span class="n">lines</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+<a id="__codelineno-0-488" name="__codelineno-0-488"></a>        <span class="c1"># add 2 spaces to each line but the first</span>
+<a id="__codelineno-0-489" name="__codelineno-0-489"></a>        <span class="n">lines</span> <span class="o">=</span> <span class="p">[(</span><span class="mi">2</span> <span class="o">*</span> <span class="s2">&quot; &quot;</span><span class="p">)</span> <span class="o">+</span> <span class="n">line</span> <span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">lines</span><span class="p">]</span>
+<a id="__codelineno-0-490" name="__codelineno-0-490"></a>        <span class="n">lines</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">lines</span><span class="p">)</span>
+<a id="__codelineno-0-491" name="__codelineno-0-491"></a>        <span class="n">lines</span> <span class="o">=</span> <span class="n">first</span> <span class="o">+</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span> <span class="o">+</span> <span class="n">lines</span>
+<a id="__codelineno-0-492" name="__codelineno-0-492"></a>        <span class="k">return</span> <span class="n">lines</span>
 </code></pre></div></td></tr></table></div>
         </details>
 
@@ -3465,7 +3469,7 @@ You may overwrite <code>from_yamls</code> in case something is not yaml serializ
   <small>
     
       Last update:
-      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-05-18 15:11:29</span>
+      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-05-22 16:09:35</span>
       
     
   </small>
