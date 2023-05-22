@@ -448,6 +448,8 @@ class RunnerBase:
         return os.path.join(self.dir, self.checkpoint_dir_name)
 
     def __getattr__(self, name) -> Any:
+        if "state" not in self:
+            raise RuntimeError("Runner is not initialised yet.")
         if name in self.state:
             return self.state[name]
         if name in dir(self.state):
