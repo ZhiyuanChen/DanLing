@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from datetime import datetime
 from random import randint
 from typing import IO, List, Optional, Union
@@ -168,7 +169,12 @@ class RunnerState(NestedDict):
             except ImportError:
                 warn("GitPython is not installed, using default experiment id.")
             except InvalidGitRepositoryError:
-                warn("Git reporitory is invalid, using default experiment id.")
+                path = os.path.dirname(os.path.abspath(sys.argv[0]))
+                warn("CWD is not under a git repo, fallback to top-level code environment.")
+                try:
+                    self.experiment_id = Repo(path=path, search_parent_directories=True).head.object.hexsha
+                except InvalidGitRepositoryError:
+                    warn("Top-level code environment is not under a git repo, using default experiment id.")
         else:
             warn("GitPython is not installed, using default experiment id.")
         self.deterministic = False
