@@ -15,9 +15,6 @@ from .runner_state import RunnerState
 PathStr = Union[os.PathLike, str, bytes]
 File = Union[PathStr, IO]
 
-DEFAULT_EXPERIMENT_NAME = "DanLing"
-DEFAULT_EXPERIMENT_ID = "xxxxxxxxxxxxxxxx"
-
 
 class RunnerBase:
     r"""

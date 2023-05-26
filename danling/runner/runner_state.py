@@ -19,12 +19,10 @@ except ImportError:
 
 from danling.utils import base62
 
+from . import defaults
+
 PathStr = Union[os.PathLike, str, bytes]
 File = Union[PathStr, IO]
-
-DEFAULT_EXPERIMENT_NAME = "DanLing"
-DEFAULT_EXPERIMENT_ID = "xxxxxxxxxxxxxxxx"
-DEFAULT_IGNORED_KEYS_IN_HASH = {"iters", "steps", "epochs", "results", "index_set", "index"}
 
 
 class RunnerState(NestedDict):
@@ -134,9 +132,9 @@ class RunnerState(NestedDict):
     id: str
     name: str
     run_id: str
-    run_name: str = "Run"
-    experiment_id: str = DEFAULT_EXPERIMENT_ID
-    experiment_name: str = DEFAULT_EXPERIMENT_NAME
+    run_name: str
+    experiment_id: str
+    experiment_name: str
 
     seed: int
     deterministic: bool
@@ -163,6 +161,9 @@ class RunnerState(NestedDict):
     save_interval: int = -1
 
     def __init__(self, *args, **kwargs):
+        self.run_name = defaults.DEFAULT_RUN_NAME
+        self.experiment_id = defaults.DEFAULT_EXPERIMENT_ID
+        self.experiment_name = defaults.DEFAULT_EXPERIMENT_NAME
         if Repo is not None:
             try:
                 self.experiment_id = Repo(search_parent_directories=True).head.object.hexsha
@@ -192,7 +193,7 @@ class RunnerState(NestedDict):
         time_str = "".join(base62.encode(i) for i in time_tuple)
         self.id = f"{time_str}{self.experiment_id:.5}{self.run_id:.4}"  # pylint: disable=C0103
         self.name = f"{self.experiment_name}-{self.run_name}"
-        self.setattr("ignored_keys_in_hash", DEFAULT_IGNORED_KEYS_IN_HASH)
+        self.setattr("ignored_keys_in_hash", defaults.DEFAULT_IGNORED_KEYS_IN_HASH)
 
     @property
     def experiment_uuid(self) -> UUID:
@@ -219,6 +220,6 @@ class RunnerState(NestedDict):
         return uuid5(self.run_uuid, self.id)
 
     def __hash__(self) -> int:
-        ignored_keys_in_hash = self.getattr("ignored_keys_in_hash", DEFAULT_IGNORED_KEYS_IN_HASH)
+        ignored_keys_in_hash = self.getattr("ignored_keys_in_hash", defaults.DEFAULT_IGNORED_KEYS_IN_HASH)
         state = NestedDict({k: v for k, v in self.dict().items() if k not in ignored_keys_in_hash})
         return hash(state.yamls())
