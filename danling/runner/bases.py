@@ -18,6 +18,8 @@ from yaml import dump as yaml_dump
 
 from danling.utils import base62, catch, ensure_dir, is_json_serializable, load, save
 
+from . import defaults
+
 NUMPY_AVAILABLE = True
 try:
     import numpy as np
@@ -26,9 +28,6 @@ except ImportError:
 
 PathStr = Union[os.PathLike, str, bytes]
 File = Union[PathStr, IO]
-
-DEFAULT_EXPERIMENT_NAME = "DanLing"
-DEFAULT_EXPERIMENT_ID = "xxxxxxxxxxxxxxxx"
 
 
 class RunnerBase:
@@ -177,10 +176,10 @@ class RunnerBase:
 
     run_id: str
     run_uuid: UUID
-    run_name: str = "Run"
-    experiment_id: str = DEFAULT_EXPERIMENT_ID
+    run_name: str
+    experiment_id: str
     experiment_uuid: UUID
-    experiment_name: str = DEFAULT_EXPERIMENT_NAME
+    experiment_name: str
 
     seed: int
     deterministic: bool
@@ -217,6 +216,9 @@ class RunnerBase:
 
     def __init__(self, *args, **kwargs):
         super().__init__()
+        self.run_name = defaults.DEFAULT_RUN_NAME
+        self.experiment_name = defaults.DEFAULT_EXPERIMENT_NAME
+        self.experiment_id = defaults.DEFAULT_EXPERIMENT_ID
         # Init attributes that should be kept in checkpoint inside `__init__`.
         # Note that attributes should be init before redefine `self.__dict__`.
         try:

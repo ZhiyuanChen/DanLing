@@ -1,0 +1,3 @@
+DEFAULT_RUN_NAME = "Run"
+DEFAULT_EXPERIMENT_NAME = "DanLing"
+DEFAULT_EXPERIMENT_ID = "xxxxxxxxxxxxxxxx"
