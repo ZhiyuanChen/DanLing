@@ -9,11 +9,9 @@ from chanfig import Config, FlatDict, NestedDict, Variable
 
 from danling.metrics import AverageMeters
 from danling.utils import catch, ensure_dir, load, save
+from danling.typing import PathStr, File
 
 from .runner_state import RunnerState
-
-PathStr = Union[os.PathLike, str, bytes]
-File = Union[PathStr, IO]
 
 
 class RunnerBase:

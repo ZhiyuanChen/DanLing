@@ -4,7 +4,7 @@ import os
 import sys
 from datetime import datetime
 from random import randint
-from typing import IO, List, Optional, Union
+from typing import List, Optional
 from uuid import UUID, uuid5
 from warnings import warn
 
@@ -20,9 +20,6 @@ except ImportError:
 from danling.utils import base62
 
 from . import defaults
-
-PathStr = Union[os.PathLike, str, bytes]
-File = Union[PathStr, IO]
 
 
 class RunnerState(NestedDict):
