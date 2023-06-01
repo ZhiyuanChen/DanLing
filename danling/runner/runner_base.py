@@ -3,13 +3,13 @@ from __future__ import annotations
 import logging
 import logging.config
 import os
-from typing import IO, Any, Callable, List, Mapping, Optional, Union
+from typing import Any, Callable, List, Mapping, Optional
 
 from chanfig import Config, FlatDict, NestedDict, Variable
 
 from danling.metrics import AverageMeters
+from danling.typing import File, PathStr
 from danling.utils import catch, ensure_dir, load, save
-from danling.typing import PathStr, File
 
 from .runner_state import RunnerState
 

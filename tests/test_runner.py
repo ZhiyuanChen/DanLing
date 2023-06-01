@@ -2,13 +2,13 @@ import time
 
 import torch
 import torchvision
-from chanfig import Config, FlatDict, NestedDict
+from chanfig import Config, FlatDict, NestedDict, Registry
 from torch import nn, optim
 from torch.utils import data
 
 import danling as dl
 
-OPTIMIZERS = dl.Registry()
+OPTIMIZERS = Registry()
 OPTIMIZERS.register(optim.AdamW, "adamw")
 OPTIMIZERS.register(optim.SGD, "sgd")
 
