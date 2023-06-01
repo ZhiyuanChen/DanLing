@@ -4,42 +4,35 @@ from os import makedirs
 from os.path import abspath
 from sys import stderr
 from traceback import format_exc
-from typing import Callable, Optional, Type
+from typing import Callable, Optional
+from warnings import warn
 from weakref import ref
+
+from danling.typing import Exceptions
 
 
 def flexible_decorator(maybe_decorator: Optional[Callable] = None):
-    """
+    r"""
     Decorator to allow bracket-less when no arguments are passed.
 
     Examples:
-    For decorator defined as follows:
+        For decorator defined as follows:
 
-    ```python
-    >>> @flexible_decorator
-    ... def decorator(*args, **kwargs):
-    ...     def wrapper(func, *args, **kwargs):
-    ...         pass
-    ...     return wrapper
+        >>> @flexible_decorator
+        ... def decorator(*args, **kwargs):
+        ...     def wrapper(func, *args, **kwargs):
+        ...         pass
+        ...     return wrapper
 
-    ```
+        The following two are equivalent:
 
-    The following two are equivalent:
+        >>> @decorator
+        ... def func(*args, **kwargs):
+        ...     pass
 
-    ```python
-    >>> @decorator
-    ... def func(*args, **kwargs):
-    ...     pass
-
-    ```
-
-    ```python
-    >>> @decorator()
-    ... def func(*args, **kwargs):
-    ...     pass
-
-    ```
-
+        >>> @decorator()
+        ... def func(*args, **kwargs):
+        ...     pass
     """
 
     def decorator(func: Callable):
@@ -58,12 +51,13 @@ def flexible_decorator(maybe_decorator: Optional[Callable] = None):
 
 @flexible_decorator
 def catch(
-    error: Type[Exception] = Exception,
-    exclude: Optional[Type[Exception]] = None,
-    verbose: bool = True,
-    print_args: bool = False,
+    error: Exceptions = Exception,
+    exclude: Optional[Exceptions] = None,
+    verbosity: int = 40,
+    verbose: Optional[bool] = None,
+    print_args: Optional[bool] = None,
 ):
-    """
+    r"""
     Decorator to catch `error` except for `exclude`.
     Detailed traceback will be printed to `stderr`.
 
@@ -74,12 +68,34 @@ def catch(
     Args:
         error:
         exclude:
-        print_args: Whether to print the arguments passed to the function.
+        verbosity: What level of traceback to print.
+            0-: No traceback.
+            0-20: Detailed traceback with arguments.
+            40+: Function name and error messages.
+        verbose: Deprecated in favor of `verbosity`.
+            Whether to print the traceback.
+        print_args: Deprecated in favor of `verbosity`.
+            Whether to print the arguments passed to the function.
+
+    Examples:
+        >>> def file_not_found(*args, **kwargs):
+        ...     return exclude
+        ...     raise FileNotFoundError
+
+        >>> file_not_found()
+        >>> raise ValueError
+        >>> assert 1 == 2
+
     """
 
-    def decorator(
-        func, error: Type[Exception] = Exception, exclude: Optional[Type[Exception]] = None, print_args: bool = False
-    ):
+    if verbose:
+        warn("verbose is deprecated in favor of verbosity", DeprecationWarning)
+        verbosity = 40
+    if print_args:
+        warn("verbose is deprecated in favor of verbosity", DeprecationWarning)
+        verbosity = 20
+
+    def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):  # pylint: disable=R1710
             try:
@@ -87,16 +103,21 @@ def catch(
             except error as exc:  # pylint: disable=W0703
                 if exclude is not None and isinstance(exc, exclude):
                     raise exc
-                if verbose:
+                if verbosity >= 0:
                     message = format_exc()
                     message += f"\nencoutered when calling {func}"
-                    if print_args:
+                    if verbosity <= 20:
                         message += f"with args {args} and kwargs {kwargs}"
-                    print(message, file=stderr, force=True)
+                    try:
+                        print(message, file=stderr, force=True)  # type: ignore
+                    except TypeError:
+                        print(message, file=stderr)
 
         return wrapper
 
-    return lambda func: decorator(func, error, exclude, print_args)
+    decorator.__doc__ = catch.__doc__
+
+    return decorator
 
 
 def method_cache(*cache_args, **lru_kwargs):
@@ -130,7 +151,7 @@ def method_cache(*cache_args, **lru_kwargs):
 
 
 def ensure_dir(func):
-    """
+    r"""
     Decorator to ensure a directory property exists.
     """
 
