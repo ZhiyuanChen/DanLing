@@ -26,6 +26,7 @@ nav:
     - AverageMeter: metrics/average_meter.md
   - Utils:
       - Decorator: utils/decorators.md
+      - Context Manager: utils/contextmanagers.md
       - IO: utils/io.md
       - basex: utils/basex.md
   - package: package.md

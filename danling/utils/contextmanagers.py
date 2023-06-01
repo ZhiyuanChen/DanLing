@@ -7,7 +7,7 @@ from danling.typing import Exceptions
 try:
     import ipdb as pdb
 except ImportError:
-    import pdb
+    import pdb  # type: ignore
 
 
 @contextmanager
@@ -20,18 +20,20 @@ def debug(
     Contextmanager to enter debug mode on `error` except for `exclude`.
 
     `debug` is intended to be used to catch the error and enter debug mode.
-    Since it is mainly for development purpose, we intentionally do not catch `KeyboardInterrupt` and `SystemExit`.
-    For example, `Runner` saves checkpoint regularly, however, this might break running if the space is full.
-    Decorating `save` method with `catch` will allow you to catch these errors and continue your running.
+    Since it is mainly for development purposed, we include an `enable` args so that it can be deactivated.
 
     Args:
-        error:
-        exclude:
-        print_args: Whether to print the arguments passed to the function.
+        enable: Whether to enable the contextmanager.
+            Defaults to `True`.
+        error: The error to catch.
+            Defaults to `Exception`.
+        exclude: The error to exclude.
+            Defaults to `None`.
     """
 
     if not enable:
         yield
+        return
     try:
         yield
     except error as exc:  # pylint: disable=W0703
