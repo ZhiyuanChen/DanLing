@@ -994,81 +994,125 @@ from a state and corresponding weights or even restart a run from a state.</p>
           <td>
                 <code>str</code>
           </td>
-          <td><p><code>f"{self.experiment_id:.4}{self.run_id:.4}{time_str}"</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p><code>f"{self.experiment_id:.4}{self.run_id:.4}{time_str}"</code>.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>uuid</code></td>
           <td>
                 <code><span title="uuid.UUID">UUID</span>, property</code>
           </td>
-          <td><p><code>uuid5(self.run_id, self.id)</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p><code>uuid5(self.run_id, self.id)</code>.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>name</code></td>
           <td>
                 <code>str</code>
           </td>
-          <td><p><code>f"{self.experiment_name}-{self.run_name}"</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p><code>f"{self.experiment_name}-{self.run_name}"</code>.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>run_id</code></td>
           <td>
                 <code>str</code>
           </td>
-          <td><p>hex of <code>self.run_uuid</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>hex of <code>self.run_uuid</code>.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>run_uuid</code></td>
           <td>
                 <code><span title="uuid.UUID">UUID</span>, property</code>
           </td>
-          <td><p><code>uuid5(self.experiment_id, config.jsons())</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p><code>uuid5(self.experiment_id, config.jsons())</code>.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>run_name</code></td>
           <td>
                 <code>str</code>
           </td>
-          <td><p>Defaults to <code>"DanLing"</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Defaults to <code>"DanLing"</code>.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>experiment_id</code></td>
           <td>
                 <code>str</code>
           </td>
-          <td><p>git hash of the current HEAD.
-Defaults to <code>"xxxxxxxxxxxxxxxx"</code> if Runner not under a git repo or git/gitpython not installed.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>git hash of the current HEAD.
+Defaults to <code>"xxxxxxxxxxxxxxxx"</code> if Runner not under a git repo or git/gitpython not installed.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>experiment_uuid</code></td>
           <td>
                 <code><span title="uuid.UUID">UUID</span>, property</code>
           </td>
-          <td><p>UUID of <code>self.experiment_id</code>.
+          <td>
+            <div class="doc-md-description">
+              <p>UUID of <code>self.experiment_id</code>.
 Defaults to <code>UUID('78787878-7878-7878-7878-787878787878')</code>
-if Runner not under a git repo or git/gitpython not installed.</p></td>
+if Runner not under a git repo or git/gitpython not installed.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>experiment_name</code></td>
           <td>
                 <code>str</code>
           </td>
-          <td><p>Defaults to <code>"DanLing"</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Defaults to <code>"DanLing"</code>.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>seed</code></td>
           <td>
                 <code>int</code>
           </td>
-          <td><p>Defaults to <code>randint(0, 2**32 - 1)</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Defaults to <code>randint(0, 2**32 - 1)</code>.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>deterministic</code></td>
           <td>
                 <code>bool</code>
           </td>
-          <td><p>Ensure <a href="https://pytorch.org/docs/stable/notes/randomness.html">deterministic</a> operations.
-Defaults to <code>False</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Ensure <a href="https://pytorch.org/docs/stable/notes/randomness.html">deterministic</a> operations.
+Defaults to <code>False</code>.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -1088,46 +1132,70 @@ Defaults to <code>False</code>.</p></td>
           <td>
                 <code>int</code>
           </td>
-          <td><p>The number of data samples processed.
-equals to <code>steps</code> when <code>batch_size = 1</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The number of data samples processed.
+equals to <code>steps</code> when <code>batch_size = 1</code>.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>steps</code></td>
           <td>
                 <code>int</code>
           </td>
-          <td><p>The number of <code>step</code> calls.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The number of <code>step</code> calls.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>epochs</code></td>
           <td>
                 <code>int</code>
           </td>
-          <td><p>The number of complete passes over the datasets.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The number of complete passes over the datasets.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>iter_end</code></td>
           <td>
                 <code>int</code>
           </td>
-          <td><p>End running iters.
-Note that <code>step_end</code> not initialised since this variable may not apply to some Runners.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>End running iters.
+Note that <code>step_end</code> not initialised since this variable may not apply to some Runners.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>step_end</code></td>
           <td>
                 <code>int</code>
           </td>
-          <td><p>End running steps.
-Note that <code>step_end</code> not initialised since this variable may not apply to some Runners.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>End running steps.
+Note that <code>step_end</code> not initialised since this variable may not apply to some Runners.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>epoch_end</code></td>
           <td>
                 <code>int</code>
           </td>
-          <td><p>End running epochs.
-Note that <code>epoch_end</code> not initialised since this variable may not apply to some Runners.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>End running epochs.
+Note that <code>epoch_end</code> not initialised since this variable may not apply to some Runners.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -1148,7 +1216,11 @@ Note that <code>epoch_end</code> not initialised since this variable may not app
           <td>
                 <code><span title="typing.List">List</span>[<span title="chanfig.NestedDict">NestedDict</span>]</code>
           </td>
-          <td><p>All results, should be in the form of <code>[{subset: {index: score}}]</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>All results, should be in the form of <code>[{subset: {index: score}}]</code>.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -1201,8 +1273,12 @@ If <code>index_set = "val"</code>, <code>index = "accuracy"</code>, then <code>s
           <td>
                 <code>str</code>
           </td>
-          <td><p>The root directory for all experiments.
-Defaults to <code>"experiments"</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The root directory for all experiments.
+Defaults to <code>"experiments"</code>.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -1228,32 +1304,48 @@ In practice, <code>checkpoint_dir_name</code> is rarely called.</p>
           <td>
                 <code>bool</code>
           </td>
-          <td><p>Whether to log the outputs.
-Defaults to <code>True</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Whether to log the outputs.
+Defaults to <code>True</code>.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>tensorboard</code></td>
           <td>
                 <code>bool</code>
           </td>
-          <td><p>Whether to use <code>tensorboard</code>.
-Defaults to <code>False</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Whether to use <code>tensorboard</code>.
+Defaults to <code>False</code>.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>print_interval</code></td>
           <td>
                 <code>int</code>
           </td>
-          <td><p>Interval of printing logs.
-Defaults to -1.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Interval of printing logs.
+Defaults to -1.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>save_interval</code></td>
           <td>
                 <code>int</code>
           </td>
-          <td><p>Interval of saving intermediate checkpoints.
-Defaults to -1, never save intermediate checkpoints.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Interval of saving intermediate checkpoints.
+Defaults to -1, never save intermediate checkpoints.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>

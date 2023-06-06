@@ -1451,28 +1451,44 @@
           <td>
                 <code>int</code>
           </td>
-          <td><p>Current value.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Current value.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>avg</code></td>
           <td>
                 <code>float</code>
           </td>
-          <td><p>Average value.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Average value.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>sum</code></td>
           <td>
                 <code>int</code>
           </td>
-          <td><p>Sum of values.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Sum of values.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>count</code></td>
           <td>
                 <code>int</code>
           </td>
-          <td><p>Number of values.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Number of values.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -1872,7 +1888,11 @@
           <td><code>val</code></td>
           <td>
           </td>
-          <td><p>Value to be added to the average.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Value to be added to the average.</p>
+            </div>
+          </td>
           <td>
               <em>required</em>
           </td>
@@ -1882,7 +1902,11 @@
           <td>
                 <code>int</code>
           </td>
-          <td><p>Number of values to be added.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Number of values to be added.</p>
+            </div>
+          </td>
           <td>
                 <code>1</code>
           </td>
@@ -2395,7 +2419,11 @@
           <td><code>val</code></td>
           <td>
           </td>
-          <td><p>Value to be added to the average.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Value to be added to the average.</p>
+            </div>
+          </td>
           <td>
               <em>required</em>
           </td>
@@ -2405,7 +2433,11 @@
           <td>
                 <code>int</code>
           </td>
-          <td><p>Number of values to be added.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Number of values to be added.</p>
+            </div>
+          </td>
           <td>
                 <code>1</code>
           </td>
@@ -3026,7 +3058,11 @@ and access through <code>registry.sub_registry.register()</code>.</p>
           <td>
                 <code><span title="typing.Optional">Optional</span>[<span title="typing.Callable">Callable</span>]</code>
           </td>
-          <td><p>The component to register.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The component to register.</p>
+            </div>
+          </td>
           <td>
                 <code>None</code>
           </td>
@@ -3036,7 +3072,11 @@ and access through <code>registry.sub_registry.register()</code>.</p>
           <td>
                 <code><span title="typing.Optional">Optional</span>[str]</code>
           </td>
-          <td><p>The name of the component.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The name of the component.</p>
+            </div>
+          </td>
           <td>
                 <code>None</code>
           </td>
@@ -3057,7 +3097,11 @@ and access through <code>registry.sub_registry.register()</code>.</p>
 <td><code>component</code></td>          <td>
                 <code><span title="typing.Callable">Callable</span></code>
           </td>
-          <td><p>The registered component.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The registered component.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -3075,7 +3119,11 @@ and access through <code>registry.sub_registry.register()</code>.</p>
           <td>
                 <code>ValueError</code>
           </td>
-          <td><p>If the component with the same name already registered and <code>Registry.override=False</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>If the component with the same name already registered and <code>Registry.override=False</code>.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -3256,7 +3304,11 @@ and access through <code>registry.sub_registry.register()</code>.</p>
           <td>
                 <code>str</code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
           <td>
               <em>required</em>
           </td>
@@ -3277,7 +3329,11 @@ and access through <code>registry.sub_registry.register()</code>.</p>
           <td>
                 <code><span title="typing.Any">Any</span></code>
           </td>
-          <td><p>The component.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The component.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -3295,7 +3351,11 @@ and access through <code>registry.sub_registry.register()</code>.</p>
           <td>
                 <code>KeyError</code>
           </td>
-          <td><p>If the component is not registered.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>If the component is not registered.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -3412,8 +3472,12 @@ and access through <code>registry.sub_registry.register()</code>.</p>
           <td>
                 <code>str | <span title="typing.Mapping">Mapping</span></code>
           </td>
-          <td><p>If its a <code>Mapping</code>, it must contain <code>"name"</code> as a member, the rest will be treated as <code>**kwargs</code>.
-Note that values in <code>kwargs</code> will override values in <code>name</code> if its a <code>Mapping</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>If its a <code>Mapping</code>, it must contain <code>"name"</code> as a member, the rest will be treated as <code>**kwargs</code>.
+Note that values in <code>kwargs</code> will override values in <code>name</code> if its a <code>Mapping</code>.</p>
+            </div>
+          </td>
           <td>
               <em>required</em>
           </td>
@@ -3422,7 +3486,11 @@ Note that values in <code>kwargs</code> will override values in <code>name</code
           <td><code>*args</code></td>
           <td>
           </td>
-          <td><p>The arguments to pass to the component.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The arguments to pass to the component.</p>
+            </div>
+          </td>
           <td>
                 <code>()</code>
           </td>
@@ -3431,7 +3499,11 @@ Note that values in <code>kwargs</code> will override values in <code>name</code
           <td><code>**kwargs</code></td>
           <td>
           </td>
-          <td><p>The keyword arguments to pass to the component.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The keyword arguments to pass to the component.</p>
+            </div>
+          </td>
           <td>
                 <code>{}</code>
           </td>
@@ -3452,7 +3524,11 @@ Note that values in <code>kwargs</code> will override values in <code>name</code
           <td>
                 <code><span title="typing.Any">Any</span></code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -3470,7 +3546,11 @@ Note that values in <code>kwargs</code> will override values in <code>name</code
           <td>
                 <code>KeyError</code>
           </td>
-          <td><p>If the component is not registered.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>If the component is not registered.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -3807,7 +3887,11 @@ and all you need to do is to convert <code>PNTensor</code> to <code>NestedTensor
           <td>
                 <code>torch.<span title="torch.Tensor">Tensor</span></code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -3861,7 +3945,11 @@ and all you need to do is to convert <code>PNTensor</code> to <code>NestedTensor
           <td>
                 <code>torch.<span title="torch.Tensor">Tensor</span></code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -3903,7 +3991,7 @@ and all you need to do is to convert <code>PNTensor</code> to <code>NestedTensor
 
   <div class="doc doc-contents ">
       <p class="doc doc-class-bases">
-        Bases: <code><a class="autorefs autorefs-internal" title="danling.runner.base_runner.BaseRunner" href="../../package/#danling.BaseRunner">BaseRunner</a></code></p>
+        Bases: <code><a class="autorefs autorefs-internal" title="danling.runner.base_runner.BaseRunner" href="../../runner/base_runner/#danling.runner.BaseRunner">BaseRunner</a></code></p>
 
   
       <p>Set up everything for running a job.</p>
@@ -3923,15 +4011,23 @@ and all you need to do is to convert <code>PNTensor</code> to <code>NestedTensor
           <td>
                 <code><span title="accelerate.Accelerator">Accelerator</span></code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>accelerate</code></td>
           <td>
                 <code><span title="typing.Mapping">Mapping</span>[str, <span title="typing.Any">Any</span>]</code>
           </td>
-          <td><p>Defaults to <code>{}</code>.
-if is <code>None</code>, will not use <code>accelerate</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Defaults to <code>{}</code>.
+if is <code>None</code>, will not use <code>accelerate</code>.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -4453,7 +4549,11 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
           <td>
                 <code>int</code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -4492,7 +4592,11 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
           <td>
                 <code>int</code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -4711,8 +4815,12 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
           <td>
                 <code>int</code>
           </td>
-          <td><p>Random seed to set.
-Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Random seed to set.
+Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p>
+            </div>
+          </td>
           <td>
                 <code>None</code>
           </td>
@@ -4722,10 +4830,14 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p></td>
           <td>
                 <code><span title="typing.Optional">Optional</span>[int]</code>
           </td>
-          <td><p>Make the seed different for each processes.</p>
+          <td>
+            <div class="doc-md-description">
+              <p>Make the seed different for each processes.</p>
 <p>This avoids same data augmentation are applied on every processes.</p>
 <p>Defaults to <code>self.rank</code>.</p>
-<p>Set to <code>False</code> to disable this feature.</p></td>
+<p>Set to <code>False</code> to disable this feature.</p>
+            </div>
+          </td>
           <td>
                 <code>None</code>
           </td>
@@ -5024,7 +5136,11 @@ then return them in the same order.</p>
           <td>
                 <code><span title="typing.Optional">Optional</span>[<span title="torch.nn">nn</span>.<span title="torch.nn.Module">Module</span>]</code>
           </td>
-          <td><p>Defaults to <code>self.model</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Defaults to <code>self.model</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>None</code>
           </td>
@@ -6033,7 +6149,11 @@ then return them in the same order.</p>
           <td>
                 <code>int</code>
           </td>
-          <td><p>The process to <code>print</code> on.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The process to <code>print</code> on.</p>
+            </div>
+          </td>
           <td>
                 <code>0</code>
           </td>
@@ -6171,8 +6291,12 @@ then return them in the same order.</p>
           <td>
                 <code><span title="typing.Optional">Optional</span>[int]</code>
           </td>
-          <td><p>Random seed to set.
-Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Random seed to set.
+Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p>
+            </div>
+          </td>
           <td>
                 <code>None</code>
           </td>
@@ -6182,10 +6306,14 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p></td>
           <td>
                 <code><span title="typing.Optional">Optional</span>[int]</code>
           </td>
-          <td><p>Make the seed different for each processes.</p>
+          <td>
+            <div class="doc-md-description">
+              <p>Make the seed different for each processes.</p>
 <p>This avoids same data augmentation are applied on every processes.</p>
 <p>Defaults to <code>self.rank</code>.</p>
-<p>Set to <code>False</code> to disable this feature.</p></td>
+<p>Set to <code>False</code> to disable this feature.</p>
+            </div>
+          </td>
           <td>
                 <code>None</code>
           </td>
@@ -6388,7 +6516,11 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p></td>
           <td>
                 <code>bool</code>
           </td>
-          <td><p>Whether to zero the gradients.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Whether to zero the gradients.</p>
+            </div>
+          </td>
           <td>
                 <code>True</code>
           </td>
@@ -6585,8 +6717,12 @@ the checkpoint will also be copied to <code>self.checkpoint_dir/epoch-{self.stat
           <td>
                 <code><span title="typing.Optional">Optional</span>[<span title="typing.Union">Union</span>[<span title="typing.Mapping">Mapping</span>, str]]</code>
           </td>
-          <td><p>Checkpoint (or its path) to load.
-Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Checkpoint (or its path) to load.
+Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>None</code>
           </td>
@@ -6596,8 +6732,12 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p></td>
           <td>
                 <code>bool</code>
           </td>
-          <td><p>If True, override runner state with checkpoint state.
-Defaults to <code>False</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>If True, override runner state with checkpoint state.
+Defaults to <code>False</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>False</code>
           </td>
@@ -6606,7 +6746,11 @@ Defaults to <code>False</code>.</p></td>
           <td><code>*args</code></td>
           <td>
           </td>
-          <td><p>Additional arguments to pass to <code>self.load</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Additional arguments to pass to <code>self.load</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>()</code>
           </td>
@@ -6615,7 +6759,11 @@ Defaults to <code>False</code>.</p></td>
           <td><code>**kwargs</code></td>
           <td>
           </td>
-          <td><p>Additional keyword arguments to pass to <code>self.load</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Additional keyword arguments to pass to <code>self.load</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>{}</code>
           </td>
@@ -6636,7 +6784,11 @@ Defaults to <code>False</code>.</p></td>
           <td>
                 <code>FileNotFoundError</code>
           </td>
-          <td><p>If <code>checkpoint</code> does not exists.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>If <code>checkpoint</code> does not exists.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -6763,7 +6915,11 @@ Defaults to <code>False</code>.</p></td>
           <td>
                 <code><span title="typing.Union">Union</span>[<span title="typing.Mapping">Mapping</span>, str]</code>
           </td>
-          <td><p>Pretrained checkpoint (or its path) to load.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Pretrained checkpoint (or its path) to load.</p>
+            </div>
+          </td>
           <td>
               <em>required</em>
           </td>
@@ -6772,7 +6928,11 @@ Defaults to <code>False</code>.</p></td>
           <td><code>*args</code></td>
           <td>
           </td>
-          <td><p>Additional arguments to pass to <code>self.load</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Additional arguments to pass to <code>self.load</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>()</code>
           </td>
@@ -6781,7 +6941,11 @@ Defaults to <code>False</code>.</p></td>
           <td><code>**kwargs</code></td>
           <td>
           </td>
-          <td><p>Additional keyword arguments to pass to <code>self.load</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Additional keyword arguments to pass to <code>self.load</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>{}</code>
           </td>
@@ -6802,7 +6966,11 @@ Defaults to <code>False</code>.</p></td>
           <td>
                 <code>FileNotFoundError</code>
           </td>
-          <td><p>If <code>checkpoint</code> does not exists.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>If <code>checkpoint</code> does not exists.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -6906,8 +7074,12 @@ Defaults to <code>False</code>.</p></td>
           <td>
                 <code><span title="typing.Union">Union</span>[<span title="typing.Mapping">Mapping</span>, str]</code>
           </td>
-          <td><p>Checkpoint (or its path) to load.
-Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Checkpoint (or its path) to load.
+Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p>
+            </div>
+          </td>
           <td>
               <em>required</em>
           </td>
@@ -6916,7 +7088,11 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p></td>
           <td><code>*args</code></td>
           <td>
           </td>
-          <td><p>Additional arguments to pass to <code>self.load</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Additional arguments to pass to <code>self.load</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>()</code>
           </td>
@@ -6925,7 +7101,11 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p></td>
           <td><code>**kwargs</code></td>
           <td>
           </td>
-          <td><p>Additional keyword arguments to pass to <code>self.load</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Additional keyword arguments to pass to <code>self.load</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>{}</code>
           </td>
@@ -6944,9 +7124,13 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p></td>
     <tbody>
         <tr>
           <td>
-                <code><a class="autorefs autorefs-internal" title="danling.runner.base_runner.BaseRunner" href="../../package/#danling.BaseRunner">BaseRunner</a></code>
+                <code><a class="autorefs autorefs-internal" title="danling.runner.base_runner.BaseRunner" href="../../runner/base_runner/#danling.runner.BaseRunner">BaseRunner</a></code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -7192,23 +7376,35 @@ It also provides a mask that can be used to retrieve the original sequence of te
           <td>
                 <code><span title="typing.Sequence">Sequence</span>[<span title="torch.Tensor">Tensor</span>]</code>
           </td>
-          <td><p>The sequence of tensors.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The sequence of tensors.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>batch_first</code></td>
           <td>
                 <code>bool</code>
           </td>
-          <td><p>Whether the first dimension of the tensors is the batch dimension.</p>
+          <td>
+            <div class="doc-md-description">
+              <p>Whether the first dimension of the tensors is the batch dimension.</p>
 <p>If <code>True</code>, the first dimension is the batch dimension, i.e., <code>B, N, *</code>.</p>
-<p>If <code>False</code>, the first dimension is the sequence dimension, i.e., <code>N, B, *</code></p></td>
+<p>If <code>False</code>, the first dimension is the sequence dimension, i.e., <code>N, B, *</code></p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>padding_value</code></td>
           <td>
                 <code><span title="typing.SupportsFloat">SupportsFloat</span></code>
           </td>
-          <td><p>The value used to pad the tensors.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The value used to pad the tensors.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -7229,7 +7425,11 @@ It also provides a mask that can be used to retrieve the original sequence of te
           <td>
                 <code><span title="typing.Iterable">Iterable</span>[<span title="torch.Tensor">Tensor</span>]</code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
           <td>
               <em>required</em>
           </td>
@@ -7239,7 +7439,11 @@ It also provides a mask that can be used to retrieve the original sequence of te
           <td>
                 <code>bool</code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
           <td>
                 <code>True</code>
           </td>
@@ -7260,13 +7464,21 @@ It also provides a mask that can be used to retrieve the original sequence of te
           <td>
                 <code>ValueError</code>
           </td>
-          <td><p>If <code>tensors</code> is not a sequence.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>If <code>tensors</code> is not a sequence.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td>
                 <code>ValueError</code>
           </td>
-          <td><p>If <code>tensors</code> is empty.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>If <code>tensors</code> is empty.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -8306,7 +8518,11 @@ However, not all operations are tested.</p>
           <td>
                 <code>torch.<span title="torch.Tensor">Tensor</span></code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -8356,7 +8572,11 @@ However, not all operations are tested.</p>
           <td>
                 <code>torch.<span title="torch.Tensor">Tensor</span></code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -8406,7 +8626,11 @@ However, not all operations are tested.</p>
           <td>
                 <code>torch.<span title="torch.Tensor">Tensor</span></code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -8454,7 +8678,11 @@ However, not all operations are tested.</p>
           <td>
                 <code>torch.<span title="torch.Size">Size</span></code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -8506,7 +8734,11 @@ However, not all operations are tested.</p>
           <td>
                 <code>torch.<span title="torch.Size">Size</span></code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -8598,9 +8830,13 @@ However, not all operations are tested.</p>
     <tbody>
         <tr>
           <td>
-                <code><a class="autorefs autorefs-internal" title="danling.tensors.nested_tensor.NestedTensor" href="../../package/#danling.NestedTensor">NestedTensor</a></code>
+                <code><a class="autorefs autorefs-internal" title="danling.tensors.nested_tensor.NestedTensor" href="../../tensors/nested_tensor/#danling.tensors.NestedTensor">NestedTensor</a></code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -8724,8 +8960,12 @@ Since it is mainly for development purposed, we include an <code>enable</code> a
           <td>
                 <code>bool</code>
           </td>
-          <td><p>Whether to enable the contextmanager.
-Defaults to <code>True</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Whether to enable the contextmanager.
+Defaults to <code>True</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>True</code>
           </td>
@@ -8735,8 +8975,12 @@ Defaults to <code>True</code>.</p></td>
           <td>
                 <code><span title="danling.typing.Exceptions">Exceptions</span></code>
           </td>
-          <td><p>The error to catch.
-Defaults to <code>Exception</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The error to catch.
+Defaults to <code>Exception</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>Exception</code>
           </td>
@@ -8746,8 +8990,12 @@ Defaults to <code>Exception</code>.</p></td>
           <td>
                 <code><span title="typing.Optional">Optional</span>[<span title="danling.typing.Exceptions">Exceptions</span>]</code>
           </td>
-          <td><p>The error to exclude.
-Defaults to <code>None</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The error to exclude.
+Defaults to <code>None</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>None</code>
           </td>
@@ -9068,7 +9316,11 @@ Decorating <code>save</code> method with <code>catch</code> will allow you to ca
           <td>
                 <code><span title="danling.typing.Exceptions">Exceptions</span></code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
           <td>
                 <code>Exception</code>
           </td>
@@ -9078,7 +9330,11 @@ Decorating <code>save</code> method with <code>catch</code> will allow you to ca
           <td>
                 <code><span title="typing.Optional">Optional</span>[<span title="danling.typing.Exceptions">Exceptions</span>]</code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
           <td>
                 <code>None</code>
           </td>
@@ -9088,10 +9344,14 @@ Decorating <code>save</code> method with <code>catch</code> will allow you to ca
           <td>
                 <code>int</code>
           </td>
-          <td><p>What level of traceback to print.
+          <td>
+            <div class="doc-md-description">
+              <p>What level of traceback to print.
 0-: No traceback.
 0-20: Detailed traceback with arguments.
-40+: Function name and error messages.</p></td>
+40+: Function name and error messages.</p>
+            </div>
+          </td>
           <td>
                 <code>40</code>
           </td>
@@ -9101,8 +9361,12 @@ Decorating <code>save</code> method with <code>catch</code> will allow you to ca
           <td>
                 <code><span title="typing.Optional">Optional</span>[bool]</code>
           </td>
-          <td><p>Deprecated in favor of <code>verbosity</code>.
-Whether to print the traceback.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Deprecated in favor of <code>verbosity</code>.
+Whether to print the traceback.</p>
+            </div>
+          </td>
           <td>
                 <code>None</code>
           </td>
@@ -9112,8 +9376,12 @@ Whether to print the traceback.</p></td>
           <td>
                 <code><span title="typing.Optional">Optional</span>[bool]</code>
           </td>
-          <td><p>Deprecated in favor of <code>verbosity</code>.
-Whether to print the arguments passed to the function.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Deprecated in favor of <code>verbosity</code>.
+Whether to print the arguments passed to the function.</p>
+            </div>
+          </td>
           <td>
                 <code>None</code>
           </td>

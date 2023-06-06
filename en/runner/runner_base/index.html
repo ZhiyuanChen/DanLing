@@ -1167,28 +1167,44 @@
           <td>
                 <code><span title="typing.Callable">Callable</span></code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>criterion</code></td>
           <td>
                 <code><span title="typing.Callable">Callable</span></code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>optimizer</code></td>
           <td>
                 <code><span title="typing.Optional">Optional</span>[<span title="typing.Any">Any</span>]</code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>scheduler</code></td>
           <td>
                 <code><span title="typing.Optional">Optional</span>[<span title="typing.Any">Any</span>]</code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -1208,35 +1224,55 @@
           <td>
                 <code><span title="chanfig.FlatDict">FlatDict</span></code>
           </td>
-          <td><p>All datasets, should be in the form of <code>{subset: dataset}</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>All datasets, should be in the form of <code>{subset: dataset}</code>.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>datasamplers</code></td>
           <td>
                 <code><span title="chanfig.FlatDict">FlatDict</span></code>
           </td>
-          <td><p>All datasamplers, should be in the form of <code>{subset: datasampler}</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>All datasamplers, should be in the form of <code>{subset: datasampler}</code>.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>dataloaders</code></td>
           <td>
                 <code><span title="chanfig.FlatDict">FlatDict</span></code>
           </td>
-          <td><p>All dataloaders, should be in the form of <code>{subset: dataloader}</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>All dataloaders, should be in the form of <code>{subset: dataloader}</code>.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>batch_size</code></td>
           <td>
                 <code>int, property</code>
           </td>
-          <td><p>Number of samples per batch in train dataloader or the first dataloader.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Number of samples per batch in train dataloader or the first dataloader.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>batch_size_equivalent</code></td>
           <td>
                 <code>int, property</code>
           </td>
-          <td><p>Total batch_size (<code>batch_size * world_size * accum_steps</code>).</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Total batch_size (<code>batch_size * world_size * accum_steps</code>).</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -1258,7 +1294,11 @@ Their keys should be <code>split</code> (e.g. <code>train</code>, <code>val</cod
           <td>
                 <code>float, property</code>
           </td>
-          <td><p>Running Progress, in <code>range(0, 1)</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Running Progress, in <code>range(0, 1)</code>.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -1278,59 +1318,91 @@ Their keys should be <code>split</code> (e.g. <code>train</code>, <code>val</cod
           <td>
                 <code><span title="chanfig.NestedDict">NestedDict</span>, property</code>
           </td>
-          <td><p>Most recent results,
-should be in the form of <code>{subset: {index: score}}</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Most recent results,
+should be in the form of <code>{subset: {index: score}}</code>.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>best_result</code></td>
           <td>
                 <code><span title="chanfig.NestedDict">NestedDict</span>, property</code>
           </td>
-          <td><p>Best recent results, should be in the form of <code>{subset: {index: score}}</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Best recent results, should be in the form of <code>{subset: {index: score}}</code>.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>scores</code></td>
           <td>
                 <code><span title="typing.List">List</span>[float], property</code>
           </td>
-          <td><p>All scores.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>All scores.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>latest_score</code></td>
           <td>
                 <code>float, property</code>
           </td>
-          <td><p>Most recent score.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Most recent score.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>best_score</code></td>
           <td>
                 <code>float, property</code>
           </td>
-          <td><p>Best score.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Best score.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>index_set</code></td>
           <td>
                 <code><span title="typing.Optional">Optional</span>[str]</code>
           </td>
-          <td><p>The subset to calculate the core score.
-If is <code>None</code>, will use the last set of the result.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The subset to calculate the core score.
+If is <code>None</code>, will use the last set of the result.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>index</code></td>
           <td>
                 <code>str</code>
           </td>
-          <td><p>The index to calculate the core score.
-Defaults to <code>"loss"</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The index to calculate the core score.
+Defaults to <code>"loss"</code>.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>is_best</code></td>
           <td>
                 <code>bool, property</code>
           </td>
-          <td><p>If <code>latest_score == best_score</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>If <code>latest_score == best_score</code>.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -1350,30 +1422,46 @@ Defaults to <code>"loss"</code>.</p></td>
           <td>
                 <code>str, property</code>
           </td>
-          <td><p>Directory of the run.
-Defaults to <code>os.path.join(self.project_root, f"{self.name}-{self.id}")</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Directory of the run.
+Defaults to <code>os.path.join(self.project_root, f"{self.name}-{self.id}")</code>.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>checkpoint_dir</code></td>
           <td>
                 <code>str, property</code>
           </td>
-          <td><p>Directory of checkpoints.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Directory of checkpoints.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>log_path</code></td>
           <td>
                 <code>str, property</code>
           </td>
-          <td><p>Path of log file.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Path of log file.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>checkpoint_dir_name</code></td>
           <td>
                 <code>str</code>
           </td>
-          <td><p>The name of the directory under <code>runner.dir</code> to save checkpoints.
-Defaults to <code>"checkpoints"</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The name of the directory under <code>runner.dir</code> to save checkpoints.
+Defaults to <code>"checkpoints"</code>.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -1393,42 +1481,66 @@ Defaults to <code>"checkpoints"</code>.</p></td>
           <td>
                 <code>int, property</code>
           </td>
-          <td><p>Number of processes.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Number of processes.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>rank</code></td>
           <td>
                 <code>int, property</code>
           </td>
-          <td><p>Process index of all processes.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Process index of all processes.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>local_rank</code></td>
           <td>
                 <code>int, property</code>
           </td>
-          <td><p>Process index of local processes.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Process index of local processes.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>distributed</code></td>
           <td>
                 <code>bool, property</code>
           </td>
-          <td><p>If runner is running in distributed mode.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>If runner is running in distributed mode.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>is_main_process</code></td>
           <td>
                 <code>bool, property</code>
           </td>
-          <td><p>If current process is the main process of all processes.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>If current process is the main process of all processes.</p>
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>is_local_main_process</code></td>
           <td>
                 <code>bool, property</code>
           </td>
-          <td><p>If current process is the main process of local processes.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>If current process is the main process of local processes.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -1448,14 +1560,22 @@ Defaults to <code>"checkpoints"</code>.</p></td>
           <td>
                 <code><span title="typing.Optional">Optional</span>[<span title="logging.config">logging</span>.<span title="logging.config.Logger">Logger</span>]</code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>writer</code></td>
           <td>
                 <code><span title="typing.Optional">Optional</span>[<span title="typing.Any">Any</span>]</code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -2464,7 +2584,11 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
           <td>
                 <code>int</code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -2503,7 +2627,11 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
           <td>
                 <code>int</code>
           </td>
-          <td><p><code>batch_size</code> * <code>world_size</code> * <code>accum_steps</code></p></td>
+          <td>
+            <div class="doc-md-description">
+              <p><code>batch_size</code> * <code>world_size</code> * <code>accum_steps</code></p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -2542,7 +2670,11 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
           <td>
                 <code>int</code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -2728,7 +2860,11 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
           <td>
                 <code>float</code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -2746,7 +2882,11 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
           <td>
                 <code>RuntimeError</code>
           </td>
-          <td><p>If no terminal is defined.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>If no terminal is defined.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -2786,7 +2926,11 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
           <td>
                 <code>callable</code>
           </td>
-          <td><p><code>max</code></p></td>
+          <td>
+            <div class="doc-md-description">
+              <p><code>max</code></p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -3119,7 +3263,11 @@ Moreover, any error raised by <code>Runner.save</code> will be caught and logged
           <td>
                 <code><span title="typing.Callable">Callable</span></code>
           </td>
-          <td><p>Target `clc to convert to.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Target `clc to convert to.</p>
+            </div>
+          </td>
           <td>
                 <code>dict</code>
           </td>

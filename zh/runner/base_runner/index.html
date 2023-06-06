@@ -1915,7 +1915,11 @@
           <td>
                 <code>int</code>
           </td>
-          <td><p>The process to <code>print</code> on.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>The process to <code>print</code> on.</p>
+            </div>
+          </td>
           <td>
                 <code>0</code>
           </td>
@@ -2053,8 +2057,12 @@
           <td>
                 <code><span title="typing.Optional">Optional</span>[int]</code>
           </td>
-          <td><p>Random seed to set.
-Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Random seed to set.
+Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p>
+            </div>
+          </td>
           <td>
                 <code>None</code>
           </td>
@@ -2064,10 +2072,14 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p></td>
           <td>
                 <code><span title="typing.Optional">Optional</span>[int]</code>
           </td>
-          <td><p>Make the seed different for each processes.</p>
+          <td>
+            <div class="doc-md-description">
+              <p>Make the seed different for each processes.</p>
 <p>This avoids same data augmentation are applied on every processes.</p>
 <p>Defaults to <code>self.rank</code>.</p>
-<p>Set to <code>False</code> to disable this feature.</p></td>
+<p>Set to <code>False</code> to disable this feature.</p>
+            </div>
+          </td>
           <td>
                 <code>None</code>
           </td>
@@ -2270,7 +2282,11 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p></td>
           <td>
                 <code>bool</code>
           </td>
-          <td><p>Whether to zero the gradients.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Whether to zero the gradients.</p>
+            </div>
+          </td>
           <td>
                 <code>True</code>
           </td>
@@ -2467,8 +2483,12 @@ the checkpoint will also be copied to <code>self.checkpoint_dir/epoch-{self.stat
           <td>
                 <code><span title="typing.Optional">Optional</span>[<span title="typing.Union">Union</span>[<span title="typing.Mapping">Mapping</span>, str]]</code>
           </td>
-          <td><p>Checkpoint (or its path) to load.
-Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Checkpoint (or its path) to load.
+Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>None</code>
           </td>
@@ -2478,8 +2498,12 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p></td>
           <td>
                 <code>bool</code>
           </td>
-          <td><p>If True, override runner state with checkpoint state.
-Defaults to <code>False</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>If True, override runner state with checkpoint state.
+Defaults to <code>False</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>False</code>
           </td>
@@ -2488,7 +2512,11 @@ Defaults to <code>False</code>.</p></td>
           <td><code>*args</code></td>
           <td>
           </td>
-          <td><p>Additional arguments to pass to <code>self.load</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Additional arguments to pass to <code>self.load</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>()</code>
           </td>
@@ -2497,7 +2525,11 @@ Defaults to <code>False</code>.</p></td>
           <td><code>**kwargs</code></td>
           <td>
           </td>
-          <td><p>Additional keyword arguments to pass to <code>self.load</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Additional keyword arguments to pass to <code>self.load</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>{}</code>
           </td>
@@ -2518,7 +2550,11 @@ Defaults to <code>False</code>.</p></td>
           <td>
                 <code>FileNotFoundError</code>
           </td>
-          <td><p>If <code>checkpoint</code> does not exists.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>If <code>checkpoint</code> does not exists.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -2645,7 +2681,11 @@ Defaults to <code>False</code>.</p></td>
           <td>
                 <code><span title="typing.Union">Union</span>[<span title="typing.Mapping">Mapping</span>, str]</code>
           </td>
-          <td><p>Pretrained checkpoint (or its path) to load.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Pretrained checkpoint (or its path) to load.</p>
+            </div>
+          </td>
           <td>
               <em>required</em>
           </td>
@@ -2654,7 +2694,11 @@ Defaults to <code>False</code>.</p></td>
           <td><code>*args</code></td>
           <td>
           </td>
-          <td><p>Additional arguments to pass to <code>self.load</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Additional arguments to pass to <code>self.load</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>()</code>
           </td>
@@ -2663,7 +2707,11 @@ Defaults to <code>False</code>.</p></td>
           <td><code>**kwargs</code></td>
           <td>
           </td>
-          <td><p>Additional keyword arguments to pass to <code>self.load</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Additional keyword arguments to pass to <code>self.load</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>{}</code>
           </td>
@@ -2684,7 +2732,11 @@ Defaults to <code>False</code>.</p></td>
           <td>
                 <code>FileNotFoundError</code>
           </td>
-          <td><p>If <code>checkpoint</code> does not exists.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>If <code>checkpoint</code> does not exists.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -2788,8 +2840,12 @@ Defaults to <code>False</code>.</p></td>
           <td>
                 <code><span title="typing.Union">Union</span>[<span title="typing.Mapping">Mapping</span>, str]</code>
           </td>
-          <td><p>Checkpoint (or its path) to load.
-Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Checkpoint (or its path) to load.
+Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p>
+            </div>
+          </td>
           <td>
               <em>required</em>
           </td>
@@ -2798,7 +2854,11 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p></td>
           <td><code>*args</code></td>
           <td>
           </td>
-          <td><p>Additional arguments to pass to <code>self.load</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Additional arguments to pass to <code>self.load</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>()</code>
           </td>
@@ -2807,7 +2867,11 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p></td>
           <td><code>**kwargs</code></td>
           <td>
           </td>
-          <td><p>Additional keyword arguments to pass to <code>self.load</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Additional keyword arguments to pass to <code>self.load</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>{}</code>
           </td>
@@ -2826,9 +2890,13 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p></td>
     <tbody>
         <tr>
           <td>
-                <code><a class="autorefs autorefs-internal" title="danling.runner.base_runner.BaseRunner" href="../../../package/#danling.BaseRunner">BaseRunner</a></code>
+                <code><a class="autorefs autorefs-internal" title="danling.runner.base_runner.BaseRunner" href="../../../runner/base_runner/#danling.runner.BaseRunner">BaseRunner</a></code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>

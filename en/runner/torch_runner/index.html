@@ -1041,7 +1041,7 @@
 <a id="danling.runner.TorchRunner"></a>
   <div class="doc doc-contents first">
       <p class="doc doc-class-bases">
-        Bases: <code><a class="autorefs autorefs-internal" title="danling.runner.base_runner.BaseRunner" href="../../../package/#danling.BaseRunner">BaseRunner</a></code></p>
+        Bases: <code><a class="autorefs autorefs-internal" title="danling.runner.base_runner.BaseRunner" href="../../../runner/base_runner/#danling.runner.BaseRunner">BaseRunner</a></code></p>
 
   
       <p>Set up everything for running a job.</p>
@@ -1061,15 +1061,23 @@
           <td>
                 <code><span title="accelerate.Accelerator">Accelerator</span></code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
         <tr>
           <td><code>accelerate</code></td>
           <td>
                 <code><span title="typing.Mapping">Mapping</span>[str, <span title="typing.Any">Any</span>]</code>
           </td>
-          <td><p>Defaults to <code>{}</code>.
-if is <code>None</code>, will not use <code>accelerate</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Defaults to <code>{}</code>.
+if is <code>None</code>, will not use <code>accelerate</code>.</p>
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -1591,7 +1599,11 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
           <td>
                 <code>int</code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -1630,7 +1642,11 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
           <td>
                 <code>int</code>
           </td>
-          <td></td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
         </tr>
     </tbody>
   </table>
@@ -1849,8 +1865,12 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
           <td>
                 <code>int</code>
           </td>
-          <td><p>Random seed to set.
-Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Random seed to set.
+Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p>
+            </div>
+          </td>
           <td>
                 <code>None</code>
           </td>
@@ -1860,10 +1880,14 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p></td>
           <td>
                 <code><span title="typing.Optional">Optional</span>[int]</code>
           </td>
-          <td><p>Make the seed different for each processes.</p>
+          <td>
+            <div class="doc-md-description">
+              <p>Make the seed different for each processes.</p>
 <p>This avoids same data augmentation are applied on every processes.</p>
 <p>Defaults to <code>self.rank</code>.</p>
-<p>Set to <code>False</code> to disable this feature.</p></td>
+<p>Set to <code>False</code> to disable this feature.</p>
+            </div>
+          </td>
           <td>
                 <code>None</code>
           </td>
@@ -2162,7 +2186,11 @@ then return them in the same order.</p>
           <td>
                 <code><span title="typing.Optional">Optional</span>[<span title="torch.nn">nn</span>.<span title="torch.nn.Module">Module</span>]</code>
           </td>
-          <td><p>Defaults to <code>self.model</code>.</p></td>
+          <td>
+            <div class="doc-md-description">
+              <p>Defaults to <code>self.model</code>.</p>
+            </div>
+          </td>
           <td>
                 <code>None</code>
           </td>
