@@ -35,7 +35,7 @@ class RunnerState(NestedDict):
     Since `RunnerState` is a `NestedDict`, you can access its attributes by `state["key"]` or `state.key`.
 
     Attributes: General:
-        id (str): `f"{self.experiment_id:.4}{self.run_id:.4}{time_str}"`.
+        id (str): `f"{time_str}{self.experiment_id:.5}{self.run_id:.4}"`.
         uuid (UUID, property): `uuid5(self.run_id, self.id)`.
         name (str): `f"{self.experiment_name}-{self.run_name}"`.
         run_id (str): hex of `self.run_uuid`.
