@@ -442,11 +442,18 @@ class RunnerBase:
 
         return os.path.join(self.dir, self.checkpoint_dir_name)
 
+    def __getattribute__(self, name) -> Any:
+        if name in ("__class__", "__dict__"):
+            return super().__getattribute__(name)
+        if name in self.__dict__:
+            return self.__dict__[name]
+        if "state" in self and name in self.state:
+            return self.state[name]
+        return super().__getattribute__(name)
+
     def __getattr__(self, name) -> Any:
         if "state" not in self:
             raise RuntimeError("Runner is not initialised yet.")
-        if name in self.state:
-            return self.state[name]
         if name in dir(self.state):
             return getattr(self.state, name)
         raise super().__getattribute__(name)
@@ -458,7 +465,7 @@ class RunnerBase:
             self.__dict__[name] = value
 
     def __contains__(self, name) -> bool:
-        return name in self.__dict__
+        return name in dir(self) or ("state" in self.__dict__ and name in dir(self.state))
 
     def __repr__(self):
         lines = []
