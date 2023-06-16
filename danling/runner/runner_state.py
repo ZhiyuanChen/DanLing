@@ -166,13 +166,15 @@ class RunnerState(NestedDict):
                 self.experiment_id = Repo(search_parent_directories=True).head.object.hexsha
             except ImportError:
                 warn("GitPython is not installed, using default experiment id.")
-            except InvalidGitRepositoryError:
+            except (InvalidGitRepositoryError, ValueError):
                 path = os.path.dirname(os.path.abspath(sys.argv[0]))
-                warn("CWD is not under a git repo, fallback to top-level code environment.")
+                warn("Unable to retrive git hash from CWD, fallback to top-level code environment.")
                 try:
                     self.experiment_id = Repo(path=path, search_parent_directories=True).head.object.hexsha
-                except InvalidGitRepositoryError:
-                    warn("Top-level code environment is not under a git repo, using default experiment id.")
+                except (InvalidGitRepositoryError, ValueError):
+                    warn(
+                        "Unable to retrive git hash from top-level code environment, fallback to default experiment id."
+                    )
         else:
             warn("GitPython is not installed, using default experiment id.")
         self.deterministic = False
