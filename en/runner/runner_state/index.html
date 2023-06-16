@@ -36,7 +36,7 @@
         <link rel="next" href="../runner_base/">
       
       <link rel="icon" href="../../../assets/images/logo.ico">
-      <meta name="generator" content="mkdocs-1.4.3, mkdocs-material-9.1.15">
+      <meta name="generator" content="mkdocs-1.4.3, mkdocs-material-9.1.16">
     
     
       
@@ -1533,7 +1533,9 @@ Defaults to -1, never save intermediate checkpoints.</p>
 <span class="normal"><a href="#__codelineno-0-219">219</a></span>
 <span class="normal"><a href="#__codelineno-0-220">220</a></span>
 <span class="normal"><a href="#__codelineno-0-221">221</a></span>
-<span class="normal"><a href="#__codelineno-0-222">222</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-25" name="__codelineno-0-25"></a><span class="k">class</span> <span class="nc">RunnerState</span><span class="p">(</span><span class="n">NestedDict</span><span class="p">):</span>
+<span class="normal"><a href="#__codelineno-0-222">222</a></span>
+<span class="normal"><a href="#__codelineno-0-223">223</a></span>
+<span class="normal"><a href="#__codelineno-0-224">224</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-25" name="__codelineno-0-25"></a><span class="k">class</span> <span class="nc">RunnerState</span><span class="p">(</span><span class="n">NestedDict</span><span class="p">):</span>
 <a id="__codelineno-0-26" name="__codelineno-0-26"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
 <a id="__codelineno-0-27" name="__codelineno-0-27"></a><span class="sd">    `RunnerState` is a `NestedDict` that contains all states of a `Runner`.</span>
 <a id="__codelineno-0-28" name="__codelineno-0-28"></a>
@@ -1677,60 +1679,62 @@ Defaults to -1, never save intermediate checkpoints.</p>
 <a id="__codelineno-0-166" name="__codelineno-0-166"></a>                <span class="bp">self</span><span class="o">.</span><span class="n">experiment_id</span> <span class="o">=</span> <span class="n">Repo</span><span class="p">(</span><span class="n">search_parent_directories</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span><span class="o">.</span><span class="n">head</span><span class="o">.</span><span class="n">object</span><span class="o">.</span><span class="n">hexsha</span>
 <a id="__codelineno-0-167" name="__codelineno-0-167"></a>            <span class="k">except</span> <span class="ne">ImportError</span><span class="p">:</span>
 <a id="__codelineno-0-168" name="__codelineno-0-168"></a>                <span class="n">warn</span><span class="p">(</span><span class="s2">&quot;GitPython is not installed, using default experiment id.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-169" name="__codelineno-0-169"></a>            <span class="k">except</span> <span class="n">InvalidGitRepositoryError</span><span class="p">:</span>
+<a id="__codelineno-0-169" name="__codelineno-0-169"></a>            <span class="k">except</span> <span class="p">(</span><span class="n">InvalidGitRepositoryError</span><span class="p">,</span> <span class="ne">ValueError</span><span class="p">):</span>
 <a id="__codelineno-0-170" name="__codelineno-0-170"></a>                <span class="n">path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">dirname</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">abspath</span><span class="p">(</span><span class="n">sys</span><span class="o">.</span><span class="n">argv</span><span class="p">[</span><span class="mi">0</span><span class="p">]))</span>
-<a id="__codelineno-0-171" name="__codelineno-0-171"></a>                <span class="n">warn</span><span class="p">(</span><span class="s2">&quot;CWD is not under a git repo, fallback to top-level code environment.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-171" name="__codelineno-0-171"></a>                <span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Unable to retrive git hash from CWD, fallback to top-level code environment.&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-172" name="__codelineno-0-172"></a>                <span class="k">try</span><span class="p">:</span>
 <a id="__codelineno-0-173" name="__codelineno-0-173"></a>                    <span class="bp">self</span><span class="o">.</span><span class="n">experiment_id</span> <span class="o">=</span> <span class="n">Repo</span><span class="p">(</span><span class="n">path</span><span class="o">=</span><span class="n">path</span><span class="p">,</span> <span class="n">search_parent_directories</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span><span class="o">.</span><span class="n">head</span><span class="o">.</span><span class="n">object</span><span class="o">.</span><span class="n">hexsha</span>
-<a id="__codelineno-0-174" name="__codelineno-0-174"></a>                <span class="k">except</span> <span class="n">InvalidGitRepositoryError</span><span class="p">:</span>
-<a id="__codelineno-0-175" name="__codelineno-0-175"></a>                    <span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Top-level code environment is not under a git repo, using default experiment id.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-176" name="__codelineno-0-176"></a>        <span class="k">else</span><span class="p">:</span>
-<a id="__codelineno-0-177" name="__codelineno-0-177"></a>            <span class="n">warn</span><span class="p">(</span><span class="s2">&quot;GitPython is not installed, using default experiment id.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-178" name="__codelineno-0-178"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">deterministic</span> <span class="o">=</span> <span class="kc">False</span>
-<a id="__codelineno-0-179" name="__codelineno-0-179"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">seed</span> <span class="o">=</span> <span class="n">randint</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="o">**</span><span class="mi">32</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span>
-<a id="__codelineno-0-180" name="__codelineno-0-180"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">iters</span> <span class="o">=</span> <span class="mi">0</span>
-<a id="__codelineno-0-181" name="__codelineno-0-181"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">steps</span> <span class="o">=</span> <span class="mi">0</span>
-<a id="__codelineno-0-182" name="__codelineno-0-182"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">epochs</span> <span class="o">=</span> <span class="mi">0</span>
-<a id="__codelineno-0-183" name="__codelineno-0-183"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">results</span> <span class="o">=</span> <span class="p">[]</span>
-<a id="__codelineno-0-184" name="__codelineno-0-184"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">index_set</span> <span class="o">=</span> <span class="kc">None</span>
-<a id="__codelineno-0-185" name="__codelineno-0-185"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">index</span> <span class="o">=</span> <span class="s2">&quot;loss&quot;</span>
-<a id="__codelineno-0-186" name="__codelineno-0-186"></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
-<a id="__codelineno-0-187" name="__codelineno-0-187"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">run_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">run_uuid</span><span class="o">.</span><span class="n">hex</span>
-<a id="__codelineno-0-188" name="__codelineno-0-188"></a>        <span class="n">time</span> <span class="o">=</span> <span class="n">datetime</span><span class="o">.</span><span class="n">now</span><span class="p">()</span>
-<a id="__codelineno-0-189" name="__codelineno-0-189"></a>        <span class="n">time_tuple</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">isocalendar</span><span class="p">()[</span><span class="mi">1</span><span class="p">:]</span> <span class="o">+</span> <span class="p">(</span><span class="n">time</span><span class="o">.</span><span class="n">hour</span><span class="p">,</span> <span class="n">time</span><span class="o">.</span><span class="n">minute</span><span class="p">,</span> <span class="n">time</span><span class="o">.</span><span class="n">second</span><span class="p">,</span> <span class="n">time</span><span class="o">.</span><span class="n">microsecond</span><span class="p">)</span>
-<a id="__codelineno-0-190" name="__codelineno-0-190"></a>        <span class="n">time_str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">base62</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="n">i</span><span class="p">)</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">time_tuple</span><span class="p">)</span>
-<a id="__codelineno-0-191" name="__codelineno-0-191"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">id</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">time_str</span><span class="si">}{</span><span class="bp">self</span><span class="o">.</span><span class="n">experiment_id</span><span class="si">:</span><span class="s2">.5</span><span class="si">}{</span><span class="bp">self</span><span class="o">.</span><span class="n">run_id</span><span class="si">:</span><span class="s2">.4</span><span class="si">}</span><span class="s2">&quot;</span>  <span class="c1"># pylint: disable=C0103</span>
-<a id="__codelineno-0-192" name="__codelineno-0-192"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">experiment_name</span><span class="si">}</span><span class="s2">-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">run_name</span><span class="si">}</span><span class="s2">&quot;</span>
-<a id="__codelineno-0-193" name="__codelineno-0-193"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">setattr</span><span class="p">(</span><span class="s2">&quot;ignored_keys_in_hash&quot;</span><span class="p">,</span> <span class="n">defaults</span><span class="o">.</span><span class="n">DEFAULT_IGNORED_KEYS_IN_HASH</span><span class="p">)</span>
-<a id="__codelineno-0-194" name="__codelineno-0-194"></a>
-<a id="__codelineno-0-195" name="__codelineno-0-195"></a>    <span class="nd">@property</span>
-<a id="__codelineno-0-196" name="__codelineno-0-196"></a>    <span class="k">def</span> <span class="nf">experiment_uuid</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">UUID</span><span class="p">:</span>
-<a id="__codelineno-0-197" name="__codelineno-0-197"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-198" name="__codelineno-0-198"></a><span class="sd">        UUID of the experiment.</span>
-<a id="__codelineno-0-199" name="__codelineno-0-199"></a><span class="sd">        &quot;&quot;&quot;</span>
-<a id="__codelineno-0-200" name="__codelineno-0-200"></a>
-<a id="__codelineno-0-201" name="__codelineno-0-201"></a>        <span class="k">return</span> <span class="n">UUID</span><span class="p">(</span><span class="nb">bytes</span><span class="o">=</span><span class="nb">bytes</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">experiment_id</span><span class="o">.</span><span class="n">ljust</span><span class="p">(</span><span class="mi">16</span><span class="p">,</span> <span class="s2">&quot;x&quot;</span><span class="p">)[:</span><span class="mi">16</span><span class="p">],</span> <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;ascii&quot;</span><span class="p">))</span>
+<a id="__codelineno-0-174" name="__codelineno-0-174"></a>                <span class="k">except</span> <span class="p">(</span><span class="n">InvalidGitRepositoryError</span><span class="p">,</span> <span class="ne">ValueError</span><span class="p">):</span>
+<a id="__codelineno-0-175" name="__codelineno-0-175"></a>                    <span class="n">warn</span><span class="p">(</span>
+<a id="__codelineno-0-176" name="__codelineno-0-176"></a>                        <span class="s2">&quot;Unable to retrive git hash from top-level code environment, fallback to default experiment id.&quot;</span>
+<a id="__codelineno-0-177" name="__codelineno-0-177"></a>                    <span class="p">)</span>
+<a id="__codelineno-0-178" name="__codelineno-0-178"></a>        <span class="k">else</span><span class="p">:</span>
+<a id="__codelineno-0-179" name="__codelineno-0-179"></a>            <span class="n">warn</span><span class="p">(</span><span class="s2">&quot;GitPython is not installed, using default experiment id.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-180" name="__codelineno-0-180"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">deterministic</span> <span class="o">=</span> <span class="kc">False</span>
+<a id="__codelineno-0-181" name="__codelineno-0-181"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">seed</span> <span class="o">=</span> <span class="n">randint</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="o">**</span><span class="mi">32</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span>
+<a id="__codelineno-0-182" name="__codelineno-0-182"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">iters</span> <span class="o">=</span> <span class="mi">0</span>
+<a id="__codelineno-0-183" name="__codelineno-0-183"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">steps</span> <span class="o">=</span> <span class="mi">0</span>
+<a id="__codelineno-0-184" name="__codelineno-0-184"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">epochs</span> <span class="o">=</span> <span class="mi">0</span>
+<a id="__codelineno-0-185" name="__codelineno-0-185"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">results</span> <span class="o">=</span> <span class="p">[]</span>
+<a id="__codelineno-0-186" name="__codelineno-0-186"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">index_set</span> <span class="o">=</span> <span class="kc">None</span>
+<a id="__codelineno-0-187" name="__codelineno-0-187"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">index</span> <span class="o">=</span> <span class="s2">&quot;loss&quot;</span>
+<a id="__codelineno-0-188" name="__codelineno-0-188"></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+<a id="__codelineno-0-189" name="__codelineno-0-189"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">run_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">run_uuid</span><span class="o">.</span><span class="n">hex</span>
+<a id="__codelineno-0-190" name="__codelineno-0-190"></a>        <span class="n">time</span> <span class="o">=</span> <span class="n">datetime</span><span class="o">.</span><span class="n">now</span><span class="p">()</span>
+<a id="__codelineno-0-191" name="__codelineno-0-191"></a>        <span class="n">time_tuple</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">isocalendar</span><span class="p">()[</span><span class="mi">1</span><span class="p">:]</span> <span class="o">+</span> <span class="p">(</span><span class="n">time</span><span class="o">.</span><span class="n">hour</span><span class="p">,</span> <span class="n">time</span><span class="o">.</span><span class="n">minute</span><span class="p">,</span> <span class="n">time</span><span class="o">.</span><span class="n">second</span><span class="p">,</span> <span class="n">time</span><span class="o">.</span><span class="n">microsecond</span><span class="p">)</span>
+<a id="__codelineno-0-192" name="__codelineno-0-192"></a>        <span class="n">time_str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">base62</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="n">i</span><span class="p">)</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">time_tuple</span><span class="p">)</span>
+<a id="__codelineno-0-193" name="__codelineno-0-193"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">id</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">time_str</span><span class="si">}{</span><span class="bp">self</span><span class="o">.</span><span class="n">experiment_id</span><span class="si">:</span><span class="s2">.5</span><span class="si">}{</span><span class="bp">self</span><span class="o">.</span><span class="n">run_id</span><span class="si">:</span><span class="s2">.4</span><span class="si">}</span><span class="s2">&quot;</span>  <span class="c1"># pylint: disable=C0103</span>
+<a id="__codelineno-0-194" name="__codelineno-0-194"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">experiment_name</span><span class="si">}</span><span class="s2">-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">run_name</span><span class="si">}</span><span class="s2">&quot;</span>
+<a id="__codelineno-0-195" name="__codelineno-0-195"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">setattr</span><span class="p">(</span><span class="s2">&quot;ignored_keys_in_hash&quot;</span><span class="p">,</span> <span class="n">defaults</span><span class="o">.</span><span class="n">DEFAULT_IGNORED_KEYS_IN_HASH</span><span class="p">)</span>
+<a id="__codelineno-0-196" name="__codelineno-0-196"></a>
+<a id="__codelineno-0-197" name="__codelineno-0-197"></a>    <span class="nd">@property</span>
+<a id="__codelineno-0-198" name="__codelineno-0-198"></a>    <span class="k">def</span> <span class="nf">experiment_uuid</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">UUID</span><span class="p">:</span>
+<a id="__codelineno-0-199" name="__codelineno-0-199"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-200" name="__codelineno-0-200"></a><span class="sd">        UUID of the experiment.</span>
+<a id="__codelineno-0-201" name="__codelineno-0-201"></a><span class="sd">        &quot;&quot;&quot;</span>
 <a id="__codelineno-0-202" name="__codelineno-0-202"></a>
-<a id="__codelineno-0-203" name="__codelineno-0-203"></a>    <span class="nd">@property</span>
-<a id="__codelineno-0-204" name="__codelineno-0-204"></a>    <span class="k">def</span> <span class="nf">run_uuid</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">UUID</span><span class="p">:</span>
-<a id="__codelineno-0-205" name="__codelineno-0-205"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-206" name="__codelineno-0-206"></a><span class="sd">        UUID of the run.</span>
-<a id="__codelineno-0-207" name="__codelineno-0-207"></a><span class="sd">        &quot;&quot;&quot;</span>
-<a id="__codelineno-0-208" name="__codelineno-0-208"></a>
-<a id="__codelineno-0-209" name="__codelineno-0-209"></a>        <span class="k">return</span> <span class="n">uuid5</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">experiment_uuid</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="nb">hash</span><span class="p">(</span><span class="bp">self</span><span class="p">)))</span>
+<a id="__codelineno-0-203" name="__codelineno-0-203"></a>        <span class="k">return</span> <span class="n">UUID</span><span class="p">(</span><span class="nb">bytes</span><span class="o">=</span><span class="nb">bytes</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">experiment_id</span><span class="o">.</span><span class="n">ljust</span><span class="p">(</span><span class="mi">16</span><span class="p">,</span> <span class="s2">&quot;x&quot;</span><span class="p">)[:</span><span class="mi">16</span><span class="p">],</span> <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;ascii&quot;</span><span class="p">))</span>
+<a id="__codelineno-0-204" name="__codelineno-0-204"></a>
+<a id="__codelineno-0-205" name="__codelineno-0-205"></a>    <span class="nd">@property</span>
+<a id="__codelineno-0-206" name="__codelineno-0-206"></a>    <span class="k">def</span> <span class="nf">run_uuid</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">UUID</span><span class="p">:</span>
+<a id="__codelineno-0-207" name="__codelineno-0-207"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-208" name="__codelineno-0-208"></a><span class="sd">        UUID of the run.</span>
+<a id="__codelineno-0-209" name="__codelineno-0-209"></a><span class="sd">        &quot;&quot;&quot;</span>
 <a id="__codelineno-0-210" name="__codelineno-0-210"></a>
-<a id="__codelineno-0-211" name="__codelineno-0-211"></a>    <span class="nd">@property</span>
-<a id="__codelineno-0-212" name="__codelineno-0-212"></a>    <span class="k">def</span> <span class="nf">uuid</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">UUID</span><span class="p">:</span>
-<a id="__codelineno-0-213" name="__codelineno-0-213"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-214" name="__codelineno-0-214"></a><span class="sd">        UUID of the state.</span>
-<a id="__codelineno-0-215" name="__codelineno-0-215"></a><span class="sd">        &quot;&quot;&quot;</span>
-<a id="__codelineno-0-216" name="__codelineno-0-216"></a>
-<a id="__codelineno-0-217" name="__codelineno-0-217"></a>        <span class="k">return</span> <span class="n">uuid5</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">run_uuid</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+<a id="__codelineno-0-211" name="__codelineno-0-211"></a>        <span class="k">return</span> <span class="n">uuid5</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">experiment_uuid</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="nb">hash</span><span class="p">(</span><span class="bp">self</span><span class="p">)))</span>
+<a id="__codelineno-0-212" name="__codelineno-0-212"></a>
+<a id="__codelineno-0-213" name="__codelineno-0-213"></a>    <span class="nd">@property</span>
+<a id="__codelineno-0-214" name="__codelineno-0-214"></a>    <span class="k">def</span> <span class="nf">uuid</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">UUID</span><span class="p">:</span>
+<a id="__codelineno-0-215" name="__codelineno-0-215"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-216" name="__codelineno-0-216"></a><span class="sd">        UUID of the state.</span>
+<a id="__codelineno-0-217" name="__codelineno-0-217"></a><span class="sd">        &quot;&quot;&quot;</span>
 <a id="__codelineno-0-218" name="__codelineno-0-218"></a>
-<a id="__codelineno-0-219" name="__codelineno-0-219"></a>    <span class="k">def</span> <span class="fm">__hash__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
-<a id="__codelineno-0-220" name="__codelineno-0-220"></a>        <span class="n">ignored_keys_in_hash</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">getattr</span><span class="p">(</span><span class="s2">&quot;ignored_keys_in_hash&quot;</span><span class="p">,</span> <span class="n">defaults</span><span class="o">.</span><span class="n">DEFAULT_IGNORED_KEYS_IN_HASH</span><span class="p">)</span>
-<a id="__codelineno-0-221" name="__codelineno-0-221"></a>        <span class="n">state</span> <span class="o">=</span> <span class="n">NestedDict</span><span class="p">({</span><span class="n">k</span><span class="p">:</span> <span class="n">v</span> <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">dict</span><span class="p">()</span><span class="o">.</span><span class="n">items</span><span class="p">()</span> <span class="k">if</span> <span class="n">k</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">ignored_keys_in_hash</span><span class="p">})</span>
-<a id="__codelineno-0-222" name="__codelineno-0-222"></a>        <span class="k">return</span> <span class="nb">hash</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">yamls</span><span class="p">())</span>
+<a id="__codelineno-0-219" name="__codelineno-0-219"></a>        <span class="k">return</span> <span class="n">uuid5</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">run_uuid</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+<a id="__codelineno-0-220" name="__codelineno-0-220"></a>
+<a id="__codelineno-0-221" name="__codelineno-0-221"></a>    <span class="k">def</span> <span class="fm">__hash__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<a id="__codelineno-0-222" name="__codelineno-0-222"></a>        <span class="n">ignored_keys_in_hash</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">getattr</span><span class="p">(</span><span class="s2">&quot;ignored_keys_in_hash&quot;</span><span class="p">,</span> <span class="n">defaults</span><span class="o">.</span><span class="n">DEFAULT_IGNORED_KEYS_IN_HASH</span><span class="p">)</span>
+<a id="__codelineno-0-223" name="__codelineno-0-223"></a>        <span class="n">state</span> <span class="o">=</span> <span class="n">NestedDict</span><span class="p">({</span><span class="n">k</span><span class="p">:</span> <span class="n">v</span> <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">dict</span><span class="p">()</span><span class="o">.</span><span class="n">items</span><span class="p">()</span> <span class="k">if</span> <span class="n">k</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">ignored_keys_in_hash</span><span class="p">})</span>
+<a id="__codelineno-0-224" name="__codelineno-0-224"></a>        <span class="k">return</span> <span class="nb">hash</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">yamls</span><span class="p">())</span>
 </code></pre></div></td></tr></table></div>
         </details>
 
@@ -1822,7 +1826,7 @@ Defaults to -1, never save intermediate checkpoints.</p>
   <small>
     
       Last update:
-      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-06-07 07:25:58</span>
+      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-06-16 15:21:39</span>
       
     
   </small>
@@ -1997,15 +2001,23 @@ Defaults to -1, never save intermediate checkpoints.</p>
     <script id="__config" type="application/json">{"base": "../../..", "features": ["announce.dismiss", "content.code.annotate", "content.tabs.link", "content.tooltips", "header.autohide", "navigation.expand", "navigation.indexes", "navigation.instant", "navigation.prune", "navigation.sections", "navigation.tabs", "navigation.tabs.sticky", "navigation.top", "navigation.tracking", "search.highlight", "search.share", "search.suggest", "toc.follow", "toc.integrate"], "search": "../../../assets/javascripts/workers/search.208ed371.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}}</script>
     
     
-      <script src="../../../assets/javascripts/bundle.b4d07000.min.js"></script>
+      <script src="../../../assets/javascripts/bundle.a51614de.min.js"></script>
       
-        <script src="../../../javascripts/mathjax.js"></script>
+        
+          <script src="../../../javascripts/mathjax.js"></script>
+        
       
-        <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+        
+          <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+        
       
-        <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+        
+          <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+        
       
-        <script src="../../../javascripts/shortcuts.js"></script>
+        
+          <script src="../../../javascripts/shortcuts.js"></script>
+        
       
     
   </body>
