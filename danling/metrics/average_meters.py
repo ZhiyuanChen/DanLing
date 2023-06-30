@@ -36,7 +36,9 @@ class AverageMeters(DefaultDict):
     """
 
     def __init__(self, *args, **kwargs) -> None:
-        super().__init__(default_factory=AverageMeter, *args, **kwargs)
+        if "default_factory" not in kwargs:
+            kwargs["default_factory"] = AverageMeter
+        super().__init__(*args, **kwargs)
 
     def reset(self) -> None:
         r"""
@@ -62,7 +64,7 @@ class AverageMeters(DefaultDict):
         for meter in self.values():
             meter.reset()
 
-    def update(self, val, n: int = 1) -> None:  # pylint: disable=W0237
+    def update(self, val, n: int = 1) -> None:  # type: ignore # pylint: disable=W0237
         r"""
         Updates the average and current value in all meters.
 

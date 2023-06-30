@@ -218,7 +218,7 @@ class RunnerState(NestedDict):
 
         return uuid5(self.run_uuid, self.id)
 
-    def __hash__(self) -> int:
+    def __hash__(self) -> int:  # type: ignore
         ignored_keys_in_hash = self.getattr("ignored_keys_in_hash", defaults.DEFAULT_IGNORED_KEYS_IN_HASH)
-        state = NestedDict({k: v for k, v in self.dict().items() if k not in ignored_keys_in_hash})
+        state: NestedDict = NestedDict({k: v for k, v in self.dict().items() if k not in ignored_keys_in_hash})
         return hash(state.yamls())

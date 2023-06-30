@@ -4,6 +4,13 @@ import logging
 import logging.config
 import os
 from typing import Any, Callable, List, Mapping, Optional
+try:
+    from functools import cached_property  # type: ignore
+except ImportError:
+    from functools import lru_cache
+
+    def cached_property(f):  # type: ignore
+        return property(lru_cache()(f))
 
 from chanfig import Config, FlatDict, NestedDict, Variable
 
@@ -416,34 +423,42 @@ class RunnerBase:
         except TypeError:
             return True
 
-    @property  # type: ignore
+    @cached_property
     @ensure_dir
     def dir(self) -> str:
         r"""
         Directory of the run.
         """
 
+        if "dir" in self.state:
+            return self.state.dir
         return os.path.join(self.project_root, f"{self.name}-{self.id}")
 
-    @property
+    @cached_property
     def log_path(self) -> str:
         r"""
         Path of log file.
         """
 
+        if "log_path" in self.state:
+            return self.state.log_path
         return os.path.join(self.dir, "run.log")
 
-    @property  # type: ignore
+    @cached_property
     @ensure_dir
     def checkpoint_dir(self) -> str:
         r"""
         Directory of checkpoints.
         """
 
+        if "checkpoint_dir" in self.state:
+            return self.state.checkpoint_dir
         return os.path.join(self.dir, self.checkpoint_dir_name)
 
     def __getattribute__(self, name) -> Any:
         if name in ("__class__", "__dict__"):
+            return super().__getattribute__(name)
+        if name in dir(self):
             return super().__getattribute__(name)
         if name in self.__dict__:
             return self.__dict__[name]

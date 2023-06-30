@@ -37,6 +37,8 @@ class BaseRunner(RunnerBase):
             self.set_seed()
         if self.state.deterministic:
             self.set_deterministic()
+        if os.listdir(self.dir):
+            warn(f"Directory `{self.dir}` is not empty.", category=RuntimeWarning, stacklevel=2)
         if self.state.log:
             self.init_logging()
         self.init_print()
@@ -49,6 +51,7 @@ class BaseRunner(RunnerBase):
         Set up logging.
         """
 
+        os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
         # Why is setting up proper logging so !@?#! ugly?
         logging.config.dictConfig(
             {
