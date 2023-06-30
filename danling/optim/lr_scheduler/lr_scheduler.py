@@ -1,7 +1,7 @@
+from math import cos, pi
 from typing import List, Optional
 from warnings import warn
 
-import numpy as np
 from torch.optim import Optimizer, lr_scheduler
 
 
@@ -116,12 +116,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
             warn(
                 f"Step count {step_count} is out of range [1, {self.steps + 1}]", category=RuntimeWarning, stacklevel=2
             )
-        progress = np.clip(step_count / self.steps, 0.0, 1.0)
-        warmup_ratio = step_count / self.warmup_steps if self.warmup_steps > 0 else 1.0
-        cooldown_ratio = (
-            1 - (step_count - self.cooldown_steps_begin) / self.cooldown_steps if self.cooldown_steps > 0 else 1.0
-        )
-        return [self._get_lr(lr, step_count, progress, warmup_ratio, cooldown_ratio) for lr in self.base_lrs]
+        return [self._get_lr(lr, step_count) for lr in self.base_lrs]
 
     def _get_lr(
         self,
@@ -134,7 +129,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
     ) -> float:
         method = method or self.method
         step_count = step_count or self._step_count  # type: ignore
-        progress = progress or np.clip(step_count / self.steps, 0.0, 1.0)
+        progress = progress or min(max(step_count / self.steps, 0.0), 1.0)
         final_lr = self.final_lr or lr * self.final_lr_ratio
         ratio = getattr(self, self.strategy)(progress)
         if method == "percentile":
@@ -146,7 +141,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         if self.warmup_steps > step_count > 0:
             warmup_ratio = warmup_ratio or step_count / self.warmup_steps
             lr = warmup_ratio * (lr - self.min_lr) + self.min_lr
-        if step_count > self.cooldown_steps_begin and self.cooldown_steps > 0:
+        elif self.cooldown_steps > 0 and step_count > self.cooldown_steps_begin:
             cooldown_ratio = cooldown_ratio or 1 - (step_count - self.cooldown_steps_begin) / self.cooldown_steps
             lr = cooldown_ratio * (lr - self.min_lr) + self.min_lr
         return max(self.min_lr, lr)
@@ -155,7 +150,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         return progress
 
     def cosine(self, progress: float) -> float:  # pylint: disable=C0116
-        return 1 - ((1 + np.cos(np.pi * progress)) / 2)
+        return 1 - ((1 + cos(pi * progress)) / 2)
 
     def constant(self, progress: float) -> float:  # pylint: disable=W0613, C0116
         return 0.0

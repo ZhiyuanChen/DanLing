@@ -8,8 +8,12 @@ import shutil
 from typing import Callable, Mapping
 from warnings import warn
 
-import numpy as np
 from chanfig import FlatDict, NestedDict
+
+try:
+    from numpy import random as np_random
+except ImportError:
+    np_random = None
 
 from danling.utils import catch
 
@@ -152,7 +156,8 @@ class BaseRunner(RunnerBase):
             bias = self.rank
         if bias:
             seed += bias
-        np.random.seed(seed)
+        if np_random is not None:
+            np_random.seed(seed)
         random.seed(seed)
 
     def set_deterministic(self) -> None:

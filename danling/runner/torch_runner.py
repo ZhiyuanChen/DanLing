@@ -2,13 +2,17 @@ import random
 from contextlib import suppress
 from typing import Any, Callable, List, Mapping, Optional
 
-import numpy as np
 import torch
 from accelerate import Accelerator
 from torch import distributed as dist
 from torch import nn
 from torch.backends import cudnn
 from torch.utils.data import BatchSampler
+
+try:
+    from numpy import random as np_random
+except ImportError:
+    np_random = None
 
 from danling.utils import catch
 
@@ -98,7 +102,8 @@ class TorchRunner(BaseRunner):
         self.state.seed = seed
         torch.manual_seed(seed)
         torch.cuda.manual_seed(seed)
-        np.random.seed(seed)
+        if np_random is not None:
+            np_random.seed(seed)
         random.seed(seed)
 
     def set_deterministic(self) -> None:
