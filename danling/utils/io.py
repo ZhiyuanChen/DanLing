@@ -93,10 +93,10 @@ def load(file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
             raise ImportError(f"Trying to load {file!r} but pandas is not installed.")
         return pandas.read_csv(file, *args, **kwargs)  # type: ignore
     if extension in JSON:
-        with open(file, "r") as fp:  # pylint: disable=W1514, C0103
+        with open(file) as fp:  # pylint: disable=W1514, C0103
             return json.load(fp, *args, **kwargs)  # type: ignore
     if extension in YAML:
-        with open(file, "r") as fp:  # pylint: disable=W1514, C0103
+        with open(file) as fp:  # pylint: disable=W1514, C0103
             return yaml.load(fp, *args, **kwargs)  # type: ignore
     if extension in PICKLE:
         with open(file, "rb") as fp:  # type: ignore # pylint: disable=C0103

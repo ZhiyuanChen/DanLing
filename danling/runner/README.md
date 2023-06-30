@@ -29,7 +29,7 @@ It works in an AbstractBaseClass manner and should neither be used directly nor 
 [`BaseRunner`][danling.runner.BaseRunner] contains core methods of general basic functionality,
 such as `init_logging`, `append_result`, `print_result`.
 
-###  [`Runner`][danling.runner.TorchRunner]
+### [`Runner`][danling.runner.TorchRunner]
 
 [`Runner`][danling.runner.TorchRunner] should only contain platform-specific features.
 Currently, only [`TorchRunner`][danling.runner.TorchRunner] is supported.
@@ -81,8 +81,8 @@ You may also set a catchy custom `run_name` to identify each experiment.
 
 DanLing has two properties built-in to help you identify each run.
 
-+ `id` by default is the join of `experiment_id`, `run_id`, and `uuid`. It is automatically generated hex-strings and is unique for each run.
-+ `name` by default is `experiment_name-run_name`. It is manually specified and easy to read. Note that `name` is not guaranteed to be unique.
+- `id` by default is the join of `experiment_id`, `run_id`, and `uuid`. It is automatically generated hex-strings and is unique for each run.
+- `name` by default is `experiment_name-run_name`. It is manually specified and easy to read. Note that `name` is not guaranteed to be unique.
 
 ### Directories
 

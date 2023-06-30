@@ -55,7 +55,8 @@ class Registry(NestedDict):
         self.setattr("override", override)
         warn(
             "DanLing Registry has been deprecated in favor of CHANfiG Registry, and will be removed in 0.2.0.",
-            DeprecationWarning,
+            category=DeprecationWarning,
+            stacklevel=2,
         )
 
     def register(self, component: Optional[Callable] = None, name: Optional[str] = None) -> Callable:

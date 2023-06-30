@@ -51,7 +51,7 @@ class SimpleAttention(nn.Module):  # pylint: disable=R0902
         # pylint: disable=C0103, E1101, R0801
 
         if self.batch_first:
-            query, key, value = [x.transpose(0, 1) for x in (query, key, value)]
+            query, key, value = (x.transpose(0, 1) for x in (query, key, value))
 
         # set up shape vars
         target_len, batch_size, embed_dim = query.shape
@@ -65,7 +65,9 @@ class SimpleAttention(nn.Module):  # pylint: disable=R0902
         if attn_mask is not None:
             if attn_mask.dtype == torch.uint8:
                 warnings.warn(
-                    "attn_mask is of type uint8. This type is deprecated. Please use bool or float tensors instead."
+                    "attn_mask is of type uint8. This type is deprecated. Please use bool or float tensors instead.",
+                    category=DeprecationWarning,
+                    stacklevel=2,
                 )
                 attn_mask = attn_mask.to(torch.bool)
             elif not (attn_mask.is_floating_point() or attn_mask.dtype == torch.bool):
@@ -86,7 +88,9 @@ class SimpleAttention(nn.Module):  # pylint: disable=R0902
         # prep key padding mask
         if key_padding_mask is not None and key_padding_mask.dtype == torch.uint8:
             warnings.warn(
-                "key_padding_mask is of type uint8. This type is deprecated. Please use bool or float tensors instead."
+                "key_padding_mask is of type uint8. This type is deprecated. Please use bool or float tensors instead.",
+                category=DeprecationWarning,
+                stacklevel=2,
             )
             key_padding_mask = key_padding_mask.to(torch.bool)
 

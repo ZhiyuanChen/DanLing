@@ -70,9 +70,9 @@ channels: []
 # Use `anaconda-project add-platforms` to add platforms.
 #
 platforms:
-- linux-64
-- osx-64
-- win-64
+  - linux-64
+  - osx-64
+  - win-64
 
 #
 # You can define multiple, named environment specs.

@@ -18,7 +18,11 @@ class Test:
     def _get_lrs(self, strategy, method, steps: int = 100, final_lr_ratio: float = 0.001):
         lrs = []
         scheduler = LRScheduler(
-            self.optimizer, steps=steps, final_lr_ratio=final_lr_ratio, strategy=strategy, method=method
+            self.optimizer,
+            steps=steps,
+            final_lr_ratio=final_lr_ratio,
+            strategy=strategy,
+            method=method,
         )
         for _ in range(100):
             lrs.append(scheduler.get_lr()[0])

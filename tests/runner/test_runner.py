@@ -66,12 +66,13 @@ class MNISTRunner(dl.TorchRunner):
         self.meters.time.reset()
 
     def run(self):
-        for self.epochs in range(self.epochs, self.epoch_end):
-            result = NestedDict(epoch=self.epochs)
+        for epoch in range(self.epochs, self.epoch_end):
+            result = NestedDict(epoch=epoch)
             result.train = self.train_epoch()
             result.val = self.evaluate_epoch()
             self.append_result(result)
             self.print_result()
+            self.epochs = epoch
 
     def train_epoch(self, split: str = "train"):
         self.model.train()

@@ -1,4 +1,5 @@
 import random
+from contextlib import suppress
 from typing import Any, Callable, List, Mapping, Optional
 
 import numpy as np
@@ -241,10 +242,8 @@ class TorchRunner(BaseRunner):
         return self.accelerator.reduce(tensor, reduction=reduction)
 
     def __getattr__(self, name: str) -> Any:
-        try:
+        with suppress(AttributeError):
             return super().__getattr__(name)
-        except AttributeError:
-            pass
         if self.accelerator is not None and hasattr(self.accelerator, name):
             return getattr(self.accelerator, name)
         raise super().__getattribute__(name)

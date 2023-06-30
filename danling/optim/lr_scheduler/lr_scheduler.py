@@ -95,7 +95,11 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
             raise ValueError(f"Scaling strategy must be one of {self.strategies.keys()}, but got {strategy}")
         self.steps = steps
         if final_lr is not None:
-            warn("Argument `final_lr` is deprecated, use `final_lr_ratio` instead", DeprecationWarning)
+            warn(
+                "Argument `final_lr` is deprecated, use `final_lr_ratio` instead",
+                category=DeprecationWarning,
+                stacklevel=2,
+            )
         self.final_lr = final_lr
         self.final_lr_ratio = final_lr_ratio
         self.min_lr = min_lr
@@ -109,7 +113,9 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
     def get_lr(self) -> List[float]:  # type: ignore
         step_count = self._step_count  # type: ignore
         if step_count > self.steps + 1 or step_count < 1:
-            warn(f"Step count {step_count} is out of range [1, {self.steps + 1}]", RuntimeWarning)
+            warn(
+                f"Step count {step_count} is out of range [1, {self.steps + 1}]", category=RuntimeWarning, stacklevel=2
+            )
         progress = np.clip(step_count / self.steps, 0.0, 1.0)
         warmup_ratio = step_count / self.warmup_steps if self.warmup_steps > 0 else 1.0
         cooldown_ratio = (

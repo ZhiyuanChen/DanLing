@@ -1,6 +1,14 @@
 from .mlp import MLP, Dense
-from .transformer import (FullyConnectedNetwork, MultiHeadAttention, SimpleAttention, TransformerDecoder,
-                          TransformerDecoderLayer, TransformerEncoder, TransformerEncoderLayer, UnitedPositionEmbedding)
+from .transformer import (
+    FullyConnectedNetwork,
+    MultiHeadAttention,
+    SimpleAttention,
+    TransformerDecoder,
+    TransformerDecoderLayer,
+    TransformerEncoder,
+    TransformerEncoderLayer,
+    UnitedPositionEmbedding,
+)
 
 __all__ = [
     "TransformerEncoder",

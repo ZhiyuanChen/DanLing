@@ -4,7 +4,6 @@ import os
 import sys
 from datetime import datetime
 from random import randint
-from typing import List, Optional
 from uuid import UUID, uuid5
 from warnings import warn
 
@@ -14,7 +13,7 @@ try:
     from git.exc import InvalidGitRepositoryError
     from git.repo import Repo
 except ImportError:
-    warn("gitpython not installed, git hash will not be available")
+    warn("gitpython not installed, git hash will not be available", category=RuntimeWarning, stacklevel=2)
     Repo = None  # type: ignore
 
 from danling.utils import base62
@@ -146,8 +145,8 @@ class RunnerState(NestedDict):
     step_end: int
     epoch_end: int
 
-    results: List[NestedDict]
-    index_set: Optional[str]
+    results: list[NestedDict]
+    index_set: str | None
     index: str
 
     project_root: str = "experiments"
@@ -165,18 +164,32 @@ class RunnerState(NestedDict):
             try:
                 self.experiment_id = Repo(search_parent_directories=True).head.object.hexsha
             except ImportError:
-                warn("GitPython is not installed, using default experiment id.")
+                warn(
+                    "GitPython is not installed, fallback to `DEFAULT_EXPERIMENT_ID`.",
+                    category=RuntimeWarning,
+                    stacklevel=2,
+                )
             except (InvalidGitRepositoryError, ValueError):
                 path = os.path.dirname(os.path.abspath(sys.argv[0]))
-                warn("Unable to retrive git hash from CWD, fallback to top-level code environment.")
+                warn(
+                    "Unable to get git hash from CWD, fallback to top-level code environment.",
+                    category=RuntimeWarning,
+                    stacklevel=2,
+                )
                 try:
                     self.experiment_id = Repo(path=path, search_parent_directories=True).head.object.hexsha
                 except (InvalidGitRepositoryError, ValueError):
                     warn(
-                        "Unable to retrive git hash from top-level code environment, fallback to default experiment id."
+                        "Unable to get git hash from top-level code environment, fallback to `DEFAULT_EXPERIMENT_ID`.",
+                        category=RuntimeWarning,
+                        stacklevel=2,
                     )
         else:
-            warn("GitPython is not installed, using default experiment id.")
+            warn(
+                "GitPython is not installed, fallback to `DEFAULT_EXPERIMENT_ID`.",
+                category=RuntimeWarning,
+                stacklevel=2,
+            )
         self.deterministic = False
         self.seed = randint(0, 2**32 - 1)
         self.iters = 0
@@ -188,7 +201,12 @@ class RunnerState(NestedDict):
         super().__init__(*args, **kwargs)
         self.run_id = self.run_uuid.hex
         time = datetime.now()
-        time_tuple = time.isocalendar()[1:] + (time.hour, time.minute, time.second, time.microsecond)
+        time_tuple = time.isocalendar()[1:] + (
+            time.hour,
+            time.minute,
+            time.second,
+            time.microsecond,
+        )
         time_str = "".join(base62.encode(i) for i in time_tuple)
         self.id = f"{time_str}{self.experiment_id:.5}{self.run_id:.4}"  # pylint: disable=C0103
         self.name = f"{self.experiment_name}-{self.run_name}"

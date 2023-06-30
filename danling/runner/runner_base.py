@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import logging.config
 import os
-from typing import Any, Callable, List, Mapping, Optional
+from typing import Any, Callable, Mapping
+
 try:
     from functools import cached_property  # type: ignore
 except ImportError:
@@ -11,6 +12,7 @@ except ImportError:
 
     def cached_property(f):  # type: ignore
         return property(lru_cache()(f))
+
 
 from chanfig import Config, FlatDict, NestedDict, Variable
 
@@ -99,18 +101,18 @@ class RunnerBase:
 
     state: RunnerState
 
-    model: Optional[Callable] = None
-    criterion: Optional[Callable] = None
-    optimizer: Optional[Any] = None
-    scheduler: Optional[Any] = None
+    model: Callable | None = None
+    criterion: Callable | None = None
+    optimizer: Any | None = None
+    scheduler: Any | None = None
 
     datasets: FlatDict
     datasamplers: FlatDict
     dataloaders: FlatDict
 
-    meters: Optional[AverageMeters] = None
-    logger: Optional[logging.Logger] = None
-    writer: Optional[Any] = None
+    meters: AverageMeters | None = None
+    logger: logging.Logger | None = None
+    writer: Any | None = None
 
     def __init__(self, *args, **kwargs):
         super().__init__()
@@ -360,7 +362,7 @@ class RunnerBase:
         return max
 
     @property
-    def latest_result(self) -> Optional[NestedDict]:
+    def latest_result(self) -> NestedDict | None:
         r"""
         Latest result.
         """
@@ -368,7 +370,7 @@ class RunnerBase:
         return self.state.results[-1] if self.state.results else None
 
     @property
-    def best_result(self) -> Optional[NestedDict]:
+    def best_result(self) -> NestedDict | None:
         r"""
         Best result.
         """
@@ -377,7 +379,7 @@ class RunnerBase:
         return self.state.results[-1 - self.scores[::-1].index(self.best_score)]  # type: ignore
 
     @property
-    def scores(self) -> List[float]:
+    def scores(self) -> list[float]:
         r"""
         All scores.
 
@@ -397,7 +399,7 @@ class RunnerBase:
         return [r[index_set][self.state.index] for r in self.state.results]
 
     @property
-    def latest_score(self) -> Optional[float]:
+    def latest_score(self) -> float | None:
         r"""
         Latest score.
         """
@@ -405,7 +407,7 @@ class RunnerBase:
         return self.scores[-1] if self.state.results else None
 
     @property
-    def best_score(self) -> Optional[float]:
+    def best_score(self) -> float | None:
         r"""
         Best score.
         """

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, SupportsFloat, Tuple, Union
+from typing import Any, Callable, Iterable, Mapping, Sequence, SupportsFloat
 
 import torch
 from torch import Tensor
@@ -461,7 +461,7 @@ class NestedTensor:
                 value -= other
         return self
 
-    def __getitem__(self, index) -> Tuple[Tensor, Tensor]:
+    def __getitem__(self, index) -> tuple[Tensor, Tensor]:
         ret = self.storage[index]
         if isinstance(ret, Tensor):
             return ret, torch.ones_like(ret)  # pylint: disable=E1101
@@ -492,7 +492,7 @@ class NestedTensor:
     def __len__(self) -> int:
         return len(self.storage)
 
-    def __eq__(self, other) -> Union[bool, Tensor, NestedTensor]:  # type: ignore[override]
+    def __eq__(self, other) -> bool | Tensor | NestedTensor:  # type: ignore[override]
         if isinstance(other, NestedTensor):
             return self.storage == other.storage
         if isinstance(other, Tensor):
@@ -550,10 +550,10 @@ NestedTensorFunc = TorchFuncRegistry()
 @NestedTensorFunc.implement(torch.mean)  # pylint: disable=E1101
 def mean(
     input,  # pylint: disable=W0622
-    dim: Optional[int] = None,
+    dim: int | None = None,
     keepdim: bool = False,
     *,
-    dtype: Optional[torch.dtype] = None,
+    dtype: torch.dtype | None = None,
 ):
     return input.mean(dim=dim, keepdim=keepdim, dtype=dtype)
 
@@ -589,7 +589,7 @@ class NestedTensorFuncWrapper:
     storage: Sequence[Callable] = []
     state: Mapping = {}
 
-    def __init__(self, callables, state: Optional[Mapping] = None) -> None:
+    def __init__(self, callables, state: Mapping | None = None) -> None:
         if not isinstance(callables, Sequence):
             raise ValueError(f"NestedTensorFuncWrapper must be initialised with a Sequence, bug got {type(callables)}")
         if len(callables) == 0:
@@ -603,7 +603,7 @@ class NestedTensorFuncWrapper:
             state = {}
         self.state = state
 
-    def __call__(self, *args, **kwargs) -> Union[NestedTensor, Sequence[Tensor]]:
+    def __call__(self, *args, **kwargs) -> NestedTensor | Sequence[Tensor]:
         ret = [call(*args, **kwargs) for call in self.storage]
         elem = ret[0]
         if isinstance(elem, Tensor):

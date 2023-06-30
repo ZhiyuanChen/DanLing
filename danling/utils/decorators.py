@@ -89,10 +89,10 @@ def catch(
     """
 
     if verbose:
-        warn("verbose is deprecated in favor of verbosity", DeprecationWarning)
+        warn("verbose is deprecated in favor of verbosity", category=DeprecationWarning, stacklevel=2)
         verbosity = 40
     if print_args:
-        warn("verbose is deprecated in favor of verbosity", DeprecationWarning)
+        warn("verbose is deprecated in favor of verbosity", category=DeprecationWarning, stacklevel=2)
         verbosity = 20
 
     def decorator(func):

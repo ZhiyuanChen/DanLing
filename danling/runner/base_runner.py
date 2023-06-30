@@ -5,7 +5,7 @@ import logging.config
 import os
 import random
 import shutil
-from typing import Callable, Mapping, Optional, Union
+from typing import Callable, Mapping
 from warnings import warn
 
 import numpy as np
@@ -38,7 +38,11 @@ class BaseRunner(RunnerBase):
         if self.state.deterministic:
             self.set_deterministic()
         if os.listdir(self.dir):
-            warn(f"Directory `{self.dir}` is not empty.", category=RuntimeWarning, stacklevel=2)
+            warn(
+                f"Directory `{self.dir}` is not empty.",
+                category=RuntimeWarning,
+                stacklevel=2,
+            )
         if self.state.log:
             self.init_logging()
         self.init_print()
@@ -125,7 +129,7 @@ class BaseRunner(RunnerBase):
         """
         raise NotImplementedError
 
-    def set_seed(self, seed: Optional[int] = None, bias: Optional[int] = None) -> None:
+    def set_seed(self, seed: int | None = None, bias: int | None = None) -> None:
         r"""
         Set up random seed.
 
@@ -161,8 +165,8 @@ class BaseRunner(RunnerBase):
     def scale_lr(
         self,
         lr: float,  # pylint: disable=C0103
-        lr_scale_factor: Optional[float] = None,
-        batch_size_base: Optional[int] = None,
+        lr_scale_factor: float | None = None,
+        batch_size_base: int | None = None,
     ) -> float:
         r"""
         Scale learning rate according to [linear scaling rule](https://arxiv.org/abs/1706.02677).
@@ -178,14 +182,13 @@ class BaseRunner(RunnerBase):
             lr_scale_factor = self.batch_size_equivalent / batch_size_base
         elif batch_size_base is not None:
             warn(
-                "batch_size_base will be ignored if lr_scale_factor is specified",
-                RuntimeWarning,
+                "batch_size_base will be ignored if lr_scale_factor is specified", category=RuntimeWarning, stacklevel=2
             )
         lr = lr * lr_scale_factor  # pylint: disable=C0103, E1101
         self.lr_scale_factor = lr_scale_factor
         return lr
 
-    def step(self, zero_grad: bool = True, batch_size: Optional[int] = None) -> None:
+    def step(self, zero_grad: bool = True, batch_size: int | None = None) -> None:
         r"""
         Step optimizer and scheduler.
 
@@ -244,7 +247,7 @@ class BaseRunner(RunnerBase):
             shutil.copy(latest_path, best_path)
 
     def load_checkpoint(  # pylint: disable=W1113
-        self, checkpoint: Optional[Union[Mapping, str]] = None, override_state: bool = False, *args, **kwargs
+        self, checkpoint: Mapping | str | None = None, override_state: bool = False, *args, **kwargs
     ) -> None:
         """
         Load info from checkpoint.
@@ -266,25 +269,27 @@ class BaseRunner(RunnerBase):
         """
 
         if checkpoint is None:
-            checkpoint = os.path.join(self.checkpoint_dir, "latest.pth")  # type: ignore
+            checkpoint = os.path.join(self.checkpoint_dir, "latest.pth")
         # TODO: Support loading checkpoints in other format
         if isinstance(checkpoint, str):
             if not os.path.exists(checkpoint):
                 raise FileNotFoundError(f"checkpoint is set to {checkpoint} but does not exist.")
             self.checkpoint = checkpoint  # pylint: disable=W0201
-            checkpoint: Mapping = self.load(checkpoint, *args, **kwargs)  # type: ignore
+            ckpt = self.load(checkpoint, *args, **kwargs)
+        else:
+            ckpt = checkpoint
         # TODO: Wrap state_dict in a dataclass
         if override_state:
-            self.__dict__.update(NestedDict(**checkpoint["runner"]))  # type: ignore
-        if self.model is not None and "model" in checkpoint:
+            self.__dict__.update(NestedDict(**ckpt["runner"]))
+        if self.model is not None and "model" in ckpt:
             model = self.unwrap_model(self.model)
-            model.load_state_dict(checkpoint["model"])  # type: ignore
-        if self.optimizer is not None and "optimizer" in checkpoint:
-            self.optimizer.load_state_dict(checkpoint["optimizer"])  # type: ignore
-        if self.scheduler is not None and "scheduler" in checkpoint:
-            self.scheduler.load_state_dict(checkpoint["scheduler"])  # type: ignore
+            model.load_state_dict(ckpt["model"])
+        if self.optimizer is not None and "optimizer" in ckpt:
+            self.optimizer.load_state_dict(ckpt["optimizer"])
+        if self.scheduler is not None and "scheduler" in ckpt:
+            self.scheduler.load_state_dict(ckpt["scheduler"])
 
-    def load_pretrained(self, checkpoint: Union[Mapping, str], *args, **kwargs) -> None:
+    def load_pretrained(self, checkpoint: Mapping | str, *args, **kwargs) -> None:
         """
         Load parameters from pretrained checkpoint.
 
@@ -304,16 +309,18 @@ class BaseRunner(RunnerBase):
         if isinstance(checkpoint, str):
             if not os.path.exists(checkpoint):
                 raise FileNotFoundError(f"pretrained is set to {checkpoint} but does not exist.")
-            checkpoint: Mapping = self.load(checkpoint, *args, **kwargs)  # type: ignore
-        if "model" in checkpoint:
-            checkpoint = checkpoint["model"]  # type: ignore
-        if "state_dict" in checkpoint:
-            checkpoint = checkpoint["state_dict"]  # type: ignore
+            ckpt = self.load(checkpoint, *args, **kwargs)
+        else:
+            ckpt = checkpoint
+        if "model" in ckpt:  # noqa: SIM908
+            ckpt = ckpt["model"]
+        if "state_dict" in ckpt:  # noqa: SIM908
+            ckpt = ckpt["state_dict"]
         model = self.unwrap_model(self.model)
-        model.load_state_dict(checkpoint)  # type: ignore
+        model.load_state_dict(ckpt)
 
     @classmethod
-    def from_checkpoint(cls, checkpoint: Union[Mapping, str], *args, **kwargs) -> BaseRunner:
+    def from_checkpoint(cls, checkpoint: Mapping | str, *args, **kwargs) -> BaseRunner:
         r"""
         Build BaseRunner from checkpoint.
 
@@ -365,7 +372,15 @@ class BaseRunner(RunnerBase):
         """
 
         results_path = os.path.join(self.dir, "results.json")
-        self.save({"id": self.state.id, "name": self.state.name, "results": self.state.results}, results_path, indent=4)
+        self.save(
+            {
+                "id": self.state.id,
+                "name": self.state.name,
+                "results": self.state.results,
+            },
+            results_path,
+            indent=4,
+        )
         ret = {"id": self.state.id, "name": self.state.name}
         result = self.latest_result  # type: ignore
         if isinstance(result, FlatDict):
