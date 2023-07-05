@@ -20,12 +20,12 @@ repos:
           - flake8-comprehensions
           - flake8-simplify
   - repo: https://github.com/asottile/pyupgrade
-    rev: v3.7.0
+    rev: v3.8.0
     hooks:
       - id: pyupgrade
         args: [--py37-plus]
   - repo: https://github.com/tox-dev/pyproject-fmt
-    rev: 0.12.1
+    rev: 0.13.0
     hooks:
       - id: pyproject-fmt
   - repo: https://github.com/pre-commit/mirrors-mypy
