@@ -239,7 +239,7 @@ class RunnerBase:
         r"""
         Load any file with supported extensions.
 
-        `Runner.load` is identical to `dl.save`.
+        `Runner.load` is identical to `dl.load`.
         """
 
         return load(file, *args, **kwargs)
