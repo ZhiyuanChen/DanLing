@@ -900,8 +900,8 @@
 
 <a id="danling.Registry"></a>
   <div class="doc doc-contents first">
-      <p class="doc doc-class-bases">
-        Bases: <code><span title="chanfig.NestedDict">NestedDict</span></code></p>
+          <p class="doc doc-class-bases">
+            Bases: <code><span title="chanfig.NestedDict">NestedDict</span></code></p>
 
   
       <p><code>Registry</code> for components.</p>
@@ -913,6 +913,8 @@
 You could create a sub-registry by simply calling <code>registry.sub_registry = Registry</code>,
 and access through <code>registry.sub_registry.register()</code>.</p>
 </details>
+
+
 <p><strong>Examples:</strong></p>
     
       <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-1"> 1</a></span>
@@ -966,10 +968,9 @@ and access through <code>registry.sub_registry.register()</code>.</p>
 <a id="__codelineno-0-25" name="__codelineno-0-25"></a><span class="mi">2</span>
 </code></pre></div></td></tr></table></div>
 
-
-        <details class="quote">
-          <summary>Source code in <code>danling/registry.py</code></summary>
-          <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-9">  9</a></span>
+            <details class="quote">
+              <summary>Source code in <code>danling/registry.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-9">  9</a></span>
 <span class="normal"><a href="#__codelineno-0-10"> 10</a></span>
 <span class="normal"><a href="#__codelineno-0-11"> 11</a></span>
 <span class="normal"><a href="#__codelineno-0-12"> 12</a></span>
@@ -1339,11 +1340,12 @@ and access through <code>registry.sub_registry.register()</code>.</p>
 <a id="__codelineno-0-192" name="__codelineno-0-192"></a>    <span class="k">def</span> <span class="nf">__wrapped__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
 <a id="__codelineno-0-193" name="__codelineno-0-193"></a>        <span class="k">pass</span>
 </code></pre></div></td></tr></table></div>
-        </details>
+            </details>
 
   
 
   <div class="doc doc-children">
+
 
 
 
@@ -1366,6 +1368,8 @@ and access through <code>registry.sub_registry.register()</code>.</p>
   <div class="doc doc-contents ">
   
       <p>Register a new component.</p>
+
+
 
   <p><strong>Parameters:</strong></p>
   <table>
@@ -1409,6 +1413,8 @@ and access through <code>registry.sub_registry.register()</code>.</p>
     </tbody>
   </table>
 
+
+
   <p><strong>Returns:</strong></p>
   <table>
     <thead>
@@ -1431,6 +1437,8 @@ and access through <code>registry.sub_registry.register()</code>.</p>
     </tbody>
   </table>
 
+
+
   <p><strong>Raises:</strong></p>
   <table>
     <thead>
@@ -1452,6 +1460,8 @@ and access through <code>registry.sub_registry.register()</code>.</p>
         </tr>
     </tbody>
   </table>
+
+
 
 <p><strong>Examples:</strong></p>
     
@@ -1484,9 +1494,9 @@ and access through <code>registry.sub_registry.register()</code>.</p>
 <a id="__codelineno-0-14" name="__codelineno-0-14"></a><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/registry.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-62"> 62</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/registry.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-62"> 62</a></span>
 <span class="normal"><a href="#__codelineno-0-63"> 63</a></span>
 <span class="normal"><a href="#__codelineno-0-64"> 64</a></span>
 <span class="normal"><a href="#__codelineno-0-65"> 65</a></span>
@@ -1594,10 +1604,11 @@ and access through <code>registry.sub_registry.register()</code>.</p>
 <a id="__codelineno-0-114" name="__codelineno-0-114"></a>
 <a id="__codelineno-0-115" name="__codelineno-0-115"></a>    <span class="k">return</span> <span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">register</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">component</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -1612,6 +1623,8 @@ and access through <code>registry.sub_registry.register()</code>.</p>
   <div class="doc doc-contents ">
   
       <p>Lookup for a component.</p>
+
+
 
   <p><strong>Parameters:</strong></p>
   <table>
@@ -1641,6 +1654,8 @@ and access through <code>registry.sub_registry.register()</code>.</p>
     </tbody>
   </table>
 
+
+
   <p><strong>Returns:</strong></p>
   <table>
     <thead>
@@ -1662,6 +1677,8 @@ and access through <code>registry.sub_registry.register()</code>.</p>
         </tr>
     </tbody>
   </table>
+
+
 
   <p><strong>Raises:</strong></p>
   <table>
@@ -1685,6 +1702,8 @@ and access through <code>registry.sub_registry.register()</code>.</p>
     </tbody>
   </table>
 
+
+
 <p><strong>Examples:</strong></p>
     
       <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-1">1</a></span>
@@ -1704,9 +1723,9 @@ and access through <code>registry.sub_registry.register()</code>.</p>
 <a id="__codelineno-0-8" name="__codelineno-0-8"></a><span class="o">&lt;</span><span class="k">class</span> <span class="err">&#39;</span><span class="nc">danling</span><span class="o">.</span><span class="n">registry</span><span class="o">.</span><span class="n">Module</span><span class="s1">&#39;&gt;</span>
 </code></pre></div></td></tr></table></div>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/registry.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-117">117</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/registry.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-117">117</a></span>
 <span class="normal"><a href="#__codelineno-0-118">118</a></span>
 <span class="normal"><a href="#__codelineno-0-119">119</a></span>
 <span class="normal"><a href="#__codelineno-0-120">120</a></span>
@@ -1762,10 +1781,11 @@ and access through <code>registry.sub_registry.register()</code>.</p>
 <a id="__codelineno-0-143" name="__codelineno-0-143"></a>
 <a id="__codelineno-0-144" name="__codelineno-0-144"></a>    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -1780,6 +1800,8 @@ and access through <code>registry.sub_registry.register()</code>.</p>
   <div class="doc doc-contents ">
   
       <p>Build a component.</p>
+
+
 
   <p><strong>Parameters:</strong></p>
   <table>
@@ -1836,6 +1858,8 @@ Note that values in <code>kwargs</code> will override values in <code>name</code
     </tbody>
   </table>
 
+
+
   <p><strong>Returns:</strong></p>
   <table>
     <thead>
@@ -1858,6 +1882,8 @@ Note that values in <code>kwargs</code> will override values in <code>name</code
     </tbody>
   </table>
 
+
+
   <p><strong>Raises:</strong></p>
   <table>
     <thead>
@@ -1879,6 +1905,8 @@ Note that values in <code>kwargs</code> will override values in <code>name</code
         </tr>
     </tbody>
   </table>
+
+
 
 <p><strong>Examples:</strong></p>
     
@@ -1919,9 +1947,9 @@ Note that values in <code>kwargs</code> will override values in <code>name</code
 <a id="__codelineno-0-18" name="__codelineno-0-18"></a><span class="mi">2</span>
 </code></pre></div></td></tr></table></div>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/registry.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-146">146</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/registry.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-146">146</a></span>
 <span class="normal"><a href="#__codelineno-0-147">147</a></span>
 <span class="normal"><a href="#__codelineno-0-148">148</a></span>
 <span class="normal"><a href="#__codelineno-0-149">149</a></span>
@@ -2011,7 +2039,7 @@ Note that values in <code>kwargs</code> will override values in <code>name</code
 <a id="__codelineno-0-189" name="__codelineno-0-189"></a>        <span class="n">name</span><span class="p">,</span> <span class="n">kwargs</span> <span class="o">=</span> <span class="n">name</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s2">&quot;name&quot;</span><span class="p">),</span> <span class="nb">dict</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
 <a id="__codelineno-0-190" name="__codelineno-0-190"></a>    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">name</span><span class="p">)(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
@@ -2029,7 +2057,7 @@ Note that values in <code>kwargs</code> will override values in <code>name</code
   <small>
     
       最后更新:
-      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-07-12 01:05:52</span>
+      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-07-18 05:51:26</span>
       
     
   </small>

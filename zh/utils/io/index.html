@@ -955,6 +955,7 @@
 
 
 
+
 <div class="doc doc-object doc-function">
 
 
@@ -969,9 +970,9 @@
   
       <p>Save any file with supported extensions.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/utils/io.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-38">38</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/utils/io.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-38">38</a></span>
 <span class="normal"><a href="#__codelineno-0-39">39</a></span>
 <span class="normal"><a href="#__codelineno-0-40">40</a></span>
 <span class="normal"><a href="#__codelineno-0-41">41</a></span>
@@ -1043,10 +1044,11 @@
 <a id="__codelineno-0-72" name="__codelineno-0-72"></a>        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Tying to save </span><span class="si">{</span><span class="n">obj</span><span class="si">}</span><span class="s2"> to </span><span class="si">{</span><span class="n">file</span><span class="si">!r}</span><span class="s2"> with unsupported extension=</span><span class="si">{</span><span class="n">extension</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-73" name="__codelineno-0-73"></a>    <span class="k">return</span> <span class="n">file</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -1062,9 +1064,9 @@
   
       <p>Load any file with supported extensions.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/utils/io.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-76"> 76</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/utils/io.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-76"> 76</a></span>
 <span class="normal"><a href="#__codelineno-0-77"> 77</a></span>
 <span class="normal"><a href="#__codelineno-0-78"> 78</a></span>
 <span class="normal"><a href="#__codelineno-0-79"> 79</a></span>
@@ -1122,10 +1124,11 @@
 <a id="__codelineno-0-103" name="__codelineno-0-103"></a>            <span class="k">return</span> <span class="n">pickle</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">fp</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>  <span class="c1"># type: ignore</span>
 <a id="__codelineno-0-104" name="__codelineno-0-104"></a>    <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Tying to load </span><span class="si">{</span><span class="n">file</span><span class="si">!r}</span><span class="s2"> with unsupported extension=</span><span class="si">{</span><span class="n">extension</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -1141,9 +1144,9 @@
   
       <p>Check if <code>obj</code> is JSON serializable.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/utils/io.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-107">107</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/utils/io.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-107">107</a></span>
 <span class="normal"><a href="#__codelineno-0-108">108</a></span>
 <span class="normal"><a href="#__codelineno-0-109">109</a></span>
 <span class="normal"><a href="#__codelineno-0-110">110</a></span>
@@ -1161,7 +1164,7 @@
 <a id="__codelineno-0-114" name="__codelineno-0-114"></a>    <span class="k">except</span> <span class="p">(</span><span class="ne">TypeError</span><span class="p">,</span> <span class="ne">OverflowError</span><span class="p">):</span>
 <a id="__codelineno-0-115" name="__codelineno-0-115"></a>        <span class="k">return</span> <span class="kc">False</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
@@ -1179,7 +1182,7 @@
   <small>
     
       最后更新:
-      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-07-12 01:05:52</span>
+      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-07-18 05:51:26</span>
       
     
   </small>

@@ -1039,8 +1039,8 @@
 
 <a id="danling.runner.BaseRunner"></a>
   <div class="doc doc-contents first">
-      <p class="doc doc-class-bases">
-        Bases: <code><a class="autorefs autorefs-internal" title="danling.runner.runner_base.RunnerBase" href="../../../runner/runner_base/#danling.runner.runner_base.RunnerBase">RunnerBase</a></code></p>
+          <p class="doc doc-class-bases">
+            Bases: <code><a class="autorefs autorefs-internal" title="danling.runner.runner_base.RunnerBase" href="../../../runner/runner_base/#danling.runner.runner_base.RunnerBase">RunnerBase</a></code></p>
 
   
       <p>Base class for running a neural network.</p>
@@ -1048,10 +1048,9 @@
 <p><code>BaseRunner</code> also provides some basic methods, such as, <code>step</code>, <code>state_dict</code>, <code>save_checkpoint</code>, <code>load_checkpoint</code>.</p>
 <p>All runners should inherit <code>BaseRunner</code>.</p>
 
-
-        <details class="quote">
-          <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-          <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-24"> 24</a></span>
+            <details class="quote">
+              <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-24"> 24</a></span>
 <span class="normal"><a href="#__codelineno-0-25"> 25</a></span>
 <span class="normal"><a href="#__codelineno-0-26"> 26</a></span>
 <span class="normal"><a href="#__codelineno-0-27"> 27</a></span>
@@ -1805,11 +1804,12 @@
 <a id="__codelineno-0-399" name="__codelineno-0-399"></a>            <span class="n">best_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;best.json&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-400" name="__codelineno-0-400"></a>            <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">best_path</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-        </details>
+            </details>
 
   
 
   <div class="doc doc-children">
+
 
 
 
@@ -1833,9 +1833,9 @@
   
       <p>Set up logging.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-56">56</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-56">56</a></span>
 <span class="normal"><a href="#__codelineno-0-57">57</a></span>
 <span class="normal"><a href="#__codelineno-0-58">58</a></span>
 <span class="normal"><a href="#__codelineno-0-59">59</a></span>
@@ -1919,10 +1919,11 @@
 <a id="__codelineno-0-96" name="__codelineno-0-96"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="s2">&quot;runner&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-97" name="__codelineno-0-97"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">flush</span> <span class="o">=</span> <span class="k">lambda</span><span class="p">:</span> <span class="p">[</span><span class="n">h</span><span class="o">.</span><span class="n">flush</span><span class="p">()</span> <span class="k">for</span> <span class="n">h</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">handlers</span><span class="p">]</span>  <span class="c1"># type: ignore</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -1938,6 +1939,8 @@
   
       <p>Set up <code>print</code>.</p>
 <p>Only print on a specific <code>process</code> or when <code>force = True</code>.</p>
+
+
 
   <p><strong>Parameters:</strong></p>
   <table>
@@ -1969,9 +1972,9 @@
       <h4 id="danling.runner.base_runner.BaseRunner.init_print--notes">Notes<a class="headerlink" href="#danling.runner.base_runner.BaseRunner.init_print--notes" title="Permanent link">&para;</a></h4>
 <p>If <code>self.state.log = True</code>, the default <code>print</code> function will be override by <code>logging.info</code>.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-99"> 99</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-99"> 99</a></span>
 <span class="normal"><a href="#__codelineno-0-100">100</a></span>
 <span class="normal"><a href="#__codelineno-0-101">101</a></span>
 <span class="normal"><a href="#__codelineno-0-102">102</a></span>
@@ -2029,10 +2032,11 @@
 <a id="__codelineno-0-126" name="__codelineno-0-126"></a>
 <a id="__codelineno-0-127" name="__codelineno-0-127"></a>    <span class="n">__builtin__</span><span class="o">.</span><span class="n">print</span> <span class="o">=</span> <span class="nb">print</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -2048,9 +2052,9 @@
   
       <p>Set up Tensoraoard SummaryWriter.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-129">129</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-129">129</a></span>
 <span class="normal"><a href="#__codelineno-0-130">130</a></span>
 <span class="normal"><a href="#__codelineno-0-131">131</a></span>
 <span class="normal"><a href="#__codelineno-0-132">132</a></span>
@@ -2062,10 +2066,11 @@
 <a id="__codelineno-0-133" name="__codelineno-0-133"></a><span class="sd">    &quot;&quot;&quot;</span>
 <a id="__codelineno-0-134" name="__codelineno-0-134"></a>    <span class="k">raise</span> <span class="ne">NotImplementedError</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -2080,6 +2085,8 @@
   <div class="doc doc-contents ">
   
       <p>Set up random seed.</p>
+
+
 
   <p><strong>Parameters:</strong></p>
   <table>
@@ -2127,9 +2134,9 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p>
     </tbody>
   </table>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-136">136</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-136">136</a></span>
 <span class="normal"><a href="#__codelineno-0-137">137</a></span>
 <span class="normal"><a href="#__codelineno-0-138">138</a></span>
 <span class="normal"><a href="#__codelineno-0-139">139</a></span>
@@ -2181,10 +2188,11 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p>
 <a id="__codelineno-0-160" name="__codelineno-0-160"></a>        <span class="n">np_random</span><span class="o">.</span><span class="n">seed</span><span class="p">(</span><span class="n">seed</span><span class="p">)</span>
 <a id="__codelineno-0-161" name="__codelineno-0-161"></a>    <span class="n">random</span><span class="o">.</span><span class="n">seed</span><span class="p">(</span><span class="n">seed</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -2200,9 +2208,9 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p>
   
       <p>Set up deterministic.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-163">163</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-163">163</a></span>
 <span class="normal"><a href="#__codelineno-0-164">164</a></span>
 <span class="normal"><a href="#__codelineno-0-165">165</a></span>
 <span class="normal"><a href="#__codelineno-0-166">166</a></span>
@@ -2214,10 +2222,11 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p>
 <a id="__codelineno-0-167" name="__codelineno-0-167"></a>
 <a id="__codelineno-0-168" name="__codelineno-0-168"></a>    <span class="k">raise</span> <span class="ne">NotImplementedError</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -2233,9 +2242,9 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p>
   
       <p>Scale learning rate according to <a href="https://arxiv.org/abs/1706.02677">linear scaling rule</a>.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-170">170</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-170">170</a></span>
 <span class="normal"><a href="#__codelineno-0-171">171</a></span>
 <span class="normal"><a href="#__codelineno-0-172">172</a></span>
 <span class="normal"><a href="#__codelineno-0-173">173</a></span>
@@ -2285,10 +2294,11 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p>
 <a id="__codelineno-0-193" name="__codelineno-0-193"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">lr_scale_factor</span> <span class="o">=</span> <span class="n">lr_scale_factor</span>
 <a id="__codelineno-0-194" name="__codelineno-0-194"></a>    <span class="k">return</span> <span class="n">lr</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -2305,6 +2315,8 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p>
       <p>Step optimizer and scheduler.</p>
 <p>This method increment <code>self.state.steps</code>.</p>
 <p>This method also increment <code>self.state.iters</code> when <code>batch_size</code> is specified.</p>
+
+
 
   <p><strong>Parameters:</strong></p>
   <table>
@@ -2334,9 +2346,9 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p>
     </tbody>
   </table>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-196">196</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-196">196</a></span>
 <span class="normal"><a href="#__codelineno-0-197">197</a></span>
 <span class="normal"><a href="#__codelineno-0-198">198</a></span>
 <span class="normal"><a href="#__codelineno-0-199">199</a></span>
@@ -2378,10 +2390,11 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p>
 <a id="__codelineno-0-215" name="__codelineno-0-215"></a>    <span class="k">if</span> <span class="n">batch_size</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
 <a id="__codelineno-0-216" name="__codelineno-0-216"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">iters</span> <span class="o">+=</span> <span class="n">batch_size</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -2397,9 +2410,9 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p>
   
       <p>Return dict of all attributes for checkpoint.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-220">220</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-220">220</a></span>
 <span class="normal"><a href="#__codelineno-0-221">221</a></span>
 <span class="normal"><a href="#__codelineno-0-222">222</a></span>
 <span class="normal"><a href="#__codelineno-0-223">223</a></span>
@@ -2411,10 +2424,11 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p>
 <a id="__codelineno-0-224" name="__codelineno-0-224"></a>
 <a id="__codelineno-0-225" name="__codelineno-0-225"></a>    <span class="k">raise</span> <span class="ne">NotImplementedError</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -2434,9 +2448,9 @@ Defaults to <code>self.state.seed</code> (<code>config.seed</code>).</p>
 the checkpoint will also be copied to <code>self.checkpoint_dir/epoch-{self.state.epochs}.pth</code>.</p>
 <p>If <code>self.state.is_best</code> is <code>True</code>, the checkpoint will also be copied to <code>self.checkpoint_dir/best.pth</code>.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-227">227</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-227">227</a></span>
 <span class="normal"><a href="#__codelineno-0-228">228</a></span>
 <span class="normal"><a href="#__codelineno-0-229">229</a></span>
 <span class="normal"><a href="#__codelineno-0-230">230</a></span>
@@ -2488,10 +2502,11 @@ the checkpoint will also be copied to <code>self.checkpoint_dir/epoch-{self.stat
 <a id="__codelineno-0-251" name="__codelineno-0-251"></a>        <span class="n">best_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;best.pth&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-252" name="__codelineno-0-252"></a>        <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">best_path</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -2506,6 +2521,8 @@ the checkpoint will also be copied to <code>self.checkpoint_dir/epoch-{self.stat
   <div class="doc doc-contents ">
   
       <p>Load info from checkpoint.</p>
+
+
 
   <p><strong>Parameters:</strong></p>
   <table>
@@ -2577,6 +2594,8 @@ Defaults to <code>False</code>.</p>
     </tbody>
   </table>
 
+
+
   <p><strong>Raises:</strong></p>
   <table>
     <thead>
@@ -2604,9 +2623,9 @@ Defaults to <code>False</code>.</p>
   <p>[<code>from_checkpoint</code>][danling.BaseRunner.from_checkpoint]: Build runner from checkpoint.
 [<code>load_pretrained</code>][danling.BaseRunner.load_pretrained]: Load parameters from pretrained checkpoint.</p>
 </details>
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-254">254</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-254">254</a></span>
 <span class="normal"><a href="#__codelineno-0-255">255</a></span>
 <span class="normal"><a href="#__codelineno-0-256">256</a></span>
 <span class="normal"><a href="#__codelineno-0-257">257</a></span>
@@ -2690,10 +2709,11 @@ Defaults to <code>False</code>.</p>
 <a id="__codelineno-0-294" name="__codelineno-0-294"></a>    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="s2">&quot;scheduler&quot;</span> <span class="ow">in</span> <span class="n">ckpt</span><span class="p">:</span>
 <a id="__codelineno-0-295" name="__codelineno-0-295"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">ckpt</span><span class="p">[</span><span class="s2">&quot;scheduler&quot;</span><span class="p">])</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -2708,6 +2728,8 @@ Defaults to <code>False</code>.</p>
   <div class="doc doc-contents ">
   
       <p>Load parameters from pretrained checkpoint.</p>
+
+
 
   <p><strong>Parameters:</strong></p>
   <table>
@@ -2763,6 +2785,8 @@ Defaults to <code>False</code>.</p>
     </tbody>
   </table>
 
+
+
   <p><strong>Raises:</strong></p>
   <table>
     <thead>
@@ -2789,9 +2813,9 @@ Defaults to <code>False</code>.</p>
   <summary>See Also</summary>
   <p>[<code>load_checkpoint</code>][danling.BaseRunner.load_checkpoint]: Load info from checkpoint.</p>
 </details>
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-297">297</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-297">297</a></span>
 <span class="normal"><a href="#__codelineno-0-298">298</a></span>
 <span class="normal"><a href="#__codelineno-0-299">299</a></span>
 <span class="normal"><a href="#__codelineno-0-300">300</a></span>
@@ -2849,10 +2873,11 @@ Defaults to <code>False</code>.</p>
 <a id="__codelineno-0-324" name="__codelineno-0-324"></a>    <span class="n">model</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">unwrap_model</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="p">)</span>
 <a id="__codelineno-0-325" name="__codelineno-0-325"></a>    <span class="n">model</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">ckpt</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -2871,6 +2896,8 @@ Defaults to <code>False</code>.</p>
   <div class="doc doc-contents ">
   
       <p>Build BaseRunner from checkpoint.</p>
+
+
 
   <p><strong>Parameters:</strong></p>
   <table>
@@ -2927,6 +2954,8 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p>
     </tbody>
   </table>
 
+
+
   <p><strong>Returns:</strong></p>
   <table>
     <thead>
@@ -2938,7 +2967,7 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p>
     <tbody>
         <tr>
           <td>
-                <code><a class="autorefs autorefs-internal" title="danling.runner.base_runner.BaseRunner" href="../../../package/#danling.BaseRunner">BaseRunner</a></code>
+                <code><a class="autorefs autorefs-internal" title="danling.runner.base_runner.BaseRunner" href="../../../runner/base_runner/#danling.runner.BaseRunner">BaseRunner</a></code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -2949,9 +2978,9 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p>
     </tbody>
   </table>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-327">327</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-327">327</a></span>
 <span class="normal"><a href="#__codelineno-0-328">328</a></span>
 <span class="normal"><a href="#__codelineno-0-329">329</a></span>
 <span class="normal"><a href="#__codelineno-0-330">330</a></span>
@@ -2991,10 +3020,11 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p>
 <a id="__codelineno-0-345" name="__codelineno-0-345"></a>    <span class="n">runner</span><span class="o">.</span><span class="n">load_checkpoint</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="n">override_state</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 <a id="__codelineno-0-346" name="__codelineno-0-346"></a>    <span class="k">return</span> <span class="n">runner</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -3010,9 +3040,9 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p>
   
       <p>Append result to <code>self.state.results</code>.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-348">348</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-348">348</a></span>
 <span class="normal"><a href="#__codelineno-0-349">349</a></span>
 <span class="normal"><a href="#__codelineno-0-350">350</a></span>
 <span class="normal"><a href="#__codelineno-0-351">351</a></span>
@@ -3034,10 +3064,11 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p>
 <a id="__codelineno-0-357" name="__codelineno-0-357"></a>
 <a id="__codelineno-0-358" name="__codelineno-0-358"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">results</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -3053,9 +3084,9 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p>
   
       <p>Print latest and best result.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-360">360</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-360">360</a></span>
 <span class="normal"><a href="#__codelineno-0-361">361</a></span>
 <span class="normal"><a href="#__codelineno-0-362">362</a></span>
 <span class="normal"><a href="#__codelineno-0-363">363</a></span>
@@ -3071,10 +3102,11 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p>
 <a id="__codelineno-0-366" name="__codelineno-0-366"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;latest result: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">latest_result</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-367" name="__codelineno-0-367"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;best result: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">best_result</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -3092,9 +3124,9 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p>
 <p>This method will save latest and best result to
 <code>self.dir/latest.json</code> and <code>self.dir/best.json</code> respectively.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-369">369</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/base_runner.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-369">369</a></span>
 <span class="normal"><a href="#__codelineno-0-370">370</a></span>
 <span class="normal"><a href="#__codelineno-0-371">371</a></span>
 <span class="normal"><a href="#__codelineno-0-372">372</a></span>
@@ -3158,7 +3190,7 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p>
 <a id="__codelineno-0-399" name="__codelineno-0-399"></a>        <span class="n">best_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;best.json&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-400" name="__codelineno-0-400"></a>        <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">latest_path</span><span class="p">,</span> <span class="n">best_path</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
@@ -3176,7 +3208,7 @@ Defaults to <code>self.checkpoint_dir/latest.pth</code>.</p>
   <small>
     
       Last update:
-      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-07-12 01:05:52</span>
+      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-07-18 05:51:26</span>
       
     
   </small>

@@ -961,8 +961,8 @@
 
 <a id="danling.tensors.PNTensor"></a>
   <div class="doc doc-contents first">
-      <p class="doc doc-class-bases">
-        Bases: <code><span title="torch.Tensor">Tensor</span></code></p>
+          <p class="doc doc-class-bases">
+            Bases: <code><span title="torch.Tensor">Tensor</span></code></p>
 
   
       <p>Wrapper for tensors to be converted to <code>NestedTensor</code>.</p>
@@ -975,10 +975,9 @@ However, it is hard to tell if a batch of <code>Tensor</code> should be stacked 
 <p>Convert tensors that will be converted to <code>NestedTensor</code> to a <code>PNTensor</code>,
 and all you need to do is to convert <code>PNTensor</code> to <code>NestedTensor</code> in <code>collate_fn</code>.</p>
 
-
-        <details class="quote">
-          <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-          <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-14">14</a></span>
+            <details class="quote">
+              <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-14">14</a></span>
 <span class="normal"><a href="#__codelineno-0-15">15</a></span>
 <span class="normal"><a href="#__codelineno-0-16">16</a></span>
 <span class="normal"><a href="#__codelineno-0-17">17</a></span>
@@ -1094,7 +1093,7 @@ and all you need to do is to convert <code>PNTensor</code> to <code>NestedTensor
 <a id="__codelineno-0-70" name="__codelineno-0-70"></a>
 <a id="__codelineno-0-71" name="__codelineno-0-71"></a>        <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">ones_like</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>  <span class="c1"># pylint: disable=E1101</span>
 </code></pre></div></td></tr></table></div>
-        </details>
+            </details>
 
   
 
@@ -1124,6 +1123,8 @@ and all you need to do is to convert <code>PNTensor</code> to <code>NestedTensor
   
       <p>Identical to <code>self</code>.</p>
 
+
+
   <p><strong>Returns:</strong></p>
   <table>
     <thead>
@@ -1145,6 +1146,8 @@ and all you need to do is to convert <code>PNTensor</code> to <code>NestedTensor
         </tr>
     </tbody>
   </table>
+
+
 
 <p><strong>Examples:</strong></p>
     
@@ -1182,6 +1185,8 @@ and all you need to do is to convert <code>PNTensor</code> to <code>NestedTensor
   
       <p>Identical to <code>torch.ones_like(self)</code>.</p>
 
+
+
   <p><strong>Returns:</strong></p>
   <table>
     <thead>
@@ -1203,6 +1208,8 @@ and all you need to do is to convert <code>PNTensor</code> to <code>NestedTensor
         </tr>
     </tbody>
   </table>
+
+
 
 <p><strong>Examples:</strong></p>
     
@@ -1233,7 +1240,7 @@ and all you need to do is to convert <code>PNTensor</code> to <code>NestedTensor
   <small>
     
       最后更新:
-      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-07-12 01:05:52</span>
+      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-07-18 05:51:26</span>
       
     
   </small>

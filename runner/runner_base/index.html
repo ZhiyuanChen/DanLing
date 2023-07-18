@@ -1178,6 +1178,8 @@
 <p>It defines all basic attributes and relevant properties such as <code>scores</code>, <code>progress</code>, etc.</p>
 <p><code>RunnerBase</code> also defines basic IO operations such as <code>save</code>, <code>load</code>, <code>json</code>, <code>yaml</code>, etc.</p>
 
+
+
   <p><strong>Model:</strong></p>
   <table>
     <thead>
@@ -1235,6 +1237,8 @@
     </tbody>
   </table>
 
+
+
   <p><strong>Data:</strong></p>
   <table>
     <thead>
@@ -1281,7 +1285,7 @@
         <tr>
           <td><code>batch_size</code></td>
           <td>
-                <code>int, property</code>
+                <code>(int, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1292,7 +1296,7 @@
         <tr>
           <td><code>batch_size_equivalent</code></td>
           <td>
-                <code>int, property</code>
+                <code>(int, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1304,6 +1308,8 @@
   </table>
       <p><code>datasets</code>, <code>datasamplers</code>, <code>dataloaders</code> should be a dict with the same keys.
 Their keys should be <code>split</code> (e.g. <code>train</code>, <code>val</code>, <code>test</code>).</p>
+
+
 
   <p><strong>Progress:</strong></p>
   <table>
@@ -1318,7 +1324,7 @@ Their keys should be <code>split</code> (e.g. <code>train</code>, <code>val</cod
         <tr>
           <td><code>progress</code></td>
           <td>
-                <code>float, property</code>
+                <code>(float, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1328,6 +1334,8 @@ Their keys should be <code>split</code> (e.g. <code>train</code>, <code>val</cod
         </tr>
     </tbody>
   </table>
+
+
 
   <p><strong>Results:</strong></p>
   <table>
@@ -1342,7 +1350,7 @@ Their keys should be <code>split</code> (e.g. <code>train</code>, <code>val</cod
         <tr>
           <td><code>latest_result</code></td>
           <td>
-                <code><span title="chanfig.NestedDict">NestedDict</span>, property</code>
+                <code>(<span title="chanfig.NestedDict">NestedDict</span>, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1354,7 +1362,7 @@ should be in the form of <code>{subset: {index: score}}</code>.</p>
         <tr>
           <td><code>best_result</code></td>
           <td>
-                <code><span title="chanfig.NestedDict">NestedDict</span>, property</code>
+                <code>(<span title="chanfig.NestedDict">NestedDict</span>, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1365,7 +1373,7 @@ should be in the form of <code>{subset: {index: score}}</code>.</p>
         <tr>
           <td><code>scores</code></td>
           <td>
-                <code>List[float], property</code>
+                <code>(List[float], property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1376,7 +1384,7 @@ should be in the form of <code>{subset: {index: score}}</code>.</p>
         <tr>
           <td><code>latest_score</code></td>
           <td>
-                <code>float, property</code>
+                <code>(float, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1387,7 +1395,7 @@ should be in the form of <code>{subset: {index: score}}</code>.</p>
         <tr>
           <td><code>best_score</code></td>
           <td>
-                <code>float, property</code>
+                <code>(float, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1422,7 +1430,7 @@ Defaults to <code>"loss"</code>.</p>
         <tr>
           <td><code>is_best</code></td>
           <td>
-                <code>bool, property</code>
+                <code>(bool, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1432,6 +1440,8 @@ Defaults to <code>"loss"</code>.</p>
         </tr>
     </tbody>
   </table>
+
+
 
   <p><strong>IO:</strong></p>
   <table>
@@ -1446,7 +1456,7 @@ Defaults to <code>"loss"</code>.</p>
         <tr>
           <td><code>dir</code></td>
           <td>
-                <code>str, property</code>
+                <code>(str, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1458,7 +1468,7 @@ Defaults to <code>os.path.join(self.project_root, f"{self.name}-{self.id}")</cod
         <tr>
           <td><code>checkpoint_dir</code></td>
           <td>
-                <code>str, property</code>
+                <code>(str, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1469,7 +1479,7 @@ Defaults to <code>os.path.join(self.project_root, f"{self.name}-{self.id}")</cod
         <tr>
           <td><code>log_path</code></td>
           <td>
-                <code>str, property</code>
+                <code>(str, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1492,6 +1502,8 @@ Defaults to <code>"checkpoints"</code>.</p>
     </tbody>
   </table>
 
+
+
   <p><strong>Parallel Training:</strong></p>
   <table>
     <thead>
@@ -1505,7 +1517,7 @@ Defaults to <code>"checkpoints"</code>.</p>
         <tr>
           <td><code>world_size</code></td>
           <td>
-                <code>int, property</code>
+                <code>(int, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1516,7 +1528,7 @@ Defaults to <code>"checkpoints"</code>.</p>
         <tr>
           <td><code>rank</code></td>
           <td>
-                <code>int, property</code>
+                <code>(int, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1527,7 +1539,7 @@ Defaults to <code>"checkpoints"</code>.</p>
         <tr>
           <td><code>local_rank</code></td>
           <td>
-                <code>int, property</code>
+                <code>(int, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1538,7 +1550,7 @@ Defaults to <code>"checkpoints"</code>.</p>
         <tr>
           <td><code>distributed</code></td>
           <td>
-                <code>bool, property</code>
+                <code>(bool, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1549,7 +1561,7 @@ Defaults to <code>"checkpoints"</code>.</p>
         <tr>
           <td><code>is_main_process</code></td>
           <td>
-                <code>bool, property</code>
+                <code>(bool, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1560,7 +1572,7 @@ Defaults to <code>"checkpoints"</code>.</p>
         <tr>
           <td><code>is_local_main_process</code></td>
           <td>
-                <code>bool, property</code>
+                <code>(bool, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1570,6 +1582,8 @@ Defaults to <code>"checkpoints"</code>.</p>
         </tr>
     </tbody>
   </table>
+
+
 
   <p><strong>logging:</strong></p>
   <table>
@@ -1584,7 +1598,7 @@ Defaults to <code>"checkpoints"</code>.</p>
         <tr>
           <td><code>logger</code></td>
           <td>
-                <code><span title="logging.config">logging</span>.<span title="logging.config.Logger">Logger</span> | None</code>
+                <code>logging.<span title="logging.Logger">Logger</span> | None</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1617,10 +1631,9 @@ and is meant for demonstrating all attributes and properties only.</p>
   <p><a class="autorefs autorefs-internal" href="../runner_state/#danling.runner.runner_state.RunnerState"><code>RunnerState</code></a>: The runeer base that stores runtime information.
 <a class="autorefs autorefs-internal" href="../base_runner/#danling.runner.BaseRunner"><code>BaseRunner</code></a>: The base runner class.</p>
 </details>
-
-        <details class="quote">
-          <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-          <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-26"> 26</a></span>
+            <details class="quote">
+              <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-26"> 26</a></span>
 <span class="normal"><a href="#__codelineno-0-27"> 27</a></span>
 <span class="normal"><a href="#__codelineno-0-28"> 28</a></span>
 <span class="normal"><a href="#__codelineno-0-29"> 29</a></span>
@@ -2592,7 +2605,7 @@ and is meant for demonstrating all attributes and properties only.</p>
 <a id="__codelineno-0-510" name="__codelineno-0-510"></a>        <span class="n">lines</span> <span class="o">=</span> <span class="n">first</span> <span class="o">+</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span> <span class="o">+</span> <span class="n">lines</span>
 <a id="__codelineno-0-511" name="__codelineno-0-511"></a>        <span class="k">return</span> <span class="n">lines</span>
 </code></pre></div></td></tr></table></div>
-        </details>
+            </details>
 
   
 
@@ -2627,6 +2640,8 @@ and is meant for demonstrating all attributes and properties only.</p>
   <p>If <code>train</code> is in <code>dataloaders</code>, then <code>batch_size</code> is the batch size of <code>train</code>.
 Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p>
 </details>
+
+
   <p><strong>Returns:</strong></p>
   <table>
     <thead>
@@ -2670,6 +2685,8 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
   
       <p>Actual batch size.</p>
 
+
+
   <p><strong>Returns:</strong></p>
   <table>
     <thead>
@@ -2712,6 +2729,8 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
   <div class="doc doc-contents ">
   
       <p>Accumulated steps.</p>
+
+
 
   <p><strong>Returns:</strong></p>
   <table>
@@ -2903,6 +2922,8 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
   
       <p>Training Progress.</p>
 
+
+
   <p><strong>Returns:</strong></p>
   <table>
     <thead>
@@ -2924,6 +2945,8 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
         </tr>
     </tbody>
   </table>
+
+
 
   <p><strong>Raises:</strong></p>
   <table>
@@ -2968,6 +2991,8 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
   
       <p>Function to determine the best score from a list of scores.</p>
 <p>Subclass can override this method to accommodate needs, such as <code>min</code>.</p>
+
+
 
   <p><strong>Returns:</strong></p>
   <table>
@@ -3128,6 +3153,7 @@ It is useful to determine the best model and the best hyper-parameters.</p>
 
 
 
+
 <div class="doc doc-object doc-function">
 
 
@@ -3145,9 +3171,9 @@ It is useful to determine the best model and the best hyper-parameters.</p>
 but with additional arguments to allow it save only on the main process.
 Moreover, any error raised by <code>Runner.save</code> will be caught and logged.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-221">221</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-221">221</a></span>
 <span class="normal"><a href="#__codelineno-0-222">222</a></span>
 <span class="normal"><a href="#__codelineno-0-223">223</a></span>
 <span class="normal"><a href="#__codelineno-0-224">224</a></span>
@@ -3177,10 +3203,11 @@ Moreover, any error raised by <code>Runner.save</code> will be caught and logged
 <a id="__codelineno-0-234" name="__codelineno-0-234"></a>        <span class="k">return</span> <span class="n">save</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">file</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
 <a id="__codelineno-0-235" name="__codelineno-0-235"></a>    <span class="k">return</span> <span class="n">file</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -3201,9 +3228,9 @@ Moreover, any error raised by <code>Runner.save</code> will be caught and logged
       <p>Load any file with supported extensions.</p>
 <p><code>Runner.load</code> is identical to <code>dl.load</code>.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-237">237</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-237">237</a></span>
 <span class="normal"><a href="#__codelineno-0-238">238</a></span>
 <span class="normal"><a href="#__codelineno-0-239">239</a></span>
 <span class="normal"><a href="#__codelineno-0-240">240</a></span>
@@ -3221,10 +3248,11 @@ Moreover, any error raised by <code>Runner.save</code> will be caught and logged
 <a id="__codelineno-0-244" name="__codelineno-0-244"></a>
 <a id="__codelineno-0-245" name="__codelineno-0-245"></a>    <span class="k">return</span> <span class="n">load</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -3239,6 +3267,8 @@ Moreover, any error raised by <code>Runner.save</code> will be caught and logged
   <div class="doc doc-contents ">
   
       <p>Convert state to Mapping.</p>
+
+
 
   <p><strong>Parameters:</strong></p>
   <table>
@@ -3262,15 +3292,15 @@ Moreover, any error raised by <code>Runner.save</code> will be caught and logged
             </div>
           </td>
           <td>
-                <code>dict</code>
+                <code><a class="autorefs autorefs-internal" title="danling.runner.runner_base.RunnerBase.dict" href="#danling.runner.runner_base.RunnerBase.dict">dict</a></code>
           </td>
         </tr>
     </tbody>
   </table>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-247">247</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-247">247</a></span>
 <span class="normal"><a href="#__codelineno-0-248">248</a></span>
 <span class="normal"><a href="#__codelineno-0-249">249</a></span>
 <span class="normal"><a href="#__codelineno-0-250">250</a></span>
@@ -3292,10 +3322,11 @@ Moreover, any error raised by <code>Runner.save</code> will be caught and logged
 <a id="__codelineno-0-256" name="__codelineno-0-256"></a>
 <a id="__codelineno-0-257" name="__codelineno-0-257"></a>    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">dict</span><span class="p">(</span><span class="bp">cls</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -3311,9 +3342,9 @@ Moreover, any error raised by <code>Runner.save</code> will be caught and logged
   
       <p>Dump Runner State to json file.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-259">259</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-259">259</a></span>
 <span class="normal"><a href="#__codelineno-0-260">260</a></span>
 <span class="normal"><a href="#__codelineno-0-261">261</a></span>
 <span class="normal"><a href="#__codelineno-0-262">262</a></span>
@@ -3329,10 +3360,11 @@ Moreover, any error raised by <code>Runner.save</code> will be caught and logged
 <a id="__codelineno-0-265" name="__codelineno-0-265"></a>    <span class="k">if</span> <span class="n">main_process_only</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_main_process</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">main_process_only</span><span class="p">:</span>
 <a id="__codelineno-0-266" name="__codelineno-0-266"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">json</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -3354,9 +3386,9 @@ Moreover, any error raised by <code>Runner.save</code> will be caught and logged
 <p>This function calls <code>self.from_jsons()</code> to construct object from json string.
 You may overwrite <code>from_jsons</code> in case something is not json serializable.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-268">268</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-268">268</a></span>
 <span class="normal"><a href="#__codelineno-0-269">269</a></span>
 <span class="normal"><a href="#__codelineno-0-270">270</a></span>
 <span class="normal"><a href="#__codelineno-0-271">271</a></span>
@@ -3378,10 +3410,11 @@ You may overwrite <code>from_jsons</code> in case something is not json serializ
 <a id="__codelineno-0-277" name="__codelineno-0-277"></a>    <span class="k">with</span> <span class="n">FlatDict</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">file</span><span class="p">)</span> <span class="k">as</span> <span class="n">fp</span><span class="p">:</span>  <span class="c1"># pylint: disable=C0103</span>
 <a id="__codelineno-0-278" name="__codelineno-0-278"></a>        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">from_jsons</span><span class="p">(</span><span class="n">fp</span><span class="o">.</span><span class="n">read</span><span class="p">(),</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -3397,9 +3430,9 @@ You may overwrite <code>from_jsons</code> in case something is not json serializ
   
       <p>Dump Runner State to json string.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-280">280</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-280">280</a></span>
 <span class="normal"><a href="#__codelineno-0-281">281</a></span>
 <span class="normal"><a href="#__codelineno-0-282">282</a></span>
 <span class="normal"><a href="#__codelineno-0-283">283</a></span>
@@ -3411,10 +3444,11 @@ You may overwrite <code>from_jsons</code> in case something is not json serializ
 <a id="__codelineno-0-284" name="__codelineno-0-284"></a>
 <a id="__codelineno-0-285" name="__codelineno-0-285"></a>    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">jsons</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -3434,9 +3468,9 @@ You may overwrite <code>from_jsons</code> in case something is not json serializ
   
       <p>Construct Runner from json string.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-287">287</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-287">287</a></span>
 <span class="normal"><a href="#__codelineno-0-288">288</a></span>
 <span class="normal"><a href="#__codelineno-0-289">289</a></span>
 <span class="normal"><a href="#__codelineno-0-290">290</a></span>
@@ -3450,10 +3484,11 @@ You may overwrite <code>from_jsons</code> in case something is not json serializ
 <a id="__codelineno-0-292" name="__codelineno-0-292"></a>
 <a id="__codelineno-0-293" name="__codelineno-0-293"></a>    <span class="k">return</span> <span class="bp">cls</span><span class="p">(</span><span class="n">Config</span><span class="o">.</span><span class="n">from_jsons</span><span class="p">(</span><span class="n">string</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">))</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -3469,9 +3504,9 @@ You may overwrite <code>from_jsons</code> in case something is not json serializ
   
       <p>Dump Runner State to yaml file.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-295">295</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-295">295</a></span>
 <span class="normal"><a href="#__codelineno-0-296">296</a></span>
 <span class="normal"><a href="#__codelineno-0-297">297</a></span>
 <span class="normal"><a href="#__codelineno-0-298">298</a></span>
@@ -3487,10 +3522,11 @@ You may overwrite <code>from_jsons</code> in case something is not json serializ
 <a id="__codelineno-0-301" name="__codelineno-0-301"></a>    <span class="k">if</span> <span class="n">main_process_only</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_main_process</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">main_process_only</span><span class="p">:</span>
 <a id="__codelineno-0-302" name="__codelineno-0-302"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">yaml</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -3512,9 +3548,9 @@ You may overwrite <code>from_jsons</code> in case something is not json serializ
 <p>This function calls <code>self.from_yamls()</code> to construct object from yaml string.
 You may overwrite <code>from_yamls</code> in case something is not yaml serializable.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-304">304</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-304">304</a></span>
 <span class="normal"><a href="#__codelineno-0-305">305</a></span>
 <span class="normal"><a href="#__codelineno-0-306">306</a></span>
 <span class="normal"><a href="#__codelineno-0-307">307</a></span>
@@ -3536,10 +3572,11 @@ You may overwrite <code>from_yamls</code> in case something is not yaml serializ
 <a id="__codelineno-0-313" name="__codelineno-0-313"></a>    <span class="k">with</span> <span class="n">FlatDict</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">file</span><span class="p">)</span> <span class="k">as</span> <span class="n">fp</span><span class="p">:</span>  <span class="c1"># pylint: disable=C0103</span>
 <a id="__codelineno-0-314" name="__codelineno-0-314"></a>        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">from_yamls</span><span class="p">(</span><span class="n">fp</span><span class="o">.</span><span class="n">read</span><span class="p">(),</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -3555,9 +3592,9 @@ You may overwrite <code>from_yamls</code> in case something is not yaml serializ
   
       <p>Dump Runner State to yaml string.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-316">316</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-316">316</a></span>
 <span class="normal"><a href="#__codelineno-0-317">317</a></span>
 <span class="normal"><a href="#__codelineno-0-318">318</a></span>
 <span class="normal"><a href="#__codelineno-0-319">319</a></span>
@@ -3569,10 +3606,11 @@ You may overwrite <code>from_yamls</code> in case something is not yaml serializ
 <a id="__codelineno-0-320" name="__codelineno-0-320"></a>
 <a id="__codelineno-0-321" name="__codelineno-0-321"></a>    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">yamls</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -3592,9 +3630,9 @@ You may overwrite <code>from_yamls</code> in case something is not yaml serializ
   
       <p>Construct Runner from yaml string.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-323">323</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-323">323</a></span>
 <span class="normal"><a href="#__codelineno-0-324">324</a></span>
 <span class="normal"><a href="#__codelineno-0-325">325</a></span>
 <span class="normal"><a href="#__codelineno-0-326">326</a></span>
@@ -3608,10 +3646,11 @@ You may overwrite <code>from_yamls</code> in case something is not yaml serializ
 <a id="__codelineno-0-328" name="__codelineno-0-328"></a>
 <a id="__codelineno-0-329" name="__codelineno-0-329"></a>    <span class="k">return</span> <span class="bp">cls</span><span class="p">(</span><span class="n">Config</span><span class="o">.</span><span class="n">from_yamls</span><span class="p">(</span><span class="n">string</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">))</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -3627,9 +3666,9 @@ You may overwrite <code>from_yamls</code> in case something is not yaml serializ
   
       <p>Directory of the run.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-428">428</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-428">428</a></span>
 <span class="normal"><a href="#__codelineno-0-429">429</a></span>
 <span class="normal"><a href="#__codelineno-0-430">430</a></span>
 <span class="normal"><a href="#__codelineno-0-431">431</a></span>
@@ -3649,10 +3688,11 @@ You may overwrite <code>from_yamls</code> in case something is not yaml serializ
 <a id="__codelineno-0-436" name="__codelineno-0-436"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">dir</span>
 <a id="__codelineno-0-437" name="__codelineno-0-437"></a>    <span class="k">return</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">project_root</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -3668,9 +3708,9 @@ You may overwrite <code>from_yamls</code> in case something is not yaml serializ
   
       <p>Path of log file.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-439">439</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-439">439</a></span>
 <span class="normal"><a href="#__codelineno-0-440">440</a></span>
 <span class="normal"><a href="#__codelineno-0-441">441</a></span>
 <span class="normal"><a href="#__codelineno-0-442">442</a></span>
@@ -3688,10 +3728,11 @@ You may overwrite <code>from_yamls</code> in case something is not yaml serializ
 <a id="__codelineno-0-446" name="__codelineno-0-446"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">log_path</span>
 <a id="__codelineno-0-447" name="__codelineno-0-447"></a>    <span class="k">return</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="s2">&quot;run.log&quot;</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
+
 
 <div class="doc doc-object doc-function">
 
@@ -3707,9 +3748,9 @@ You may overwrite <code>from_yamls</code> in case something is not yaml serializ
   
       <p>Directory of checkpoints.</p>
 
-      <details class="quote">
-        <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-        <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-449">449</a></span>
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-449">449</a></span>
 <span class="normal"><a href="#__codelineno-0-450">450</a></span>
 <span class="normal"><a href="#__codelineno-0-451">451</a></span>
 <span class="normal"><a href="#__codelineno-0-452">452</a></span>
@@ -3729,7 +3770,7 @@ You may overwrite <code>from_yamls</code> in case something is not yaml serializ
 <a id="__codelineno-0-457" name="__codelineno-0-457"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">checkpoint_dir</span>
 <a id="__codelineno-0-458" name="__codelineno-0-458"></a>    <span class="k">return</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dir</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir_name</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-      </details>
+          </details>
   </div>
 
 </div>
@@ -3747,7 +3788,7 @@ You may overwrite <code>from_yamls</code> in case something is not yaml serializ
   <small>
     
       最后更新:
-      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-07-12 01:05:52</span>
+      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-07-18 05:51:26</span>
       
     
   </small>

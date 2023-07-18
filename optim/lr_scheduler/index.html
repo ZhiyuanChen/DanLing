@@ -947,8 +947,8 @@
 
 <a id="danling.optim.LRScheduler"></a>
   <div class="doc doc-contents first">
-      <p class="doc doc-class-bases">
-        Bases: <code><span title="torch.optim.lr_scheduler">lr_scheduler</span>.<span title="torch.optim.lr_scheduler._LRScheduler">_LRScheduler</span></code></p>
+          <p class="doc doc-class-bases">
+            Bases: <code><span title="torch.optim.lr_scheduler">lr_scheduler</span>.<span title="torch.optim.lr_scheduler._LRScheduler">_LRScheduler</span></code></p>
 
   
       <p>General learning rate scheduler.</p>
@@ -959,6 +959,8 @@ with total progress (range from 0 to 1), and everything else will be done automa
 <p>Moreover, this class has warmup and cooldown built-in.
 By default, the first 5% and last 20% of training steps will be warmup and cooldown respectively.
 You can alternate by passing <code>warmup_steps</code> and <code>cooldown_steps</code>, or disable them by setting them to 0.</p>
+
+
 
   <p><strong>Parameters:</strong></p>
   <table>
@@ -1122,6 +1124,8 @@ Defaults to &ldquo;percentile&rdquo;.</p>
     </tbody>
   </table>
 
+
+
 <p><strong>Examples:</strong></p>
     <div class="highlight"><span class="filename">Python Console Session</span><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span> <span class="nn">danling.optim</span> <span class="kn">import</span> <span class="n">LRScheduler</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="gp">&gt;&gt;&gt; </span><span class="kn">import</span> <span class="nn">torch</span>
@@ -1143,10 +1147,9 @@ Defaults to &ldquo;percentile&rdquo;.</p>
 <a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="go">[0.3330753446, 0.0187302031, 0.000533897, 3.00232e-05, 1e-09]</span>
 </code></pre></div>
 
-
-        <details class="quote">
-          <summary>Source code in <code>danling/optim/lr_scheduler/lr_scheduler.py</code></summary>
-          <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-8">  8</a></span>
+            <details class="quote">
+              <summary>Source code in <code>danling/optim/lr_scheduler/lr_scheduler.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-8">  8</a></span>
 <span class="normal"><a href="#__codelineno-0-9">  9</a></span>
 <span class="normal"><a href="#__codelineno-0-10"> 10</a></span>
 <span class="normal"><a href="#__codelineno-0-11"> 11</a></span>
@@ -1458,7 +1461,7 @@ Defaults to &ldquo;percentile&rdquo;.</p>
 <a id="__codelineno-0-162" name="__codelineno-0-162"></a>            <span class="sa">f</span><span class="s2">&quot;warmup_steps=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">warmup_steps</span><span class="si">}</span><span class="s2">, cooldown_steps=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">cooldown_steps</span><span class="si">}</span><span class="s2">)&quot;</span>
 <a id="__codelineno-0-163" name="__codelineno-0-163"></a>        <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
-        </details>
+            </details>
 
   
 
@@ -1485,7 +1488,7 @@ Defaults to &ldquo;percentile&rdquo;.</p>
   <small>
     
       最后更新:
-      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-07-12 01:05:52</span>
+      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-07-18 05:51:26</span>
       
     
   </small>

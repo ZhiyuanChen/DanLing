@@ -942,8 +942,8 @@
 
 <a id="danling.runner.runner_state.RunnerState"></a>
   <div class="doc doc-contents first">
-      <p class="doc doc-class-bases">
-        Bases: <code><span title="chanfig.NestedDict">NestedDict</span></code></p>
+          <p class="doc doc-class-bases">
+            Bases: <code><span title="chanfig.NestedDict">NestedDict</span></code></p>
 
   
       <p><code>RunnerState</code> is a <code>NestedDict</code> that contains all states of a <code>Runner</code>.</p>
@@ -952,6 +952,8 @@ from a state and corresponding weights or even restart a run from a state.</p>
 <p><code>RunnerState</code> is also designed to be serialisable and hashable, so that you can save it to a file.
 <code>RunnerState</code> is saved in checkpoint together with weights by default.</p>
 <p>Since <code>RunnerState</code> is a <code>NestedDict</code>, you can access its attributes by <code>state["key"]</code> or <code>state.key</code>.</p>
+
+
 
   <p><strong>General:</strong></p>
   <table>
@@ -977,7 +979,7 @@ from a state and corresponding weights or even restart a run from a state.</p>
         <tr>
           <td><code>uuid</code></td>
           <td>
-                <code><span title="uuid.UUID">UUID</span>, property</code>
+                <code>(<span title="uuid.UUID">UUID</span>, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1010,7 +1012,7 @@ from a state and corresponding weights or even restart a run from a state.</p>
         <tr>
           <td><code>run_uuid</code></td>
           <td>
-                <code><span title="uuid.UUID">UUID</span>, property</code>
+                <code>(<span title="uuid.UUID">UUID</span>, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1044,7 +1046,7 @@ Defaults to <code>"xxxxxxxxxxxxxxxx"</code> if Runner not under a git repo or gi
         <tr>
           <td><code>experiment_uuid</code></td>
           <td>
-                <code><span title="uuid.UUID">UUID</span>, property</code>
+                <code>(<span title="uuid.UUID">UUID</span>, property)</code>
           </td>
           <td>
             <div class="doc-md-description">
@@ -1090,6 +1092,8 @@ Defaults to <code>False</code>.</p>
         </tr>
     </tbody>
   </table>
+
+
 
   <p><strong>Progress:</strong></p>
   <table>
@@ -1175,6 +1179,8 @@ Note that <code>epoch_end</code> not initialised since this variable may not app
   </table>
       <p>In general you should only use one of <code>iter_end</code>, <code>step_end</code>, <code>epoch_end</code> to indicate the length of running.</p>
 
+
+
   <p><strong>Results:</strong></p>
   <table>
     <thead>
@@ -1232,6 +1238,8 @@ A typical <code>result</code> might look like this:
 <p><code>scores</code> are usually a list of <code>float</code>, and are dynamically extracted from <code>results</code> by <code>index_set</code> and <code>index</code>.
 If <code>index_set = "val"</code>, <code>index = "accuracy"</code>, then <code>scores = 0.9</code>.</p>
 
+
+
   <p><strong>IO:</strong></p>
   <table>
     <thead>
@@ -1262,6 +1270,8 @@ Defaults to <code>"experiments"</code>.</p>
 <p><code>checkpoint_dir_name</code> is relative to <code>dir</code>, and is passed to generate <code>checkpoint_dir</code>
 (<code>checkpoint_dir = os.path.join(dir, checkpoint_dir_name)</code>).
 In practice, <code>checkpoint_dir_name</code> is rarely called.</p>
+
+
 
   <p><strong>logging:</strong></p>
   <table>
@@ -1333,10 +1343,9 @@ Defaults to -1, never save intermediate checkpoints.</p>
   <p>[<code>RunnerBase</code>][danling.runner.runner_base.RunnerBase]: The runeer state that stores critical information.
 [<code>BaseRunner</code>][danling.runner.BaseRunner]: The base runner class.</p>
 </details>
-
-        <details class="quote">
-          <summary>Source code in <code>danling/runner/runner_state.py</code></summary>
-          <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-24"> 24</a></span>
+            <details class="quote">
+              <summary>Source code in <code>danling/runner/runner_state.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-24"> 24</a></span>
 <span class="normal"><a href="#__codelineno-0-25"> 25</a></span>
 <span class="normal"><a href="#__codelineno-0-26"> 26</a></span>
 <span class="normal"><a href="#__codelineno-0-27"> 27</a></span>
@@ -1774,7 +1783,7 @@ Defaults to -1, never save intermediate checkpoints.</p>
 <a id="__codelineno-0-241" name="__codelineno-0-241"></a>        <span class="n">state</span><span class="p">:</span> <span class="n">NestedDict</span> <span class="o">=</span> <span class="n">NestedDict</span><span class="p">({</span><span class="n">k</span><span class="p">:</span> <span class="n">v</span> <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">dict</span><span class="p">()</span><span class="o">.</span><span class="n">items</span><span class="p">()</span> <span class="k">if</span> <span class="n">k</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">ignored_keys_in_hash</span><span class="p">})</span>
 <a id="__codelineno-0-242" name="__codelineno-0-242"></a>        <span class="k">return</span> <span class="nb">hash</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">yamls</span><span class="p">())</span>
 </code></pre></div></td></tr></table></div>
-        </details>
+            </details>
 
   
 
@@ -1864,7 +1873,7 @@ Defaults to -1, never save intermediate checkpoints.</p>
   <small>
     
       Last update:
-      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-07-12 01:05:52</span>
+      <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime">2023-07-18 05:51:26</span>
       
     
   </small>
