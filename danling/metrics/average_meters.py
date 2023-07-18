@@ -1,4 +1,4 @@
-from chanfig import DefaultDict
+from chanfig import DefaultDict, FlatDict
 
 from .average_meter import AverageMeter
 
@@ -36,9 +36,24 @@ class AverageMeters(DefaultDict):
     """
 
     def __init__(self, *args, **kwargs) -> None:
-        if "default_factory" not in kwargs:
-            kwargs["default_factory"] = AverageMeter
+        kwargs.setdefault("default_factory", AverageMeter)
         super().__init__(*args, **kwargs)
+
+    @property
+    def val(self) -> FlatDict[str, float]:
+        return FlatDict({key: meter.val for key, meter in self.items()})
+
+    @property
+    def avg(self) -> FlatDict[str, float]:
+        return FlatDict({key: meter.avg for key, meter in self.items()})
+
+    @property
+    def sum(self) -> FlatDict[str, float]:
+        return FlatDict({key: meter.sum for key, meter in self.items()})
+
+    @property
+    def count(self) -> FlatDict[str, int]:
+        return FlatDict({key: meter.count for key, meter in self.items()})
 
     def reset(self) -> None:
         r"""
@@ -98,3 +113,6 @@ class AverageMeters(DefaultDict):
 
         for meter in self.values():
             meter.update(val, n)
+
+    def __format__(self, format_spec) -> str:
+        return "\n".join(f"{key}: {meter.__format__(format_spec)}" for key, meter in self.items())

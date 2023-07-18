@@ -34,9 +34,9 @@ class AverageMeter:
     ```
     """
 
-    val: int = 0
+    val: float = 0
     avg: float = 0
-    sum: int = 0
+    sum: float = 0
     count: int = 0
 
     def __init__(self) -> None:
@@ -103,3 +103,6 @@ class AverageMeter:
         self.sum += val * n
         self.count += n
         self.avg = self.sum / self.count
+
+    def __format__(self, format_spec) -> str:
+        return f"{self.val.__format__(format_spec)} ({self.avg.__format__(format_spec)})"
