@@ -60,20 +60,17 @@ class AverageMeters(DefaultDict):
         Resets all meters.
 
         Examples:
-        ```python
-        >>> meters = AverageMeters()
-        >>> meters.loss.update(0.7)
-        >>> meters.loss.val
-        0.7
-        >>> meters.loss.avg
-        0.7
-        >>> meters.reset()
-        >>> meters.loss.val
-        0
-        >>> meters.loss.avg
-        0
-
-        ```
+            >>> meters = AverageMeters()
+            >>> meters.loss.update(0.7)
+            >>> meters.loss.val
+            0.7
+            >>> meters.loss.avg
+            0.7
+            >>> meters.reset()
+            >>> meters.loss.val
+            0
+            >>> meters.loss.avg
+            0
         """
 
         for meter in self.values():
@@ -91,24 +88,21 @@ class AverageMeters(DefaultDict):
             This function is **NOT** recommended to use, as it alters all meters in the bank.
 
         Examples:
-        ```python
-        >>> meters = AverageMeters()
-        >>> meters.loss.update(0.7)
-        >>> meters.loss.val
-        0.7
-        >>> meters.loss.avg
-        0.7
-        >>> meters.update(0.9)
-        >>> meters.loss.val
-        0.9
-        >>> meters.loss.avg
-        0.8
-        >>> meters.loss.sum
-        1.6
-        >>> meters.loss.count
-        2
-
-        ```
+            >>> meters = AverageMeters()
+            >>> meters.loss.update(0.7)
+            >>> meters.loss.val
+            0.7
+            >>> meters.loss.avg
+            0.7
+            >>> meters.update(0.9)
+            >>> meters.loss.val
+            0.9
+            >>> meters.loss.avg
+            0.8
+            >>> meters.loss.sum
+            1.6
+            >>> meters.loss.count
+            2
         """
 
         for meter in self.values():

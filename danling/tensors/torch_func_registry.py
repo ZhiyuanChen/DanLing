@@ -23,18 +23,15 @@ class TorchFuncRegistry(Registry):
             ValueError: If the function with the same name already registered and `TorchFuncRegistry.override=False`.
 
         Examples:
-        ```python
-        >>> import torch
-        >>> registry = TorchFuncRegistry("test")
-        >>> @registry.implement(torch.mean)  # pylint: disable=E1101
-        ... def mean(input):
-        ...     raise input.mean()
-        >>> registry  # doctest: +ELLIPSIS
-        TorchFuncRegistry(
-          (<built-in method mean of type object at ...>): <function mean at ...>
-        )
-
-        ```
+            >>> import torch
+            >>> registry = TorchFuncRegistry("test")
+            >>> @registry.implement(torch.mean)  # pylint: disable=E1101
+            ... def mean(input):
+            ...     raise input.mean()
+            >>> registry  # doctest: +ELLIPSIS
+            TorchFuncRegistry(
+              (<built-in method mean of type object at ...>): <function mean at ...>
+            )
         """
 
         if torch_function in self and not self.override:

@@ -47,20 +47,17 @@ class AverageMeter:
         Resets the meter.
 
         Examples:
-        ```python
-        >>> meter = AverageMeter()
-        >>> meter.update(0.7)
-        >>> meter.val
-        0.7
-        >>> meter.avg
-        0.7
-        >>> meter.reset()
-        >>> meter.val
-        0
-        >>> meter.avg
-        0
-
-        ```
+            >>> meter = AverageMeter()
+            >>> meter.update(0.7)
+            >>> meter.val
+            0.7
+            >>> meter.avg
+            0.7
+            >>> meter.reset()
+            >>> meter.val
+            0
+            >>> meter.avg
+            0
         """
 
         self.val = 0
@@ -77,24 +74,21 @@ class AverageMeter:
             n: Number of values to be added.
 
         Examples:
-        ```python
-        >>> meter = AverageMeter()
-        >>> meter.update(0.7)
-        >>> meter.val
-        0.7
-        >>> meter.avg
-        0.7
-        >>> meter.update(0.9)
-        >>> meter.val
-        0.9
-        >>> meter.avg
-        0.8
-        >>> meter.sum
-        1.6
-        >>> meter.count
-        2
-
-        ```
+            >>> meter = AverageMeter()
+            >>> meter.update(0.7)
+            >>> meter.val
+            0.7
+            >>> meter.avg
+            0.7
+            >>> meter.update(0.9)
+            >>> meter.val
+            0.9
+            >>> meter.avg
+            0.8
+            >>> meter.sum
+            1.6
+            >>> meter.count
+            2
         """
 
         # pylint: disable=C0103

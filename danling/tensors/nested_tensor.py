@@ -37,15 +37,12 @@ class PNTensor(Tensor):
             (torch.Tensor):
 
         Examples:
-        ```python
-        >>> tensor = torch.tensor([1, 2, 3])
-        >>> pn_tensor = PNTensor(tensor)
-        >>> (tensor == pn_tensor).all()
-        PNTensor(True)
-        >>> (tensor == pn_tensor.tensor).all()
-        PNTensor(True)
-
-        ```
+            >>> tensor = torch.tensor([1, 2, 3])
+            >>> pn_tensor = PNTensor(tensor)
+            >>> (tensor == pn_tensor).all()
+            PNTensor(True)
+            >>> (tensor == pn_tensor.tensor).all()
+            PNTensor(True)
         """
 
         return self
@@ -59,13 +56,10 @@ class PNTensor(Tensor):
             (torch.Tensor):
 
         Examples:
-        ```python
-        >>> tensor = torch.tensor([1, 2, 3])
-        >>> pn_tensor = PNTensor(tensor)
-        >>> (pn_tensor.mask == torch.ones_like(pn_tensor)).all()
-        PNTensor(True)
-
-        ```
+            >>> tensor = torch.tensor([1, 2, 3])
+            >>> pn_tensor = PNTensor(tensor)
+            >>> (pn_tensor.mask == torch.ones_like(pn_tensor)).all()
+            PNTensor(True)
         """
 
         return torch.ones_like(self)  # pylint: disable=E1101
@@ -165,13 +159,10 @@ class NestedTensor:
             (torch.Tensor):
 
         Examples:
-        ```python
-        >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
-        >>> nested_tensor.tensor
-        tensor([[1, 2, 3],
-                [4, 5, 0]])
-
-        ```
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.tensor
+            tensor([[1, 2, 3],
+                    [4, 5, 0]])
         """
 
         return self._tensor(tuple(self.storage), self.batch_first, float(self.padding_value))
@@ -185,13 +176,10 @@ class NestedTensor:
             (torch.Tensor):
 
         Examples:
-        ```python
-        >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
-        >>> nested_tensor.mask
-        tensor([[ True,  True,  True],
-                [ True,  True, False]])
-
-        ```
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.mask
+            tensor([[ True,  True,  True],
+                    [ True,  True, False]])
         """
 
         return self._mask(tuple(self.storage), self.mask_value)
@@ -205,12 +193,9 @@ class NestedTensor:
             (torch.Tensor):
 
         Examples:
-        ```python
-        >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
-        >>> nested_tensor.device
-        device(type='cpu')
-
-        ```
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.device
+            device(type='cpu')
         """
 
         return self._device(tuple(self.storage))
@@ -224,15 +209,12 @@ class NestedTensor:
             (torch.Size):
 
         Examples:
-        ```python
-        >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
-        >>> nested_tensor.shape
-        torch.Size([2, 3])
-        >>> nested_tensor.storage.append(torch.tensor([6, 7, 8, 9]))
-        >>> nested_tensor.shape
-        torch.Size([3, 4])
-
-        ```
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.shape
+            torch.Size([2, 3])
+            >>> nested_tensor.storage.append(torch.tensor([6, 7, 8, 9]))
+            >>> nested_tensor.shape
+            torch.Size([3, 4])
         """
 
         return self.size()
@@ -245,15 +227,12 @@ class NestedTensor:
             (torch.Size):
 
         Examples:
-        ```python
-        >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
-        >>> nested_tensor.size()
-        torch.Size([2, 3])
-        >>> nested_tensor.storage[1] = torch.tensor([4, 5, 6, 7])
-        >>> nested_tensor.size()
-        torch.Size([2, 4])
-
-        ```
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.size()
+            torch.Size([2, 3])
+            >>> nested_tensor.storage[1] = torch.tensor([4, 5, 6, 7])
+            >>> nested_tensor.size()
+            torch.Size([2, 4])
         """
 
         return self._size(tuple(self.storage))
@@ -266,15 +245,12 @@ class NestedTensor:
             (NestedTensor):
 
         Examples:
-        ```python
-        >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
-        >>> nested_tensor.size()
-        torch.Size([2, 3])
-        >>> nested_tensor.storage[1] = torch.tensor([4, 5, 6, 7])
-        >>> nested_tensor.size()
-        torch.Size([2, 4])
-
-        ```
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.size()
+            torch.Size([2, 3])
+            >>> nested_tensor.storage[1] = torch.tensor([4, 5, 6, 7])
+            >>> nested_tensor.size()
+            torch.Size([2, 4])
         """
 
         if isinstance(condition, NestedTensor) and isinstance(other, NestedTensor):

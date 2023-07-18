@@ -74,23 +74,20 @@ class Registry(NestedDict):
             ValueError: If the component with the same name already registered and `Registry.override=False`.
 
         Examples:
-        ```python
-        >>> registry = Registry("test")
-        >>> @registry.register
-        ... @registry.register("Module1")
-        ... class Module:
-        ...     def __init__(self, a, b):
-        ...         self.a = a
-        ...         self.b = b
-        >>> module = registry.register(Module, "Module2")
-        >>> registry
-        Registry(
-          ('Module1'): <class 'danling.registry.Module'>
-          ('Module'): <class 'danling.registry.Module'>
-          ('Module2'): <class 'danling.registry.Module'>
-        )
-
-        ```
+            >>> registry = Registry("test")
+            >>> @registry.register
+            ... @registry.register("Module1")
+            ... class Module:
+            ...     def __init__(self, a, b):
+            ...         self.a = a
+            ...         self.b = b
+            >>> module = registry.register(Module, "Module2")
+            >>> registry
+            Registry(
+              ('Module1'): <class 'danling.registry.Module'>
+              ('Module'): <class 'danling.registry.Module'>
+              ('Module2'): <class 'danling.registry.Module'>
+            )
         """
 
         if name in self and not self.override:
@@ -128,17 +125,14 @@ class Registry(NestedDict):
             KeyError: If the component is not registered.
 
         Examples:
-        ```python
-        >>> registry = Registry("test")
-        >>> @registry.register
-        ... class Module:
-        ...     def __init__(self, a, b):
-        ...         self.a = a
-        ...         self.b = b
-        >>> registry.lookup("Module")
-        <class 'danling.registry.Module'>
-
-        ```
+            >>> registry = Registry("test")
+            >>> @registry.register
+            ... class Module:
+            ...     def __init__(self, a, b):
+            ...         self.a = a
+            ...         self.b = b
+            >>> registry.lookup("Module")
+            <class 'danling.registry.Module'>
         """
 
         return self.get(name)
@@ -161,27 +155,24 @@ class Registry(NestedDict):
             KeyError: If the component is not registered.
 
         Examples:
-        ```python
-        >>> registry = Registry("test")
-        >>> @registry.register
-        ... class Module:
-        ...     def __init__(self, a, b):
-        ...         self.a = a
-        ...         self.b = b
-        >>> config = {"module": {"name": "Module", "a": 1, "b": 2}}
-        >>> # registry.register(Module)
-        >>> module = registry.build(**config["module"])
-        >>> type(module)
-        <class 'danling.registry.Module'>
-        >>> module.a
-        1
-        >>> module.b
-        2
-        >>> module = registry.build(config["module"], a=2)
-        >>> module.a
-        2
-
-        ```
+            >>> registry = Registry("test")
+            >>> @registry.register
+            ... class Module:
+            ...     def __init__(self, a, b):
+            ...         self.a = a
+            ...         self.b = b
+            >>> config = {"module": {"name": "Module", "a": 1, "b": 2}}
+            >>> # registry.register(Module)
+            >>> module = registry.build(**config["module"])
+            >>> type(module)
+            <class 'danling.registry.Module'>
+            >>> module.a
+            1
+            >>> module.b
+            2
+            >>> module = registry.build(config["module"], a=2)
+            >>> module.a
+            2
         """
 
         if isinstance(name, Mapping):
