@@ -54,6 +54,8 @@ tensorflow = [
 torch = [
   "accelerate",
   "torch",
+  "torcheval",
+  "torchmetrics",
 ]
 [project.urls]
 documentation = "https://danling.org"

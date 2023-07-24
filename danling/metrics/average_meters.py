@@ -7,7 +7,6 @@ class AverageMeters(DefaultDict):
     r"""
     A `DefaultDict` for `AverageMeter`.
 
-
     Examples:
     ```python
     >>> meters = AverageMeters()
