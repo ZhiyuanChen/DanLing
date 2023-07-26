@@ -135,7 +135,7 @@ class Registry(NestedDict):
             <class 'danling.registry.Module'>
         """
 
-        return self.get(name)
+        return self[name]
 
     def build(self, name: Union[str, Mapping], *args, **kwargs) -> Any:
         r"""
@@ -178,7 +178,7 @@ class Registry(NestedDict):
         if isinstance(name, Mapping):
             name = deepcopy(name)
             name, kwargs = name.pop("name"), dict(name, **kwargs)  # type: ignore
-        return self.get(name)(*args, **kwargs)  # type: ignore
+        return self.lookup(name)(*args, **kwargs)  # type: ignore
 
     def __wrapped__(self, *args, **kwargs):
         pass
