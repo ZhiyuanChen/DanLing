@@ -1,2 +1,2 @@
-chanfig>=0.0.69
+chanfig >= 0.0.87
 gitpython

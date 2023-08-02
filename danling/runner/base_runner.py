@@ -252,14 +252,22 @@ class BaseRunner(RunnerBase):
             shutil.copy(latest_path, best_path)
 
     def load_checkpoint(  # pylint: disable=W1113
-        self, checkpoint: Mapping | str | None = None, override_state: bool = False, *args, **kwargs
+        self,
+        checkpoint: Mapping | bytes | str | os.PathLike | None = None,
+        auto_resume: bool | None = None,
+        override_state: bool = False,
+        *args,
+        **kwargs
     ) -> None:
         """
         Load info from checkpoint.
 
         Args:
             checkpoint: Checkpoint (or its path) to load.
-                Defaults to `self.checkpoint_dir/latest.pth`.
+                Defaults to `self.state.checkpoint`.
+            auto_resume: Automatically resume from latest checkpoint if exists.
+                Defaults to `False`.
+                If is `True` and `checkpoint` is None, will set it to `self.checkpoint_dir/latest.pth`.
             override_state: If True, override runner state with checkpoint state.
                 Defaults to `False`.
             *args: Additional arguments to pass to `self.load`.
@@ -273,19 +281,39 @@ class BaseRunner(RunnerBase):
             [`load_pretrained`][danling.BaseRunner.load_pretrained]: Load parameters from pretrained checkpoint.
         """
 
-        if checkpoint is None:
-            checkpoint = os.path.join(self.checkpoint_dir, "latest.pth")
+        checkpoint = checkpoint if checkpoint is not None else self.state.get("checkpoint", None)
+        auto_resume = auto_resume if auto_resume is not None else self.state.get("auto_resume", False)
+
         # TODO: Support loading checkpoints in other format
-        if isinstance(checkpoint, str):
-            if not os.path.exists(checkpoint):
-                raise FileNotFoundError(f"checkpoint is set to {checkpoint} but does not exist.")
-            self.checkpoint = checkpoint  # pylint: disable=W0201
-            ckpt = self.load(checkpoint, *args, **kwargs)
+        if checkpoint is not None:
+            if auto_resume:
+                warn(
+                    "latest checkpoint is preempted by value specified in checkpoint",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            if isinstance(checkpoint, (bytes, str, os.PathLike)):
+                if not os.path.exists(checkpoint):
+                    raise FileNotFoundError(f"checkpoint is set to {checkpoint!r} but does not exist.")
+                self.state.checkpoint = checkpoint
+                ckpt = self.load(checkpoint, *args, **kwargs)
+            elif isinstance(checkpoint, Mapping):
+                ckpt = checkpoint
+            else:
+                raise ValueError(f"pretrained is set to {checkpoint!r} but is not a valid checkpoint.")
+        elif auto_resume:
+            checkpoint = os.path.join(self.checkpoint_dir, "latest.pth")
+            if os.path.exists(checkpoint):
+                self.state.checkpoint = checkpoint
+                ckpt = self.load(checkpoint, *args, **kwargs)
+            else:
+                warn("latest checkpoint does not exits", category=RuntimeWarning, stacklevel=2)
+                return
         else:
-            ckpt = checkpoint
+            raise ValueError("checkpoint is not specified and auto_resume is not set to True")
+
         # TODO: Wrap state_dict in a dataclass
-        if override_state:
-            self.__dict__.update(NestedDict(**ckpt["runner"]))
+        self.state.merge(ckpt["runner"], overwrite=override_state)
         if self.model is not None and "model" in ckpt:
             model = self.unwrap_model(self.model)
             model.load_state_dict(ckpt["model"])
@@ -294,12 +322,41 @@ class BaseRunner(RunnerBase):
         if self.scheduler is not None and "scheduler" in ckpt:
             self.scheduler.load_state_dict(ckpt["scheduler"])
 
-    def load_pretrained(self, checkpoint: Mapping | str, *args, **kwargs) -> None:
+    @classmethod
+    def from_checkpoint(cls, checkpoint: Mapping | bytes | str | os.PathLike, *args, **kwargs) -> BaseRunner:
+        r"""
+        Build BaseRunner from checkpoint.
+
+        Args:
+            checkpoint: Checkpoint (or its path) to load.
+            *args: Additional arguments to pass to `cls.load`.
+            **kwargs: Additional keyword arguments to pass to `cls.load`.
+
+        Returns:
+            (BaseRunner):
+        """
+
+        if isinstance(checkpoint, (bytes, str, os.PathLike)):
+            ckpt = cls.load(checkpoint, *args, **kwargs)
+        elif isinstance(checkpoint, Mapping):
+            ckpt = checkpoint
+        else:
+            raise ValueError(f"checkpoint is set to {checkpoint} but is not a valid checkpoint.")
+        runner = cls(**ckpt["runner"])
+        runner.load_checkpoint(ckpt, override_state=False)
+        return runner
+
+    def load_pretrained(  # pylint: disable=W1113
+        self, checkpoint: Mapping | bytes | str | os.PathLike | None = None, *args, **kwargs
+    ) -> None:
         """
         Load parameters from pretrained checkpoint.
 
+        This method only loads the model weights.
+
         Args:
             checkpoint: Pretrained checkpoint (or its path) to load.
+                Defaults to `self.state.pretrained`.
             *args: Additional arguments to pass to `self.load`.
             **kwargs: Additional keyword arguments to pass to `self.load`.
 
@@ -311,39 +368,21 @@ class BaseRunner(RunnerBase):
         """
 
         # TODO: Support loading checkpoints in other format
-        if isinstance(checkpoint, str):
+        checkpoint = checkpoint if checkpoint is None else self.state.get("pretrained", None)
+        if isinstance(checkpoint, (bytes, str, os.PathLike)):
             if not os.path.exists(checkpoint):
                 raise FileNotFoundError(f"pretrained is set to {checkpoint} but does not exist.")
             ckpt = self.load(checkpoint, *args, **kwargs)
-        else:
+        elif isinstance(checkpoint, Mapping):
             ckpt = checkpoint
-        if "model" in ckpt:  # noqa: SIM908
+        else:
+            raise ValueError(f"pretrained is set to {checkpoint} but is not a valid checkpoint.")
+        if "model" in ckpt:
             ckpt = ckpt["model"]
-        if "state_dict" in ckpt:  # noqa: SIM908
+        if "state_dict" in ckpt:
             ckpt = ckpt["state_dict"]
         model = self.unwrap_model(self.model)
         model.load_state_dict(ckpt)
-
-    @classmethod
-    def from_checkpoint(cls, checkpoint: Mapping | str, *args, **kwargs) -> BaseRunner:
-        r"""
-        Build BaseRunner from checkpoint.
-
-        Args:
-            checkpoint: Checkpoint (or its path) to load.
-                Defaults to `self.checkpoint_dir/latest.pth`.
-            *args: Additional arguments to pass to `self.load`.
-            **kwargs: Additional keyword arguments to pass to `self.load`.
-
-        Returns:
-            (BaseRunner):
-        """
-
-        if isinstance(checkpoint, str):
-            checkpoint = cls.load(checkpoint, *args, **kwargs)
-        runner = cls(**checkpoint["runner"])  # type: ignore
-        runner.load_checkpoint(checkpoint, override_state=False)
-        return runner
 
     def append_result(self, result) -> None:
         r"""
