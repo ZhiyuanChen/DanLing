@@ -203,21 +203,18 @@ class NestedTensor:
     @property
     def shape(self) -> torch.Size:  # pylint: disable=E1101
         r"""
-        Alias for `size`.
-
-        Returns:
-            (torch.Size):
-
-        Examples:
-            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
-            >>> nested_tensor.shape
-            torch.Size([2, 3])
-            >>> nested_tensor.storage.append(torch.tensor([6, 7, 8, 9]))
-            >>> nested_tensor.shape
-            torch.Size([3, 4])
+        Alias for `size()`.
         """
 
         return self.size()
+
+    @property
+    def ndim(self) -> int:  # pylint: disable=E1101
+        r"""
+        Alias for `dim()`.
+        """
+
+        return self.dim()
 
     def size(self) -> torch.Size:  # pylint: disable=E1101
         r"""
@@ -231,11 +228,29 @@ class NestedTensor:
             >>> nested_tensor.size()
             torch.Size([2, 3])
             >>> nested_tensor.storage[1] = torch.tensor([4, 5, 6, 7])
-            >>> nested_tensor.size()
+            >>> nested_tensor.shape
             torch.Size([2, 4])
         """
 
         return self._size(tuple(self.storage))
+
+    def dim(self) -> int:  # pylint: disable=E1101
+        r"""
+        Number of dimension of the NestedTensor.
+
+        Returns:
+            (int):
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.dim()
+            2
+            >>> nested_tensor.storage.append(torch.tensor([6, 7, 8, 9]))
+            >>> nested_tensor.ndim
+            2
+        """
+
+        return self._dim(tuple(self.storage))
 
     def where(self, condition, other) -> NestedTensor:
         r"""
@@ -515,9 +530,15 @@ class NestedTensor:
     @lru_cache(maxsize=None)
     def _size(storage) -> torch.Size:
         # pylint: disable=E1101
-        if storage[0].dim() == 0:
+        if max(t.dim() for t in storage) == 0:
             return torch.Size([len(storage)])
         return torch.Size([len(storage), max(t.shape[0] for t in storage), *storage[0].shape[1:]])
+
+    @staticmethod
+    @lru_cache(maxsize=None)
+    def _dim(storage) -> torch.Size:
+        # pylint: disable=E1101
+        return max(t.dim() for t in storage) + 1
 
 
 NestedTensorFunc = TorchFuncRegistry()
