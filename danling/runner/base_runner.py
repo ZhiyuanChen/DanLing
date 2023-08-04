@@ -281,7 +281,7 @@ class BaseRunner(RunnerBase):
             [`load_pretrained`][danling.BaseRunner.load_pretrained]: Load parameters from pretrained checkpoint.
         """
 
-        checkpoint = checkpoint if checkpoint is not None else self.state.get("checkpoint", None)
+        checkpoint = checkpoint if checkpoint is not None else self.state.get("checkpoint")
         auto_resume = auto_resume if auto_resume is not None else self.state.get("auto_resume", False)
 
         # TODO: Support loading checkpoints in other format
@@ -368,7 +368,7 @@ class BaseRunner(RunnerBase):
         """
 
         # TODO: Support loading checkpoints in other format
-        checkpoint = checkpoint if checkpoint is None else self.state.get("pretrained", None)
+        checkpoint = checkpoint if checkpoint is None else self.state.get("pretrained")
         if isinstance(checkpoint, (bytes, str, os.PathLike)):
             if not os.path.exists(checkpoint):
                 raise FileNotFoundError(f"pretrained is set to {checkpoint} but does not exist.")

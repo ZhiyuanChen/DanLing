@@ -40,7 +40,7 @@ dynamic = [
   "version",
 ]
 dependencies = [
-  "chanfig>=0.0.87",
+  "chanfig>=0.0.88",
   "gitpython",
 ]
 [project.optional-dependencies]
