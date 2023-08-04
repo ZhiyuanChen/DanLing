@@ -8,7 +8,7 @@ import shutil
 from typing import Callable, Mapping
 from warnings import warn
 
-from chanfig import FlatDict, NestedDict
+from chanfig import FlatDict
 
 try:
     from numpy import random as np_random
@@ -371,16 +371,14 @@ class BaseRunner(RunnerBase):
         checkpoint = checkpoint if checkpoint is None else self.state.get("pretrained")
         if isinstance(checkpoint, (bytes, str, os.PathLike)):
             if not os.path.exists(checkpoint):
-                raise FileNotFoundError(f"pretrained is set to {checkpoint} but does not exist.")
+                raise FileNotFoundError(f"pretrained is set to {checkpoint!r} but does not exist.")
             ckpt = self.load(checkpoint, *args, **kwargs)
         elif isinstance(checkpoint, Mapping):
             ckpt = checkpoint
         else:
-            raise ValueError(f"pretrained is set to {checkpoint} but is not a valid checkpoint.")
-        if "model" in ckpt:
-            ckpt = ckpt["model"]
-        if "state_dict" in ckpt:
-            ckpt = ckpt["state_dict"]
+            raise ValueError(f"pretrained is set to {checkpoint!r} but is not a valid checkpoint.")
+        ckpt = ckpt.get("model", ckpt)
+        ckpt = ckpt.get("state_dict", ckpt)
         model = self.unwrap_model(self.model)
         model.load_state_dict(ckpt)
 
