@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import random
+from collections.abc import Callable, Mapping
 from contextlib import suppress
-from typing import Any, Callable, List, Mapping, Optional
+from typing import Any
 
 import torch
 from accelerate import Accelerator
@@ -72,7 +75,7 @@ class TorchRunner(BaseRunner):
         self.writer = SummaryWriter(*args, **kwargs)
         self.writer.add_scalar = catch(OSError, verbose=False)(self.writer.add_scalar)  # type: ignore
 
-    def set_seed(self, seed: int = None, bias: Optional[int] = None) -> None:  # type: ignore
+    def set_seed(self, seed: int = None, bias: int | None = None) -> None:  # type: ignore
         r"""
         Set up random seed.
 
@@ -131,7 +134,7 @@ class TorchRunner(BaseRunner):
             scheduler=self.scheduler.state_dict() if self.scheduler else None,
         )
 
-    def prepare(self, *args, device_placement: Optional[List[bool]] = None) -> None:
+    def prepare(self, *args, device_placement: list[bool] | None = None) -> None:
         r"""
         Prepare all objects passed in `args` for distributed training and mixed precision,
         then return them in the same order.
@@ -153,7 +156,7 @@ class TorchRunner(BaseRunner):
 
         return self.accelerator.backward(loss)
 
-    def unwrap_model(self, model: Optional[nn.Module] = None) -> nn.Module:
+    def unwrap_model(self, model: nn.Module | None = None) -> nn.Module:
         r"""
         Unwrap DDP model.
 

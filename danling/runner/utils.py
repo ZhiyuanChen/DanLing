@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from functools import wraps
-from typing import Any, Optional
+from typing import Any
 
 
 def on_main_process(func):
@@ -8,7 +10,7 @@ def on_main_process(func):
     """
 
     @wraps(func)
-    def wrapper(self, *args, **kwargs) -> Optional[Any]:
+    def wrapper(self, *args, **kwargs) -> Any | None:
         if self.is_main_process or not self.distributed:
             return func(self, *args, **kwargs)
         return None
@@ -22,7 +24,7 @@ def on_local_main_process(func):
     """
 
     @wraps(func)
-    def wrapper(self, *args, **kwargs) -> Optional[Any]:
+    def wrapper(self, *args, **kwargs) -> Any | None:
         if self.is_local_main_process or not self.distributed:
             return func(self, *args, **kwargs)
         return None

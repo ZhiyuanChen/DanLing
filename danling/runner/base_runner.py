@@ -5,7 +5,7 @@ import logging.config
 import os
 import random
 import shutil
-from typing import Callable, Mapping
+from collections.abc import Callable, Mapping
 from warnings import warn
 
 from chanfig import FlatDict

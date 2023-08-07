@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import logging.config
 import os
-from typing import Any, Callable, Mapping
+from collections.abc import Callable, Mapping
+from typing import Any
 
 try:
     from functools import cached_property  # type: ignore
