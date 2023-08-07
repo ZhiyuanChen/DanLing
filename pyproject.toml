@@ -83,7 +83,7 @@ addopts = "--doctest-modules --cov"
 
 [tool.coverage.run]
 branch = true
-omit = ["tests/*", "setup.py"]
+include = ["danling/**"]
 
 [tool.coverage.paths]
 source = ["icrawler"]
