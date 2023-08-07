@@ -4,13 +4,20 @@ import logging
 import logging.config
 import os
 from collections.abc import Callable, Mapping
+from enum import auto
+from sys import version_info
 from typing import Any
 
 from chanfig import Config, FlatDict, NestedDict, Variable
 
-from danling.metrics import AverageMeters
+from danling.metrics import AverageMeters, Metrics
 from danling.typing import File, PathStr
 from danling.utils import catch, ensure_dir, load, save
+
+try:
+    from enum import StrEnum  # type: ignore # pylint: disable = C0412
+except ImportError:
+    from strenum import LowercaseStrEnum as StrEnum  # type: ignore
 
 try:
     from functools import cached_property
@@ -18,6 +25,23 @@ except ImportError:
     from cached_property import cached_property  # type: ignore
 
 from .runner_state import RunnerState
+
+PY38_PLUS = version_info >= (3, 8)
+
+
+class RunnerMode(StrEnum):
+    r"""
+    `RunnerMode` is an enumeration of running modes.
+
+    Attributes:
+        train: Training mode.
+        eval: Evaluation mode.
+        inf: Inference mode.
+    """
+
+    train = auto()
+    eval = auto()
+    inf = auto()
 
 
 class RunnerBase:
@@ -30,6 +54,10 @@ class RunnerBase:
 
     `RunnerBase` also defines basic IO operations such as `save`, `load`, `json`, `yaml`, etc.
 
+    Attributes: Core:
+        mode (RunnerMode, property): Running mode.
+        state (RunnerState): Running state. See `RunnerState` for details.
+
     Attributes: Model:
         model (Callable):
         criterion (Callable):
@@ -38,8 +66,11 @@ class RunnerBase:
 
     Attributes: Data:
         datasets (FlatDict): All datasets, should be in the form of ``{subset: dataset}``.
+            Initialised to `FlatDict` by default.
         datasamplers (FlatDict): All datasamplers, should be in the form of ``{subset: datasampler}``.
+            Initialised to `FlatDict` by default.
         dataloaders (FlatDict): All dataloaders, should be in the form of ``{subset: dataloader}``.
+            Initialised to `FlatDict` by default.
         batch_size (int, property): Number of samples per batch in train dataloader or the first dataloader.
         batch_size_equivalent (int, property): Total batch_size (`batch_size * world_size * accum_steps`).
 
@@ -50,15 +81,17 @@ class RunnerBase:
         progress (float, property): Running Progress, in `range(0, 1)`.
 
     Attributes: Results:
-        latest_result (NestedDict, property): Most recent results,
-            should be in the form of ``{subset: {index: score}}``.
-        best_result (NestedDict, property): Best recent results, should be in the form of ``{subset: {index: score}}``.
-        scores (List[float], property): All scores.
-        latest_score (float, property): Most recent score.
-        best_score (float, property): Best score.
-        index_set (Optional[str]): The subset to calculate the core score.
+        results (NestedDict): Results include all metric information of the model.
+            Results should be in the form of `{epoch: {subset: {metric: score}}}`.
+        latest_result (NestedDict, property): Most recent result, should be in the form of `{subset: {metric: score}}`.
+        best_result (NestedDict, property): Best result, should be in the form of `{subset: {metric: score}}`.
+        scores (List[float], property): Score is the core metric that is used to evaluate the performance of the model.
+            Scores should be in the form of `{epoch: score}`.
+        latest_score (float, property): Most recent score, should be in the form of `score`.
+        best_score (float, property): Best score, should be in the form of `score`.
+        score_set (Optional[str]): The subset to calculate the score.
             If is `None`, will use the last set of the result.
-        index (str): The index to calculate the core score.
+        score_name (str): The metric name of score.
             Defaults to `"loss"`.
         is_best (bool, property): If `latest_score == best_score`.
 
@@ -79,6 +112,9 @@ class RunnerBase:
         is_local_main_process (bool, property): If current process is the main process of local processes.
 
     Attributes: logging:
+        meters (AverageMeters): Average meters.
+            Initialised to `AverageMeters` by default.
+        metrics (Metrics): Metrics for evaluating.
         logger:
         writer:
 
@@ -96,6 +132,7 @@ class RunnerBase:
     # pylint: disable=R0902, R0904
     # DO NOT set default value in class, as they won't be stored in `__dict__`.
 
+    _mode: RunnerMode
     state: RunnerState
 
     model: Callable | None = None
@@ -108,16 +145,31 @@ class RunnerBase:
     dataloaders: FlatDict
 
     meters: AverageMeters | None = None
+    metrics: Metrics | None = None
     logger: logging.Logger | None = None
     writer: Any | None = None
 
     def __init__(self, *args, **kwargs):
         super().__init__()
+        self._mode = RunnerMode.train
         self.state = RunnerState(*args, **kwargs)
         self.meters = AverageMeters()
+        self.metrics = None
         self.datasets = FlatDict()
         self.datasamplers = FlatDict()
         self.dataloaders = FlatDict()
+
+    @property
+    def mode(self) -> RunnerMode:
+        return self._mode
+
+    @mode.setter
+    def mode(self, mode: str | RunnerMode) -> None:
+        if isinstance(mode, str):
+            mode = RunnerMode(mode)
+        self._mode = mode
+        if self.model is not None:
+            self.model.train(mode == RunnerMode.train)  # type: ignore
 
     @property
     def batch_size(self) -> int:
@@ -132,6 +184,9 @@ class RunnerBase:
             (int):
         """
 
+        batch_size = self.state.get("batch_size")
+        if batch_size:
+            return batch_size
         if self.dataloaders:
             loader = self.dataloaders["train"] if "train" in self.dataloaders else next(iter(self.dataloaders.values()))
             return loader.batch_size
@@ -157,7 +212,7 @@ class RunnerBase:
             (int):
         """
 
-        raise AttributeError("accum_steps is not defined.")
+        return self.state.get("accum_steps", 1)
 
     @property
     def device(self) -> Any:
@@ -346,17 +401,34 @@ class RunnerBase:
         raise RuntimeError("DanLing cannot determine progress since no terminal is defined.")
 
     @property
-    def best_fn(self) -> Callable:  # pylint: disable=C0103
+    def best_fn(self) -> Callable:
         r"""
         Function to determine the best score from a list of scores.
+
+        By default, the `best_fn` returns `min` if `self.state.score_name` is `loss`,
+        otherwise, returns `max`.
 
         Subclass can override this method to accommodate needs, such as `min`.
 
         Returns:
-            (callable): `max`
+            (callable):
         """
 
-        return max
+        return max if self.state.score_name != "loss" else min
+
+    @property
+    def best_index(self) -> int:
+        r"""
+        Find the best index from all scores.
+
+        Returns:
+            (int):
+        """
+
+        if not self.scores:
+            return 0
+        values = list(self.scores.values())
+        return self.best_fn(range(len(values)), key=values.__getitem__)
 
     @property
     def latest_result(self) -> NestedDict | None:
@@ -364,36 +436,46 @@ class RunnerBase:
         Latest result.
         """
 
-        return self.state.results[-1] if self.state.results else None
+        if not self.state.results:
+            return None
+        if not PY38_PLUS:
+            return next(reversed(list(self.state.results.values())))
+        return next(reversed(self.state.results.values()))
 
     @property
     def best_result(self) -> NestedDict | None:
         r"""
         Best result.
         """
+
         if not self.state.results:
             return None
-        return self.state.results[-1 - self.scores[::-1].index(self.best_score)]  # type: ignore
+        return self.state.results[self.best_index]
 
     @property
-    def scores(self) -> list[float]:
+    def scores(self) -> FlatDict | None:
         r"""
         All scores.
 
-        Scores are extracted from results by `index_set` and `runner.index`,
-        following `[r[index_set][self.state.index] for r in self.state.results]`.
+        Scores are extracted from results by `score_set` and `runner.state.score_name`,
+        following `[r[score_set][self.state.score_name] for r in self.state.results]`.
 
-        By default, `index_set` points to `self.state.index_set` and is set to `val`,
-        if `self.state.index_set` is not set, it will be the last key of the last result.
+        By default, `score_set` points to `self.state.score_set` and is set to `val`,
+        if `self.state.score_set` is not set, it will be the last key of the last result.
 
         Scores are considered as the index of the performance of the model.
         It is useful to determine the best model and the best hyper-parameters.
         """
 
         if not self.state.results:
-            return []
-        index_set = self.state.index_set or next(reversed(self.state.results[-1]))
-        return [r[index_set][self.state.index] for r in self.state.results]
+            return None
+        score_set = self.state.get("score_set")
+        if score_set is None:
+            if not PY38_PLUS:
+                score_set = next(reversed(list(self.latest_result)))  # type: ignore
+            else:
+                score_set = next(reversed(self.latest_result))  # type: ignore
+        return FlatDict({k: v[score_set][self.state.score_name] for k, v in self.state.results.items()})
 
     @property
     def latest_score(self) -> float | None:
@@ -401,7 +483,11 @@ class RunnerBase:
         Latest score.
         """
 
-        return self.scores[-1] if self.state.results else None
+        if not self.state.results:
+            return None
+        if not PY38_PLUS:
+            return next(reversed(list(self.scores.values())))  # type: ignore
+        return next(reversed(self.scores.values()))  # type: ignore
 
     @property
     def best_score(self) -> float | None:
@@ -409,7 +495,9 @@ class RunnerBase:
         Best score.
         """
 
-        return self.best_fn(self.scores) if self.results else None
+        if not self.state.results:
+            return None
+        return self.scores[self.best_index]  # type: ignore
 
     @property
     def is_best(self) -> bool:

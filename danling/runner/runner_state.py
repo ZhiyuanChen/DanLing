@@ -4,7 +4,7 @@ import os
 import sys
 from datetime import datetime
 from random import randint
-from typing import List, Optional
+from typing import Optional
 from uuid import UUID, uuid5
 from warnings import warn
 
@@ -66,7 +66,7 @@ class RunnerState(NestedDict):
     In general you should only use one of `iter_end`, `step_end`, `epoch_end` to indicate the length of running.
 
     Attributes: Results:
-        results (List[dict]): All results, should be in the form of ``[{subset: {index: score}}]``.
+        results (dict): All results, should be in the form of `{step: {subset: {score_name: score}}}`.
 
     `results` should be a list of `result`.
     `result` should be a dict with the same `split` as keys, like `dataloaders`.
@@ -88,8 +88,9 @@ class RunnerState(NestedDict):
     }
     ```
 
-    `scores` are usually a list of `float`, and are dynamically extracted from `results` by `index_set` and `index`.
-    If `index_set = "val"`, `index = "accuracy"`, then `scores = 0.9`.
+    `scores` are dynamically extracted from `results` by `score_set` and `score_name`.
+    They represent the core metric that is used in comparing the performance against different models and settings.
+    For the above `results`, If `score_set = "val"`, `score_name = "accuracy"`, then `scores = 0.9`.
 
     Attributes: IO:
         project_root (str): The root directory for all experiments.
@@ -146,9 +147,9 @@ class RunnerState(NestedDict):
     step_end: int
     epoch_end: int
 
-    results: List[dict]
-    index_set: Optional[str]
-    index: str
+    results: dict
+    score_set: Optional[str]
+    score_name: str
 
     project_root: str = "experiments"
     checkpoint_dir_name: str = "checkpoints"
@@ -196,9 +197,9 @@ class RunnerState(NestedDict):
         self.iters = 0
         self.steps = 0
         self.epochs = 0
-        self.results = []
-        self.index_set = None
-        self.index = "loss"
+        self.results = NestedDict()
+        self.score_set = None
+        self.score_name = "loss"
         super().__init__(*args, **kwargs)
         self.run_id = self.run_uuid.hex
         time = datetime.now()

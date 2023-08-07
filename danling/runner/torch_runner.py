@@ -11,7 +11,6 @@ from accelerate import Accelerator
 from torch import distributed as dist
 from torch import nn
 from torch.backends import cudnn
-from torch.utils.data import BatchSampler
 
 try:
     from numpy import random as np_random
@@ -98,14 +97,12 @@ class TorchRunner(BaseRunner):
                 Set to `False` to disable this feature.
         """
 
-        if seed is None:
-            seed = self.state.seed
+        seed = seed or self.state.seed
         if self.distributed:
             object_list = [seed]
             dist.broadcast_object_list(object_list)
             seed = object_list[0]
-        if bias is None:
-            bias = self.rank
+        bias = bias or self.rank
         if bias:
             seed += bias  # type: ignore
         self.state.seed = seed
@@ -148,9 +145,17 @@ class TorchRunner(BaseRunner):
 
         return self.accelerator.prepare(*args, device_placement=device_placement)
 
+    def accumulate(self, model: nn.Module | None = None):
+        r"""
+        Context manager that enables gradient accumulate.
+        """
+
+        model = model or self.model
+        return self.accelerator.accumulate(model)
+
     def autocast(self):
         r"""
-        Context manager that enables autocasting for the forward pass (and maybe backward pass).
+        Context manager that enables auto-casting for the forward pass (and maybe backward pass).
         """
 
         return self.accelerator.autocast()
@@ -192,9 +197,14 @@ class TorchRunner(BaseRunner):
             (int):
         """
 
+        batch_size = self.state.get("batch_size")
+        if batch_size:
+            return batch_size
         if self.dataloaders:
             loader = self.dataloaders["train"] if "train" in self.dataloaders else next(iter(self.dataloaders.values()))
-            batch_sampler = loader.sampler if isinstance(loader.sampler, BatchSampler) else loader.batch_sampler
+            if loader.batch_size:
+                return loader.batch_size
+            batch_sampler = loader.batch_sampler if loader.batch_sampler is not None else loader.sampler
             return batch_sampler.batch_size
         raise AttributeError("batch_size could not be inferred, since no dataloaedr found.")
 

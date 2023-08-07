@@ -8,7 +8,7 @@ import shutil
 from collections.abc import Callable, Mapping
 from warnings import warn
 
-from chanfig import FlatDict
+from chanfig import FlatDict, NestedDict
 
 try:
     from numpy import random as np_random
@@ -150,10 +150,8 @@ class BaseRunner(RunnerBase):
                 Set to `False` to disable this feature.
         """
 
-        if seed is None:
-            seed = self.state.seed
-        if bias is None:
-            bias = self.rank
+        seed = seed or self.state.seed
+        bias = bias or self.rank
         if bias:
             seed += bias
         if np_random is not None:
@@ -212,8 +210,9 @@ class BaseRunner(RunnerBase):
         if self.scheduler is not None:
             self.scheduler.step()
         self.state.steps += 1
-        if batch_size is not None:
-            self.state.iters += batch_size
+        if batch_size is None:
+            batch_size = self.batch_size_equivalent
+        self.state.iters += batch_size
         # TODO: Support `drop_last = False`
         # self.state.iters += self.batch_size_equivalent
 
@@ -222,7 +221,7 @@ class BaseRunner(RunnerBase):
         Return dict of all attributes for checkpoint.
         """
 
-        raise NotImplementedError
+        return cls(self.state)
 
     @catch
     @on_main_process
@@ -257,7 +256,7 @@ class BaseRunner(RunnerBase):
         auto_resume: bool | None = None,
         override_state: bool = False,
         *args,
-        **kwargs
+        **kwargs,
     ) -> None:
         """
         Load info from checkpoint.
@@ -384,7 +383,7 @@ class BaseRunner(RunnerBase):
         model = self.unwrap_model(self.model)
         model.load_state_dict(ckpt)
 
-    def append_result(self, result) -> None:
+    def append_result(self, result: NestedDict, epochs: int | None = None) -> None:
         r"""
         Append result to `self.state.results`.
 
@@ -394,7 +393,11 @@ class BaseRunner(RunnerBase):
             Failed to use this method may lead to unexpected behavior.
         """
 
-        self.state.results.append(result)
+        epochs = epochs or self.state.epochs
+        if epochs in self.state.results:
+            self.state.results[epochs].merge(result)
+        else:
+            self.state.results[epochs] = result
 
     def print_result(self) -> None:
         r"""
