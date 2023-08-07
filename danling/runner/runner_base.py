@@ -474,13 +474,21 @@ class RunnerBase:
             raise RuntimeError("Runner is not initialised yet.")
         if name in dir(self.state):
             return getattr(self.state, name)
-        raise super().__getattribute__(name)
+        return super().__getattribute__(name)
 
     def __setattr__(self, name, value) -> None:
-        if name in self.__dict__ and isinstance(self.__dict__[name], Variable):
-            self.__dict__[name].set(value)
+        if name in self.__dict__:
+            if isinstance(self.__dict__[name], Variable):
+                self.__dict__[name].set(value)
+            else:
+                self.__dict__[name] = value
+        elif "state" in self and name in self.state:
+            if isinstance(self.state[name], Variable):
+                self.state[name].set(value)
+            else:
+                self.state[name] = value
         else:
-            self.__dict__[name] = value
+            object.__setattr__(self, name, value)
 
     def __contains__(self, name) -> bool:
         return name in dir(self) or ("state" in self.__dict__ and name in dir(self.state))
