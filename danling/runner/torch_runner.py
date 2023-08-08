@@ -3,14 +3,17 @@ from __future__ import annotations
 import random
 from collections.abc import Callable, Mapping
 from contextlib import suppress
+from time import time
 from typing import Any
 from warnings import warn
 
 import torch
 from accelerate import Accelerator
+from chanfig import NestedDict
 from torch import distributed as dist
 from torch import nn
 from torch.backends import cudnn
+from tqdm import tqdm
 
 try:
     from numpy import random as np_random
@@ -20,6 +23,7 @@ except ImportError:
 from danling.utils import catch
 
 from .base_runner import BaseRunner
+from .runner_base import RunnerMode
 from .utils import on_main_process
 
 
@@ -51,6 +55,156 @@ class TorchRunner(BaseRunner):
         if "accelerate" in kwargs:
             self.accelerate.update(kwargs.pop("accelerate"))  # type: ignore
         super().__init__(*args, **kwargs)
+
+    def train(self):
+        early_stop_counter = 0
+        print("begin training")
+        self.state.epoch_begin = self.state.epochs
+        for self.state.epochs in range(self.state.epoch_begin, self.state.epoch_end):  # noqa: B020
+            result = NestedDict()
+            result.setattr("convert_mapping", True)
+            result.train = self.train_epoch()
+            if "val" in self.dataloaders:
+                result.val = self.evaluate_epoch("val")
+            if "test" in self.dataloaders:
+                result.test = self.evaluate_epoch("test")
+            self.append_result(result)
+            print(self.format_epoch_result(result))
+            self.save_result()
+            self.save_checkpoint()
+            early_stop_counter = 0 if self.is_best else early_stop_counter + 1
+            if self.patience and early_stop_counter > self.patience:
+                print("early stop")
+                break
+        return self.results
+
+    def train_epoch(self, split: str = "train"):
+        r"""
+        Train one epoch on `split`.
+
+        Args:
+            split (str): split to run train
+
+        Return:
+            Dict[str, float]: train result
+        """
+
+        # pylint: disable=E1101, E1102, W0622
+        self.mode = RunnerMode("train")
+        loader = self.dataloaders[split]
+        length = len(loader) - 1
+        if hasattr(loader.batch_sampler, "set_epoch"):
+            loader.batch_sampler.set_epoch(self.epochs)
+        if hasattr(loader.sampler, "set_epoch"):
+            loader.sampler.set_epoch(self.epochs)
+        self.meters.reset()
+        if self.metrics is not None:
+            self.metrics.reset()
+        batch_time = time()
+
+        for iteration, (input, target) in enumerate(loader):  # pylint: disable=W0622
+            with self.accelerator.accumulate(self.model):
+                pred = self.model(**input) if isinstance(input, Mapping) else self.model(input)  # type: ignore
+                loss = self.criterion(pred, target)  # type: ignore
+                if self.metrics is not None:
+                    self.metrics.update(pred, target)
+                self.accelerator.backward(loss)
+                if self.sync_gradients:
+                    max_grad_value = self.state.get("max_grad_value")
+                    if max_grad_value:
+                        self.clip_grad_value_(self.model.parameters(), max_grad_value)  # type: ignore
+                    max_grad_norm = self.state.get("max_grad_norm")
+                    if max_grad_norm:
+                        self.clip_grad_norm_(self.model.parameters(), max_grad_norm)  # type: ignore
+                self.step()
+
+            if self.print_interval > 0 and iteration % self.print_interval == 0:
+                if self.device == torch.device("cuda"):
+                    torch.cuda.synchronize()
+                self.meters.time.update((time() - batch_time) / self.print_interval)
+                batch_time = time()
+                reduced_loss = self.reduce(loss).item()
+                self.meters.loss.update(reduced_loss)
+                self.step_log(split, iteration, length)
+
+        result = self.meters.avg
+        if self.metrics is not None:
+            result.merge(self.metrics.avg)
+        return result
+
+    def evaluate(self):
+        print("begin evaluation")
+        result = self.evaluate_epoch()
+        print(self.format_epoch_result({"evaluate": result}))
+        return result
+
+    @torch.inference_mode()
+    def evaluate_epoch(self, split: str = "val"):
+        r"""
+        Evaluate one epoch on `split`.
+
+        Args:
+            split (str): split to run evaluate
+
+        Return:
+            Dict[str, float]: evaluation result
+        """
+
+        # pylint: disable=E1101, E1102, W0622
+        self.mode = RunnerMode("eval")
+        loader = self.dataloaders[split]
+        length = len(loader) - 1
+        self.meters.reset()
+        if self.metrics is not None:
+            self.metrics.reset()
+        batch_time = time()
+
+        for iteration, (input, target) in enumerate(loader):
+            pred = self.model(**input) if isinstance(input, Mapping) else self.model(input)  # type: ignore
+            loss = self.criterion(pred, target)  # type: ignore
+            if self.metrics is not None:
+                self.metrics.update(pred, target)
+
+            if self.print_interval > 0 and iteration % self.print_interval == 0:
+                if self.device == torch.device("cuda"):
+                    torch.cuda.synchronize()
+                self.meters.time.update((time() - batch_time) / self.print_interval)
+                batch_time = time()
+                reduced_loss = self.reduce(loss).item()
+                self.meters.loss.update(reduced_loss)
+                self.step_log(split, iteration, length)
+
+        result = self.meters.avg
+        if self.metrics is not None:
+            result.merge(self.metrics.avg)
+        self.write_result(result, split, self.state.epochs)
+        return result
+
+    @torch.inference_mode()
+    def inference(self, split: str = "inf"):
+        r"""
+        Perform inference on `split`.
+
+        Args:
+            split (str): split to run inference
+
+        Return:
+            Tensor: inference outputs
+        """
+
+        # pylint: disable=E1102, W0622
+        self.mode = RunnerMode("inf")
+        loader = self.dataloaders[split]
+        self.meters.reset()
+        output = []
+        for _, (input, _) in tqdm(enumerate(loader), total=len(loader)):
+            pred = self.model(**input) if isinstance(input, Mapping) else self.model(input)  # type: ignore
+            output.extend(pred.tolist())
+
+        if self.distributed:
+            torch.cuda.synchronize()
+            output = self.gather_for_metrics(output)
+        return output
 
     def init_distributed(self) -> None:
         r"""

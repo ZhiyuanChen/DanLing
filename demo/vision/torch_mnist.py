@@ -11,8 +11,6 @@ OPTIMIZERS.register(optim.SGD, "sgd")
 
 
 class MNISTConfig(Config):
-    __test__ = False
-
     def __init__(self):
         self.network.name = "resnet18"
         self.dataset.download = True
@@ -27,14 +25,14 @@ class MNISTConfig(Config):
         self.print_interval = 1000
         self.score_set = "val"
         self.score_name = "loss"
+        self.debug = False
+        self.patience = 1
 
     def post(self):
         self.experiment_name = f"{self.network.name}_{self.optim.name}@{self.optim.lr}"
 
 
 class MNISTRunner(dl.TorchRunner):
-    __test__ = False
-
     def __init__(self, config: Config):
         super().__init__(**config)
 
@@ -46,9 +44,6 @@ class MNISTRunner(dl.TorchRunner):
         )
         self.datasets.train = torchvision.datasets.MNIST(train=True, **self.dataset)
         self.datasets.val = torchvision.datasets.MNIST(train=False, **self.dataset)
-        # only run on a few samples to speed up testing process
-        self.datasets.train.data = self.datasets.train.data[:64]
-        self.datasets.val.data = self.datasets.val.data[:64]
         self.dataloaders.train = self.prepare(data.DataLoader(self.datasets.train, shuffle=True, **self.dataloader))
         self.dataloaders.val = self.prepare(data.DataLoader(self.datasets.val, shuffle=True, **self.dataloader))
 
@@ -62,19 +57,10 @@ class MNISTRunner(dl.TorchRunner):
         self.meters.time.reset()
 
 
-class Test:
-    config = MNISTConfig()
-    runner = MNISTRunner(config)
-
-    def test_train(self):
-        self.runner.train()
-
-    def test_evaluate(self):
-        self.runner.evaluate()
-
-
 if __name__ == "__main__":
     config = MNISTConfig()
     config.parse()
-    runner = MNISTRunner(config)
-    runner.train()
+    with dl.debug(config.get("debug", False)):
+        runner = MNISTRunner(config)
+        runner.train()
+        runner.evaluate()

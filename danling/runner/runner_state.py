@@ -146,6 +146,7 @@ class RunnerState(NestedDict):
     iter_end: int
     step_end: int
     epoch_end: int
+    patience: float | int
 
     results: dict
     score_set: Optional[str]
@@ -197,6 +198,7 @@ class RunnerState(NestedDict):
         self.iters = 0
         self.steps = 0
         self.epochs = 0
+        self.patience = float("inf")
         self.results = NestedDict()
         self.score_set = None
         self.score_name = "loss"

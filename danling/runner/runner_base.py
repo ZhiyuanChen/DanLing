@@ -144,7 +144,7 @@ class RunnerBase:
     datasamplers: FlatDict
     dataloaders: FlatDict
 
-    meters: AverageMeters | None = None
+    meters: AverageMeters
     metrics: Metrics | None = None
     logger: logging.Logger | None = None
     writer: Any | None = None

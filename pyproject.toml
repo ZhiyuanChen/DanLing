@@ -84,6 +84,9 @@ max-line-length = 120
 [tool.pytest.ini_options]
 addopts = "--doctest-modules --cov"
 
+[tool.pytest]
+norecursedirs = "demo/*"
+
 [tool.coverage.run]
 branch = true
 include = ["danling/**"]

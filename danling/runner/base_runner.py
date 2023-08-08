@@ -5,7 +5,7 @@ import logging.config
 import os
 import random
 import shutil
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from warnings import warn
 
 from chanfig import FlatDict, NestedDict
@@ -15,10 +15,13 @@ try:
 except ImportError:
     np_random = None
 
+from danling.metrics import AverageMeter
 from danling.utils import catch
 
 from .runner_base import RunnerBase
 from .utils import on_main_process
+
+_APPEND_RESULT_COUNTER = 0
 
 
 class BaseRunner(RunnerBase):
@@ -383,7 +386,7 @@ class BaseRunner(RunnerBase):
         model = self.unwrap_model(self.model)
         model.load_state_dict(ckpt)
 
-    def append_result(self, result: NestedDict, epochs: int | None = None) -> None:
+    def append_result(self, result: NestedDict, index: int | None = None) -> None:
         r"""
         Append result to `self.state.results`.
 
@@ -393,11 +396,23 @@ class BaseRunner(RunnerBase):
             Failed to use this method may lead to unexpected behavior.
         """
 
-        epochs = epochs or self.state.epochs
-        if epochs in self.state.results:
-            self.state.results[epochs].merge(result)
+        if index is None:
+            index = self.state.epochs
+            global _APPEND_RESULT_COUNTER
+            _APPEND_RESULT_COUNTER += 1
+            if index == 0 and _APPEND_RESULT_COUNTER > 1:
+                warn(
+                    """
+                    Automatically set index to `self.state.epochs`.
+                    Please ensure `self.state.epochs` updates before calling `append_result`
+                    """,
+                    category=RuntimeWarning,
+                    stacklevel=2,
+                )
+        if index in self.state.results:
+            self.state.results[index].merge(result)
         else:
-            self.state.results[epochs] = result
+            self.state.results[index] = result
 
     def print_result(self) -> None:
         r"""
@@ -407,6 +422,55 @@ class BaseRunner(RunnerBase):
         print(f"results: {self.state.results}")
         print(f"latest result: {self.latest_result}")
         print(f"best result: {self.best_result}")
+
+    def step_log(self, split: str, iteration: int, length: int | None = None):
+        if length is None:
+            length = len(self.dataloaders[split]) - 1
+        result = self.meters.val
+        if self.metrics is not None:
+            result.merge(self.metrics.val)
+        self.print(self.format_step_result(result, split, iteration, length))
+        if self.mode == "train":
+            self.write_result(result, split, iteration)
+        return result
+
+    def format_step_result(self, result: NestedDict, split: str, steps: int, length: int) -> str:
+        repr_str = ""
+        if split is not None:
+            if self.mode == "train":
+                repr_str = f"training on {split} "
+            elif self.mode == "eval":
+                repr_str = f"evaluating on {split} "
+        repr_str += f"[{steps}/{length}]\t"
+        return repr_str + self.format_result(result)
+
+    def format_epoch_result(self, result: NestedDict, epochs: int | None = None, epoch_end: int | None = None) -> str:
+        epochs = epochs or self.state.epochs
+        epoch_end = epoch_end or self.state.epoch_end
+        repr_str = f"epoch [{epochs}/{epoch_end - 1}]\n" if epochs and epoch_end else ""
+        repr_str += "\n".join([f"{k}:\t{self.format_result(v)}" for k, v in result.items()])
+        return repr_str
+
+    def format_result(self, result):
+        return "\t".join([f"{k}: {v}" for k, v in result.items()])
+
+    def write_result(self, result: NestedDict, split: str, steps: int):
+        for name, score in result.clone().all_items():
+            name = name.replace(".", "/")
+            if name == "loss" and isinstance(score, AverageMeter):
+                score = score.avg
+            if isinstance(score, Sequence):
+                for i, s in enumerate(score):
+                    self.write_score(f"{name}/{i}", s, split, steps)
+            elif isinstance(score, Mapping):
+                for k, s in score.items():
+                    self.write_score(f"{name}/{k}", s, split, steps)
+            else:
+                self.write_score(name, score, split, steps)
+
+    def write_score(self, name: str, score: float, split: str, steps: int):
+        if self.tensorboard:
+            self.writer.add_scalar(f"{split}/{name}", score, steps)  # type: ignore
 
     @catch
     @on_main_process
