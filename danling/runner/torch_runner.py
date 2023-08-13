@@ -102,8 +102,10 @@ class TorchRunner(BaseRunner):
             self.metrics.reset()
         batch_time = time()
 
-        for iteration, (input, target) in enumerate(loader):  # pylint: disable=W0622
+        for iteration, data in enumerate(loader):  # pylint: disable=W0622
             with self.accelerator.accumulate(self.model):
+                input = data["input"] if isinstance(data, Mapping) else data[0]
+                target = data["target"] if isinstance(data, Mapping) else data[1]
                 pred = self.model(**input) if isinstance(input, Mapping) else self.model(input)  # type: ignore
                 loss = self.criterion(pred, target)  # type: ignore
                 if self.metrics is not None:
@@ -159,7 +161,9 @@ class TorchRunner(BaseRunner):
             self.metrics.reset()
         batch_time = time()
 
-        for iteration, (input, target) in enumerate(loader):
+        for iteration, data in enumerate(loader):
+            input = data["input"] if isinstance(data, Mapping) else data[0]
+            target = data["target"] if isinstance(data, Mapping) else data[1]
             pred = self.model(**input) if isinstance(input, Mapping) else self.model(input)  # type: ignore
             loss = self.criterion(pred, target)  # type: ignore
             if self.metrics is not None:
@@ -197,7 +201,8 @@ class TorchRunner(BaseRunner):
         loader = self.dataloaders[split]
         self.meters.reset()
         output = []
-        for _, (input, _) in tqdm(enumerate(loader), total=len(loader)):
+        for _, data in tqdm(enumerate(loader), total=len(loader)):
+            input = data["input"] if isinstance(data, Mapping) else data[0]
             pred = self.model(**input) if isinstance(input, Mapping) else self.model(input)  # type: ignore
             output.extend(pred.tolist())
 
