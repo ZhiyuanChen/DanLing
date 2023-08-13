@@ -4,6 +4,6 @@ authors:
 date: 2022-05-04
 ---
 
-# Metrics
+# AverageMeters
 
-::: danling.metrics.metrics
+::: danling.metrics.average_meters
