@@ -447,7 +447,7 @@ class BaseRunner(RunnerBase):
     def format_epoch_result(self, result: NestedDict, epochs: int | None = None, epoch_end: int | None = None) -> str:
         epochs = epochs or self.state.epochs
         epoch_end = epoch_end or self.state.epoch_end
-        repr_str = f"epoch [{epochs}/{epoch_end - 1}]\n" if epochs and epoch_end else ""
+        repr_str = f"epoch [{epochs}/{epoch_end - 1}]\n" if epochs is not None and epoch_end else ""
         repr_str += "\n".join([f"{k}:\t{self.format_result(v)}" for k, v in result.items()])
         return repr_str
 
