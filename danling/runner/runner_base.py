@@ -505,6 +505,8 @@ class RunnerBase:
         If current epoch is the best epoch.
         """
 
+        if not self.state.results:
+            return True
         try:
             return abs(self.latest_score - self.best_score) < 1e-7  # type: ignore
         except TypeError:
