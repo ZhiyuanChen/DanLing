@@ -11,7 +11,7 @@ import torch
 from accelerate import Accelerator
 from chanfig import NestedDict
 from torch import distributed as dist
-from torch import nn
+from torch import nn, optim
 from torch.backends import cudnn
 from tqdm import tqdm
 
@@ -39,7 +39,12 @@ class TorchRunner(BaseRunner):
     # pylint: disable=R0902
 
     accelerator: Accelerator = None  # type: ignore
-    accelerate: Mapping[str, Any]
+    accelerate: dict
+
+    model: nn.Module
+    criterion: nn.Module
+    optimizer: optim.Optimizer
+    scheduler: optim.lr_scheduler._LRScheduler
 
     def __init__(self, *args, **kwargs) -> None:
         if len(args) != 1 or kwargs:
@@ -51,9 +56,9 @@ class TorchRunner(BaseRunner):
         if "accelerate" not in self:
             self.accelerate = {}
         if len(args) == 1 and isinstance(args[0], dict):
-            self.accelerate.update(args[0].pop("accelerate", {}))  # type: ignore
+            self.accelerate.update(args[0].pop("accelerate", {}))
         if "accelerate" in kwargs:
-            self.accelerate.update(kwargs.pop("accelerate"))  # type: ignore
+            self.accelerate.update(kwargs.pop("accelerate"))
         super().__init__(*args, **kwargs)
 
     def train(self):
@@ -103,21 +108,21 @@ class TorchRunner(BaseRunner):
         batch_time = time()
 
         for iteration, data in enumerate(loader):  # pylint: disable=W0622
-            with self.accelerator.accumulate(self.model):
+            with self.autocast(), self.accumulate():
                 input = data["input"] if isinstance(data, Mapping) else data[0]
                 target = data["target"] if isinstance(data, Mapping) else data[1]
-                pred = self.model(**input) if isinstance(input, Mapping) else self.model(input)  # type: ignore
-                loss = self.criterion(pred, target)  # type: ignore
+                pred = self.model(**input) if isinstance(input, Mapping) else self.model(input)
+                loss = self.criterion(pred, target)
                 if self.metrics is not None:
                     self.metrics.update(pred, target)
                 self.accelerator.backward(loss)
                 if self.sync_gradients:
                     max_grad_value = self.state.get("max_grad_value")
                     if max_grad_value:
-                        self.clip_grad_value_(self.model.parameters(), max_grad_value)  # type: ignore
+                        self.clip_grad_value_(self.model.parameters(), max_grad_value)
                     max_grad_norm = self.state.get("max_grad_norm")
                     if max_grad_norm:
-                        self.clip_grad_norm_(self.model.parameters(), max_grad_norm)  # type: ignore
+                        self.clip_grad_norm_(self.model.parameters(), max_grad_norm)
                 self.step()
 
             if self.print_interval > 0 and iteration % self.print_interval == 0:
@@ -164,8 +169,8 @@ class TorchRunner(BaseRunner):
         for iteration, data in enumerate(loader):
             input = data["input"] if isinstance(data, Mapping) else data[0]
             target = data["target"] if isinstance(data, Mapping) else data[1]
-            pred = self.model(**input) if isinstance(input, Mapping) else self.model(input)  # type: ignore
-            loss = self.criterion(pred, target)  # type: ignore
+            pred = self.model(**input) if isinstance(input, Mapping) else self.model(input)
+            loss = self.criterion(pred, target)
             if self.metrics is not None:
                 self.metrics.update(pred, target)
 
@@ -203,7 +208,7 @@ class TorchRunner(BaseRunner):
         output = []
         for _, data in tqdm(enumerate(loader), total=len(loader)):
             input = data["input"] if isinstance(data, Mapping) else data[0]
-            pred = self.model(**input) if isinstance(input, Mapping) else self.model(input)  # type: ignore
+            pred = self.model(**input) if isinstance(input, Mapping) else self.model(input)
             output.extend(pred.tolist())
 
         if self.distributed:
@@ -237,9 +242,9 @@ class TorchRunner(BaseRunner):
             kwargs["log_dir"] = self.dir
 
         self.writer = SummaryWriter(*args, **kwargs)
-        self.writer.add_scalar = catch(OSError, verbose=False)(self.writer.add_scalar)  # type: ignore
+        self.writer.add_scalar = catch(OSError, verbose=False)(self.writer.add_scalar)
 
-    def set_seed(self, seed: int = None, bias: int | None = None) -> None:  # type: ignore
+    def set_seed(self, seed: int | None = None, bias: int | None = None) -> None:
         r"""
         Set up random seed.
 
@@ -263,7 +268,7 @@ class TorchRunner(BaseRunner):
             seed = object_list[0]
         bias = bias or self.rank
         if bias:
-            seed += bias  # type: ignore
+            seed += bias
         self.state.seed = seed
         torch.manual_seed(seed)
         torch.cuda.manual_seed(seed)
@@ -336,12 +341,12 @@ class TorchRunner(BaseRunner):
         """
 
         if model is not None:
-            model = self.model  # type: ignore
+            model = self.model
         if self.accelerator is not None:
             return self.accelerator.unwrap_model(model)
         if self.distributed:
-            return model.module  # type: ignore
-        return model  # type: ignore
+            return model.module
+        return model
 
     @property
     def batch_size(self) -> int:
