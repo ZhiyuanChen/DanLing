@@ -1,6 +1,19 @@
+# pylint: disable=E1101,W0622
+
+from __future__ import annotations
+
 from functools import partial
 from math import nan
-from typing import Any, Callable, Iterable, List, Mapping, Optional, Union
+from typing import Any, Callable, Iterable
+
+try:
+    from functools import cached_property  # type: ignore
+except ImportError:
+    from functools import lru_cache
+
+    def cached_property(f):  # type: ignore
+        return property(lru_cache()(f))
+
 
 import torch
 from chanfig import FlatDict
@@ -18,11 +31,13 @@ class flist(list):  # pylint: disable=R0903
 
 class Metrics(Metric):
     r"""
-    Metric class that wraps around multiple metrics.
+    Metric class wraps around multiple metrics that share the same states.
 
-    Typically, there are many metrics that we want to compute.
-    Computing them one by one is inefficient, especially when evaluating in distributed environment.
-    This class wraps around multiple metrics and computes them at the same time.
+    Typically, there are many metrics that we want to compute for a single task.
+    For example, we usually needs to compute `accuracy`, `auroc`, `auprc` for a classification task.
+    Computing them one by one is inefficient, especially when evaluating in a distributed environment.
+
+    To solve this problem, Metrics maintains a shared state for multiple metric functions.
 
     Attributes:
         metrics: A dictionary of metrics to be computed.
@@ -34,112 +49,113 @@ class Metrics(Metric):
     Args:
         *args: A single mapping of metrics.
         **metrics: Metrics.
-
     """
 
     metrics: FlatDict[str, Callable]
     _input: Tensor
     _target: Tensor
-    _inputs: List[Tensor]
-    _targets: List[Tensor]
+    _inputs: list[Tensor]
+    _targets: list[Tensor]
+    _input_buffer: list[Tensor]
+    _target_buffer: list[Tensor]
     index: str
     best_fn: Callable
 
     def __init__(self, *args, **metrics: FlatDict[str, Callable]):
-        self.metrics = FlatDict()
         super().__init__()
-        self._add_state("_input", torch.empty(0))  # pylint: disable=E1101
-        self._add_state("_target", torch.empty(0))  # pylint: disable=E1101
+        self._add_state("_input", torch.empty(0))
+        self._add_state("_target", torch.empty(0))
         self._add_state("_inputs", [])
         self._add_state("_targets", [])
-        if len(args) == 1 and isinstance(args[0], Mapping):
-            self.metrics.merge(args[0])
-        elif len(args) != 0:
-            raise ValueError("Metrics only accepts a single mapping as positional argument")
-        self.metrics.merge(metrics)
+        self._add_state("_input_buffer", [])
+        self._add_state("_target_buffer", [])
+        self.metrics = FlatDict(*args, **metrics)
 
     @torch.inference_mode()
-    def update(self, input: Any, target: Any) -> None:  # pylint: disable=W0622
+    def update(self, input: Any, target: Any) -> None:
         if not isinstance(input, torch.Tensor):
-            input = torch.tensor(input)  # pylint: disable=E1101
+            input = torch.tensor(input)
         if not isinstance(target, torch.Tensor):
-            target = torch.tensor(target)  # pylint: disable=E1101
+            target = torch.tensor(target)
         input, target = input.to(self.device), target.to(self.device)
         self._input, self._target = input, target
-        self._inputs.append(input)
-        self._targets.append(target)
-
-    @property
-    def val(self) -> FlatDict[str, float]:
-        return self.compute()
-
-    @property
-    def avg(self) -> FlatDict[str, float]:
-        return self.average()
+        self._input_buffer.append(input)
+        self._target_buffer.append(target)
 
     def compute(self) -> FlatDict[str, float]:
-        ret = FlatDict()
-        for name, metric in self.metrics.items():
-            ret[name] = self.calculate(metric, self.input, self.target)
-        return ret
+        return self.comp
+
+    def value(self) -> FlatDict[str, float]:
+        return self.val
 
     def average(self) -> FlatDict[str, float]:
+        return self.avg
+
+    @cached_property
+    def comp(self) -> FlatDict[str, float]:
+        return self._compute(self._input, self._target)
+
+    @cached_property
+    def val(self) -> FlatDict[str, float]:
+        return self._compute(self.input, self.target)
+
+    @cached_property
+    def avg(self) -> FlatDict[str, float]:
+        return self._compute(self.inputs, self.targets)
+
+    @torch.inference_mode()
+    def _compute(self, input: Tensor, target: Tensor) -> flist | float:
+        if input.numel() == 0 == target.numel():
+            return FlatDict({name: nan for name in self.metrics.keys()})
         ret = FlatDict()
         for name, metric in self.metrics.items():
-            ret[name] = self.calculate(metric, self.inputs, self.targets)
+            score = metric(input, target)
+            ret[name] = score.item() if score.numel() == 1 else flist(score.tolist())
         return ret
-
-    @staticmethod
-    @torch.inference_mode()
-    def calculate(func, input: Tensor, target: Tensor) -> Union[flist, float]:  # pylint: disable=W0622
-        if input.numel() == 0 == target.numel():
-            return nan
-        score = func(input, target)
-        return score.item() if score.numel() == 1 else flist(score.tolist())
 
     @torch.inference_mode()
     def merge_state(self, metrics: Iterable):
         raise NotImplementedError()
 
-    @property
+    @cached_property
     @torch.inference_mode()
     def input(self):
         if not dist.is_initialized() or dist.get_world_size() == 1:
             return self._input
-        synced_input = [None for _ in range(dist.get_world_size())]
-        dist.all_gather_object(synced_input, self._input)
-        return torch.cat([t.to(self.device) for t in synced_input], 0)  # pylint: disable=E1101
+        synced_input = [torch.zeros_like(self._input) for _ in range(dist.get_world_size())]
+        dist.all_gather(synced_input, self._input)
+        return torch.cat([t.to(self.device) for t in synced_input], 0)
 
-    @property
+    @cached_property
     @torch.inference_mode()
     def target(self):
         if not dist.is_initialized() or dist.get_world_size() == 1:
             return self._target
-        synced_target = [None for _ in range(dist.get_world_size())]
-        dist.all_gather_object(synced_target, self._target)
-        return torch.cat([t.to(self.device) for t in synced_target], 0)  # pylint: disable=E1101
+        synced_target = [torch.zeros_like(self._target) for _ in range(dist.get_world_size())]
+        dist.all_gather(synced_target, self._target)
+        return torch.cat([t.to(self.device) for t in synced_target], 0)
 
-    @property
+    @cached_property
     @torch.inference_mode()
     def inputs(self):
         if not self._inputs:
-            return torch.empty(0)  # pylint: disable=E1101
-        if not dist.is_initialized() or dist.get_world_size() == 1:
-            return torch.cat(self._inputs, 0)  # pylint: disable=E1101
-        synced_inputs = [None for _ in range(dist.get_world_size())]
-        dist.all_gather_object(synced_inputs, self._inputs)
-        return torch.cat([t.to(self.device) for i in synced_inputs for t in i], 0)  # pylint: disable=E1101
+            return torch.empty(0)
+        if self._input_buffer and dist.is_initialized() and dist.get_world_size() > 1:
+            synced_inputs = [None for _ in range(dist.get_world_size())]
+            dist.all_gather_object(synced_inputs, self._input_buffer)
+            self._inputs.extend(synced_inputs)
+        return torch.cat(self._inputs, 0)
 
-    @property
+    @cached_property
     @torch.inference_mode()
     def targets(self):
         if not self._targets:
-            return torch.empty(0)  # pylint: disable=E1101
-        if not dist.is_initialized() or dist.get_world_size() == 1:
-            return torch.cat(self._targets, 0)  # pylint: disable=E1101
-        synced_targets = [None for _ in range(dist.get_world_size())]
-        dist.all_gather_object(synced_targets, self._targets)
-        return torch.cat([t.to(self.device) for i in synced_targets for t in i], 0)  # pylint: disable=E1101
+            return torch.empty(0)
+        if self._target_buffer and dist.is_initialized() and dist.get_world_size() > 1:
+            synced_targets = [None for _ in range(dist.get_world_size())]
+            dist.all_gather_object(synced_targets, self._target_buffer)
+            self._targets.extend(synced_targets)
+        return torch.cat(self._targets, 0)
 
     def __repr__(self):
         keys = tuple(i for i in self.metrics.keys())
@@ -180,24 +196,24 @@ class IndexMetrics(Metrics):
     best_fn: Callable
 
     def __init__(
-        self, *args, index: Optional[str] = None, best_fn: Optional[Callable] = max, **metrics: FlatDict[str, Callable]
+        self, *args, index: str | None = None, best_fn: Callable | None = max, **metrics: FlatDict[str, Callable]
     ):
         super().__init__(*args, **metrics)
         self.index = index or next(iter(self.metrics.keys()))
         self.metric = self.metrics[self.index]
         self.best_fn = best_fn or max
 
-    def score(self, scope: str) -> Union[float, flist]:
+    def score(self, scope: str) -> float | flist:
         if scope == "batch":
             return self.batch_score()
         if scope == "average":
             return self.average_score()
         raise ValueError(f"Unknown scope: {scope}")
 
-    def batch_score(self) -> Union[float, flist]:
+    def batch_score(self) -> float | flist:
         return self.calculate(self.metric, self.input, self.target)
 
-    def average_score(self) -> Union[float, flist]:
+    def average_score(self) -> float | flist:
         return self.calculate(self.metric, self.inputs, self.targets)
 
 
