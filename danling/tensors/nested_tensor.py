@@ -216,6 +216,9 @@ class NestedTensor:
 
         return self.dim()
 
+    def tolist(self) -> list:
+        return [t.tolist() for t in self.storage]
+
     def size(self) -> torch.Size:  # pylint: disable=E1101
         r"""
         Shape of the NestedTensor.
