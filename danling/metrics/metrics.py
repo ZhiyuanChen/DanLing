@@ -24,6 +24,13 @@ from torcheval.metrics import functional as tef
 from torchmetrics import functional as tmf
 
 
+def world_size() -> int:
+    r"""Return the number of processes in the current process group."""
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_world_size()
+    return 1
+
+
 class flist(list):  # pylint: disable=R0903
     def __format__(self, *args, **kwargs):
         return " ".join([x.__format__(*args, **kwargs) for x in self])
@@ -120,7 +127,7 @@ class Metrics(Metric):
     @cached_property
     @torch.inference_mode()
     def input(self):
-        if not dist.is_initialized() or dist.get_world_size() == 1:
+        if world_size() == 1:
             return self._input
         synced_input = [torch.zeros_like(self._input) for _ in range(dist.get_world_size())]
         dist.all_gather(synced_input, self._input)
@@ -129,7 +136,7 @@ class Metrics(Metric):
     @cached_property
     @torch.inference_mode()
     def target(self):
-        if not dist.is_initialized() or dist.get_world_size() == 1:
+        if world_size() == 1:
             return self._target
         synced_target = [torch.zeros_like(self._target) for _ in range(dist.get_world_size())]
         dist.all_gather(synced_target, self._target)
@@ -140,7 +147,7 @@ class Metrics(Metric):
     def inputs(self):
         if not self._inputs:
             return torch.empty(0)
-        if self._input_buffer and dist.is_initialized() and dist.get_world_size() > 1:
+        if self._input_buffer and world_size() > 1:
             synced_inputs = [None for _ in range(dist.get_world_size())]
             dist.all_gather_object(synced_inputs, self._input_buffer)
             self._inputs.extend(synced_inputs)
@@ -151,7 +158,7 @@ class Metrics(Metric):
     def targets(self):
         if not self._targets:
             return torch.empty(0)
-        if self._target_buffer and dist.is_initialized() and dist.get_world_size() > 1:
+        if self._target_buffer and world_size() > 1:
             synced_targets = [None for _ in range(dist.get_world_size())]
             dist.all_gather_object(synced_targets, self._target_buffer)
             self._targets.extend(synced_targets)
