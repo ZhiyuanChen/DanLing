@@ -368,7 +368,9 @@ class BaseRunner(RunnerBase):
         """
 
         # TODO: Support loading checkpoints in other format
-        checkpoint = checkpoint if checkpoint is None else self.state.get("pretrained")
+        checkpoint = checkpoint if checkpoint is not None else self.state.get("pretrained")
+        if checkpoint is None:
+            raise ValueError("pretrained is not specified")
         if isinstance(checkpoint, (bytes, str, os.PathLike)):
             if not os.path.exists(checkpoint):
                 raise FileNotFoundError(f"pretrained is set to {checkpoint!r} but does not exist.")
