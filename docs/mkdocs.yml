@@ -55,13 +55,17 @@ theme:
   favicon: "assets/images/logo.ico"
   features:
     - announce.dismiss
+    # - content.action.edit
+    # - content.action.view
     - content.code.annotate
+    - content.code.copy
     - content.tabs.link
     - content.tooltips
     - header.autohide
     - navigation.expand
+    - navigation.footer
     - navigation.indexes
-    - navigation.instant
+    # - navigation.instant
     - navigation.prune
     - navigation.sections
     - navigation.tabs
@@ -171,8 +175,6 @@ plugins:
         python:
           rendering:
             members_order: source
-      watch:
-        - danling/
   - i18n:
       default_language: en
       languages:
@@ -194,3 +196,6 @@ plugins:
   - search:
       separator: '[\s\u200b\-]'
   - tags
+
+watch:
+  - ../danling/
