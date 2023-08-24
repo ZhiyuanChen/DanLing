@@ -4,35 +4,26 @@ The Runner of DanLing sets up the basic environment for running neural networks.
 
 ## Components
 
-For readability and maintainability, there are three levels of Runner + a RunnerState.
+For cross-platform compatibilities, DanLing features a two-level Runner + RunnerState system.
 
-The RunnerState stores all the information that is critical for a run and is stored in the checkpoint (e.g. `epochs`, `run_id`, etc.).
-With RunnerState and corresponding weights, you can resume a run from any point.
+### PlatformRunner
 
-The Runner contains all runtime information that is irrelevant to the checkpoint (e.g. `world_size`, `rank`, etc.).
+PlatformRunner implements platform-specific features like `step` and `prepare`.
 
-### [`RunnerState`][danling.runner.runner_state.RunnerState]
+The Runner contains all runtime information that is irrelevant to the checkpoint (e.g. `world_size`, `rank`, etc.). All other information should be saved in `RunnerState`.
 
-[`RunnerState`][danling.runner.runner_state.RunnerState] stores the state of a run.
-
-All attributes stored in `RunnerState` will be saved in the checkpoint, and thus should be json serialisable.
-Except for `@property` of json serialisable attributes.
-
-### [`RunnerBase`][danling.runner.runner_base.RunnerBase]
-
-[`RunnerBase`][danling.runner.base_runner.RunnerBase] gives you a basic instinct on what attributes and properties are provided by the Runner.
-
-It works in an AbstractBaseClass manner and should neither be used directly nor be inherited from.
+Currently, only [`TorchRunner`][danling.runner.TorchRunner] is supported.
 
 ### [`BaseRunner`][danling.runner.BaseRunner]
 
-[`BaseRunner`][danling.runner.BaseRunner] contains core methods of general basic functionality,
-such as `init_logging`, `append_result`, `print_result`.
+[`BaseRunner`](danling.runner.BaseRunner) defines shared attributes and implements platform-agnostic features, including `init_logging`, `results` and `scores`.
 
-### [`Runner`][danling.runner.TorchRunner]
+### [`RunnerState`][danling.runner.RunnerState]
 
-[`Runner`][danling.runner.TorchRunner] should only contain platform-specific features.
-Currently, only [`TorchRunner`][danling.runner.TorchRunner] is supported.
+[`RunnerState`][danling.runner.RunnerState] stores the state of a run (e.g. `epochs`, `run_id`, `network`, etc.).
+
+With `RunnerState` and corresponding weights, you can resume a run from any point.
+Therefore, all members in `RunnerState` will be saved in the checkpoint, and thus should be json serialisable.
 
 ## Experiments Management
 

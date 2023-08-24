@@ -4,6 +4,11 @@ from chanfig import NestedDict
 import danling as dl
 
 
+class Runner(dl.BaseRunner):
+    def init_distributed(self) -> None:
+        pass
+
+
 class Config(Config_):
     __test__ = False
 
@@ -28,7 +33,7 @@ class Config(Config_):
 
 class Test:
     config = Config()
-    runner = dl.runner.runner_base.RunnerBase(config)
+    runner = Runner(config)
 
     def test_results(self):
         runner = self.runner
