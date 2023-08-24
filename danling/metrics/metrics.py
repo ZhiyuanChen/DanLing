@@ -6,15 +6,6 @@ from functools import partial
 from math import nan
 from typing import Any, Callable, Iterable
 
-try:
-    from functools import cached_property  # type: ignore
-except ImportError:
-    from functools import lru_cache
-
-    def cached_property(f):  # type: ignore
-        return property(lru_cache()(f))
-
-
 import torch
 from chanfig import FlatDict
 from torch import Tensor
@@ -22,6 +13,11 @@ from torch import distributed as dist
 from torcheval.metrics import Metric
 from torcheval.metrics import functional as tef
 from torchmetrics import functional as tmf
+
+try:
+    from functools import cached_property
+except ImportError:
+    from cached_property import cached_property  # type: ignore
 
 
 def world_size() -> int:

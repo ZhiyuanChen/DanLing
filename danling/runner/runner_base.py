@@ -6,20 +6,16 @@ import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
-try:
-    from functools import cached_property  # type: ignore
-except ImportError:
-    from functools import lru_cache
-
-    def cached_property(f):  # type: ignore
-        return property(lru_cache()(f))
-
-
 from chanfig import Config, FlatDict, NestedDict, Variable
 
 from danling.metrics import AverageMeters
 from danling.typing import File, PathStr
 from danling.utils import catch, ensure_dir, load, save
+
+try:
+    from functools import cached_property
+except ImportError:
+    from cached_property import cached_property  # type: ignore
 
 from .runner_state import RunnerState
 
