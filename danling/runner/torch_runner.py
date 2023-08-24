@@ -4,6 +4,7 @@ import random
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from typing import Any
+from warnings import warn
 
 import torch
 from accelerate import Accelerator
@@ -29,8 +30,7 @@ class TorchRunner(BaseRunner):
 
     Attributes:
         accelerator (Accelerator):
-        accelerate: Defaults to `{}`.
-            if is `None`, will not use `accelerate`.
+        accelerate: Arguments to pass when building accelerator. Defaults to `{}`.
     """
 
     # pylint: disable=R0902
@@ -39,6 +39,12 @@ class TorchRunner(BaseRunner):
     accelerate: Mapping[str, Any]
 
     def __init__(self, *args, **kwargs) -> None:
+        if len(args) != 1 or kwargs:
+            message = (
+                "Passing multiple args & kwargs to build Runner is deprecated and will be removed in DanLing v0.3.\n"
+                "Please only pass a config dict instead."
+            )
+            warn(message, DeprecationWarning, stacklevel=2)
         if "accelerate" not in self:
             self.accelerate = {}
         if len(args) == 1 and isinstance(args[0], dict):
