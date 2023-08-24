@@ -9,6 +9,7 @@ from warnings import warn
 
 import torch
 from accelerate import Accelerator
+from accelerate.utils import DeepSpeedPlugin, DistributedType
 from chanfig import NestedDict
 from torch import distributed as dist
 from torch import nn, optim
@@ -66,6 +67,8 @@ class TorchRunner(BaseRunner):
     def _prepare(self):
         objects = [self.model, self.criterion, self.optimizer, self.scheduler]
         dataloader_names = []
+        if self.accelerator.distributed_type == DistributedType.DEEPSPEED:
+            self.init_deepspeed()
         for name, dataloader in self.dataloaders.items():
             dataloader_names.append(name)
             objects.append(dataloader)
@@ -75,6 +78,12 @@ class TorchRunner(BaseRunner):
             raise ValueError("Number of dataloaders does not match.")
         for name, dataloader in zip(dataloader_names, objects[4:]):
             self.dataloaders[name] = dataloader
+
+    @property
+    def deepspeed(self) -> dict:
+        if "accelerator" not in self:
+            raise ValueError("accelerator is not used")
+        return self.accelerator.state.deepspeed_plugin.deepspeed_config
 
     def train(self):
         early_stop_counter = 0
@@ -238,11 +247,54 @@ class TorchRunner(BaseRunner):
         Initialise process group and set up DDP variables.
         """
 
+        if self.state.get("deepspeed"):
+            deepspeed = self.state.get("deepspeed")
+            if not isinstance(deepspeed, dict):
+                deepspeed = NestedDict.load(deepspeed)
+            deepspeed_config = NestedDict(hf_ds_config=deepspeed)
+            deepspeed_plugin = DeepSpeedPlugin(**deepspeed_config)
+            self.accelerate["deepspeed_plugin"] = deepspeed_plugin
         self.accelerator = Accelerator(**self.accelerate)
         if self.distributed:
             object_list = [self.state.id]
             dist.broadcast_object_list(object_list)
             self.state.id = object_list[0]
+
+    def init_deepspeed(self) -> None:
+        r"""
+        Set up config for DeepSpeed.
+        """
+        config = self.deepspeed
+        if config.get("steps_per_print", "auto") == "auto":
+            config["steps_per_print"] = self.print_interval
+        if config.get("train_micro_batch_size_per_gpu", "auto") == "auto":
+            config["train_micro_batch_size_per_gpu"] = self.batch_size
+        if "optimizer" in config:
+            if "params" not in config["optimizer"]:
+                config["optimizer"]["params"] = {}
+            optimizer = config["optimizer"]["params"]
+            if optimizer.get("lr", "auto") == "auto":
+                optimizer["lr"] = self.state.get("optim.lr", 1e-3)
+            if optimizer.get("weight_decay", "auto") == "auto":
+                optimizer["weight_decay"] = self.state.get("optim.weight_decay", 1e-2)
+        if "scheduler" in config:
+            if "params" not in config["scheduler"]:
+                config["scheduler"]["params"] = {}
+            scheduler = config["scheduler"]["params"]
+            if scheduler.get("total_num_steps", "auto") == "auto":
+                dataset = self.datasets.get("train", next(iter(self.datasets.values())))
+                scheduler["total_num_steps"] = self.state.epoch_end * len(dataset) // self.batch_size_equivalent
+            if scheduler.get("warmup_num_steps", "auto") == "auto":
+                scheduler["warmup_num_steps"] = scheduler["total_num_steps"] // 20
+            if scheduler.get("warmup_max_lr", "auto") == "auto":
+                if self.optimizer:
+                    scheduler["warmup_max_lr"] = self.optimizer.param_groups[0]["lr"]
+                elif "optimizer" in config:
+                    scheduler["warmup_max_lr"] = config["optimizer"]["params"]["lr"]
+                else:
+                    raise ValueError("warmup_max_lr is not defined and cannot be inferred")
+            if scheduler.get("warmup_min_lr", "auto") == "auto":
+                scheduler["warmup_min_lr"] = 1e-7
 
     @on_main_process
     def init_tensorboard(self, *args, **kwargs) -> None:
@@ -378,7 +430,7 @@ class TorchRunner(BaseRunner):
         if batch_size:
             return batch_size
         if self.dataloaders:
-            loader = self.dataloaders["train"] if "train" in self.dataloaders else next(iter(self.dataloaders.values()))
+            loader = self.dataloaders.get("train", next(iter(self.dataloaders.values())))
             if loader.batch_size:
                 return loader.batch_size
             batch_sampler = loader.batch_sampler if loader.batch_sampler is not None else loader.sampler
