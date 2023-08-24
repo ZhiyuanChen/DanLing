@@ -60,6 +60,22 @@ class TorchRunner(BaseRunner):
             self.accelerate.update(kwargs.pop("accelerate"))
         super().__init__(*args, **kwargs)
 
+    def __post_init__(self, *args, **kwargs) -> None:
+        self._prepare()
+
+    def _prepare(self):
+        objects = [self.model, self.criterion, self.optimizer, self.scheduler]
+        dataloader_names = []
+        for name, dataloader in self.dataloaders.items():
+            dataloader_names.append(name)
+            objects.append(dataloader)
+        objects = self.prepare(*objects)
+        self.model, self.criterion, self.optimizer, self.scheduler = objects[:4]
+        if len(objects) != len(dataloader_names) + 4:
+            raise ValueError("Number of dataloaders does not match.")
+        for name, dataloader in zip(dataloader_names, objects[4:]):
+            self.dataloaders[name] = dataloader
+
     def train(self):
         early_stop_counter = 0
         print("begin training")

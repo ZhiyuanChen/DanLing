@@ -44,13 +44,12 @@ class MNISTRunner(dl.TorchRunner):
         )
         self.datasets.train = torchvision.datasets.MNIST(train=True, **self.dataset)
         self.datasets.val = torchvision.datasets.MNIST(train=False, **self.dataset)
-        self.dataloaders.train = self.prepare(data.DataLoader(self.datasets.train, shuffle=True, **self.dataloader))
-        self.dataloaders.val = self.prepare(data.DataLoader(self.datasets.val, shuffle=True, **self.dataloader))
+        self.dataloaders.train = data.DataLoader(self.datasets.train, shuffle=True, **self.dataloader)
+        self.dataloaders.val = data.DataLoader(self.datasets.val, shuffle=True, **self.dataloader)
 
         self.model = getattr(torchvision.models, self.network.name)(pretrained=False, num_classes=10)
         self.model.conv1 = nn.Conv2d(1, 64, 1, bias=False)
         self.optimizer = OPTIMIZERS.build(params=self.model.parameters(), **self.optim)
-        self.model, self.optimizer = self.prepare(self.model, self.optimizer)
         self.criterion = nn.CrossEntropyLoss()
 
         self.meters.loss.reset()
