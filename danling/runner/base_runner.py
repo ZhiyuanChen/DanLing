@@ -6,7 +6,6 @@ import os
 import random
 import shutil
 from collections.abc import Callable, Mapping, Sequence
-from enum import auto
 from sys import version_info
 from typing import Any
 from warnings import warn
@@ -27,34 +26,14 @@ try:
 except ImportError:
     np_random = None
 
-try:
-    from enum import StrEnum  # type: ignore # pylint: disable = C0412
-except ImportError:
-    from strenum import LowercaseStrEnum as StrEnum  # type: ignore
-
 from .runner_state import RunnerState
-from .utils import on_main_process
+from .utils import RunnerMeta, RunnerMode, on_main_process
 
 PY38_PLUS = version_info >= (3, 8)
 __APPEND_RESULT_COUNTER__ = 0
 
 
-class RunnerMode(StrEnum):
-    r"""
-    `RunnerMode` is an enumeration of running modes.
-
-    Attributes:
-        train: Training mode.
-        eval: Evaluation mode.
-        inf: Inference mode.
-    """
-
-    train = auto()
-    eval = auto()
-    inf = auto()
-
-
-class BaseRunner:
+class BaseRunner(metaclass=RunnerMeta):
     r"""
     Base class for all runners.
 
@@ -177,6 +156,9 @@ class BaseRunner:
         self.init_print()
         if self.state.tensorboard:
             self.init_tensorboard()
+
+    def __post_init__(self, *args, **kwargs) -> None:
+        pass
 
     @property
     def mode(self) -> RunnerMode:

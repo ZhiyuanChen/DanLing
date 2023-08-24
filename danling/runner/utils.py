@@ -1,7 +1,35 @@
 from __future__ import annotations
 
+from enum import auto
 from functools import wraps
 from typing import Any
+
+try:
+    from enum import StrEnum  # type: ignore # pylint: disable = C0412
+except ImportError:
+    from strenum import LowercaseStrEnum as StrEnum  # type: ignore
+
+
+class RunnerMeta(type):
+    def __call__(cls, *args: Any, **kwargs: Any) -> Any:
+        instance = super().__call__(*args, **kwargs)
+        instance.__post_init__()
+        return instance
+
+
+class RunnerMode(StrEnum):
+    r"""
+    `RunnerMode` is an enumeration of running modes.
+
+    Attributes:
+        train: Training mode.
+        eval: Evaluation mode.
+        inf: Inference mode.
+    """
+
+    train = auto()
+    eval = auto()
+    inf = auto()
 
 
 def on_main_process(func):
