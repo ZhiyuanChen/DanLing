@@ -132,9 +132,9 @@ class BaseRunner(metaclass=RunnerMeta):
     logger: logging.Logger | None = None
     writer: Any | None = None
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, config: NestedDict) -> None:
         self._mode = RunnerMode.train
-        self.state = RunnerState(*args, **kwargs)
+        self.state = RunnerState(config)
         self.meters = AverageMeters()
         self.metrics = None
         self.datasets = FlatDict()

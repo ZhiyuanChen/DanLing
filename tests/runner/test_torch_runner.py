@@ -36,7 +36,7 @@ class MNISTRunner(dl.TorchRunner):
     __test__ = False
 
     def __init__(self, config: Config):
-        super().__init__(**config)
+        super().__init__(config)
 
         self.dataset.transform = torchvision.transforms.Compose(
             [

@@ -52,13 +52,13 @@ class TorchRunner(BaseRunner):
                 "Please only pass a config dict instead."
             )
             warn(message, DeprecationWarning, stacklevel=2)
-        if "accelerate" not in self:
+            config = NestedDict(*args, **kwargs)
+        else:
+            config = args[0]
+        if "accelerate" not in self:  # class attributes
             self.accelerate = {}
-        if len(args) == 1 and isinstance(args[0], dict):
-            self.accelerate.update(args[0].pop("accelerate", {}))
-        if "accelerate" in kwargs:
-            self.accelerate.update(kwargs.pop("accelerate"))
-        super().__init__(*args, **kwargs)
+        self.accelerate.update(config.get("accelerate", {}))
+        super().__init__(config)
 
     def __post_init__(self, *args, **kwargs) -> None:
         self._prepare()
@@ -238,8 +238,6 @@ class TorchRunner(BaseRunner):
         Initialise process group and set up DDP variables.
         """
 
-        if self.accelerate is None:
-            self.accelerate = {}
         self.accelerator = Accelerator(**self.accelerate)
         if self.distributed:
             object_list = [self.state.id]
