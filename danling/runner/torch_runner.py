@@ -23,7 +23,6 @@ except ImportError:
 from danling.utils import catch
 
 from .base_runner import BaseRunner
-from .runner_base import RunnerMode
 from .utils import on_main_process
 
 
@@ -38,7 +37,7 @@ class TorchRunner(BaseRunner):
 
     # pylint: disable=R0902
 
-    accelerator: Accelerator = None  # type: ignore
+    accelerator: Accelerator
     accelerate: dict
 
     model: nn.Module
@@ -95,7 +94,7 @@ class TorchRunner(BaseRunner):
         """
 
         # pylint: disable=E1101, E1102, W0622
-        self.mode = RunnerMode("train")
+        self.mode = "train"  # type: ignore
         loader = self.dataloaders[split]
         length = len(loader) - 1
         if hasattr(loader.batch_sampler, "set_epoch"):
@@ -116,13 +115,13 @@ class TorchRunner(BaseRunner):
                 if self.metrics is not None:
                     self.metrics.update(pred, target)
                 self.accelerator.backward(loss)
-                if self.sync_gradients:
+                if self.accelerator.sync_gradients:
                     max_grad_value = self.state.get("max_grad_value")
                     if max_grad_value:
-                        self.clip_grad_value_(self.model.parameters(), max_grad_value)
+                        self.accelerator.clip_grad_value_(self.model.parameters(), max_grad_value)
                     max_grad_norm = self.state.get("max_grad_norm")
                     if max_grad_norm:
-                        self.clip_grad_norm_(self.model.parameters(), max_grad_norm)
+                        self.accelerator.clip_grad_norm_(self.model.parameters(), max_grad_norm)
                 self.step()
 
             if self.print_interval > 0 and iteration % self.print_interval == 0:
@@ -158,7 +157,7 @@ class TorchRunner(BaseRunner):
         """
 
         # pylint: disable=E1101, E1102, W0622
-        self.mode = RunnerMode("eval")
+        self.mode = "eval"  # type: ignore
         loader = self.dataloaders[split]
         length = len(loader) - 1
         self.meters.reset()
@@ -202,7 +201,7 @@ class TorchRunner(BaseRunner):
         """
 
         # pylint: disable=E1102, W0622
-        self.mode = RunnerMode("inf")
+        self.mode = "inf"  # type: ignore
         loader = self.dataloaders[split]
         self.meters.reset()
         output = []
