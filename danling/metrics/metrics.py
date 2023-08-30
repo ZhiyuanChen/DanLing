@@ -113,7 +113,10 @@ class Metrics(Metric):
         ret = FlatDict()
         for name, metric in self.metrics.items():
             score = metric(input, target)
-            ret[name] = score.item() if score.numel() == 1 else flist(score.tolist())
+            if isinstance(score, Tensor):
+                ret[name] = score.item() if score.numel() == 1 else flist(score.tolist())
+            else:
+                ret[name] = score
         return ret
 
     @torch.inference_mode()
