@@ -122,16 +122,16 @@ class TorchRunner(BaseRunner):
         self.mode = "train"  # type: ignore
         loader = self.dataloaders[split]
         length = len(loader) - 1
-        if hasattr(loader.batch_sampler, "set_epoch"):
-            loader.batch_sampler.set_epoch(self.epochs)
-        if hasattr(loader.sampler, "set_epoch"):
-            loader.sampler.set_epoch(self.epochs)
         self.meters.reset()
         if self.metrics is not None:
             self.metrics.reset()
         batch_time = time()
+        if hasattr(loader.batch_sampler, "set_epoch"):
+            loader.batch_sampler.set_epoch(self.epochs)
+        if hasattr(loader.sampler, "set_epoch"):
+            loader.sampler.set_epoch(self.epochs)
 
-        for iteration, data in enumerate(loader):  # pylint: disable=W0622
+        for iteration, data in enumerate(loader):
             with self.autocast(), self.accumulate():
                 input = data["input"] if isinstance(data, Mapping) else data[0]
                 target = data["target"] if isinstance(data, Mapping) else data[1]
