@@ -14,11 +14,6 @@ from torcheval.metrics import Metric
 from torcheval.metrics import functional as tef
 from torchmetrics import functional as tmf
 
-try:
-    from functools import cached_property
-except ImportError:
-    from cached_property import cached_property  # type: ignore
-
 
 def world_size() -> int:
     r"""Return the number of processes in the current process group."""
@@ -80,10 +75,10 @@ class Metrics(Metric):
             input = torch.tensor(input)
         if not isinstance(target, torch.Tensor):
             target = torch.tensor(target)
-        input, target = input.to(self.device), target.to(self.device)
+        # input, target = input.to(self.device), target.to(self.device)
         self._input, self._target = input, target
-        self._input_buffer.append(input)
-        self._target_buffer.append(target)
+        self._input_buffer.append(input.to(self.device))
+        self._target_buffer.append(target.to(self.device))
 
     def compute(self) -> FlatDict[str, float]:
         return self.comp
@@ -94,15 +89,15 @@ class Metrics(Metric):
     def average(self) -> FlatDict[str, float]:
         return self.avg
 
-    @cached_property
+    @property
     def comp(self) -> FlatDict[str, float]:
         return self._compute(self._input, self._target)
 
-    @cached_property
+    @property
     def val(self) -> FlatDict[str, float]:
         return self._compute(self.input, self.target)
 
-    @cached_property
+    @property
     def avg(self) -> FlatDict[str, float]:
         return self._compute(self.inputs, self.targets)
 
@@ -123,44 +118,52 @@ class Metrics(Metric):
     def merge_state(self, metrics: Iterable):
         raise NotImplementedError()
 
-    @cached_property
+    @property
     @torch.inference_mode()
     def input(self):
         if world_size() == 1:
             return self._input
         synced_input = [torch.zeros_like(self._input) for _ in range(dist.get_world_size())]
         dist.all_gather(synced_input, self._input)
-        return torch.cat([t.to(self.device) for t in synced_input], 0)
+        return torch.cat(synced_input, 0)
 
-    @cached_property
+    @property
     @torch.inference_mode()
     def target(self):
         if world_size() == 1:
             return self._target
         synced_target = [torch.zeros_like(self._target) for _ in range(dist.get_world_size())]
         dist.all_gather(synced_target, self._target)
-        return torch.cat([t.to(self.device) for t in synced_target], 0)
+        return torch.cat(synced_target, 0)
 
-    @cached_property
+    @property
     @torch.inference_mode()
     def inputs(self):
-        if not self._inputs:
+        if not self._inputs and not self._input_buffer:
             return torch.empty(0)
-        if self._input_buffer and world_size() > 1:
-            synced_inputs = [None for _ in range(dist.get_world_size())]
-            dist.all_gather_object(synced_inputs, self._input_buffer)
-            self._inputs.extend(synced_inputs)
+        if self._input_buffer:
+            if world_size() > 1:
+                synced_inputs = [None for _ in range(dist.get_world_size())]
+                dist.all_gather_object(synced_inputs, self._input_buffer)
+                self._inputs.extend([i for j in synced_inputs for i in j])
+            else:
+                self._inputs.extend(self._input_buffer)
+            self._input_buffer = []
         return torch.cat(self._inputs, 0)
 
-    @cached_property
+    @property
     @torch.inference_mode()
     def targets(self):
-        if not self._targets:
+        if not self._targets and not self._target_buffer:
             return torch.empty(0)
-        if self._target_buffer and world_size() > 1:
-            synced_targets = [None for _ in range(dist.get_world_size())]
-            dist.all_gather_object(synced_targets, self._target_buffer)
-            self._targets.extend(synced_targets)
+        if self._target_buffer:
+            if world_size() > 1:
+                synced_targets = [None for _ in range(dist.get_world_size())]
+                dist.all_gather_object(synced_targets, self._target_buffer)
+                self._targets.extend([i for j in synced_targets for i in j])
+            else:
+                self._targets.extend(self._target_buffer)
+            self._target_buffer = []
         return torch.cat(self._targets, 0)
 
     def __repr__(self):
