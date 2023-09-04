@@ -1,2 +1,5 @@
+cached-property; python_version < "3.8"
 chanfig >= 0.0.91
 gitpython
+strenum; python_version < "3.11"
+tqdm
