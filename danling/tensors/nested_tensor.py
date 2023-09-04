@@ -6,9 +6,24 @@ from typing import Any, Callable, Iterable, Mapping, Sequence, SupportsFloat
 
 import torch
 from torch import Tensor
-from torch.nn.utils.rnn import pad_sequence
 
 from .torch_func_registry import TorchFuncRegistry
+
+
+def pad_tensor(
+    tensors: tuple[Tensor], *, batch_first: bool = True, padding_value: float = 0.0, size: torch.Size | None = None
+):
+    tensor = tensors[0]
+    if size is None:
+        size = NestedTensor._size(tuple(tensors))  # pylint: disable=W0212
+    ret = torch.zeros(size, dtype=tensor.dtype, device=tensor.device)  # pylint: disable=E1101
+    if padding_value:
+        ret.fill_(padding_value)
+    for i, t in enumerate(tensors):
+        ret[i][tuple(slice(0, t.shape[dim]) for dim in range(t.dim()))] = t
+    if not batch_first:
+        ret = ret.transpose(0, 1)
+    return ret
 
 
 class PNTensor(Tensor):
@@ -512,7 +527,7 @@ class NestedTensor:
     def _tensor(storage, batch_first, padding_value: float = 0) -> Tensor:
         if storage[0].dim() == 0:
             return torch.stack(storage, dim=0)  # pylint: disable=E1101
-        return pad_sequence(storage, batch_first=batch_first, padding_value=padding_value)
+        return pad_tensor(storage, batch_first=batch_first, padding_value=padding_value)
 
     @staticmethod
     @lru_cache(maxsize=None)
@@ -535,7 +550,10 @@ class NestedTensor:
         # pylint: disable=E1101
         if max(t.dim() for t in storage) == 0:
             return torch.Size([len(storage)])
-        return torch.Size([len(storage), max(t.shape[0] for t in storage), *storage[0].shape[1:]])
+        ndim = max(t.dim() for t in storage)
+        size = [max(t.shape[i] if i < len(t.shape) else 0 for t in storage) for i in range(ndim)]
+        size.insert(0, len(storage))
+        return torch.Size(size)
 
     @staticmethod
     @lru_cache(maxsize=None)
