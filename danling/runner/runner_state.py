@@ -4,7 +4,7 @@ import os
 import sys
 from datetime import datetime
 from random import randint
-from typing import Optional
+from typing import Optional, Union
 from uuid import UUID, uuid5
 from warnings import warn
 
@@ -146,7 +146,7 @@ class RunnerState(NestedDict):
     iter_end: int
     step_end: int
     epoch_end: int
-    patience: float | int
+    patience: Union[float, int]
 
     results: dict
     score_set: Optional[str]
