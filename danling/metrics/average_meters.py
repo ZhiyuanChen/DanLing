@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from chanfig import DefaultDict, FlatDict
 
 from .average_meter import AverageMeter

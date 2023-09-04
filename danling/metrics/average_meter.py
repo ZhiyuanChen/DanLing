@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 class AverageMeter:
     r"""
     Computes and stores the average and current value.

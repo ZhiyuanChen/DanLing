@@ -41,7 +41,7 @@ dynamic = [
 ]
 dependencies = [
   'cached-property; python_version < "3.8"',
-  "chanfig>=0.0.88",
+  "chanfig>=0.0.91",
   "gitpython",
 ]
 [project.optional-dependencies]

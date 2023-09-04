@@ -4,6 +4,7 @@ import os
 import sys
 from datetime import datetime
 from random import randint
+from typing import List, Optional
 from uuid import UUID, uuid5
 from warnings import warn
 
@@ -145,8 +146,8 @@ class RunnerState(NestedDict):
     step_end: int
     epoch_end: int
 
-    results: list[NestedDict]
-    index_set: str | None
+    results: List[NestedDict]
+    index_set: Optional[str]
     index: str
 
     project_root: str = "experiments"
