@@ -90,6 +90,10 @@ class NestedTensor:
     `NestedTensor` allows to store a sequence of tensors of different lengths in a single object.
     It also provides a mask that can be used to retrieve the original sequence of tensors.
 
+    When calling `__getitem__(arg)` on a `NestedTensor`, it has two return type:
+    1. if arg is `int` or `slice`, returns a tuple of two `tensor`s, representing data and padding mask.
+    2. if arg is a `tuple`, return a new `NestedTensor` with specified shape.
+
     Attributes:
 
         storage: The sequence of tensors.
@@ -115,28 +119,34 @@ class NestedTensor:
         Please file an issue if you find any bugs.
 
     Examples:
-    ```python
-    >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
-    >>> nested_tensor.shape
-    torch.Size([2, 3])
-    >>> nested_tensor.device
-    device(type='cpu')
-    >>> nested_tensor.dtype
-    torch.int64
-    >>> nested_tensor.tensor
-    tensor([[1, 2, 3],
-            [4, 5, 0]])
-    >>> nested_tensor.mask
-    tensor([[ True,  True,  True],
-            [ True,  True, False]])
-    >>> nested_tensor.to(torch.float).tensor
-    tensor([[1., 2., 3.],
-            [4., 5., 0.]])
-    >>> nested_tensor.half().tensor
-    tensor([[1., 2., 3.],
-            [4., 5., 0.]], dtype=torch.float16)
-
-    ```
+        >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+        >>> nested_tensor.shape
+        torch.Size([2, 3])
+        >>> nested_tensor.device
+        device(type='cpu')
+        >>> nested_tensor.dtype
+        torch.int64
+        >>> nested_tensor.tensor
+        tensor([[1, 2, 3],
+                [4, 5, 0]])
+        >>> nested_tensor.mask
+        tensor([[ True,  True,  True],
+                [ True,  True, False]])
+        >>> nested_tensor.to(torch.float).tensor
+        tensor([[1., 2., 3.],
+                [4., 5., 0.]])
+        >>> nested_tensor.half().tensor
+        tensor([[1., 2., 3.],
+                [4., 5., 0.]], dtype=torch.float16)
+        >>> nested_tensor[:]
+        (tensor([[1, 2, 3],
+                [4, 5, 0]]), tensor([[ True,  True,  True],
+                [ True,  True, False]]))
+        >>> nested_tensor[1]
+        (tensor([4, 5]), tensor([True, True]))
+        >>> nested_tensor[:, 1:]
+        NestedTensor([[2, 3],
+                [5, 0]])
     """
 
     # pylint: disable=C0103
@@ -516,11 +526,15 @@ class NestedTensor:
                 value -= other
         return self
 
-    def __getitem__(self, index) -> tuple[Tensor, Tensor]:
-        ret = self.storage[index]
-        if isinstance(ret, Tensor):
-            return ret, torch.ones_like(ret)  # pylint: disable=E1101
-        return self.tensor, self.mask
+    def __getitem__(self, index: int | slice | tuple) -> tuple[Tensor, Tensor] | NestedTensor:
+        if isinstance(index, tuple):
+            return NestedTensor([t[index[0]][index[1:]] for t in self.storage])
+        if isinstance(index, (int, slice)):
+            ret = self.storage[index]
+            if isinstance(ret, Tensor):
+                return ret, torch.ones_like(ret, dtype=bool)  # pylint: disable=E1101
+            return self.tensor, self.mask
+        raise ValueError(f"Unsupported index type {type(index)}")
 
     def __getattr__(self, name) -> Any:
         if not self.storage:
