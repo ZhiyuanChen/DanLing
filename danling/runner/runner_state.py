@@ -66,7 +66,7 @@ class RunnerState(NestedDict):
     In general you should only use one of `iter_end`, `step_end`, `epoch_end` to indicate the length of running.
 
     Attributes: Results:
-        results (List[NestedDict]): All results, should be in the form of ``[{subset: {index: score}}]``.
+        results (List[dict]): All results, should be in the form of ``[{subset: {index: score}}]``.
 
     `results` should be a list of `result`.
     `result` should be a dict with the same `split` as keys, like `dataloaders`.
@@ -146,7 +146,7 @@ class RunnerState(NestedDict):
     step_end: int
     epoch_end: int
 
-    results: List[NestedDict]
+    results: List[dict]
     index_set: Optional[str]
     index: str
 
