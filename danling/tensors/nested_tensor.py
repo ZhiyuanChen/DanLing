@@ -234,23 +234,32 @@ class NestedTensor:
     def tolist(self) -> list:
         return [t.tolist() for t in self.storage]
 
-    def size(self) -> torch.Size:  # pylint: disable=E1101
+    def size(self, dim: int | None = None) -> torch.Size | int:  # pylint: disable=E1101
         r"""
-        Shape of the NestedTensor.
+        Returns the size of the self `NestedTensor`.
+
+        Args:
+            dim: If not specified, the returned value is a `torch.Size`, a subclass of `tuple`.
+                If specified, returns an `int` holding the size of that dimension.
+                Defaults to `None`.
 
         Returns:
-            (torch.Size):
+            (torch.Size | int):
 
         Examples:
             >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
             >>> nested_tensor.size()
             torch.Size([2, 3])
+            >>> nested_tensor.size(0)
+            2
             >>> nested_tensor.storage[1] = torch.tensor([4, 5, 6, 7])
             >>> nested_tensor.shape
             torch.Size([2, 4])
+            >>> nested_tensor.size(1)
+            4
         """
 
-        return self._size(tuple(self.storage))
+        return self._size(tuple(self.storage), dim)
 
     def dim(self) -> int:  # pylint: disable=E1101
         r"""
@@ -546,8 +555,12 @@ class NestedTensor:
 
     @staticmethod
     @lru_cache(maxsize=None)
-    def _size(storage) -> torch.Size:
+    def _size(storage, dim: int | None = None) -> torch.Size | int:
         # pylint: disable=E1101
+        if dim is not None:
+            if dim == 0:
+                return len(storage)
+            return max(t.size(dim - 1) for t in storage)
         if max(t.dim() for t in storage) == 0:
             return torch.Size([len(storage)])
         ndim = max(t.dim() for t in storage)
