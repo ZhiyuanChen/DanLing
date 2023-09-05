@@ -199,6 +199,43 @@ class NestedTensor:
 
         return self._mask(tuple(self.storage), self.mask_value)
 
+    def nested_like(self, other: Tensor, unsafe: bool = False) -> NestedTensor:
+        r"""
+        Create a new `NestedTensor` from a `Tensor`.
+        The newly created `NestedTensor` will have the same shape as current `NestedTensor`.
+
+        Args:
+            other: The `Tensor` to be nested.
+            unsafe: Whether to check the shape of `other` and current `NestedTensor`.
+
+        Returns:
+            (NestedTensor):
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> tensor = nested_tensor.tensor
+            >>> new_tensor = nested_tensor.nested_like(tensor)
+            >>> all([(x == y).all() for x, y in zip(nested_tensor.storage, new_tensor.storage)])
+            True
+            >>> f = nested_tensor.nested_like(torch.randn(2, 2))
+            Traceback (most recent call last):
+            ValueError: The shape of NestedTensor and input tensor does not match, torch.Size([2, 3]) != torch.Size([2, 2])
+            >>> p = nested_tensor.nested_like(torch.randn(2, 2), True)
+            >>> p = nested_tensor.nested_like(torch.randn(3, 3), True)
+            Traceback (most recent call last):
+            ValueError: The batch size of NestedTensor and input tensor does not match, 2 != 3
+        """  # noqa: E501
+
+        if not unsafe and self.shape != other.shape:
+            raise ValueError(
+                f"The shape of NestedTensor and input tensor does not match, {self.shape} != {other.shape}"
+            )
+        if self.size(0) != other.size(0):
+            raise ValueError(
+                f"The batch size of NestedTensor and input tensor does not match, {self.size(0)} != {other.size(0)}"
+            )
+        return NestedTensor([o[tuple(slice(0, dim) for dim in t.shape)] for t, o in zip(self.storage, other)])
+
     @property
     def device(self) -> torch.device:  # pylint: disable=E1101
         r"""
