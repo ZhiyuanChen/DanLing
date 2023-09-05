@@ -30,6 +30,7 @@ from .runner_state import RunnerState
 from .utils import RunnerMeta, RunnerMode, on_main_process
 
 PY38_PLUS = version_info >= (3, 8)
+IGNORED_SET_NAMES = ("index", "epoch", "step", "iter")
 __APPEND_RESULT_COUNTER__ = 0
 
 
@@ -446,9 +447,10 @@ class BaseRunner(metaclass=RunnerMeta):
 
         if not self.state.results:
             return None
-        if not PY38_PLUS:
-            return next(reversed(list(self.state.results.values())))
-        return next(reversed(self.state.results.values()))
+        latest_index = next(reversed(self.state.results if PY38_PLUS else list(self.state.results)))  # type: ignore
+        ret = self.state.results[latest_index]
+        ret["index"] = latest_index
+        return ret
 
     @property
     def best_result(self) -> NestedDict | None:
@@ -458,7 +460,10 @@ class BaseRunner(metaclass=RunnerMeta):
 
         if not self.state.results:
             return None
-        return self.state.results[self.best_index]
+        best_index = self.best_index
+        ret = self.state.results[best_index]
+        ret["index"] = best_index
+        return ret
 
     @property
     def scores(self) -> FlatDict | None:
@@ -468,21 +473,27 @@ class BaseRunner(metaclass=RunnerMeta):
         Scores are extracted from results by `score_set` and `runner.state.score_name`,
         following `[r[score_set][self.state.score_name] for r in self.state.results]`.
 
-        By default, `score_set` points to `self.state.score_set` and is set to `val`,
-        if `self.state.score_set` is not set, it will be the last key of the last result.
-
         Scores are considered as the index of the performance of the model.
         It is useful to determine the best model and the best hyper-parameters.
+
+        `score_set` is defined in `self.state.score_set`.
+        If it is not set, `DanLing` will use `val` or `validate` if they appear in the `latest_result`.
+        If `DanLing` still could not find, it will fall back to the second key in the `latest_result`
+        if it contains more that one element, or the first key.
+
+        Note that certain keys are ignored when falling back, they are defined in {IGNORED_SET_NAMES}.
         """
 
         if not self.state.results:
             return None
+        subsets = [i for i in self.latest_result.keys() if i not in IGNORED_SET_NAMES]  # type: ignore
         score_set = self.state.get("score_set")
+        if score_set is None and "val" in subsets:
+            score_set = "val"
+        if score_set is None and "validate" in subsets:
+            score_set = "validate"
         if score_set is None:
-            if not PY38_PLUS:
-                score_set = next(reversed(list(self.latest_result)))  # type: ignore
-            else:
-                score_set = next(reversed(self.latest_result))  # type: ignore
+            score_set = subsets[1] if len(subsets) > 1 else subsets[0]
         return FlatDict({k: v[score_set][self.state.score_name] for k, v in self.state.results.items()})
 
     @property

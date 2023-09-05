@@ -67,12 +67,14 @@ class Test:
             }
         )
         assert runner.best_result.dict() == {
+            "index": 2,
             "val": {
                 "loss": 0.2,
                 "acc": 0.8,
             },
         }
         assert runner.latest_result.dict() == {
+            "index": 3,
             "val": {
                 "loss": 0.6,
                 "acc": 0.4,
