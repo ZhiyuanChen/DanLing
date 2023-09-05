@@ -40,7 +40,7 @@
         <link rel="alternate" type="application/rss+xml" title="已更新内容的 RSS 订阅" href="../../feed_rss_updated.xml">
       
       <link rel="icon" href="../../assets/images/logo.ico">
-      <meta name="generator" content="mkdocs-1.5.2, mkdocs-material-9.2.3">
+      <meta name="generator" content="mkdocs-1.5.2, mkdocs-material-9.2.8">
     
     
       
@@ -48,7 +48,7 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.0e669242.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.046329b4.min.css">
       
         
         <link rel="stylesheet" href="../../assets/stylesheets/palette.85d0ee34.min.css">
@@ -63,6 +63,8 @@
     
       
     
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
     
       <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
     
@@ -856,19 +858,19 @@
 <p>The RunnerState stores all the information that is critical for a run and is stored in the checkpoint (e.g. <code>epochs</code>, <code>run_id</code>, etc.).
 With RunnerState and corresponding weights, you can resume a run from any point.</p>
 <p>The Runner contains all runtime information that is irrelevant to the checkpoint (e.g. <code>world_size</code>, <code>rank</code>, etc.).</p>
-<h3 id="runnerstatedanlingrunnerrunner_staterunnerstate">[<code>RunnerState</code>][danling.runner.runner_state.RunnerState]<a class="headerlink" href="#runnerstatedanlingrunnerrunner_staterunnerstate" title="Permanent link">&para;</a></h3>
-<p>[<code>RunnerState</code>][danling.runner.runner_state.RunnerState] stores the state of a run.</p>
+<h3 id="runnerstate"><a class="autorefs autorefs-internal" href="runner_state/#danling.runner.runner_state.RunnerState"><code>RunnerState</code></a><a class="headerlink" href="#runnerstate" title="Permanent link">&para;</a></h3>
+<p><a class="autorefs autorefs-internal" href="runner_state/#danling.runner.runner_state.RunnerState"><code>RunnerState</code></a> stores the state of a run.</p>
 <p>All attributes stored in <code>RunnerState</code> will be saved in the checkpoint, and thus should be json serialisable.
 Except for <code>@property</code> of json serialisable attributes.</p>
-<h3 id="runnerbasedanlingrunnerrunner_baserunnerbase">[<code>RunnerBase</code>][danling.runner.runner_base.RunnerBase]<a class="headerlink" href="#runnerbasedanlingrunnerrunner_baserunnerbase" title="Permanent link">&para;</a></h3>
+<h3 id="runnerbase"><a class="autorefs autorefs-internal" href="runner_base/#danling.runner.runner_base.RunnerBase"><code>RunnerBase</code></a><a class="headerlink" href="#runnerbase" title="Permanent link">&para;</a></h3>
 <p>[<code>RunnerBase</code>][danling.runner.abstract_base_runner.RunnerBase] gives you a basic instinct on what attributes and properties are provided by the Runner.</p>
 <p>It works in an AbstractBaseClass manner and should neither be used directly nor be inherited from.</p>
-<h3 id="baserunnerdanlingrunnerbaserunner">[<code>BaseRunner</code>][danling.runner.BaseRunner]<a class="headerlink" href="#baserunnerdanlingrunnerbaserunner" title="Permanent link">&para;</a></h3>
-<p>[<code>BaseRunner</code>][danling.runner.BaseRunner] contains core methods of general basic functionality,
+<h3 id="baserunner"><a class="autorefs autorefs-internal" href="base_runner/#danling.runner.BaseRunner"><code>BaseRunner</code></a><a class="headerlink" href="#baserunner" title="Permanent link">&para;</a></h3>
+<p><a class="autorefs autorefs-internal" href="base_runner/#danling.runner.BaseRunner"><code>BaseRunner</code></a> contains core methods of general basic functionality,
 such as <code>init_logging</code>, <code>append_result</code>, <code>print_result</code>.</p>
-<h3 id="runnerdanlingrunnertorchrunner">[<code>Runner</code>][danling.runner.TorchRunner]<a class="headerlink" href="#runnerdanlingrunnertorchrunner" title="Permanent link">&para;</a></h3>
-<p>[<code>Runner</code>][danling.runner.TorchRunner] should only contain platform-specific features.
-Currently, only [<code>TorchRunner</code>][danling.runner.TorchRunner] is supported.</p>
+<h3 id="runner_1"><a class="autorefs autorefs-internal" href="torch_runner/#danling.runner.TorchRunner"><code>Runner</code></a><a class="headerlink" href="#runner_1" title="Permanent link">&para;</a></h3>
+<p><a class="autorefs autorefs-internal" href="torch_runner/#danling.runner.TorchRunner"><code>Runner</code></a> should only contain platform-specific features.
+Currently, only <a class="autorefs autorefs-internal" href="torch_runner/#danling.runner.TorchRunner"><code>TorchRunner</code></a> is supported.</p>
 <h2 id="experiments-management">Experiments Management<a class="headerlink" href="#experiments-management" title="Permanent link">&para;</a></h2>
 <p>DanLing Runner is designed for a 3.5-level experiments management system: <strong>Project</strong>, <strong>Group</strong>, <strong>Experiment</strong>, and, <strong>Run</strong>.</p>
 <h3 id="project">Project<a class="headerlink" href="#project" title="Permanent link">&para;</a></h3>
@@ -1154,7 +1156,7 @@ All run files should be under this directory.</p>
     <script id="__config" type="application/json">{"base": "../..", "features": ["announce.dismiss", "content.code.annotate", "content.code.copy", "content.tabs.link", "content.tooltips", "header.autohide", "navigation.expand", "navigation.footer", "navigation.indexes", "navigation.prune", "navigation.sections", "navigation.tabs", "navigation.tabs.sticky", "navigation.top", "navigation.tracking", "search.highlight", "search.share", "search.suggest", "toc.follow", "toc.integrate"], "search": "../../assets/javascripts/workers/search.dfff1995.min.js", "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}}</script>
     
     
-      <script src="../../assets/javascripts/bundle.78eede0e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.dff1b7c8.min.js"></script>
       
         <script src="../../javascripts/mathjax.js"></script>
       

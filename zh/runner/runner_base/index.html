@@ -40,7 +40,7 @@
         <link rel="alternate" type="application/rss+xml" title="已更新内容的 RSS 订阅" href="../../../feed_rss_updated.xml">
       
       <link rel="icon" href="../../../assets/images/logo.ico">
-      <meta name="generator" content="mkdocs-1.5.2, mkdocs-material-9.2.3">
+      <meta name="generator" content="mkdocs-1.5.2, mkdocs-material-9.2.8">
     
     
       
@@ -48,7 +48,7 @@
       
     
     
-      <link rel="stylesheet" href="../../../assets/stylesheets/main.0e669242.min.css">
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.046329b4.min.css">
       
         
         <link rel="stylesheet" href="../../../assets/stylesheets/palette.85d0ee34.min.css">
@@ -63,6 +63,8 @@
     
       
     
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
     
       <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
     
@@ -612,7 +614,14 @@
       
         <li class="md-nav__item">
   <a href="#danling.runner.runner_base.RunnerBase" class="md-nav__link">
-    danling.runner.runner_base.RunnerBase
+    RunnerBase
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.runner_base.RunnerBase.accum_steps" class="md-nav__link">
+    accum_steps
   </a>
   
 </li>
@@ -632,78 +641,8 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.accum_steps" class="md-nav__link">
-    accum_steps
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.device" class="md-nav__link">
-    device
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.world_size" class="md-nav__link">
-    world_size
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.rank" class="md-nav__link">
-    rank
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.local_rank" class="md-nav__link">
-    local_rank
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.distributed" class="md-nav__link">
-    distributed
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.is_main_process" class="md-nav__link">
-    is_main_process
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.is_local_main_process" class="md-nav__link">
-    is_local_main_process
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.progress" class="md-nav__link">
-    progress
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#danling.runner.runner_base.RunnerBase.best_fn" class="md-nav__link">
     best_fn
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.latest_result" class="md-nav__link">
-    latest_result
   </a>
   
 </li>
@@ -716,43 +655,8 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.scores" class="md-nav__link">
-    scores
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.latest_score" class="md-nav__link">
-    latest_score
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#danling.runner.runner_base.RunnerBase.best_score" class="md-nav__link">
     best_score
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.is_best" class="md-nav__link">
-    is_best
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.dir" class="md-nav__link">
-    dir
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.log_path" class="md-nav__link">
-    log_path
   </a>
   
 </li>
@@ -765,15 +669,99 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.save" class="md-nav__link">
-    save()
+  <a href="#danling.runner.runner_base.RunnerBase.device" class="md-nav__link">
+    device
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.load" class="md-nav__link">
-    load()
+  <a href="#danling.runner.runner_base.RunnerBase.dir" class="md-nav__link">
+    dir
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.runner_base.RunnerBase.distributed" class="md-nav__link">
+    distributed
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.runner_base.RunnerBase.is_best" class="md-nav__link">
+    is_best
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.runner_base.RunnerBase.is_local_main_process" class="md-nav__link">
+    is_local_main_process
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.runner_base.RunnerBase.is_main_process" class="md-nav__link">
+    is_main_process
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.runner_base.RunnerBase.latest_result" class="md-nav__link">
+    latest_result
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.runner_base.RunnerBase.latest_score" class="md-nav__link">
+    latest_score
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.runner_base.RunnerBase.local_rank" class="md-nav__link">
+    local_rank
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.runner_base.RunnerBase.log_path" class="md-nav__link">
+    log_path
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.runner_base.RunnerBase.progress" class="md-nav__link">
+    progress
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.runner_base.RunnerBase.rank" class="md-nav__link">
+    rank
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.runner_base.RunnerBase.scores" class="md-nav__link">
+    scores
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.runner_base.RunnerBase.world_size" class="md-nav__link">
+    world_size
   </a>
   
 </li>
@@ -786,22 +774,8 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.json" class="md-nav__link">
-    json()
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#danling.runner.runner_base.RunnerBase.from_json" class="md-nav__link">
     from_json()
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.jsons" class="md-nav__link">
-    jsons()
   </a>
   
 </li>
@@ -814,13 +788,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.yaml" class="md-nav__link">
-    yaml()
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#danling.runner.runner_base.RunnerBase.from_yaml" class="md-nav__link">
     from_yaml()
   </a>
@@ -828,15 +795,50 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.yamls" class="md-nav__link">
-    yamls()
+  <a href="#danling.runner.runner_base.RunnerBase.from_yamls" class="md-nav__link">
+    from_yamls()
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#danling.runner.runner_base.RunnerBase.from_yamls" class="md-nav__link">
-    from_yamls()
+  <a href="#danling.runner.runner_base.RunnerBase.json" class="md-nav__link">
+    json()
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.runner_base.RunnerBase.jsons" class="md-nav__link">
+    jsons()
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.runner_base.RunnerBase.load" class="md-nav__link">
+    load()
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.runner_base.RunnerBase.save" class="md-nav__link">
+    save()
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.runner_base.RunnerBase.yaml" class="md-nav__link">
+    yaml()
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.runner_base.RunnerBase.yamls" class="md-nav__link">
+    yamls()
   </a>
   
 </li>
@@ -1124,6 +1126,7 @@
 
 
 <div class="doc doc-object doc-class">
+
 
 
 <a id="danling.runner.runner_base.RunnerBase"></a>
@@ -1585,8 +1588,8 @@ and is meant for demonstrating all attributes and properties only.</p>
 </details>
 <details class="see-also" open>
   <summary>See Also</summary>
-  <p>[<code>RunnerState</code>][danling.runner.runner_state.RunnerState]: The runeer base that stores runtime information.
-[<code>BaseRunner</code>][danling.runner.BaseRunner]: The base runner class.</p>
+  <p><a class="autorefs autorefs-internal" href="../runner_state/#danling.runner.runner_state.RunnerState"><code>RunnerState</code></a>: The runeer base that stores runtime information.
+<a class="autorefs autorefs-internal" href="../base_runner/#danling.runner.BaseRunner"><code>BaseRunner</code></a>: The base runner class.</p>
 </details>
             <details class="quote">
               <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
@@ -2594,8 +2597,55 @@ and is meant for demonstrating all attributes and properties only.</p>
 
 
 
+
+<h2 id="danling.runner.runner_base.RunnerBase.accum_steps" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">accum_steps</span><span class="p">:</span> <span class="nb">int</span></code>
+  
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#danling.runner.runner_base.RunnerBase.accum_steps" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>Accumulated steps.</p>
+
+
+
+  <p><strong>Returns:</strong></p>
+  <table>
+    <thead>
+      <tr>
+        <th>Type</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+        <tr>
+          <td>
+                <code>int</code>
+          </td>
+          <td>
+            <div class="doc-md-description">
+              
+            </div>
+          </td>
+        </tr>
+    </tbody>
+  </table>
+  </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
 <h2 id="danling.runner.runner_base.RunnerBase.batch_size" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">batch_size</span><span class="p">:</span> <span class="nb">int</span></code>
+          <code class="highlight language-python"><span class="n">batch_size</span><span class="p">:</span> <span class="nb">int</span></code>
   
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-property"><code>property</code></small>
@@ -2644,8 +2694,9 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
 
 
 
+
 <h2 id="danling.runner.runner_base.RunnerBase.batch_size_equivalent" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">batch_size_equivalent</span><span class="p">:</span> <span class="nb">int</span></code>
+          <code class="highlight language-python"><span class="n">batch_size_equivalent</span><span class="p">:</span> <span class="nb">int</span></code>
   
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-property"><code>property</code></small>
@@ -2689,19 +2740,21 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
 
 
 
-<h2 id="danling.runner.runner_base.RunnerBase.accum_steps" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">accum_steps</span><span class="p">:</span> <span class="nb">int</span></code>
+
+<h2 id="danling.runner.runner_base.RunnerBase.best_fn" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">best_fn</span><span class="p">:</span> <span class="n">Callable</span></code>
   
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-property"><code>property</code></small>
   </span>
 
-<a href="#danling.runner.runner_base.RunnerBase.accum_steps" class="headerlink" title="Permanent link">&para;</a></h2>
+<a href="#danling.runner.runner_base.RunnerBase.best_fn" class="headerlink" title="Permanent link">&para;</a></h2>
 
 
   <div class="doc doc-contents ">
   
-      <p>Accumulated steps.</p>
+      <p>Function to determine the best score from a list of scores.</p>
+<p>Subclass can override this method to accommodate needs, such as <code>min</code>.</p>
 
 
 
@@ -2716,11 +2769,11 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
     <tbody>
         <tr>
           <td>
-                <code>int</code>
+                <code>callable</code>
           </td>
           <td>
             <div class="doc-md-description">
-              
+              <p><code>max</code></p>
             </div>
           </td>
         </tr>
@@ -2734,8 +2787,76 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
 
 
 
+
+<h2 id="danling.runner.runner_base.RunnerBase.best_result" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">best_result</span><span class="p">:</span> <span class="n">NestedDict</span> <span class="o">|</span> <span class="kc">None</span></code>
+  
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#danling.runner.runner_base.RunnerBase.best_result" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>Best result.</p>
+  </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<h2 id="danling.runner.runner_base.RunnerBase.best_score" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">best_score</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span></code>
+  
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#danling.runner.runner_base.RunnerBase.best_score" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>Best score.</p>
+  </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<h2 id="danling.runner.runner_base.RunnerBase.checkpoint_dir" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">checkpoint_dir</span><span class="p">:</span> <span class="nb">str</span></code>
+  
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-cached"><code>cached</code></small>
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#danling.runner.runner_base.RunnerBase.checkpoint_dir" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>Directory of checkpoints.</p>
+  </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
 <h2 id="danling.runner.runner_base.RunnerBase.device" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">device</span><span class="p">:</span> <span class="n">Any</span></code>
+          <code class="highlight language-python"><span class="n">device</span><span class="p">:</span> <span class="n">Any</span></code>
   
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-property"><code>property</code></small>
@@ -2755,71 +2876,32 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
 
 
 
-<h2 id="danling.runner.runner_base.RunnerBase.world_size" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">world_size</span><span class="p">:</span> <span class="nb">int</span></code>
+
+<h2 id="danling.runner.runner_base.RunnerBase.dir" class="doc doc-heading">
+          <code class="highlight language-python"><span class="nb">dir</span><span class="p">:</span> <span class="nb">str</span></code>
   
   <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-cached"><code>cached</code></small>
       <small class="doc doc-label doc-label-property"><code>property</code></small>
   </span>
 
-<a href="#danling.runner.runner_base.RunnerBase.world_size" class="headerlink" title="Permanent link">&para;</a></h2>
+<a href="#danling.runner.runner_base.RunnerBase.dir" class="headerlink" title="Permanent link">&para;</a></h2>
 
 
   <div class="doc doc-contents ">
   
-      <p>Number of processes.</p>
+      <p>Directory of the run.</p>
   </div>
 
 </div>
 
 <div class="doc doc-object doc-attribute">
 
-
-
-<h2 id="danling.runner.runner_base.RunnerBase.rank" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">rank</span><span class="p">:</span> <span class="nb">int</span></code>
-  
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-property"><code>property</code></small>
-  </span>
-
-<a href="#danling.runner.runner_base.RunnerBase.rank" class="headerlink" title="Permanent link">&para;</a></h2>
-
-
-  <div class="doc doc-contents ">
-  
-      <p>Process index of all processes.</p>
-  </div>
-
-</div>
-
-<div class="doc doc-object doc-attribute">
-
-
-
-<h2 id="danling.runner.runner_base.RunnerBase.local_rank" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">local_rank</span><span class="p">:</span> <span class="nb">int</span></code>
-  
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-property"><code>property</code></small>
-  </span>
-
-<a href="#danling.runner.runner_base.RunnerBase.local_rank" class="headerlink" title="Permanent link">&para;</a></h2>
-
-
-  <div class="doc doc-contents ">
-  
-      <p>Process index of local processes.</p>
-  </div>
-
-</div>
-
-<div class="doc doc-object doc-attribute">
 
 
 
 <h2 id="danling.runner.runner_base.RunnerBase.distributed" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">distributed</span><span class="p">:</span> <span class="nb">bool</span></code>
+          <code class="highlight language-python"><span class="n">distributed</span><span class="p">:</span> <span class="nb">bool</span></code>
   
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-property"><code>property</code></small>
@@ -2839,19 +2921,20 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
 
 
 
-<h2 id="danling.runner.runner_base.RunnerBase.is_main_process" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">is_main_process</span><span class="p">:</span> <span class="nb">bool</span></code>
+
+<h2 id="danling.runner.runner_base.RunnerBase.is_best" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">is_best</span><span class="p">:</span> <span class="nb">bool</span></code>
   
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-property"><code>property</code></small>
   </span>
 
-<a href="#danling.runner.runner_base.RunnerBase.is_main_process" class="headerlink" title="Permanent link">&para;</a></h2>
+<a href="#danling.runner.runner_base.RunnerBase.is_best" class="headerlink" title="Permanent link">&para;</a></h2>
 
 
   <div class="doc doc-contents ">
   
-      <p>If current process is the main process of all processes.</p>
+      <p>If current epoch is the best epoch.</p>
   </div>
 
 </div>
@@ -2860,8 +2943,9 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
 
 
 
+
 <h2 id="danling.runner.runner_base.RunnerBase.is_local_main_process" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">is_local_main_process</span><span class="p">:</span> <span class="nb">bool</span></code>
+          <code class="highlight language-python"><span class="n">is_local_main_process</span><span class="p">:</span> <span class="nb">bool</span></code>
   
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-property"><code>property</code></small>
@@ -2881,8 +2965,120 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
 
 
 
+
+<h2 id="danling.runner.runner_base.RunnerBase.is_main_process" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">is_main_process</span><span class="p">:</span> <span class="nb">bool</span></code>
+  
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#danling.runner.runner_base.RunnerBase.is_main_process" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>If current process is the main process of all processes.</p>
+  </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<h2 id="danling.runner.runner_base.RunnerBase.latest_result" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">latest_result</span><span class="p">:</span> <span class="n">NestedDict</span> <span class="o">|</span> <span class="kc">None</span></code>
+  
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#danling.runner.runner_base.RunnerBase.latest_result" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>Latest result.</p>
+  </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<h2 id="danling.runner.runner_base.RunnerBase.latest_score" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">latest_score</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span></code>
+  
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#danling.runner.runner_base.RunnerBase.latest_score" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>Latest score.</p>
+  </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<h2 id="danling.runner.runner_base.RunnerBase.local_rank" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">local_rank</span><span class="p">:</span> <span class="nb">int</span></code>
+  
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#danling.runner.runner_base.RunnerBase.local_rank" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>Process index of local processes.</p>
+  </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<h2 id="danling.runner.runner_base.RunnerBase.log_path" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">log_path</span><span class="p">:</span> <span class="nb">str</span></code>
+  
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-cached"><code>cached</code></small>
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#danling.runner.runner_base.RunnerBase.log_path" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>Path of log file.</p>
+  </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
 <h2 id="danling.runner.runner_base.RunnerBase.progress" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">progress</span><span class="p">:</span> <span class="nb">float</span></code>
+          <code class="highlight language-python"><span class="n">progress</span><span class="p">:</span> <span class="nb">float</span></code>
   
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-property"><code>property</code></small>
@@ -2950,96 +3146,31 @@ Otherwise, <code>batch_size</code> is the batch size of the first dataloader.</p
 
 
 
-<h2 id="danling.runner.runner_base.RunnerBase.best_fn" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">best_fn</span><span class="p">:</span> <span class="n">Callable</span></code>
+
+<h2 id="danling.runner.runner_base.RunnerBase.rank" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">rank</span><span class="p">:</span> <span class="nb">int</span></code>
   
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-property"><code>property</code></small>
   </span>
 
-<a href="#danling.runner.runner_base.RunnerBase.best_fn" class="headerlink" title="Permanent link">&para;</a></h2>
+<a href="#danling.runner.runner_base.RunnerBase.rank" class="headerlink" title="Permanent link">&para;</a></h2>
 
 
   <div class="doc doc-contents ">
   
-      <p>Function to determine the best score from a list of scores.</p>
-<p>Subclass can override this method to accommodate needs, such as <code>min</code>.</p>
-
-
-
-  <p><strong>Returns:</strong></p>
-  <table>
-    <thead>
-      <tr>
-        <th>Type</th>
-        <th>Description</th>
-      </tr>
-    </thead>
-    <tbody>
-        <tr>
-          <td>
-                <code>callable</code>
-          </td>
-          <td>
-            <div class="doc-md-description">
-              <p><code>max</code></p>
-            </div>
-          </td>
-        </tr>
-    </tbody>
-  </table>
+      <p>Process index of all processes.</p>
   </div>
 
 </div>
 
 <div class="doc doc-object doc-attribute">
 
-
-
-<h2 id="danling.runner.runner_base.RunnerBase.latest_result" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">latest_result</span><span class="p">:</span> <span class="n">NestedDict</span> <span class="o">|</span> <span class="kc">None</span></code>
-  
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-property"><code>property</code></small>
-  </span>
-
-<a href="#danling.runner.runner_base.RunnerBase.latest_result" class="headerlink" title="Permanent link">&para;</a></h2>
-
-
-  <div class="doc doc-contents ">
-  
-      <p>Latest result.</p>
-  </div>
-
-</div>
-
-<div class="doc doc-object doc-attribute">
-
-
-
-<h2 id="danling.runner.runner_base.RunnerBase.best_result" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">best_result</span><span class="p">:</span> <span class="n">NestedDict</span> <span class="o">|</span> <span class="kc">None</span></code>
-  
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-property"><code>property</code></small>
-  </span>
-
-<a href="#danling.runner.runner_base.RunnerBase.best_result" class="headerlink" title="Permanent link">&para;</a></h2>
-
-
-  <div class="doc doc-contents ">
-  
-      <p>Best result.</p>
-  </div>
-
-</div>
-
-<div class="doc doc-object doc-attribute">
 
 
 
 <h2 id="danling.runner.runner_base.RunnerBase.scores" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">scores</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span></code>
+          <code class="highlight language-python"><span class="n">scores</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span></code>
   
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-property"><code>property</code></small>
@@ -3065,127 +3196,20 @@ It is useful to determine the best model and the best hyper-parameters.</p>
 
 
 
-<h2 id="danling.runner.runner_base.RunnerBase.latest_score" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">latest_score</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span></code>
+
+<h2 id="danling.runner.runner_base.RunnerBase.world_size" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">world_size</span><span class="p">:</span> <span class="nb">int</span></code>
   
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-property"><code>property</code></small>
   </span>
 
-<a href="#danling.runner.runner_base.RunnerBase.latest_score" class="headerlink" title="Permanent link">&para;</a></h2>
+<a href="#danling.runner.runner_base.RunnerBase.world_size" class="headerlink" title="Permanent link">&para;</a></h2>
 
 
   <div class="doc doc-contents ">
   
-      <p>Latest score.</p>
-  </div>
-
-</div>
-
-<div class="doc doc-object doc-attribute">
-
-
-
-<h2 id="danling.runner.runner_base.RunnerBase.best_score" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">best_score</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span></code>
-  
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-property"><code>property</code></small>
-  </span>
-
-<a href="#danling.runner.runner_base.RunnerBase.best_score" class="headerlink" title="Permanent link">&para;</a></h2>
-
-
-  <div class="doc doc-contents ">
-  
-      <p>Best score.</p>
-  </div>
-
-</div>
-
-<div class="doc doc-object doc-attribute">
-
-
-
-<h2 id="danling.runner.runner_base.RunnerBase.is_best" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">is_best</span><span class="p">:</span> <span class="nb">bool</span></code>
-  
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-property"><code>property</code></small>
-  </span>
-
-<a href="#danling.runner.runner_base.RunnerBase.is_best" class="headerlink" title="Permanent link">&para;</a></h2>
-
-
-  <div class="doc doc-contents ">
-  
-      <p>If current epoch is the best epoch.</p>
-  </div>
-
-</div>
-
-<div class="doc doc-object doc-attribute">
-
-
-
-<h2 id="danling.runner.runner_base.RunnerBase.dir" class="doc doc-heading">
-<code class="highlight language-python"><span class="nb">dir</span><span class="p">:</span> <span class="nb">str</span></code>
-  
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-cached"><code>cached</code></small>
-      <small class="doc doc-label doc-label-property"><code>property</code></small>
-  </span>
-
-<a href="#danling.runner.runner_base.RunnerBase.dir" class="headerlink" title="Permanent link">&para;</a></h2>
-
-
-  <div class="doc doc-contents ">
-  
-      <p>Directory of the run.</p>
-  </div>
-
-</div>
-
-<div class="doc doc-object doc-attribute">
-
-
-
-<h2 id="danling.runner.runner_base.RunnerBase.log_path" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">log_path</span><span class="p">:</span> <span class="nb">str</span></code>
-  
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-cached"><code>cached</code></small>
-      <small class="doc doc-label doc-label-property"><code>property</code></small>
-  </span>
-
-<a href="#danling.runner.runner_base.RunnerBase.log_path" class="headerlink" title="Permanent link">&para;</a></h2>
-
-
-  <div class="doc doc-contents ">
-  
-      <p>Path of log file.</p>
-  </div>
-
-</div>
-
-<div class="doc doc-object doc-attribute">
-
-
-
-<h2 id="danling.runner.runner_base.RunnerBase.checkpoint_dir" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">checkpoint_dir</span><span class="p">:</span> <span class="nb">str</span></code>
-  
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-cached"><code>cached</code></small>
-      <small class="doc doc-label doc-label-property"><code>property</code></small>
-  </span>
-
-<a href="#danling.runner.runner_base.RunnerBase.checkpoint_dir" class="headerlink" title="Permanent link">&para;</a></h2>
-
-
-  <div class="doc doc-contents ">
-  
-      <p>Directory of checkpoints.</p>
+      <p>Number of processes.</p>
   </div>
 
 </div>
@@ -3197,8 +3221,388 @@ It is useful to determine the best model and the best hyper-parameters.</p>
 
 
 
+
+<h2 id="danling.runner.runner_base.RunnerBase.dict" class="doc doc-heading">
+          <code class="highlight language-python"><span class="nb">dict</span><span class="p">(</span><span class="bp">cls</span><span class="o">=</span><span class="nb">dict</span><span class="p">)</span></code>
+
+<a href="#danling.runner.runner_base.RunnerBase.dict" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>Convert state to Mapping.</p>
+
+
+
+  <p><strong>Parameters:</strong></p>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Type</th>
+        <th>Description</th>
+        <th>Default</th>
+      </tr>
+    </thead>
+    <tbody>
+        <tr>
+          <td><code>cls</code></td>
+          <td>
+                <code><span title="collections.abc.Callable">Callable</span></code>
+          </td>
+          <td>
+            <div class="doc-md-description">
+              <p>Target `clc to convert to.</p>
+            </div>
+          </td>
+          <td>
+                <code><a class="autorefs autorefs-internal" title="danling.runner.runner_base.RunnerBase.dict" href="#danling.runner.runner_base.RunnerBase.dict">dict</a></code>
+          </td>
+        </tr>
+    </tbody>
+  </table>
+
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-244">244</a></span>
+<span class="normal"><a href="#__codelineno-0-245">245</a></span>
+<span class="normal"><a href="#__codelineno-0-246">246</a></span>
+<span class="normal"><a href="#__codelineno-0-247">247</a></span>
+<span class="normal"><a href="#__codelineno-0-248">248</a></span>
+<span class="normal"><a href="#__codelineno-0-249">249</a></span>
+<span class="normal"><a href="#__codelineno-0-250">250</a></span>
+<span class="normal"><a href="#__codelineno-0-251">251</a></span>
+<span class="normal"><a href="#__codelineno-0-252">252</a></span>
+<span class="normal"><a href="#__codelineno-0-253">253</a></span>
+<span class="normal"><a href="#__codelineno-0-254">254</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-244" name="__codelineno-0-244"></a><span class="k">def</span> <span class="nf">dict</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="bp">cls</span><span class="p">:</span> <span class="n">Callable</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Mapping</span><span class="p">:</span>
+<a id="__codelineno-0-245" name="__codelineno-0-245"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-246" name="__codelineno-0-246"></a><span class="sd">    Convert state to Mapping.</span>
+<a id="__codelineno-0-247" name="__codelineno-0-247"></a>
+<a id="__codelineno-0-248" name="__codelineno-0-248"></a><span class="sd">    Args:</span>
+<a id="__codelineno-0-249" name="__codelineno-0-249"></a><span class="sd">        cls: Target `clc to convert to.</span>
+<a id="__codelineno-0-250" name="__codelineno-0-250"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-251" name="__codelineno-0-251"></a>
+<a id="__codelineno-0-252" name="__codelineno-0-252"></a>    <span class="c1"># pylint: disable=C0103</span>
+<a id="__codelineno-0-253" name="__codelineno-0-253"></a>
+<a id="__codelineno-0-254" name="__codelineno-0-254"></a>    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">dict</span><span class="p">(</span><span class="bp">cls</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+          </details>
+  </div>
+
+</div>
+
+
+<div class="doc doc-object doc-function">
+
+
+
+
+<h2 id="danling.runner.runner_base.RunnerBase.from_json" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">from_json</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
+  
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+<a href="#danling.runner.runner_base.RunnerBase.from_json" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>Construct Runner from json file.</p>
+<p>This function calls <code>self.from_jsons()</code> to construct object from json string.
+You may overwrite <code>from_jsons</code> in case something is not json serializable.</p>
+
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-265">265</a></span>
+<span class="normal"><a href="#__codelineno-0-266">266</a></span>
+<span class="normal"><a href="#__codelineno-0-267">267</a></span>
+<span class="normal"><a href="#__codelineno-0-268">268</a></span>
+<span class="normal"><a href="#__codelineno-0-269">269</a></span>
+<span class="normal"><a href="#__codelineno-0-270">270</a></span>
+<span class="normal"><a href="#__codelineno-0-271">271</a></span>
+<span class="normal"><a href="#__codelineno-0-272">272</a></span>
+<span class="normal"><a href="#__codelineno-0-273">273</a></span>
+<span class="normal"><a href="#__codelineno-0-274">274</a></span>
+<span class="normal"><a href="#__codelineno-0-275">275</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-265" name="__codelineno-0-265"></a><span class="nd">@classmethod</span>
+<a id="__codelineno-0-266" name="__codelineno-0-266"></a><span class="k">def</span> <span class="nf">from_json</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">file</span><span class="p">:</span> <span class="n">File</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">RunnerBase</span><span class="p">:</span>
+<a id="__codelineno-0-267" name="__codelineno-0-267"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-268" name="__codelineno-0-268"></a><span class="sd">    Construct Runner from json file.</span>
+<a id="__codelineno-0-269" name="__codelineno-0-269"></a>
+<a id="__codelineno-0-270" name="__codelineno-0-270"></a><span class="sd">    This function calls `self.from_jsons()` to construct object from json string.</span>
+<a id="__codelineno-0-271" name="__codelineno-0-271"></a><span class="sd">    You may overwrite `from_jsons` in case something is not json serializable.</span>
+<a id="__codelineno-0-272" name="__codelineno-0-272"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-273" name="__codelineno-0-273"></a>
+<a id="__codelineno-0-274" name="__codelineno-0-274"></a>    <span class="k">with</span> <span class="n">FlatDict</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">file</span><span class="p">)</span> <span class="k">as</span> <span class="n">fp</span><span class="p">:</span>  <span class="c1"># pylint: disable=C0103</span>
+<a id="__codelineno-0-275" name="__codelineno-0-275"></a>        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">from_jsons</span><span class="p">(</span><span class="n">fp</span><span class="o">.</span><span class="n">read</span><span class="p">(),</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+          </details>
+  </div>
+
+</div>
+
+
+<div class="doc doc-object doc-function">
+
+
+
+
+<h2 id="danling.runner.runner_base.RunnerBase.from_jsons" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">from_jsons</span><span class="p">(</span><span class="n">string</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
+  
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+<a href="#danling.runner.runner_base.RunnerBase.from_jsons" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>Construct Runner from json string.</p>
+
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-284">284</a></span>
+<span class="normal"><a href="#__codelineno-0-285">285</a></span>
+<span class="normal"><a href="#__codelineno-0-286">286</a></span>
+<span class="normal"><a href="#__codelineno-0-287">287</a></span>
+<span class="normal"><a href="#__codelineno-0-288">288</a></span>
+<span class="normal"><a href="#__codelineno-0-289">289</a></span>
+<span class="normal"><a href="#__codelineno-0-290">290</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-284" name="__codelineno-0-284"></a><span class="nd">@classmethod</span>
+<a id="__codelineno-0-285" name="__codelineno-0-285"></a><span class="k">def</span> <span class="nf">from_jsons</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">string</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">RunnerBase</span><span class="p">:</span>
+<a id="__codelineno-0-286" name="__codelineno-0-286"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-287" name="__codelineno-0-287"></a><span class="sd">    Construct Runner from json string.</span>
+<a id="__codelineno-0-288" name="__codelineno-0-288"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-289" name="__codelineno-0-289"></a>
+<a id="__codelineno-0-290" name="__codelineno-0-290"></a>    <span class="k">return</span> <span class="bp">cls</span><span class="p">(</span><span class="n">Config</span><span class="o">.</span><span class="n">from_jsons</span><span class="p">(</span><span class="n">string</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">))</span>
+</code></pre></div></td></tr></table></div>
+          </details>
+  </div>
+
+</div>
+
+
+<div class="doc doc-object doc-function">
+
+
+
+
+<h2 id="danling.runner.runner_base.RunnerBase.from_yaml" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">from_yaml</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
+  
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+<a href="#danling.runner.runner_base.RunnerBase.from_yaml" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>Construct Runner from yaml file.</p>
+<p>This function calls <code>self.from_yamls()</code> to construct object from yaml string.
+You may overwrite <code>from_yamls</code> in case something is not yaml serializable.</p>
+
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-301">301</a></span>
+<span class="normal"><a href="#__codelineno-0-302">302</a></span>
+<span class="normal"><a href="#__codelineno-0-303">303</a></span>
+<span class="normal"><a href="#__codelineno-0-304">304</a></span>
+<span class="normal"><a href="#__codelineno-0-305">305</a></span>
+<span class="normal"><a href="#__codelineno-0-306">306</a></span>
+<span class="normal"><a href="#__codelineno-0-307">307</a></span>
+<span class="normal"><a href="#__codelineno-0-308">308</a></span>
+<span class="normal"><a href="#__codelineno-0-309">309</a></span>
+<span class="normal"><a href="#__codelineno-0-310">310</a></span>
+<span class="normal"><a href="#__codelineno-0-311">311</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-301" name="__codelineno-0-301"></a><span class="nd">@classmethod</span>
+<a id="__codelineno-0-302" name="__codelineno-0-302"></a><span class="k">def</span> <span class="nf">from_yaml</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">file</span><span class="p">:</span> <span class="n">File</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">RunnerBase</span><span class="p">:</span>
+<a id="__codelineno-0-303" name="__codelineno-0-303"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-304" name="__codelineno-0-304"></a><span class="sd">    Construct Runner from yaml file.</span>
+<a id="__codelineno-0-305" name="__codelineno-0-305"></a>
+<a id="__codelineno-0-306" name="__codelineno-0-306"></a><span class="sd">    This function calls `self.from_yamls()` to construct object from yaml string.</span>
+<a id="__codelineno-0-307" name="__codelineno-0-307"></a><span class="sd">    You may overwrite `from_yamls` in case something is not yaml serializable.</span>
+<a id="__codelineno-0-308" name="__codelineno-0-308"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-309" name="__codelineno-0-309"></a>
+<a id="__codelineno-0-310" name="__codelineno-0-310"></a>    <span class="k">with</span> <span class="n">FlatDict</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">file</span><span class="p">)</span> <span class="k">as</span> <span class="n">fp</span><span class="p">:</span>  <span class="c1"># pylint: disable=C0103</span>
+<a id="__codelineno-0-311" name="__codelineno-0-311"></a>        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">from_yamls</span><span class="p">(</span><span class="n">fp</span><span class="o">.</span><span class="n">read</span><span class="p">(),</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+          </details>
+  </div>
+
+</div>
+
+
+<div class="doc doc-object doc-function">
+
+
+
+
+<h2 id="danling.runner.runner_base.RunnerBase.from_yamls" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">from_yamls</span><span class="p">(</span><span class="n">string</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
+  
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+<a href="#danling.runner.runner_base.RunnerBase.from_yamls" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>Construct Runner from yaml string.</p>
+
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-320">320</a></span>
+<span class="normal"><a href="#__codelineno-0-321">321</a></span>
+<span class="normal"><a href="#__codelineno-0-322">322</a></span>
+<span class="normal"><a href="#__codelineno-0-323">323</a></span>
+<span class="normal"><a href="#__codelineno-0-324">324</a></span>
+<span class="normal"><a href="#__codelineno-0-325">325</a></span>
+<span class="normal"><a href="#__codelineno-0-326">326</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-320" name="__codelineno-0-320"></a><span class="nd">@classmethod</span>
+<a id="__codelineno-0-321" name="__codelineno-0-321"></a><span class="k">def</span> <span class="nf">from_yamls</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">string</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">RunnerBase</span><span class="p">:</span>
+<a id="__codelineno-0-322" name="__codelineno-0-322"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-323" name="__codelineno-0-323"></a><span class="sd">    Construct Runner from yaml string.</span>
+<a id="__codelineno-0-324" name="__codelineno-0-324"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-325" name="__codelineno-0-325"></a>
+<a id="__codelineno-0-326" name="__codelineno-0-326"></a>    <span class="k">return</span> <span class="bp">cls</span><span class="p">(</span><span class="n">Config</span><span class="o">.</span><span class="n">from_yamls</span><span class="p">(</span><span class="n">string</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">))</span>
+</code></pre></div></td></tr></table></div>
+          </details>
+  </div>
+
+</div>
+
+
+<div class="doc doc-object doc-function">
+
+
+
+
+<h2 id="danling.runner.runner_base.RunnerBase.json" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">json</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="n">main_process_only</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
+
+<a href="#danling.runner.runner_base.RunnerBase.json" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>Dump Runner State to json file.</p>
+
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-256">256</a></span>
+<span class="normal"><a href="#__codelineno-0-257">257</a></span>
+<span class="normal"><a href="#__codelineno-0-258">258</a></span>
+<span class="normal"><a href="#__codelineno-0-259">259</a></span>
+<span class="normal"><a href="#__codelineno-0-260">260</a></span>
+<span class="normal"><a href="#__codelineno-0-261">261</a></span>
+<span class="normal"><a href="#__codelineno-0-262">262</a></span>
+<span class="normal"><a href="#__codelineno-0-263">263</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-256" name="__codelineno-0-256"></a><span class="nd">@catch</span>
+<a id="__codelineno-0-257" name="__codelineno-0-257"></a><span class="k">def</span> <span class="nf">json</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">file</span><span class="p">:</span> <span class="n">File</span><span class="p">,</span> <span class="n">main_process_only</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>  <span class="c1"># pylint: disable=W1113</span>
+<a id="__codelineno-0-258" name="__codelineno-0-258"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-259" name="__codelineno-0-259"></a><span class="sd">    Dump Runner State to json file.</span>
+<a id="__codelineno-0-260" name="__codelineno-0-260"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-261" name="__codelineno-0-261"></a>
+<a id="__codelineno-0-262" name="__codelineno-0-262"></a>    <span class="k">if</span> <span class="n">main_process_only</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_main_process</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">main_process_only</span><span class="p">:</span>
+<a id="__codelineno-0-263" name="__codelineno-0-263"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">json</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+          </details>
+  </div>
+
+</div>
+
+
+<div class="doc doc-object doc-function">
+
+
+
+
+<h2 id="danling.runner.runner_base.RunnerBase.jsons" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">jsons</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
+
+<a href="#danling.runner.runner_base.RunnerBase.jsons" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>Dump Runner State to json string.</p>
+
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-277">277</a></span>
+<span class="normal"><a href="#__codelineno-0-278">278</a></span>
+<span class="normal"><a href="#__codelineno-0-279">279</a></span>
+<span class="normal"><a href="#__codelineno-0-280">280</a></span>
+<span class="normal"><a href="#__codelineno-0-281">281</a></span>
+<span class="normal"><a href="#__codelineno-0-282">282</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-277" name="__codelineno-0-277"></a><span class="k">def</span> <span class="nf">jsons</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<a id="__codelineno-0-278" name="__codelineno-0-278"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-279" name="__codelineno-0-279"></a><span class="sd">    Dump Runner State to json string.</span>
+<a id="__codelineno-0-280" name="__codelineno-0-280"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-281" name="__codelineno-0-281"></a>
+<a id="__codelineno-0-282" name="__codelineno-0-282"></a>    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">jsons</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+          </details>
+  </div>
+
+</div>
+
+
+<div class="doc doc-object doc-function">
+
+
+
+
+<h2 id="danling.runner.runner_base.RunnerBase.load" class="doc doc-heading">
+          <code class="highlight language-python"><span class="n">load</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
+  
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+<a href="#danling.runner.runner_base.RunnerBase.load" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+  <div class="doc doc-contents ">
+  
+      <p>Load any file with supported extensions.</p>
+<p><code>Runner.load</code> is identical to <code>dl.load</code>.</p>
+
+          <details class="quote">
+            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
+            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-234">234</a></span>
+<span class="normal"><a href="#__codelineno-0-235">235</a></span>
+<span class="normal"><a href="#__codelineno-0-236">236</a></span>
+<span class="normal"><a href="#__codelineno-0-237">237</a></span>
+<span class="normal"><a href="#__codelineno-0-238">238</a></span>
+<span class="normal"><a href="#__codelineno-0-239">239</a></span>
+<span class="normal"><a href="#__codelineno-0-240">240</a></span>
+<span class="normal"><a href="#__codelineno-0-241">241</a></span>
+<span class="normal"><a href="#__codelineno-0-242">242</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-234" name="__codelineno-0-234"></a><span class="nd">@staticmethod</span>
+<a id="__codelineno-0-235" name="__codelineno-0-235"></a><span class="k">def</span> <span class="nf">load</span><span class="p">(</span><span class="n">file</span><span class="p">:</span> <span class="n">PathStr</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>  <span class="c1"># pylint: disable=C0103</span>
+<a id="__codelineno-0-236" name="__codelineno-0-236"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-237" name="__codelineno-0-237"></a><span class="sd">    Load any file with supported extensions.</span>
+<a id="__codelineno-0-238" name="__codelineno-0-238"></a>
+<a id="__codelineno-0-239" name="__codelineno-0-239"></a><span class="sd">    `Runner.load` is identical to `dl.load`.</span>
+<a id="__codelineno-0-240" name="__codelineno-0-240"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-241" name="__codelineno-0-241"></a>
+<a id="__codelineno-0-242" name="__codelineno-0-242"></a>    <span class="k">return</span> <span class="n">load</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+          </details>
+  </div>
+
+</div>
+
+
+<div class="doc doc-object doc-function">
+
+
+
+
 <h2 id="danling.runner.runner_base.RunnerBase.save" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">save</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">file</span><span class="p">,</span> <span class="n">main_process_only</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
+          <code class="highlight language-python"><span class="n">save</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">file</span><span class="p">,</span> <span class="n">main_process_only</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
 
 <a href="#danling.runner.runner_base.RunnerBase.save" class="headerlink" title="Permanent link">&para;</a></h2>
 
@@ -3252,289 +3656,9 @@ Moreover, any error raised by <code>Runner.save</code> will be caught and logged
 
 
 
-<h2 id="danling.runner.runner_base.RunnerBase.load" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">load</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
-  
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
-  </span>
-
-<a href="#danling.runner.runner_base.RunnerBase.load" class="headerlink" title="Permanent link">&para;</a></h2>
-
-
-  <div class="doc doc-contents ">
-  
-      <p>Load any file with supported extensions.</p>
-<p><code>Runner.load</code> is identical to <code>dl.load</code>.</p>
-
-          <details class="quote">
-            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-234">234</a></span>
-<span class="normal"><a href="#__codelineno-0-235">235</a></span>
-<span class="normal"><a href="#__codelineno-0-236">236</a></span>
-<span class="normal"><a href="#__codelineno-0-237">237</a></span>
-<span class="normal"><a href="#__codelineno-0-238">238</a></span>
-<span class="normal"><a href="#__codelineno-0-239">239</a></span>
-<span class="normal"><a href="#__codelineno-0-240">240</a></span>
-<span class="normal"><a href="#__codelineno-0-241">241</a></span>
-<span class="normal"><a href="#__codelineno-0-242">242</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-234" name="__codelineno-0-234"></a><span class="nd">@staticmethod</span>
-<a id="__codelineno-0-235" name="__codelineno-0-235"></a><span class="k">def</span> <span class="nf">load</span><span class="p">(</span><span class="n">file</span><span class="p">:</span> <span class="n">PathStr</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>  <span class="c1"># pylint: disable=C0103</span>
-<a id="__codelineno-0-236" name="__codelineno-0-236"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-237" name="__codelineno-0-237"></a><span class="sd">    Load any file with supported extensions.</span>
-<a id="__codelineno-0-238" name="__codelineno-0-238"></a>
-<a id="__codelineno-0-239" name="__codelineno-0-239"></a><span class="sd">    `Runner.load` is identical to `dl.load`.</span>
-<a id="__codelineno-0-240" name="__codelineno-0-240"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-241" name="__codelineno-0-241"></a>
-<a id="__codelineno-0-242" name="__codelineno-0-242"></a>    <span class="k">return</span> <span class="n">load</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
-</code></pre></div></td></tr></table></div>
-          </details>
-  </div>
-
-</div>
-
-
-<div class="doc doc-object doc-function">
-
-
-
-<h2 id="danling.runner.runner_base.RunnerBase.dict" class="doc doc-heading">
-<code class="highlight language-python"><span class="nb">dict</span><span class="p">(</span><span class="bp">cls</span><span class="o">=</span><span class="nb">dict</span><span class="p">)</span></code>
-
-<a href="#danling.runner.runner_base.RunnerBase.dict" class="headerlink" title="Permanent link">&para;</a></h2>
-
-
-  <div class="doc doc-contents ">
-  
-      <p>Convert state to Mapping.</p>
-
-
-
-  <p><strong>Parameters:</strong></p>
-  <table>
-    <thead>
-      <tr>
-        <th>Name</th>
-        <th>Type</th>
-        <th>Description</th>
-        <th>Default</th>
-      </tr>
-    </thead>
-    <tbody>
-        <tr>
-          <td><code>cls</code></td>
-          <td>
-                <code><span title="collections.abc.Callable">Callable</span></code>
-          </td>
-          <td>
-            <div class="doc-md-description">
-              <p>Target `clc to convert to.</p>
-            </div>
-          </td>
-          <td>
-                <code><a class="autorefs autorefs-internal" title="danling.runner.runner_base.RunnerBase.dict" href="../../../runner/runner_base/#danling.runner.runner_base.RunnerBase.dict">dict</a></code>
-          </td>
-        </tr>
-    </tbody>
-  </table>
-
-          <details class="quote">
-            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-244">244</a></span>
-<span class="normal"><a href="#__codelineno-0-245">245</a></span>
-<span class="normal"><a href="#__codelineno-0-246">246</a></span>
-<span class="normal"><a href="#__codelineno-0-247">247</a></span>
-<span class="normal"><a href="#__codelineno-0-248">248</a></span>
-<span class="normal"><a href="#__codelineno-0-249">249</a></span>
-<span class="normal"><a href="#__codelineno-0-250">250</a></span>
-<span class="normal"><a href="#__codelineno-0-251">251</a></span>
-<span class="normal"><a href="#__codelineno-0-252">252</a></span>
-<span class="normal"><a href="#__codelineno-0-253">253</a></span>
-<span class="normal"><a href="#__codelineno-0-254">254</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-244" name="__codelineno-0-244"></a><span class="k">def</span> <span class="nf">dict</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="bp">cls</span><span class="p">:</span> <span class="n">Callable</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Mapping</span><span class="p">:</span>
-<a id="__codelineno-0-245" name="__codelineno-0-245"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-246" name="__codelineno-0-246"></a><span class="sd">    Convert state to Mapping.</span>
-<a id="__codelineno-0-247" name="__codelineno-0-247"></a>
-<a id="__codelineno-0-248" name="__codelineno-0-248"></a><span class="sd">    Args:</span>
-<a id="__codelineno-0-249" name="__codelineno-0-249"></a><span class="sd">        cls: Target `clc to convert to.</span>
-<a id="__codelineno-0-250" name="__codelineno-0-250"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-251" name="__codelineno-0-251"></a>
-<a id="__codelineno-0-252" name="__codelineno-0-252"></a>    <span class="c1"># pylint: disable=C0103</span>
-<a id="__codelineno-0-253" name="__codelineno-0-253"></a>
-<a id="__codelineno-0-254" name="__codelineno-0-254"></a>    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">dict</span><span class="p">(</span><span class="bp">cls</span><span class="p">)</span>
-</code></pre></div></td></tr></table></div>
-          </details>
-  </div>
-
-</div>
-
-
-<div class="doc doc-object doc-function">
-
-
-
-<h2 id="danling.runner.runner_base.RunnerBase.json" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">json</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="n">main_process_only</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
-
-<a href="#danling.runner.runner_base.RunnerBase.json" class="headerlink" title="Permanent link">&para;</a></h2>
-
-
-  <div class="doc doc-contents ">
-  
-      <p>Dump Runner State to json file.</p>
-
-          <details class="quote">
-            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-256">256</a></span>
-<span class="normal"><a href="#__codelineno-0-257">257</a></span>
-<span class="normal"><a href="#__codelineno-0-258">258</a></span>
-<span class="normal"><a href="#__codelineno-0-259">259</a></span>
-<span class="normal"><a href="#__codelineno-0-260">260</a></span>
-<span class="normal"><a href="#__codelineno-0-261">261</a></span>
-<span class="normal"><a href="#__codelineno-0-262">262</a></span>
-<span class="normal"><a href="#__codelineno-0-263">263</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-256" name="__codelineno-0-256"></a><span class="nd">@catch</span>
-<a id="__codelineno-0-257" name="__codelineno-0-257"></a><span class="k">def</span> <span class="nf">json</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">file</span><span class="p">:</span> <span class="n">File</span><span class="p">,</span> <span class="n">main_process_only</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>  <span class="c1"># pylint: disable=W1113</span>
-<a id="__codelineno-0-258" name="__codelineno-0-258"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-259" name="__codelineno-0-259"></a><span class="sd">    Dump Runner State to json file.</span>
-<a id="__codelineno-0-260" name="__codelineno-0-260"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-261" name="__codelineno-0-261"></a>
-<a id="__codelineno-0-262" name="__codelineno-0-262"></a>    <span class="k">if</span> <span class="n">main_process_only</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_main_process</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">main_process_only</span><span class="p">:</span>
-<a id="__codelineno-0-263" name="__codelineno-0-263"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">json</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
-</code></pre></div></td></tr></table></div>
-          </details>
-  </div>
-
-</div>
-
-
-<div class="doc doc-object doc-function">
-
-
-
-<h2 id="danling.runner.runner_base.RunnerBase.from_json" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">from_json</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
-  
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
-  </span>
-
-<a href="#danling.runner.runner_base.RunnerBase.from_json" class="headerlink" title="Permanent link">&para;</a></h2>
-
-
-  <div class="doc doc-contents ">
-  
-      <p>Construct Runner from json file.</p>
-<p>This function calls <code>self.from_jsons()</code> to construct object from json string.
-You may overwrite <code>from_jsons</code> in case something is not json serializable.</p>
-
-          <details class="quote">
-            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-265">265</a></span>
-<span class="normal"><a href="#__codelineno-0-266">266</a></span>
-<span class="normal"><a href="#__codelineno-0-267">267</a></span>
-<span class="normal"><a href="#__codelineno-0-268">268</a></span>
-<span class="normal"><a href="#__codelineno-0-269">269</a></span>
-<span class="normal"><a href="#__codelineno-0-270">270</a></span>
-<span class="normal"><a href="#__codelineno-0-271">271</a></span>
-<span class="normal"><a href="#__codelineno-0-272">272</a></span>
-<span class="normal"><a href="#__codelineno-0-273">273</a></span>
-<span class="normal"><a href="#__codelineno-0-274">274</a></span>
-<span class="normal"><a href="#__codelineno-0-275">275</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-265" name="__codelineno-0-265"></a><span class="nd">@classmethod</span>
-<a id="__codelineno-0-266" name="__codelineno-0-266"></a><span class="k">def</span> <span class="nf">from_json</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">file</span><span class="p">:</span> <span class="n">File</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">RunnerBase</span><span class="p">:</span>
-<a id="__codelineno-0-267" name="__codelineno-0-267"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-268" name="__codelineno-0-268"></a><span class="sd">    Construct Runner from json file.</span>
-<a id="__codelineno-0-269" name="__codelineno-0-269"></a>
-<a id="__codelineno-0-270" name="__codelineno-0-270"></a><span class="sd">    This function calls `self.from_jsons()` to construct object from json string.</span>
-<a id="__codelineno-0-271" name="__codelineno-0-271"></a><span class="sd">    You may overwrite `from_jsons` in case something is not json serializable.</span>
-<a id="__codelineno-0-272" name="__codelineno-0-272"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-273" name="__codelineno-0-273"></a>
-<a id="__codelineno-0-274" name="__codelineno-0-274"></a>    <span class="k">with</span> <span class="n">FlatDict</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">file</span><span class="p">)</span> <span class="k">as</span> <span class="n">fp</span><span class="p">:</span>  <span class="c1"># pylint: disable=C0103</span>
-<a id="__codelineno-0-275" name="__codelineno-0-275"></a>        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">from_jsons</span><span class="p">(</span><span class="n">fp</span><span class="o">.</span><span class="n">read</span><span class="p">(),</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
-</code></pre></div></td></tr></table></div>
-          </details>
-  </div>
-
-</div>
-
-
-<div class="doc doc-object doc-function">
-
-
-
-<h2 id="danling.runner.runner_base.RunnerBase.jsons" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">jsons</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
-
-<a href="#danling.runner.runner_base.RunnerBase.jsons" class="headerlink" title="Permanent link">&para;</a></h2>
-
-
-  <div class="doc doc-contents ">
-  
-      <p>Dump Runner State to json string.</p>
-
-          <details class="quote">
-            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-277">277</a></span>
-<span class="normal"><a href="#__codelineno-0-278">278</a></span>
-<span class="normal"><a href="#__codelineno-0-279">279</a></span>
-<span class="normal"><a href="#__codelineno-0-280">280</a></span>
-<span class="normal"><a href="#__codelineno-0-281">281</a></span>
-<span class="normal"><a href="#__codelineno-0-282">282</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-277" name="__codelineno-0-277"></a><span class="k">def</span> <span class="nf">jsons</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
-<a id="__codelineno-0-278" name="__codelineno-0-278"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-279" name="__codelineno-0-279"></a><span class="sd">    Dump Runner State to json string.</span>
-<a id="__codelineno-0-280" name="__codelineno-0-280"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-281" name="__codelineno-0-281"></a>
-<a id="__codelineno-0-282" name="__codelineno-0-282"></a>    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">jsons</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
-</code></pre></div></td></tr></table></div>
-          </details>
-  </div>
-
-</div>
-
-
-<div class="doc doc-object doc-function">
-
-
-
-<h2 id="danling.runner.runner_base.RunnerBase.from_jsons" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">from_jsons</span><span class="p">(</span><span class="n">string</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
-  
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
-  </span>
-
-<a href="#danling.runner.runner_base.RunnerBase.from_jsons" class="headerlink" title="Permanent link">&para;</a></h2>
-
-
-  <div class="doc doc-contents ">
-  
-      <p>Construct Runner from json string.</p>
-
-          <details class="quote">
-            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-284">284</a></span>
-<span class="normal"><a href="#__codelineno-0-285">285</a></span>
-<span class="normal"><a href="#__codelineno-0-286">286</a></span>
-<span class="normal"><a href="#__codelineno-0-287">287</a></span>
-<span class="normal"><a href="#__codelineno-0-288">288</a></span>
-<span class="normal"><a href="#__codelineno-0-289">289</a></span>
-<span class="normal"><a href="#__codelineno-0-290">290</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-284" name="__codelineno-0-284"></a><span class="nd">@classmethod</span>
-<a id="__codelineno-0-285" name="__codelineno-0-285"></a><span class="k">def</span> <span class="nf">from_jsons</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">string</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">RunnerBase</span><span class="p">:</span>
-<a id="__codelineno-0-286" name="__codelineno-0-286"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-287" name="__codelineno-0-287"></a><span class="sd">    Construct Runner from json string.</span>
-<a id="__codelineno-0-288" name="__codelineno-0-288"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-289" name="__codelineno-0-289"></a>
-<a id="__codelineno-0-290" name="__codelineno-0-290"></a>    <span class="k">return</span> <span class="bp">cls</span><span class="p">(</span><span class="n">Config</span><span class="o">.</span><span class="n">from_jsons</span><span class="p">(</span><span class="n">string</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">))</span>
-</code></pre></div></td></tr></table></div>
-          </details>
-  </div>
-
-</div>
-
-
-<div class="doc doc-object doc-function">
-
-
 
 <h2 id="danling.runner.runner_base.RunnerBase.yaml" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">yaml</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="n">main_process_only</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
+          <code class="highlight language-python"><span class="n">yaml</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="n">main_process_only</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
 
 <a href="#danling.runner.runner_base.RunnerBase.yaml" class="headerlink" title="Permanent link">&para;</a></h2>
 
@@ -3571,58 +3695,9 @@ You may overwrite <code>from_jsons</code> in case something is not json serializ
 
 
 
-<h2 id="danling.runner.runner_base.RunnerBase.from_yaml" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">from_yaml</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
-  
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
-  </span>
-
-<a href="#danling.runner.runner_base.RunnerBase.from_yaml" class="headerlink" title="Permanent link">&para;</a></h2>
-
-
-  <div class="doc doc-contents ">
-  
-      <p>Construct Runner from yaml file.</p>
-<p>This function calls <code>self.from_yamls()</code> to construct object from yaml string.
-You may overwrite <code>from_yamls</code> in case something is not yaml serializable.</p>
-
-          <details class="quote">
-            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-301">301</a></span>
-<span class="normal"><a href="#__codelineno-0-302">302</a></span>
-<span class="normal"><a href="#__codelineno-0-303">303</a></span>
-<span class="normal"><a href="#__codelineno-0-304">304</a></span>
-<span class="normal"><a href="#__codelineno-0-305">305</a></span>
-<span class="normal"><a href="#__codelineno-0-306">306</a></span>
-<span class="normal"><a href="#__codelineno-0-307">307</a></span>
-<span class="normal"><a href="#__codelineno-0-308">308</a></span>
-<span class="normal"><a href="#__codelineno-0-309">309</a></span>
-<span class="normal"><a href="#__codelineno-0-310">310</a></span>
-<span class="normal"><a href="#__codelineno-0-311">311</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-301" name="__codelineno-0-301"></a><span class="nd">@classmethod</span>
-<a id="__codelineno-0-302" name="__codelineno-0-302"></a><span class="k">def</span> <span class="nf">from_yaml</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">file</span><span class="p">:</span> <span class="n">File</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">RunnerBase</span><span class="p">:</span>
-<a id="__codelineno-0-303" name="__codelineno-0-303"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-304" name="__codelineno-0-304"></a><span class="sd">    Construct Runner from yaml file.</span>
-<a id="__codelineno-0-305" name="__codelineno-0-305"></a>
-<a id="__codelineno-0-306" name="__codelineno-0-306"></a><span class="sd">    This function calls `self.from_yamls()` to construct object from yaml string.</span>
-<a id="__codelineno-0-307" name="__codelineno-0-307"></a><span class="sd">    You may overwrite `from_yamls` in case something is not yaml serializable.</span>
-<a id="__codelineno-0-308" name="__codelineno-0-308"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-309" name="__codelineno-0-309"></a>
-<a id="__codelineno-0-310" name="__codelineno-0-310"></a>    <span class="k">with</span> <span class="n">FlatDict</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">file</span><span class="p">)</span> <span class="k">as</span> <span class="n">fp</span><span class="p">:</span>  <span class="c1"># pylint: disable=C0103</span>
-<a id="__codelineno-0-311" name="__codelineno-0-311"></a>        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">from_yamls</span><span class="p">(</span><span class="n">fp</span><span class="o">.</span><span class="n">read</span><span class="p">(),</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
-</code></pre></div></td></tr></table></div>
-          </details>
-  </div>
-
-</div>
-
-
-<div class="doc doc-object doc-function">
-
-
 
 <h2 id="danling.runner.runner_base.RunnerBase.yamls" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">yamls</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
+          <code class="highlight language-python"><span class="n">yamls</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
 
 <a href="#danling.runner.runner_base.RunnerBase.yamls" class="headerlink" title="Permanent link">&para;</a></h2>
 
@@ -3644,46 +3719,6 @@ You may overwrite <code>from_yamls</code> in case something is not yaml serializ
 <a id="__codelineno-0-316" name="__codelineno-0-316"></a><span class="sd">    &quot;&quot;&quot;</span>
 <a id="__codelineno-0-317" name="__codelineno-0-317"></a>
 <a id="__codelineno-0-318" name="__codelineno-0-318"></a>    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">yamls</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
-</code></pre></div></td></tr></table></div>
-          </details>
-  </div>
-
-</div>
-
-
-<div class="doc doc-object doc-function">
-
-
-
-<h2 id="danling.runner.runner_base.RunnerBase.from_yamls" class="doc doc-heading">
-<code class="highlight language-python"><span class="n">from_yamls</span><span class="p">(</span><span class="n">string</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></code>
-  
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
-  </span>
-
-<a href="#danling.runner.runner_base.RunnerBase.from_yamls" class="headerlink" title="Permanent link">&para;</a></h2>
-
-
-  <div class="doc doc-contents ">
-  
-      <p>Construct Runner from yaml string.</p>
-
-          <details class="quote">
-            <summary>Source code in <code>danling/runner/runner_base.py</code></summary>
-            <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-320">320</a></span>
-<span class="normal"><a href="#__codelineno-0-321">321</a></span>
-<span class="normal"><a href="#__codelineno-0-322">322</a></span>
-<span class="normal"><a href="#__codelineno-0-323">323</a></span>
-<span class="normal"><a href="#__codelineno-0-324">324</a></span>
-<span class="normal"><a href="#__codelineno-0-325">325</a></span>
-<span class="normal"><a href="#__codelineno-0-326">326</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-320" name="__codelineno-0-320"></a><span class="nd">@classmethod</span>
-<a id="__codelineno-0-321" name="__codelineno-0-321"></a><span class="k">def</span> <span class="nf">from_yamls</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">string</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">RunnerBase</span><span class="p">:</span>
-<a id="__codelineno-0-322" name="__codelineno-0-322"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-323" name="__codelineno-0-323"></a><span class="sd">    Construct Runner from yaml string.</span>
-<a id="__codelineno-0-324" name="__codelineno-0-324"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-325" name="__codelineno-0-325"></a>
-<a id="__codelineno-0-326" name="__codelineno-0-326"></a>    <span class="k">return</span> <span class="bp">cls</span><span class="p">(</span><span class="n">Config</span><span class="o">.</span><span class="n">from_yamls</span><span class="p">(</span><span class="n">string</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">))</span>
 </code></pre></div></td></tr></table></div>
           </details>
   </div>
@@ -3919,7 +3954,7 @@ You may overwrite <code>from_yamls</code> in case something is not yaml serializ
     <script id="__config" type="application/json">{"base": "../../..", "features": ["announce.dismiss", "content.code.annotate", "content.code.copy", "content.tabs.link", "content.tooltips", "header.autohide", "navigation.expand", "navigation.footer", "navigation.indexes", "navigation.prune", "navigation.sections", "navigation.tabs", "navigation.tabs.sticky", "navigation.top", "navigation.tracking", "search.highlight", "search.share", "search.suggest", "toc.follow", "toc.integrate"], "search": "../../../assets/javascripts/workers/search.dfff1995.min.js", "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}}</script>
     
     
-      <script src="../../../assets/javascripts/bundle.78eede0e.min.js"></script>
+      <script src="../../../assets/javascripts/bundle.dff1b7c8.min.js"></script>
       
         <script src="../../../javascripts/mathjax.js"></script>
       
