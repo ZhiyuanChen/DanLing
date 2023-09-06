@@ -1003,16 +1003,20 @@ class BaseRunner(metaclass=RunnerMeta):
         return result
 
     def format_step_result(self, result: NestedDict, split: str, steps: int, length: int) -> str:
+        result = NestedDict(result).clone()
         repr_str = ""
         if split is not None:
             if self.mode == "train":
                 repr_str = f"training on {split} "
             elif self.mode == "eval":
                 repr_str = f"evaluating on {split} "
+            else:
+                repr_str = f"running in {self.mode} mode on {split} "
         repr_str += f"[{steps}/{length}]\t"
         return repr_str + self.format_result(result)
 
     def format_epoch_result(self, result: NestedDict, epochs: int | None = None, epoch_end: int | None = None) -> str:
+        result = NestedDict(result).clone()
         epochs = epochs or self.state.epochs
         epoch_end = epoch_end or self.state.epoch_end
         repr_str = f"epoch [{epochs}/{epoch_end - 1}]\n" if epochs is not None and epoch_end else ""
@@ -1023,7 +1027,7 @@ class BaseRunner(metaclass=RunnerMeta):
         return "\t".join([f"{k}: {v}" for k, v in result.items()])
 
     def write_result(self, result: NestedDict, split: str, steps: int):
-        for name, score in result.clone().all_items():
+        for name, score in result.all_items():
             name = name.replace(".", "/")
             if name == "loss" and isinstance(score, AverageMeter):
                 score = score.avg
@@ -1037,7 +1041,7 @@ class BaseRunner(metaclass=RunnerMeta):
                 self.write_score(name, score, split, steps)
 
     def write_score(self, name: str, score: float, split: str, steps: int):
-        if self.tensorboard:
+        if self.writer:
             self.writer.add_scalar(f"{split}/{name}", score, steps)  # type: ignore
 
     @catch

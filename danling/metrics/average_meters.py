@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from chanfig import DefaultDict, FlatDict
+from chanfig import DefaultDict, NestedDict
 
 
 class AverageMeter:
@@ -143,20 +143,20 @@ class AverageMeters(DefaultDict):
         super().__init__(*args, **kwargs)
 
     @property
-    def val(self) -> FlatDict[str, float]:
-        return FlatDict({key: meter.val for key, meter in self.items()})
+    def val(self) -> NestedDict[str, float]:
+        return NestedDict({key: meter.val for key, meter in self.items()})
 
     @property
-    def avg(self) -> FlatDict[str, float]:
-        return FlatDict({key: meter.avg for key, meter in self.items()})
+    def avg(self) -> NestedDict[str, float]:
+        return NestedDict({key: meter.avg for key, meter in self.items()})
 
     @property
-    def sum(self) -> FlatDict[str, float]:
-        return FlatDict({key: meter.sum for key, meter in self.items()})
+    def sum(self) -> NestedDict[str, float]:
+        return NestedDict({key: meter.sum for key, meter in self.items()})
 
     @property
-    def count(self) -> FlatDict[str, int]:
-        return FlatDict({key: meter.count for key, meter in self.items()})
+    def count(self) -> NestedDict[str, int]:
+        return NestedDict({key: meter.count for key, meter in self.items()})
 
     def reset(self) -> None:
         r"""
