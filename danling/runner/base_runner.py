@@ -997,7 +997,7 @@ class BaseRunner(metaclass=RunnerMeta):
         result = self.meters.val
         if self.metrics is not None:
             result.merge(self.metrics.val)
-        self.print(self.format_step_result(result, split, iteration, length))
+        print(self.format_step_result(result, split, iteration, length))
         if self.mode == "train":
             self.write_result(result, split, iteration)
         return result
