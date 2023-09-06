@@ -107,7 +107,9 @@ class TorchRunner(BaseRunner):
         early_stop_counter = 0
         print("begin training")
         self.state.epoch_begin = self.state.epochs
-        for self.state.epochs in range(self.state.epoch_begin, self.state.epoch_end):  # noqa: B020
+        patience = self.state.get("patience", float("inf"))
+        for epochs in range(self.state.epoch_begin, self.state.epoch_end):
+            self.state.epochs = epochs
             result = NestedDict()
             result.setattr("convert_mapping", True)
             result.train = self.train_epoch()
@@ -120,7 +122,7 @@ class TorchRunner(BaseRunner):
             self.save_result()
             self.save_checkpoint()
             early_stop_counter = 0 if self.is_best else early_stop_counter + 1
-            if self.patience and early_stop_counter > self.patience:
+            if early_stop_counter > patience:
                 print("early stop")
                 break
         return self.results
