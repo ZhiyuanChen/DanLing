@@ -1,7 +1,6 @@
 import torchvision
 from chanfig import Config, Registry
 from torch import nn, optim
-from torch.utils import data
 
 import danling as dl
 
@@ -49,8 +48,6 @@ class MNISTRunner(dl.TorchRunner):
         # only run on a few samples to speed up testing process
         self.datasets.train.data = self.datasets.train.data[:64]
         self.datasets.val.data = self.datasets.val.data[:64]
-        self.dataloaders.train = data.DataLoader(self.datasets.train, shuffle=True, **self.dataloader)
-        self.dataloaders.val = data.DataLoader(self.datasets.val, shuffle=True, **self.dataloader)
 
         self.model = getattr(torchvision.models, self.network.name)(pretrained=False, num_classes=10)
         self.model.conv1 = nn.Conv2d(1, 64, 1, bias=False)

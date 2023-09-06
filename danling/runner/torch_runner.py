@@ -12,7 +12,7 @@ from accelerate import Accelerator
 from accelerate.utils import DeepSpeedPlugin, DistributedType
 from chanfig import NestedDict
 from torch import distributed as dist
-from torch import nn, optim
+from torch import nn, optim, utils
 from torch.backends import cudnn
 from tqdm import tqdm
 
@@ -30,6 +30,18 @@ from .utils import on_main_process
 class TorchRunner(BaseRunner):
     r"""
     Set up everything for running a job.
+
+    `TorchRunner` uses [`accelerate`][accelerate] as distributed backend to
+    provide seamless distributed training experience.
+
+    `TorchRunner` will automatically [`prepare`][accelerate.Accelerator.prepare] everything,
+    including `model`, `criterion`, `optimizer`, `scheduler`, and `dataloaders` for distribute training,
+    mixed precision, and deepspeed (optional).
+
+    In fact, you don't even need to create `dataloaders`, just define
+    `datasets` and `TorchRunner` will create `dataloaders` for you.
+    `TorchRunner` will inspect the `train` flag in corresponding dataset to
+    automatically set `shuffle`.
 
     Attributes:
         accelerator (Accelerator):
@@ -65,10 +77,16 @@ class TorchRunner(BaseRunner):
         self._prepare()
 
     def _prepare(self):
-        objects = [self.model, self.criterion, self.optimizer, self.scheduler]
-        dataloader_names = []
         if self.accelerator.distributed_type == DistributedType.DEEPSPEED:
             self.init_deepspeed()
+        if self.datasets:
+            datasets = {k: d for k, d in self.datasets.items() if k not in self.dataloaders}
+            dataloader_kwargs = self.state.get("dataloader", {})
+            for k, d in datasets.items():
+                shuffle = dataloader_kwargs.shuffle if "shuffle" in dataloader_kwargs else getattr(d, "train", True)
+                self.dataloaders[k] = utils.data.DataLoader(d, shuffle=shuffle, **dataloader_kwargs)
+        objects = [self.model, self.criterion, self.optimizer, self.scheduler]
+        dataloader_names = []
         for name, dataloader in self.dataloaders.items():
             dataloader_names.append(name)
             objects.append(dataloader)
