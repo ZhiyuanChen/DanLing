@@ -326,6 +326,38 @@ class TorchRunner(BaseRunner):
             config["steps_per_print"] = self.print_interval
         if config.get("train_micro_batch_size_per_gpu", "auto") == "auto":
             config["train_micro_batch_size_per_gpu"] = self.batch_size
+        if "amp" in config:
+            amp = config["amp"]
+            if amp.get("enabled", "auto") == "auto":
+                amp["enabled"] = "true"
+            if amp.get("opt_level", "auto") == "auto":
+                amp["opt_level"] = "O1"
+        if "zero_optimization" in config:
+            zero = config["zero_optimization"]
+            if zero.get("allgather_bucket_size") == "auto":
+                zero["allgather_bucket_size"] = 1e6
+            if zero.get("reduce_bucket_size") == "auto":
+                zero["reduce_bucket_size"] = 1e6
+            if zero.get("stage3_max_live_parameters") == "auto":
+                zero["stage3_max_live_parameters"] = 1e8
+            if zero.get("stage3_max_live_gradients") == "auto":
+                zero["stage3_max_live_gradients"] = 1e8
+            if zero.get("stage3_max_reuse_distance") == "auto":
+                zero["stage3_max_reuse_distance"] = 1e8
+            if zero.get("stage3_prefetch_bucket_size") == "auto":
+                zero["stage3_prefetch_bucket_size"] = 1e6
+            if zero.get("stage3_param_persistence_threshold") == "auto":
+                zero["stage3_param_persistence_threshold"] = 1e8
+            if "amp" in config:
+                if "fp16" not in config:
+                    config["fp16"] = {}
+                if config["fp16"].get("enabled", "auto"):
+                    config["fp16"]["enabled"] = config["amp"]["enabled"]
+                warn(
+                    f"AMP is not compatible with ZeRO. Automatically set 'fp16' to {config['amp']['enabled']}",
+                    stacklevel=2,
+                )
+                del config["amp"]
         if "optimizer" in config:
             if "params" not in config["optimizer"]:
                 config["optimizer"]["params"] = {}
@@ -334,6 +366,10 @@ class TorchRunner(BaseRunner):
                 optimizer["lr"] = self.state.get("optim.lr", 1e-3)
             if optimizer.get("weight_decay", "auto") == "auto":
                 optimizer["weight_decay"] = self.state.get("optim.weight_decay", 1e-2)
+            if optimizer.get("betas") == "auto":
+                optimizer["betas"] = (0.9, 0.999)
+            if optimizer.get("eps") == "auto":
+                optimizer["eps"] = 1e-8
         if "scheduler" in config:
             if "params" not in config["scheduler"]:
                 config["scheduler"]["params"] = {}
