@@ -66,7 +66,7 @@ class Test:
         self.runner.train()
 
     def test_evaluate(self):
-        self.runner.evaluate()
+        self.runner.evaluate(["val"])
 
 
 if __name__ == "__main__":

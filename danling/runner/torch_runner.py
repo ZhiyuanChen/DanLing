@@ -103,20 +103,39 @@ class TorchRunner(BaseRunner):
             raise ValueError("accelerator is not used")
         return self.accelerator.state.deepspeed_plugin.deepspeed_config
 
-    def train(self):
+    def train(self, train_splits: list[str] | None = None, eval_splits: list[str] | None = None) -> NestedDict:
+        r"""
+        Perform training on `split`.
+
+        Args:
+            train_splits (list[str]): list of split to run train.
+                Defaults to `["train"]`.
+            eval_splits (list[str]): list of split to run evaluate.
+                Defaults to `self.dataloaders` except for those in `train_splits`.
+
+        Return:
+            NestedDict: train results
+        """
+
         early_stop_counter = 0
-        print("begin training")
+        if train_splits is None:
+            train_splits = ["train"]
+        if eval_splits is None:
+            eval_splits = [s for s in self.dataloaders if s not in train_splits]
         self.state.epoch_begin = self.state.epochs
+        print(f"Begin training from {self.state.epoch_begin} to {self.state.epoch_end}")
+        print(f"Training splits: {train_splits}")
+        print(f"Evaluation splits: {eval_splits}")
         patience = self.state.get("patience", float("inf"))
+        result = NestedDict()
+        result.setattr("convert_mapping", True)
         for epochs in range(self.state.epoch_begin, self.state.epoch_end):
             self.state.epochs = epochs
-            result = NestedDict()
-            result.setattr("convert_mapping", True)
-            result.train = self.train_epoch()
-            if "val" in self.dataloaders:
-                result.val = self.evaluate_epoch("val")
-            if "test" in self.dataloaders:
-                result.test = self.evaluate_epoch("test")
+            result.clear()
+            for split in train_splits:
+                result[split] = self.train_epoch(split)
+            for split in eval_splits:
+                result[split] = self.evaluate_epoch(split)
             self.append_result(result)
             print(self.format_epoch_result(result))
             self.save_result()
@@ -127,7 +146,7 @@ class TorchRunner(BaseRunner):
                 break
         return self.results
 
-    def train_epoch(self, split: str = "train"):
+    def train_epoch(self, split: str = "train") -> NestedDict:
         r"""
         Train one epoch on `split`.
 
@@ -135,7 +154,7 @@ class TorchRunner(BaseRunner):
             split (str): split to run train
 
         Return:
-            Dict[str, float]: train result
+            NestedDict: train result
         """
 
         # pylint: disable=E1101, E1102, W0622
@@ -183,14 +202,32 @@ class TorchRunner(BaseRunner):
             result.merge(self.metrics.avg)
         return result
 
-    def evaluate(self):
-        print("begin evaluation")
-        result = self.evaluate_epoch()
-        print(self.format_epoch_result({"evaluate": result}))
+    def evaluate(self, eval_splits: list[str] | None = None) -> NestedDict:
+        r"""
+        Perform evaluation on `eval_splits`.
+
+        Args:
+            eval_splits (list[str]): list of split to run evaluate.
+                Defaults to `["eval"]`.
+
+        Return:
+            NestedDict: evaluation result
+        """
+
+        if eval_splits is None:
+            eval_splits = ["eval"]
+
+        print("Begin evaluation")
+        print(f"Evaluation splits: {eval_splits}")
+        result = NestedDict()
+        result.setattr("convert_mapping", True)
+        for split in eval_splits:
+            result[split] = self.evaluate_epoch(split=split)
+        print(self.format_epoch_result(result))
         return result
 
     @torch.inference_mode()
-    def evaluate_epoch(self, split: str = "val"):
+    def evaluate_epoch(self, split: str = "val") -> NestedDict:
         r"""
         Evaluate one epoch on `split`.
 
@@ -198,7 +235,7 @@ class TorchRunner(BaseRunner):
             split (str): split to run evaluate
 
         Return:
-            Dict[str, float]: evaluation result
+            NestedDict: evaluation result
         """
 
         # pylint: disable=E1101, E1102, W0622
@@ -234,7 +271,7 @@ class TorchRunner(BaseRunner):
         return result
 
     @torch.inference_mode()
-    def inference(self, split: str = "inf"):
+    def inference(self, split: str = "inf") -> list:
         r"""
         Perform inference on `split`.
 
@@ -338,11 +375,8 @@ class TorchRunner(BaseRunner):
                 Defaults to `self.state.seed` (`config.seed`).
 
             bias: Make the seed different for each processes.
-
-                This avoids same data augmentation are applied on every processes.
-
+                This is used to ensure the data augmentation are applied differently on every processes.
                 Defaults to `self.rank`.
-
                 Set to `False` to disable this feature.
         """
 
