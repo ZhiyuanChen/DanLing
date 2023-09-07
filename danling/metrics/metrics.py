@@ -77,14 +77,22 @@ class Metrics(Metric):
 
     @torch.inference_mode()
     def update(self, input: Any, target: Any) -> None:
-        if not isinstance(input, torch.Tensor):
-            input = torch.tensor(input)
-        if not isinstance(target, torch.Tensor):
-            target = torch.tensor(target)
-        # input, target = input.to(self.device), target.to(self.device)
-        self._input, self._target = input, target
-        self._input_buffer.append(input.to(self.device))
-        self._target_buffer.append(target.to(self.device))
+        if isinstance(input, NestedTensor):
+            self._input = input
+            self._input_buffer.extend(input.to(self.device).storage)
+        else:
+            if not isinstance(input, torch.Tensor):
+                input = torch.tensor(input)
+            self._input = input
+            self._input_buffer.append(input.to(self.device))
+        if isinstance(target, NestedTensor):
+            self._target = target
+            self._target_buffer.extend(target.to(self.device).storage)
+        else:
+            if not isinstance(target, torch.Tensor):
+                target = torch.tensor(target)
+            self._target = target
+            self._target_buffer.append(target.to(self.device))
 
     def compute(self) -> FlatDict[str, float]:
         return self.comp
