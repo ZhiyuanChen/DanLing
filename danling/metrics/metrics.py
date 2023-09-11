@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from functools import partial
 from math import nan
 from typing import Any, Callable, Iterable
 
@@ -12,8 +11,6 @@ from chanfig import FlatDict
 from torch import Tensor
 from torch import distributed as dist
 from torcheval.metrics import Metric
-from torcheval.metrics import functional as tef
-from torchmetrics import functional as tmf
 
 from danling.tensors import NestedTensor
 
@@ -259,29 +256,3 @@ class IndexMetrics(Metrics):
 
     def average_score(self) -> float | flist:
         return self.calculate(self.metric, self.inputs, self.targets)
-
-
-def binary_metrics():
-    return Metrics(auroc=tef.binary_auroc, auprc=tef.binary_auprc, acc=tef.binary_accuracy)
-
-
-def multiclass_metrics(num_classes: int):
-    auroc = partial(tef.multiclass_auroc, num_classes=num_classes)
-    auprc = partial(tef.multiclass_auprc, num_classes=num_classes)
-    acc = partial(tef.multiclass_accuracy, num_classes=num_classes)
-    return Metrics(auroc=auroc, auprc=auprc, acc=acc)
-
-
-def multilabel_metrics(num_labels: int):
-    auroc = partial(tmf.classification.multilabel_auroc, num_labels=num_labels)
-    auprc = partial(tef.multilabel_auprc, num_labels=num_labels)
-    return Metrics(auroc=auroc, auprc=auprc, acc=tef.multilabel_accuracy)
-
-
-def regression_metrics():
-    return Metrics(
-        pearson=tmf.pearson_corrcoef,
-        spearman=tmf.spearman_corrcoef,
-        r2=tef.r2_score,
-        mse=tef.mean_squared_error,
-    )
