@@ -1,11 +1,12 @@
+from __future__ import annotations
+
+import traceback
 from functools import lru_cache, wraps
 from inspect import isfunction
 from os import makedirs
 from os.path import abspath
 from sys import stderr
-from traceback import format_exc
 from typing import Callable, Optional
-from warnings import warn
 from weakref import ref
 
 from danling.typing import Exceptions
@@ -49,13 +50,39 @@ def flexible_decorator(maybe_decorator: Optional[Callable] = None):
     return decorator(maybe_decorator)
 
 
+def print_exc(exc, func, args, kwargs, verbosity: int = 40):  # pylint: disable=W0613
+    r"""
+    Print exception raised by `func` with `args` and `kwargs` to `stderr`.
+    This function serves as the default callback for catch.
+
+    Args:
+        verbosity: What level of traceback to print.
+            0-: No traceback.
+            0-10: Full information of arguments and key word arguments.
+            10-20: Stack trace to function calls.
+            40+: Function name and error messages.
+    """
+
+    if verbosity >= 0:
+        message = traceback.format_exc()
+        message += f"\nencoutered when calling {func}"
+        if verbosity <= 20:
+            message += "\n\nstack:\n" + "\n".join(traceback.format_stack()[:-2])
+        if verbosity <= 10:
+            message += "\n" + f"args: {args}\nkwargs: {kwargs}"
+        try:
+            print(message, file=stderr, force=True)  # type: ignore
+        except TypeError:
+            print(message, file=stderr)
+
+
 @flexible_decorator
-def catch(
+def catch(  # pylint: disable=W1113
     error: Exceptions = Exception,
-    exclude: Optional[Exceptions] = None,
-    verbosity: int = 40,
-    verbose: Optional[bool] = None,
-    print_args: Optional[bool] = None,
+    exclude: Exceptions | None = None,
+    callback: Callable = print_exc,
+    *callback_args,
+    **callback_kwargs,
 ):
     r"""
     Decorator to catch `error` except for `exclude`.
@@ -66,16 +93,13 @@ def catch(
     Decorating `save` method with `catch` will allow you to catch these errors and continue your running.
 
     Args:
-        error:
-        exclude:
-        verbosity: What level of traceback to print.
-            0-: No traceback.
-            0-20: Detailed traceback with arguments.
-            40+: Function name and error messages.
-        verbose: Deprecated in favor of `verbosity`.
-            Whether to print the traceback.
-        print_args: Deprecated in favor of `verbosity`.
-            Whether to print the arguments passed to the function.
+        error: Exceptions to be caught.
+        exclude: Exceptions to be excluded.
+        callback: Callback to be called when an error occurs.
+            The first four arguments to `callback` are `exc`, `func`, `args`, `kwargs`.
+            Additional arguments should be passed with `*callback_args` and `**callback_kwargs`.
+        callback_args: Arguments to be passed to `callback`.
+        callback_kwargs: Keyword arguments to be passed to `callback`.
 
     Examples:
         >>> def file_not_found(*args, **kwargs):
@@ -85,15 +109,7 @@ def catch(
         >>> file_not_found()
         >>> raise ValueError
         >>> assert 1 == 2
-
     """
-
-    if verbose:
-        warn("verbose is deprecated in favor of verbosity", category=DeprecationWarning, stacklevel=2)
-        verbosity = 40
-    if print_args:
-        warn("verbose is deprecated in favor of verbosity", category=DeprecationWarning, stacklevel=2)
-        verbosity = 20
 
     def decorator(func):
         @wraps(func)
@@ -103,15 +119,7 @@ def catch(
             except error as exc:  # pylint: disable=W0703
                 if exclude is not None and isinstance(exc, exclude):
                     raise exc
-                if verbosity >= 0:
-                    message = format_exc()
-                    message += f"\nencoutered when calling {func}"
-                    if verbosity <= 20:
-                        message += f"with args {args} and kwargs {kwargs}"
-                    try:
-                        print(message, file=stderr, force=True)  # type: ignore
-                    except TypeError:
-                        print(message, file=stderr)
+                callback(exc, func, args, kwargs, *callback_args, **callback_kwargs)
 
         return wrapper
 
