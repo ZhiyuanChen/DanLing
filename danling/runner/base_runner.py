@@ -448,7 +448,7 @@ class BaseRunner(metaclass=RunnerMeta):
         if not self.state.results:
             return None
         latest_index = next(reversed(self.state.results if PY38_PLUS else list(self.state.results)))  # type: ignore
-        ret = self.state.results[latest_index]
+        ret = self.state.results[latest_index].clone()
         ret["index"] = latest_index
         return ret
 
@@ -461,7 +461,7 @@ class BaseRunner(metaclass=RunnerMeta):
         if not self.state.results:
             return None
         best_index = self.best_index
-        ret = self.state.results[best_index]
+        ret = self.state.results[best_index].clone()
         ret["index"] = best_index
         return ret
 
