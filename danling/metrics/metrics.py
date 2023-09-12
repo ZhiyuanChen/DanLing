@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from functools import partial
 from math import nan
 from typing import Any, Callable, Iterable
@@ -58,8 +59,9 @@ class Metrics(Metric):
     _target_buffer: list[Tensor]
     index: str
     best_fn: Callable
+    merge_dict: bool = True
 
-    def __init__(self, *args, **metrics: FlatDict[str, Callable]):
+    def __init__(self, *args, merge_dict: bool | None = None, **metrics: FlatDict[str, Callable]):
         super().__init__()
         self._add_state("_input", torch.empty(0))
         self._add_state("_target", torch.empty(0))
@@ -68,6 +70,8 @@ class Metrics(Metric):
         self._add_state("_input_buffer", [])
         self._add_state("_target_buffer", [])
         self.metrics = FlatDict(*args, **metrics)
+        if merge_dict is not None:
+            self.merge_dict = merge_dict
 
     @torch.inference_mode()
     def update(self, input: Any, target: Any) -> None:
@@ -110,6 +114,12 @@ class Metrics(Metric):
             score = metric(input, target)
             if isinstance(score, Tensor):
                 ret[name] = score.item() if score.numel() == 1 else flist(score.tolist())
+            elif isinstance(score, Mapping):
+                if self.merge_dict:
+                    ret.merge(score)
+                else:
+                    for n, s in score:
+                        ret[f"{name}.{n}"] = s
             else:
                 ret[name] = score
         return ret
