@@ -15,6 +15,8 @@ from torcheval.metrics import Metric
 from torcheval.metrics import functional as tef
 from torchmetrics import functional as tmf
 
+from danling.tensors import NestedTensor
+
 
 def world_size() -> int:
     r"""Return the number of processes in the current process group."""
@@ -159,6 +161,8 @@ class Metrics(Metric):
             else:
                 self._inputs.extend(self._input_buffer)
             self._input_buffer = []
+        if isinstance(self._input, NestedTensor):
+            return NestedTensor(self._inputs)
         return torch.cat(self._inputs, 0)
 
     @property
@@ -174,6 +178,8 @@ class Metrics(Metric):
             else:
                 self._targets.extend(self._target_buffer)
             self._target_buffer = []
+        if isinstance(self._target, NestedTensor):
+            return NestedTensor(self._targets)
         return torch.cat(self._targets, 0)
 
     def __repr__(self):
