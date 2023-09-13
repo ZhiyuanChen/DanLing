@@ -20,7 +20,7 @@ Except for `@property` of json serialisable attributes.
 
 ### [`RunnerBase`][danling.runner.runner_base.RunnerBase]
 
-[`RunnerBase`][danling.runner.abstract_base_runner.RunnerBase] gives you a basic instinct on what attributes and properties are provided by the Runner.
+[`RunnerBase`][danling.runner.base_runner.RunnerBase] gives you a basic instinct on what attributes and properties are provided by the Runner.
 
 It works in an AbstractBaseClass manner and should neither be used directly nor be inherited from.
 
