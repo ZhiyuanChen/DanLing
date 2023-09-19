@@ -56,7 +56,7 @@ class Metrics(Metric):
     _targets: list[Tensor]
     _input_buffer: list[Tensor]
     _target_buffer: list[Tensor]
-    index: str
+    score_name: str
     best_fn: Callable
     merge_dict: bool = True
 
@@ -209,39 +209,39 @@ class Metrics(Metric):
         )
 
 
-class IndexMetrics(Metrics):
+class ScoreMetrics(Metrics):
     r"""
-    IndexMetrics is a subclass of Metrics that supports scoring.
+    `ScoreMetrics` is a subclass of Metrics that supports scoring.
 
     Score is a single value that best represents the performance of the model.
     It is the core metrics that we use to compare different models.
     For example, in classification, we usually use auroc as the score.
 
-    IndexMetrics requires two additional arguments: `index` and `best_fn`.
-    `index` is the name of the metric that we use to compute the score.
+    `ScoreMetrics` requires two additional arguments: `score_name` and `best_fn`.
+    `score_name` is the name of the metric that we use to compute the score.
     `best_fn` is a function that takes a list of values and returns the best value.
-    `best_fn` is only not used by IndexMetrics, it is meant to be accessed by other classes.
+    `best_fn` is only not used by `ScoreMetrics`, it is meant to be accessed by other classes.
 
     Attributes:
-        index: The name of the metric that we use to compute the score.
+        score_name: The name of the metric that we use to compute the score.
         best_fn: A function that takes a list of values and returns the best value.
 
     Args:
         *args: A single mapping of metrics.
-        index: The name of the metric that we use to compute the score. Defaults to the first metric.
+        score_name: The name of the metric that we use to compute the score. Defaults to the first metric.
         best_fn: A function that takes a list of values and returns the best value. Defaults to `max`.
         **metrics: Metrics.
     """
 
-    index: str
+    score_name: str
     best_fn: Callable
 
     def __init__(
-        self, *args, index: str | None = None, best_fn: Callable | None = max, **metrics: FlatDict[str, Callable]
+        self, *args, score_name: str | None = None, best_fn: Callable | None = max, **metrics: FlatDict[str, Callable]
     ):
         super().__init__(*args, **metrics)
-        self.index = index or next(iter(self.metrics.keys()))
-        self.metric = self.metrics[self.index]
+        self.score_name = score_name or next(iter(self.metrics.keys()))
+        self.metric = self.metrics[self.score_name]
         self.best_fn = best_fn or max
 
     def score(self, scope: str) -> float | flist:
