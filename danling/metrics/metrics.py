@@ -135,18 +135,29 @@ class Metrics(Metric):
     def input(self):
         if world_size() == 1:
             return self._input
-        synced_input = [torch.zeros_like(self._input) for _ in range(dist.get_world_size())]
-        dist.all_gather(synced_input, self._input)
-        return torch.cat(synced_input, 0)
+        if isinstance(self._input, Tensor):
+            synced_tensor = [torch.zeros_like(self._input) for _ in range(dist.get_world_size())]
+            dist.all_gather(synced_tensor, self._input)
+            return torch.cat(synced_tensor, 0)
+        if isinstance(self._input, NestedTensor):
+            synced_tensors = [None for _ in range(dist.get_world_size())]
+            dist.all_gather_object(synced_tensors, self._input.storage)
+            return NestedTensor([i for j in synced_tensors for i in j])
+        raise ValueError(f"Expected input to be a Tensor or a NestedTensor, but got {type(self._input)}")
 
     @property
     @torch.inference_mode()
     def target(self):
         if world_size() == 1:
             return self._target
-        synced_target = [torch.zeros_like(self._target) for _ in range(dist.get_world_size())]
-        dist.all_gather(synced_target, self._target)
-        return torch.cat(synced_target, 0)
+        if isinstance(self._target, Tensor):
+            synced_tensor = [torch.zeros_like(self._target) for _ in range(dist.get_world_size())]
+            dist.all_gather(synced_tensor, self._target)
+            return torch.cat(synced_tensor, 0)
+        if isinstance(self._target, NestedTensor):
+            synced_tensors = [None for _ in range(dist.get_world_size())]
+            dist.all_gather_object(synced_tensors, self._target.storage)
+            return NestedTensor([i for j in synced_tensors for i in j])
 
     @property
     @torch.inference_mode()
@@ -155,9 +166,9 @@ class Metrics(Metric):
             return torch.empty(0)
         if self._input_buffer:
             if world_size() > 1:
-                synced_inputs = [None for _ in range(dist.get_world_size())]
-                dist.all_gather_object(synced_inputs, self._input_buffer)
-                self._inputs.extend([i for j in synced_inputs for i in j])
+                synced_tensors = [None for _ in range(dist.get_world_size())]
+                dist.all_gather_object(synced_tensors, self._input_buffer)
+                self._inputs.extend([i for j in synced_tensors for i in j])
             else:
                 self._inputs.extend(self._input_buffer)
             self._input_buffer = []
@@ -172,9 +183,9 @@ class Metrics(Metric):
             return torch.empty(0)
         if self._target_buffer:
             if world_size() > 1:
-                synced_targets = [None for _ in range(dist.get_world_size())]
-                dist.all_gather_object(synced_targets, self._target_buffer)
-                self._targets.extend([i for j in synced_targets for i in j])
+                synced_tensors = [None for _ in range(dist.get_world_size())]
+                dist.all_gather_object(synced_tensors, self._target_buffer)
+                self._targets.extend([i for j in synced_tensors for i in j])
             else:
                 self._targets.extend(self._target_buffer)
             self._target_buffer = []
