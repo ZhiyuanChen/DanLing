@@ -762,9 +762,9 @@ class BaseRunner(metaclass=RunnerMeta):
         self.lr_scale_factor = lr_scale_factor
         return lr
 
-    def step(self, zero_grad: bool = True, batch_size: int | None = None) -> None:
+    def step(self, loss, batch_size: int | None = None, zero_grad: bool = True) -> None:
         r"""
-        Step optimizer and scheduler.
+        Backward loss and step optimizer & scheduler.
 
         This method increment `self.state.steps`.
 
@@ -774,6 +774,12 @@ class BaseRunner(metaclass=RunnerMeta):
             zero_grad: Whether to zero the gradients.
         """
 
+        self.accelerator.backward(loss)
+        if self.sync_gradients:
+            if self.state.get("max_grad_value") is not None:
+                self.clip_grad_value_(self.model.parameters(), self.state.get("max_grad_value"))  # type: ignore
+            if self.state.get("max_grad_norm") is not None:
+                self.clip_grad_norm_(self.model.parameters(), self.state.get("max_grad_norm"))  # type: ignore
         if self.optimizer is not None:
             self.optimizer.step()
             if zero_grad:

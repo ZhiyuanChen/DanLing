@@ -178,15 +178,7 @@ class TorchRunner(BaseRunner):
                 loss = self.criterion(pred, target)
                 if self.metrics is not None:
                     self.metrics.update(pred, target)
-                self.accelerator.backward(loss)
-                if self.accelerator.sync_gradients:
-                    max_grad_value = self.state.get("max_grad_value")
-                    if max_grad_value:
-                        self.accelerator.clip_grad_value_(self.model.parameters(), max_grad_value)
-                    max_grad_norm = self.state.get("max_grad_norm")
-                    if max_grad_norm:
-                        self.accelerator.clip_grad_norm_(self.model.parameters(), max_grad_norm)
-                self.step()
+                self.step(loss)
 
             if self.print_interval > 0 and iteration % self.print_interval == 0:
                 if self.device == torch.device("cuda"):
