@@ -140,10 +140,12 @@ class TorchRunner(BaseRunner):
             print(self.format_epoch_result(result))
             self.save_result()
             self.save_checkpoint()
+            """@nni.report_intermediate_result(self.latest_score)"""  # pylint: disable=W0105
             early_stop_counter = 0 if self.is_best else early_stop_counter + 1
             if early_stop_counter > patience:
                 print("early stop")
                 break
+        """@nni.report_final_result(self.latest_score)"""  # pylint: disable=W0105
         return self.results
 
     def train_epoch(self, split: str = "train") -> NestedDict:
