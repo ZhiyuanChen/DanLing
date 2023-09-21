@@ -135,12 +135,13 @@ class BaseRunner(metaclass=RunnerMeta):
 
     def __init__(self, config: NestedDict) -> None:
         self._mode = RunnerMode.train
-        self.state = RunnerState(config)
         self.meters = AverageMeters()
         self.metrics = None
         self.datasets = FlatDict()
         self.datasamplers = FlatDict()
         self.dataloaders = FlatDict()
+        # must init state at last to avoid conflict names
+        self.state = RunnerState(config)
         self.init_distributed()
         if self.state.seed is not None:
             self.set_seed()
