@@ -509,7 +509,7 @@ class TorchRunner(BaseRunner):
             (int):
         """
 
-        batch_size = self.state.get("batch_size")
+        batch_size = self.state.get("dataloader.batch_size")
         if batch_size:
             return batch_size
         if self.dataloaders:
@@ -518,7 +518,7 @@ class TorchRunner(BaseRunner):
                 return loader.batch_size
             batch_sampler = loader.batch_sampler if loader.batch_sampler is not None else loader.sampler
             return batch_sampler.batch_size
-        raise AttributeError("batch_size could not be inferred, since no dataloaedr found.")
+        raise AttributeError("batch_size could not be inferred, since no dataloader found.")
 
     @property
     def accum_steps(self) -> int:
