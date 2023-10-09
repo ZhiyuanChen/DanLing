@@ -9,7 +9,7 @@ from warnings import warn
 
 import torch
 from accelerate import Accelerator
-from accelerate.utils import DeepSpeedPlugin, DistributedType
+from accelerate.utils import DeepSpeedPlugin
 from chanfig import NestedDict
 from torch import distributed as dist
 from torch import nn, optim, utils
@@ -77,8 +77,6 @@ class TorchRunner(BaseRunner):
         self._prepare()
 
     def _prepare(self):
-        if self.accelerator.distributed_type == DistributedType.DEEPSPEED:
-            self.init_deepspeed()
         if self.datasets:
             datasets = {k: d for k, d in self.datasets.items() if k not in self.dataloaders}
             dataloader_kwargs = self.state.get("dataloader", {})
@@ -298,89 +296,12 @@ class TorchRunner(BaseRunner):
         """
 
         if self.state.get("deepspeed"):
-            deepspeed = self.state.get("deepspeed")
-            if not isinstance(deepspeed, dict):
-                deepspeed = NestedDict.load(deepspeed)
-            deepspeed_config = NestedDict(hf_ds_config=deepspeed)
-            deepspeed_plugin = DeepSpeedPlugin(**deepspeed_config)
-            self.accelerate["deepspeed_plugin"] = deepspeed_plugin
+            self.accelerate["deepspeed_plugin"] = DeepSpeedPlugin(hf_ds_config=self.init_deepspeed())
         self.accelerator = Accelerator(**self.accelerate)
         if self.distributed:
             object_list = [self.state.id]
             dist.broadcast_object_list(object_list)
             self.state.id = object_list[0]
-
-    def init_deepspeed(self) -> None:
-        r"""
-        Set up config for DeepSpeed.
-        """
-        config = self.deepspeed
-        if config.get("steps_per_print", "auto") == "auto":
-            config["steps_per_print"] = self.print_interval
-        if config.get("train_micro_batch_size_per_gpu", "auto") == "auto":
-            config["train_micro_batch_size_per_gpu"] = self.batch_size
-        if "amp" in config:
-            amp = config["amp"]
-            if amp.get("enabled", "auto") == "auto":
-                amp["enabled"] = "true"
-            if amp.get("opt_level", "auto") == "auto":
-                amp["opt_level"] = "O1"
-        if "zero_optimization" in config:
-            zero = config["zero_optimization"]
-            if zero.get("allgather_bucket_size") == "auto":
-                zero["allgather_bucket_size"] = 1e6
-            if zero.get("reduce_bucket_size") == "auto":
-                zero["reduce_bucket_size"] = 1e6
-            if zero.get("stage3_max_live_parameters") == "auto":
-                zero["stage3_max_live_parameters"] = 1e8
-            if zero.get("stage3_max_live_gradients") == "auto":
-                zero["stage3_max_live_gradients"] = 1e8
-            if zero.get("stage3_max_reuse_distance") == "auto":
-                zero["stage3_max_reuse_distance"] = 1e8
-            if zero.get("stage3_prefetch_bucket_size") == "auto":
-                zero["stage3_prefetch_bucket_size"] = 1e6
-            if zero.get("stage3_param_persistence_threshold") == "auto":
-                zero["stage3_param_persistence_threshold"] = 1e8
-            if "amp" in config:
-                if "fp16" not in config:
-                    config["fp16"] = {}
-                if config["fp16"].get("enabled", "auto"):
-                    config["fp16"]["enabled"] = config["amp"]["enabled"]
-                warn(
-                    f"AMP is not compatible with ZeRO. Automatically set 'fp16' to {config['amp']['enabled']}",
-                    stacklevel=2,
-                )
-                del config["amp"]
-        if "optimizer" in config:
-            if "params" not in config["optimizer"]:
-                config["optimizer"]["params"] = {}
-            optimizer = config["optimizer"]["params"]
-            if optimizer.get("lr", "auto") == "auto":
-                optimizer["lr"] = self.state.get("optim.lr", 1e-3)
-            if optimizer.get("weight_decay", "auto") == "auto":
-                optimizer["weight_decay"] = self.state.get("optim.weight_decay", 1e-2)
-            if optimizer.get("betas") == "auto":
-                optimizer["betas"] = (0.9, 0.999)
-            if optimizer.get("eps") == "auto":
-                optimizer["eps"] = 1e-8
-        if "scheduler" in config:
-            if "params" not in config["scheduler"]:
-                config["scheduler"]["params"] = {}
-            scheduler = config["scheduler"]["params"]
-            if scheduler.get("total_num_steps", "auto") == "auto":
-                dataset = self.datasets.get("train", next(iter(self.datasets.values())))
-                scheduler["total_num_steps"] = self.state.epoch_end * len(dataset) // self.batch_size_equivalent
-            if scheduler.get("warmup_num_steps", "auto") == "auto":
-                scheduler["warmup_num_steps"] = scheduler["total_num_steps"] // 20
-            if scheduler.get("warmup_max_lr", "auto") == "auto":
-                if self.optimizer:
-                    scheduler["warmup_max_lr"] = self.optimizer.param_groups[0]["lr"]
-                elif "optimizer" in config:
-                    scheduler["warmup_max_lr"] = config["optimizer"]["params"]["lr"]
-                else:
-                    raise ValueError("warmup_max_lr is not defined and cannot be inferred")
-            if scheduler.get("warmup_min_lr", "auto") == "auto":
-                scheduler["warmup_min_lr"] = 1e-7
 
     @on_main_process
     def init_tensorboard(self, *args, **kwargs) -> None:
