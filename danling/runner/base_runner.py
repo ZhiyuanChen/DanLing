@@ -891,7 +891,7 @@ class BaseRunner(metaclass=RunnerMeta):
         If `self.state.save_interval` is positive and `self.state.epochs + 1` is a multiple of `save_interval`,
         the checkpoint will also be copied to `self.checkpoint_dir/epoch-{self.state.epochs}.pth`.
 
-        If `self.state.is_best` is `True`, the checkpoint will also be copied to `self.checkpoint_dir/best.pth`.
+        If `self.is_best` is `True`, the checkpoint will also be copied to `self.checkpoint_dir/best.pth`.
         """
 
         latest_path = os.path.join(self.checkpoint_dir, "latest.pth")
