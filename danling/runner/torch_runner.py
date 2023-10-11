@@ -83,16 +83,16 @@ class TorchRunner(BaseRunner):
             for k, d in datasets.items():
                 shuffle = dataloader_kwargs.shuffle if "shuffle" in dataloader_kwargs else getattr(d, "train", True)
                 self.dataloaders[k] = utils.data.DataLoader(d, shuffle=shuffle, **dataloader_kwargs)
-        objects = [self.model, self.criterion, self.optimizer, self.scheduler]
+        objects = [self.model, self.criterion, self.optimizer]
         dataloader_names = []
         for name, dataloader in self.dataloaders.items():
             dataloader_names.append(name)
             objects.append(dataloader)
         objects = self.prepare(*objects)
-        self.model, self.criterion, self.optimizer, self.scheduler = objects[:4]
-        if len(objects) != len(dataloader_names) + 4:
+        self.model, self.criterion, self.optimizer = objects[:3]
+        if len(objects) != len(dataloader_names) + 3:
             raise ValueError("Number of dataloaders does not match.")
-        for name, dataloader in zip(dataloader_names, objects[4:]):
+        for name, dataloader in zip(dataloader_names, objects[3:]):
             self.dataloaders[name] = dataloader
 
     @property
