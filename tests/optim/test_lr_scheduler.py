@@ -19,7 +19,7 @@ class Test:
         lrs = []
         scheduler = LRScheduler(
             self.optimizer,
-            steps=steps,
+            total_steps=steps,
             final_lr_ratio=final_lr_ratio,
             strategy=strategy,
             method=method,

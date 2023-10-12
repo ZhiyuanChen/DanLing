@@ -20,7 +20,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
 
     Args:
         optimizer: Wrapped optimizer.
-        steps: Total number of steps.
+        total_steps: Total number of steps.
         final_lr_ratio: Final learning rate ratio to initial learning rate.
             Defaults to 100.
         final_lr: Final learning rate. Deprecated, use `final_lr_ratio` instead.
@@ -43,14 +43,14 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         >>> import torch
         >>> from torch import optim
         >>> optimizer = optim.SGD([{'params': torch.tensor([0])}], lr=1, momentum=0.9)
-        >>> scheduler = LRScheduler(optimizer, steps=5, final_lr_ratio=1e-5, strategy='linear')
+        >>> scheduler = LRScheduler(optimizer, total_steps=5, final_lr_ratio=1e-5, strategy='linear')
         >>> lrs = []
         >>> for epoch in range(5):
         ...     lrs.append(scheduler.get_lr()[0])
         ...     scheduler.step()
         >>> [round(lr, 10) for lr in lrs]
         [0.1, 0.01, 0.001, 0.0001, 1e-09]
-        >>> scheduler = LRScheduler(optimizer, steps=5, final_lr_ratio=1e-5, strategy='cosine')
+        >>> scheduler = LRScheduler(optimizer, total_steps=5, final_lr_ratio=1e-5, strategy='cosine')
         >>> lrs = []
         >>> for epoch in range(5):
         ...     lrs.append(scheduler.get_lr()[0])
@@ -62,7 +62,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
     def __init__(  # pylint: disable=R0913
         self,
         optimizer: Optimizer,
-        steps: int,
+        total_steps: int,
         final_lr_ratio: float = 100,
         final_lr: Optional[float] = None,
         min_lr: float = 1e-9,
@@ -72,16 +72,18 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         last_epoch: int = -1,
         method: str = "percentile",
     ):
+        if total_steps <= 0:
+            raise ValueError(f"Total steps must be positive, but got {total_steps}")
         if warmup_steps is None:
-            warmup_steps = steps // 20
-        elif warmup_steps > steps:
-            raise ValueError(f"Warmup steps must be less than total steps, but got {warmup_steps} > {steps}")
+            warmup_steps = total_steps // 20
+        elif warmup_steps > total_steps:
+            raise ValueError(f"Warmup steps must be less than total steps, but got {warmup_steps} > {total_steps}")
         elif warmup_steps < 0:
             raise ValueError(f"Warmup steps must be positive, but got {warmup_steps}")
         if cooldown_steps is None:
-            cooldown_steps = steps // 5
-        elif cooldown_steps > steps:
-            raise ValueError(f"Cooldown steps must be less than total steps, but got {cooldown_steps} > {steps}")
+            cooldown_steps = total_steps // 5
+        elif cooldown_steps > total_steps:
+            raise ValueError(f"Cooldown steps must be less than total steps, but got {cooldown_steps} > {total_steps}")
         elif cooldown_steps < 0:
             raise ValueError(f"Cooldown steps must be positive, but got {cooldown_steps}")
         if final_lr_ratio < 0:
@@ -93,7 +95,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         }
         if strategy not in self.strategies:
             raise ValueError(f"Scaling strategy must be one of {self.strategies.keys()}, but got {strategy}")
-        self.steps = steps
+        self.total_steps = total_steps
         if final_lr is not None:
             warn(
                 "Argument `final_lr` is deprecated, use `final_lr_ratio` instead",
@@ -107,14 +109,16 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         self.method = method
         self.warmup_steps = warmup_steps
         self.cooldown_steps = cooldown_steps
-        self.cooldown_steps_begin = self.steps - self.cooldown_steps
+        self.cooldown_steps_begin = self.total_steps - self.cooldown_steps
         super().__init__(optimizer, last_epoch)
 
     def get_lr(self) -> List[float]:  # type: ignore
         step_count = self._step_count  # type: ignore
-        if step_count > self.steps + 1 or step_count < 1:
+        if step_count > self.total_steps + 1 or step_count < 1:
             warn(
-                f"Step count {step_count} is out of range [1, {self.steps + 1}]", category=RuntimeWarning, stacklevel=2
+                f"Step count {step_count} is out of range [1, {self.total_steps + 1}]",
+                category=RuntimeWarning,
+                stacklevel=2,
             )
         return [self._get_lr(lr, step_count) for lr in self.base_lrs]
 
@@ -129,7 +133,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
     ) -> float:
         method = method or self.method
         step_count = step_count or self._step_count  # type: ignore
-        progress = progress or min(max(step_count / self.steps, 0.0), 1.0)
+        progress = progress or min(max(step_count / self.total_steps, 0.0), 1.0)
         final_lr = self.final_lr or lr * self.final_lr_ratio
         ratio = getattr(self, self.strategy)(progress)
         if method == "percentile":
@@ -158,6 +162,6 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}({self.strategy}, method={self.method}, "
-            f"final_lr_ratio={self.final_lr_ratio}, steps={self.steps}, "
+            f"final_lr_ratio={self.final_lr_ratio}, total_steps={self.total_steps}, "
             f"warmup_steps={self.warmup_steps}, cooldown_steps={self.cooldown_steps})"
         )
