@@ -532,6 +532,6 @@ class TorchRunner(BaseRunner):
     def __getattr__(self, name: str) -> Any:
         with suppress(AttributeError):
             return super().__getattr__(name)
-        if self.accelerator is not None and hasattr(self.accelerator, name):
+        if "accelerator" in self.__dict__ and hasattr(self.accelerator, name):
             return getattr(self.accelerator, name)
         raise super().__getattribute__(name)
