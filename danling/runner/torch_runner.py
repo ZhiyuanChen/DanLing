@@ -355,6 +355,37 @@ class TorchRunner(BaseRunner):
         if torch.__version__ >= "1.8.0":
             torch.use_deterministic_algorithms(True)
 
+    def step(self, loss, batch_size: int | None = None, zero_grad: bool = True) -> None:
+        r"""
+        Backward loss and step optimizer & scheduler.
+
+        This method increment `self.state.steps`.
+
+        This method also increment `self.state.iters` when `batch_size` is specified.
+
+        Args:
+            zero_grad: Whether to zero the gradients.
+        """
+
+        self.accelerator.backward(loss)
+        if self.sync_gradients:
+            if self.state.get("max_grad_value") is not None:
+                self.clip_grad_value_(self.model.parameters(), self.state.get("max_grad_value"))  # type: ignore
+            if self.state.get("max_grad_norm") is not None:
+                self.clip_grad_norm_(self.model.parameters(), self.state.get("max_grad_norm"))  # type: ignore
+        if self.optimizer is not None:
+            self.optimizer.step()
+            if zero_grad:
+                self.optimizer.zero_grad()
+        if self.scheduler is not None:
+            self.scheduler.step()
+        self.state.steps += 1
+        if batch_size is None:
+            batch_size = self.batch_size_equivalent
+        self.state.iters += batch_size
+        # TODO: Support `drop_last = False`
+        # self.state.iters += self.batch_size_equivalent
+
     def state_dict(self, cls: Callable = dict) -> Mapping:
         r"""
         Return dict of all attributes for checkpoint.
