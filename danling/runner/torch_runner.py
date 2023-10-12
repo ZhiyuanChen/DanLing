@@ -125,7 +125,7 @@ class TorchRunner(BaseRunner):
         print(f"Training splits: {train_splits}")
         print(f"Evaluation splits: {eval_splits}")
         patience = self.state.get("patience", float("inf"))
-        for epochs in range(self.state.epoch_begin, self.state.epoch_end):
+        for epochs in range(self.state.epoch_begin, self.state.epoch_end):  # type: ignore
             self.state.epochs = epochs
             result = NestedDict()
             result.setattr("convert_mapping", True)

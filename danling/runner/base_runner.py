@@ -6,6 +6,7 @@ import os
 import random
 import shutil
 from collections.abc import Callable, Mapping, Sequence
+from math import ceil
 from sys import version_info
 from typing import Any
 from warnings import warn
@@ -177,7 +178,7 @@ class BaseRunner(metaclass=RunnerMeta):
         if self.model is not None:
             self.model.train(mode == RunnerMode.train)  # type: ignore
 
-    @property
+    @cached_property
     def batch_size(self) -> int:
         r"""
         Batch size.
@@ -190,7 +191,7 @@ class BaseRunner(metaclass=RunnerMeta):
             (int):
         """
 
-        batch_size = self.state.get("batch_size")
+        batch_size = self.state.get("dataloader.batch_size")
         if batch_size:
             return batch_size
         if self.dataloaders:
@@ -209,7 +210,20 @@ class BaseRunner(metaclass=RunnerMeta):
 
         return self.batch_size * self.world_size * getattr(self, "accum_steps", 1)
 
-    @property
+    @cached_property
+    def total_epochs(self) -> int:
+        if self.state.epoch_end:
+            return self.state.epoch_end - self.state.epoch_begin
+        raise ValueError("epoch_end is not specified")
+
+    @cached_property
+    def total_steps(self) -> int:
+        if self.state.step_end:
+            return self.state.step_end - self.state.step_begin
+        dataset = self.datasets.get("train", next(iter(self.datasets.values())))
+        return self.total_epochs * ceil(len(dataset) / self.batch_size)
+
+    @cached_property
     def accum_steps(self) -> int:
         r"""
         Accumulated steps.
@@ -405,13 +419,7 @@ class BaseRunner(metaclass=RunnerMeta):
             RuntimeError: If no terminal is defined.
         """
 
-        if hasattr(self.state, "iter_end"):
-            return self.state.iters / self.state.iter_end
-        if hasattr(self.state, "step_end"):
-            return self.state.steps / self.state.step_end
-        if hasattr(self.state, "epoch_end"):
-            return self.state.epochs / self.state.epoch_end
-        raise RuntimeError("DanLing cannot determine progress since no terminal is defined.")
+        return self.steps / self.total_steps
 
     @property
     def best_fn(self) -> Callable:
@@ -692,8 +700,7 @@ class BaseRunner(metaclass=RunnerMeta):
                 config["scheduler"]["params"] = {}
             scheduler = config["scheduler"]["params"]
             if scheduler.get("total_num_steps", "auto") == "auto":
-                dataset = self.datasets.get("train", next(iter(self.datasets.values())))
-                scheduler["total_num_steps"] = self.state.epoch_end * len(dataset) // self.batch_size_equivalent
+                scheduler["total_num_steps"] = self.total_steps
             if scheduler.get("warmup_num_steps", "auto") == "auto":
                 scheduler["warmup_num_steps"] = scheduler["total_num_steps"] // 20
             if scheduler.get("warmup_max_lr", "auto") == "auto":
@@ -963,6 +970,9 @@ class BaseRunner(metaclass=RunnerMeta):
             self.optimizer.load_state_dict(ckpt["optimizer"])
         if self.scheduler is not None and "scheduler" in ckpt:
             self.scheduler.load_state_dict(ckpt["scheduler"])
+        self.state.iter_begin = self.state.iters
+        self.state.step_begin = self.state.steps
+        self.state.epoch_begin = self.state.epochs
 
     @classmethod
     def from_checkpoint(cls, checkpoint: Mapping | bytes | str | os.PathLike, *args, **kwargs) -> BaseRunner:

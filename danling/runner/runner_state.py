@@ -140,12 +140,12 @@ class RunnerState(NestedDict):
     iters: int
     steps: int
     epochs: int
-    # iter_begin: int  # Deprecated
-    # step_begin: int  # Deprecated
-    # epoch_begin: int  # Deprecated
-    iter_end: int
-    step_end: int
-    epoch_end: int
+    iter_begin: int
+    step_begin: int
+    epoch_begin: int
+    iter_end: Optional[int]
+    step_end: Optional[int]
+    epoch_end: Optional[int]
 
     results: dict
     score_set: Optional[str]
@@ -194,9 +194,10 @@ class RunnerState(NestedDict):
             )
         self.deterministic = False
         self.seed = randint(0, 2**32 - 1)
-        self.iters = 0
-        self.steps = 0
-        self.epochs = 0
+        self.iter_begin = self.iters = 0
+        self.step_begin = self.steps = 0
+        self.epoch_begin = self.epochs = 0
+        self.iter_end = self.step_end = self.epoch_end = None
         self.results = NestedDict()
         self.score_set = None
         self.score_name = "loss"
