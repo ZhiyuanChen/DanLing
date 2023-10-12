@@ -134,12 +134,15 @@ class BaseRunner(metaclass=RunnerMeta):
     writer: Any | None = None
 
     def __init__(self, config: NestedDict) -> None:
+        if "datasets" not in self.__dict__:
+            self.datasets = FlatDict()
+        if "datasamplers" not in self.__dict__:
+            self.datasamplers = FlatDict()
+        if "dataloaders" not in self.__dict__:
+            self.dataloaders = FlatDict()
         self._mode = RunnerMode.train
         self.meters = AverageMeters()
         self.metrics = None
-        self.datasets = FlatDict()
-        self.datasamplers = FlatDict()
-        self.dataloaders = FlatDict()
         # must init state at last to avoid conflict names
         self.state = RunnerState(config)
         self.init_distributed()
