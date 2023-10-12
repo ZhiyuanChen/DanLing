@@ -97,10 +97,12 @@ class TorchRunner(BaseRunner):
             self.dataloaders[name] = dataloader
 
     @property
-    def deepspeed(self) -> dict:
+    def deepspeed(self) -> dict | None:
         if "accelerator" not in self:
             raise ValueError("accelerator is not used")
-        return self.accelerator.state.deepspeed_plugin.deepspeed_config
+        if self.accelerator.state.deepspeed_plugin is not None:
+            return self.accelerator.state.deepspeed_plugin.deepspeed_config
+        return None
 
     def train(self, train_splits: list[str] | None = None, eval_splits: list[str] | None = None) -> NestedDict:
         r"""
