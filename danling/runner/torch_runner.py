@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import random
 from collections.abc import Callable, Mapping
 from contextlib import suppress
@@ -298,8 +299,9 @@ class TorchRunner(BaseRunner):
         Initialise process group and set up DDP variables.
         """
 
-        if self.state.get("deepspeed"):
-            self.accelerate["deepspeed_plugin"] = DeepSpeedPlugin(hf_ds_config=self.init_deepspeed())
+        if os.environ.get("ACCELERATE_USE_DEEPSPEED", "false").lower() == "true":
+            deepspeed_config = self.state.get("deepspeed", os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE"))
+            self.accelerate["deepspeed_plugin"] = DeepSpeedPlugin(hf_ds_config=self.init_deepspeed(deepspeed_config))
         self.accelerator = Accelerator(**self.accelerate)
         if self.distributed:
             object_list = [self.state.id]
