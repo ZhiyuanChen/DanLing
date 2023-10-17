@@ -6,6 +6,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence, SupportsFloat
 
 import torch
 from torch import Tensor
+from torch.utils.data._utils.collate import default_collate_fn_map
 
 from .torch_func_registry import TorchFuncRegistry
 
@@ -693,3 +694,12 @@ class NestedTensorFuncWrapper:
         if elem.__hash__ is not None and len(set(ret)) == 1:
             return elem
         return ret
+
+
+def collate_pn_tensor_fn(
+    batch, *, collate_fn_map: dict[type | tuple[type, ...], Callable] | None = None  # pylint: disable=W0613
+):
+    return NestedTensor(batch)
+
+
+default_collate_fn_map[PNTensor] = collate_pn_tensor_fn
