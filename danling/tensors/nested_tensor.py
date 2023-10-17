@@ -7,7 +7,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence, SupportsFloat
 import torch
 from torch import Tensor
 
-from .torch_func_registry import TorchFuncRegistry
+from .utils import TorchFuncRegistry
 
 
 def pad_tensor(

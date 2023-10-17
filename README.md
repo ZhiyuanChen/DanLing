@@ -11,7 +11,7 @@ Instead, the Runner of DanLing just initialise the essential parts for you, and 
 
 Although many attributes and properties are pre-defined and are expected to be used in DanLing, you have full control over your code.
 
-DanLing also provides some utilities, such as [Registry][danling.Registry], [NestedTensor][danling.NestedTensor], [catch][danling.utils.catch], etc.
+DanLing also provides some utilities, such as [`NestedTensor`][danling.NestedTensor], [`LRScheduler`][danling.optim.LRScheduler], [`catch`][danling.utils.catch], etc.
 
 ## Installation
 

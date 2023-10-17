@@ -4,6 +4,6 @@ authors:
 date: 2022-05-04
 ---
 
-# Registry
+# AverageMeters
 
-::: danling.Registry
+::: danling.metrics.average_meters

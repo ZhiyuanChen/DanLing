@@ -44,6 +44,8 @@ dependencies = [
   'cached-property; python_version < "3.8"',
   "chanfig>=0.0.91",
   "gitpython",
+  'strenum; python_version < "3.11"',
+  "tqdm",
 ]
 [project.optional-dependencies]
 jax = [
@@ -82,6 +84,9 @@ max-line-length = 120
 
 [tool.pytest.ini_options]
 addopts = "--doctest-modules --cov"
+
+[tool.pytest]
+norecursedirs = "demo/*"
 
 [tool.coverage.run]
 branch = true

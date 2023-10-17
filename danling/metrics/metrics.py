@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from functools import partial
 from math import nan
 from typing import Any, Callable, Iterable
 
@@ -12,8 +11,6 @@ from chanfig import FlatDict
 from torch import Tensor
 from torch import distributed as dist
 from torcheval.metrics import Metric
-from torcheval.metrics import functional as tef
-from torchmetrics import functional as tmf
 
 from danling.tensors import NestedTensor
 
@@ -59,7 +56,7 @@ class Metrics(Metric):
     _targets: list[Tensor]
     _input_buffer: list[Tensor]
     _target_buffer: list[Tensor]
-    index: str
+    score_name: str
     best_fn: Callable
     merge_dict: bool = True
 
@@ -77,14 +74,22 @@ class Metrics(Metric):
 
     @torch.inference_mode()
     def update(self, input: Any, target: Any) -> None:
-        if not isinstance(input, torch.Tensor):
-            input = torch.tensor(input)
-        if not isinstance(target, torch.Tensor):
-            target = torch.tensor(target)
-        # input, target = input.to(self.device), target.to(self.device)
-        self._input, self._target = input, target
-        self._input_buffer.append(input.to(self.device))
-        self._target_buffer.append(target.to(self.device))
+        if isinstance(input, NestedTensor):
+            self._input = input
+            self._input_buffer.extend(input.to(self.device).storage)
+        else:
+            if not isinstance(input, torch.Tensor):
+                input = torch.tensor(input)
+            self._input = input
+            self._input_buffer.append(input.to(self.device))
+        if isinstance(target, NestedTensor):
+            self._target = target
+            self._target_buffer.extend(target.to(self.device).storage)
+        else:
+            if not isinstance(target, torch.Tensor):
+                target = torch.tensor(target)
+            self._target = target
+            self._target_buffer.append(target.to(self.device))
 
     def compute(self) -> FlatDict[str, float]:
         return self.comp
@@ -204,39 +209,39 @@ class Metrics(Metric):
         )
 
 
-class IndexMetrics(Metrics):
+class ScoreMetrics(Metrics):
     r"""
-    IndexMetrics is a subclass of Metrics that supports scoring.
+    `ScoreMetrics` is a subclass of Metrics that supports scoring.
 
     Score is a single value that best represents the performance of the model.
     It is the core metrics that we use to compare different models.
     For example, in classification, we usually use auroc as the score.
 
-    IndexMetrics requires two additional arguments: `index` and `best_fn`.
-    `index` is the name of the metric that we use to compute the score.
+    `ScoreMetrics` requires two additional arguments: `score_name` and `best_fn`.
+    `score_name` is the name of the metric that we use to compute the score.
     `best_fn` is a function that takes a list of values and returns the best value.
-    `best_fn` is only not used by IndexMetrics, it is meant to be accessed by other classes.
+    `best_fn` is only not used by `ScoreMetrics`, it is meant to be accessed by other classes.
 
     Attributes:
-        index: The name of the metric that we use to compute the score.
+        score_name: The name of the metric that we use to compute the score.
         best_fn: A function that takes a list of values and returns the best value.
 
     Args:
         *args: A single mapping of metrics.
-        index: The name of the metric that we use to compute the score. Defaults to the first metric.
+        score_name: The name of the metric that we use to compute the score. Defaults to the first metric.
         best_fn: A function that takes a list of values and returns the best value. Defaults to `max`.
         **metrics: Metrics.
     """
 
-    index: str
+    score_name: str
     best_fn: Callable
 
     def __init__(
-        self, *args, index: str | None = None, best_fn: Callable | None = max, **metrics: FlatDict[str, Callable]
+        self, *args, score_name: str | None = None, best_fn: Callable | None = max, **metrics: FlatDict[str, Callable]
     ):
         super().__init__(*args, **metrics)
-        self.index = index or next(iter(self.metrics.keys()))
-        self.metric = self.metrics[self.index]
+        self.score_name = score_name or next(iter(self.metrics.keys()))
+        self.metric = self.metrics[self.score_name]
         self.best_fn = best_fn or max
 
     def score(self, scope: str) -> float | flist:
@@ -251,29 +256,3 @@ class IndexMetrics(Metrics):
 
     def average_score(self) -> float | flist:
         return self.calculate(self.metric, self.inputs, self.targets)
-
-
-def binary_metrics():
-    return Metrics(auroc=tef.binary_auroc, auprc=tef.binary_auprc, acc=tef.binary_accuracy)
-
-
-def multiclass_metrics(num_classes: int):
-    auroc = partial(tef.multiclass_auroc, num_classes=num_classes)
-    auprc = partial(tef.multiclass_auprc, num_classes=num_classes)
-    acc = partial(tef.multiclass_accuracy, num_classes=num_classes)
-    return Metrics(auroc=auroc, auprc=auprc, acc=acc)
-
-
-def multilabel_metrics(num_labels: int):
-    auroc = partial(tmf.classification.multilabel_auroc, num_labels=num_labels)
-    auprc = partial(tef.multilabel_auprc, num_labels=num_labels)
-    return Metrics(auroc=auroc, auprc=auprc, acc=tef.multilabel_accuracy)
-
-
-def regression_metrics():
-    return Metrics(
-        pearson=tmf.pearson_corrcoef,
-        spearman=tmf.spearman_corrcoef,
-        r2=tef.r2_score,
-        mse=tef.mean_squared_error,
-    )

@@ -12,7 +12,6 @@ nav:
   - Runner:
       - runner/index.md
       - RunnerState: runner/runner_state.md
-      - RunnerBase: runner/runner_base.md
       - BaseRunner: runner/base_runner.md
       - TorchRunner: runner/torch_runner.md
       - Utilities: runner/utils.md
@@ -23,7 +22,8 @@ nav:
   - Optim:
       - LRScheduler: optim/lr_scheduler.md
   - Metrics:
-      - AverageMeter: metrics/average_meter.md
+      - metrics: metrics/metrics.md
+      - AverageMeters: metrics/average_meters.md
   - Utils:
       - Decorator: utils/decorators.md
       - Context Manager: utils/contextmanagers.md
