@@ -15,13 +15,6 @@
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/package/"/>
     </url>
     <url>
-        <loc>https://danling.org/registry/</loc>
-        <lastmod>2023-10-17</lastmod>
-        <changefreq>daily</changefreq>
-        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/registry/"/>
-        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/registry/"/>
-    </url>
-    <url>
         <loc>https://danling.org/blog/</loc>
         <lastmod>2023-10-17</lastmod>
         <changefreq>daily</changefreq>
@@ -34,6 +27,13 @@
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metrics/average_meter/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metrics/average_meter/"/>
+    </url>
+    <url>
+        <loc>https://danling.org/metrics/average_meters/</loc>
+        <lastmod>2023-10-17</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metrics/average_meters/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metrics/average_meters/"/>
     </url>
     <url>
         <loc>https://danling.org/metrics/metrics/</loc>
@@ -62,13 +62,6 @@
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/base_runner/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/base_runner/"/>
-    </url>
-    <url>
-        <loc>https://danling.org/runner/runner_base/</loc>
-        <lastmod>2023-10-17</lastmod>
-        <changefreq>daily</changefreq>
-        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/runner_base/"/>
-        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/runner_base/"/>
     </url>
     <url>
         <loc>https://danling.org/runner/runner_state/</loc>
@@ -155,13 +148,6 @@
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/package/"/>
     </url>
     <url>
-        <loc>https://danling.org/zh/registry/</loc>
-        <lastmod>2023-10-17</lastmod>
-        <changefreq>daily</changefreq>
-        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/registry/"/>
-        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/registry/"/>
-    </url>
-    <url>
         <loc>https://danling.org/zh/blog/</loc>
         <lastmod>2023-10-17</lastmod>
         <changefreq>daily</changefreq>
@@ -174,6 +160,13 @@
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metrics/average_meter/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metrics/average_meter/"/>
+    </url>
+    <url>
+        <loc>https://danling.org/zh/metrics/average_meters/</loc>
+        <lastmod>2023-10-17</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metrics/average_meters/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metrics/average_meters/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/metrics/metrics/</loc>
@@ -202,13 +195,6 @@
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/base_runner/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/base_runner/"/>
-    </url>
-    <url>
-        <loc>https://danling.org/zh/runner/runner_base/</loc>
-        <lastmod>2023-10-17</lastmod>
-        <changefreq>daily</changefreq>
-        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/runner_base/"/>
-        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/runner_base/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/runner/runner_state/</loc>

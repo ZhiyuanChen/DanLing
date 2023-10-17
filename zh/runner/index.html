@@ -358,7 +358,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../metrics/average_meter/" class="md-tabs__link">
+        <a href="../metrics/metrics/" class="md-tabs__link">
           
   
     
@@ -501,8 +501,6 @@
       
         
       
-        
-      
     
     
     
@@ -557,26 +555,6 @@
   
   <span class="md-ellipsis">
     RunnerState
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="runner_base/" class="md-nav__link">
-        
-  
-  <span class="md-ellipsis">
-    RunnerBase
   </span>
   
 
@@ -851,6 +829,8 @@
       
         
       
+        
+      
     
     
     
@@ -892,11 +872,31 @@
   
   
     <li class="md-nav__item">
-      <a href="../metrics/average_meter/" class="md-nav__link">
+      <a href="../metrics/metrics/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
-    AverageMeter
+    metrics
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../metrics/average_meters/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    AverageMeters
   </span>
   
 
@@ -1091,23 +1091,17 @@
 <h1 id="runner">Runner<a class="headerlink" href="#runner" title="Permanent link">&para;</a></h1>
 <p>The Runner of DanLing sets up the basic environment for running neural networks.</p>
 <h2 id="components">Components<a class="headerlink" href="#components" title="Permanent link">&para;</a></h2>
-<p>For readability and maintainability, there are three levels of Runner + a RunnerState.</p>
-<p>The RunnerState stores all the information that is critical for a run and is stored in the checkpoint (e.g. <code>epochs</code>, <code>run_id</code>, etc.).
-With RunnerState and corresponding weights, you can resume a run from any point.</p>
-<p>The Runner contains all runtime information that is irrelevant to the checkpoint (e.g. <code>world_size</code>, <code>rank</code>, etc.).</p>
-<h3 id="runnerstate"><a class="autorefs autorefs-internal" href="runner_state/#danling.runner.runner_state.RunnerState"><code>RunnerState</code></a><a class="headerlink" href="#runnerstate" title="Permanent link">&para;</a></h3>
-<p><a class="autorefs autorefs-internal" href="runner_state/#danling.runner.runner_state.RunnerState"><code>RunnerState</code></a> stores the state of a run.</p>
-<p>All attributes stored in <code>RunnerState</code> will be saved in the checkpoint, and thus should be json serialisable.
-Except for <code>@property</code> of json serialisable attributes.</p>
-<h3 id="runnerbase"><a class="autorefs autorefs-internal" href="runner_base/#danling.runner.runner_base.RunnerBase"><code>RunnerBase</code></a><a class="headerlink" href="#runnerbase" title="Permanent link">&para;</a></h3>
-<p><a class="autorefs autorefs-internal" href="../../runner/runner_base/#danling.runner.runner_base.RunnerBase"><code>RunnerBase</code></a> gives you a basic instinct on what attributes and properties are provided by the Runner.</p>
-<p>It works in an AbstractBaseClass manner and should neither be used directly nor be inherited from.</p>
+<p>For cross-platform compatibilities, DanLing features a two-level Runner + RunnerState system.</p>
+<h3 id="platformrunner">PlatformRunner<a class="headerlink" href="#platformrunner" title="Permanent link">&para;</a></h3>
+<p>PlatformRunner implements platform-specific features like <code>step</code> and <code>prepare</code>.</p>
+<p>The Runner contains all runtime information that is irrelevant to the checkpoint (e.g. <code>world_size</code>, <code>rank</code>, etc.). All other information should be saved in <code>RunnerState</code>.</p>
+<p>Currently, only <a class="autorefs autorefs-internal" href="torch_runner/#danling.runner.TorchRunner"><code>TorchRunner</code></a> is supported.</p>
 <h3 id="baserunner"><a class="autorefs autorefs-internal" href="base_runner/#danling.runner.BaseRunner"><code>BaseRunner</code></a><a class="headerlink" href="#baserunner" title="Permanent link">&para;</a></h3>
-<p><a class="autorefs autorefs-internal" href="base_runner/#danling.runner.BaseRunner"><code>BaseRunner</code></a> contains core methods of general basic functionality,
-such as <code>init_logging</code>, <code>append_result</code>, <code>print_result</code>.</p>
-<h3 id="runner_1"><a class="autorefs autorefs-internal" href="torch_runner/#danling.runner.TorchRunner"><code>Runner</code></a><a class="headerlink" href="#runner_1" title="Permanent link">&para;</a></h3>
-<p><a class="autorefs autorefs-internal" href="torch_runner/#danling.runner.TorchRunner"><code>Runner</code></a> should only contain platform-specific features.
-Currently, only <a class="autorefs autorefs-internal" href="torch_runner/#danling.runner.TorchRunner"><code>TorchRunner</code></a> is supported.</p>
+<p><a href="danling.runner.BaseRunner"><code>BaseRunner</code></a> defines shared attributes and implements platform-agnostic features, including <code>init_logging</code>, <code>results</code> and <code>scores</code>.</p>
+<h3 id="runnerstate"><a class="autorefs autorefs-internal" href="../../runner/runner_state/#danling.runner.runner_state.RunnerState"><code>RunnerState</code></a><a class="headerlink" href="#runnerstate" title="Permanent link">&para;</a></h3>
+<p><a class="autorefs autorefs-internal" href="../../runner/runner_state/#danling.runner.runner_state.RunnerState"><code>RunnerState</code></a> stores the state of a run (e.g. <code>epochs</code>, <code>run_id</code>, <code>network</code>, etc.).</p>
+<p>With <code>RunnerState</code> and corresponding weights, you can resume a run from any point.
+Therefore, all members in <code>RunnerState</code> will be saved in the checkpoint, and thus should be json serialisable.</p>
 <h2 id="experiments-management">Experiments Management<a class="headerlink" href="#experiments-management" title="Permanent link">&para;</a></h2>
 <p>DanLing Runner is designed for a 3.5-level experiments management system: <strong>Project</strong>, <strong>Group</strong>, <strong>Experiment</strong>, and, <strong>Run</strong>.</p>
 <h3 id="project">Project<a class="headerlink" href="#project" title="Permanent link">&para;</a></h3>
