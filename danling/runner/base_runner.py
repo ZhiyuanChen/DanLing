@@ -28,7 +28,7 @@ except ImportError:
     np_random = None
 
 from .runner_state import RunnerState
-from .utils import RunnerMeta, RunnerMode, on_main_process
+from .utils import RunnerMeta, RunnerMode, UniqueList, on_main_process
 
 PY38_PLUS = version_info >= (3, 8)
 IGNORED_SET_NAMES = ("index", "epoch", "step", "iter")
@@ -120,10 +120,10 @@ class BaseRunner(metaclass=RunnerMeta):
     _mode: RunnerMode
     state: RunnerState
 
-    model: Callable | None = None
-    criterion: Callable | None = None
-    optimizer: Any | None = None
-    scheduler: Any | None = None
+    _models: UniqueList
+    _criterions: UniqueList
+    _optimizers: UniqueList
+    _schedulers: UniqueList
 
     datasets: FlatDict
     datasamplers: FlatDict
@@ -135,17 +135,20 @@ class BaseRunner(metaclass=RunnerMeta):
     writer: Any | None = None
 
     def __init__(self, config: NestedDict) -> None:
-        if "datasets" not in self.__dict__:
-            self.datasets = FlatDict()
-        if "datasamplers" not in self.__dict__:
-            self.datasamplers = FlatDict()
-        if "dataloaders" not in self.__dict__:
-            self.dataloaders = FlatDict()
         self._mode = RunnerMode.train
+        self._models = UniqueList()
+        self._criterions = UniqueList()
+        self._optimizers = UniqueList()
+        self._schedulers = UniqueList()
+        self.datasets = FlatDict()
+        self.datasamplers = FlatDict()
+        self.dataloaders = FlatDict()
         self.meters = AverageMeters()
         self.metrics = None
         # must init state at last to avoid conflict names
         self.state = RunnerState(config)
+
+    def __post_init__(self, *args, **kwargs) -> None:
         self.init_distributed()
         if self.state.seed is not None:
             self.set_seed()
@@ -159,12 +162,9 @@ class BaseRunner(metaclass=RunnerMeta):
             )
         if self.state.log:
             self.init_logging()
-        self.init_print()
         if self.state.tensorboard:
             self.init_tensorboard()
-
-    def __post_init__(self, *args, **kwargs) -> None:
-        pass
+        self.init_print()
 
     @property
     def mode(self) -> RunnerMode:
@@ -177,6 +177,54 @@ class BaseRunner(metaclass=RunnerMeta):
         self._mode = mode
         if self.model is not None:
             self.model.train(mode == RunnerMode.train)  # type: ignore
+
+    @property
+    def model(self) -> Any:
+        if len(self._models) == 0:
+            return None
+        if len(self._models) == 1:
+            return self._models[0]
+        raise ValueError("More than one model registered")
+
+    @model.setter
+    def model(self, model: Any) -> None:
+        self._models.append(model)
+
+    @property
+    def criterion(self) -> Any:
+        if len(self._criterions) == 0:
+            return None
+        if len(self._criterions) == 1:
+            return self._criterions[0]
+        raise ValueError("More than one criterion registered")
+
+    @criterion.setter
+    def criterion(self, criterion: Any) -> None:
+        self._criterions.append(criterion)
+
+    @property
+    def optimizer(self) -> Any:
+        if len(self._optimizers) == 0:
+            return None
+        if len(self._optimizers) == 1:
+            return self._optimizers[0]
+        raise ValueError("More than one optimizer registered")
+
+    @optimizer.setter
+    def optimizer(self, optimizer: Any) -> None:
+        self._optimizers.append(optimizer)
+
+    @property
+    def scheduler(self) -> Any:
+        if len(self._schedulers) == 0:
+            return None
+        if len(self._schedulers) == 1:
+            return self._schedulers[0]
+        raise ValueError("More than one scheduler registered")
+
+    @scheduler.setter
+    def scheduler(self, scheduler: Any) -> None:
+        self._schedulers.append(scheduler)
 
     @cached_property
     def batch_size(self) -> int:
@@ -223,17 +271,6 @@ class BaseRunner(metaclass=RunnerMeta):
         dataset = self.datasets.get("train", next(iter(self.datasets.values())))
         return self.total_epochs * ceil(len(dataset) / self.batch_size)
 
-    @cached_property
-    def accum_steps(self) -> int:
-        r"""
-        Accumulated steps.
-
-        Returns:
-            (int):
-        """
-
-        return self.state.get("accum_steps", 1)
-
     def init_distributed(self) -> None:
         r"""
         Initialise distributed running environment.
@@ -255,7 +292,7 @@ class BaseRunner(metaclass=RunnerMeta):
         Number of processes.
         """
 
-        return 1
+        return int(os.environ.get("WORLD_SIZE", 1))
 
     @property
     def rank(self) -> int:
@@ -263,7 +300,7 @@ class BaseRunner(metaclass=RunnerMeta):
         Process index of all processes.
         """
 
-        return 0
+        return int(os.environ.get("RANK", -1))
 
     @property
     def local_rank(self) -> int:
@@ -271,7 +308,7 @@ class BaseRunner(metaclass=RunnerMeta):
         Process index of local processes.
         """
 
-        return 0
+        return int(os.environ.get("LOCAL_RANK", -1))
 
     @property
     def distributed(self) -> bool:

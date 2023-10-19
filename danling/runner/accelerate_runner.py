@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import os
 import random
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from time import time
+from typing import Any
 from warnings import warn
 
-import deepspeed
 import torch
+from accelerate import Accelerator
+from accelerate.utils import DeepSpeedPlugin
 from chanfig import NestedDict
 from torch import distributed as dist
 from torch import nn, optim, utils
@@ -21,27 +25,39 @@ except ImportError:
 from danling.utils import catch
 
 from .base_runner import BaseRunner
-from .utils import is_criterion, on_main_process
+from .utils import on_main_process
 
 
-class TorchRunner(BaseRunner):
+class AccelerateRunner(BaseRunner):
     r"""
     Set up everything for running a job.
 
-    `TorchRunner` uses [`deepspeed`][deepspeed] as distributed backend to
-    provide seamless experience for large-scale training.
+    `AccelerateRunner` uses [`accelerate`][accelerate] as distributed backend to
+    provide seamless distributed training experience.
 
-    `TorchRunner` will automatically [`prepare`][accelerate.Accelerator.prepare] everything,
+    `AccelerateRunner` will automatically [`prepare`][accelerate.Accelerator.prepare] everything,
     including `model`, `criterion`, `optimizer`, `scheduler`, and `dataloaders` for distribute training,
     mixed precision, and deepspeed (optional).
 
     In fact, you don't even need to create `dataloaders`, just define
-    `datasets` and `TorchRunner` will create `dataloaders` for you.
-    `TorchRunner` will inspect the `train` flag in corresponding dataset to
+    `datasets` and `AccelerateRunner` will create `dataloaders` for you.
+    `AccelerateRunner` will inspect the `train` flag in corresponding dataset to
     automatically set `shuffle`.
+
+    Attributes:
+        accelerator (Accelerator):
+        accelerate: Arguments to pass when building accelerator. Defaults to `{}`.
     """
 
     # pylint: disable=R0902
+
+    accelerator: Accelerator
+    accelerate: dict
+
+    model: nn.Module
+    criterion: nn.Module
+    optimizer: optim.Optimizer
+    scheduler: optim.lr_scheduler._LRScheduler
 
     def __init__(self, *args, **kwargs) -> None:
         if len(args) != 1 or kwargs:
@@ -59,10 +75,9 @@ class TorchRunner(BaseRunner):
         super().__init__(config)
 
     def __post_init__(self, *args, **kwargs) -> None:
-        super().__post_init__()
-        self.prepare_runner()
+        self._prepare()
 
-    def prepare_runner(self):
+    def _prepare(self):
         if self.datasets:
             datasets = {k: d for k, d in self.datasets.items() if k not in self.dataloaders}
             dataloader_kwargs = self.state.get("dataloader", {})
@@ -84,6 +99,10 @@ class TorchRunner(BaseRunner):
 
     @property
     def deepspeed(self) -> dict | None:
+        if "accelerator" not in self:
+            raise ValueError("accelerator is not used")
+        if self.accelerator.state.deepspeed_plugin is not None:
+            return self.accelerator.state.deepspeed_plugin.deepspeed_config
         return None
 
     def train(self, train_splits: list[str] | None = None, eval_splits: list[str] | None = None) -> NestedDict:
@@ -280,8 +299,11 @@ class TorchRunner(BaseRunner):
         Initialise process group and set up DDP variables.
         """
 
+        if os.environ.get("ACCELERATE_USE_DEEPSPEED", "false").lower() == "true":
+            deepspeed_config = self.state.get("deepspeed", os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE"))
+            self.accelerate["deepspeed_plugin"] = DeepSpeedPlugin(hf_ds_config=self.init_deepspeed(deepspeed_config))
+        self.accelerator = Accelerator(**self.accelerate)
         if self.distributed:
-            deepspeed.init_distributed()
             object_list = [self.state.id]
             dist.broadcast_object_list(object_list)
             self.state.id = object_list[0]
@@ -456,14 +478,23 @@ class TorchRunner(BaseRunner):
         raise AttributeError("batch_size could not be inferred, since no dataloader found.")
 
     @property
+    def accum_steps(self) -> int:
+        r"""
+        Gradient accumulation steps.
+
+        Returns:
+            (int):
+        """
+
+        return self.accelerator.gradient_accumulation_steps
+
+    @property
     def device(self) -> torch.device:  # pylint: disable=E1101
         r"""
         Device of runner.
         """
 
-        if torch.cuda.is_available():
-            return torch.device("cuda", self.local_rank)
-        return torch.device("cpu")
+        return self.accelerator.device
 
     @property
     def world_size(self) -> int:
@@ -471,9 +502,7 @@ class TorchRunner(BaseRunner):
         Number of Processes.
         """
 
-        if dist.is_initialized():
-            return dist.get_world_size()
-        return super().world_size
+        return self.accelerator.num_processes
 
     @property
     def rank(self) -> int:
@@ -481,20 +510,33 @@ class TorchRunner(BaseRunner):
         Process index in all processes.
         """
 
-        if dist.is_initialized():
-            return dist.get_rank()
-        return super().rank
+        return self.accelerator.process_index
 
-    def __setattr__(self, name, value):
-        if isinstance(value, nn.Module):
-            if value not in self._models and value not in self._criterions:
-                if is_criterion(value):
-                    self._criterions.append(value)
-                else:
-                    self._models.append(value)
-        elif isinstance(value, optim.Optimizer):
-            self._optimizers.append(value)
-        elif isinstance(value, optim.lr_scheduler.LRScheduler):
-            self._schedulers.append(value)
+    @property
+    def local_rank(self) -> int:
+        r"""
+        Process index in local processes.
+        """
 
-        super().__setattr__(name, value)
+        return self.accelerator.local_process_index
+
+    def gather(self, tensor) -> torch.Tensor:
+        r"""
+        Gather tensor.
+        """
+
+        return self.accelerator.gather(tensor)
+
+    def reduce(self, tensor, reduction: str = "sum") -> torch.Tensor:
+        r"""
+        Reduce tensor.
+        """
+
+        return self.accelerator.reduce(tensor, reduction=reduction)
+
+    def __getattr__(self, name: str) -> Any:
+        with suppress(AttributeError):
+            return super().__getattr__(name)
+        if "accelerator" in self.__dict__ and hasattr(self.accelerator, name):
+            return getattr(self.accelerator, name)
+        raise super().__getattribute__(name)

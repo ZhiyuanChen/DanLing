@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import auto
 from functools import wraps
 from typing import Any
+
+from torch import nn
 
 try:
     from enum import StrEnum  # type: ignore # pylint: disable = C0412
@@ -32,7 +35,22 @@ class RunnerMode(StrEnum):
     inf = auto()
 
 
-def on_main_process(func):
+class UniqueList(list):
+    elements: set[Any] = set()
+
+    def append(self, item) -> None:
+        if item not in self.elements:
+            self.elements.add(item)
+            super().append(item)
+
+    def add(self, item) -> None:
+        return self.append(item)
+
+    def __contains__(self, item: object) -> bool:
+        return item in self.elements
+
+
+def on_main_process(func: Callable):
     """
     Decorator to run func only on main process.
     """
@@ -46,7 +64,7 @@ def on_main_process(func):
     return wrapper
 
 
-def on_local_main_process(func):
+def on_local_main_process(func: Callable):
     """
     Decorator to run func only on local main process.
     """
@@ -58,3 +76,15 @@ def on_local_main_process(func):
         return None
 
     return wrapper
+
+
+def is_criterion(module: nn.Module):
+    has_parameters = any(p.requires_grad for p in module.parameters())
+    if has_parameters:
+        return False
+
+    forward_params = list(module.forward.__code__.co_varnames)
+    if "input" in forward_params and "target" in forward_params:
+        return True
+
+    return False
