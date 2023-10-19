@@ -569,7 +569,7 @@ class NestedTensor:
             return self.tensor == other
         if isinstance(other, SupportsFloat):
             return NestedTensor([x == other for x in self.storage], **self._state())
-        raise NotImplementedError(f"Cannot compare {self.__class__.__name__} with {other.__class__.__name__}")
+        return False
 
     def _state(self) -> Mapping:
         return {k: v for k, v in self.__dict__.items() if k != "storage"}
