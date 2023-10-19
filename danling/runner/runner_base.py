@@ -337,11 +337,11 @@ class RunnerBase:
             RuntimeError: If no terminal is defined.
         """
 
-        if hasattr(self.state, "iter_end"):
+        if self.state.iter_end is not None:
             return self.state.iters / self.state.iter_end
-        if hasattr(self.state, "step_end"):
+        if self.state.step_end is not None:
             return self.state.steps / self.state.step_end
-        if hasattr(self.state, "epoch_end"):
+        if self.state.epoch_end is not None:
             return self.state.epochs / self.state.epoch_end
         raise RuntimeError("DanLing cannot determine progress since no terminal is defined.")
 

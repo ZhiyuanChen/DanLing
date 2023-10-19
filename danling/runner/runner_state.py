@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 import sys
+from contextlib import suppress
 from datetime import datetime
 from random import randint
-from typing import List, Optional
+from typing import Optional
 from uuid import UUID, uuid5
 from warnings import warn
 
@@ -134,21 +135,21 @@ class RunnerState(NestedDict):
     experiment_name: str
 
     seed: int
-    deterministic: bool
+    deterministic: bool = False
 
-    iters: int
-    steps: int
-    epochs: int
-    # iter_begin: int  # Deprecated
-    # step_begin: int  # Deprecated
-    # epoch_begin: int  # Deprecated
-    iter_end: int
-    step_end: int
-    epoch_end: int
+    iters: int = 0
+    steps: int = 0
+    epochs: int = 0
+    iter_begin: int = 0
+    step_begin: int = 0
+    epoch_begin: int = 0
+    iter_end: Optional[int] = None
+    step_end: Optional[int] = None
+    epoch_end: Optional[int] = None
 
-    results: List[dict]
-    index_set: Optional[str]
-    index: str
+    results: list
+    score_set: Optional[str] = None
+    score_name: str = "loss"
 
     project_root: str = "experiments"
     checkpoint_dir_name: str = "checkpoints"
@@ -157,50 +158,51 @@ class RunnerState(NestedDict):
     print_interval: int = -1
     save_interval: int = -1
 
+    distributed: Optional[bool] = None
+    dist_backend: Optional[str] = None
+    init_method: Optional[str] = None
+    master_addr: Optional[str] = None
+    master_port: Optional[int] = None
+
     def __init__(self, *args, **kwargs):
+        for k, v in self.__class__.__dict__.items():
+            if not (k.startswith("__") and k.endswith("__")) and (not (isinstance(v, property) or callable(v))):
+                self.set(k, v)
         self.run_name = defaults.DEFAULT_RUN_NAME
-        self.experiment_id = defaults.DEFAULT_EXPERIMENT_ID
         self.experiment_name = defaults.DEFAULT_EXPERIMENT_NAME
+        self.seed = randint(0, 2**32 - 1)
+        self.results = []
+        super().__init__(*args, **kwargs)
+        self.experiment_id = self.get_experiment_id()
+        self.run_id = self.run_uuid.hex
+        self.id = f"{self.get_time_str()}{self.experiment_id:.5}{self.run_id:.4}"  # pylint: disable=C0103
+        self.name = f"{self.experiment_name}-{self.run_name}"
+        self.setattr("ignored_keys_in_hash", defaults.DEFAULT_IGNORED_KEYS_IN_HASH)
+
+    # staticmethod is not recognised by `callable` in earlier python
+    def get_experiment_id(self) -> str:
         if Repo is not None:
             try:
-                self.experiment_id = Repo(search_parent_directories=True).head.object.hexsha
+                return Repo(search_parent_directories=True).head.object.hexsha
             except ImportError:
-                warn(
-                    "GitPython is not installed, fallback to `DEFAULT_EXPERIMENT_ID`.",
-                    category=RuntimeWarning,
-                    stacklevel=2,
-                )
+                pass  # handle at last
             except (InvalidGitRepositoryError, ValueError):
-                path = os.path.dirname(os.path.abspath(sys.argv[0]))
                 warn(
                     "Unable to get git hash from CWD, fallback to top-level code environment.",
                     category=RuntimeWarning,
                     stacklevel=2,
                 )
-                try:
-                    self.experiment_id = Repo(path=path, search_parent_directories=True).head.object.hexsha
-                except (InvalidGitRepositoryError, ValueError):
-                    warn(
-                        "Unable to get git hash from top-level code environment, fallback to `DEFAULT_EXPERIMENT_ID`.",
-                        category=RuntimeWarning,
-                        stacklevel=2,
-                    )
-        else:
-            warn(
-                "GitPython is not installed, fallback to `DEFAULT_EXPERIMENT_ID`.",
-                category=RuntimeWarning,
-                stacklevel=2,
-            )
-        self.deterministic = False
-        self.seed = randint(0, 2**32 - 1)
-        self.iters = 0
-        self.steps = 0
-        self.epochs = 0
-        self.results = []
-        self.index_set = None
-        self.index = "loss"
-        super().__init__(*args, **kwargs)
-        self.run_id = self.run_uuid.hex
+                path = os.path.dirname(os.path.abspath(sys.argv[0]))
+                with suppress(InvalidGitRepositoryError, ValueError):
+                    return Repo(path=path, search_parent_directories=True).head.object.hexsha
+        warn(
+            "GitPython is not installed, fallback to `DEFAULT_EXPERIMENT_ID`.",
+            category=RuntimeWarning,
+            stacklevel=2,
+        )
+        return defaults.DEFAULT_EXPERIMENT_ID
+
+    def get_time_str(self) -> str:
         time = datetime.now()
         time_tuple = time.isocalendar()[1:] + (
             time.hour,
@@ -208,10 +210,7 @@ class RunnerState(NestedDict):
             time.second,
             time.microsecond,
         )
-        time_str = "".join(base62.encode(i) for i in time_tuple)
-        self.id = f"{time_str}{self.experiment_id:.5}{self.run_id:.4}"  # pylint: disable=C0103
-        self.name = f"{self.experiment_name}-{self.run_name}"
-        self.setattr("ignored_keys_in_hash", defaults.DEFAULT_IGNORED_KEYS_IN_HASH)
+        return "".join(base62.encode(i) for i in time_tuple)
 
     @property
     def experiment_uuid(self) -> UUID:
