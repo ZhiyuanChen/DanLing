@@ -59,4 +59,4 @@ if __name__ == "__main__":
     with dl.debug(config.get("debug", False)):
         runner = MNISTRunner(config)
         runner.train()
-        runner.evaluate()
+        runner.evaluate(["val"])
