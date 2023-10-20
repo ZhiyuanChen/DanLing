@@ -164,6 +164,7 @@ class TorchRunner(BaseRunner):
         self.mode = "train"  # type: ignore
         loader = self.dataloaders[split]
         length = len(loader) - 1
+        last_print_iteration = -1
         self.meters.reset()
         if self.metrics is not None:
             self.metrics.reset()
@@ -183,14 +184,18 @@ class TorchRunner(BaseRunner):
                     self.metrics.update(pred, target)
                 self.step(loss)
 
-            if self.print_interval > 0 and iteration % self.print_interval == 0:
+            if self.print_interval > 0 and (
+                iteration > 0 and iteration % self.print_interval == 0 or iteration == length
+            ):
+                interval = iteration - last_print_iteration
                 if self.device == torch.device("cuda"):
                     torch.cuda.synchronize()
-                self.meters.time.update((time() - batch_time) / self.print_interval)
+                self.meters.time.update((time() - batch_time) / interval)
                 batch_time = time()
                 reduced_loss = self.reduce(loss).item()
                 self.meters.loss.update(reduced_loss)
                 self.step_log(split, iteration, length)
+                last_print_iteration = iteration
 
         result = self.meters.avg
         if self.metrics is not None:
@@ -237,6 +242,7 @@ class TorchRunner(BaseRunner):
         self.mode = "eval"  # type: ignore
         loader = self.dataloaders[split]
         length = len(loader) - 1
+        last_print_iteration = -1
         self.meters.reset()
         if self.metrics is not None:
             self.metrics.reset()
@@ -250,14 +256,18 @@ class TorchRunner(BaseRunner):
             if self.metrics is not None:
                 self.metrics.update(pred, target)
 
-            if self.print_interval > 0 and iteration % self.print_interval == 0:
+            if self.print_interval > 0 and (
+                iteration > 0 and iteration % self.print_interval == 0 or iteration == length
+            ):
+                interval = iteration - last_print_iteration
                 if self.device == torch.device("cuda"):
                     torch.cuda.synchronize()
-                self.meters.time.update((time() - batch_time) / self.print_interval)
+                self.meters.time.update((time() - batch_time) / interval)
                 batch_time = time()
                 reduced_loss = self.reduce(loss).item()
                 self.meters.loss.update(reduced_loss)
                 self.step_log(split, iteration, length)
+                last_print_iteration = iteration
 
         result = self.meters.avg
         if self.metrics is not None:
