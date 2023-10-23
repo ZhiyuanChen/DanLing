@@ -208,7 +208,7 @@ class BaseRunner(metaclass=RunnerMeta):
             (int): `batch_size` * `world_size` * `accum_steps`
         """
 
-        return self.batch_size * self.world_size * getattr(self, "accum_steps", 1)
+        return self.batch_size * self.world_size * self.accum_steps
 
     @cached_property
     def total_epochs(self) -> int:
