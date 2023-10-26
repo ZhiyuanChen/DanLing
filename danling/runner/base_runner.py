@@ -575,22 +575,20 @@ class BaseRunner(metaclass=RunnerMeta):
             return self.state.checkpoint_dir
         return os.path.join(self.dir, self.checkpoint_dir_name)
 
-    def __getattribute__(self, name) -> Any:
-        if name in ("__class__", "__dict__"):
-            return super().__getattribute__(name)
-        if name in dir(self):
-            return super().__getattribute__(name)
-        if name in self.__dict__:
-            return self.__dict__[name]
-        if "state" in self and name in self.state:
-            return self.state[name]
-        return super().__getattribute__(name)
+    # def __getattribute__(self, name) -> Any:
+    #     if name in ("__class__", "__dict__"):
+    #         return super().__getattribute__(name)
+    #     if name in self.__dict__:
+    #         return self.__dict__[name]
+    #     if name in dir(self):
+    #         return super().__getattribute__(name)
+    #     if "state" in self and name in self.state:
+    #         return self.state[name]
+    #     return super().__getattribute__(name)
 
     def __getattr__(self, name) -> Any:
-        if "state" not in self:
-            raise RuntimeError("Runner is not initialised yet.")
-        if name in dir(self.state):
-            return getattr(self.state, name)
+        if "state" in self and name in self.state:
+            return self.state[name]
         return super().__getattribute__(name)
 
     def __setattr__(self, name, value) -> None:
@@ -599,13 +597,20 @@ class BaseRunner(metaclass=RunnerMeta):
                 self.__dict__[name].set(value)
             else:
                 self.__dict__[name] = value
-        elif "state" in self and name in self.state:
+            return
+        if name in dir(self):
+            if isinstance(super().__getattribute__(name), Variable):
+                super().__getattribute__(name).set(value)
+            else:
+                object.__setattr__(self, name, value)
+            return
+        if "state" in self and name in self.state:
             if isinstance(self.state[name], Variable):
                 self.state[name].set(value)
             else:
                 self.state[name] = value
-        else:
-            object.__setattr__(self, name, value)
+            return
+        object.__setattr__(self, name, value)
 
     def __contains__(self, name) -> bool:
         return name in dir(self) or ("state" in self.__dict__ and name in dir(self.state))

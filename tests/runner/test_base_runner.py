@@ -5,6 +5,8 @@ import danling as dl
 
 
 class Runner(dl.BaseRunner):
+    conflict: bool = True
+
     def init_distributed(self) -> None:
         pass
 
@@ -29,6 +31,7 @@ class Config(Config_):
         self.val_iterations_per_epoch = 16
         self.index_set = "val"
         self.index = "loss"
+        self.conflict = 1
 
 
 class Test:
@@ -82,3 +85,10 @@ class Test:
         }
         assert runner.best_score == 0.2
         assert runner.latest_score == 0.6
+
+    def test_conflict(self):
+        runner = self.runner
+        state = runner.state
+        runner.conflict = False
+        assert not runner.conflict
+        assert state.conflict == 1
