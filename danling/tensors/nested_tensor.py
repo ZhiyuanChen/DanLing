@@ -80,6 +80,9 @@ class PNTensor(Tensor):
 
         return torch.ones_like(self)  # pylint: disable=E1101
 
+    def new_empty(self, *args, **kwargs):
+        return PNTensor(super().new_empty(*args, **kwargs))
+
 
 class NestedTensor:
     r"""
