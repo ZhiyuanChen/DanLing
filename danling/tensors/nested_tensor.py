@@ -100,7 +100,7 @@ class NestedTensor:
 
     Attributes:
 
-        storage: The sequence of tensors.
+        _storage: The sequence of tensors.
         batch_first:  Whether the first dimension of the tensors is the batch dimension.
 
             If `True`, the first dimension is the batch dimension, i.e., `B, N, *`.
@@ -155,7 +155,7 @@ class NestedTensor:
 
     # pylint: disable=C0103
 
-    storage: Sequence[Tensor] = []
+    _storage: Sequence[Tensor] = []
     batch_first: bool = True
     padding_value: SupportsFloat = 0.0
     mask_value: bool = False
@@ -174,10 +174,13 @@ class NestedTensor:
             raise ValueError("NestedTensor must be initialised with a non-empty Iterable.")
         if not isinstance(tensors[0], Tensor):
             tensors = [torch.tensor(tensor) for tensor in tensors]  # pylint: disable=E1101
-        self.storage = tensors
+        self._storage = tensors
         self.batch_first = batch_first
         self.padding_value = padding_value
         self.mask_value = mask_value
+
+    def storage(self):
+        return self._storage
 
     @property
     def tensor(self) -> Tensor:
@@ -194,7 +197,7 @@ class NestedTensor:
                     [4, 5, 0]])
         """
 
-        return self._tensor(tuple(self.storage), self.batch_first, float(self.padding_value))
+        return self._tensor(tuple(self._storage), self.batch_first, float(self.padding_value))
 
     @property
     def mask(self) -> Tensor:
@@ -211,7 +214,7 @@ class NestedTensor:
                     [ True,  True, False]])
         """
 
-        return self._mask(tuple(self.storage), self.mask_value)
+        return self._mask(tuple(self._storage), self.mask_value)
 
     def nested_like(self, other: Tensor, unsafe: bool = False) -> NestedTensor:
         r"""
@@ -229,7 +232,7 @@ class NestedTensor:
             >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
             >>> tensor = nested_tensor.tensor
             >>> new_tensor = nested_tensor.nested_like(tensor)
-            >>> all([(x == y).all() for x, y in zip(nested_tensor.storage, new_tensor.storage)])
+            >>> all([(x == y).all() for x, y in zip(nested_tensor.storage(), new_tensor.storage())])
             True
             >>> f = nested_tensor.nested_like(torch.randn(2, 2))
             Traceback (most recent call last):
@@ -248,7 +251,7 @@ class NestedTensor:
             raise ValueError(
                 f"The batch size of NestedTensor and input tensor does not match, {self.size(0)} != {other.size(0)}"
             )
-        return NestedTensor([o[tuple(slice(0, dim) for dim in t.shape)] for t, o in zip(self.storage, other)])
+        return NestedTensor([o[tuple(slice(0, dim) for dim in t.shape)] for t, o in zip(self._storage, other)])
 
     @property
     def device(self) -> torch.device:  # pylint: disable=E1101
@@ -264,7 +267,7 @@ class NestedTensor:
             device(type='cpu')
         """
 
-        return self._device(tuple(self.storage))
+        return self._device(tuple(self._storage))
 
     @property
     def shape(self) -> torch.Size:  # pylint: disable=E1101
@@ -283,7 +286,7 @@ class NestedTensor:
         return self.dim()
 
     def tolist(self) -> list:
-        return [t.tolist() for t in self.storage]
+        return [t.tolist() for t in self._storage]
 
     def size(self, dim: int | None = None) -> torch.Size | int:  # pylint: disable=E1101
         r"""
@@ -303,14 +306,14 @@ class NestedTensor:
             torch.Size([2, 3])
             >>> nested_tensor.size(0)
             2
-            >>> nested_tensor.storage[1] = torch.tensor([4, 5, 6, 7])
+            >>> nested_tensor.storage()[1] = torch.tensor([4, 5, 6, 7])
             >>> nested_tensor.shape
             torch.Size([2, 4])
             >>> nested_tensor.size(1)
             4
         """
 
-        return self._size(tuple(self.storage), dim)
+        return self._size(tuple(self._storage), dim)
 
     def dim(self) -> int:  # pylint: disable=E1101
         r"""
@@ -323,12 +326,12 @@ class NestedTensor:
             >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
             >>> nested_tensor.dim()
             2
-            >>> nested_tensor.storage.append(torch.tensor([6, 7, 8, 9]))
+            >>> nested_tensor.storage().append(torch.tensor([6, 7, 8, 9]))
             >>> nested_tensor.ndim
             2
         """
 
-        return self._dim(tuple(self.storage))
+        return self._dim(tuple(self._storage))
 
     def where(self, condition, other) -> NestedTensor:
         r"""
@@ -341,214 +344,214 @@ class NestedTensor:
             >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
             >>> nested_tensor.size()
             torch.Size([2, 3])
-            >>> nested_tensor.storage[1] = torch.tensor([4, 5, 6, 7])
+            >>> nested_tensor.storage()[1] = torch.tensor([4, 5, 6, 7])
             >>> nested_tensor.size()
             torch.Size([2, 4])
         """
 
         if isinstance(condition, NestedTensor) and isinstance(other, NestedTensor):
             return NestedTensor(
-                [x.where(c, y) for x, c, y in zip(self.storage, condition.storage, other.storage)], **self._state()
+                [x.where(c, y) for x, c, y in zip(self._storage, condition._storage, other._storage)], **self._state
             )
         if isinstance(condition, NestedTensor):
-            return NestedTensor([x.where(c, other) for x, c in zip(self.storage, condition.storage)], **self._state())
+            return NestedTensor([x.where(c, other) for x, c in zip(self._storage, condition._storage)], **self._state)
         if isinstance(other, NestedTensor):
-            return NestedTensor([x.where(condition, y) for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor(x.where(condition, other) for x in self.storage)
+            return NestedTensor([x.where(condition, y) for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor(x.where(condition, other) for x in self._storage)
 
     def __abs__(self):
-        return NestedTensor([abs(value) for value in self.storage], **self._state())
+        return NestedTensor([abs(value) for value in self._storage], **self._state)
 
     def __add__(self, other):
         if isinstance(other, NestedTensor):
-            return NestedTensor([x + y for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor([value + other for value in self.storage], **self._state())
+            return NestedTensor([x + y for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor([value + other for value in self._storage], **self._state)
 
     def __radd__(self, other):
         if isinstance(other, NestedTensor):
-            return NestedTensor([y + x for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor([other + value for value in self.storage], **self._state())
+            return NestedTensor([y + x for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor([other + value for value in self._storage], **self._state)
 
     def __iadd__(self, other):
         if isinstance(other, NestedTensor):
-            for x, y in zip(self.storage, other.storage):
+            for x, y in zip(self._storage, other._storage):
                 x += y
         else:
-            for value in self.storage:
+            for value in self._storage:
                 value += other
         return self
 
     def __and__(self, other):
         if isinstance(other, NestedTensor):
-            return NestedTensor([x & y for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor([value & other for value in self.storage], **self._state())
+            return NestedTensor([x & y for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor([value & other for value in self._storage], **self._state)
 
     def __rand__(self, other):
         if isinstance(other, NestedTensor):
-            return NestedTensor([y & x for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor([other & value for value in self.storage], **self._state())
+            return NestedTensor([y & x for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor([other & value for value in self._storage], **self._state)
 
     def __iand__(self, other):
         if isinstance(other, NestedTensor):
-            for x, y in zip(self.storage, other.storage):
+            for x, y in zip(self._storage, other._storage):
                 x &= y
         else:
-            for value in self.storage:
+            for value in self._storage:
                 value &= other
         return self
 
     def __floordiv__(self, other):
         if isinstance(other, NestedTensor):
-            return NestedTensor([x // y for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor([value // other for value in self.storage], **self._state())
+            return NestedTensor([x // y for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor([value // other for value in self._storage], **self._state)
 
     def __rfloordiv__(self, other):
         if isinstance(other, NestedTensor):
-            return NestedTensor([y // x for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor([other // value for value in self.storage], **self._state())
+            return NestedTensor([y // x for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor([other // value for value in self._storage], **self._state)
 
     def __ifloordiv__(self, other):
         if isinstance(other, NestedTensor):
-            for x, y in zip(self.storage, other.storage):
+            for x, y in zip(self._storage, other._storage):
                 x //= y
         else:
-            for value in self.storage:
+            for value in self._storage:
                 value //= other
         return self
 
     def __mod__(self, other):
         if isinstance(other, NestedTensor):
-            return NestedTensor([x % y for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor([value % other for value in self.storage], **self._state())
+            return NestedTensor([x % y for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor([value % other for value in self._storage], **self._state)
 
     def __rmod__(self, other):
         if isinstance(other, NestedTensor):
-            return NestedTensor([y % x for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor([other % value for value in self.storage], **self._state())
+            return NestedTensor([y % x for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor([other % value for value in self._storage], **self._state)
 
     def __imod__(self, other):
         if isinstance(other, NestedTensor):
-            for x, y in zip(self.storage, other.storage):
+            for x, y in zip(self._storage, other._storage):
                 x %= y
         else:
-            for value in self.storage:
+            for value in self._storage:
                 value %= other
         return self
 
     def __mul__(self, other):
         if isinstance(other, NestedTensor):
-            return NestedTensor([x * y for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor([value * other for value in self.storage], **self._state())
+            return NestedTensor([x * y for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor([value * other for value in self._storage], **self._state)
 
     def __rmul__(self, other):
         if isinstance(other, NestedTensor):
-            return NestedTensor([y * x for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor([other * value for value in self.storage], **self._state())
+            return NestedTensor([y * x for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor([other * value for value in self._storage], **self._state)
 
     def __imul__(self, other):
         if isinstance(other, NestedTensor):
-            for x, y in zip(self.storage, other.storage):
+            for x, y in zip(self._storage, other._storage):
                 x *= y
         else:
-            for value in self.storage:
+            for value in self._storage:
                 value *= other
         return self
 
     def __matmul__(self, other):
         if isinstance(other, NestedTensor):
-            return NestedTensor([x @ y for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor([value @ other for value in self.storage], **self._state())
+            return NestedTensor([x @ y for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor([value @ other for value in self._storage], **self._state)
 
     def __rmatmul__(self, other):
         if isinstance(other, NestedTensor):
-            return NestedTensor([y @ x for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor([other @ value for value in self.storage], **self._state())
+            return NestedTensor([y @ x for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor([other @ value for value in self._storage], **self._state)
 
     def __imatmul__(self, other):
         if isinstance(other, NestedTensor):
-            for x, y in zip(self.storage, other.storage):
+            for x, y in zip(self._storage, other._storage):
                 x @= y
         else:
-            for value in self.storage:
+            for value in self._storage:
                 value @= other
         return self
 
     def __pow__(self, other):
         if isinstance(other, NestedTensor):
-            return NestedTensor([x**y for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor([value**other for value in self.storage], **self._state())
+            return NestedTensor([x**y for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor([value**other for value in self._storage], **self._state)
 
     def __rpow__(self, other):
         if isinstance(other, NestedTensor):
-            return NestedTensor([y**x for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor([other**value for value in self.storage], **self._state())
+            return NestedTensor([y**x for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor([other**value for value in self._storage], **self._state)
 
     def __ipow__(self, other):
         if isinstance(other, NestedTensor):
-            for x, y in zip(self.storage, other.storage):
+            for x, y in zip(self._storage, other._storage):
                 x *= y
         else:
-            for value in self.storage:
+            for value in self._storage:
                 value *= other
         return self
 
     def __truediv__(self, other):
         if isinstance(other, NestedTensor):
-            return NestedTensor([x / y for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor([value / other for value in self.storage], **self._state())
+            return NestedTensor([x / y for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor([value / other for value in self._storage], **self._state)
 
     def __rtruediv__(self, other):
         if isinstance(other, NestedTensor):
-            return NestedTensor([y / x for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor([other / value for value in self.storage], **self._state())
+            return NestedTensor([y / x for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor([other / value for value in self._storage], **self._state)
 
     def __itruediv__(self, other):
         if isinstance(other, NestedTensor):
-            for x, y in zip(self.storage, other.storage):
+            for x, y in zip(self._storage, other._storage):
                 x /= y
         else:
-            for value in self.storage:
+            for value in self._storage:
                 value /= other
         return self
 
     def __sub__(self, other):
         if isinstance(other, NestedTensor):
-            return NestedTensor([x - y for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor([value - other for value in self.storage], **self._state())
+            return NestedTensor([x - y for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor([value - other for value in self._storage], **self._state)
 
     def __rsub__(self, other):
         if isinstance(other, NestedTensor):
-            return NestedTensor([y - x for x, y in zip(self.storage, other.storage)], **self._state())
-        return NestedTensor([other - value for value in self.storage], **self._state())
+            return NestedTensor([y - x for x, y in zip(self._storage, other._storage)], **self._state)
+        return NestedTensor([other - value for value in self._storage], **self._state)
 
     def __isub__(self, other):
         if isinstance(other, NestedTensor):
-            for x, y in zip(self.storage, other.storage):
+            for x, y in zip(self._storage, other._storage):
                 x -= y
         else:
-            for value in self.storage:
+            for value in self._storage:
                 value -= other
         return self
 
     def __getitem__(self, index: int | slice | tuple) -> tuple[Tensor, Tensor] | NestedTensor:
         if isinstance(index, tuple):
-            return NestedTensor([t[index[0]][index[1:]] for t in self.storage])
+            return NestedTensor([t[index[0]][index[1:]] for t in self._storage])
         if isinstance(index, (int, slice)):
-            ret = self.storage[index]
+            ret = self._storage[index]
             if isinstance(ret, Tensor):
                 return ret, torch.ones_like(ret, dtype=bool)  # pylint: disable=E1101
             return self.tensor, self.mask
         raise ValueError(f"Unsupported index type {type(index)}")
 
     def __getattr__(self, name) -> Any:
-        if not self.storage:
+        if not self._storage:
             raise ValueError(f"Unable to get {name} from an empty {self.__class__.__name__}")
-        ret = [getattr(i, name) for i in self.storage]
+        ret = [getattr(i, name) for i in self._storage]
         elem = ret[0]
         if isinstance(elem, Tensor):
-            return NestedTensor(ret, **self._state())
+            return NestedTensor(ret, **self._state)
         if callable(elem):
-            return NestedTensorFuncWrapper(ret, state=self._state())
+            return NestedTensorFuncWrapper(ret, state=self._state)
         if elem.__hash__ is not None and len(set(ret)) == 1:
             return elem
         return ret
@@ -563,19 +566,20 @@ class NestedTensor:
         return NestedTensorFunc[func](*args, **kwargs)
 
     def __len__(self) -> int:
-        return len(self.storage)
+        return len(self._storage)
 
     def __eq__(self, other) -> bool | Tensor | NestedTensor:  # type: ignore[override]
         if isinstance(other, NestedTensor):
-            return self.storage == other.storage
+            return self._storage == other._storage
         if isinstance(other, Tensor):
             return self.tensor == other
         if isinstance(other, SupportsFloat):
-            return NestedTensor([x == other for x in self.storage], **self._state())
+            return NestedTensor([x == other for x in self._storage], **self._state)
         return False
 
+    @property
     def _state(self) -> Mapping:
-        return {k: v for k, v in self.__dict__.items() if k != "storage"}
+        return {k: v for k, v in self.__dict__.items() if k != "_storage"}
 
     def __state__(self) -> Mapping:
         return self.__dict__
@@ -648,7 +652,7 @@ def mean(
 def cat(tensors, dim: int = 0):
     if dim != 0:
         raise NotImplementedError(f"NestedTensor only supports cat when dim=0, but got {dim}")
-    return NestedTensor([t for tensor in tensors for t in tensor.storage], tensors[0]._state())  # pylint: disable=W0212
+    return NestedTensor([t for tensor in tensors for t in tensor._storage], tensors[0]._state)  # pylint: disable=W0212
 
 
 @NestedTensorFunc.implement(torch.stack)  # pylint: disable=E1101
@@ -672,7 +676,7 @@ class NestedTensorFuncWrapper:
 
     # pylint: disable=R0903
 
-    storage: Sequence[Callable] = []
+    _storage: Sequence[Callable] = []
     state: Mapping = {}
 
     def __init__(self, callables, state: Mapping | None = None) -> None:
@@ -684,13 +688,13 @@ class NestedTensorFuncWrapper:
             raise ValueError(
                 f"NestedTensorFuncWrapper must be initialised with a Sequence of Callable, bug got {type(callables[0])}"
             )
-        self.storage = callables
+        self._storage = callables
         if state is None:
             state = {}
         self.state = state
 
     def __call__(self, *args, **kwargs) -> NestedTensor | Sequence[Tensor]:
-        ret = [call(*args, **kwargs) for call in self.storage]
+        ret = [call(*args, **kwargs) for call in self._storage]
         elem = ret[0]
         if isinstance(elem, Tensor):
             return NestedTensor(ret, **self.state)
