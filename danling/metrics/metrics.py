@@ -76,7 +76,7 @@ class Metrics(Metric):
     def update(self, input: Any, target: Any) -> None:
         if isinstance(input, NestedTensor):
             self._input = input
-            self._input_buffer.extend(input.to(self.device).storage)
+            self._input_buffer.extend(input.to(self.device).storage())
         else:
             if not isinstance(input, torch.Tensor):
                 input = torch.tensor(input)
@@ -84,7 +84,7 @@ class Metrics(Metric):
             self._input_buffer.append(input.to(self.device))
         if isinstance(target, NestedTensor):
             self._target = target
-            self._target_buffer.extend(target.to(self.device).storage)
+            self._target_buffer.extend(target.to(self.device).storage())
         else:
             if not isinstance(target, torch.Tensor):
                 target = torch.tensor(target)
@@ -146,7 +146,7 @@ class Metrics(Metric):
             return torch.cat(synced_tensor, 0)
         if isinstance(self._input, NestedTensor):
             synced_tensors = [None for _ in range(dist.get_world_size())]
-            dist.all_gather_object(synced_tensors, self._input.storage)
+            dist.all_gather_object(synced_tensors, self._input.storage())
             return NestedTensor([i for j in synced_tensors for i in j])
         raise ValueError(f"Expected input to be a Tensor or a NestedTensor, but got {type(self._input)}")
 
@@ -161,7 +161,7 @@ class Metrics(Metric):
             return torch.cat(synced_tensor, 0)
         if isinstance(self._target, NestedTensor):
             synced_tensors = [None for _ in range(dist.get_world_size())]
-            dist.all_gather_object(synced_tensors, self._target.storage)
+            dist.all_gather_object(synced_tensors, self._target.storage())
             return NestedTensor([i for j in synced_tensors for i in j])
 
     @property

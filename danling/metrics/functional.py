@@ -21,9 +21,9 @@ def auroc(
     **kwargs
 ):
     if isinstance(input, NestedTensor):
-        input = torch.cat(input.storage)
+        input = torch.cat(input.storage())
     if isinstance(target, NestedTensor):
-        target = torch.cat(target.storage)
+        target = torch.cat(target.storage())
     if num_labels is None and num_classes is None:
         return tef.binary_auroc(input=input, target=target, weight=weight, **kwargs)
     if num_classes is None:
@@ -46,9 +46,9 @@ def auprc(
     **kwargs
 ):
     if isinstance(input, NestedTensor):
-        input = torch.cat(input.storage)
+        input = torch.cat(input.storage())
     if isinstance(target, NestedTensor):
-        target = torch.cat(target.storage)
+        target = torch.cat(target.storage())
     if num_labels is None and num_classes is None:
         return tef.binary_auprc(input=input, target=target, **kwargs)
     if num_classes is None:
@@ -71,9 +71,9 @@ def accuracy(
     **kwargs
 ):
     if isinstance(input, NestedTensor):
-        input = torch.cat(input.storage)
+        input = torch.cat(input.storage())
     if isinstance(target, NestedTensor):
-        target = torch.cat(target.storage)
+        target = torch.cat(target.storage())
     if num_labels is None and num_classes is None:
         return tef.binary_accuracy(input=input, target=target, threshold=threshold, **kwargs)
     if num_classes is None:
@@ -88,9 +88,9 @@ def pearson(
     target: Tensor | NestedTensor,
 ):
     if isinstance(input, NestedTensor):
-        input = torch.cat(input.storage)
+        input = torch.cat(input.storage())
     if isinstance(target, NestedTensor):
-        target = torch.cat(target.storage)
+        target = torch.cat(target.storage())
     return tmf.pearson_corrcoef(input, target)
 
 
@@ -99,9 +99,9 @@ def spearman(
     target: Tensor | NestedTensor,
 ):
     if isinstance(input, NestedTensor):
-        input = torch.cat(input.storage)
+        input = torch.cat(input.storage())
     if isinstance(target, NestedTensor):
-        target = torch.cat(target.storage)
+        target = torch.cat(target.storage())
     return tmf.spearman_corrcoef(input, target)
 
 
@@ -110,9 +110,9 @@ def r2_score(
     target: Tensor | NestedTensor,
 ):
     if isinstance(input, NestedTensor):
-        input = torch.cat(input.storage)
+        input = torch.cat(input.storage())
     if isinstance(target, NestedTensor):
-        target = torch.cat(target.storage)
+        target = torch.cat(target.storage())
     return tef.r2_score(input, target)
 
 
@@ -121,9 +121,9 @@ def mse(
     target: Tensor | NestedTensor,
 ):
     if isinstance(input, NestedTensor):
-        input = torch.cat(input.storage)
+        input = torch.cat(input.storage())
     if isinstance(target, NestedTensor):
-        target = torch.cat(target.storage)
+        target = torch.cat(target.storage())
     return tef.mean_squared_error(input, target)
 
 
@@ -132,7 +132,7 @@ def rmse(
     target: Tensor | NestedTensor,
 ):
     if isinstance(input, NestedTensor):
-        input = torch.cat(input.storage)
+        input = torch.cat(input.storage())
     if isinstance(target, NestedTensor):
-        target = torch.cat(target.storage)
+        target = torch.cat(target.storage())
     return tef.mean_squared_error(input, target).sqrt()
