@@ -25,7 +25,7 @@ except ImportError:
 from danling.utils import catch
 
 from .base_runner import BaseRunner
-from .utils import on_main_process
+from .utils import RunnerMode, on_main_process
 
 
 class TorchRunner(BaseRunner):
@@ -385,9 +385,9 @@ class TorchRunner(BaseRunner):
         self.accelerator.backward(loss)
         if self.sync_gradients:
             if self.state.get("max_grad_value") is not None:
-                self.clip_grad_value_(self.model.parameters(), self.state.get("max_grad_value"))  # type: ignore
+                self.clip_grad_value_(self.model.parameters(), self.state.get("max_grad_value"))
             if self.state.get("max_grad_norm") is not None:
-                self.clip_grad_norm_(self.model.parameters(), self.state.get("max_grad_norm"))  # type: ignore
+                self.clip_grad_norm_(self.model.parameters(), self.state.get("max_grad_norm"))
         if self.optimizer is not None:
             self.optimizer.step()
             if zero_grad:
@@ -462,6 +462,18 @@ class TorchRunner(BaseRunner):
         if self.distributed:
             return model.module
         return model
+
+    @property
+    def mode(self) -> RunnerMode:
+        return self._mode
+
+    @mode.setter
+    def mode(self, mode: str | RunnerMode) -> None:
+        if isinstance(mode, str):
+            mode = RunnerMode(mode)
+        self._mode = mode
+        if self.model is not None:
+            self.model.train(mode == RunnerMode.train)
 
     @property
     def batch_size(self) -> int:

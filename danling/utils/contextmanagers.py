@@ -7,7 +7,7 @@ from danling.typing import Exceptions
 try:
     import ipdb as pdb
 except ImportError:
-    import pdb  # type: ignore
+    import pdb
 
 
 @contextmanager

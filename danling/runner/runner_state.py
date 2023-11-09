@@ -16,7 +16,7 @@ try:
     from git.repo import Repo
 except ImportError:
     warn("gitpython not installed, git hash will not be available", category=RuntimeWarning, stacklevel=2)
-    Repo = None  # type: ignore
+    Repo = None
 
 from danling.utils import base62
 
@@ -236,7 +236,7 @@ class RunnerState(NestedDict):
 
         return uuid5(self.run_uuid, self.id)
 
-    def __hash__(self) -> int:  # type: ignore
+    def __hash__(self) -> int:
         ignored_keys_in_hash = self.getattr("ignored_keys_in_hash", defaults.DEFAULT_IGNORED_KEYS_IN_HASH)
         state: NestedDict = NestedDict({k: v for k, v in self.dict().items() if k not in ignored_keys_in_hash})
         return hash(state.yamls())

@@ -39,18 +39,18 @@ def save(obj: Any, file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) ->
     r"""
     Save any file with supported extensions.
     """
-    extension = os.path.splitext(file)[-1].lower()[1:]  # type: ignore
+    extension = os.path.splitext(file)[-1].lower()[1:]
     if extension in PYTORCH:
         if not TORCH_AVAILABLE:
             raise ImportError(f"Trying to save {obj} to {file!r} but torch is not installed.")
-        torch.save(obj, file, *args, **kwargs)  # type: ignore
+        torch.save(obj, file, *args, **kwargs)
     elif extension in NUMPY:
         if not NUMPY_AVAILABLE:
             raise ImportError(f"Trying to save {obj} to {file!r} but numpy is not installed.")
-        numpy.save(file, obj, *args, **kwargs)  # type: ignore
+        numpy.save(file, obj, *args, **kwargs)
     elif extension in CSV:
         if isinstance(obj, pandas.DataFrame):
-            obj.to_csv(file, *args, **kwargs)  # type: ignore
+            obj.to_csv(file, *args, **kwargs)
         else:
             raise NotImplementedError(f"Trying to save {obj} to {file!r} but is not supported")
     elif extension in JSON:
@@ -66,7 +66,7 @@ def save(obj: Any, file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) ->
             with open(file, "w") as fp:  # pylint: disable=W1514, C0103
                 yaml.dump(obj, fp, *args, **kwargs)  # type: ignore
     elif extension in PICKLE:
-        with open(file, "wb") as fp:  # type: ignore # pylint: disable=C0103
+        with open(file, "wb") as fp:  # pylint: disable=C0103
             pickle.dump(obj, fp, *args, **kwargs)  # type: ignore
     else:
         raise ValueError(f"Tying to save {obj} to {file!r} with unsupported extension={extension!r}")
@@ -79,19 +79,19 @@ def load(file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
     """
     if not os.path.isfile(file):
         raise ValueError(f"Trying to load {file!r} but it is not a file.")
-    extension = os.path.splitext(file)[-1].lower()[1:]  # type: ignore
+    extension = os.path.splitext(file)[-1].lower()[1:]
     if extension in PYTORCH:
         if not TORCH_AVAILABLE:
             raise ImportError(f"Trying to load {file!r} but torch is not installed.")
-        return torch.load(file, *args, **kwargs)  # type: ignore
+        return torch.load(file, *args, **kwargs)
     if extension in NUMPY:
         if not NUMPY_AVAILABLE:
             raise ImportError(f"Trying to load {file!r} but numpy is not installed.")
-        return numpy.load(file, *args, **kwargs)  # type: ignore
+        return numpy.load(file, *args, **kwargs)
     if extension in CSV:
         if not PANDAS_AVAILABLE:
             raise ImportError(f"Trying to load {file!r} but pandas is not installed.")
-        return pandas.read_csv(file, *args, **kwargs)  # type: ignore
+        return pandas.read_csv(file, *args, **kwargs)
     if extension in JSON:
         with open(file) as fp:  # pylint: disable=W1514, C0103
             return json.load(fp, *args, **kwargs)  # type: ignore
@@ -99,7 +99,7 @@ def load(file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
         with open(file) as fp:  # pylint: disable=W1514, C0103
             return yaml.load(fp, *args, **kwargs)  # type: ignore
     if extension in PICKLE:
-        with open(file, "rb") as fp:  # type: ignore # pylint: disable=C0103
+        with open(file, "rb") as fp:  # pylint: disable=C0103
             return pickle.load(fp, *args, **kwargs)  # type: ignore
     raise ValueError(f"Tying to load {file!r} with unsupported extension={extension!r}")
 

@@ -112,8 +112,8 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         self.cooldown_steps_begin = self.total_steps - self.cooldown_steps
         super().__init__(optimizer, last_epoch)
 
-    def get_lr(self) -> List[float]:  # type: ignore
-        step_count = self._step_count  # type: ignore
+    def get_lr(self) -> List[float]:
+        step_count = self._step_count
         if step_count > self.total_steps + 1 or step_count < 1:
             warn(
                 f"Step count {step_count} is out of range [1, {self.total_steps + 1}]",
@@ -132,7 +132,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         method: Optional[str] = None,
     ) -> float:
         method = method or self.method
-        step_count = step_count or self._step_count  # type: ignore
+        step_count = step_count or self._step_count
         progress = progress or min(max(step_count / self.total_steps, 0.0), 1.0)
         final_lr = self.final_lr or lr * self.final_lr_ratio
         ratio = getattr(self, self.strategy)(progress)

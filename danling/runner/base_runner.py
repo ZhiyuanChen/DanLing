@@ -175,8 +175,6 @@ class BaseRunner(metaclass=RunnerMeta):
         if isinstance(mode, str):
             mode = RunnerMode(mode)
         self._mode = mode
-        if self.model is not None:
-            self.model.train(mode == RunnerMode.train)  # type: ignore
 
     @cached_property
     def batch_size(self) -> int:
@@ -641,7 +639,7 @@ class BaseRunner(metaclass=RunnerMeta):
         lines = first + "\n" + lines
         return lines
 
-    def init_deepspeed(self, config: dict | None = None) -> dict:  # type: ignore # pylint: disable=R0912,R0915
+    def init_deepspeed(self, config: dict | None = None) -> dict:  # type: ignore  # pylint: disable=R0912,R0915
         r"""
         Preprocess DeepSpeed config.
         """
@@ -1129,7 +1127,7 @@ class BaseRunner(metaclass=RunnerMeta):
 
     def write_score(self, name: str, score: float, split: str, steps: int):
         if self.writer:
-            self.writer.add_scalar(f"{split}/{name}", score, steps)  # type: ignore
+            self.writer.add_scalar(f"{split}/{name}", score, steps)
 
     @catch
     @on_main_process
@@ -1152,12 +1150,12 @@ class BaseRunner(metaclass=RunnerMeta):
             indent=4,
         )
         ret = {"id": self.state.id, "name": self.state.name}
-        result = self.latest_result  # type: ignore
+        result = self.latest_result
         if isinstance(result, FlatDict):
-            result = result.dict()  # type: ignore
+            result = result.dict()
         # This is slower but ensure id is the first key
         if result is not None:
-            ret.update(result)  # type: ignore
+            ret.update(result)
         latest_path = os.path.join(self.dir, "latest.json")
         self.save(ret, latest_path, indent=4)
         if self.is_best:

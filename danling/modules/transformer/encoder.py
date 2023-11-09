@@ -36,7 +36,7 @@ class TransformerEncoderLayer(nn.Module):
         if ffn_dim is None:
             ffn_dim = embed_dim * 4
         self.norm_first = norm_first
-        self.attn = Attention(  # type: ignore
+        self.attn = Attention(
             embed_dim,
             num_heads,
             attn_dropout=attn_dropout,
@@ -48,7 +48,7 @@ class TransformerEncoderLayer(nn.Module):
             **kwargs
         )
         self.norm1 = nn.LayerNorm(embed_dim, eps=layer_norm_eps)
-        self.ffn = FeedForwardNetwork(embed_dim, ffn_dim, activation, ffn_dropout, **kwargs)  # type: ignore
+        self.ffn = FeedForwardNetwork(embed_dim, ffn_dim, activation, ffn_dropout, **kwargs)
         self.norm2 = nn.LayerNorm(embed_dim, eps=layer_norm_eps)
         self.dropout = nn.Dropout(dropout)
 
@@ -111,12 +111,12 @@ class TransformerEncoder(nn.Module):
         for layer in self.layers:
             if gradient_checkpoint and self.training:
                 layer = partial(checkpoint, layer)
-                need_weights = torch.tensor(need_weights)  # type: ignore
+                need_weights = torch.tensor(need_weights)
             output, weights = layer(output, attn_bias, attn_mask, key_padding_mask, need_weights)
             if need_weights:
-                attn_weights.append(weights)  # type: ignore
+                attn_weights.append(weights)
 
         if need_weights:
-            attn_weights = torch.stack(attn_weights).cpu().detach()  # type: ignore
+            attn_weights = torch.stack(attn_weights).cpu().detach()
 
-        return output, attn_weights  # type: ignore
+        return output, attn_weights

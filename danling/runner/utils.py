@@ -5,7 +5,7 @@ from functools import wraps
 from typing import Any
 
 try:
-    from enum import StrEnum  # type: ignore # pylint: disable = C0412
+    from enum import StrEnum  # pylint: disable = C0412
 except ImportError:
     from strenum import LowercaseStrEnum as StrEnum  # type: ignore
 
