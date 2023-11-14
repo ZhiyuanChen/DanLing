@@ -8,24 +8,27 @@ from chanfig import FlatDict
 
 from danling.typing import File, PathStr
 
-TORCH_AVAILABLE = True
-NUMPY_AVAILABLE = True
-PANDAS_AVAILABLE = True
-
 try:
     import torch
+
+    TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
 
 try:
     import numpy
+
+    NUMPY_AVAILABLE = True
 except ImportError:
     NUMPY_AVAILABLE = False
 
 try:
     import pandas
+
+    PANDAS_AVAILABLE = True
 except ImportError:
     PANDAS_AVAILABLE = False
+
 
 JSON = ("json",)
 YAML = ("yaml", "yml")
@@ -35,7 +38,7 @@ NUMPY = ("numpy", "npy", "npz")
 PICKLE = ("pickle", "pkl")
 
 
-def save(obj: Any, file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) -> File:  # pylint: disable=R0912
+def save(obj: Any, file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) -> File:
     r"""
     Save any file with supported extensions.
     """
@@ -57,16 +60,16 @@ def save(obj: Any, file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) ->
         if isinstance(obj, FlatDict):
             obj.json(file)
         else:
-            with open(file, "w") as fp:  # pylint: disable=W1514, C0103
+            with open(file, "w") as fp:
                 json.dump(obj, fp, *args, **kwargs)  # type: ignore
     elif extension in YAML:
         if isinstance(obj, FlatDict):
             obj.yaml(file)
         else:
-            with open(file, "w") as fp:  # pylint: disable=W1514, C0103
+            with open(file, "w") as fp:
                 yaml.dump(obj, fp, *args, **kwargs)  # type: ignore
     elif extension in PICKLE:
-        with open(file, "wb") as fp:  # pylint: disable=C0103
+        with open(file, "wb") as fp:
             pickle.dump(obj, fp, *args, **kwargs)  # type: ignore
     else:
         raise ValueError(f"Tying to save {obj} to {file!r} with unsupported extension={extension!r}")
@@ -93,13 +96,13 @@ def load(file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
             raise ImportError(f"Trying to load {file!r} but pandas is not installed.")
         return pandas.read_csv(file, *args, **kwargs)
     if extension in JSON:
-        with open(file) as fp:  # pylint: disable=W1514, C0103
+        with open(file) as fp:
             return json.load(fp, *args, **kwargs)  # type: ignore
     if extension in YAML:
-        with open(file) as fp:  # pylint: disable=W1514, C0103
+        with open(file) as fp:
             return yaml.load(fp, *args, **kwargs)  # type: ignore
     if extension in PICKLE:
-        with open(file, "rb") as fp:  # pylint: disable=C0103
+        with open(file, "rb") as fp:
             return pickle.load(fp, *args, **kwargs)  # type: ignore
     raise ValueError(f"Tying to load {file!r} with unsupported extension={extension!r}")
 

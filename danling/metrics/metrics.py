@@ -1,5 +1,4 @@
-# pylint: disable=E1101,W0622
-
+# pylint: disable=redefined-builtin
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -22,7 +21,7 @@ def world_size() -> int:
     return 1
 
 
-class flist(list):  # pylint: disable=R0903
+class flist(list):
     def __format__(self, *args, **kwargs):
         return " ".join([x.__format__(*args, **kwargs) for x in self])
 
@@ -148,7 +147,7 @@ class Metrics(Metric):
             synced_tensors = [None for _ in range(dist.get_world_size())]
             dist.all_gather_object(synced_tensors, self._input.storage())
             return NestedTensor([i for j in synced_tensors for i in j])
-        raise ValueError(f"Expected input to be a Tensor or a NestedTensor, but got {type(self._input)}")
+        raise ValueError(f"Expected _input to be a Tensor or a NestedTensor, but got {type(self._input)}")
 
     @property
     @torch.inference_mode()
@@ -163,6 +162,7 @@ class Metrics(Metric):
             synced_tensors = [None for _ in range(dist.get_world_size())]
             dist.all_gather_object(synced_tensors, self._target.storage())
             return NestedTensor([i for j in synced_tensors for i in j])
+        raise ValueError(f"Expected _target to be a Tensor or a NestedTensor, but got {type(self._target)}")
 
     @property
     @torch.inference_mode()
@@ -209,7 +209,7 @@ class Metrics(Metric):
         )
 
 
-class ScoreMetrics(Metrics):
+class ScoreMetrics(Metrics):  # pylint: disable=abstract-method
     r"""
     `ScoreMetrics` is a subclass of Metrics that supports scoring.
 

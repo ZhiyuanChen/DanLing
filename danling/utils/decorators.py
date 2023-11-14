@@ -77,7 +77,7 @@ def print_exc(exc, func, args, kwargs, verbosity: int = 40):  # pylint: disable=
 
 
 @flexible_decorator
-def catch(  # pylint: disable=W1113
+def catch(  # pylint: disable=keyword-arg-before-vararg
     error: Exceptions = Exception,
     exclude: Exceptions | None = None,
     callback: Callable = print_exc,
@@ -113,10 +113,10 @@ def catch(  # pylint: disable=W1113
 
     def decorator(func):
         @wraps(func)
-        def wrapper(*args, **kwargs):  # pylint: disable=R1710
+        def wrapper(*args, **kwargs):  # pylint: disable=inconsistent-return-statements
             try:
                 return func(*args, **kwargs)
-            except error as exc:  # pylint: disable=W0703
+            except error as exc:  # pylint: disable=broad-exception-caught
                 if exclude is not None and isinstance(exc, exclude):
                     raise exc
                 callback(exc, func, args, kwargs, *callback_args, **callback_kwargs)

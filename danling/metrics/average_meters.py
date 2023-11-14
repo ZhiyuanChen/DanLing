@@ -96,8 +96,6 @@ class AverageMeter:
             2
         """
 
-        # pylint: disable=C0103
-
         self.val = val
         self.sum += val * n
         self.count += n

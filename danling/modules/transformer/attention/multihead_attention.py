@@ -6,11 +6,11 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 
-class MultiHeadAttention(nn.Module):  # pylint: disable=R0902
+class MultiHeadAttention(nn.Module):
     bias_k: Optional[Tensor]
     bias_v: Optional[Tensor]
 
-    def __init__(  # pylint: disable=R0913
+    def __init__(
         self,
         embed_dim: int,
         num_heads: int,
@@ -23,8 +23,6 @@ class MultiHeadAttention(nn.Module):  # pylint: disable=R0902
         v_dim: Optional[int] = None,
         batch_first: bool = True,
     ) -> None:
-        # pylint: disable=E1101
-
         super().__init__()
         self.embed_dim = embed_dim
         self.k_dim = k_dim if k_dim is not None else self.embed_dim
@@ -63,7 +61,7 @@ class MultiHeadAttention(nn.Module):  # pylint: disable=R0902
         if self.bias_v is not None:
             nn.init.xavier_normal_(self.bias_v)
 
-    def forward(  # pylint: disable=R0912, R0913, R0914, R0915
+    def forward(  # pylint: disable=R0912, R0914, R0915
         self,
         query: Tensor,
         key: Tensor,
@@ -75,8 +73,6 @@ class MultiHeadAttention(nn.Module):  # pylint: disable=R0902
         static_k: Optional[Tensor] = None,
         static_v: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Optional[Tensor]]:
-        # pylint: disable=C0103, E1101
-
         if self.batch_first:
             query, key, value = (x.transpose(0, 1) for x in (query, key, value))
 
@@ -208,31 +204,26 @@ class MultiHeadAttention(nn.Module):  # pylint: disable=R0902
 
         if self.batch_first:
             return attn_output.transpose(0, 1), attn_output_weights
-        else:
-            return attn_output, attn_output_weights
+        return attn_output, attn_output_weights
 
     def in_projection(self, q: Tensor, k: Tensor, v: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
-        # pylint: disable=C0103, E1101
-
         if k is v:
             # self-attention
             if q is k:
                 return self.in_proj(q).split((self.embed_dim, self.k_dim, self.v_dim), dim=-1)
             # encoder-decoder attention
-            else:
-                w_q, w_kv = self.in_proj.weight.split((self.embed_dim, self.k_dim + self.v_dim))
-                b_q, b_kv = None, None
-                if self.in_proj.bias is not None:
-                    b_q, b_kv = self.in_proj.bias.split((self.embed_dim, self.k_dim + self.v_dim))
-                return (F.linear(q, w_q, b_q),) + F.linear(k, w_kv, b_kv).split((self.k_dim, self.v_dim), dim=-1)
-        else:
-            w_q, w_k, w_v = self.in_proj.weight.split((self.embed_dim, self.k_dim, self.v_dim))
-            b_q, b_k, b_v = None, None, None
+            w_q, w_kv = self.in_proj.weight.split((self.embed_dim, self.k_dim + self.v_dim))
+            b_q, b_kv = None, None
             if self.in_proj.bias is not None:
-                b_q, b_k, b_v = self.in_proj.bias.split((self.embed_dim, self.k_dim, self.v_dim))
-            return F.linear(q, w_q, b_q), F.linear(k, w_k, b_k), F.linear(v, w_v, b_v)
+                b_q, b_kv = self.in_proj.bias.split((self.embed_dim, self.k_dim + self.v_dim))
+            return (F.linear(q, w_q, b_q),) + F.linear(k, w_kv, b_kv).split((self.k_dim, self.v_dim), dim=-1)
+        w_q, w_k, w_v = self.in_proj.weight.split((self.embed_dim, self.k_dim, self.v_dim))
+        b_q, b_k, b_v = None, None, None
+        if self.in_proj.bias is not None:
+            b_q, b_k, b_v = self.in_proj.bias.split((self.embed_dim, self.k_dim, self.v_dim))
+        return F.linear(q, w_q, b_q), F.linear(k, w_k, b_k), F.linear(v, w_v, b_v)
 
-    def attention(  # pylint: disable=R0913
+    def attention(
         self,
         q: Tensor,
         k: Tensor,
@@ -240,8 +231,6 @@ class MultiHeadAttention(nn.Module):  # pylint: disable=R0902
         attn_bias: Optional[Tensor] = None,
         attn_mask: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
-        # pylint: disable=C0103, E1101
-
         q *= self.scaling
         # (B, Nt, E) x (B, E, Ns) -> (B, Nt, Ns)
         attn = torch.bmm(q, k.transpose(-2, -1))

@@ -2,7 +2,7 @@ from torch import nn
 
 
 class Dense(nn.Module):
-    def __init__(  # pylint: disable=R0913
+    def __init__(
         self,
         in_features: int,
         out_features: int,
@@ -19,7 +19,7 @@ class Dense(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.pool = nn.AdaptiveAvgPool1d(out_features) if residual else None
 
-    def forward(self, x):  # pylint: disable=C0103
+    def forward(self, x):
         out = self.linear(x)
         out = self.norm(out)
         out = self.activation(out)

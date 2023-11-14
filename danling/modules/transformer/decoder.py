@@ -63,7 +63,7 @@ class TransformerDecoderLayer(nn.Module):
         self.norm2 = nn.LayerNorm(embed_dim, eps=layer_norm_eps)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(  # pylint: disable=R0913
+    def forward(
         self,
         tgt: Tensor,
         mem: Tensor,
@@ -118,7 +118,7 @@ class TransformerDecoder(nn.Module):
         self.layers = nn.ModuleList([])
         self.layers.extend([layer for _ in range(self.num_layers)])
 
-    def forward(  # pylint: disable=R0913
+    def forward(
         self,
         tgt: Tensor,
         mem: Tensor,
@@ -131,8 +131,6 @@ class TransformerDecoder(nn.Module):
         need_weights: bool = False,
         gradient_checkpoint: bool = False,
     ) -> Tuple[Tensor, Tensor]:
-        # pylint: disable=E1101
-
         output = tgt
         # attn_weights is set to torch.empty(0, requires_grad=False) to avoid errors in DDP
         attn_weights = [] if need_weights else torch.empty(0, requires_grad=False)

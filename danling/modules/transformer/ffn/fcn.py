@@ -15,7 +15,7 @@ class FullyConnectedNetwork(nn.Module):
         self.dropout = nn.Dropout(ffn_dropout)
         self.fc2 = nn.Linear(ffn_dim, embed_dim)
 
-    def forward(self, x: Tensor) -> Tensor:  # pylint: disable=C0103
+    def forward(self, x: Tensor) -> Tensor:
         out = self.fc1(x)
         out = self.activation(out)
         out = self.dropout(out)

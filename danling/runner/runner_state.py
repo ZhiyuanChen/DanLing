@@ -23,7 +23,7 @@ from danling.utils import base62
 from . import defaults
 
 
-class RunnerState(NestedDict):
+class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
     r"""
     `RunnerState` is a `NestedDict` that contains all states of a `Runner`.
 
@@ -124,7 +124,6 @@ class RunnerState(NestedDict):
         [`BaseRunner`][danling.runner.BaseRunner]: The base runner class.
     """
 
-    # pylint: disable=R0902, R0904
     # DO NOT set default value in class, as they won't be stored in `__dict__`.
 
     id: str
@@ -175,7 +174,7 @@ class RunnerState(NestedDict):
         super().__init__(*args, **kwargs)
         self.experiment_id = self.get_experiment_id()
         self.run_id = self.run_uuid.hex
-        self.id = f"{self.get_time_str()}{self.experiment_id:.5}{self.run_id:.4}"  # pylint: disable=C0103
+        self.id = f"{self.get_time_str()}{self.experiment_id:.5}{self.run_id:.4}"
         self.name = f"{self.experiment_name}-{self.run_name}"
         self.setattr("ignored_keys_in_hash", defaults.DEFAULT_IGNORED_KEYS_IN_HASH)
 

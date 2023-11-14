@@ -4,7 +4,7 @@ from typing import Callable
 from chanfig import Registry
 
 
-class TorchFuncRegistry(Registry):
+class TorchFuncRegistry(Registry):  # pylint: disable=too-few-public-methods
     """
     `TorchFuncRegistry` for extending PyTorch Tensor.
     """
@@ -25,7 +25,7 @@ class TorchFuncRegistry(Registry):
         Examples:
             >>> import torch
             >>> registry = TorchFuncRegistry("test")
-            >>> @registry.implement(torch.mean)  # pylint: disable=E1101
+            >>> @registry.implement(torch.mean)
             ... def mean(input):
             ...     raise input.mean()
             >>> registry  # doctest: +ELLIPSIS

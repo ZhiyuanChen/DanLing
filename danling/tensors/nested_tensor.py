@@ -1,4 +1,4 @@
-# pylint: disable=C0116
+# pylint: disable=protected-access
 from __future__ import annotations
 
 from functools import lru_cache
@@ -16,8 +16,8 @@ def pad_tensor(
 ):
     tensor = tensors[0]
     if size is None:
-        size = NestedTensor._size(tuple(tensors))  # pylint: disable=W0212
-    ret = torch.zeros(size, dtype=tensor.dtype, device=tensor.device)  # pylint: disable=E1101
+        size = NestedTensor._size(tuple(tensors))
+    ret = torch.zeros(size, dtype=tensor.dtype, device=tensor.device)
     if padding_value:
         ret.fill_(padding_value)
     for i, t in enumerate(tensors):
@@ -78,7 +78,7 @@ class PNTensor(Tensor):
             PNTensor(True)
         """
 
-        return torch.ones_like(self)  # pylint: disable=E1101
+        return torch.ones_like(self)
 
     def new_empty(self, *args, **kwargs):
         return PNTensor(super().new_empty(*args, **kwargs))
@@ -153,8 +153,6 @@ class NestedTensor:
                 [5, 0]])
     """
 
-    # pylint: disable=C0103
-
     _storage: Sequence[Tensor] = []
     batch_first: bool = True
     padding_value: SupportsFloat = 0.0
@@ -173,7 +171,7 @@ class NestedTensor:
         if len(tensors) == 0:
             raise ValueError("NestedTensor must be initialised with a non-empty Iterable.")
         if not isinstance(tensors[0], Tensor):
-            tensors = [torch.tensor(tensor) for tensor in tensors]  # pylint: disable=E1101
+            tensors = [torch.tensor(tensor) for tensor in tensors]
         self._storage = tensors
         self.batch_first = batch_first
         self.padding_value = padding_value
@@ -254,7 +252,7 @@ class NestedTensor:
         return NestedTensor([o[tuple(slice(0, dim) for dim in t.shape)] for t, o in zip(self._storage, other)])
 
     @property
-    def device(self) -> torch.device:  # pylint: disable=E1101
+    def device(self) -> torch.device:
         r"""
         Device of the NestedTensor.
 
@@ -270,7 +268,7 @@ class NestedTensor:
         return self._device(tuple(self._storage))
 
     @property
-    def shape(self) -> torch.Size:  # pylint: disable=E1101
+    def shape(self) -> torch.Size:
         r"""
         Alias for `size()`.
         """
@@ -278,7 +276,7 @@ class NestedTensor:
         return self.size()
 
     @property
-    def ndim(self) -> int:  # pylint: disable=E1101
+    def ndim(self) -> int:
         r"""
         Alias for `dim()`.
         """
@@ -288,7 +286,7 @@ class NestedTensor:
     def tolist(self) -> list:
         return [t.tolist() for t in self._storage]
 
-    def size(self, dim: int | None = None) -> torch.Size | int:  # pylint: disable=E1101
+    def size(self, dim: int | None = None) -> torch.Size | int:
         r"""
         Returns the size of the self `NestedTensor`.
 
@@ -315,7 +313,7 @@ class NestedTensor:
 
         return self._size(tuple(self._storage), dim)
 
-    def dim(self) -> int:  # pylint: disable=E1101
+    def dim(self) -> int:
         r"""
         Number of dimension of the NestedTensor.
 
@@ -539,7 +537,7 @@ class NestedTensor:
         if isinstance(index, (int, slice)):
             ret = self._storage[index]
             if isinstance(ret, Tensor):
-                return ret, torch.ones_like(ret, dtype=bool)  # pylint: disable=E1101
+                return ret, torch.ones_like(ret, dtype=bool)
             return self.tensor, self.mask
         raise ValueError(f"Unsupported index type {type(index)}")
 
@@ -594,13 +592,12 @@ class NestedTensor:
     @lru_cache(maxsize=None)
     def _tensor(storage, batch_first, padding_value: float = 0) -> Tensor:
         if storage[0].dim() == 0:
-            return torch.stack(storage, dim=0)  # pylint: disable=E1101
+            return torch.stack(storage, dim=0)
         return pad_tensor(storage, batch_first=batch_first, padding_value=padding_value)
 
     @staticmethod
     @lru_cache(maxsize=None)
     def _mask(storage, mask_value: bool = False) -> Tensor:
-        # pylint: disable=E1101
         if storage[0].dim() == 0:
             return torch.ones(len(storage), dtype=torch.bool)
         lens = torch.tensor([len(t) for t in storage], device=storage[0].device)
@@ -609,13 +606,12 @@ class NestedTensor:
 
     @staticmethod
     @lru_cache(maxsize=None)
-    def _device(storage) -> torch.device:  # pylint: disable=E1101
+    def _device(storage) -> torch.device:
         return storage[0].device
 
     @staticmethod
     @lru_cache(maxsize=None)
     def _size(storage, dim: int | None = None) -> torch.Size | int:
-        # pylint: disable=E1101
         if dim is not None:
             if dim == 0:
                 return len(storage)
@@ -630,16 +626,15 @@ class NestedTensor:
     @staticmethod
     @lru_cache(maxsize=None)
     def _dim(storage) -> torch.Size:
-        # pylint: disable=E1101
         return max(t.dim() for t in storage) + 1
 
 
 NestedTensorFunc = TorchFuncRegistry()
 
 
-@NestedTensorFunc.implement(torch.mean)  # pylint: disable=E1101
+@NestedTensorFunc.implement(torch.mean)
 def mean(
-    input,  # pylint: disable=W0622
+    input,
     dim: int | None = None,
     keepdim: bool = False,
     *,
@@ -648,33 +643,31 @@ def mean(
     return input.mean(dim=dim, keepdim=keepdim, dtype=dtype)
 
 
-@NestedTensorFunc.implement(torch.cat)  # pylint: disable=E1101
+@NestedTensorFunc.implement(torch.cat)
 def cat(tensors, dim: int = 0):
     if dim != 0:
         raise NotImplementedError(f"NestedTensor only supports cat when dim=0, but got {dim}")
-    return NestedTensor([t for tensor in tensors for t in tensor._storage], tensors[0]._state)  # pylint: disable=W0212
+    return NestedTensor([t for tensor in tensors for t in tensor._storage], tensors[0]._state)
 
 
-@NestedTensorFunc.implement(torch.stack)  # pylint: disable=E1101
+@NestedTensorFunc.implement(torch.stack)
 def stack(tensors, dim: int = 0):
     raise NotImplementedError("NestedTensor does not support stack as of now")
 
 
-@NestedTensorFunc.implement(torch.isin)  # pylint: disable=E1101
+@NestedTensorFunc.implement(torch.isin)
 def isin(elements, test_elements, *, assume_unique: bool = False, invert: bool = False):
     if isinstance(elements, NestedTensor):
         elements = elements.tensor
     if isinstance(test_elements, NestedTensor):
         test_elements = test_elements.tensor
-    return torch.isin(elements, test_elements, assume_unique=assume_unique, invert=invert)  # pylint: disable=E1101
+    return torch.isin(elements, test_elements, assume_unique=assume_unique, invert=invert)
 
 
 class NestedTensorFuncWrapper:
     r"""
     Function Wrapper to handle NestedTensor as input.
     """
-
-    # pylint: disable=R0903
 
     _storage: Sequence[Callable] = []
     state: Mapping = {}
@@ -703,9 +696,7 @@ class NestedTensorFuncWrapper:
         return ret
 
 
-def collate_pn_tensor_fn(
-    batch, *, collate_fn_map: dict[type | tuple[type, ...], Callable] | None = None  # pylint: disable=W0613
-):
+def collate_pn_tensor_fn(batch, *, collate_fn_map: dict[type | tuple[type, ...], Callable] | None = None):
     return NestedTensor(batch)
 
 

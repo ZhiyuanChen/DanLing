@@ -6,8 +6,8 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 
-class SimpleAttention(nn.Module):  # pylint: disable=R0902
-    def __init__(  # pylint: disable=R0913
+class SimpleAttention(nn.Module):
+    def __init__(
         self,
         embed_dim: int,
         num_heads: int,
@@ -38,7 +38,7 @@ class SimpleAttention(nn.Module):  # pylint: disable=R0902
             nn.init.constant_(self.in_proj.bias, 0.0)
             nn.init.constant_(self.out_proj.bias, 0.0)
 
-    def forward(  # pylint: disable=R0912, R0913, R0914, R0915
+    def forward(  # pylint: disable=R0912, R0914, R0915
         self,
         query: Tensor,
         key: Tensor,
@@ -48,8 +48,6 @@ class SimpleAttention(nn.Module):  # pylint: disable=R0902
         key_padding_mask: Optional[Tensor] = None,
         need_weights: bool = False,
     ) -> Tuple[Tensor, Optional[Tensor]]:
-        # pylint: disable=C0103, E1101, R0801
-
         if self.batch_first:
             query, key, value = (x.transpose(0, 1) for x in (query, key, value))
 
@@ -137,31 +135,26 @@ class SimpleAttention(nn.Module):  # pylint: disable=R0902
 
         if self.batch_first:
             return attn_output.transpose(0, 1), attn_output_weights
-        else:
-            return attn_output, attn_output_weights
+        return attn_output, attn_output_weights
 
     def in_projection(self, q: Tensor, k: Tensor, v: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
-        # pylint: disable=C0103, E1101
-
         if k is v:
             # self-attention
             if q is k:
                 return self.in_proj(q).chunk(3, dim=-1)
             # encoder-decoder attention
-            else:
-                w_q, w_kv = self.in_proj.weight.split(self.embed_dim)
-                b_q, b_kv = None, None
-                if self.in_proj.bias is not None:
-                    b_q, b_kv = self.in_proj.bias.split((self.embed_dim, self.embed_dim * 2))
-                return (F.linear(q, w_q, b_q),) + tuple(F.linear(k, w_kv, b_kv).chunk(2, dim=-1))  # type: ignore
-        else:
-            w_q, w_k, w_v = self.in_proj.weight.chunk(3, -1)
-            b_q, b_k, b_v = None, None, None
+            w_q, w_kv = self.in_proj.weight.split(self.embed_dim)
+            b_q, b_kv = None, None
             if self.in_proj.bias is not None:
-                b_q, b_k, b_v = self.in_proj.bias.chunk(3)
-            return F.linear(q, w_q, b_q), F.linear(k, w_k, b_k), F.linear(v, w_v, b_v)
+                b_q, b_kv = self.in_proj.bias.split((self.embed_dim, self.embed_dim * 2))
+            return (F.linear(q, w_q, b_q),) + tuple(F.linear(k, w_kv, b_kv).chunk(2, dim=-1))  # type: ignore
+        w_q, w_k, w_v = self.in_proj.weight.chunk(3, -1)
+        b_q, b_k, b_v = None, None, None
+        if self.in_proj.bias is not None:
+            b_q, b_k, b_v = self.in_proj.bias.chunk(3)
+        return F.linear(q, w_q, b_q), F.linear(k, w_k, b_k), F.linear(v, w_v, b_v)
 
-    def attention(  # pylint: disable=R0913
+    def attention(
         self,
         q: Tensor,
         k: Tensor,
@@ -169,8 +162,6 @@ class SimpleAttention(nn.Module):  # pylint: disable=R0902
         attn_bias: Optional[Tensor] = None,
         attn_mask: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
-        # pylint: disable=C0103, E1101, R0801
-
         q *= self.scaling
         # (B, Nt, E) x (B, E, Ns) -> (B, Nt, Ns)
         attn = torch.bmm(q, k.transpose(-2, -1))

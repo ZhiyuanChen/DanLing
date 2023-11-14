@@ -5,7 +5,7 @@ from warnings import warn
 from torch.optim import Optimizer, lr_scheduler
 
 
-class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
+class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-access
     r"""
     General learning rate scheduler.
 
@@ -59,7 +59,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
         [0.3330753446, 0.0187302031, 0.000533897, 3.00232e-05, 1e-09]
     """
 
-    def __init__(  # pylint: disable=R0913
+    def __init__(
         self,
         optimizer: Optimizer,
         total_steps: int,
@@ -150,13 +150,13 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=W0212
             lr = cooldown_ratio * (lr - self.min_lr) + self.min_lr
         return max(self.min_lr, lr)
 
-    def linear(self, progress: float) -> float:  # pylint: disable=C0116
+    def linear(self, progress: float) -> float:
         return progress
 
-    def cosine(self, progress: float) -> float:  # pylint: disable=C0116
+    def cosine(self, progress: float) -> float:
         return 1 - ((1 + cos(pi * progress)) / 2)
 
-    def constant(self, progress: float) -> float:  # pylint: disable=W0613, C0116
+    def constant(self, progress: float) -> float:  # pylint: disable=unused-argument
         return 0.0
 
     def __repr__(self) -> str:

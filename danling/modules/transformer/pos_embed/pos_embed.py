@@ -30,7 +30,6 @@ def relative_position_bucket(
           num_buckets (int, optional): The number of buckets. Defaults to 32.
           max_distance (int, optional): The maximum distance. Defaults to 128.
     """
-    # pylint: disable=E1101
 
     context_position = torch.arange(seq_len_max, dtype=torch.long)[:, None]
     memory_position = torch.arange(seq_len_max, dtype=torch.long)[None, :]
@@ -58,7 +57,7 @@ def relative_position_bucket(
     return nn.Parameter(ret, requires_grad=False)
 
 
-class UnitedPositionEmbedding(nn.Module):  # pylint: disable=R0902
+class UnitedPositionEmbedding(nn.Module):
     r"""United Position Embedding
     See `Rethinking Positional Encoding in Language Pre-training <https://arxiv.org/abs/2006.15595>`_
     .. math::
@@ -91,7 +90,7 @@ class UnitedPositionEmbedding(nn.Module):  # pylint: disable=R0902
     ```
     """
 
-    def __init__(  # pylint: disable=R0913
+    def __init__(
         self,
         embed_dim: int,
         num_heads: int,
@@ -112,7 +111,7 @@ class UnitedPositionEmbedding(nn.Module):  # pylint: disable=R0902
         if self.has_cls_token:
             # make room for [CLS]-to-others and others-to-[CLS]
             self.seq_len_max += 2
-        self.abs_pos_embed = nn.Parameter(torch.randn(self.seq_len_max, self.embed_dim))  # pylint: disable=E1101
+        self.abs_pos_embed = nn.Parameter(torch.randn(self.seq_len_max, self.embed_dim))
         self.norm = nn.LayerNorm(self.embed_dim)
         self.in_proj = nn.Linear(self.embed_dim, self.embed_dim * 2)
         self.scaling = (embed_dim / num_heads * pos_scale_factor) ** -0.5
@@ -130,8 +129,6 @@ class UnitedPositionEmbedding(nn.Module):  # pylint: disable=R0902
             )
 
     def forward(self, src: Tensor, cls_token_index: Optional[Tensor] = None) -> Tensor:
-        # pylint: disable=C0103, C0116, E1101
-
         B, N, C = src.shape
         # 0 is for others-to-[CLS] 1 is for [CLS]-to-others
         # Assume the input is ordered. If your input token is permuted, you may need to update this accordingly

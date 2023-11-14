@@ -8,6 +8,7 @@ from time import time
 from typing import Any
 from warnings import warn
 
+# pylint: disable=redefined-builtin
 import torch
 from accelerate import Accelerator
 from accelerate.utils import DeepSpeedPlugin
@@ -28,7 +29,7 @@ from .base_runner import BaseRunner
 from .utils import RunnerMode, on_main_process
 
 
-class TorchRunner(BaseRunner):
+class TorchRunner(BaseRunner):  # pylint: disable=too-many-public-methods
     r"""
     Set up everything for running a job.
 
@@ -48,8 +49,6 @@ class TorchRunner(BaseRunner):
         accelerator (Accelerator):
         accelerate: Arguments to pass when building accelerator. Defaults to `{}`.
     """
-
-    # pylint: disable=R0902
 
     accelerator: Accelerator
     accelerate: dict
@@ -141,12 +140,12 @@ class TorchRunner(BaseRunner):
             print(self.format_epoch_result(result))
             self.save_result()
             self.save_checkpoint()
-            """@nni.report_intermediate_result(self.latest_score)"""  # pylint: disable=W0105
+            """@nni.report_intermediate_result(self.latest_score)"""
             early_stop_counter = 0 if self.is_best else early_stop_counter + 1
             if early_stop_counter > patience:
                 print("early stop")
                 break
-        """@nni.report_final_result(self.latest_score)"""  # pylint: disable=W0105
+        """@nni.report_final_result(self.latest_score)"""
         return self.results
 
     def train_epoch(self, split: str = "train") -> NestedDict:
@@ -160,7 +159,6 @@ class TorchRunner(BaseRunner):
             NestedDict: train result
         """
 
-        # pylint: disable=E1101, E1102, W0622
         self.mode = "train"  # type: ignore
         loader = self.dataloaders[split]
         length = len(loader) - 1
@@ -238,7 +236,6 @@ class TorchRunner(BaseRunner):
             NestedDict: evaluation result
         """
 
-        # pylint: disable=E1101, E1102, W0622
         self.mode = "eval"  # type: ignore
         loader = self.dataloaders[split]
         length = len(loader) - 1
@@ -287,7 +284,6 @@ class TorchRunner(BaseRunner):
             Tensor: inference outputs
         """
 
-        # pylint: disable=E1102, W0622
         self.mode = "inf"  # type: ignore
         loader = self.dataloaders[split]
         self.meters.reset()
@@ -511,7 +507,7 @@ class TorchRunner(BaseRunner):
         return self.accelerator.gradient_accumulation_steps
 
     @property
-    def device(self) -> torch.device:  # pylint: disable=E1101
+    def device(self) -> torch.device:
         r"""
         Device of runner.
         """

@@ -17,7 +17,7 @@ class RunnerMeta(type):
         return instance
 
 
-class RunnerMode(StrEnum):
+class RunnerMode(StrEnum):  # pylint: disable=too-few-public-methods
     r"""
     `RunnerMode` is an enumeration of running modes.
 

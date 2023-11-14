@@ -36,11 +36,11 @@ def debug(
         return
     try:
         yield
-    except error as exc:  # pylint: disable=W0703
+    except error as exc:  # pylint: disable=broad-exception-caught
         if exclude is not None and isinstance(exc, exclude):
             raise exc
-        _, m, tb = sys.exc_info()  # pylint: disable=C0103
-        print(m.__repr__(), file=sys.stderr)  # pylint: disable=C2801
+        _, m, tb = sys.exc_info()
+        print(repr(m), file=sys.stderr)
         pdb.post_mortem(tb)
     finally:
         pass

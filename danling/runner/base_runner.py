@@ -1,3 +1,4 @@
+# pylint: disable=redefined-builtin, keyword-arg-before-vararg
 from __future__ import annotations
 
 import logging
@@ -8,7 +9,7 @@ import shutil
 from collections.abc import Callable, Mapping, Sequence
 from math import ceil
 from sys import version_info
-from typing import Any
+from typing import Any, Dict
 from warnings import warn
 
 from chanfig import Config, FlatDict, NestedDict, Variable
@@ -35,7 +36,7 @@ IGNORED_SET_NAMES = ("index", "epoch", "step", "iter")
 __APPEND_RESULT_COUNTER__ = 0
 
 
-class BaseRunner(metaclass=RunnerMeta):
+class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-methods
     r"""
     Base class for all runners.
 
@@ -114,7 +115,6 @@ class BaseRunner(metaclass=RunnerMeta):
         [`BaseRunner`][danling.runner.BaseRunner]: The base runner class.
     """
 
-    # pylint: disable=R0902, R0904
     # DO NOT set default value in class, as they won't be stored in `__dict__`.
 
     _mode: RunnerMode
@@ -296,9 +296,7 @@ class BaseRunner(metaclass=RunnerMeta):
         return self.local_rank == 0
 
     @catch
-    def save(  # pylint: disable=W1113
-        self, obj: Any, file: PathStr, main_process_only: bool = True, *args, **kwargs
-    ) -> File:
+    def save(self, obj: Any, file: PathStr, main_process_only: bool = True, *args, **kwargs) -> File:
         r"""
         Save any file with supported extensions.
 
@@ -312,7 +310,7 @@ class BaseRunner(metaclass=RunnerMeta):
         return file
 
     @staticmethod
-    def load(file: PathStr, *args, **kwargs) -> Any:  # pylint: disable=C0103
+    def load(file: PathStr, *args, **kwargs) -> Any:
         r"""
         Load any file with supported extensions.
 
@@ -329,12 +327,10 @@ class BaseRunner(metaclass=RunnerMeta):
             cls: Target `clc to convert to.
         """
 
-        # pylint: disable=C0103
-
         return self.state.dict(cls)
 
     @catch
-    def json(self, file: File, main_process_only: bool = True, *args, **kwargs) -> None:  # pylint: disable=W1113
+    def json(self, file: File, main_process_only: bool = True, *args, **kwargs) -> None:  # pylint: disable=R1710
         r"""
         Dump Runner State to json file.
         """
@@ -351,7 +347,7 @@ class BaseRunner(metaclass=RunnerMeta):
         You may overwrite `from_jsons` in case something is not json serializable.
         """
 
-        with FlatDict.open(file) as fp:  # pylint: disable=C0103
+        with FlatDict.open(file) as fp:
             return cls.from_jsons(fp.read(), *args, **kwargs)
 
     def jsons(self, *args, **kwargs) -> str:
@@ -370,7 +366,7 @@ class BaseRunner(metaclass=RunnerMeta):
         return cls(Config.from_jsons(string, *args, **kwargs))
 
     @catch
-    def yaml(self, file: File, main_process_only: bool = True, *args, **kwargs) -> None:  # pylint: disable=W1113
+    def yaml(self, file: File, main_process_only: bool = True, *args, **kwargs) -> None:  # pylint: disable=R1710
         r"""
         Dump Runner State to yaml file.
         """
@@ -387,7 +383,7 @@ class BaseRunner(metaclass=RunnerMeta):
         You may overwrite `from_yamls` in case something is not yaml serializable.
         """
 
-        with FlatDict.open(file) as fp:  # pylint: disable=C0103
+        with FlatDict.open(file) as fp:
             return cls.from_yamls(fp.read(), *args, **kwargs)
 
     def yamls(self, *args, **kwargs) -> str:
@@ -639,7 +635,9 @@ class BaseRunner(metaclass=RunnerMeta):
         lines = first + "\n" + lines
         return lines
 
-    def init_deepspeed(self, config: dict | None = None) -> dict:  # type: ignore  # pylint: disable=R0912,R0915
+    def init_deepspeed(  # pylint: disable=too-many-branches, too-many-statements
+        self, config: Dict = None  # type: ignore
+    ) -> Dict:
         r"""
         Preprocess DeepSpeed config.
         """
@@ -781,7 +779,7 @@ class BaseRunner(metaclass=RunnerMeta):
         builtin_print = __builtin__.print
 
         @catch
-        def print(*args, force=False, end="\n", file=None, flush=False, **kwargs):  # pylint: disable=W0622
+        def print(*args, force=False, end="\n", file=None, flush=False, **kwargs):  # pylint: disable=redefined-builtin
             if self.rank == process or force:
                 if self.state.log:
                     logger.info(*args, **kwargs)
@@ -831,7 +829,7 @@ class BaseRunner(metaclass=RunnerMeta):
 
     def scale_lr(
         self,
-        lr: float,  # pylint: disable=C0103
+        lr: float,
         lr_scale_factor: float | None = None,
         batch_size_base: int | None = None,
     ) -> float:
@@ -839,7 +837,8 @@ class BaseRunner(metaclass=RunnerMeta):
         Scale learning rate according to [linear scaling rule](https://arxiv.org/abs/1706.02677).
         """
 
-        # pylint: disable=W0201
+        if lr_scale_factor in self.state:
+            lr_scale_factor = self.state.lr_scale_factor
 
         if lr_scale_factor is None:
             if batch_size_base is None:
@@ -851,8 +850,8 @@ class BaseRunner(metaclass=RunnerMeta):
             warn(
                 "batch_size_base will be ignored if lr_scale_factor is specified", category=RuntimeWarning, stacklevel=2
             )
-        lr = lr * lr_scale_factor  # pylint: disable=C0103, E1101
-        self.lr_scale_factor = lr_scale_factor
+        lr = lr * lr_scale_factor
+        self.state.lr_scale_factor = lr_scale_factor
         return lr
 
     def step(self, loss, batch_size: int | None = None, zero_grad: bool = True) -> None:
@@ -903,7 +902,7 @@ class BaseRunner(metaclass=RunnerMeta):
             best_path = os.path.join(self.checkpoint_dir, "best.pth")
             shutil.copy(latest_path, best_path)
 
-    def load_checkpoint(  # pylint: disable=W1113
+    def load_checkpoint(
         self,
         checkpoint: Mapping | bytes | str | os.PathLike | None = None,
         auto_resume: bool | None = None,
@@ -1001,9 +1000,7 @@ class BaseRunner(metaclass=RunnerMeta):
         runner.load_checkpoint(ckpt, override_state=False)
         return runner
 
-    def load_pretrained(  # pylint: disable=W1113
-        self, checkpoint: Mapping | bytes | str | os.PathLike | None = None, *args, **kwargs
-    ) -> None:
+    def load_pretrained(self, checkpoint: Mapping | bytes | str | os.PathLike | None = None, *args, **kwargs) -> None:
         """
         Load parameters from pretrained checkpoint.
 
@@ -1051,7 +1048,7 @@ class BaseRunner(metaclass=RunnerMeta):
 
         if index is None:
             index = self.state.epochs
-            global __APPEND_RESULT_COUNTER__
+            global __APPEND_RESULT_COUNTER__  # pylint: disable=global-statement
             __APPEND_RESULT_COUNTER__ += 1
             if index == 0 and __APPEND_RESULT_COUNTER__ > 1:
                 warn(

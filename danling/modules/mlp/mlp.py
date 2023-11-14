@@ -7,7 +7,7 @@ from .dense import Dense
 
 
 class MLP(nn.Module):
-    def __init__(  # pylint: disable=R0913
+    def __init__(
         self,
         features: List[int],
         dropout: float = 0.1,
@@ -31,6 +31,6 @@ class MLP(nn.Module):
             *[dense(in_features, out_features) for in_features, out_features in zip(features, features[1:])]
         )
 
-    def forward(self, x):  # pylint: disable=C0103
+    def forward(self, x):
         out = self.layers(x)
         return out
