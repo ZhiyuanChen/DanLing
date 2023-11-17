@@ -1081,7 +1081,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             result.merge(self.metrics.val)
         print(self.format_step_result(result, split, iteration, length))
         if self.mode == "train":
-            self.write_result(result, split, iteration)
+            self.write_result(result, split)
         return result
 
     def format_step_result(self, result: NestedDict, split: str, steps: int, length: int) -> str:
@@ -1108,7 +1108,9 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     def format_result(self, result):
         return "\t".join([f"{k}: {v}" for k, v in result.items()])
 
-    def write_result(self, result: NestedDict, split: str, steps: int):
+    def write_result(self, result: NestedDict, split: str, steps: int | None = None):
+        if steps is None:
+            steps = self.steps
         for name, score in result.all_items():
             name = name.replace(".", "/")
             if name == "loss" and isinstance(score, AverageMeter):
