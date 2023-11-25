@@ -128,7 +128,8 @@ def catch(  # pylint: disable=keyword-arg-before-vararg
     return decorator
 
 
-def method_cache(*cache_args, **lru_kwargs):
+@flexible_decorator
+def method_cache(maxsize: int | None = 128, typed: bool = False):
     r"""
     Decorator to cache the result of an instance method.
 
@@ -146,7 +147,7 @@ def method_cache(*cache_args, **lru_kwargs):
             self_ref = ref(self)
 
             @wraps(func)
-            @lru_cache(*cache_args, **lru_kwargs)
+            @lru_cache(maxsize=maxsize, typed=typed)
             def cached_method(*args, **kwargs):
                 return func(self_ref(), *args, **kwargs)
 
