@@ -22,7 +22,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         optimizer: Wrapped optimizer.
         total_steps: Total number of steps.
         final_lr_ratio: Final learning rate ratio to initial learning rate.
-            Defaults to 100.
+            Defaults to 1e-3.
         final_lr: Final learning rate. Deprecated, use `final_lr_ratio` instead.
             Defaults to None.
         min_lr: Minimal learning rate.
@@ -63,7 +63,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         self,
         optimizer: Optimizer,
         total_steps: int,
-        final_lr_ratio: float = 100,
+        final_lr_ratio: float = 1e-3,
         final_lr: Optional[float] = None,
         min_lr: float = 1e-9,
         strategy: str = "cosine",
@@ -96,6 +96,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         if strategy not in self.strategies:
             raise ValueError(f"Scaling strategy must be one of {self.strategies.keys()}, but got {strategy}")
         self.total_steps = total_steps
+        self.final_lr_ratio = final_lr_ratio
         if final_lr is not None:
             warn(
                 "Argument `final_lr` is deprecated, use `final_lr_ratio` instead",
@@ -103,7 +104,6 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
                 stacklevel=2,
             )
         self.final_lr = final_lr
-        self.final_lr_ratio = final_lr_ratio
         self.min_lr = min_lr
         self.strategy = strategy
         self.method = method
