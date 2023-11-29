@@ -1229,11 +1229,11 @@ You can alternate by passing <code>warmup_steps</code> and <code>cooldown_steps<
           <td>
             <div class="doc-md-description">
               <p>Final learning rate ratio to initial learning rate.
-Defaults to 100.</p>
+Defaults to 1e-4.</p>
             </div>
           </td>
           <td>
-                <code>100</code>
+                <code>0.0001</code>
           </td>
         </tr>
         <tr>
@@ -1545,7 +1545,7 @@ Defaults to &ldquo;percentile&rdquo;.</p>
 <a id="__codelineno-0-22" name="__codelineno-0-22"></a><span class="sd">        optimizer: Wrapped optimizer.</span>
 <a id="__codelineno-0-23" name="__codelineno-0-23"></a><span class="sd">        total_steps: Total number of steps.</span>
 <a id="__codelineno-0-24" name="__codelineno-0-24"></a><span class="sd">        final_lr_ratio: Final learning rate ratio to initial learning rate.</span>
-<a id="__codelineno-0-25" name="__codelineno-0-25"></a><span class="sd">            Defaults to 100.</span>
+<a id="__codelineno-0-25" name="__codelineno-0-25"></a><span class="sd">            Defaults to 1e-4.</span>
 <a id="__codelineno-0-26" name="__codelineno-0-26"></a><span class="sd">        final_lr: Final learning rate. Deprecated, use `final_lr_ratio` instead.</span>
 <a id="__codelineno-0-27" name="__codelineno-0-27"></a><span class="sd">            Defaults to None.</span>
 <a id="__codelineno-0-28" name="__codelineno-0-28"></a><span class="sd">        min_lr: Minimal learning rate.</span>
@@ -1586,7 +1586,7 @@ Defaults to &ldquo;percentile&rdquo;.</p>
 <a id="__codelineno-0-63" name="__codelineno-0-63"></a>        <span class="bp">self</span><span class="p">,</span>
 <a id="__codelineno-0-64" name="__codelineno-0-64"></a>        <span class="n">optimizer</span><span class="p">:</span> <span class="n">Optimizer</span><span class="p">,</span>
 <a id="__codelineno-0-65" name="__codelineno-0-65"></a>        <span class="n">total_steps</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
-<a id="__codelineno-0-66" name="__codelineno-0-66"></a>        <span class="n">final_lr_ratio</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mi">100</span><span class="p">,</span>
+<a id="__codelineno-0-66" name="__codelineno-0-66"></a>        <span class="n">final_lr_ratio</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-4</span><span class="p">,</span>
 <a id="__codelineno-0-67" name="__codelineno-0-67"></a>        <span class="n">final_lr</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <a id="__codelineno-0-68" name="__codelineno-0-68"></a>        <span class="n">min_lr</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-9</span><span class="p">,</span>
 <a id="__codelineno-0-69" name="__codelineno-0-69"></a>        <span class="n">strategy</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;cosine&quot;</span><span class="p">,</span>
@@ -1619,14 +1619,14 @@ Defaults to &ldquo;percentile&rdquo;.</p>
 <a id="__codelineno-0-96" name="__codelineno-0-96"></a>        <span class="k">if</span> <span class="n">strategy</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">strategies</span><span class="p">:</span>
 <a id="__codelineno-0-97" name="__codelineno-0-97"></a>            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Scaling strategy must be one of </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">strategies</span><span class="o">.</span><span class="n">keys</span><span class="p">()</span><span class="si">}</span><span class="s2">, but got </span><span class="si">{</span><span class="n">strategy</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-98" name="__codelineno-0-98"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">total_steps</span> <span class="o">=</span> <span class="n">total_steps</span>
-<a id="__codelineno-0-99" name="__codelineno-0-99"></a>        <span class="k">if</span> <span class="n">final_lr</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-100" name="__codelineno-0-100"></a>            <span class="n">warn</span><span class="p">(</span>
-<a id="__codelineno-0-101" name="__codelineno-0-101"></a>                <span class="s2">&quot;Argument `final_lr` is deprecated, use `final_lr_ratio` instead&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-102" name="__codelineno-0-102"></a>                <span class="n">category</span><span class="o">=</span><span class="ne">DeprecationWarning</span><span class="p">,</span>
-<a id="__codelineno-0-103" name="__codelineno-0-103"></a>                <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
-<a id="__codelineno-0-104" name="__codelineno-0-104"></a>            <span class="p">)</span>
-<a id="__codelineno-0-105" name="__codelineno-0-105"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">final_lr</span> <span class="o">=</span> <span class="n">final_lr</span>
-<a id="__codelineno-0-106" name="__codelineno-0-106"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">final_lr_ratio</span> <span class="o">=</span> <span class="n">final_lr_ratio</span>
+<a id="__codelineno-0-99" name="__codelineno-0-99"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">final_lr_ratio</span> <span class="o">=</span> <span class="n">final_lr_ratio</span>
+<a id="__codelineno-0-100" name="__codelineno-0-100"></a>        <span class="k">if</span> <span class="n">final_lr</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-101" name="__codelineno-0-101"></a>            <span class="n">warn</span><span class="p">(</span>
+<a id="__codelineno-0-102" name="__codelineno-0-102"></a>                <span class="s2">&quot;Argument `final_lr` is deprecated, use `final_lr_ratio` instead&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-103" name="__codelineno-0-103"></a>                <span class="n">category</span><span class="o">=</span><span class="ne">DeprecationWarning</span><span class="p">,</span>
+<a id="__codelineno-0-104" name="__codelineno-0-104"></a>                <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+<a id="__codelineno-0-105" name="__codelineno-0-105"></a>            <span class="p">)</span>
+<a id="__codelineno-0-106" name="__codelineno-0-106"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">final_lr</span> <span class="o">=</span> <span class="n">final_lr</span>
 <a id="__codelineno-0-107" name="__codelineno-0-107"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">min_lr</span> <span class="o">=</span> <span class="n">min_lr</span>
 <a id="__codelineno-0-108" name="__codelineno-0-108"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">strategy</span> <span class="o">=</span> <span class="n">strategy</span>
 <a id="__codelineno-0-109" name="__codelineno-0-109"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">method</span> <span class="o">=</span> <span class="n">method</span>
