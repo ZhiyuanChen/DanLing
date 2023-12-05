@@ -30,7 +30,7 @@ class TransformerEncoderLayer(nn.Module):
         norm_first: bool = False,
         Attention: Type[nn.Module] = MultiHeadAttention,
         FeedForwardNetwork: Type[nn.Module] = FullyConnectedNetwork,
-        **kwargs: Optional[Dict[str, Any]]
+        **kwargs: Optional[Dict[str, Any]],
     ) -> None:
         super().__init__()
         if ffn_dim is None:
@@ -45,7 +45,7 @@ class TransformerEncoderLayer(nn.Module):
             add_bias_kv=add_bias_kv,
             add_zero_attn=add_zero_attn,
             batch_first=batch_first,
-            **kwargs
+            **kwargs,
         )
         self.norm1 = nn.LayerNorm(embed_dim, eps=layer_norm_eps)
         self.ffn = FeedForwardNetwork(embed_dim, ffn_dim, activation, ffn_dropout, **kwargs)  # type: ignore

@@ -257,7 +257,7 @@ class BaseRunner(RunnerBase):
         auto_resume: bool | None = None,
         override_state: bool = False,
         *args,
-        **kwargs
+        **kwargs,
     ) -> None:
         """
         Load info from checkpoint.
