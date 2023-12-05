@@ -59,8 +59,14 @@ class Metrics(Metric):
     best_fn: Callable
     merge_dict: bool = True
 
-    def __init__(self, *args, merge_dict: bool | None = None, **metrics: FlatDict[str, Callable]):
-        super().__init__()
+    def __init__(
+        self,
+        *args,
+        merge_dict: bool | None = None,
+        device: torch.device | None = None,
+        **metrics: FlatDict[str, Callable]
+    ):
+        super().__init__(device=device)
         self._add_state("_input", torch.empty(0))
         self._add_state("_target", torch.empty(0))
         self._add_state("_inputs", [])
@@ -72,23 +78,23 @@ class Metrics(Metric):
             self.merge_dict = merge_dict
 
     @torch.inference_mode()
-    def update(self, input: Any, target: Any) -> None:
+    def update(self, input: Any, target: Any) -> None:  # pylint: disable=W0221
         if isinstance(input, NestedTensor):
             self._input = input
-            self._input_buffer.extend(input.to(self.device).storage())
+            self._input_buffer.extend(input.cpu().storage())
         else:
             if not isinstance(input, torch.Tensor):
                 input = torch.tensor(input)
             self._input = input
-            self._input_buffer.append(input.to(self.device))
+            self._input_buffer.append(input.cpu())
         if isinstance(target, NestedTensor):
             self._target = target
-            self._target_buffer.extend(target.to(self.device).storage())
+            self._target_buffer.extend(target.cpu().storage())
         else:
             if not isinstance(target, torch.Tensor):
                 target = torch.tensor(target)
             self._target = target
-            self._target_buffer.append(target.to(self.device))
+            self._target_buffer.append(target.cpu())
 
     def compute(self) -> FlatDict[str, float]:
         return self.comp
@@ -109,7 +115,7 @@ class Metrics(Metric):
 
     @property
     def avg(self) -> FlatDict[str, float]:
-        return self._compute(self.inputs, self.targets)
+        return self._compute(self.inputs.to(self.device), self.targets.to(self.device))
 
     @torch.inference_mode()
     def _compute(self, input: Tensor, target: Tensor) -> flist | float:
