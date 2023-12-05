@@ -1,5 +1,4 @@
-from .average_meter import AverageMeter
-from .average_meters import AverageMeters
+from .average_meters import AverageMeter, AverageMeters
 from .metrics import Metrics, binary_metrics, multiclass_metrics, multilabel_metrics, regression_metrics
 
 __all__ = [
