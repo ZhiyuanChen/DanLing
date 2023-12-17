@@ -35,6 +35,7 @@ YAML = ("yaml", "yml")
 PYTORCH = ("pt", "pth")
 CSV = ("csv",)
 NUMPY = ("numpy", "npy", "npz")
+PANDAS = ("pandas", "pd")
 PICKLE = ("pickle", "pkl")
 
 
@@ -51,6 +52,10 @@ def save(obj: Any, file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) ->
         if not NUMPY_AVAILABLE:
             raise ImportError(f"Trying to save {obj} to {file!r} but numpy is not installed.")
         numpy.save(file, obj, *args, **kwargs)
+    elif extension in PANDAS:
+        if not PANDAS_AVAILABLE:
+            raise ImportError(f"Trying to save {obj} to {file!r} but pandas is not installed.")
+        pandas.to_pickle(obj, file, *args, **kwargs)
     elif extension in CSV:
         if isinstance(obj, pandas.DataFrame):
             obj.to_csv(file, *args, **kwargs)
@@ -91,6 +96,10 @@ def load(file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
         if not NUMPY_AVAILABLE:
             raise ImportError(f"Trying to load {file!r} but numpy is not installed.")
         return numpy.load(file, *args, **kwargs)
+    if extension in PANDAS:
+        if not PANDAS_AVAILABLE:
+            raise ImportError(f"Trying to load {file!r} but pandas is not installed.")
+        return pandas.read_pickle(file, *args, **kwargs)
     if extension in CSV:
         if not PANDAS_AVAILABLE:
             raise ImportError(f"Trying to load {file!r} but pandas is not installed.")
