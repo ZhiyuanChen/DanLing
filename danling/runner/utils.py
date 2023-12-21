@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import os
+import sys
+from contextlib import suppress
+from datetime import datetime
 from enum import auto
 from functools import wraps
 from typing import Any
+from warnings import warn
+
+from danling.utils import base62
 
 try:
     from enum import StrEnum  # pylint: disable = C0412
@@ -30,6 +37,44 @@ class RunnerMode(StrEnum):  # pylint: disable=too-few-public-methods
     train = auto()
     eval = auto()
     inf = auto()
+
+
+def get_time_str() -> str:
+    time = datetime.now()
+    time_tuple = time.isocalendar()[1:] + (
+        time.hour,
+        time.minute,
+        time.second,
+        time.microsecond,
+    )
+    return "".join(base62.encode(i) for i in time_tuple)
+
+
+def get_git_hash() -> str | None:
+    try:
+        from git.exc import InvalidGitRepositoryError
+        from git.repo import Repo
+
+        try:
+            return Repo(search_parent_directories=True).head.object.hexsha
+        except ImportError:
+            pass  # handle at last
+        except (InvalidGitRepositoryError, ValueError):
+            warn(
+                "Unable to get git hash from CWD, fallback to git has of top-level code environment.",
+                category=RuntimeWarning,
+                stacklevel=2,
+            )
+            path = os.path.dirname(os.path.abspath(sys.argv[0]))
+            with suppress(InvalidGitRepositoryError, ValueError):
+                return Repo(path=path, search_parent_directories=True).head.object.hexsha
+    except ImportError:
+        warn(
+            "GitPython is not installed, unable to fing git hash",
+            category=RuntimeWarning,
+            stacklevel=2,
+        )
+    return None
 
 
 def on_main_process(func):

@@ -1,26 +1,13 @@
 from __future__ import annotations
 
-import os
-import sys
-from contextlib import suppress
-from datetime import datetime
 from random import randint
 from typing import Optional
 from uuid import UUID, uuid5
-from warnings import warn
 
 from chanfig import NestedDict
 
-try:
-    from git.exc import InvalidGitRepositoryError
-    from git.repo import Repo
-except ImportError:
-    warn("gitpython not installed, git hash will not be available", category=RuntimeWarning, stacklevel=2)
-    Repo = None
-
-from danling.utils import base62
-
 from . import defaults
+from .utils import get_git_hash, get_time_str
 
 
 class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
@@ -36,11 +23,12 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
     Since `RunnerState` is a `NestedDict`, you can access its attributes by `state["key"]` or `state.key`.
 
     Attributes: General:
-        id (str): `f"{time_str}{self.experiment_id:.5}{self.run_id:.4}"`.
+        timestamp (str): A time string representing the creation time of run.
+        id (str): `f"{self.experiment_id:.8}{self.run_id:.8}"`.
         uuid (UUID, property): `uuid5(self.run_id, self.id)`.
         name (str): `f"{self.experiment_name}-{self.run_name}"`.
         run_id (str): hex of `self.run_uuid`.
-        run_uuid (UUID, property): `uuid5(self.experiment_id, config.jsons())`.
+        run_uuid (UUID, property): `uuid5(self.experiment_id, str(hash(self)))`.
         run_name (str): Defaults to `"DanLing"`.
         experiment_id (str): git hash of the current HEAD.
             Defaults to `"xxxxxxxxxxxxxxxx"` if Runner not under a git repo or git/gitpython not installed.
@@ -126,6 +114,7 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
 
     # DO NOT set default value in class, as they won't be stored in `__dict__`.
 
+    timestamp: str
     id: str
     name: str
     run_id: str
@@ -172,44 +161,12 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
         self.seed = randint(0, 2**32 - 1)
         self.results = NestedDict()
         super().__init__(*args, **kwargs)
-        self.experiment_id = self.get_experiment_id()
+        self.experiment_id = get_git_hash() or defaults.DEFAULT_EXPERIMENT_ID
         self.run_id = self.run_uuid.hex
-        self.id = f"{self.get_time_str()}{self.experiment_id:.5}{self.run_id:.4}"
+        self.id = f"{self.experiment_id:.8}{self.run_id:.8}"
         self.name = f"{self.experiment_name}-{self.run_name}"
+        self.timestamp = get_time_str()
         self.setattr("ignored_keys_in_hash", defaults.DEFAULT_IGNORED_KEYS_IN_HASH)
-
-    # staticmethod is not recognised by `callable` in earlier python
-    def get_experiment_id(self) -> str:
-        if Repo is not None:
-            try:
-                return Repo(search_parent_directories=True).head.object.hexsha
-            except ImportError:
-                pass  # handle at last
-            except (InvalidGitRepositoryError, ValueError):
-                warn(
-                    "Unable to get git hash from CWD, fallback to top-level code environment.",
-                    category=RuntimeWarning,
-                    stacklevel=2,
-                )
-                path = os.path.dirname(os.path.abspath(sys.argv[0]))
-                with suppress(InvalidGitRepositoryError, ValueError):
-                    return Repo(path=path, search_parent_directories=True).head.object.hexsha
-        warn(
-            "GitPython is not installed, fallback to `DEFAULT_EXPERIMENT_ID`.",
-            category=RuntimeWarning,
-            stacklevel=2,
-        )
-        return defaults.DEFAULT_EXPERIMENT_ID
-
-    def get_time_str(self) -> str:
-        time = datetime.now()
-        time_tuple = time.isocalendar()[1:] + (
-            time.hour,
-            time.minute,
-            time.second,
-            time.microsecond,
-        )
-        return "".join(base62.encode(i) for i in time_tuple)
 
     @property
     def experiment_uuid(self) -> UUID:

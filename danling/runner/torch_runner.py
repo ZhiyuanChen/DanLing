@@ -310,9 +310,9 @@ class TorchRunner(BaseRunner):  # pylint: disable=too-many-public-methods
             self.accelerate["deepspeed_plugin"] = DeepSpeedPlugin(hf_ds_config=self.init_deepspeed(deepspeed_config))
         self.accelerator = Accelerator(**self.accelerate)
         if self.distributed:
-            object_list = [self.state.id]
+            object_list = [self.state.id, self.state.timestamp]
             dist.broadcast_object_list(object_list)
-            self.state.id = object_list[0]
+            self.state.id, self.state.timestamp = object_list
 
     @on_main_process
     def init_tensorboard(self, *args, **kwargs) -> None:
