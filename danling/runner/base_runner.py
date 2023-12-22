@@ -151,12 +151,6 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             self.set_seed()
         if self.state.deterministic:
             self.set_deterministic()
-        if os.listdir(self.dir):
-            warn(
-                f"Directory `{self.dir}` is not empty.",
-                category=RuntimeWarning,
-                stacklevel=2,
-            )
         if self.state.log:
             self.init_logging()
         self.init_print()
@@ -537,7 +531,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         except TypeError:
             return True
 
-    @cached_property
+    @property
     @ensure_dir
     def dir(self) -> str:
         r"""
@@ -558,7 +552,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             return self.state.log_path
         return os.path.join(self.dir, "run.log")
 
-    @cached_property
+    @property
     @ensure_dir
     def checkpoint_dir(self) -> str:
         r"""
@@ -634,6 +628,29 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         lines = "\n".join(lines)
         lines = first + "\n" + lines
         return lines
+
+    def check_dir(self, action: str = "warn") -> bool:
+        r"""
+        Check if `self.dir` is not empty.
+
+        Args:
+            action (str): The action to perform if `self.dir` is not empty.
+            Can be one of ("warn", "raise", "ignore"), default is "warn".
+        """
+
+        if action and action not in ("warn", "raise", "ignore"):
+            raise ValueError(f"Directory `{self.dir}`")
+        if os.listdir(self.dir):
+            if action == "warn":
+                warn(
+                    f"Directory `{self.dir}` is not empty",
+                    category=RuntimeWarning,
+                    stacklevel=2,
+                )
+            if action == "raise":
+                raise RuntimeError(f"Directory `{self.dir}` is not empty")
+            return False
+        return True
 
     def init_deepspeed(  # pylint: disable=too-many-branches, too-many-statements
         self, config: Dict = None  # type: ignore
