@@ -140,8 +140,10 @@ class Metrics(Metric):
     def merge_state(self, metrics: Iterable):
         raise NotImplementedError()
 
+    # Due to an issue with PyTorch, we cannot decorate input/target with @torch.inference_mode()
+    # Otherwise, we will encounter the following error when using "gloo" backend:
+    # Inplace update to inference tensor outside InferenceMode is not allowed
     @property
-    @torch.inference_mode()
     def input(self):
         if world_size() == 1:
             return self._input
@@ -152,11 +154,14 @@ class Metrics(Metric):
         if isinstance(self._input, NestedTensor):
             synced_tensors = [None for _ in range(dist.get_world_size())]
             dist.all_gather_object(synced_tensors, self._input.storage())
-            return NestedTensor([i for j in synced_tensors for i in j])
+            synced_tensors = [i for j in synced_tensors for i in j]
+            try:
+                return torch.cat(synced_tensors, 0)
+            except RuntimeError:
+                return synced_tensors
         raise ValueError(f"Expected _input to be a Tensor or a NestedTensor, but got {type(self._input)}")
 
     @property
-    @torch.inference_mode()
     def target(self):
         if world_size() == 1:
             return self._target
@@ -167,11 +172,14 @@ class Metrics(Metric):
         if isinstance(self._target, NestedTensor):
             synced_tensors = [None for _ in range(dist.get_world_size())]
             dist.all_gather_object(synced_tensors, self._target.storage())
-            return NestedTensor([i for j in synced_tensors for i in j])
+            synced_tensors = [i for j in synced_tensors for i in j]
+            try:
+                return torch.cat(synced_tensors, 0)
+            except RuntimeError:
+                return synced_tensors
         raise ValueError(f"Expected _target to be a Tensor or a NestedTensor, but got {type(self._target)}")
 
     @property
-    @torch.inference_mode()
     def inputs(self):
         if not self._inputs and not self._input_buffer:
             return torch.empty(0)
@@ -183,12 +191,14 @@ class Metrics(Metric):
             else:
                 self._inputs.extend(self._input_buffer)
             self._input_buffer = []
-        if isinstance(self._input, NestedTensor):
-            return NestedTensor(self._inputs)
-        return torch.cat(self._inputs, 0)
+        # if isinstance(self._input, NestedTensor):
+        #     return NestedTensor(self._inputs)
+        try:
+            return torch.cat(self._inputs, 0)
+        except RuntimeError:
+            return self._inputs
 
     @property
-    @torch.inference_mode()
     def targets(self):
         if not self._targets and not self._target_buffer:
             return torch.empty(0)
@@ -200,9 +210,12 @@ class Metrics(Metric):
             else:
                 self._targets.extend(self._target_buffer)
             self._target_buffer = []
-        if isinstance(self._target, NestedTensor):
-            return NestedTensor(self._targets)
-        return torch.cat(self._targets, 0)
+        # if isinstance(self._target, NestedTensor):
+        #     return NestedTensor(self._targets)
+        try:
+            return torch.cat(self._targets, 0)
+        except RuntimeError:
+            return self._targets
 
     def __repr__(self):
         keys = tuple(i for i in self.metrics.keys())
