@@ -17,7 +17,7 @@ def auroc(
     num_labels: int | None = None,
     num_classes: int | None = None,
     task_weights: Tensor | None = None,
-    **kwargs
+    **kwargs,
 ):
     if isinstance(input, NestedTensor):
         input = torch.cat(input.storage())
@@ -42,7 +42,7 @@ def auprc(
     num_labels: int | None = None,
     num_classes: int | None = None,
     task_weights: Tensor | None = None,
-    **kwargs
+    **kwargs,
 ):
     if isinstance(input, NestedTensor):
         input = torch.cat(input.storage())
@@ -67,7 +67,7 @@ def accuracy(
     average: str | None = "micro",
     num_labels: int | None = None,
     num_classes: int | None = None,
-    **kwargs
+    **kwargs,
 ):
     if isinstance(input, NestedTensor):
         input = torch.cat(input.storage())

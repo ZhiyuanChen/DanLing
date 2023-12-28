@@ -118,7 +118,7 @@ class Metrics(Metric):
         *args,
         merge_dict: bool | None = None,
         device: torch.device | None = None,
-        **metrics: FlatDict[str, Callable]
+        **metrics: FlatDict[str, Callable],
     ):
         super().__init__(device=device)
         self._add_state("_input", torch.empty(0))

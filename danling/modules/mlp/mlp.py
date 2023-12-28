@@ -16,7 +16,7 @@ class MLP(nn.Module):
         pool: str = "AdaptiveAvgPool1d",
         bias: bool = True,
         residual: bool = True,
-        linear_output: bool = True
+        linear_output: bool = True,
     ) -> None:
         super().__init__()
         if len(features) == 0 and isinstance(features, Sequence):
