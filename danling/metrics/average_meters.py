@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Dict
+
 from chanfig import DefaultDict, NestedDict
 
 
@@ -14,29 +16,26 @@ class AverageMeter:
         count: Number of values.
 
     Examples:
-    ```python
-    >>> meter = AverageMeter()
-    >>> meter.update(0.7)
-    >>> meter.val
-    0.7
-    >>> meter.avg
-    0.7
-    >>> meter.update(0.9)
-    >>> meter.val
-    0.9
-    >>> meter.avg
-    0.8
-    >>> meter.sum
-    1.6
-    >>> meter.count
-    2
-    >>> meter.reset()
-    >>> meter.val
-    0
-    >>> meter.avg
-    0
-
-    ```
+        >>> meter = AverageMeter()
+        >>> meter.update(0.7)
+        >>> meter.val
+        0.7
+        >>> meter.avg
+        0.7
+        >>> meter.update(0.9)
+        >>> meter.val
+        0.9
+        >>> meter.avg
+        0.8
+        >>> meter.sum
+        1.6
+        >>> meter.count
+        2
+        >>> meter.reset()
+        >>> meter.val
+        0
+        >>> meter.avg
+        0
     """
 
     val: float = 0
@@ -70,12 +69,12 @@ class AverageMeter:
         self.sum = 0
         self.count = 0
 
-    def update(self, val, n: int = 1) -> None:
+    def update(self, value, n: int = 1) -> None:
         r"""
         Updates the average and current value in the meter.
 
         Args:
-            val: Value to be added to the average.
+            value: Value to be added to the average.
             n: Number of values to be added.
 
         Examples:
@@ -96,8 +95,8 @@ class AverageMeter:
             2
         """
 
-        self.val = val
-        self.sum += val * n
+        self.val = value
+        self.sum += value * n
         self.count += n
         self.avg = self.sum / self.count
 
@@ -110,30 +109,43 @@ class AverageMeters(DefaultDict):
     A `DefaultDict` for `AverageMeter`.
 
     Examples:
-    ```python
-    >>> meters = AverageMeters()
-    >>> meters.loss.reset()
-    >>> meters.loss.update(0.7)
-    >>> meters.loss.val
-    0.7
-    >>> meters.loss.avg
-    0.7
-    >>> meters.update(0.9)
-    >>> meters.loss.val
-    0.9
-    >>> meters.loss.avg
-    0.8
-    >>> meters.loss.sum
-    1.6
-    >>> meters.loss.count
-    2
-    >>> meters.reset()
-    >>> meters.loss.val
-    0
-    >>> meters.loss.avg
-    0
-
-    ```
+        >>> meters = AverageMeters()
+        >>> meters.loss.reset()
+        >>> meters.update({"loss": 0.7})
+        >>> meters.val
+        NestedDict(
+          ('loss'): 0.7
+        )
+        >>> meters.avg
+        NestedDict(
+          ('loss'): 0.7
+        )
+        >>> meters.update({"loss": {"value": 0.9, "n": 1}})
+        >>> meters.val
+        NestedDict(
+          ('loss'): 0.9
+        )
+        >>> meters.avg
+        NestedDict(
+          ('loss'): 0.8
+        )
+        >>> meters.sum
+        NestedDict(
+          ('loss'): 1.6
+        )
+        >>> meters.count
+        NestedDict(
+          ('loss'): 2
+        )
+        >>> meters.reset()
+        >>> meters.val
+        NestedDict(
+          ('loss'): 0
+        )
+        >>> meters.avg
+        NestedDict(
+          ('loss'): 0
+        )
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -177,16 +189,16 @@ class AverageMeters(DefaultDict):
         for meter in self.values():
             meter.reset()
 
-    def update(self, val, n: int = 1) -> None:  # pylint: disable=W0237
+    def update(self, values: Dict, *, n: int = 1) -> None:  # pylint: disable=W0237
         r"""
         Updates the average and current value in all meters.
 
         Args:
-            val: Value to be added to the average.
+            values: Dict of values to be added to the average.
             n: Number of values to be added.
 
-        Note:
-            This function is **NOT** recommended to use, as it alters all meters in the bank.
+        Raises:
+            ValueError: If the value is not an instance of (int, float, Mapping).
 
         Examples:
             >>> meters = AverageMeters()
@@ -195,7 +207,7 @@ class AverageMeters(DefaultDict):
             0.7
             >>> meters.loss.avg
             0.7
-            >>> meters.update(0.9)
+            >>> meters.update(dict(loss=0.9))
             >>> meters.loss.val
             0.9
             >>> meters.loss.avg
@@ -204,10 +216,21 @@ class AverageMeters(DefaultDict):
             1.6
             >>> meters.loss.count
             2
+            >>> meters.update(dict(loss=""))
+            Traceback (most recent call last):
+            ValueError: Value for AverageMeters should be of type inf, float or Mapping, buf got <class 'str'>
         """
 
-        for meter in self.values():
-            meter.update(val, n)
+        for meter, value in values.items():
+            if isinstance(value, (int, float)):
+                self[meter].update(value, n)
+            elif isinstance(value, Dict):
+                value.setdefault("n", n)
+                self[meter].update(**value)
+            else:
+                raise ValueError(
+                    f"Value for AverageMeters should be of type inf, float or Mapping, buf got {type(value)}"
+                )
 
     def __format__(self, format_spec) -> str:
         return "\n".join(f"{key}: {meter.__format__(format_spec)}" for key, meter in self.items())
