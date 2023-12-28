@@ -21,7 +21,7 @@ maintainers = [
 authors = [
     {name = "Zhiyuan Chen", email = "this@zyc.ai"},
 ]
-requires-python = ">=3"
+requires-python = ">=3.7"
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "Intended Audience :: Developers",
@@ -80,6 +80,23 @@ profile = "black"
 [tool.flake8]
 max-line-length = 120
 
+[tool.pylint.format]
+max-line-length = 120
+
+[tool.pylint.messages_control]
+disable = """
+  E0012,
+  E0401,
+  R0201,
+  R0801,
+"""
+
+[tool.pylint.reports]
+output-format = "colorized"
+
+[tool.pylint.main]
+fail-under = 9.8
+
 [tool.pytest.ini_options]
 addopts = "--doctest-modules --cov"
 
@@ -102,20 +119,3 @@ show_missing = true
 
 [tool.mypy]
 ignore_missing_imports = true
-
-[tool.pylint.format]
-max-line-length = 120
-
-[tool.pylint.messages_control]
-disable = """
-  E0012,
-  E0401,
-  R0201,
-  R0801,
-"""
-
-[tool.pylint.reports]
-output-format = "colorized"
-
-[tool.pylint.main]
-fail-under = 9.8

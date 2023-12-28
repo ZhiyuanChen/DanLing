@@ -11,7 +11,7 @@ def tensor_mask(
     *,
     batch_first: bool = True,
     padding_value: float = 0.0,
-    mask_value: bool = False
+    mask_value: bool = False,
 ) -> Tuple[Tensor, Tensor]:
     r"""
     Build a padded tensor and corresponding tensor mask with a sequence of tensors and desired size.
