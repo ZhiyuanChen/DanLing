@@ -46,6 +46,60 @@ class Metrics(Metric):
     Args:
         *args: A single mapping of metrics.
         **metrics: Metrics.
+
+    Examples:
+        >>> from danling.metrics import auroc, auprc
+        >>> metrics = Metrics(auroc=auroc, auprc=auprc)
+        >>> metrics
+        Metrics('auroc', 'auprc')
+        >>> metrics.update([0.2, 0.3, 0.5, 0.7], [0, 1, 0, 1])
+        >>> metrics.input  # predicted values of current batch
+        tensor([0.2000, 0.3000, 0.5000, 0.7000])
+        >>> metrics.target  # ground truth of current batch
+        tensor([0, 1, 0, 1])
+        >>> metrics.inputs  # predicted values of all data
+        tensor([0.2000, 0.3000, 0.5000, 0.7000])
+        >>> metrics.targets  # ground truth of all data
+        tensor([0, 1, 0, 1])
+        >>> metrics.comp  # Metrics of current batch on current device
+        FlatDict(
+          ('auroc'): 0.75
+          ('auprc'): 0.8333333730697632
+        )
+        >>> metrics.val  # Metrics of current batch on all devices
+        FlatDict(
+          ('auroc'): 0.75
+          ('auprc'): 0.8333333730697632
+        )
+        >>> metrics.avg  # Metrics of all data on all devices
+        FlatDict(
+          ('auroc'): 0.75
+          ('auprc'): 0.8333333730697632
+        )
+        >>> metrics.update([0.1, 0.4, 0.6, 0.8], [0, 0, 1, 0])
+        >>> metrics.input  # predicted values of current batch
+        tensor([0.1000, 0.4000, 0.6000, 0.8000])
+        >>> metrics.target  # ground truth of current batch
+        tensor([0, 0, 1, 0])
+        >>> metrics.inputs  # predicted values of all data
+        tensor([0.2000, 0.3000, 0.5000, 0.7000, 0.1000, 0.4000, 0.6000, 0.8000])
+        >>> metrics.targets  # ground truth of all data
+        tensor([0, 1, 0, 1, 0, 0, 1, 0])
+        >>> metrics.comp  # Metrics of current batch on current device
+        FlatDict(
+          ('auroc'): 0.6666666666666666
+          ('auprc'): 0.5
+        )
+        >>> metrics.val  # Metrics of current batch on all devices
+        FlatDict(
+          ('auroc'): 0.6666666666666666
+          ('auprc'): 0.5
+        )
+        >>> metrics.avg  # Metrics of all data on all devices
+        FlatDict(
+          ('auroc'): 0.6666666666666666
+          ('auprc'): 0.5555555820465088
+        )
     """
 
     metrics: FlatDict[str, Callable]
@@ -107,34 +161,41 @@ class Metrics(Metric):
 
     @property
     def comp(self) -> FlatDict[str, float]:
-        return self._compute(self._input, self._target)
+        return self.calculate(self._input, self._target)
 
     @property
     def val(self) -> FlatDict[str, float]:
-        return self._compute(self.input, self.target)
+        return self.calculate(self.input, self.target)
 
     @property
     def avg(self) -> FlatDict[str, float]:
-        return self._compute(self.inputs.to(self.device), self.targets.to(self.device))
+        return self.calculate(self.inputs.to(self.device), self.targets.to(self.device))
 
     @torch.inference_mode()
-    def _compute(self, input: Tensor, target: Tensor) -> flist | float:
+    def calculate(self, input: Tensor, target: Tensor) -> flist | float:
         if input.numel() == 0 == target.numel():
             return FlatDict({name: nan for name in self.metrics.keys()})
         ret = FlatDict()
         for name, metric in self.metrics.items():
-            score = metric(input, target)
-            if isinstance(score, Tensor):
-                ret[name] = score.item() if score.numel() == 1 else flist(score.tolist())
-            elif isinstance(score, Mapping):
+            score = self._calculate(metric, input, target)
+            if isinstance(score, Mapping):
                 if self.merge_dict:
                     ret.merge(score)
                 else:
-                    for n, s in score:
+                    for n, s in score.items():
                         ret[f"{name}.{n}"] = s
             else:
                 ret[name] = score
         return ret
+
+    @torch.inference_mode()
+    def _calculate(self, metric, input: Tensor, target: Tensor) -> flist | float:
+        if input.numel() == 0 == target.numel():
+            return FlatDict({name: nan for name in self.metrics.keys()})
+        score = metric(input, target)
+        if isinstance(score, Tensor):
+            return score.item() if score.numel() == 1 else flist(score.tolist())
+        return score
 
     @torch.inference_mode()
     def merge_state(self, metrics: Iterable):
@@ -252,7 +313,7 @@ class ScoreMetrics(Metrics):  # pylint: disable=abstract-method
         **metrics: Metrics.
     """
 
-    score_name: str
+    _score_name: str
     best_fn: Callable
 
     def __init__(
@@ -263,15 +324,27 @@ class ScoreMetrics(Metrics):  # pylint: disable=abstract-method
         self.metric = self.metrics[self.score_name]
         self.best_fn = best_fn or max
 
-    def score(self, scope: str) -> float | flist:
+    def get_score(self, scope: str) -> float | flist:
         if scope == "batch":
-            return self.batch_score()
+            return self.batch_score
         if scope == "average":
-            return self.average_score()
+            return self.average_score
         raise ValueError(f"Unknown scope: {scope}")
 
+    @property
     def batch_score(self) -> float | flist:
-        return self.calculate(self.metric, self.input, self.target)
+        return self._calculate(self.metric, self.input, self.target)
 
+    @property
     def average_score(self) -> float | flist:
-        return self.calculate(self.metric, self.inputs, self.targets)
+        return self._calculate(self.metric, self.inputs, self.targets)
+
+    @property
+    def score_name(self) -> str:
+        return self._score_name
+
+    @score_name.setter
+    def score_name(self, name) -> None:
+        if name not in self.metrics:
+            raise ValueError(f"score_name must be in {self.metrics.keys()}, but got {name}")
+        self._score_name = name
