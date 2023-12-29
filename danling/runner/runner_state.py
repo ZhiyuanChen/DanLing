@@ -156,17 +156,25 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
         for k, v in self.__class__.__dict__.items():
             if not (k.startswith("__") and k.endswith("__")) and (not (isinstance(v, property) or callable(v))):
                 self.set(k, v)
-        self.run_name = defaults.DEFAULT_RUN_NAME
         self.experiment_name = defaults.DEFAULT_EXPERIMENT_NAME
+        self.run_name = defaults.DEFAULT_RUN_NAME
         self.seed = randint(0, 2**32 - 1)
         self.results = NestedDict()
         super().__init__(*args, **kwargs)
-        self.experiment_id = get_git_hash() or defaults.DEFAULT_EXPERIMENT_ID
-        self.run_id = self.run_uuid.hex
-        self.id = f"{self.experiment_id:.8}{self.run_id:.8}"
-        self.name = f"{self.experiment_name}-{self.run_name}"
+        if "experiment_id" not in self:
+            self.experiment_id = get_git_hash() or defaults.DEFAULT_EXPERIMENT_ID
+        if "run_id" not in self:
+            self.run_id = self.run_uuid.hex
         self.timestamp = get_time_str()
         self.setattr("ignored_keys_in_hash", defaults.DEFAULT_IGNORED_KEYS_IN_HASH)
+
+    @property
+    def name(self):
+        return f"{self.experiment_name}-{self.run_name}"
+
+    @property
+    def id(self):
+        return f"{self.experiment_id:.8}{self.run_id:.8}"
 
     @property
     def experiment_uuid(self) -> UUID:
@@ -182,7 +190,9 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
         UUID of the run.
         """
 
-        return uuid5(self.experiment_uuid, str(hash(self)))
+        ignored_keys_in_hash = self.getattr("ignored_keys_in_hash", defaults.DEFAULT_IGNORED_KEYS_IN_HASH)
+        state: NestedDict = NestedDict({k: v for k, v in self.dict().items() if k not in ignored_keys_in_hash})
+        return uuid5(self.experiment_uuid, state.yamls())
 
     @property
     def uuid(self) -> UUID:
@@ -193,6 +203,4 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
         return uuid5(self.run_uuid, self.id)
 
     def __hash__(self) -> int:
-        ignored_keys_in_hash = self.getattr("ignored_keys_in_hash", defaults.DEFAULT_IGNORED_KEYS_IN_HASH)
-        state: NestedDict = NestedDict({k: v for k, v in self.dict().items() if k not in ignored_keys_in_hash})
-        return hash(state.yamls())
+        return int(self.run_uuid.hex, 16)

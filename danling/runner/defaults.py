@@ -8,4 +8,5 @@ DEFAULT_IGNORED_KEYS_IN_HASH = {
     "results",
     "index_set",
     "index",
+    "timestamp",
 }

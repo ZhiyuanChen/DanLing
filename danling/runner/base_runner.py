@@ -89,7 +89,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
 
     Attributes: IO:
         dir (str, property): Directory of the run.
-            Defaults to `${self.project_root}/${self.name}-${self.experiment_id}/${self.timestamp})`.
+            Defaults to `${self.project_root}/${self.name}-${self.id}/${self.timestamp})`.
         checkpoint_dir (str, property): Directory of checkpoints.
         log_path (str, property):  Path of log file.
         checkpoint_dir_name (str): The name of the directory under `runner.dir` to save checkpoints.
@@ -540,7 +540,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
 
         if "dir" in self.state:
             return self.state.dir
-        return os.path.join(self.project_root, f"{self.name}-{self.experiment_id:.8}", self.timestamp)
+        return os.path.join(self.project_root, f"{self.name}-{self.id}", self.timestamp)
 
     @cached_property
     def log_path(self) -> str:
@@ -575,8 +575,11 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     #     return super().__getattribute__(name)
 
     def __getattr__(self, name) -> Any:
-        if "state" in self and name in self.state:
-            return self.state[name]
+        if "state" in self:
+            if name in self.state:
+                return self.state[name]
+            if name in dir(self.state):
+                return getattr(self.state, name)
         return super().__getattribute__(name)
 
     def __setattr__(self, name, value) -> None:
@@ -592,12 +595,16 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             else:
                 object.__setattr__(self, name, value)
             return
-        if "state" in self and name in self.state:
-            if isinstance(self.state[name], Variable):
-                self.state[name].set(value)
-            else:
-                self.state[name] = value
-            return
+        if "state" in self:
+            if name in self.state:
+                if isinstance(self.state[name], Variable):
+                    self.state[name].set(value)
+                else:
+                    self.state[name] = value
+                return
+            if name in dir(self.state):
+                setattr(self.state, name, value)
+                return
         object.__setattr__(self, name, value)
 
     def __contains__(self, name) -> bool:
