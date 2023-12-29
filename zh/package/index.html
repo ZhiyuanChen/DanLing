@@ -9723,7 +9723,8 @@ Computing them one by one is inefficient, especially when evaluating in a distri
 <span class="normal"><a href="#__codelineno-0-341">341</a></span>
 <span class="normal"><a href="#__codelineno-0-342">342</a></span>
 <span class="normal"><a href="#__codelineno-0-343">343</a></span>
-<span class="normal"><a href="#__codelineno-0-344">344</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-37" name="__codelineno-0-37"></a><span class="k">class</span> <span class="nc">Metrics</span><span class="p">(</span><span class="n">Metric</span><span class="p">):</span>
+<span class="normal"><a href="#__codelineno-0-344">344</a></span>
+<span class="normal"><a href="#__codelineno-0-345">345</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-37" name="__codelineno-0-37"></a><span class="k">class</span> <span class="nc">Metrics</span><span class="p">(</span><span class="n">Metric</span><span class="p">):</span>
 <a id="__codelineno-0-38" name="__codelineno-0-38"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
 <a id="__codelineno-0-39" name="__codelineno-0-39"></a><span class="sd">    Metric class wraps around multiple metrics that share the same states.</span>
 <a id="__codelineno-0-40" name="__codelineno-0-40"></a>
@@ -10027,10 +10028,11 @@ Computing them one by one is inefficient, especially when evaluating in a distri
 <a id="__codelineno-0-338" name="__codelineno-0-338"></a>                <span class="nb">setattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state_name</span><span class="p">,</span> <span class="n">default</span><span class="p">)</span>
 <a id="__codelineno-0-339" name="__codelineno-0-339"></a>            <span class="k">else</span><span class="p">:</span>
 <a id="__codelineno-0-340" name="__codelineno-0-340"></a>                <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span>
-<a id="__codelineno-0-341" name="__codelineno-0-341"></a>                    <span class="sa">f</span><span class="s2">&quot;Invalid type for default value for </span><span class="si">{</span><span class="n">state_name</span><span class="si">}</span><span class="s2">. Received </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">default</span><span class="p">)</span><span class="si">}</span><span class="s2">, but expected ``torch.Tensor``,&quot;</span>
-<a id="__codelineno-0-342" name="__codelineno-0-342"></a>                    <span class="sa">f</span><span class="s2">&quot;a list of ``torch.Tensor``, a dictionary with ``torch.Tensor``, int, or float.&quot;</span>
-<a id="__codelineno-0-343" name="__codelineno-0-343"></a>                <span class="p">)</span>
-<a id="__codelineno-0-344" name="__codelineno-0-344"></a>        <span class="k">return</span> <span class="bp">self</span>
+<a id="__codelineno-0-341" name="__codelineno-0-341"></a>                    <span class="sa">f</span><span class="s2">&quot;Invalid type for default value for </span><span class="si">{</span><span class="n">state_name</span><span class="si">}</span><span class="s2">. Received </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">default</span><span class="p">)</span><span class="si">}</span><span class="s2">,&quot;</span>
+<a id="__codelineno-0-342" name="__codelineno-0-342"></a>                    <span class="s2">&quot;but expected ``torch.Tensor``, a list of ``torch.Tensor``,&quot;</span>
+<a id="__codelineno-0-343" name="__codelineno-0-343"></a>                    <span class="s2">&quot;a dictionary with ``torch.Tensor``, int, or float.&quot;</span>
+<a id="__codelineno-0-344" name="__codelineno-0-344"></a>                <span class="p">)</span>
+<a id="__codelineno-0-345" name="__codelineno-0-345"></a>        <span class="k">return</span> <span class="bp">self</span>
 </code></pre></div></td></tr></table></div>
             </details>
 
@@ -10097,7 +10099,8 @@ the last <code>self.to(device)</code> call.</p>
 <span class="normal"><a href="#__codelineno-0-341">341</a></span>
 <span class="normal"><a href="#__codelineno-0-342">342</a></span>
 <span class="normal"><a href="#__codelineno-0-343">343</a></span>
-<span class="normal"><a href="#__codelineno-0-344">344</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-313" name="__codelineno-0-313"></a><span class="k">def</span> <span class="nf">reset</span><span class="p">(</span><span class="bp">self</span><span class="p">:</span> <span class="n">Self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>  <span class="c1"># pragma: no cover</span>
+<span class="normal"><a href="#__codelineno-0-344">344</a></span>
+<span class="normal"><a href="#__codelineno-0-345">345</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-313" name="__codelineno-0-313"></a><span class="k">def</span> <span class="nf">reset</span><span class="p">(</span><span class="bp">self</span><span class="p">:</span> <span class="n">Self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>  <span class="c1"># pragma: no cover</span>
 <a id="__codelineno-0-314" name="__codelineno-0-314"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <a id="__codelineno-0-315" name="__codelineno-0-315"></a><span class="sd">    Reset the metric state variables to their default value.</span>
 <a id="__codelineno-0-316" name="__codelineno-0-316"></a><span class="sd">    The tensors in the default values are also moved to the device of</span>
@@ -10125,10 +10128,11 @@ the last <code>self.to(device)</code> call.</p>
 <a id="__codelineno-0-338" name="__codelineno-0-338"></a>            <span class="nb">setattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state_name</span><span class="p">,</span> <span class="n">default</span><span class="p">)</span>
 <a id="__codelineno-0-339" name="__codelineno-0-339"></a>        <span class="k">else</span><span class="p">:</span>
 <a id="__codelineno-0-340" name="__codelineno-0-340"></a>            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span>
-<a id="__codelineno-0-341" name="__codelineno-0-341"></a>                <span class="sa">f</span><span class="s2">&quot;Invalid type for default value for </span><span class="si">{</span><span class="n">state_name</span><span class="si">}</span><span class="s2">. Received </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">default</span><span class="p">)</span><span class="si">}</span><span class="s2">, but expected ``torch.Tensor``,&quot;</span>
-<a id="__codelineno-0-342" name="__codelineno-0-342"></a>                <span class="sa">f</span><span class="s2">&quot;a list of ``torch.Tensor``, a dictionary with ``torch.Tensor``, int, or float.&quot;</span>
-<a id="__codelineno-0-343" name="__codelineno-0-343"></a>            <span class="p">)</span>
-<a id="__codelineno-0-344" name="__codelineno-0-344"></a>    <span class="k">return</span> <span class="bp">self</span>
+<a id="__codelineno-0-341" name="__codelineno-0-341"></a>                <span class="sa">f</span><span class="s2">&quot;Invalid type for default value for </span><span class="si">{</span><span class="n">state_name</span><span class="si">}</span><span class="s2">. Received </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">default</span><span class="p">)</span><span class="si">}</span><span class="s2">,&quot;</span>
+<a id="__codelineno-0-342" name="__codelineno-0-342"></a>                <span class="s2">&quot;but expected ``torch.Tensor``, a list of ``torch.Tensor``,&quot;</span>
+<a id="__codelineno-0-343" name="__codelineno-0-343"></a>                <span class="s2">&quot;a dictionary with ``torch.Tensor``, int, or float.&quot;</span>
+<a id="__codelineno-0-344" name="__codelineno-0-344"></a>            <span class="p">)</span>
+<a id="__codelineno-0-345" name="__codelineno-0-345"></a>    <span class="k">return</span> <span class="bp">self</span>
 </code></pre></div></td></tr></table></div>
           </details>
   </div>

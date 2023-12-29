@@ -1720,7 +1720,8 @@ Computing them one by one is inefficient, especially when evaluating in a distri
 <span class="normal"><a href="#__codelineno-0-341">341</a></span>
 <span class="normal"><a href="#__codelineno-0-342">342</a></span>
 <span class="normal"><a href="#__codelineno-0-343">343</a></span>
-<span class="normal"><a href="#__codelineno-0-344">344</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-37" name="__codelineno-0-37"></a><span class="k">class</span> <span class="nc">Metrics</span><span class="p">(</span><span class="n">Metric</span><span class="p">):</span>
+<span class="normal"><a href="#__codelineno-0-344">344</a></span>
+<span class="normal"><a href="#__codelineno-0-345">345</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-37" name="__codelineno-0-37"></a><span class="k">class</span> <span class="nc">Metrics</span><span class="p">(</span><span class="n">Metric</span><span class="p">):</span>
 <a id="__codelineno-0-38" name="__codelineno-0-38"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
 <a id="__codelineno-0-39" name="__codelineno-0-39"></a><span class="sd">    Metric class wraps around multiple metrics that share the same states.</span>
 <a id="__codelineno-0-40" name="__codelineno-0-40"></a>
@@ -2024,10 +2025,11 @@ Computing them one by one is inefficient, especially when evaluating in a distri
 <a id="__codelineno-0-338" name="__codelineno-0-338"></a>                <span class="nb">setattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state_name</span><span class="p">,</span> <span class="n">default</span><span class="p">)</span>
 <a id="__codelineno-0-339" name="__codelineno-0-339"></a>            <span class="k">else</span><span class="p">:</span>
 <a id="__codelineno-0-340" name="__codelineno-0-340"></a>                <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span>
-<a id="__codelineno-0-341" name="__codelineno-0-341"></a>                    <span class="sa">f</span><span class="s2">&quot;Invalid type for default value for </span><span class="si">{</span><span class="n">state_name</span><span class="si">}</span><span class="s2">. Received </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">default</span><span class="p">)</span><span class="si">}</span><span class="s2">, but expected ``torch.Tensor``,&quot;</span>
-<a id="__codelineno-0-342" name="__codelineno-0-342"></a>                    <span class="sa">f</span><span class="s2">&quot;a list of ``torch.Tensor``, a dictionary with ``torch.Tensor``, int, or float.&quot;</span>
-<a id="__codelineno-0-343" name="__codelineno-0-343"></a>                <span class="p">)</span>
-<a id="__codelineno-0-344" name="__codelineno-0-344"></a>        <span class="k">return</span> <span class="bp">self</span>
+<a id="__codelineno-0-341" name="__codelineno-0-341"></a>                    <span class="sa">f</span><span class="s2">&quot;Invalid type for default value for </span><span class="si">{</span><span class="n">state_name</span><span class="si">}</span><span class="s2">. Received </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">default</span><span class="p">)</span><span class="si">}</span><span class="s2">,&quot;</span>
+<a id="__codelineno-0-342" name="__codelineno-0-342"></a>                    <span class="s2">&quot;but expected ``torch.Tensor``, a list of ``torch.Tensor``,&quot;</span>
+<a id="__codelineno-0-343" name="__codelineno-0-343"></a>                    <span class="s2">&quot;a dictionary with ``torch.Tensor``, int, or float.&quot;</span>
+<a id="__codelineno-0-344" name="__codelineno-0-344"></a>                <span class="p">)</span>
+<a id="__codelineno-0-345" name="__codelineno-0-345"></a>        <span class="k">return</span> <span class="bp">self</span>
 </code></pre></div></td></tr></table></div>
             </details>
 
@@ -2094,7 +2096,8 @@ the last <code>self.to(device)</code> call.</p>
 <span class="normal"><a href="#__codelineno-0-341">341</a></span>
 <span class="normal"><a href="#__codelineno-0-342">342</a></span>
 <span class="normal"><a href="#__codelineno-0-343">343</a></span>
-<span class="normal"><a href="#__codelineno-0-344">344</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-313" name="__codelineno-0-313"></a><span class="k">def</span> <span class="nf">reset</span><span class="p">(</span><span class="bp">self</span><span class="p">:</span> <span class="n">Self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>  <span class="c1"># pragma: no cover</span>
+<span class="normal"><a href="#__codelineno-0-344">344</a></span>
+<span class="normal"><a href="#__codelineno-0-345">345</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-313" name="__codelineno-0-313"></a><span class="k">def</span> <span class="nf">reset</span><span class="p">(</span><span class="bp">self</span><span class="p">:</span> <span class="n">Self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>  <span class="c1"># pragma: no cover</span>
 <a id="__codelineno-0-314" name="__codelineno-0-314"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <a id="__codelineno-0-315" name="__codelineno-0-315"></a><span class="sd">    Reset the metric state variables to their default value.</span>
 <a id="__codelineno-0-316" name="__codelineno-0-316"></a><span class="sd">    The tensors in the default values are also moved to the device of</span>
@@ -2122,10 +2125,11 @@ the last <code>self.to(device)</code> call.</p>
 <a id="__codelineno-0-338" name="__codelineno-0-338"></a>            <span class="nb">setattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state_name</span><span class="p">,</span> <span class="n">default</span><span class="p">)</span>
 <a id="__codelineno-0-339" name="__codelineno-0-339"></a>        <span class="k">else</span><span class="p">:</span>
 <a id="__codelineno-0-340" name="__codelineno-0-340"></a>            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span>
-<a id="__codelineno-0-341" name="__codelineno-0-341"></a>                <span class="sa">f</span><span class="s2">&quot;Invalid type for default value for </span><span class="si">{</span><span class="n">state_name</span><span class="si">}</span><span class="s2">. Received </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">default</span><span class="p">)</span><span class="si">}</span><span class="s2">, but expected ``torch.Tensor``,&quot;</span>
-<a id="__codelineno-0-342" name="__codelineno-0-342"></a>                <span class="sa">f</span><span class="s2">&quot;a list of ``torch.Tensor``, a dictionary with ``torch.Tensor``, int, or float.&quot;</span>
-<a id="__codelineno-0-343" name="__codelineno-0-343"></a>            <span class="p">)</span>
-<a id="__codelineno-0-344" name="__codelineno-0-344"></a>    <span class="k">return</span> <span class="bp">self</span>
+<a id="__codelineno-0-341" name="__codelineno-0-341"></a>                <span class="sa">f</span><span class="s2">&quot;Invalid type for default value for </span><span class="si">{</span><span class="n">state_name</span><span class="si">}</span><span class="s2">. Received </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">default</span><span class="p">)</span><span class="si">}</span><span class="s2">,&quot;</span>
+<a id="__codelineno-0-342" name="__codelineno-0-342"></a>                <span class="s2">&quot;but expected ``torch.Tensor``, a list of ``torch.Tensor``,&quot;</span>
+<a id="__codelineno-0-343" name="__codelineno-0-343"></a>                <span class="s2">&quot;a dictionary with ``torch.Tensor``, int, or float.&quot;</span>
+<a id="__codelineno-0-344" name="__codelineno-0-344"></a>            <span class="p">)</span>
+<a id="__codelineno-0-345" name="__codelineno-0-345"></a>    <span class="k">return</span> <span class="bp">self</span>
 </code></pre></div></td></tr></table></div>
           </details>
   </div>
@@ -2276,8 +2280,7 @@ For example, in classification, we usually use auroc as the score.</p>
 
             <details class="quote">
               <summary>Source code in <code>danling/metrics/metrics.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-347">347</a></span>
-<span class="normal"><a href="#__codelineno-0-348">348</a></span>
+              <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-348">348</a></span>
 <span class="normal"><a href="#__codelineno-0-349">349</a></span>
 <span class="normal"><a href="#__codelineno-0-350">350</a></span>
 <span class="normal"><a href="#__codelineno-0-351">351</a></span>
@@ -2334,65 +2337,66 @@ For example, in classification, we usually use auroc as the score.</p>
 <span class="normal"><a href="#__codelineno-0-402">402</a></span>
 <span class="normal"><a href="#__codelineno-0-403">403</a></span>
 <span class="normal"><a href="#__codelineno-0-404">404</a></span>
-<span class="normal"><a href="#__codelineno-0-405">405</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-347" name="__codelineno-0-347"></a><span class="k">class</span> <span class="nc">ScoreMetrics</span><span class="p">(</span><span class="n">Metrics</span><span class="p">):</span>  <span class="c1"># pylint: disable=abstract-method</span>
-<a id="__codelineno-0-348" name="__codelineno-0-348"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-349" name="__codelineno-0-349"></a><span class="sd">    `ScoreMetrics` is a subclass of Metrics that supports scoring.</span>
-<a id="__codelineno-0-350" name="__codelineno-0-350"></a>
-<a id="__codelineno-0-351" name="__codelineno-0-351"></a><span class="sd">    Score is a single value that best represents the performance of the model.</span>
-<a id="__codelineno-0-352" name="__codelineno-0-352"></a><span class="sd">    It is the core metrics that we use to compare different models.</span>
-<a id="__codelineno-0-353" name="__codelineno-0-353"></a><span class="sd">    For example, in classification, we usually use auroc as the score.</span>
-<a id="__codelineno-0-354" name="__codelineno-0-354"></a>
-<a id="__codelineno-0-355" name="__codelineno-0-355"></a><span class="sd">    `ScoreMetrics` requires two additional arguments: `score_name` and `best_fn`.</span>
-<a id="__codelineno-0-356" name="__codelineno-0-356"></a><span class="sd">    `score_name` is the name of the metric that we use to compute the score.</span>
-<a id="__codelineno-0-357" name="__codelineno-0-357"></a><span class="sd">    `best_fn` is a function that takes a list of values and returns the best value.</span>
-<a id="__codelineno-0-358" name="__codelineno-0-358"></a><span class="sd">    `best_fn` is only not used by `ScoreMetrics`, it is meant to be accessed by other classes.</span>
-<a id="__codelineno-0-359" name="__codelineno-0-359"></a>
-<a id="__codelineno-0-360" name="__codelineno-0-360"></a><span class="sd">    Attributes:</span>
-<a id="__codelineno-0-361" name="__codelineno-0-361"></a><span class="sd">        score_name: The name of the metric that we use to compute the score.</span>
-<a id="__codelineno-0-362" name="__codelineno-0-362"></a><span class="sd">        best_fn: A function that takes a list of values and returns the best value.</span>
-<a id="__codelineno-0-363" name="__codelineno-0-363"></a>
-<a id="__codelineno-0-364" name="__codelineno-0-364"></a><span class="sd">    Args:</span>
-<a id="__codelineno-0-365" name="__codelineno-0-365"></a><span class="sd">        *args: A single mapping of metrics.</span>
-<a id="__codelineno-0-366" name="__codelineno-0-366"></a><span class="sd">        score_name: The name of the metric that we use to compute the score. Defaults to the first metric.</span>
-<a id="__codelineno-0-367" name="__codelineno-0-367"></a><span class="sd">        best_fn: A function that takes a list of values and returns the best value. Defaults to `max`.</span>
-<a id="__codelineno-0-368" name="__codelineno-0-368"></a><span class="sd">        **metrics: Metrics.</span>
-<a id="__codelineno-0-369" name="__codelineno-0-369"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-370" name="__codelineno-0-370"></a>
-<a id="__codelineno-0-371" name="__codelineno-0-371"></a>    <span class="n">_score_name</span><span class="p">:</span> <span class="nb">str</span>
-<a id="__codelineno-0-372" name="__codelineno-0-372"></a>    <span class="n">best_fn</span><span class="p">:</span> <span class="n">Callable</span>
-<a id="__codelineno-0-373" name="__codelineno-0-373"></a>
-<a id="__codelineno-0-374" name="__codelineno-0-374"></a>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span>
-<a id="__codelineno-0-375" name="__codelineno-0-375"></a>        <span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="n">score_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">best_fn</span><span class="p">:</span> <span class="n">Callable</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="nb">max</span><span class="p">,</span> <span class="o">**</span><span class="n">metrics</span><span class="p">:</span> <span class="n">FlatDict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Callable</span><span class="p">]</span>
-<a id="__codelineno-0-376" name="__codelineno-0-376"></a>    <span class="p">):</span>
-<a id="__codelineno-0-377" name="__codelineno-0-377"></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">metrics</span><span class="p">)</span>
-<a id="__codelineno-0-378" name="__codelineno-0-378"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">score_name</span> <span class="o">=</span> <span class="n">score_name</span> <span class="ow">or</span> <span class="nb">next</span><span class="p">(</span><span class="nb">iter</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">metrics</span><span class="o">.</span><span class="n">keys</span><span class="p">()))</span>
-<a id="__codelineno-0-379" name="__codelineno-0-379"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">metric</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">metrics</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">score_name</span><span class="p">]</span>
-<a id="__codelineno-0-380" name="__codelineno-0-380"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">best_fn</span> <span class="o">=</span> <span class="n">best_fn</span> <span class="ow">or</span> <span class="nb">max</span>
-<a id="__codelineno-0-381" name="__codelineno-0-381"></a>
-<a id="__codelineno-0-382" name="__codelineno-0-382"></a>    <span class="k">def</span> <span class="nf">get_score</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">scope</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span> <span class="o">|</span> <span class="n">flist</span><span class="p">:</span>
-<a id="__codelineno-0-383" name="__codelineno-0-383"></a>        <span class="k">if</span> <span class="n">scope</span> <span class="o">==</span> <span class="s2">&quot;batch&quot;</span><span class="p">:</span>
-<a id="__codelineno-0-384" name="__codelineno-0-384"></a>            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">batch_score</span>
-<a id="__codelineno-0-385" name="__codelineno-0-385"></a>        <span class="k">if</span> <span class="n">scope</span> <span class="o">==</span> <span class="s2">&quot;average&quot;</span><span class="p">:</span>
-<a id="__codelineno-0-386" name="__codelineno-0-386"></a>            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">average_score</span>
-<a id="__codelineno-0-387" name="__codelineno-0-387"></a>        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Unknown scope: </span><span class="si">{</span><span class="n">scope</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-388" name="__codelineno-0-388"></a>
-<a id="__codelineno-0-389" name="__codelineno-0-389"></a>    <span class="nd">@property</span>
-<a id="__codelineno-0-390" name="__codelineno-0-390"></a>    <span class="k">def</span> <span class="nf">batch_score</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span> <span class="o">|</span> <span class="n">flist</span><span class="p">:</span>
-<a id="__codelineno-0-391" name="__codelineno-0-391"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_calculate</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">metric</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">input</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">target</span><span class="p">)</span>
-<a id="__codelineno-0-392" name="__codelineno-0-392"></a>
-<a id="__codelineno-0-393" name="__codelineno-0-393"></a>    <span class="nd">@property</span>
-<a id="__codelineno-0-394" name="__codelineno-0-394"></a>    <span class="k">def</span> <span class="nf">average_score</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span> <span class="o">|</span> <span class="n">flist</span><span class="p">:</span>
-<a id="__codelineno-0-395" name="__codelineno-0-395"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_calculate</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">metric</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">inputs</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">targets</span><span class="p">)</span>
-<a id="__codelineno-0-396" name="__codelineno-0-396"></a>
-<a id="__codelineno-0-397" name="__codelineno-0-397"></a>    <span class="nd">@property</span>
-<a id="__codelineno-0-398" name="__codelineno-0-398"></a>    <span class="k">def</span> <span class="nf">score_name</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
-<a id="__codelineno-0-399" name="__codelineno-0-399"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_score_name</span>
-<a id="__codelineno-0-400" name="__codelineno-0-400"></a>
-<a id="__codelineno-0-401" name="__codelineno-0-401"></a>    <span class="nd">@score_name</span><span class="o">.</span><span class="n">setter</span>
-<a id="__codelineno-0-402" name="__codelineno-0-402"></a>    <span class="k">def</span> <span class="nf">score_name</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-403" name="__codelineno-0-403"></a>        <span class="k">if</span> <span class="n">name</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">metrics</span><span class="p">:</span>
-<a id="__codelineno-0-404" name="__codelineno-0-404"></a>            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;score_name must be in </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">metrics</span><span class="o">.</span><span class="n">keys</span><span class="p">()</span><span class="si">}</span><span class="s2">, but got </span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-405" name="__codelineno-0-405"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_score_name</span> <span class="o">=</span> <span class="n">name</span>
+<span class="normal"><a href="#__codelineno-0-405">405</a></span>
+<span class="normal"><a href="#__codelineno-0-406">406</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-348" name="__codelineno-0-348"></a><span class="k">class</span> <span class="nc">ScoreMetrics</span><span class="p">(</span><span class="n">Metrics</span><span class="p">):</span>  <span class="c1"># pylint: disable=abstract-method</span>
+<a id="__codelineno-0-349" name="__codelineno-0-349"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-350" name="__codelineno-0-350"></a><span class="sd">    `ScoreMetrics` is a subclass of Metrics that supports scoring.</span>
+<a id="__codelineno-0-351" name="__codelineno-0-351"></a>
+<a id="__codelineno-0-352" name="__codelineno-0-352"></a><span class="sd">    Score is a single value that best represents the performance of the model.</span>
+<a id="__codelineno-0-353" name="__codelineno-0-353"></a><span class="sd">    It is the core metrics that we use to compare different models.</span>
+<a id="__codelineno-0-354" name="__codelineno-0-354"></a><span class="sd">    For example, in classification, we usually use auroc as the score.</span>
+<a id="__codelineno-0-355" name="__codelineno-0-355"></a>
+<a id="__codelineno-0-356" name="__codelineno-0-356"></a><span class="sd">    `ScoreMetrics` requires two additional arguments: `score_name` and `best_fn`.</span>
+<a id="__codelineno-0-357" name="__codelineno-0-357"></a><span class="sd">    `score_name` is the name of the metric that we use to compute the score.</span>
+<a id="__codelineno-0-358" name="__codelineno-0-358"></a><span class="sd">    `best_fn` is a function that takes a list of values and returns the best value.</span>
+<a id="__codelineno-0-359" name="__codelineno-0-359"></a><span class="sd">    `best_fn` is only not used by `ScoreMetrics`, it is meant to be accessed by other classes.</span>
+<a id="__codelineno-0-360" name="__codelineno-0-360"></a>
+<a id="__codelineno-0-361" name="__codelineno-0-361"></a><span class="sd">    Attributes:</span>
+<a id="__codelineno-0-362" name="__codelineno-0-362"></a><span class="sd">        score_name: The name of the metric that we use to compute the score.</span>
+<a id="__codelineno-0-363" name="__codelineno-0-363"></a><span class="sd">        best_fn: A function that takes a list of values and returns the best value.</span>
+<a id="__codelineno-0-364" name="__codelineno-0-364"></a>
+<a id="__codelineno-0-365" name="__codelineno-0-365"></a><span class="sd">    Args:</span>
+<a id="__codelineno-0-366" name="__codelineno-0-366"></a><span class="sd">        *args: A single mapping of metrics.</span>
+<a id="__codelineno-0-367" name="__codelineno-0-367"></a><span class="sd">        score_name: The name of the metric that we use to compute the score. Defaults to the first metric.</span>
+<a id="__codelineno-0-368" name="__codelineno-0-368"></a><span class="sd">        best_fn: A function that takes a list of values and returns the best value. Defaults to `max`.</span>
+<a id="__codelineno-0-369" name="__codelineno-0-369"></a><span class="sd">        **metrics: Metrics.</span>
+<a id="__codelineno-0-370" name="__codelineno-0-370"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-371" name="__codelineno-0-371"></a>
+<a id="__codelineno-0-372" name="__codelineno-0-372"></a>    <span class="n">_score_name</span><span class="p">:</span> <span class="nb">str</span>
+<a id="__codelineno-0-373" name="__codelineno-0-373"></a>    <span class="n">best_fn</span><span class="p">:</span> <span class="n">Callable</span>
+<a id="__codelineno-0-374" name="__codelineno-0-374"></a>
+<a id="__codelineno-0-375" name="__codelineno-0-375"></a>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span>
+<a id="__codelineno-0-376" name="__codelineno-0-376"></a>        <span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="n">score_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">best_fn</span><span class="p">:</span> <span class="n">Callable</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="nb">max</span><span class="p">,</span> <span class="o">**</span><span class="n">metrics</span><span class="p">:</span> <span class="n">FlatDict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Callable</span><span class="p">]</span>
+<a id="__codelineno-0-377" name="__codelineno-0-377"></a>    <span class="p">):</span>
+<a id="__codelineno-0-378" name="__codelineno-0-378"></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">metrics</span><span class="p">)</span>
+<a id="__codelineno-0-379" name="__codelineno-0-379"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">score_name</span> <span class="o">=</span> <span class="n">score_name</span> <span class="ow">or</span> <span class="nb">next</span><span class="p">(</span><span class="nb">iter</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">metrics</span><span class="o">.</span><span class="n">keys</span><span class="p">()))</span>
+<a id="__codelineno-0-380" name="__codelineno-0-380"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">metric</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">metrics</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">score_name</span><span class="p">]</span>
+<a id="__codelineno-0-381" name="__codelineno-0-381"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">best_fn</span> <span class="o">=</span> <span class="n">best_fn</span> <span class="ow">or</span> <span class="nb">max</span>
+<a id="__codelineno-0-382" name="__codelineno-0-382"></a>
+<a id="__codelineno-0-383" name="__codelineno-0-383"></a>    <span class="k">def</span> <span class="nf">get_score</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">scope</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span> <span class="o">|</span> <span class="n">flist</span><span class="p">:</span>
+<a id="__codelineno-0-384" name="__codelineno-0-384"></a>        <span class="k">if</span> <span class="n">scope</span> <span class="o">==</span> <span class="s2">&quot;batch&quot;</span><span class="p">:</span>
+<a id="__codelineno-0-385" name="__codelineno-0-385"></a>            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">batch_score</span>
+<a id="__codelineno-0-386" name="__codelineno-0-386"></a>        <span class="k">if</span> <span class="n">scope</span> <span class="o">==</span> <span class="s2">&quot;average&quot;</span><span class="p">:</span>
+<a id="__codelineno-0-387" name="__codelineno-0-387"></a>            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">average_score</span>
+<a id="__codelineno-0-388" name="__codelineno-0-388"></a>        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Unknown scope: </span><span class="si">{</span><span class="n">scope</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-389" name="__codelineno-0-389"></a>
+<a id="__codelineno-0-390" name="__codelineno-0-390"></a>    <span class="nd">@property</span>
+<a id="__codelineno-0-391" name="__codelineno-0-391"></a>    <span class="k">def</span> <span class="nf">batch_score</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span> <span class="o">|</span> <span class="n">flist</span><span class="p">:</span>
+<a id="__codelineno-0-392" name="__codelineno-0-392"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_calculate</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">metric</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">input</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">target</span><span class="p">)</span>
+<a id="__codelineno-0-393" name="__codelineno-0-393"></a>
+<a id="__codelineno-0-394" name="__codelineno-0-394"></a>    <span class="nd">@property</span>
+<a id="__codelineno-0-395" name="__codelineno-0-395"></a>    <span class="k">def</span> <span class="nf">average_score</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span> <span class="o">|</span> <span class="n">flist</span><span class="p">:</span>
+<a id="__codelineno-0-396" name="__codelineno-0-396"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_calculate</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">metric</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">inputs</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">targets</span><span class="p">)</span>
+<a id="__codelineno-0-397" name="__codelineno-0-397"></a>
+<a id="__codelineno-0-398" name="__codelineno-0-398"></a>    <span class="nd">@property</span>
+<a id="__codelineno-0-399" name="__codelineno-0-399"></a>    <span class="k">def</span> <span class="nf">score_name</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<a id="__codelineno-0-400" name="__codelineno-0-400"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_score_name</span>
+<a id="__codelineno-0-401" name="__codelineno-0-401"></a>
+<a id="__codelineno-0-402" name="__codelineno-0-402"></a>    <span class="nd">@score_name</span><span class="o">.</span><span class="n">setter</span>
+<a id="__codelineno-0-403" name="__codelineno-0-403"></a>    <span class="k">def</span> <span class="nf">score_name</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-404" name="__codelineno-0-404"></a>        <span class="k">if</span> <span class="n">name</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">metrics</span><span class="p">:</span>
+<a id="__codelineno-0-405" name="__codelineno-0-405"></a>            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;score_name must be in </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">metrics</span><span class="o">.</span><span class="n">keys</span><span class="p">()</span><span class="si">}</span><span class="s2">, but got </span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-406" name="__codelineno-0-406"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_score_name</span> <span class="o">=</span> <span class="n">name</span>
 </code></pre></div></td></tr></table></div>
             </details>
 
