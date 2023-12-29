@@ -129,6 +129,7 @@ class Test:
         self._test_distributed(self._test_distributed_tensor_binary, world_size)
         self._test_distributed(self._test_distributed_nested_tensor_binary, world_size)
         self._test_distributed(self._test_distributed_nested_tensor_regression, world_size)
+        self._test_distributed(self._test_distributed_nested_tensor_multi_regression, world_size)
 
     def _test_distributed_tensor_binary(self, rank, world_size):
         dist.init_process_group("gloo", rank=rank, world_size=world_size)
@@ -153,13 +154,13 @@ class Test:
             assert metrics.compute()["auprc"] - binary_auprc(pred, target) < self.epsilon
             assert metrics.compute()["acc"] - binary_accuracy(pred, target) < self.epsilon
 
-        all_preds = torch.cat(self._all_gather(preds, world_size))
-        all_targets = torch.cat(self._all_gather(targets, world_size))
-        assert (all_preds == metrics.inputs).all()
-        assert (all_targets == metrics.targets).all()
-        assert metrics.average()["auroc"] - binary_auroc(all_preds, all_targets) < self.epsilon
-        assert metrics.average()["auprc"] - binary_auprc(all_preds, all_targets) < self.epsilon
-        assert metrics.average()["acc"] - binary_accuracy(all_preds, all_targets) < self.epsilon
+        pred = torch.cat(self._all_gather(preds, world_size))
+        target = torch.cat(self._all_gather(targets, world_size))
+        assert (pred == metrics.inputs).all()
+        assert (target == metrics.targets).all()
+        assert metrics.average()["auroc"] - binary_auroc(pred, target) < self.epsilon
+        assert metrics.average()["auprc"] - binary_auprc(pred, target) < self.epsilon
+        assert metrics.average()["acc"] - binary_accuracy(pred, target) < self.epsilon
 
         dist.destroy_process_group()
 
@@ -198,13 +199,13 @@ class Test:
             assert metrics.value()["auprc"] - binary_auprc(pred, target) < self.epsilon
             assert metrics.value()["acc"] - binary_accuracy(pred, target) < self.epsilon
 
-        all_preds = torch.cat(self._all_gather(preds, world_size))
-        all_targets = torch.cat(self._all_gather(targets, world_size))
-        assert (all_preds == metrics.inputs).all()
-        assert (all_targets == metrics.targets).all()
-        assert metrics.average()["auroc"] - binary_auroc(all_preds, all_targets) < self.epsilon
-        assert metrics.average()["auprc"] - binary_auprc(all_preds, all_targets) < self.epsilon
-        assert metrics.average()["acc"] - binary_accuracy(all_preds, all_targets) < self.epsilon
+        pred = torch.cat(self._all_gather(preds, world_size))
+        target = torch.cat(self._all_gather(targets, world_size))
+        assert (pred == metrics.inputs).all()
+        assert (target == metrics.targets).all()
+        assert metrics.average()["auroc"] - binary_auroc(pred, target) < self.epsilon
+        assert metrics.average()["auprc"] - binary_auprc(pred, target) < self.epsilon
+        assert metrics.average()["acc"] - binary_accuracy(pred, target) < self.epsilon
 
         dist.destroy_process_group()
 
@@ -237,13 +238,53 @@ class Test:
             assert metrics.value()["spearman"] - spearman(pred, target) < self.epsilon
             assert metrics.value()["rmse"] - rmse(pred, target) < self.epsilon
 
-        all_preds = torch.cat(self._all_gather(preds, world_size))
-        all_targets = torch.cat(self._all_gather(targets, world_size))
-        assert (all_preds == metrics.inputs).all()
-        assert (all_targets == metrics.targets).all()
-        assert metrics.average()["pearson"] - pearson(all_preds, all_targets) < self.epsilon
-        assert metrics.average()["spearman"] - spearman(all_preds, all_targets) < self.epsilon
-        assert metrics.average()["rmse"] - rmse(all_preds, all_targets) < self.epsilon
+        pred = torch.cat(self._all_gather(preds, world_size))
+        target = torch.cat(self._all_gather(targets, world_size))
+        assert (pred == metrics.inputs).all()
+        assert (target == metrics.targets).all()
+        assert metrics.average()["pearson"] - pearson(pred, target) < self.epsilon
+        assert metrics.average()["spearman"] - spearman(pred, target) < self.epsilon
+        assert metrics.average()["rmse"] - rmse(pred, target) < self.epsilon
+
+        dist.destroy_process_group()
+
+    def _test_distributed_nested_tensor_multi_regression(self, rank, world_size):
+        dist.init_process_group("gloo", rank=rank, world_size=world_size)
+
+        # cum_length = 0
+        metrics = regression_metrics(return_nested=True)
+        preds, targets = [], []
+        lengths_list = [[2, 3, 5, 7], [11, 13, 17]]
+        channels = 8
+        if rank == 0:
+            lengths_list[-1].append(19)
+        # for iter, lengths in enumerate(lengths_list):
+        for lengths in lengths_list:
+            pred_list, target_list = [], []
+            for length in lengths:
+                pred_list.append(torch.randn(length, channels))
+                target_list.append(torch.randn(length, channels))
+            preds.extend(pred_list)
+            targets.extend(target_list)
+            pred_nt, target_nt = NestedTensor(pred_list), NestedTensor(target_list)
+            metrics.update(pred_nt, target_nt)
+            pred, target = torch.cat(pred_list), torch.cat(target_list)
+            assert sum(torch.tensor(metrics.compute()["pearson"]) - pearson(pred, target)) < self.epsilon
+            assert sum(torch.tensor(metrics.compute()["spearman"]) - spearman(pred, target)) < self.epsilon
+            assert metrics.compute()["rmse"] - rmse(pred, target) < self.epsilon
+            pred = torch.cat(self._all_gather(pred_list, world_size))
+            target = torch.cat(self._all_gather(target_list, world_size))
+            assert sum(torch.tensor(metrics.value()["pearson"]) - pearson(pred, target)) < self.epsilon
+            assert sum(torch.tensor(metrics.value()["spearman"]) - spearman(pred, target)) < self.epsilon
+            assert metrics.value()["rmse"] - rmse(pred, target) < self.epsilon
+
+        pred = torch.cat(self._all_gather(preds, world_size))
+        target = torch.cat(self._all_gather(targets, world_size))
+        assert (pred == metrics.inputs).all()
+        assert (target == metrics.targets).all()
+        assert sum(torch.tensor(metrics.average()["pearson"]) - pearson(pred, target)) < self.epsilon
+        assert sum(torch.tensor(metrics.average()["spearman"]) - spearman(pred, target)) < self.epsilon
+        assert metrics.average()["rmse"] - rmse(pred, target) < self.epsilon
 
         dist.destroy_process_group()
 

@@ -6,12 +6,17 @@ from math import nan
 from typing import Any, Callable, Iterable
 
 import torch
-from chanfig import FlatDict
+from chanfig import DefaultDict, FlatDict
 from torch import Tensor
 from torch import distributed as dist
 from torcheval.metrics import Metric
 
 from danling.tensors import NestedTensor
+
+try:
+    from typing import Self
+except ImportError:
+    from typing_extensions import Self
 
 
 def world_size() -> int:
@@ -22,6 +27,9 @@ def world_size() -> int:
 
 
 class flist(list):
+    def to(self, *args, **kwargs):
+        return flist(i.to(*args, **kwargs) for i in self)
+
     def __format__(self, *args, **kwargs):
         return " ".join([x.__format__(*args, **kwargs) for x in self])
 
@@ -100,36 +108,43 @@ class Metrics(Metric):
           ('auroc'): 0.6666666666666666
           ('auprc'): 0.5555555820465088
         )
+        >>> print(f"{metrics:.4f}")
+        auroc: 0.6667 (0.6667)
+        auprc: 0.5000 (0.5556)
     """
 
     metrics: FlatDict[str, Callable]
     _input: Tensor
     _target: Tensor
-    _inputs: list[Tensor]
-    _targets: list[Tensor]
-    _input_buffer: list[Tensor]
-    _target_buffer: list[Tensor]
+    _inputs: flist
+    _targets: flist
+    _input_buffer: flist
+    _target_buffer: flist
     score_name: str
     best_fn: Callable
     merge_dict: bool = True
+    return_nested: bool = False
 
     def __init__(
         self,
         *args,
         merge_dict: bool | None = None,
+        return_nested: bool | None = None,
         device: torch.device | None = None,
         **metrics: FlatDict[str, Callable],
     ):
         super().__init__(device=device)
         self._add_state("_input", torch.empty(0))
         self._add_state("_target", torch.empty(0))
-        self._add_state("_inputs", [])
-        self._add_state("_targets", [])
-        self._add_state("_input_buffer", [])
-        self._add_state("_target_buffer", [])
+        self._add_state("_inputs", flist())
+        self._add_state("_targets", flist())
+        self._add_state("_input_buffer", flist())
+        self._add_state("_target_buffer", flist())
         self.metrics = FlatDict(*args, **metrics)
         if merge_dict is not None:
             self.merge_dict = merge_dict
+        if return_nested is not None:
+            self.return_nested = return_nested
 
     @torch.inference_mode()
     def update(self, input: Any, target: Any) -> None:  # pylint: disable=W0221
@@ -173,7 +188,12 @@ class Metrics(Metric):
 
     @torch.inference_mode()
     def calculate(self, input: Tensor, target: Tensor) -> flist | float:
-        if input.numel() == 0 == target.numel():
+        if (
+            isinstance(input, (Tensor, NestedTensor))
+            and input.numel() == 0 == target.numel()
+            or isinstance(input, (list, dict))
+            and len(input) == 0 == len(target)
+        ):
             return FlatDict({name: nan for name in self.metrics.keys()})
         ret = FlatDict()
         for name, metric in self.metrics.items():
@@ -190,8 +210,6 @@ class Metrics(Metric):
 
     @torch.inference_mode()
     def _calculate(self, metric, input: Tensor, target: Tensor) -> flist | float:
-        if input.numel() == 0 == target.numel():
-            return FlatDict({name: nan for name in self.metrics.keys()})
         score = metric(input, target)
         if isinstance(score, Tensor):
             return score.item() if score.numel() == 1 else flist(score.tolist())
@@ -215,10 +233,12 @@ class Metrics(Metric):
         if isinstance(self._input, NestedTensor):
             synced_tensors = [None for _ in range(dist.get_world_size())]
             dist.all_gather_object(synced_tensors, self._input.storage())
-            synced_tensors = [i for j in synced_tensors for i in j]
+            synced_tensors = flist(i for j in synced_tensors for i in j)
             try:
                 return torch.cat(synced_tensors, 0)
             except RuntimeError:
+                if self.return_nested:
+                    return NestedTensor(synced_tensor)
                 return synced_tensors
         raise ValueError(f"Expected _input to be a Tensor or a NestedTensor, but got {type(self._input)}")
 
@@ -233,10 +253,12 @@ class Metrics(Metric):
         if isinstance(self._target, NestedTensor):
             synced_tensors = [None for _ in range(dist.get_world_size())]
             dist.all_gather_object(synced_tensors, self._target.storage())
-            synced_tensors = [i for j in synced_tensors for i in j]
+            synced_tensors = flist(i for j in synced_tensors for i in j)
             try:
                 return torch.cat(synced_tensors, 0)
             except RuntimeError:
+                if self.return_nested:
+                    return NestedTensor(synced_tensor)
                 return synced_tensors
         raise ValueError(f"Expected _target to be a Tensor or a NestedTensor, but got {type(self._target)}")
 
@@ -251,12 +273,12 @@ class Metrics(Metric):
                 self._inputs.extend([i for j in synced_tensors for i in j])
             else:
                 self._inputs.extend(self._input_buffer)
-            self._input_buffer = []
-        # if isinstance(self._input, NestedTensor):
-        #     return NestedTensor(self._inputs)
+            self._input_buffer = flist()
         try:
             return torch.cat(self._inputs, 0)
         except RuntimeError:
+            if self.return_nested:
+                return NestedTensor(self._inputs)
             return self._inputs
 
     @property
@@ -270,12 +292,12 @@ class Metrics(Metric):
                 self._targets.extend([i for j in synced_tensors for i in j])
             else:
                 self._targets.extend(self._target_buffer)
-            self._target_buffer = []
-        # if isinstance(self._target, NestedTensor):
-        #     return NestedTensor(self._targets)
+            self._target_buffer = flist()
         try:
             return torch.cat(self._targets, 0)
         except RuntimeError:
+            if self.return_nested:
+                return NestedTensor(self._inputs)
             return self._targets
 
     def __repr__(self):
@@ -287,6 +309,40 @@ class Metrics(Metric):
         return "\n".join(
             [f"{key}: {val[key].__format__(format_spec)} ({avg[key].__format__(format_spec)})" for key in self.metrics]
         )
+
+    def reset(self: Self) -> Self:  # pragma: no cover
+        """
+        Reset the metric state variables to their default value.
+        The tensors in the default values are also moved to the device of
+        the last ``self.to(device)`` call.
+        """
+        for state_name, default in self._state_name_to_default.items():
+            if isinstance(default, torch.Tensor):
+                setattr(self, state_name, default.clone().to(self.device))
+            elif isinstance(default, list):
+                setattr(
+                    self,
+                    state_name,
+                    flist(tensor.clone().to(self.device) for tensor in default),
+                )
+            elif isinstance(default, dict):
+                setattr(
+                    self,
+                    state_name,
+                    DefaultDict(
+                        lambda: torch.tensor(0.0, device=self.device),
+                        {key: tensor.clone().to(self.device) for key, tensor in default.items()},
+                    ),
+                )
+            elif isinstance(default, (int, float)):
+                setattr(self, state_name, default)
+            else:
+                raise TypeError(
+                    f"Invalid type for default value for {state_name}. Received {type(default)},"
+                    "but expected ``torch.Tensor``, a list of ``torch.Tensor``,"
+                    "a dictionary with ``torch.Tensor``, int, or float."
+                )
+        return self
 
 
 class ScoreMetrics(Metrics):  # pylint: disable=abstract-method
