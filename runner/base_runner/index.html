@@ -1981,7 +1981,7 @@ Defaults to <code>"loss"</code>.</p>
           <td>
             <div class="doc-md-description">
               <p>Directory of the run.
-Defaults to <code>${self.project_root}/${self.name}-${self.experiment_id}/${self.timestamp})</code>.</p>
+Defaults to <code>${self.project_root}/${self.name}-${self.id}/${self.timestamp})</code>.</p>
             </div>
           </td>
         </tr>
@@ -3363,7 +3363,7 @@ Initialised to <code>AverageMeters</code> by default.</p>
 <a id="__codelineno-0-89" name="__codelineno-0-89"></a>
 <a id="__codelineno-0-90" name="__codelineno-0-90"></a><span class="sd">    Attributes: IO:</span>
 <a id="__codelineno-0-91" name="__codelineno-0-91"></a><span class="sd">        dir (str, property): Directory of the run.</span>
-<a id="__codelineno-0-92" name="__codelineno-0-92"></a><span class="sd">            Defaults to `${self.project_root}/${self.name}-${self.experiment_id}/${self.timestamp})`.</span>
+<a id="__codelineno-0-92" name="__codelineno-0-92"></a><span class="sd">            Defaults to `${self.project_root}/${self.name}-${self.id}/${self.timestamp})`.</span>
 <a id="__codelineno-0-93" name="__codelineno-0-93"></a><span class="sd">        checkpoint_dir (str, property): Directory of checkpoints.</span>
 <a id="__codelineno-0-94" name="__codelineno-0-94"></a><span class="sd">        log_path (str, property):  Path of log file.</span>
 <a id="__codelineno-0-95" name="__codelineno-0-95"></a><span class="sd">        checkpoint_dir_name (str): The name of the directory under `runner.dir` to save checkpoints.</span>
@@ -3814,7 +3814,7 @@ Initialised to <code>AverageMeters</code> by default.</p>
 <a id="__codelineno-0-540" name="__codelineno-0-540"></a>
 <a id="__codelineno-0-541" name="__codelineno-0-541"></a>        <span class="k">if</span> <span class="s2">&quot;dir&quot;</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="p">:</span>
 <a id="__codelineno-0-542" name="__codelineno-0-542"></a>            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">dir</span>
-<a id="__codelineno-0-543" name="__codelineno-0-543"></a>        <span class="k">return</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">project_root</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">experiment_id</span><span class="si">:</span><span class="s2">.8</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">timestamp</span><span class="p">)</span>
+<a id="__codelineno-0-543" name="__codelineno-0-543"></a>        <span class="k">return</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">project_root</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">-</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">timestamp</span><span class="p">)</span>
 <a id="__codelineno-0-544" name="__codelineno-0-544"></a>
 <a id="__codelineno-0-545" name="__codelineno-0-545"></a>    <span class="nd">@cached_property</span>
 <a id="__codelineno-0-546" name="__codelineno-0-546"></a>    <span class="k">def</span> <span class="nf">log_path</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
