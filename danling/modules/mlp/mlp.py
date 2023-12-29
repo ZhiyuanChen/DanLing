@@ -19,7 +19,7 @@ class MLP(nn.Module):
         linear_output: bool = True,
     ) -> None:
         super().__init__()
-        if len(features) == 0 and isinstance(features, Sequence):
+        if len(features) == 1 and isinstance(features, Sequence):
             features = features[0]  # type: ignore[assignment]
         if not len(features) > 1:
             raise ValueError(f"`features` of MLP should have at least 2 elements, but got {len(features)}")
