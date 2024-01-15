@@ -563,7 +563,7 @@ class NestedTensor:
             return NestedTensor(i < j for i, j in zip(self._storage, other._storage))
         if isinstance(other, (int, float, Tensor)):
             return NestedTensor([x < other for x in self._storage], **self._state)
-        raise TypeError(f"<= not supported between instances of '{type(self)}' and '{type(other)}'")
+        raise TypeError(f"< not supported between instances of '{type(self)}' and '{type(other)}'")
 
     def __abs__(self):
         return NestedTensor([abs(value) for value in self._storage], **self._state)

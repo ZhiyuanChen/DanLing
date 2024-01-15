@@ -12,9 +12,9 @@ from warnings import warn
 from danling.utils import base62
 
 try:
-    from enum import StrEnum  # pylint: disable = C0412
+    from enum import StrEnum  # type: ignore[attr-defined]
 except ImportError:
-    from strenum import LowercaseStrEnum as StrEnum  # type: ignore
+    from strenum import LowercaseStrEnum as StrEnum  # type: ignore[no-redef]
 
 
 class RunnerMeta(type):

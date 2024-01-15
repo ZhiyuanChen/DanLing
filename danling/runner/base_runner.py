@@ -141,7 +141,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             self.datasamplers = FlatDict()
         if "dataloaders" not in self.__dict__:
             self.dataloaders = FlatDict()
-        self._mode = RunnerMode.train
+        self._mode = RunnerMode.train  # type: ignore[assignment]
         self.meters = AverageMeters()
         self.metrics = None
         # must init state at last to avoid conflict names

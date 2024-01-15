@@ -14,7 +14,7 @@ from torcheval.metrics import Metric
 from danling.tensors import NestedTensor
 
 try:
-    from typing import Self
+    from typing import Self  # type: ignore[attr-defined]
 except ImportError:
     from typing_extensions import Self
 
