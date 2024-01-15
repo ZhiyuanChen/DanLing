@@ -233,7 +233,7 @@ class Metrics(Metric):
         if isinstance(self._input, NestedTensor):
             synced_tensors = [None for _ in range(dist.get_world_size())]
             dist.all_gather_object(synced_tensors, self._input.storage())
-            synced_tensors = flist(i for j in synced_tensors for i in j)
+            synced_tensors = flist(i.to(self.device) for j in synced_tensors for i in j)
             try:
                 return torch.cat(synced_tensors, 0)
             except RuntimeError:
@@ -253,7 +253,7 @@ class Metrics(Metric):
         if isinstance(self._target, NestedTensor):
             synced_tensors = [None for _ in range(dist.get_world_size())]
             dist.all_gather_object(synced_tensors, self._target.storage())
-            synced_tensors = flist(i for j in synced_tensors for i in j)
+            synced_tensors = flist(i.to(self.device) for j in synced_tensors for i in j)
             try:
                 return torch.cat(synced_tensors, 0)
             except RuntimeError:
