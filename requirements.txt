@@ -1,5 +1,5 @@
 cached-property; python_version < "3.8"
-chanfig >= 0.0.91
+chanfig >= 0.0.96
 gitpython
 lazy-imports
 strenum; python_version < "3.11"
