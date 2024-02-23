@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import torch
+from lazy_imports import try_import
 from torch import Tensor
-from torcheval.metrics import functional as tef
-from torchmetrics import functional as tmf
 
 from danling.tensors import NestedTensor
+
+with try_import() as lazy_import:
+    from torcheval.metrics import functional as tef
+    from torchmetrics import functional as tmf
 
 
 def auroc(
@@ -86,6 +89,7 @@ def pearson(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
 ):
+    lazy_import.check()
     if isinstance(input, NestedTensor):
         input = torch.cat(input.storage())
     if isinstance(target, NestedTensor):
@@ -97,6 +101,7 @@ def spearman(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
 ):
+    lazy_import.check()
     if isinstance(input, NestedTensor):
         input = torch.cat(input.storage())
     if isinstance(target, NestedTensor):

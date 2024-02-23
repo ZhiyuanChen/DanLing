@@ -8,8 +8,8 @@ from torch.multiprocessing import spawn
 from torcheval.metrics import BinaryAccuracy, BinaryAUPRC, BinaryAUROC
 from torcheval.metrics.functional import binary_accuracy, binary_auprc, binary_auroc
 
-from danling import Metrics, NestedTensor
-from danling.metrics import regression_metrics
+from danling import NestedTensor
+from danling.metrics import Metrics, regression_metrics
 from danling.metrics.functional import accuracy, auprc, auroc, pearson, rmse, spearman
 from danling.metrics.metrics import ScoreMetrics
 
