@@ -1,7 +1,7 @@
 {
   "short_name": "DanLing",
   "name": "DanLing",
-  "description": "Easier Configuration",
+  "description": "Scaffold for experienced Machine Learning Researchers",
   "icons": [
     {
       "src": "assets/site/logo.png",
