@@ -15449,6 +15449,19 @@ Defaults to <code>None</code>.</p>
   
       <p>Decorator to ensure a directory property exists.</p>
 
+<details class="note" open>
+  <summary>Note</summary>
+  <p>Please avoid using this with <code>cached_property</code>.</p>
+</details>
+
+
+<p><strong>Examples:</strong></p>
+    <div class="highlight"><span class="filename">Python Console Session</span><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">&gt;&gt;&gt; </span><span class="nd">@property</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="gp">... </span><span class="nd">@ensure_dir</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="gp">... </span><span class="k">def</span> <span class="nf">dir</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="gp">... </span>    <span class="k">return</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="s2">&quot;path&quot;</span><span class="p">,</span> <span class="s2">&quot;to&quot;</span><span class="p">,</span> <span class="s2">&quot;dir&quot;</span><span class="p">)</span>
+</code></pre></div>
+
           <details class="quote">
             <summary>Source code in <code>danling/utils/decorators.py</code></summary>
             <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-162">162</a></span>
@@ -15462,18 +15475,36 @@ Defaults to <code>None</code>.</p>
 <span class="normal"><a href="#__codelineno-0-170">170</a></span>
 <span class="normal"><a href="#__codelineno-0-171">171</a></span>
 <span class="normal"><a href="#__codelineno-0-172">172</a></span>
-<span class="normal"><a href="#__codelineno-0-173">173</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-162" name="__codelineno-0-162"></a><span class="k">def</span> <span class="nf">ensure_dir</span><span class="p">(</span><span class="n">func</span><span class="p">):</span>
+<span class="normal"><a href="#__codelineno-0-173">173</a></span>
+<span class="normal"><a href="#__codelineno-0-174">174</a></span>
+<span class="normal"><a href="#__codelineno-0-175">175</a></span>
+<span class="normal"><a href="#__codelineno-0-176">176</a></span>
+<span class="normal"><a href="#__codelineno-0-177">177</a></span>
+<span class="normal"><a href="#__codelineno-0-178">178</a></span>
+<span class="normal"><a href="#__codelineno-0-179">179</a></span>
+<span class="normal"><a href="#__codelineno-0-180">180</a></span>
+<span class="normal"><a href="#__codelineno-0-181">181</a></span>
+<span class="normal"><a href="#__codelineno-0-182">182</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-162" name="__codelineno-0-162"></a><span class="k">def</span> <span class="nf">ensure_dir</span><span class="p">(</span><span class="n">func</span><span class="p">):</span>
 <a id="__codelineno-0-163" name="__codelineno-0-163"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
 <a id="__codelineno-0-164" name="__codelineno-0-164"></a><span class="sd">    Decorator to ensure a directory property exists.</span>
-<a id="__codelineno-0-165" name="__codelineno-0-165"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-166" name="__codelineno-0-166"></a>
-<a id="__codelineno-0-167" name="__codelineno-0-167"></a>    <span class="nd">@wraps</span><span class="p">(</span><span class="n">func</span><span class="p">)</span>
-<a id="__codelineno-0-168" name="__codelineno-0-168"></a>    <span class="k">def</span> <span class="nf">wrapper</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
-<a id="__codelineno-0-169" name="__codelineno-0-169"></a>        <span class="n">path</span> <span class="o">=</span> <span class="n">abspath</span><span class="p">(</span><span class="n">func</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">))</span>
-<a id="__codelineno-0-170" name="__codelineno-0-170"></a>        <span class="n">makedirs</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-<a id="__codelineno-0-171" name="__codelineno-0-171"></a>        <span class="k">return</span> <span class="n">path</span>
-<a id="__codelineno-0-172" name="__codelineno-0-172"></a>
-<a id="__codelineno-0-173" name="__codelineno-0-173"></a>    <span class="k">return</span> <span class="n">wrapper</span>
+<a id="__codelineno-0-165" name="__codelineno-0-165"></a>
+<a id="__codelineno-0-166" name="__codelineno-0-166"></a><span class="sd">    Note:</span>
+<a id="__codelineno-0-167" name="__codelineno-0-167"></a><span class="sd">        Please avoid using this with `cached_property`.</span>
+<a id="__codelineno-0-168" name="__codelineno-0-168"></a>
+<a id="__codelineno-0-169" name="__codelineno-0-169"></a><span class="sd">    Examples:</span>
+<a id="__codelineno-0-170" name="__codelineno-0-170"></a><span class="sd">        &gt;&gt;&gt; @property</span>
+<a id="__codelineno-0-171" name="__codelineno-0-171"></a><span class="sd">        ... @ensure_dir</span>
+<a id="__codelineno-0-172" name="__codelineno-0-172"></a><span class="sd">        ... def dir(self) -&gt; str:</span>
+<a id="__codelineno-0-173" name="__codelineno-0-173"></a><span class="sd">        ...     return os.path.join(&quot;path&quot;, &quot;to&quot;, &quot;dir&quot;)</span>
+<a id="__codelineno-0-174" name="__codelineno-0-174"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-175" name="__codelineno-0-175"></a>
+<a id="__codelineno-0-176" name="__codelineno-0-176"></a>    <span class="nd">@wraps</span><span class="p">(</span><span class="n">func</span><span class="p">)</span>
+<a id="__codelineno-0-177" name="__codelineno-0-177"></a>    <span class="k">def</span> <span class="nf">wrapper</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+<a id="__codelineno-0-178" name="__codelineno-0-178"></a>        <span class="n">path</span> <span class="o">=</span> <span class="n">abspath</span><span class="p">(</span><span class="n">func</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">))</span>
+<a id="__codelineno-0-179" name="__codelineno-0-179"></a>        <span class="n">makedirs</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-0-180" name="__codelineno-0-180"></a>        <span class="k">return</span> <span class="n">path</span>
+<a id="__codelineno-0-181" name="__codelineno-0-181"></a>
+<a id="__codelineno-0-182" name="__codelineno-0-182"></a>    <span class="k">return</span> <span class="n">wrapper</span>
 </code></pre></div></td></tr></table></div>
           </details>
   </div>
