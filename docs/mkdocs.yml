@@ -24,7 +24,7 @@ nav:
   - Metrics:
       - metrics: metrics/metrics.md
       - AverageMeters: metrics/average_meters.md
-  - Utils:
+  - Utilities:
       - Decorator: utils/decorators.md
       - Context Manager: utils/contextmanagers.md
       - IO: utils/io.md

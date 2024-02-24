@@ -103,12 +103,12 @@ def catch(  # pylint: disable=keyword-arg-before-vararg
 
     Examples:
         >>> def file_not_found(*args, **kwargs):
-        ...     return exclude
         ...     raise FileNotFoundError
-
         >>> file_not_found()
-        >>> raise ValueError
-        >>> assert 1 == 2
+        Traceback (most recent call last):
+        FileNotFoundError
+        >>> func = catch(OSError)(file_not_found)
+        >>> file_not_found()
     """
 
     def decorator(func):
