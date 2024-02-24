@@ -162,6 +162,15 @@ def method_cache(maxsize: int | None = 128, typed: bool = False):
 def ensure_dir(func):
     r"""
     Decorator to ensure a directory property exists.
+
+    Note:
+        Please avoid using this with `cached_property`.
+
+    Examples:
+        >>> @property
+        ... @ensure_dir
+        ... def dir(self) -> str:
+        ...     return os.path.join("path", "to", "dir")
     """
 
     @wraps(func)
