@@ -136,9 +136,10 @@ def method_cache(maxsize: int | None = 128, typed: bool = False):
     `functools.lru_cache` uses a strong reference to the instance,
     which will make the instance immortal and break the garbage collection.
 
-    `method_cache` uses a weak reference to the instance and works fine.
+    `method_cache` uses a weak reference to the instance to resolve this issue.
 
-    https://rednafi.github.io/reflections/dont-wrap-instance-methods-with-functoolslru_cache-decorator-in-python.html
+    See Also:
+        https://rednafi.github.io/reflections/dont-wrap-instance-methods-with-functoolslru_cache-decorator-in-python.html
     """
 
     def decorator(func):
