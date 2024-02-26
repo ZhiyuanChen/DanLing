@@ -7,7 +7,7 @@ from uuid import UUID, uuid5
 from chanfig import NestedDict
 
 from . import defaults
-from .utils import get_git_hash, get_time_str
+from .utils import get_git_hash
 
 
 class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
@@ -20,22 +20,21 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
     `RunnerState` is also designed to be serialisable and hashable, so that you can save it to a file.
     `RunnerState` is saved in checkpoint together with weights by default.
 
-    Since `RunnerState` is a `NestedDict`, you can access its attributes by `state["key"]` or `state.key`.
+    Since `RunnerState` is a [`NestedDict`][chanfig.NestedDict], you can access its attributes by
+    `state["key"]` or `state.key`.
 
     Attributes: General:
-        timestamp (str): A time string representing the creation time of run.
-        id (str): `f"{self.experiment_id:.8}{self.run_id:.8}"`.
-        uuid (UUID, property): `uuid5(self.run_id, self.id)`.
-        name (str): `f"{self.experiment_name}-{self.run_name}"`.
+        run_name (str): Defaults to `"DanLing"`.
         run_id (str): hex of `self.run_uuid`.
         run_uuid (UUID, property): `uuid5(self.experiment_id, str(hash(self)))`.
-        run_name (str): Defaults to `"DanLing"`.
+        experiment_name (str): Defaults to `"DanLing"`.
         experiment_id (str): git hash of the current HEAD.
             Defaults to `"xxxxxxxxxxxxxxxx"` if Runner not under a git repo or git/gitpython not installed.
         experiment_uuid (UUID, property): UUID of `self.experiment_id`.
             Defaults to `UUID('78787878-7878-7878-7878-787878787878')`
             if Runner not under a git repo or git/gitpython not installed.
-        experiment_name (str): Defaults to `"DanLing"`.
+
+    Attributes: Reproducibility:
         seed (int): Defaults to `randint(0, 2**32 - 1)`.
         deterministic (bool): Ensure [deterministic](https://pytorch.org/docs/stable/notes/randomness.html) operations.
             Defaults to `False`.
@@ -114,13 +113,10 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
 
     # DO NOT set default value in class, as they won't be stored in `__dict__`.
 
-    timestamp: str
-    id: str
-    name: str
+    run_name: str = defaults.DEFAULT_RUN_NAME
     run_id: str
-    run_name: str
+    experiment_name: str = defaults.DEFAULT_EXPERIMENT_NAME
     experiment_id: str
-    experiment_name: str
 
     seed: int
     deterministic: bool = False
@@ -156,8 +152,6 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
         for k, v in self.__class__.__dict__.items():
             if not (k.startswith("__") and k.endswith("__")) and (not (isinstance(v, property) or callable(v))):
                 self.set(k, v)
-        self.experiment_name = defaults.DEFAULT_EXPERIMENT_NAME
-        self.run_name = defaults.DEFAULT_RUN_NAME
         self.seed = randint(0, 2**32 - 1)
         self.results = NestedDict()
         super().__init__(*args, **kwargs)
@@ -165,16 +159,7 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
             self.experiment_id = get_git_hash() or defaults.DEFAULT_EXPERIMENT_ID
         if "run_id" not in self:
             self.run_id = self.run_uuid.hex
-        self.timestamp = get_time_str()
         self.setattr("ignored_keys_in_hash", defaults.DEFAULT_IGNORED_KEYS_IN_HASH)
-
-    @property
-    def name(self):
-        return f"{self.experiment_name}-{self.run_name}"
-
-    @property
-    def id(self):
-        return f"{self.experiment_id:.8}{self.run_id:.8}"
 
     @property
     def experiment_uuid(self) -> UUID:
@@ -193,14 +178,6 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
         ignored_keys_in_hash = self.getattr("ignored_keys_in_hash", defaults.DEFAULT_IGNORED_KEYS_IN_HASH)
         state: NestedDict = NestedDict({k: v for k, v in self.dict().items() if k not in ignored_keys_in_hash})
         return uuid5(self.experiment_uuid, state.yamls())
-
-    @property
-    def uuid(self) -> UUID:
-        r"""
-        UUID of the state.
-        """
-
-        return uuid5(self.run_uuid, self.id)
 
     def __hash__(self) -> int:
         return int(self.run_uuid.hex, 16)

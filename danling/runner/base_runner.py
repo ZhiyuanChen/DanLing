@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from math import ceil
 from sys import version_info
 from typing import Any, Dict
+from uuid import UUID, uuid5
 from warnings import warn
 
 from chanfig import Config, FlatDict, NestedDict, Variable
@@ -28,8 +29,8 @@ try:
 except ImportError:
     np_random = None
 
-from .runner_state import RunnerState
-from .utils import RunnerMeta, RunnerMode, on_main_process
+from .state import RunnerState
+from .utils import RunnerMeta, RunnerMode, get_time_str, on_main_process
 
 PY38_PLUS = version_info >= (3, 8)
 IGNORED_SET_NAMES = ("index", "epoch", "step", "iter")
@@ -45,6 +46,12 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     `BaseRunner` also provides some basic methods, such as, `step`, `state_dict`, `save_checkpoint`, `load_checkpoint`.
 
     `BaseRunner` defines all basic attributes and relevant properties such as `scores`, `progress`, etc.
+
+    Attributes: ID:
+        timestamp (str): A time string representing the creation time of run.
+        name (str): `f"{self.state.experiment_name}-{self.state.run_name}"`.
+        id (str): `f"{self.state.experiment_id:.8}{self.state.run_id:.8}"`.
+        uuid (UUID, property): `uuid5(self.state.run_id, self.id)`.
 
     Attributes: Core:
         mode (RunnerMode, property): Running mode.
@@ -117,6 +124,8 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
 
     # DO NOT set default value in class, as they won't be stored in `__dict__`.
 
+    timestamp: str
+
     _mode: RunnerMode
     state: RunnerState
 
@@ -135,6 +144,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     writer: Any | None = None
 
     def __init__(self, config: NestedDict) -> None:
+        self.timestamp = get_time_str()
         if "datasets" not in self.__dict__:
             self.datasets = FlatDict()
         if "datasamplers" not in self.__dict__:
@@ -1165,14 +1175,15 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         results_path = os.path.join(self.dir, "results.json")
         self.save(
             {
-                "id": self.state.id,
-                "name": self.state.name,
+                "id": self.id,
+                "name": self.name,
+                "timestamp": self.timestamp,
                 "results": self.state.results,
             },
             results_path,
             indent=4,
         )
-        ret = {"id": self.state.id, "name": self.state.name}
+        ret = {"id": self.id, "name": self.name, "timestamp": self.timestamp}
         result = self.latest_result
         if isinstance(result, FlatDict):
             result = result.dict()
@@ -1184,3 +1195,19 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         if self.is_best:
             best_path = os.path.join(self.dir, "best.json")
             shutil.copy(latest_path, best_path)
+
+    @cached_property
+    def name(self):
+        return f"{self.experiment_name}-{self.run_name}"
+
+    @cached_property
+    def id(self):
+        return f"{self.experiment_id:.8}{self.run_id:.8}"
+
+    @cached_property
+    def uuid(self) -> UUID:
+        r"""
+        UUID of the state.
+        """
+
+        return uuid5(self.run_uuid, self.id)

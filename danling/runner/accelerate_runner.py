@@ -304,9 +304,9 @@ class AccelerateRunner(BaseRunner):
             self.accelerate["deepspeed_plugin"] = DeepSpeedPlugin(hf_ds_config=self.init_deepspeed(deepspeed_config))
         self.accelerator = Accelerator(**self.accelerate)
         if self.distributed:
-            object_list = [self.state.id]
+            object_list = [self.id, self.timestamp]
             dist.broadcast_object_list(object_list)
-            self.state.id = object_list[0]
+            self.id, self.timestamp = object_list[0]
 
     @on_main_process
     def init_tensorboard(self, *args, **kwargs) -> None:
