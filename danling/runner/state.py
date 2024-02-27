@@ -53,33 +53,6 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
 
     In general you should only use one of `iter_end`, `step_end`, `epoch_end` to indicate the length of running.
 
-    Attributes: Results:
-        results (dict): All results, should be in the form of `{step: {subset: {score_name: score}}}`.
-
-    `results` should be a list of `result`.
-    `result` should be a dict with the same `split` as keys, like `dataloaders`.
-    A typical `result` might look like this:
-    ```python
-    {
-        "train": {
-            "loss": 0.1,
-            "accuracy": 0.9,
-        },
-        "val": {
-            "loss": 0.2,
-            "accuracy": 0.8,
-        },
-        "test": {
-            "loss": 0.3,
-            "accuracy": 0.7,
-        },
-    }
-    ```
-
-    `scores` are dynamically extracted from `results` by `score_set` and `score_name`.
-    They represent the core metric that is used in comparing the performance against different models and settings.
-    For the above `results`, If `score_set = "val"`, `score_name = "accuracy"`, then `scores = 0.9`.
-
     Attributes: IO:
         project_root (str): The root directory for all experiments.
             Defaults to `"experiments"`.
@@ -131,7 +104,6 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
     step_end: Optional[int] = None
     epoch_end: Optional[int] = None
 
-    results: dict
     score_set: Optional[str] = None
     score_name: str = "loss"
 
@@ -153,7 +125,6 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
             if not (k.startswith("__") and k.endswith("__")) and (not (isinstance(v, property) or callable(v))):
                 self.set(k, v)
         self.seed = randint(0, 2**32 - 1)
-        self.results = NestedDict()
         super().__init__(*args, **kwargs)
         if "experiment_id" not in self:
             self.experiment_id = get_git_hash() or defaults.DEFAULT_EXPERIMENT_ID

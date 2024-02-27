@@ -94,6 +94,29 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             Defaults to `"loss"`.
         is_best (bool, property): If `latest_score == best_score`.
 
+    A `result` is a dict with the same `split` as keys, like `dataloaders`.
+    A typical `result` shall look like this:
+    ```python
+    {
+        "train": {
+            "loss": 0.1,
+            "accuracy": 0.9,
+        },
+        "val": {
+            "loss": 0.2,
+            "accuracy": 0.8,
+        },
+        "test": {
+            "loss": 0.3,
+            "accuracy": 0.7,
+        },
+    }
+    ```
+
+    `scores` are dynamically extracted from `results` by `score_set` and `score_name`.
+    They represent the core metric that is used in comparing the performance against different models and settings.
+    For the above `results`, If `score_set = "val"`, `score_name = "accuracy"`, then `scores = 0.9`.
+
     Attributes: IO:
         dir (str, property): Directory of the run.
             Defaults to `${self.project_root}/${self.name}-${self.id}/${self.timestamp})`.
@@ -138,6 +161,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     datasamplers: FlatDict
     dataloaders: FlatDict
 
+    results: NestedDict
     meters: AverageMeters
     metrics: Metrics | None = None
     logger: logging.Logger | None = None
@@ -151,6 +175,8 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             self.datasamplers = FlatDict()
         if "dataloaders" not in self.__dict__:
             self.dataloaders = FlatDict()
+        if "results" not in self.__dict__:
+            self.results = NestedDict()
         self._mode = RunnerMode.train  # type: ignore[assignment]
         self.meters = AverageMeters()
         self.metrics = None
@@ -455,10 +481,10 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         Latest result.
         """
 
-        if not self.state.results:
+        if not self.results:
             return None
-        latest_index = next(reversed(self.state.results if PY38_PLUS else list(self.state.results)))  # type: ignore
-        ret = self.state.results[latest_index].clone()
+        latest_index = next(reversed(self.results if PY38_PLUS else list(self.results)))  # type: ignore
+        ret = self.results[latest_index].clone()
         ret["index"] = latest_index
         return ret
 
@@ -468,10 +494,10 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         Best result.
         """
 
-        if not self.state.results:
+        if not self.results:
             return None
         best_index = self.best_index
-        ret = self.state.results[best_index].clone()
+        ret = self.results[best_index].clone()
         ret["index"] = best_index
         return ret
 
@@ -481,7 +507,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         All scores.
 
         Scores are extracted from results by `score_set` and `runner.state.score_name`,
-        following `[r[score_set][self.state.score_name] for r in self.state.results]`.
+        following `[r[score_set][self.state.score_name] for r in self.results]`.
 
         Scores are considered as the index of the performance of the model.
         It is useful to determine the best model and the best hyper-parameters.
@@ -494,7 +520,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         Note that certain keys are ignored when falling back, they are defined in {IGNORED_SET_NAMES}.
         """
 
-        if not self.state.results:
+        if not self.results:
             return None
         subsets = [i for i in self.latest_result.keys() if i not in IGNORED_SET_NAMES]  # type: ignore
         score_set = self.state.get("score_set")
@@ -504,7 +530,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             score_set = "validate"
         if score_set is None:
             score_set = subsets[1] if len(subsets) > 1 else subsets[0]
-        return FlatDict({k: v[score_set][self.state.score_name] for k, v in self.state.results.items()})
+        return FlatDict({k: v[score_set][self.state.score_name] for k, v in self.results.items()})
 
     @property
     def latest_score(self) -> float | None:
@@ -512,7 +538,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         Latest score.
         """
 
-        if not self.state.results:
+        if not self.results:
             return None
         if not PY38_PLUS:
             return next(reversed(list(self.scores.values())))  # type: ignore
@@ -524,7 +550,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         Best score.
         """
 
-        if not self.state.results:
+        if not self.results:
             return None
         return self.scores[self.best_index]  # type: ignore
 
@@ -534,7 +560,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         If current epoch is the best epoch.
         """
 
-        if not self.state.results:
+        if not self.results:
             return True
         try:
             return abs(self.latest_score - self.best_score) < 1e-7  # type: ignore
@@ -1072,10 +1098,10 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
 
     def append_result(self, result: NestedDict, index: int | None = None) -> None:
         r"""
-        Append result to `self.state.results`.
+        Append result to `self.results`.
 
         Warnings:
-            `self.state.results` is heavily relied upon for computing metrics.
+            `self.results` is heavily relied upon for computing metrics.
 
             Failed to use this method may lead to unexpected behavior.
         """
@@ -1093,17 +1119,17 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
                     category=RuntimeWarning,
                     stacklevel=2,
                 )
-        if index in self.state.results:
-            self.state.results[index].merge(result)
+        if index in self.results:
+            self.results[index].merge(result)
         else:
-            self.state.results[index] = result
+            self.results[index] = result
 
     def print_result(self) -> None:
         r"""
         Print latest and best result.
         """
 
-        print(f"results: {self.state.results}")
+        print(f"results: {self.results}")
         print(f"latest result: {self.latest_result}")
         print(f"best result: {self.best_result}")
 
@@ -1175,15 +1201,15 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         results_path = os.path.join(self.dir, "results.json")
         self.save(
             {
-                "id": self.id,
                 "name": self.name,
+                "id": self.id,
                 "timestamp": self.timestamp,
-                "results": self.state.results,
+                "results": self.results,
             },
             results_path,
             indent=4,
         )
-        ret = {"id": self.id, "name": self.name, "timestamp": self.timestamp}
+        ret = {"name": self.name, "id": self.id, "timestamp": self.timestamp}
         result = self.latest_result
         if isinstance(result, FlatDict):
             result = result.dict()

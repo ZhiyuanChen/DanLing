@@ -40,8 +40,7 @@ class Test:
 
     def test_results(self):
         runner = self.runner
-        state = runner.state
-        state.results = NestedDict(
+        runner.results = NestedDict(
             {
                 0: {
                     "val": {
