@@ -33,7 +33,7 @@
         <link rel="prev" href="../">
       
       
-        <link rel="next" href="runner_state/">
+        <link rel="next" href="base_runner/">
       
       
         <link rel="alternate" type="application/rss+xml" title="RSS 订阅" href="../../feed_rss_created.xml">
@@ -558,7 +558,7 @@
   
   
     <li class="md-nav__item">
-      <a href="runner_state/" class="md-nav__link">
+      <a href="../../runner/runner_state.md" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -894,8 +894,8 @@
 <p>Currently, only <a class="autorefs autorefs-internal" href="torch_runner/#danling.runner.TorchRunner"><code>TorchRunner</code></a> is supported.</p>
 <h3 id="baserunner"><a class="autorefs autorefs-internal" href="base_runner/#danling.runner.BaseRunner"><code>BaseRunner</code></a><a class="headerlink" href="#baserunner" title="Permanent link">&para;</a></h3>
 <p><a href="danling.runner.BaseRunner"><code>BaseRunner</code></a> defines shared attributes and implements platform-agnostic features, including <code>init_logging</code>, <code>results</code> and <code>scores</code>.</p>
-<h3 id="runnerstate"><a class="autorefs autorefs-internal" href="../../runner/runner_state/#danling.runner.runner_state.RunnerState"><code>RunnerState</code></a><a class="headerlink" href="#runnerstate" title="Permanent link">&para;</a></h3>
-<p><a class="autorefs autorefs-internal" href="../../runner/runner_state/#danling.runner.runner_state.RunnerState"><code>RunnerState</code></a> stores the state of a run (e.g. <code>epochs</code>, <code>run_id</code>, <code>network</code>, etc.).</p>
+<h3 id="runnerstate"><a class="autorefs autorefs-internal" href="../../runner/state/#danling.runner.state.RunnerState"><code>RunnerState</code></a><a class="headerlink" href="#runnerstate" title="Permanent link">&para;</a></h3>
+<p><a class="autorefs autorefs-internal" href="../../runner/state/#danling.runner.state.RunnerState"><code>RunnerState</code></a> stores the state of a run (e.g. <code>epochs</code>, <code>run_id</code>, <code>network</code>, etc.).</p>
 <p>With <code>RunnerState</code> and corresponding weights, you can resume a run from any point.
 Therefore, all members in <code>RunnerState</code> will be saved in the checkpoint, and thus should be json serialisable.</p>
 <h2 id="experiments-management">Experiments Management<a class="headerlink" href="#experiments-management" title="Permanent link">&para;</a></h2>
@@ -1086,13 +1086,13 @@ All run files should be under this directory.</p>
         
         
           
-          <a href="runner_state/" class="md-footer__link md-footer__link--next" aria-label="下一页: RunnerState">
+          <a href="base_runner/" class="md-footer__link md-footer__link--next" aria-label="下一页: BaseRunner">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 下一页
               </span>
               <div class="md-ellipsis">
-                RunnerState
+                BaseRunner
               </div>
             </div>
             <div class="md-footer__button md-icon">
