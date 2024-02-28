@@ -19,7 +19,7 @@ except ImportError:
     from typing_extensions import Self
 
 
-def world_size() -> int:
+def get_world_size() -> int:
     r"""Return the number of processes in the current process group."""
     if dist.is_available() and dist.is_initialized():
         return dist.get_world_size()
@@ -46,6 +46,9 @@ class Metrics(Metric):
 
     Attributes:
         metrics: A dictionary of metrics to be computed.
+        val: Metric results of current batch on current device.
+        bat: Metric results of current batch on all devices.
+        avg: Metric results of all results on all devices.
         input: The input tensor of latest batch.
         target: The target tensor of latest batch.
         inputs: All input tensors.
@@ -69,12 +72,12 @@ class Metrics(Metric):
         tensor([0.2000, 0.3000, 0.5000, 0.7000])
         >>> metrics.targets  # ground truth of all data
         tensor([0, 1, 0, 1])
-        >>> metrics.comp  # Metrics of current batch on current device
+        >>> metrics.val  # Metrics of current batch on current device
         FlatDict(
           ('auroc'): 0.75
           ('auprc'): 0.8333333730697632
         )
-        >>> metrics.val  # Metrics of current batch on all devices
+        >>> metrics.bat  # Metrics of current batch on all devices
         FlatDict(
           ('auroc'): 0.75
           ('auprc'): 0.8333333730697632
@@ -93,12 +96,12 @@ class Metrics(Metric):
         tensor([0.2000, 0.3000, 0.5000, 0.7000, 0.1000, 0.4000, 0.6000, 0.8000])
         >>> metrics.targets  # ground truth of all data
         tensor([0, 1, 0, 1, 0, 0, 1, 0])
-        >>> metrics.comp  # Metrics of current batch on current device
+        >>> metrics.val  # Metrics of current batch on current device
         FlatDict(
           ('auroc'): 0.6666666666666666
           ('auprc'): 0.5
         )
-        >>> metrics.val  # Metrics of current batch on all devices
+        >>> metrics.bat  # Metrics of current batch on all devices
         FlatDict(
           ('auroc'): 0.6666666666666666
           ('auprc'): 0.5
@@ -166,25 +169,28 @@ class Metrics(Metric):
             self._target_buffer.append(target.cpu())
 
     def compute(self) -> FlatDict[str, float]:
-        return self.comp
+        return self.calculate(self.inputs.to(self.device), self.targets.to(self.device))
 
     def value(self) -> FlatDict[str, float]:
-        return self.val
+        return self.calculate(self._input, self._target)
+
+    def batch(self) -> FlatDict[str, float]:
+        return self.calculate(self.input, self.target)
 
     def average(self) -> FlatDict[str, float]:
-        return self.avg
-
-    @property
-    def comp(self) -> FlatDict[str, float]:
-        return self.calculate(self._input, self._target)
+        return self.calculate(self.inputs.to(self.device), self.targets.to(self.device))
 
     @property
     def val(self) -> FlatDict[str, float]:
-        return self.calculate(self.input, self.target)
+        return self.value()
+
+    @property
+    def bat(self) -> FlatDict[str, float]:
+        return self.batch()
 
     @property
     def avg(self) -> FlatDict[str, float]:
-        return self.calculate(self.inputs.to(self.device), self.targets.to(self.device))
+        return self.average()
 
     @torch.inference_mode()
     def calculate(self, input: Tensor, target: Tensor) -> flist | float:
@@ -224,14 +230,17 @@ class Metrics(Metric):
     # Inplace update to inference tensor outside InferenceMode is not allowed
     @property
     def input(self):
-        if world_size() == 1:
+        world_size = get_world_size()
+        if world_size == 1:
+            if isinstance(self._input, NestedTensor) and not self.return_nested:
+                return torch.cat(self._input.storage(), 0)
             return self._input
         if isinstance(self._input, Tensor):
-            synced_tensor = [torch.zeros_like(self._input) for _ in range(dist.get_world_size())]
+            synced_tensor = [torch.zeros_like(self._input) for _ in range(world_size)]
             dist.all_gather(synced_tensor, self._input)
             return torch.cat(synced_tensor, 0)
         if isinstance(self._input, NestedTensor):
-            synced_tensors = [None for _ in range(dist.get_world_size())]
+            synced_tensors = [None for _ in range(world_size)]
             dist.all_gather_object(synced_tensors, self._input.storage())
             synced_tensors = flist(i.to(self.device) for j in synced_tensors for i in j)
             try:
@@ -244,14 +253,17 @@ class Metrics(Metric):
 
     @property
     def target(self):
-        if world_size() == 1:
+        world_size = get_world_size()
+        if world_size == 1:
+            if isinstance(self._target, NestedTensor) and not self.return_nested:
+                return torch.cat(self._target.storage(), 0)
             return self._target
         if isinstance(self._target, Tensor):
-            synced_tensor = [torch.zeros_like(self._target) for _ in range(dist.get_world_size())]
+            synced_tensor = [torch.zeros_like(self._target) for _ in range(world_size)]
             dist.all_gather(synced_tensor, self._target)
             return torch.cat(synced_tensor, 0)
         if isinstance(self._target, NestedTensor):
-            synced_tensors = [None for _ in range(dist.get_world_size())]
+            synced_tensors = [None for _ in range(world_size)]
             dist.all_gather_object(synced_tensors, self._target.storage())
             synced_tensors = flist(i.to(self.device) for j in synced_tensors for i in j)
             try:
@@ -267,8 +279,9 @@ class Metrics(Metric):
         if not self._inputs and not self._input_buffer:
             return torch.empty(0)
         if self._input_buffer:
-            if world_size() > 1:
-                synced_tensors = [None for _ in range(dist.get_world_size())]
+            world_size = get_world_size()
+            if world_size > 1:
+                synced_tensors = [None for _ in range(world_size)]
                 dist.all_gather_object(synced_tensors, self._input_buffer)
                 self._inputs.extend([i for j in synced_tensors for i in j])
             else:
@@ -286,8 +299,9 @@ class Metrics(Metric):
         if not self._targets and not self._target_buffer:
             return torch.empty(0)
         if self._target_buffer:
-            if world_size() > 1:
-                synced_tensors = [None for _ in range(dist.get_world_size())]
+            world_size = get_world_size()
+            if world_size > 1:
+                synced_tensors = [None for _ in range(world_size)]
                 dist.all_gather_object(synced_tensors, self._target_buffer)
                 self._targets.extend([i for j in synced_tensors for i in j])
             else:
@@ -305,7 +319,7 @@ class Metrics(Metric):
         return f"{self.__class__.__name__}{keys}"
 
     def __format__(self, format_spec):
-        val, avg = self.compute(), self.average()
+        val, avg = self.value(), self.average()
         return "\n".join(
             [f"{key}: {val[key].__format__(format_spec)} ({avg[key].__format__(format_spec)})" for key in self.metrics]
         )

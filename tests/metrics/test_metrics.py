@@ -67,23 +67,24 @@ class Test:
             targets.append(target)
             metrics.update(pred, target)
             merge_metrics.update(pred, target)
-            assert (pred == metrics.input).all()
-            assert (target == metrics.target).all()
             auc.update(pred, target)
             prc.update(pred, target)
             acc.update(pred, target)
-            assert metrics.compute()["auroc"] - binary_auroc(pred, target) < self.epsilon
-            assert metrics.compute()["auprc"] - binary_auprc(pred, target) < self.epsilon
-            assert metrics.value()["acc"] - binary_accuracy(pred, target) < self.epsilon
-            assert metrics.average()["auroc"] - auc.compute() < self.epsilon
-            assert metrics.average()["auprc"] - prc.compute() < self.epsilon
-            assert metrics.average()["acc"] - acc.compute() < self.epsilon
+            value, average = metrics.value(), metrics.average()
+            assert (pred == metrics.input).all()
+            assert (target == metrics.target).all()
+            assert value["auroc"] - binary_auroc(pred, target) < self.epsilon
+            assert value["auprc"] - binary_auprc(pred, target) < self.epsilon
+            assert value["acc"] - binary_accuracy(pred, target) < self.epsilon
+            assert average["auroc"] - auc.compute() < self.epsilon
+            assert average["auprc"] - prc.compute() < self.epsilon
+            assert average["acc"] - acc.compute() < self.epsilon
             assert metrics.avg == merge_metrics.avg
         assert (torch.cat(preds) == metrics.inputs).all()
         assert (torch.cat(targets) == metrics.targets).all()
-        assert metrics.average()["auroc"] - auc.compute() < self.epsilon
-        assert metrics.average()["auprc"] - prc.compute() < self.epsilon
-        assert metrics.average()["acc"] - acc.compute() < self.epsilon
+        assert average["auroc"] - auc.compute() < self.epsilon
+        assert average["auprc"] - prc.compute() < self.epsilon
+        assert average["acc"] - acc.compute() < self.epsilon
         assert metrics.avg == merge_metrics.avg
 
     def test_single_nested_tensor_binary(self):
@@ -102,25 +103,32 @@ class Test:
             preds.extend(pred_list)
             targets.extend(target_list)
             pred_nt, target_nt = NestedTensor(pred_list), NestedTensor(target_list)
-            metrics.update(pred_nt, target_nt)
-            dict_metrics.update(pred_nt, target_nt)
-            assert (pred_nt == metrics.input).all()
-            assert (target_nt == metrics.target).all()
             pred, target = torch.cat(pred_list), torch.cat(target_list)
+            metrics.update(pred_nt, target_nt)
             auc.update(pred, target)
             prc.update(pred, target)
             acc.update(pred, target)
-            assert metrics.compute()["auroc"] - binary_auroc(pred, target) < self.epsilon
-            assert metrics.compute()["auprc"] - binary_auprc(pred, target) < self.epsilon
-            assert metrics.compute()["acc"] - binary_accuracy(pred, target) < self.epsilon
-            assert metrics.average()["auroc"] - auc.compute() < self.epsilon
-            assert metrics.average()["auprc"] - prc.compute() < self.epsilon
-            assert metrics.average()["acc"] - acc.compute() < self.epsilon
+            value, batch, average = metrics.value(), metrics.batch(), metrics.average()
+            assert (pred_nt == metrics._input).all()
+            assert (target_nt == metrics._target).all()
+            dict_metrics.update(pred_nt, target_nt)
+            assert value["auroc"] - binary_auroc(pred, target) < self.epsilon
+            assert value["auprc"] - binary_auprc(pred, target) < self.epsilon
+            assert value["acc"] - binary_accuracy(pred, target) < self.epsilon
+            pred = torch.cat(pred_list)
+            target = torch.cat(target_list)
+            assert batch["auroc"] - binary_auroc(pred, target) < self.epsilon
+            assert batch["auprc"] - binary_auprc(pred, target) < self.epsilon
+            assert batch["acc"] - binary_accuracy(pred, target) < self.epsilon
+            assert average["auroc"] - auc.compute() < self.epsilon
+            assert average["auprc"] - prc.compute() < self.epsilon
+            assert average["acc"] - acc.compute() < self.epsilon
+        average = metrics.average()
         assert (torch.cat(preds) == metrics.inputs).all()
         assert (torch.cat(targets) == metrics.targets).all()
-        assert metrics.average()["auroc"] - auc.compute() < self.epsilon
-        assert metrics.average()["auprc"] - prc.compute() < self.epsilon
-        assert metrics.average()["acc"] - acc.compute() < self.epsilon
+        assert average["auroc"] - auc.compute() < self.epsilon
+        assert average["auprc"] - prc.compute() < self.epsilon
+        assert average["acc"] - acc.compute() < self.epsilon
         ret, dict_ret = metrics.average(), dict_metrics.average()
         for key, value in ret.items():
             assert dict_ret[f"func.{key}"] == value
@@ -148,19 +156,19 @@ class Test:
             auc.update(pred, target)
             prc.update(pred, target)
             acc.update(pred, target)
+            value = metrics.value()
             assert (pred == metrics.input[length * rank : length * (rank + 1)]).all()  # noqa: E203
             assert (target == metrics.target[length * rank : length * (rank + 1)]).all()  # noqa: E203
-            assert metrics.compute()["auroc"] - binary_auroc(pred, target) < self.epsilon
-            assert metrics.compute()["auprc"] - binary_auprc(pred, target) < self.epsilon
-            assert metrics.compute()["acc"] - binary_accuracy(pred, target) < self.epsilon
+            assert value["auroc"] - binary_auroc(pred, target) < self.epsilon
+            assert value["auprc"] - binary_auprc(pred, target) < self.epsilon
+            assert value["acc"] - binary_accuracy(pred, target) < self.epsilon
 
         pred = torch.cat(self._all_gather(preds, world_size))
         target = torch.cat(self._all_gather(targets, world_size))
-        assert (pred == metrics.inputs).all()
-        assert (target == metrics.targets).all()
-        assert metrics.average()["auroc"] - binary_auroc(pred, target) < self.epsilon
-        assert metrics.average()["auprc"] - binary_auprc(pred, target) < self.epsilon
-        assert metrics.average()["acc"] - binary_accuracy(pred, target) < self.epsilon
+        average = metrics.average()
+        assert average["auroc"] - binary_auroc(pred, target) < self.epsilon
+        assert average["auprc"] - binary_auprc(pred, target) < self.epsilon
+        assert average["acc"] - binary_accuracy(pred, target) < self.epsilon
 
         dist.destroy_process_group()
 
@@ -183,29 +191,33 @@ class Test:
             preds.extend(pred_list)
             targets.extend(target_list)
             pred_nt, target_nt = NestedTensor(pred_list), NestedTensor(target_list)
-            metrics.update(pred_nt, target_nt)
             pred, target = torch.cat(pred_list), torch.cat(target_list)
-            # assert (pred == metrics.input[cum_length * rank : cum_length * (rank + 1)]).all()
-            # assert (target == metrics.target[cum_length * rank : cum_length * (rank + 1)]).all()
-            assert metrics.compute()["auroc"] - binary_auroc(pred, target) < self.epsilon
-            assert metrics.compute()["auprc"] - binary_auprc(pred, target) < self.epsilon
-            assert metrics.compute()["acc"] - binary_accuracy(pred, target) < self.epsilon
-            pred = torch.cat(self._all_gather(pred_list, world_size))
-            target = torch.cat(self._all_gather(target_list, world_size))
+            metrics.update(pred_nt, target_nt)
             auc.update(pred, target)
             prc.update(pred, target)
             acc.update(pred, target)
-            assert metrics.value()["auroc"] - binary_auroc(pred, target) < self.epsilon
-            assert metrics.value()["auprc"] - binary_auprc(pred, target) < self.epsilon
-            assert metrics.value()["acc"] - binary_accuracy(pred, target) < self.epsilon
+            value, batch = metrics.value(), metrics.batch()
+            assert (pred_nt == metrics._input).all()
+            assert (target_nt == metrics._target).all()
+            assert value["auroc"] - binary_auroc(pred, target) < self.epsilon
+            assert value["auprc"] - binary_auprc(pred, target) < self.epsilon
+            assert value["acc"] - binary_accuracy(pred, target) < self.epsilon
+            pred = torch.cat(self._all_gather(pred_list, world_size))
+            target = torch.cat(self._all_gather(target_list, world_size))
+            assert batch["auroc"] - binary_auroc(pred, target) < self.epsilon
+            assert batch["auprc"] - binary_auprc(pred, target) < self.epsilon
+            assert batch["acc"] - binary_accuracy(pred, target) < self.epsilon
+            # assert (pred == metrics.input[cum_length * rank : cum_length * (rank + 1)]).all()
+            # assert (target == metrics.target[cum_length * rank : cum_length * (rank + 1)]).all()
 
         pred = torch.cat(self._all_gather(preds, world_size))
         target = torch.cat(self._all_gather(targets, world_size))
+        average = metrics.average()
         assert (pred == metrics.inputs).all()
         assert (target == metrics.targets).all()
-        assert metrics.average()["auroc"] - binary_auroc(pred, target) < self.epsilon
-        assert metrics.average()["auprc"] - binary_auprc(pred, target) < self.epsilon
-        assert metrics.average()["acc"] - binary_accuracy(pred, target) < self.epsilon
+        assert average["auroc"] - binary_auroc(pred, target) < self.epsilon
+        assert average["auprc"] - binary_auprc(pred, target) < self.epsilon
+        assert average["acc"] - binary_accuracy(pred, target) < self.epsilon
 
         dist.destroy_process_group()
 
@@ -227,24 +239,28 @@ class Test:
             preds.extend(pred_list)
             targets.extend(target_list)
             pred_nt, target_nt = NestedTensor(pred_list), NestedTensor(target_list)
-            metrics.update(pred_nt, target_nt)
             pred, target = torch.cat(pred_list), torch.cat(target_list)
-            assert metrics.compute()["pearson"] - pearson(pred, target) < self.epsilon
-            assert metrics.compute()["spearman"] - spearman(pred, target) < self.epsilon
-            assert metrics.compute()["rmse"] - rmse(pred, target) < self.epsilon
+            metrics.update(pred_nt, target_nt)
+            value, batch = metrics.value(), metrics.batch()
+            assert (pred_nt == metrics._input).all()
+            assert (target_nt == metrics._target).all()
+            assert value["pearson"] - pearson(pred, target) < self.epsilon
+            assert value["spearman"] - spearman(pred, target) < self.epsilon
+            assert value["rmse"] - rmse(pred, target) < self.epsilon
             pred = torch.cat(self._all_gather(pred_list, world_size))
             target = torch.cat(self._all_gather(target_list, world_size))
-            assert metrics.value()["pearson"] - pearson(pred, target) < self.epsilon
-            assert metrics.value()["spearman"] - spearman(pred, target) < self.epsilon
-            assert metrics.value()["rmse"] - rmse(pred, target) < self.epsilon
+            assert batch["pearson"] - pearson(pred, target) < self.epsilon
+            assert batch["spearman"] - spearman(pred, target) < self.epsilon
+            assert batch["rmse"] - rmse(pred, target) < self.epsilon
 
         pred = torch.cat(self._all_gather(preds, world_size))
         target = torch.cat(self._all_gather(targets, world_size))
+        average = metrics.compute()
         assert (pred == metrics.inputs).all()
         assert (target == metrics.targets).all()
-        assert metrics.average()["pearson"] - pearson(pred, target) < self.epsilon
-        assert metrics.average()["spearman"] - spearman(pred, target) < self.epsilon
-        assert metrics.average()["rmse"] - rmse(pred, target) < self.epsilon
+        assert average["pearson"] - pearson(pred, target) < self.epsilon
+        assert average["spearman"] - spearman(pred, target) < self.epsilon
+        assert average["rmse"] - rmse(pred, target) < self.epsilon
 
         dist.destroy_process_group()
 
@@ -267,24 +283,28 @@ class Test:
             preds.extend(pred_list)
             targets.extend(target_list)
             pred_nt, target_nt = NestedTensor(pred_list), NestedTensor(target_list)
-            metrics.update(pred_nt, target_nt)
             pred, target = torch.cat(pred_list), torch.cat(target_list)
-            assert sum(torch.tensor(metrics.compute()["pearson"]) - pearson(pred, target)) < self.epsilon
-            assert sum(torch.tensor(metrics.compute()["spearman"]) - spearman(pred, target)) < self.epsilon
-            assert metrics.compute()["rmse"] - rmse(pred, target) < self.epsilon
+            metrics.update(pred_nt, target_nt)
+            value, batch = metrics.value(), metrics.batch()
+            assert (pred_nt == metrics._input).all()
+            assert (target_nt == metrics._target).all()
+            assert sum(torch.tensor(value["pearson"]) - pearson(pred, target)) < self.epsilon
+            assert sum(torch.tensor(value["spearman"]) - spearman(pred, target)) < self.epsilon
+            assert value["rmse"] - rmse(pred, target) < self.epsilon
             pred = torch.cat(self._all_gather(pred_list, world_size))
             target = torch.cat(self._all_gather(target_list, world_size))
-            assert sum(torch.tensor(metrics.value()["pearson"]) - pearson(pred, target)) < self.epsilon
-            assert sum(torch.tensor(metrics.value()["spearman"]) - spearman(pred, target)) < self.epsilon
-            assert metrics.value()["rmse"] - rmse(pred, target) < self.epsilon
+            assert sum(torch.tensor(batch["pearson"]) - pearson(pred, target)) < self.epsilon
+            assert sum(torch.tensor(batch["spearman"]) - spearman(pred, target)) < self.epsilon
+            assert batch["rmse"] - rmse(pred, target) < self.epsilon
 
         pred = torch.cat(self._all_gather(preds, world_size))
         target = torch.cat(self._all_gather(targets, world_size))
+        average = metrics.average()
         assert (pred == metrics.inputs).all()
         assert (target == metrics.targets).all()
-        assert sum(torch.tensor(metrics.average()["pearson"]) - pearson(pred, target)) < self.epsilon
-        assert sum(torch.tensor(metrics.average()["spearman"]) - spearman(pred, target)) < self.epsilon
-        assert metrics.average()["rmse"] - rmse(pred, target) < self.epsilon
+        assert sum(torch.tensor(average["pearson"]) - pearson(pred, target)) < self.epsilon
+        assert sum(torch.tensor(average["spearman"]) - spearman(pred, target)) < self.epsilon
+        assert average["rmse"] - rmse(pred, target) < self.epsilon
 
         dist.destroy_process_group()
 
