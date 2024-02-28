@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import Dict
 
 from chanfig import DefaultDict, NestedDict
+from torch import distributed as dist
+
+from .utils import get_world_size
 
 
 class AverageMeter:
@@ -10,8 +13,9 @@ class AverageMeter:
     Computes and stores the average and current value.
 
     Attributes:
-        val: Current value.
-        avg: Average value.
+        val: Results of current batch on current device.
+        bat: Results of current batch on all devices.
+        avg: Results of all results on all devices.
         sum: Sum of values.
         count: Number of values.
 
@@ -35,13 +39,14 @@ class AverageMeter:
         >>> meter.val
         0
         >>> meter.avg
-        0
+        Traceback (most recent call last):
+        ZeroDivisionError: division by zero
     """
 
     val: float = 0
-    avg: float = 0
+    n: float = 1
     sum: float = 0
-    count: int = 0
+    count: float = 0
 
     def __init__(self) -> None:
         self.reset()
@@ -61,15 +66,16 @@ class AverageMeter:
             >>> meter.val
             0
             >>> meter.avg
-            0
+            Traceback (most recent call last):
+            ZeroDivisionError: division by zero
         """
 
         self.val = 0
-        self.avg = 0
+        self.n = 1
         self.sum = 0
         self.count = 0
 
-    def update(self, value, n: int = 1) -> None:
+    def update(self, value, n: float = 1) -> None:
         r"""
         Updates the average and current value in the meter.
 
@@ -96,9 +102,35 @@ class AverageMeter:
         """
 
         self.val = value
+        self.n = n
         self.sum += value * n
         self.count += n
-        self.avg = self.sum / self.count
+
+    def batch(self):
+        world_size = get_world_size()
+        if world_size == 1:
+            return self.val
+        synced_tuple = [None for _ in range(world_size)]
+        dist.all_gather_object(synced_tuple, (self.val * self.n, self.n))
+        val, n = zip(*synced_tuple)
+        return sum(val) / sum(n)
+
+    def average(self):
+        world_size = get_world_size()
+        if world_size == 1:
+            return self.sum / self.count
+        synced_tuple = [None for _ in range(world_size)]
+        dist.all_gather_object(synced_tuple, (self.sum, self.count))
+        val, n = zip(*synced_tuple)
+        return sum(val) / sum(n)
+
+    @property
+    def bat(self):
+        return self.batch()
+
+    @property
+    def avg(self):
+        return self.average()
 
     def __format__(self, format_spec) -> str:
         return f"{self.val.__format__(format_spec)} ({self.avg.__format__(format_spec)})"
@@ -143,9 +175,8 @@ class AverageMeters(DefaultDict):
           ('loss'): 0
         )
         >>> meters.avg
-        NestedDict(
-          ('loss'): 0
-        )
+        Traceback (most recent call last):
+        ZeroDivisionError: division by zero
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -183,7 +214,8 @@ class AverageMeters(DefaultDict):
             >>> meters.loss.val
             0
             >>> meters.loss.avg
-            0
+            Traceback (most recent call last):
+            ZeroDivisionError: division by zero
         """
 
         for meter in self.values():

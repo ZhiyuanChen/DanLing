@@ -13,25 +13,12 @@ from torcheval.metrics import Metric
 
 from danling.tensors import NestedTensor
 
+from .utils import flist, get_world_size
+
 try:
     from typing import Self  # type: ignore[attr-defined]
 except ImportError:
     from typing_extensions import Self
-
-
-def get_world_size() -> int:
-    r"""Return the number of processes in the current process group."""
-    if dist.is_available() and dist.is_initialized():
-        return dist.get_world_size()
-    return 1
-
-
-class flist(list):
-    def to(self, *args, **kwargs):
-        return flist(i.to(*args, **kwargs) for i in self)
-
-    def __format__(self, *args, **kwargs):
-        return " ".join([x.__format__(*args, **kwargs) for x in self])
 
 
 class Metrics(Metric):
