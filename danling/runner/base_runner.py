@@ -150,7 +150,8 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     timestamp: str
 
     _mode: RunnerMode
-    state: RunnerState
+    _state: RunnerState
+    inited: bool = False
 
     model: Callable | None = None
     criterion: Callable | None = None
@@ -177,11 +178,12 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             self.dataloaders = FlatDict()
         if "results" not in self.__dict__:
             self.results = NestedDict()
-        self._mode = RunnerMode.train  # type: ignore[assignment]
         self.meters = AverageMeters()
         self.metrics = None
-        # must init state at last to avoid conflict names
-        self.state = RunnerState(config)
+        self._mode = RunnerMode.train  # type: ignore[assignment]
+        # must init state at last to avoid name conflicts
+        self._state = RunnerState(config)
+        self.inited = True
         self.init_distributed()
         if self.state.seed is not None:
             self.set_seed()
@@ -193,9 +195,6 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         if self.state.tensorboard:
             self.init_tensorboard()
 
-    def __post_init__(self, *args, **kwargs) -> None:
-        pass
-
     @property
     def mode(self) -> RunnerMode:
         return self._mode
@@ -205,6 +204,10 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         if isinstance(mode, str):
             mode = RunnerMode(mode)
         self._mode = mode
+
+    @property
+    def state(self) -> RunnerState:
+        return self._state
 
     @cached_property
     def batch_size(self) -> int:
@@ -225,7 +228,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         if self.dataloaders:
             loader = self.dataloaders["train"] if "train" in self.dataloaders else next(iter(self.dataloaders.values()))
             return loader.batch_size
-        raise AttributeError("batch_size could not be inferred, since no dataloader found.")
+        raise AttributeError("batch_size could not be inferred, since no dataloader found")
 
     @property
     def batch_size_equivalent(self) -> int:
@@ -611,8 +614,8 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     #     return super().__getattribute__(name)
 
     def __getattr__(self, name) -> Any:
-        if "state" in self:
-            if name in self.state:
+        if self.inited:
+            if name in self._state:
                 return self.state[name]
             if name in dir(self.state):
                 return getattr(self.state, name)
@@ -631,7 +634,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             else:
                 object.__setattr__(self, name, value)
             return
-        if "state" in self:
+        if self.inited:
             if name in self.state:
                 if isinstance(self.state[name], Variable):
                     self.state[name].set(value)
@@ -682,7 +685,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         """
 
         if action and action not in ("warn", "raise", "ignore"):
-            raise ValueError(f"Directory `{self.dir}`")
+            raise ValueError(f"action should be one of warn, raise or ignore, but got {action}")
         if os.listdir(self.dir):
             if action == "warn":
                 warn(
@@ -1005,13 +1008,13 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
                 )
             if isinstance(checkpoint, (bytes, str, os.PathLike)):
                 if not os.path.exists(checkpoint):
-                    raise FileNotFoundError(f"checkpoint is set to {checkpoint!r} but does not exist.")
+                    raise FileNotFoundError(f"checkpoint is set to {checkpoint!r} but does not exist")
                 self.state.checkpoint = checkpoint
                 ckpt = self.load(checkpoint, *args, **kwargs)
             elif isinstance(checkpoint, Mapping):
                 ckpt = checkpoint
             else:
-                raise ValueError(f"pretrained is set to {checkpoint!r} but is not a valid checkpoint.")
+                raise ValueError(f"pretrained is set to {checkpoint!r} but is not a valid checkpoint")
         elif auto_resume:
             checkpoint = os.path.join(self.checkpoint_dir, "latest.pth")
             if os.path.exists(checkpoint):
@@ -1055,7 +1058,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         elif isinstance(checkpoint, Mapping):
             ckpt = checkpoint
         else:
-            raise ValueError(f"checkpoint is set to {checkpoint} but is not a valid checkpoint.")
+            raise ValueError(f"checkpoint is set to {checkpoint} but is not a valid checkpoint")
         runner = cls(**ckpt["runner"])
         runner.load_checkpoint(ckpt, override_state=False)
         return runner
@@ -1085,16 +1088,17 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             raise ValueError("pretrained is not specified")
         if isinstance(checkpoint, (bytes, str, os.PathLike)):
             if not os.path.exists(checkpoint):
-                raise FileNotFoundError(f"pretrained is set to {checkpoint!r} but does not exist.")
+                raise FileNotFoundError(f"pretrained is set to {checkpoint!r} but does not exist")
             ckpt = self.load(checkpoint, *args, **kwargs)
         elif isinstance(checkpoint, Mapping):
             ckpt = checkpoint
         else:
-            raise ValueError(f"pretrained is set to {checkpoint!r} but is not a valid checkpoint.")
-        ckpt = ckpt.get("model", ckpt)
-        ckpt = ckpt.get("state_dict", ckpt)
-        model = self.unwrap_model(self.model)
-        model.load_state_dict(ckpt)
+            raise ValueError(f"pretrained is set to {checkpoint!r} but is not a valid checkpoint")
+        if self.model is not None and "model" in ckpt:
+            model = self.unwrap_model(self.model)
+            model.load_state_dict(ckpt["model"])
+        else:
+            raise ValueError(f"Unable to find model weights in {checkpoint!r}")
 
     def append_result(self, result: NestedDict, index: int | None = None) -> None:
         r"""
