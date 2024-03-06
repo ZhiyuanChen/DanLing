@@ -89,6 +89,7 @@ class Test:
         b /= 1 / i
         assert torch.sum(a - b) < self.epsilon
 
+    @pytest.mark.skipif(torch.__version__ < "1.12", reason="requires PyTorch 1.12 or higher")
     @pytest.mark.parametrize(
         "i",
         [

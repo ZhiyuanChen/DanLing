@@ -37,11 +37,11 @@ class PNTensor(Tensor):
 
         Examples:
             >>> tensor = torch.tensor([1, 2, 3])
-            >>> pn_tensor = PNTensor(tensor)
-            >>> (tensor == pn_tensor).all()
-            PNTensor(True)
-            >>> (tensor == pn_tensor.tensor).all()
-            PNTensor(True)
+            >>> pn_tensor = PNTensor([1, 2, 3])
+            >>> bool((tensor == pn_tensor).all())
+            True
+            >>> bool((tensor == pn_tensor.tensor).all())
+            True
         """
 
         return self
@@ -56,9 +56,9 @@ class PNTensor(Tensor):
 
         Examples:
             >>> tensor = torch.tensor([1, 2, 3])
-            >>> pn_tensor = PNTensor(tensor)
-            >>> (pn_tensor.mask == torch.ones_like(pn_tensor)).all()
-            PNTensor(True)
+            >>> pn_tensor = PNTensor([1, 2, 3])
+            >>> bool((pn_tensor.mask == torch.ones_like(pn_tensor)).all().item())
+            True
         """
 
         return torch.ones_like(self)
