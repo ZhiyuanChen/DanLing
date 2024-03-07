@@ -57,6 +57,13 @@
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/"/>
     </url>
     <url>
+        <loc>https://danling.org/runner/accelerate_runner/</loc>
+        <lastmod>2024-03-07</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/accelerate_runner/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/accelerate_runner/"/>
+    </url>
+    <url>
         <loc>https://danling.org/runner/base_runner/</loc>
         <lastmod>2024-03-07</lastmod>
         <changefreq>daily</changefreq>
@@ -69,13 +76,6 @@
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/state/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/state/"/>
-    </url>
-    <url>
-        <loc>https://danling.org/runner/torch_runner/</loc>
-        <lastmod>2024-03-07</lastmod>
-        <changefreq>daily</changefreq>
-        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/torch_runner/"/>
-        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/torch_runner/"/>
     </url>
     <url>
         <loc>https://danling.org/runner/utils/</loc>
@@ -190,6 +190,13 @@
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/"/>
     </url>
     <url>
+        <loc>https://danling.org/zh/runner/accelerate_runner/</loc>
+        <lastmod>2024-03-07</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/accelerate_runner/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/accelerate_runner/"/>
+    </url>
+    <url>
         <loc>https://danling.org/zh/runner/base_runner/</loc>
         <lastmod>2024-03-07</lastmod>
         <changefreq>daily</changefreq>
@@ -202,13 +209,6 @@
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/state/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/state/"/>
-    </url>
-    <url>
-        <loc>https://danling.org/zh/runner/torch_runner/</loc>
-        <lastmod>2024-03-07</lastmod>
-        <changefreq>daily</changefreq>
-        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/torch_runner/"/>
-        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/torch_runner/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/runner/utils/</loc>
