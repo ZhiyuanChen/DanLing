@@ -70,7 +70,8 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             Initialised to `FlatDict` by default.
         dataloaders (FlatDict): All dataloaders, should be in the form of ``{subset: dataloader}``.
             Initialised to `FlatDict` by default.
-        batch_size (int, property): Number of samples per batch in train dataloader or the first dataloader.
+        split (str): Current running split.
+        batch_size (int, property): Number of samples per batch in current running split.
         batch_size_equivalent (int, property): Total batch_size (`batch_size * world_size * accum_steps`).
 
     `datasets`, `datasamplers`, `dataloaders` should be a dict with the same keys.
@@ -161,6 +162,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     datasets: FlatDict
     datasamplers: FlatDict
     dataloaders: FlatDict
+    split: str
 
     results: NestedDict
     meters: AverageMeters
@@ -195,508 +197,12 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         if self.state.tensorboard:
             self.init_tensorboard()
 
-    @property
-    def mode(self) -> RunnerMode:
-        return self._mode
-
-    @mode.setter
-    def mode(self, mode: str | RunnerMode) -> None:
-        if isinstance(mode, str):
-            mode = RunnerMode(mode)
-        self._mode = mode
-
-    @property
-    def state(self) -> RunnerState:
-        return self._state
-
-    @cached_property
-    def batch_size(self) -> int:
-        r"""
-        Batch size.
-
-        Notes:
-            If `train` is in `dataloaders`, then `batch_size` is the batch size of `train`.
-            Otherwise, `batch_size` is the batch size of the first dataloader.
-
-        Returns:
-            (int):
-        """
-
-        batch_size = self.state.get("dataloader.batch_size")
-        if batch_size:
-            return batch_size
-        if self.dataloaders:
-            loader = self.dataloaders["train"] if "train" in self.dataloaders else next(iter(self.dataloaders.values()))
-            return loader.batch_size
-        raise AttributeError("batch_size could not be inferred, since no dataloader found")
-
-    @property
-    def batch_size_equivalent(self) -> int:
-        r"""
-        Actual batch size.
-
-        Returns:
-            (int): `batch_size` * `world_size` * `accum_steps`
-        """
-
-        return self.batch_size * self.world_size * self.accum_steps
-
-    @cached_property
-    def total_epochs(self) -> int:
-        if self.state.epoch_end:
-            return self.state.epoch_end - self.state.epoch_begin
-        raise ValueError("epoch_end is not specified")
-
-    @cached_property
-    def total_steps(self) -> int:
-        if self.state.step_end:
-            return self.state.step_end - self.state.step_begin
-        dataset = self.datasets.get("train", next(iter(self.datasets.values())))
-        return self.total_epochs * ceil(len(dataset) / self.batch_size)
-
-    @cached_property
-    def accum_steps(self) -> int:
-        r"""
-        Accumulated steps.
-
-        Returns:
-            (int):
-        """
-
-        return self.state.get("accum_steps", 1)
-
     def init_distributed(self) -> None:
         r"""
         Initialise distributed running environment.
         """
 
         raise NotImplementedError
-
-    @property
-    def device(self) -> Any:
-        r"""
-        Device of runner.
-        """
-
-        return "cpu"
-
-    @property
-    def world_size(self) -> int:
-        r"""
-        Number of processes.
-        """
-
-        return 1
-
-    @property
-    def rank(self) -> int:
-        r"""
-        Process index of all processes.
-        """
-
-        return 0
-
-    @property
-    def local_rank(self) -> int:
-        r"""
-        Process index of local processes.
-        """
-
-        return 0
-
-    @property
-    def distributed(self) -> bool:
-        r"""
-        If runner is running in distributed mode.
-        """
-
-        return self.world_size > 1
-
-    @property
-    def is_main_process(self) -> bool:
-        r"""
-        If current process is the main process of all processes.
-        """
-
-        return self.rank == 0
-
-    @property
-    def is_local_main_process(self) -> bool:
-        r"""
-        If current process is the main process of local processes.
-        """
-
-        return self.local_rank == 0
-
-    @catch
-    def save(self, obj: Any, file: PathStr, main_process_only: bool = True, *args, **kwargs) -> File:
-        r"""
-        Save any file with supported extensions.
-
-        `Runner.save` internally calls `dl.save`,
-        but with additional arguments to allow it save only on the main process.
-        Moreover, any error raised by `Runner.save` will be caught and logged.
-        """
-
-        if main_process_only and self.is_main_process or not main_process_only:
-            return save(obj, file, *args, **kwargs)
-        return file
-
-    @staticmethod
-    def load(file: PathStr, *args, **kwargs) -> Any:
-        r"""
-        Load any file with supported extensions.
-
-        `Runner.load` is identical to `dl.load`.
-        """
-
-        return load(file, *args, **kwargs)
-
-    def dict(self, cls: Callable = dict) -> Mapping:
-        r"""
-        Convert state to Mapping.
-
-        Args:
-            cls: Target `clc to convert to.
-        """
-
-        return self.state.dict(cls)
-
-    @catch
-    def json(self, file: File, main_process_only: bool = True, *args, **kwargs) -> None:  # pylint: disable=R1710
-        r"""
-        Dump Runner State to json file.
-        """
-
-        if main_process_only and self.is_main_process or not main_process_only:
-            return self.state.json(file, *args, **kwargs)
-
-    @classmethod
-    def from_json(cls, file: File, *args, **kwargs) -> BaseRunner:
-        r"""
-        Construct Runner from json file.
-
-        This function calls `self.from_jsons()` to construct object from json string.
-        You may overwrite `from_jsons` in case something is not json serializable.
-        """
-
-        with FlatDict.open(file) as fp:
-            return cls.from_jsons(fp.read(), *args, **kwargs)
-
-    def jsons(self, *args, **kwargs) -> str:
-        r"""
-        Dump Runner State to json string.
-        """
-
-        return self.state.jsons(*args, **kwargs)
-
-    @classmethod
-    def from_jsons(cls, string: str, *args, **kwargs) -> BaseRunner:
-        r"""
-        Construct Runner from json string.
-        """
-
-        return cls(Config.from_jsons(string, *args, **kwargs))
-
-    @catch
-    def yaml(self, file: File, main_process_only: bool = True, *args, **kwargs) -> None:  # pylint: disable=R1710
-        r"""
-        Dump Runner State to yaml file.
-        """
-
-        if main_process_only and self.is_main_process or not main_process_only:
-            return self.state.yaml(file, *args, **kwargs)
-
-    @classmethod
-    def from_yaml(cls, file: File, *args, **kwargs) -> BaseRunner:
-        r"""
-        Construct Runner from yaml file.
-
-        This function calls `self.from_yamls()` to construct object from yaml string.
-        You may overwrite `from_yamls` in case something is not yaml serializable.
-        """
-
-        with FlatDict.open(file) as fp:
-            return cls.from_yamls(fp.read(), *args, **kwargs)
-
-    def yamls(self, *args, **kwargs) -> str:
-        r"""
-        Dump Runner State to yaml string.
-        """
-
-        return self.state.yamls(*args, **kwargs)
-
-    @classmethod
-    def from_yamls(cls, string: str, *args, **kwargs) -> BaseRunner:
-        r"""
-        Construct Runner from yaml string.
-        """
-
-        return cls(Config.from_yamls(string, *args, **kwargs))
-
-    @property
-    def progress(self) -> float:
-        r"""
-        Training Progress.
-
-        Returns:
-            (float):
-
-        Raises:
-            RuntimeError: If no terminal is defined.
-        """
-
-        return self.steps / self.total_steps
-
-    @property
-    def best_fn(self) -> Callable:
-        r"""
-        Function to determine the best score from a list of scores.
-
-        By default, the `best_fn` returns `min` if `self.state.score_name` is `loss`,
-        otherwise, returns `max`.
-
-        Subclass can override this method to accommodate needs, such as `min`.
-
-        Returns:
-            (callable):
-        """
-
-        return max if self.state.score_name != "loss" else min
-
-    @property
-    def best_index(self) -> int:
-        r"""
-        Find the best index from all scores.
-
-        Returns:
-            (int):
-        """
-
-        if not self.scores:
-            return 0
-        values = list(self.scores.values())
-        return self.best_fn(range(len(values)), key=values.__getitem__)
-
-    @property
-    def latest_result(self) -> NestedDict | None:
-        r"""
-        Latest result.
-        """
-
-        if not self.results:
-            return None
-        latest_index = next(reversed(self.results if PY38_PLUS else list(self.results)))  # type: ignore
-        ret = self.results[latest_index].clone()
-        ret["index"] = latest_index
-        return ret
-
-    @property
-    def best_result(self) -> NestedDict | None:
-        r"""
-        Best result.
-        """
-
-        if not self.results:
-            return None
-        best_index = self.best_index
-        ret = self.results[best_index].clone()
-        ret["index"] = best_index
-        return ret
-
-    @property
-    def scores(self) -> FlatDict | None:
-        r"""
-        All scores.
-
-        Scores are extracted from results by `score_set` and `runner.state.score_name`,
-        following `[r[score_set][self.state.score_name] for r in self.results]`.
-
-        Scores are considered as the index of the performance of the model.
-        It is useful to determine the best model and the best hyper-parameters.
-
-        `score_set` is defined in `self.state.score_set`.
-        If it is not set, `DanLing` will use `val` or `validate` if they appear in the `latest_result`.
-        If `DanLing` still could not find, it will fall back to the second key in the `latest_result`
-        if it contains more that one element, or the first key.
-
-        Note that certain keys are ignored when falling back, they are defined in {IGNORED_SET_NAMES}.
-        """
-
-        if not self.results:
-            return None
-        subsets = [i for i in self.latest_result.keys() if i not in IGNORED_SET_NAMES]  # type: ignore
-        score_set = self.state.get("score_set")
-        if score_set is None and "val" in subsets:
-            score_set = "val"
-        if score_set is None and "validate" in subsets:
-            score_set = "validate"
-        if score_set is None:
-            score_set = subsets[1] if len(subsets) > 1 else subsets[0]
-        return FlatDict({k: v[score_set][self.state.score_name] for k, v in self.results.items()})
-
-    @property
-    def latest_score(self) -> float | None:
-        r"""
-        Latest score.
-        """
-
-        if not self.results:
-            return None
-        if not PY38_PLUS:
-            return next(reversed(list(self.scores.values())))  # type: ignore
-        return next(reversed(self.scores.values()))  # type: ignore
-
-    @property
-    def best_score(self) -> float | None:
-        r"""
-        Best score.
-        """
-
-        if not self.results:
-            return None
-        return self.scores[self.best_index]  # type: ignore
-
-    @property
-    def is_best(self) -> bool:
-        r"""
-        If current epoch is the best epoch.
-        """
-
-        if not self.results:
-            return True
-        try:
-            return abs(self.latest_score - self.best_score) < 1e-7  # type: ignore
-        except TypeError:
-            return True
-
-    @property
-    @ensure_dir
-    def dir(self) -> str:
-        r"""
-        Directory of the run.
-        """
-
-        if "dir" in self.state:
-            return self.state.dir
-        return os.path.join(self.project_root, f"{self.name}-{self.id}", self.timestamp)
-
-    @cached_property
-    def log_path(self) -> str:
-        r"""
-        Path of log file.
-        """
-
-        if "log_path" in self.state:
-            return self.state.log_path
-        return os.path.join(self.dir, "run.log")
-
-    @property
-    @ensure_dir
-    def checkpoint_dir(self) -> str:
-        r"""
-        Directory of checkpoints.
-        """
-
-        if "checkpoint_dir" in self.state:
-            return self.state.checkpoint_dir
-        return os.path.join(self.dir, self.checkpoint_dir_name)
-
-    # def __getattribute__(self, name) -> Any:
-    #     if name in ("__class__", "__dict__"):
-    #         return super().__getattribute__(name)
-    #     if name in self.__dict__:
-    #         return self.__dict__[name]
-    #     if name in dir(self):
-    #         return super().__getattribute__(name)
-    #     if "state" in self and name in self.state:
-    #         return self.state[name]
-    #     return super().__getattribute__(name)
-
-    def __getattr__(self, name) -> Any:
-        if self.inited:
-            if name in self._state:
-                return self.state[name]
-            if name in dir(self.state):
-                return getattr(self.state, name)
-        return super().__getattribute__(name)
-
-    def __setattr__(self, name, value) -> None:
-        if name in self.__dict__:
-            if isinstance(self.__dict__[name], Variable):
-                self.__dict__[name].set(value)
-            else:
-                self.__dict__[name] = value
-            return
-        if name in dir(self):
-            if isinstance(super().__getattribute__(name), Variable):
-                super().__getattribute__(name).set(value)
-            else:
-                object.__setattr__(self, name, value)
-            return
-        if self.inited:
-            if name in self.state:
-                if isinstance(self.state[name], Variable):
-                    self.state[name].set(value)
-                else:
-                    self.state[name] = value
-                return
-            if name in dir(self.state):
-                setattr(self.state, name, value)
-                return
-        object.__setattr__(self, name, value)
-
-    def __contains__(self, name) -> bool:
-        return name in dir(self) or ("state" in self.__dict__ and name in dir(self.state))
-
-    def __repr__(self):
-        lines = []
-        for key, value in self.__dict__.items():
-            value_str = repr(value)
-            value_str = self._add_indent(value_str)
-            lines.append("(" + key + "): " + value_str)
-
-        main_str = self.__class__.__name__ + "("
-        if lines:
-            main_str += "\n  " + "\n  ".join(lines) + "\n"
-
-        main_str += ")"
-        return main_str
-
-    def _add_indent(self, text):
-        lines = text.split("\n")
-        # don't do anything for single-line stuff
-        if len(lines) == 1:
-            return text
-        first = lines.pop(0)
-        # add 2 spaces to each line but the first
-        lines = [(2 * " ") + line for line in lines]
-        lines = "\n".join(lines)
-        lines = first + "\n" + lines
-        return lines
-
-    def check_dir(self, action: str = "warn") -> bool:
-        r"""
-        Check if `self.dir` is not empty.
-
-        Args:
-            action (str): The action to perform if `self.dir` is not empty.
-            Can be one of ("warn", "raise", "ignore"), default is "warn".
-        """
-
-        if action and action not in ("warn", "raise", "ignore"):
-            raise ValueError(f"action should be one of warn, raise or ignore, but got {action}")
-        if os.listdir(self.dir):
-            if action == "warn":
-                warn(
-                    f"Directory `{self.dir}` is not empty",
-                    category=RuntimeWarning,
-                    stacklevel=2,
-                )
-            if action == "raise":
-                raise RuntimeError(f"Directory `{self.dir}` is not empty")
-            return False
-        return True
 
     def init_deepspeed(  # pylint: disable=too-many-branches, too-many-statements
         self, config: Dict = None  # type: ignore
@@ -937,6 +443,135 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         """
 
         return cls(self.state)
+
+    def dict(self, cls: Callable = dict) -> Mapping:
+        r"""
+        Convert state to Mapping.
+
+        Args:
+            cls: Target `clc to convert to.
+        """
+
+        return self.state.dict(cls)
+
+    @catch
+    def save(self, obj: Any, file: PathStr, main_process_only: bool = True, *args, **kwargs) -> File:
+        r"""
+        Save any file with supported extensions.
+
+        `Runner.save` internally calls `dl.save`,
+        but with additional arguments to allow it save only on the main process.
+        Moreover, any error raised by `Runner.save` will be caught and logged.
+        """
+
+        if main_process_only and self.is_main_process or not main_process_only:
+            return save(obj, file, *args, **kwargs)
+        return file
+
+    @staticmethod
+    def load(file: PathStr, *args, **kwargs) -> Any:
+        r"""
+        Load any file with supported extensions.
+
+        `Runner.load` is identical to `dl.load`.
+        """
+
+        return load(file, *args, **kwargs)
+
+    @catch
+    def json(self, file: File, main_process_only: bool = True, *args, **kwargs) -> None:  # pylint: disable=R1710
+        r"""
+        Dump Runner State to json file.
+        """
+
+        if main_process_only and self.is_main_process or not main_process_only:
+            return self.state.json(file, *args, **kwargs)
+
+    @classmethod
+    def from_json(cls, file: File, *args, **kwargs) -> BaseRunner:
+        r"""
+        Construct Runner from json file.
+
+        This function calls `self.from_jsons()` to construct object from json string.
+        You may overwrite `from_jsons` in case something is not json serializable.
+        """
+
+        with FlatDict.open(file) as fp:
+            return cls.from_jsons(fp.read(), *args, **kwargs)
+
+    def jsons(self, *args, **kwargs) -> str:
+        r"""
+        Dump Runner State to json string.
+        """
+
+        return self.state.jsons(*args, **kwargs)
+
+    @classmethod
+    def from_jsons(cls, string: str, *args, **kwargs) -> BaseRunner:
+        r"""
+        Construct Runner from json string.
+        """
+
+        return cls(Config.from_jsons(string, *args, **kwargs))
+
+    @catch
+    def yaml(self, file: File, main_process_only: bool = True, *args, **kwargs) -> None:  # pylint: disable=R1710
+        r"""
+        Dump Runner State to yaml file.
+        """
+
+        if main_process_only and self.is_main_process or not main_process_only:
+            return self.state.yaml(file, *args, **kwargs)
+
+    @classmethod
+    def from_yaml(cls, file: File, *args, **kwargs) -> BaseRunner:
+        r"""
+        Construct Runner from yaml file.
+
+        This function calls `self.from_yamls()` to construct object from yaml string.
+        You may overwrite `from_yamls` in case something is not yaml serializable.
+        """
+
+        with FlatDict.open(file) as fp:
+            return cls.from_yamls(fp.read(), *args, **kwargs)
+
+    def yamls(self, *args, **kwargs) -> str:
+        r"""
+        Dump Runner State to yaml string.
+        """
+
+        return self.state.yamls(*args, **kwargs)
+
+    @classmethod
+    def from_yamls(cls, string: str, *args, **kwargs) -> BaseRunner:
+        r"""
+        Construct Runner from yaml string.
+        """
+
+        return cls(Config.from_yamls(string, *args, **kwargs))
+
+    def check_dir(self, action: str = "warn") -> bool:
+        r"""
+        Check if `self.dir` is not empty.
+
+        Args:
+            action (str): The action to perform if `self.dir` is not empty.
+            Can be one of ("warn", "raise", "ignore"), default is "warn".
+        """
+
+        if action and action not in ("warn", "raise", "ignore"):
+            raise ValueError(f"action should be one of warn, raise or ignore, but got {action}")
+        if os.listdir(self.dir):
+            if action == "warn":
+                warn(
+                    f"Directory `{self.dir}` is not empty",
+                    category=RuntimeWarning,
+                    stacklevel=2,
+                )
+            if action == "raise":
+                raise RuntimeError(f"Directory `{self.dir}` is not empty")
+            return False
+        return True
 
     @catch
     @on_main_process
@@ -1241,3 +876,369 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         """
 
         return uuid5(self.run_uuid, self.id)
+
+    @property
+    def mode(self) -> RunnerMode:
+        return self._mode
+
+    @mode.setter
+    def mode(self, mode: str | RunnerMode) -> None:
+        if isinstance(mode, str):
+            mode = RunnerMode(mode)
+        self._mode = mode
+
+    @property
+    def state(self) -> RunnerState:
+        return self._state
+
+    @property
+    def batch_size(self) -> int:
+        r"""
+        Batch size.
+
+        Notes:
+            If `train` is in `dataloaders`, then `batch_size` is the batch size of `train`.
+            Otherwise, `batch_size` is the batch size of the first dataloader.
+
+        Returns:
+            (int):
+        """
+
+        if self.dataloaders and self.split:
+            return self.dataloaders[self.split].batch_size
+        batch_size = self.state.get("dataloader.batch_size")
+        if batch_size:
+            return batch_size
+        raise AttributeError("batch_size could not be inferred and is not in config")
+
+    @property
+    def batch_size_equivalent(self) -> int:
+        r"""
+        Actual batch size.
+
+        Returns:
+            (int): `batch_size` * `world_size` * `accum_steps`
+        """
+
+        return self.batch_size * self.world_size * self.accum_steps
+
+    @cached_property
+    def total_epochs(self) -> int:
+        if self.state.epoch_end:
+            return self.state.epoch_end - self.state.epoch_begin + 1
+        raise ValueError("epoch_end is not specified")
+
+    @cached_property
+    def total_steps(self) -> int:
+        if self.state.step_end:
+            return self.state.step_end - self.state.step_begin
+        dataset = self.datasets.get("train", next(iter(self.datasets.values())))
+        return self.total_epochs * ceil(len(dataset) / self.batch_size) + 1
+
+    @cached_property
+    def accum_steps(self) -> int:
+        r"""
+        Accumulated steps.
+
+        Returns:
+            (int):
+        """
+
+        return self.state.get("accum_steps", 1)
+
+    @property
+    def progress(self) -> float:
+        r"""
+        Training Progress.
+
+        Returns:
+            (float):
+
+        Raises:
+            RuntimeError: If no terminal is defined.
+        """
+
+        return self.steps / self.total_steps
+
+    @property
+    def device(self) -> Any:
+        r"""
+        Device of runner.
+        """
+
+        return "cpu"
+
+    @property
+    def world_size(self) -> int:
+        r"""
+        Number of processes.
+        """
+
+        return 1
+
+    @property
+    def rank(self) -> int:
+        r"""
+        Process index of all processes.
+        """
+
+        return 0
+
+    @property
+    def local_rank(self) -> int:
+        r"""
+        Process index of local processes.
+        """
+
+        return 0
+
+    @property
+    def distributed(self) -> bool:
+        r"""
+        If runner is running in distributed mode.
+        """
+
+        return self.world_size > 1
+
+    @property
+    def is_main_process(self) -> bool:
+        r"""
+        If current process is the main process of all processes.
+        """
+
+        return self.rank == 0
+
+    @property
+    def is_local_main_process(self) -> bool:
+        r"""
+        If current process is the main process of local processes.
+        """
+
+        return self.local_rank == 0
+
+    @property
+    def best_fn(self) -> Callable:
+        r"""
+        Function to determine the best score from a list of scores.
+
+        By default, the `best_fn` returns `min` if `self.state.score_name` is `loss`,
+        otherwise, returns `max`.
+
+        Subclass can override this method to accommodate needs, such as `min`.
+
+        Returns:
+            (callable):
+        """
+
+        return max if self.state.score_name != "loss" else min
+
+    @property
+    def best_index(self) -> int:
+        r"""
+        Find the best index from all scores.
+
+        Returns:
+            (int):
+        """
+
+        if not self.scores:
+            return 0
+        values = list(self.scores.values())
+        return self.best_fn(range(len(values)), key=values.__getitem__)
+
+    @property
+    def latest_result(self) -> NestedDict | None:
+        r"""
+        Latest result.
+        """
+
+        if not self.results:
+            return None
+        latest_index = next(reversed(self.results if PY38_PLUS else list(self.results)))  # type: ignore
+        ret = self.results[latest_index].clone()
+        ret["index"] = latest_index
+        return ret
+
+    @property
+    def best_result(self) -> NestedDict | None:
+        r"""
+        Best result.
+        """
+
+        if not self.results:
+            return None
+        best_index = self.best_index
+        ret = self.results[best_index].clone()
+        ret["index"] = best_index
+        return ret
+
+    @property
+    def scores(self) -> FlatDict | None:
+        r"""
+        All scores.
+
+        Scores are extracted from results by `score_set` and `runner.state.score_name`,
+        following `[r[score_set][self.state.score_name] for r in self.results]`.
+
+        Scores are considered as the index of the performance of the model.
+        It is useful to determine the best model and the best hyper-parameters.
+
+        `score_set` is defined in `self.state.score_set`.
+        If it is not set, `DanLing` will use `val` or `validate` if they appear in the `latest_result`.
+        If `DanLing` still could not find, it will fall back to the second key in the `latest_result`
+        if it contains more that one element, or the first key.
+
+        Note that certain keys are ignored when falling back, they are defined in {IGNORED_SET_NAMES}.
+        """
+
+        if not self.results:
+            return None
+        subsets = [i for i in self.latest_result.keys() if i not in IGNORED_SET_NAMES]  # type: ignore
+        score_set = self.state.get("score_set")
+        if score_set is None and "val" in subsets:
+            score_set = "val"
+        if score_set is None and "validate" in subsets:
+            score_set = "validate"
+        if score_set is None:
+            score_set = subsets[1] if len(subsets) > 1 else subsets[0]
+        return FlatDict({k: v[score_set][self.state.score_name] for k, v in self.results.items()})
+
+    @property
+    def latest_score(self) -> float | None:
+        r"""
+        Latest score.
+        """
+
+        if not self.results:
+            return None
+        if not PY38_PLUS:
+            return next(reversed(list(self.scores.values())))  # type: ignore
+        return next(reversed(self.scores.values()))  # type: ignore
+
+    @property
+    def best_score(self) -> float | None:
+        r"""
+        Best score.
+        """
+
+        if not self.results:
+            return None
+        return self.scores[self.best_index]  # type: ignore
+
+    @property
+    def is_best(self) -> bool:
+        r"""
+        If current epoch is the best epoch.
+        """
+
+        if not self.results:
+            return True
+        try:
+            return abs(self.latest_score - self.best_score) < 1e-7  # type: ignore
+        except TypeError:
+            return True
+
+    @property
+    @ensure_dir
+    def dir(self) -> str:
+        r"""
+        Directory of the run.
+        """
+
+        if "dir" in self.state:
+            return self.state.dir
+        return os.path.join(self.project_root, f"{self.name}-{self.id}", self.timestamp)
+
+    @cached_property
+    def log_path(self) -> str:
+        r"""
+        Path of log file.
+        """
+
+        if "log_path" in self.state:
+            return self.state.log_path
+        return os.path.join(self.dir, "run.log")
+
+    @property
+    @ensure_dir
+    def checkpoint_dir(self) -> str:
+        r"""
+        Directory of checkpoints.
+        """
+
+        if "checkpoint_dir" in self.state:
+            return self.state.checkpoint_dir
+        return os.path.join(self.dir, self.checkpoint_dir_name)
+
+    # def __getattribute__(self, name) -> Any:
+    #     if name in ("__class__", "__dict__"):
+    #         return super().__getattribute__(name)
+    #     if name in self.__dict__:
+    #         return self.__dict__[name]
+    #     if name in dir(self):
+    #         return super().__getattribute__(name)
+    #     if "state" in self and name in self.state:
+    #         return self.state[name]
+    #     return super().__getattribute__(name)
+
+    def __getattr__(self, name) -> Any:
+        if self.inited:
+            if name in self._state:
+                return self.state[name]
+            if name in dir(self.state):
+                return getattr(self.state, name)
+        return super().__getattribute__(name)
+
+    def __setattr__(self, name, value) -> None:
+        if name in self.__dict__:
+            if isinstance(self.__dict__[name], Variable):
+                self.__dict__[name].set(value)
+            else:
+                self.__dict__[name] = value
+            return
+        if name in dir(self):
+            if isinstance(super().__getattribute__(name), Variable):
+                super().__getattribute__(name).set(value)
+            else:
+                object.__setattr__(self, name, value)
+            return
+        if self.inited:
+            if name in self.state:
+                if isinstance(self.state[name], Variable):
+                    self.state[name].set(value)
+                else:
+                    self.state[name] = value
+                return
+            if name in dir(self.state):
+                setattr(self.state, name, value)
+                return
+        object.__setattr__(self, name, value)
+
+    def __contains__(self, name) -> bool:
+        return name in dir(self) or ("state" in self.__dict__ and name in dir(self.state))
+
+    def __repr__(self):
+        lines = []
+        for key, value in self.__dict__.items():
+            value_str = repr(value)
+            value_str = self._add_indent(value_str)
+            lines.append("(" + key + "): " + value_str)
+
+        main_str = self.__class__.__name__ + "("
+        if lines:
+            main_str += "\n  " + "\n  ".join(lines) + "\n"
+
+        main_str += ")"
+        return main_str
+
+    def _add_indent(self, text):
+        lines = text.split("\n")
+        # don't do anything for single-line stuff
+        if len(lines) == 1:
+            return text
+        first = lines.pop(0)
+        # add 2 spaces to each line but the first
+        lines = [(2 * " ") + line for line in lines]
+        lines = "\n".join(lines)
+        lines = first + "\n" + lines
+        return lines

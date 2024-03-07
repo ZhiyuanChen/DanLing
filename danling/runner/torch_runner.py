@@ -160,6 +160,7 @@ class TorchRunner(BaseRunner):  # pylint: disable=too-many-public-methods
         """
 
         self.mode = "train"  # type: ignore
+        self.split = split
         loader = self.dataloaders[split]
         length = len(loader) - 1
         last_print_iteration = -1
@@ -237,6 +238,7 @@ class TorchRunner(BaseRunner):  # pylint: disable=too-many-public-methods
         """
 
         self.mode = "eval"  # type: ignore
+        self.split = split
         loader = self.dataloaders[split]
         length = len(loader) - 1
         last_print_iteration = -1
