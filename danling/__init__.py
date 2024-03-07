@@ -2,7 +2,7 @@ from danling import metrics, modules, optim, registry, runner, tensors, typing, 
 
 from .metrics import AverageMeter, AverageMeters
 from .registry import GlobalRegistry, Registry
-from .runner import BaseRunner, TorchRunner
+from .runner import AccelerateRunner, BaseRunner, TorchRunner
 from .tensors import NestedTensor, PNTensor
 from .utils import catch, debug, ensure_dir, flexible_decorator, is_json_serializable, load, method_cache, save
 
@@ -16,6 +16,7 @@ __all__ = [
     "utils",
     "typing",
     "BaseRunner",
+    "AccelerateRunner",
     "TorchRunner",
     "Registry",
     "GlobalRegistry",

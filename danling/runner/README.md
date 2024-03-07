@@ -12,7 +12,7 @@ PlatformRunner implements platform-specific features like `step` and `prepare`.
 
 The Runner contains all runtime information that is irrelevant to the checkpoint (e.g. `world_size`, `rank`, etc.). All other information should be saved in `RunnerState`.
 
-Currently, only [`TorchRunner`][danling.runner.TorchRunner] is supported.
+Currently, only [`AccelerateRunner`][danling.runner.AccelerateRunner] is supported.
 
 ### [`BaseRunner`][danling.runner.BaseRunner]
 

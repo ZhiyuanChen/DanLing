@@ -9,4 +9,6 @@ DEFAULT_IGNORED_KEYS_IN_HASH = {
     "index_set",
     "index",
     "timestamp",
+    "auto_resume",
+    "experiment_id",
 }
