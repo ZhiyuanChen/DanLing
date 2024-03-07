@@ -9,9 +9,8 @@ from typing import Any
 from warnings import warn
 
 import torch
-from accelerate import Accelerator
-from accelerate.utils import DeepSpeedPlugin
 from chanfig import NestedDict
+from lazy_imports import try_import
 from torch import distributed as dist
 from torch import nn, optim, utils
 from torch.backends import cudnn
@@ -21,6 +20,10 @@ try:
     from numpy import random as np_random
 except ImportError:
     np_random = None
+
+with try_import() as lazy_import:
+    from accelerate import Accelerator
+    from accelerate.utils import DeepSpeedPlugin
 
 from danling.utils import catch
 
@@ -60,6 +63,7 @@ class AccelerateRunner(BaseRunner):
     scheduler: optim.lr_scheduler._LRScheduler
 
     def __init__(self, *args, **kwargs) -> None:
+        lazy_import.check()
         if len(args) != 1 or kwargs:
             message = (
                 "Passing multiple args & kwargs to build Runner is deprecated and will be removed in DanLing v0.3.\n"
@@ -73,29 +77,6 @@ class AccelerateRunner(BaseRunner):
             self.accelerate = {}
         self.accelerate.update(config.get("accelerate", {}))
         super().__init__(config)
-
-    def __post_init__(self, *args, **kwargs) -> None:
-        self._prepare()
-
-    def _prepare(self):
-        if self.datasets:
-            datasets = {k: d for k, d in self.datasets.items() if k not in self.dataloaders}
-            dataloader_kwargs = self.state.get("dataloader", {})
-            for k, d in datasets.items():
-                shuffle = dataloader_kwargs.shuffle if "shuffle" in dataloader_kwargs else getattr(d, "train", True)
-                self.dataloaders[k] = utils.data.DataLoader(d, shuffle=shuffle, **dataloader_kwargs)
-        objects = [self.model, self.criterion, self.optimizer, self.scheduler]
-        num_objects = len(objects)
-        dataloader_names = []
-        for name, dataloader in self.dataloaders.items():
-            dataloader_names.append(name)
-            objects.append(dataloader)
-        objects = self.prepare(*objects)
-        self.model, self.criterion, self.optimizer, self.scheduler = objects[:num_objects]
-        if len(objects) != len(dataloader_names) + num_objects:
-            raise ValueError("Number of dataloaders does not match.")
-        for name, dataloader in zip(dataloader_names, objects[num_objects:]):
-            self.dataloaders[name] = dataloader
 
     @property
     def deepspeed(self) -> dict | None:

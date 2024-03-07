@@ -9,6 +9,8 @@ from functools import wraps
 from typing import Any
 from warnings import warn
 
+from torch import nn
+
 from danling.utils import base62
 
 try:
@@ -103,3 +105,15 @@ def on_local_main_process(func):
         return None
 
     return wrapper
+
+
+def is_criterion(module: nn.Module):
+    has_parameters = any(p.requires_grad for p in module.parameters())
+    if has_parameters:
+        return False
+
+    forward_params = list(module.forward.__code__.co_varnames)
+    if "input" in forward_params and "target" in forward_params:
+        return True
+
+    return False
