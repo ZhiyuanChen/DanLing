@@ -8,6 +8,7 @@ from time import time
 from typing import Any
 from warnings import warn
 
+# pylint: disable=redefined-builtin
 import torch
 from accelerate import Accelerator
 from accelerate.utils import DeepSpeedPlugin
@@ -25,10 +26,10 @@ except ImportError:
 from danling.utils import catch
 
 from .base_runner import BaseRunner
-from .utils import on_main_process
+from .utils import RunnerMode, on_main_process
 
 
-class AccelerateRunner(BaseRunner):
+class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
     r"""
     Set up everything for running a job.
 
@@ -48,8 +49,6 @@ class AccelerateRunner(BaseRunner):
         accelerator (Accelerator):
         accelerate: Arguments to pass when building accelerator. Defaults to `{}`.
     """
-
-    # pylint: disable=R0902
 
     accelerator: Accelerator
     accelerate: dict
@@ -74,28 +73,20 @@ class AccelerateRunner(BaseRunner):
         self.accelerate.update(config.get("accelerate", {}))
         super().__init__(config)
 
-    def __post_init__(self, *args, **kwargs) -> None:
-        self._prepare()
-
-    def _prepare(self):
+    def __post_init__(self) -> None:
+        self.model, self.criterion, self.optimizer = self.prepare(self.model, self.criterion, self.optimizer)
+        self.scheduler = self.prepare(self.scheduler)
         if self.datasets:
             datasets = {k: d for k, d in self.datasets.items() if k not in self.dataloaders}
-            dataloader_kwargs = self.state.get("dataloader", {})
+            default_kwargs = self.state.get("dataloader", NestedDict)
+            dataloader_kwargs = NestedDict({k: default_kwargs.pop(k) for k in self.datasets if k in default_kwargs})
             for k, d in datasets.items():
-                shuffle = dataloader_kwargs.shuffle if "shuffle" in dataloader_kwargs else getattr(d, "train", True)
-                self.dataloaders[k] = utils.data.DataLoader(d, shuffle=shuffle, **dataloader_kwargs)
-        objects = [self.model, self.criterion, self.optimizer, self.scheduler]
-        num_objects = len(objects)
-        dataloader_names = []
-        for name, dataloader in self.dataloaders.items():
-            dataloader_names.append(name)
-            objects.append(dataloader)
-        objects = self.prepare(*objects)
-        self.model, self.criterion, self.optimizer, self.scheduler = objects[:num_objects]
-        if len(objects) != len(dataloader_names) + num_objects:
-            raise ValueError("Number of dataloaders does not match.")
-        for name, dataloader in zip(dataloader_names, objects[num_objects:]):
-            self.dataloaders[name] = dataloader
+                dataloader_kwargs.setdefault(k, NestedDict())
+                dataloader_kwargs[k].merge(default_kwargs, overwrite=False)
+                dataloader_kwargs[k].setdefault("shuffle", getattr(d, "train", True))
+                dataloader_kwargs[k].setdefault("drop_last", not getattr(d, "train", True))
+                self.dataloaders[k] = self.prepare(utils.data.DataLoader(d, **dataloader_kwargs[k]))
+            default_kwargs.update(dataloader_kwargs)
 
     @property
     def deepspeed(self) -> dict | None:
@@ -141,12 +132,12 @@ class AccelerateRunner(BaseRunner):
             print(self.format_epoch_result(result))
             self.save_result()
             self.save_checkpoint()
-            """@nni.report_intermediate_result(self.latest_score)"""  # pylint: disable=W0105
+            """@nni.report_intermediate_result(self.latest_score)"""
             early_stop_counter = 0 if self.is_best else early_stop_counter + 1
             if early_stop_counter > patience:
                 print("early stop")
                 break
-        """@nni.report_final_result(self.latest_score)"""  # pylint: disable=W0105
+        """@nni.report_final_result(self.latest_score)"""
         return self.results
 
     def train_epoch(self, split: str = "train") -> NestedDict:
@@ -160,10 +151,11 @@ class AccelerateRunner(BaseRunner):
             NestedDict: train result
         """
 
-        # pylint: disable=E1101, E1102, W0622
         self.mode = "train"  # type: ignore
+        self.split = split
         loader = self.dataloaders[split]
         length = len(loader) - 1
+        last_print_iteration = -1
         self.meters.reset()
         if self.metrics is not None:
             self.metrics.reset()
@@ -183,14 +175,18 @@ class AccelerateRunner(BaseRunner):
                     self.metrics.update(pred, target)
                 self.step(loss)
 
-            if self.print_interval > 0 and iteration % self.print_interval == 0:
+            if self.print_interval > 0 and (
+                iteration > 0 and iteration % self.print_interval == 0 or iteration == length
+            ):
+                interval = iteration - last_print_iteration
                 if self.device == torch.device("cuda"):
                     torch.cuda.synchronize()
-                self.meters.time.update((time() - batch_time) / self.print_interval)
+                self.meters.time.update((time() - batch_time) / interval)
                 batch_time = time()
                 reduced_loss = self.reduce(loss).item()
                 self.meters.loss.update(reduced_loss)
                 self.step_log(split, iteration, length)
+                last_print_iteration = iteration
 
         result = self.meters.avg
         if self.metrics is not None:
@@ -233,10 +229,11 @@ class AccelerateRunner(BaseRunner):
             NestedDict: evaluation result
         """
 
-        # pylint: disable=E1101, E1102, W0622
         self.mode = "eval"  # type: ignore
+        self.split = split
         loader = self.dataloaders[split]
         length = len(loader) - 1
+        last_print_iteration = -1
         self.meters.reset()
         if self.metrics is not None:
             self.metrics.reset()
@@ -250,14 +247,18 @@ class AccelerateRunner(BaseRunner):
             if self.metrics is not None:
                 self.metrics.update(pred, target)
 
-            if self.print_interval > 0 and iteration % self.print_interval == 0:
+            if self.print_interval > 0 and (
+                iteration > 0 and iteration % self.print_interval == 0 or iteration == length
+            ):
+                interval = iteration - last_print_iteration
                 if self.device == torch.device("cuda"):
                     torch.cuda.synchronize()
-                self.meters.time.update((time() - batch_time) / self.print_interval)
+                self.meters.time.update((time() - batch_time) / interval)
                 batch_time = time()
                 reduced_loss = self.reduce(loss).item()
                 self.meters.loss.update(reduced_loss)
                 self.step_log(split, iteration, length)
+                last_print_iteration = iteration
 
         result = self.meters.avg
         if self.metrics is not None:
@@ -306,7 +307,7 @@ class AccelerateRunner(BaseRunner):
         if self.distributed:
             object_list = [self.id, self.timestamp]
             dist.broadcast_object_list(object_list)
-            self.id, self.timestamp = object_list[0]
+            self.id, self.timestamp = object_list
 
     @on_main_process
     def init_tensorboard(self, *args, **kwargs) -> None:
@@ -320,84 +321,6 @@ class AccelerateRunner(BaseRunner):
 
         self.writer = SummaryWriter(*args, **kwargs)
         self.writer.add_scalar = catch(OSError, verbose=False)(self.writer.add_scalar)
-
-    def init_deepspeed(self, config: dict = None) -> dict:  # type: ignore # pylint: disable=R0912,R0915
-        r"""
-        Preprocess DeepSpeed config.
-        """
-
-        if config is None:
-            config = self.state.get("deepspeed")
-        if config is None:
-            return {}
-        if isinstance(config, str):
-            config = NestedDict.load(config)
-        if config.get("steps_per_print", "auto") == "auto":
-            config["steps_per_print"] = self.print_interval
-        if config.get("train_micro_batch_size_per_gpu", "auto") == "auto":
-            config["train_micro_batch_size_per_gpu"] = self.batch_size
-        if "amp" in config:
-            amp = config["amp"]
-            if amp.get("enabled", "auto") == "auto":
-                amp["enabled"] = "true"
-            if amp.get("opt_level", "auto") == "auto":
-                amp["opt_level"] = "O1"
-        if "zero_optimization" in config:
-            zero = config["zero_optimization"]
-            if zero.get("allgather_bucket_size") == "auto":
-                zero["allgather_bucket_size"] = 1e6
-            if zero.get("reduce_bucket_size") == "auto":
-                zero["reduce_bucket_size"] = 1e6
-            if zero.get("stage3_max_live_parameters") == "auto":
-                zero["stage3_max_live_parameters"] = 1e8
-            if zero.get("stage3_max_live_gradients") == "auto":
-                zero["stage3_max_live_gradients"] = 1e8
-            if zero.get("stage3_max_reuse_distance") == "auto":
-                zero["stage3_max_reuse_distance"] = 1e8
-            if zero.get("stage3_prefetch_bucket_size") == "auto":
-                zero["stage3_prefetch_bucket_size"] = 1e6
-            if zero.get("stage3_param_persistence_threshold") == "auto":
-                zero["stage3_param_persistence_threshold"] = 1e8
-            if "amp" in config:
-                if "fp16" not in config:
-                    config["fp16"] = {}
-                if config["fp16"].get("enabled", "auto"):
-                    config["fp16"]["enabled"] = config["amp"]["enabled"]
-                warn(
-                    f"AMP is not compatible with ZeRO. Automatically set 'fp16' to {config['amp']['enabled']}",
-                    stacklevel=2,
-                )
-                del config["amp"]
-        if "optimizer" in config:
-            if "params" not in config["optimizer"]:
-                config["optimizer"]["params"] = {}
-            optimizer = config["optimizer"]["params"]
-            if optimizer.get("lr", "auto") == "auto":
-                optimizer["lr"] = self.state.get("optim.lr", 1e-3)
-            if optimizer.get("weight_decay", "auto") == "auto":
-                optimizer["weight_decay"] = self.state.get("optim.weight_decay", 1e-2)
-            if optimizer.get("betas") == "auto":
-                optimizer["betas"] = (0.9, 0.999)
-            if optimizer.get("eps") == "auto":
-                optimizer["eps"] = 1e-8
-        if "scheduler" in config:
-            if "params" not in config["scheduler"]:
-                config["scheduler"]["params"] = {}
-            scheduler = config["scheduler"]["params"]
-            if scheduler.get("total_num_steps", "auto") == "auto":
-                scheduler["total_num_steps"] = self.total_steps
-            if scheduler.get("warmup_num_steps", "auto") == "auto":
-                scheduler["warmup_num_steps"] = scheduler["total_num_steps"] // 20
-            if scheduler.get("warmup_max_lr", "auto") == "auto":
-                if self.optimizer:
-                    scheduler["warmup_max_lr"] = self.optimizer.param_groups[0]["lr"]
-                elif "optimizer" in config:
-                    scheduler["warmup_max_lr"] = config["optimizer"]["params"]["lr"]
-                else:
-                    raise ValueError("warmup_max_lr is not defined and cannot be inferred")
-            if scheduler.get("warmup_min_lr", "auto") == "auto":
-                scheduler["warmup_min_lr"] = 1e-7
-        return config
 
     def set_seed(self, seed: int | None = None, bias: int | None = None) -> None:
         r"""
@@ -453,9 +376,9 @@ class AccelerateRunner(BaseRunner):
         self.accelerator.backward(loss)
         if self.sync_gradients:
             if self.state.get("max_grad_value") is not None:
-                self.clip_grad_value_(self.model.parameters(), self.state.get("max_grad_value"))  # type: ignore
+                self.clip_grad_value_(self.model.parameters(), self.state.get("max_grad_value"))
             if self.state.get("max_grad_norm") is not None:
-                self.clip_grad_norm_(self.model.parameters(), self.state.get("max_grad_norm"))  # type: ignore
+                self.clip_grad_norm_(self.model.parameters(), self.state.get("max_grad_norm"))
         if self.optimizer is not None:
             self.optimizer.step()
             if zero_grad:
@@ -532,6 +455,18 @@ class AccelerateRunner(BaseRunner):
         return model
 
     @property
+    def mode(self) -> RunnerMode:
+        return self._mode
+
+    @mode.setter
+    def mode(self, mode: str | RunnerMode) -> None:
+        if isinstance(mode, str):
+            mode = RunnerMode(mode)
+        self._mode = mode
+        if self.model is not None:
+            self.model.train(mode == RunnerMode.train)
+
+    @property
     def batch_size(self) -> int:
         r"""
         Batch size.
@@ -544,7 +479,7 @@ class AccelerateRunner(BaseRunner):
             (int):
         """
 
-        batch_size = self.state.get("batch_size")
+        batch_size = self.state.get("dataloader.batch_size")
         if batch_size:
             return batch_size
         if self.dataloaders:
@@ -567,7 +502,7 @@ class AccelerateRunner(BaseRunner):
         return self.accelerator.gradient_accumulation_steps
 
     @property
-    def device(self) -> torch.device:  # pylint: disable=E1101
+    def device(self) -> torch.device:
         r"""
         Device of runner.
         """
