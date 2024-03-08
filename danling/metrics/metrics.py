@@ -118,8 +118,8 @@ class Metrics(Metric):
           ('auroc'): 0.6666666666666666
           ('auprc'): 0.5555555820465088
         )
-        >>> f"{metrics:.4f}"
-        'auroc: 0.6667 (0.6667)\tauprc: 0.5000 (0.5556)'
+        >>> print(f"{metrics:.4f}")
+        auroc: 0.6667 (0.6667)      auprc: 0.5000 (0.5556)
     """
 
     metrics: FlatDict[str, Callable]
@@ -443,12 +443,16 @@ class MultiTaskMetrics(MultiTaskDict):
           ('dataset2'): Metrics('auroc', 'auprc')
         )
         >>> metrics.update({"dataset1.cls": {"input": [0.2, 0.4, 0.5, 0.7], "target": [0, 1, 0, 1]}, "dataset1.reg": {"input": [0.1, 0.4, 0.6, 0.8], "target": [0.2, 0.3, 0.5, 0.7]}, "dataset2": {"input": [0.1, 0.4, 0.6, 0.8], "target": [0, 1, 0, 1]}})
-        >>> f"{metrics:.4f}"
-        'dataset1.cls: auroc: 0.7500 (0.7500)\tauprc: 0.8333 (0.8333)\ndataset1.reg: pearson: 0.9691 (0.9691)\tspearman: 1.0000 (1.0000)\ndataset2: auroc: 0.7500 (0.7500)\tauprc: 0.8333 (0.8333)'
+        >>> print(f"{metrics:.4f}")
+        dataset1.cls: auroc: 0.7500 (0.7500)        auprc: 0.8333 (0.8333)
+        dataset1.reg: pearson: 0.9691 (0.9691)      spearman: 1.0000 (1.0000)
+        dataset2: auroc: 0.7500 (0.7500)   auprc: 0.8333 (0.8333)
         >>> metrics.setattr("return_average", True)
         >>> metrics.update({"dataset1.cls": {"input": [0.1, 0.4, 0.6, 0.8], "target": [0, 0, 1, 0]}, "dataset1.reg": {"input": [0.2, 0.3, 0.5, 0.7], "target": [0.2, 0.4, 0.6, 0.8]}, "dataset2": {"input": [0.2, 0.3, 0.5, 0.7], "target": [0, 0, 1, 0]}})
-        >>> f"{metrics:.4f}"
-        'dataset1.cls: auroc: 0.6667 (0.7000)\tauprc: 0.5000 (0.5556)\ndataset1.reg: pearson: 0.9898 (0.9146)\tspearman: 1.0000 (0.9222)\ndataset2: auroc: 0.6667 (0.7333)\tauprc: 0.5000 (0.7000)'
+        >>> print(f"{metrics:.4f}")
+        dataset1.cls: auroc: 0.7500 (0.7500)        auprc: 0.8333 (0.8333)
+        dataset1.reg: pearson: 0.9691 (0.9691)      spearman: 1.0000 (1.0000)
+        dataset2: auroc: 0.7500 (0.7500)   auprc: 0.8333 (0.8333)
     """  # noqa: E501
 
     def __init__(self, *args, **kwargs):
@@ -471,17 +475,25 @@ class MultiTaskMetrics(MultiTaskDict):
             >>> metrics.dataset1.reg = Metrics(pearson=pearson, spearman=spearman)
             >>> metrics.dataset2 = Metrics(auroc=auroc, auprc=auprc)
             >>> metrics.update({"dataset1.cls": {"input": [0.2, 0.4, 0.5, 0.7], "target": [0, 1, 0, 1]}, "dataset1.reg": {"input": [0.1, 0.4, 0.6, 0.8], "target": [0.2, 0.3, 0.5, 0.7]}})
-            >>> f"{metrics:.4f}"
-            'dataset1.cls: auroc: 0.7500 (0.7500)\tauprc: 0.8333 (0.8333)\ndataset1.reg: pearson: 0.9691 (0.9691)\tspearman: 1.0000 (1.0000)\ndataset2: auroc: nan (nan)\tauprc: nan (nan)'
+            >>> print(f"{metrics:.4f}")
+            dataset1.cls: auroc: 0.7500 (0.7500)        auprc: 0.8333 (0.8333)
+            dataset1.reg: pearson: 0.9691 (0.9691)      spearman: 1.0000 (1.0000)
+            dataset2: auroc: nan (nan)  auprc: nan (nan)
             >>> metrics.update({"dataset2": {"input": [0.1, 0.4, 0.6, 0.8], "target": [0, 1, 0, 1]}})
-            >>> f"{metrics:.4f}"
-            'dataset1.cls: auroc: 0.7500 (0.7500)\tauprc: 0.8333 (0.8333)\ndataset1.reg: pearson: 0.9691 (0.9691)\tspearman: 1.0000 (1.0000)\ndataset2: auroc: 0.7500 (0.7500)\tauprc: 0.8333 (0.8333)'
+            >>> print(f"{metrics:.4f}")
+            dataset1.cls: auroc: 0.7500 (0.7500)        auprc: 0.8333 (0.8333)
+            dataset1.reg: pearson: 0.9691 (0.9691)      spearman: 1.0000 (1.0000)
+            dataset2: auroc: nan (nan)  auprc: nan (nan)
             >>> metrics.update({"dataset1.cls": {"input": [0.1, 0.4, 0.6, 0.8], "target": [0, 0, 1, 0]}})
-            >>> f"{metrics:.4f}"
-            'dataset1.cls: auroc: 0.6667 (0.7000)\tauprc: 0.5000 (0.5556)\ndataset1.reg: pearson: 0.9691 (0.9691)\tspearman: 1.0000 (1.0000)\ndataset2: auroc: 0.7500 (0.7500)\tauprc: 0.8333 (0.8333)'
+            >>> print(f"{metrics:.4f}")
+            dataset1.cls: auroc: 0.7500 (0.7500)        auprc: 0.8333 (0.8333)
+            dataset1.reg: pearson: 0.9691 (0.9691)      spearman: 1.0000 (1.0000)
+            dataset2: auroc: nan (nan)  auprc: nan (nan)
             >>> metrics.update({"dataset1.reg": {"input": [0.2, 0.3, 0.5, 0.7], "target": [0.2, 0.4, 0.6, 0.8]}})
-            >>> f"{metrics:.4f}"
-            'dataset1.cls: auroc: 0.6667 (0.7000)\tauprc: 0.5000 (0.5556)\ndataset1.reg: pearson: 0.9898 (0.9146)\tspearman: 1.0000 (0.9222)\ndataset2: auroc: 0.7500 (0.7500)\tauprc: 0.8333 (0.8333)'
+            >>> print(f"{metrics:.4f}")
+            dataset1.cls: auroc: 0.7500 (0.7500)        auprc: 0.8333 (0.8333)
+            dataset1.reg: pearson: 0.9691 (0.9691)      spearman: 1.0000 (1.0000)
+            dataset2: auroc: nan (nan)  auprc: nan (nan)
             >>> metrics.update({"dataset1": {"cls": {"input": [0.1, 0.4, 0.6, 0.8]}}})
             Traceback (most recent call last):
             ValueError: Expected values to be a flat dictionary, but got <class 'dict'>
