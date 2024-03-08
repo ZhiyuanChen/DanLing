@@ -1,5 +1,5 @@
 import torchvision
-from chanfig import Config, Registry
+from chanfig import Registry
 from torch import nn, optim
 
 import danling as dl
@@ -9,30 +9,33 @@ OPTIMIZERS.register(optim.AdamW, "adamw")
 OPTIMIZERS.register(optim.SGD, "sgd")
 
 
-class MNISTConfig(Config):
+class MNISTConfig(dl.Config):
+    hmmm: str = "emmm"
+    epoch_end = 2
+    log = False
+    tensorboard = False
+    print_interval = 1000
+    score_set = "val"
+    score_name = "loss"
+    debug = False
+    patience = 1
+
     def __init__(self):
+        super().__init__()
         self.network.name = "resnet18"
-        self.dataset.download = True
-        self.dataset.root = "data"
-        self.dataloader.batch_size = 8
-        self.epoch_end = 2
         self.optim.name = "adamw"
         self.optim.lr = 1e-3
         self.optim.weight_decay = 1e-4
-        self.log = False
-        self.tensorboard = False
-        self.print_interval = 1000
-        self.score_set = "val"
-        self.score_name = "loss"
-        self.debug = False
-        self.patience = 1
+        self.dataset.download = True
+        self.dataset.root = "data"
+        self.dataloader.batch_size = 8
 
     def post(self):
         self.experiment_name = f"{self.network.name}_{self.optim.name}@{self.optim.lr}"
 
 
 class MNISTRunner(dl.TorchRunner):
-    def __init__(self, config: Config):
+    def __init__(self, config: dl.Config):
         super().__init__(config)
 
         self.dataset.transform = torchvision.transforms.Compose(

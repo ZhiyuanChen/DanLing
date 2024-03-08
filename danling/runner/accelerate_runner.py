@@ -3,16 +3,14 @@ from __future__ import annotations
 import os
 import random
 from collections.abc import Callable, Mapping
-from contextlib import suppress
 from time import time
-from typing import Any
 from warnings import warn
 
 # pylint: disable=redefined-builtin
 import torch
 from accelerate import Accelerator
 from accelerate.utils import DeepSpeedPlugin
-from chanfig import NestedDict
+from chanfig import FlatDict, NestedDict
 from torch import distributed as dist
 from torch import nn, optim, utils
 from torch.backends import cudnn
@@ -29,7 +27,7 @@ from .base_runner import BaseRunner
 from .utils import RunnerMode, on_main_process
 
 
-class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
+class AccelerateRunner(BaseRunner, Accelerator):  # pylint: disable=too-many-public-methods
     r"""
     Set up everything for running a job.
 
@@ -43,15 +41,11 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
     In fact, you don't even need to create `dataloaders`, just define
     `datasets` and `AccelerateRunner` will create `dataloaders` for you.
     `AccelerateRunner` will inspect the `train` flag in corresponding dataset to
-    automatically set `shuffle`.
+    set `shuffle` and `drop_last` automatically.
 
     Attributes:
-        accelerator (Accelerator):
         accelerate: Arguments to pass when building accelerator. Defaults to `{}`.
     """
-
-    accelerator: Accelerator
-    accelerate: dict
 
     model: nn.Module
     criterion: nn.Module
@@ -69,31 +63,33 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
         else:
             config = args[0]
         if "accelerate" not in self:  # class attributes
-            self.accelerate = {}
+            self.accelerate = FlatDict()
         self.accelerate.update(config.get("accelerate", {}))
-        super().__init__(config)
+        BaseRunner.__init__(self, config)
+        Accelerator.__init__(self)
 
     def __post_init__(self) -> None:
+        super().__post_init__()
         self.model, self.criterion, self.optimizer = self.prepare(self.model, self.criterion, self.optimizer)
         self.scheduler = self.prepare(self.scheduler)
         if self.datasets:
             datasets = {k: d for k, d in self.datasets.items() if k not in self.dataloaders}
-            default_kwargs = self.state.get("dataloader", NestedDict)
+            default_kwargs = self.config.get("dataloader", NestedDict)
             dataloader_kwargs = NestedDict({k: default_kwargs.pop(k) for k in self.datasets if k in default_kwargs})
             for k, d in datasets.items():
                 dataloader_kwargs.setdefault(k, NestedDict())
                 dataloader_kwargs[k].merge(default_kwargs, overwrite=False)
                 dataloader_kwargs[k].setdefault("shuffle", getattr(d, "train", True))
                 dataloader_kwargs[k].setdefault("drop_last", not getattr(d, "train", True))
-                self.dataloaders[k] = self.prepare(utils.data.DataLoader(d, **dataloader_kwargs[k]))
+                self.dataloaders[k] = utils.data.DataLoader(d, **dataloader_kwargs[k])
             default_kwargs.update(dataloader_kwargs)
+        for k, d in self.dataloaders.items():
+            self.dataloaders[k] = self.prepare(d)
 
     @property
     def deepspeed(self) -> dict | None:
-        if "accelerator" not in self:
-            raise ValueError("accelerator is not used")
-        if self.accelerator.state.deepspeed_plugin is not None:
-            return self.accelerator.state.deepspeed_plugin.deepspeed_config
+        if self.state.deepspeed_plugin is not None:
+            return self.state.deepspeed_plugin.deepspeed_config
         return None
 
     def train(self, train_splits: list[str] | None = None, eval_splits: list[str] | None = None) -> NestedDict:
@@ -115,13 +111,13 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
             train_splits = ["train"]
         if eval_splits is None:
             eval_splits = [s for s in self.dataloaders if s not in train_splits]
-        self.state.epoch_begin = self.state.epochs
-        print(f"Begin training from {self.state.epoch_begin} to {self.state.epoch_end}")
+        self.config.epoch_begin = self.config.epochs
+        print(f"Begin training from {self.config.epoch_begin} to {self.config.epoch_end}")
         print(f"Training splits: {train_splits}")
         print(f"Evaluation splits: {eval_splits}")
-        patience = self.state.get("patience", float("inf"))
-        for epochs in range(self.state.epoch_begin, self.state.epoch_end):  # type: ignore
-            self.state.epochs = epochs
+        patience = self.config.get("patience", float("inf"))
+        for epochs in range(self.config.epoch_begin, self.config.epoch_end):  # type: ignore
+            self.config.epochs = epochs
             result = NestedDict()
             result.setattr("convert_mapping", True)
             for split in train_splits:
@@ -166,14 +162,14 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
             loader.sampler.set_epoch(self.epochs)
 
         for iteration, data in enumerate(loader):
-            with self.autocast(), self.accumulate():
+            with self.autocast(), self.accumulate(self.model):
                 input = data["input"] if isinstance(data, Mapping) else data[0]
                 target = data["target"] if isinstance(data, Mapping) else data[1]
                 pred = self.model(**input) if isinstance(input, Mapping) else self.model(input)
                 loss = self.criterion(pred, target)
                 if self.metrics is not None:
                     self.metrics.update(pred, target)
-                self.step(loss)
+                self.advance(loss)
 
             if self.print_interval > 0 and (
                 iteration > 0 and iteration % self.print_interval == 0 or iteration == length
@@ -192,6 +188,29 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
         if self.metrics is not None:
             result.merge(self.metrics.avg)
         return result
+
+    def advance(self, loss) -> None:
+        r"""
+        Backward loss and step optimizer & scheduler.
+
+        This method increment `self.config.steps`.
+
+        This method also increment `self.config.iters` when `batch_size` is specified.
+
+        Args:
+            zero_grad: Whether to zero the gradients.
+        """
+
+        self.backward(loss)
+        if self.sync_gradients:
+            if self.config.get("max_grad_value") is not None:
+                self.clip_grad_value_(self.model.parameters(), self.config.get("max_grad_value"))
+            if self.config.get("max_grad_norm") is not None:
+                self.clip_grad_norm_(self.model.parameters(), self.config.get("max_grad_norm"))
+        self.optimizer.step()
+        if self.scheduler is not None:
+            self.scheduler.step()
+        self.optimizer.zero_grad()
 
     def evaluate(self, eval_splits: list[str] | None = None) -> NestedDict:
         r"""
@@ -263,7 +282,7 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
         result = self.meters.avg
         if self.metrics is not None:
             result.merge(self.metrics.avg)
-        self.write_result(result, split, self.state.epochs)
+        self.write_result(result, split, self.config.epochs)
         return result
 
     @torch.inference_mode()
@@ -278,7 +297,6 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
             Tensor: inference outputs
         """
 
-        # pylint: disable=E1102, W0622
         self.mode = "inf"  # type: ignore
         loader = self.dataloaders[split]
         self.meters.reset()
@@ -301,9 +319,8 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
         """
 
         if os.environ.get("ACCELERATE_USE_DEEPSPEED", "false").lower() == "true":
-            deepspeed_config = self.state.get("deepspeed", os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE"))
+            deepspeed_config = self.config.get("deepspeed", os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE"))
             self.accelerate["deepspeed_plugin"] = DeepSpeedPlugin(hf_ds_config=self.init_deepspeed(deepspeed_config))
-        self.accelerator = Accelerator(**self.accelerate)
         if self.distributed:
             object_list = [self.id, self.timestamp]
             dist.broadcast_object_list(object_list)
@@ -328,7 +345,7 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
 
         Args:
             seed: Random seed to set.
-                Defaults to `self.state.seed` (`config.seed`).
+                Defaults to `self.config.seed` (`config.seed`).
 
             bias: Make the seed different for each processes.
                 This is used to ensure the data augmentation are applied differently on every processes.
@@ -336,15 +353,15 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
                 Set to `False` to disable this feature.
         """
 
-        seed = seed or self.state.seed
+        seed = seed or self.config.seed
         if self.distributed:
             object_list = [seed]
             dist.broadcast_object_list(object_list)
             seed = object_list[0]
+        self.config.seed = seed
         bias = bias or self.rank
         if bias:
             seed += bias
-        self.state.seed = seed
         torch.manual_seed(seed)
         torch.cuda.manual_seed(seed)
         if np_random is not None:
@@ -361,37 +378,6 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
         if torch.__version__ >= "1.8.0":
             torch.use_deterministic_algorithms(True)
 
-    def step(self, loss, batch_size: int | None = None, zero_grad: bool = True) -> None:
-        r"""
-        Backward loss and step optimizer & scheduler.
-
-        This method increment `self.state.steps`.
-
-        This method also increment `self.state.iters` when `batch_size` is specified.
-
-        Args:
-            zero_grad: Whether to zero the gradients.
-        """
-
-        self.accelerator.backward(loss)
-        if self.sync_gradients:
-            if self.state.get("max_grad_value") is not None:
-                self.clip_grad_value_(self.model.parameters(), self.state.get("max_grad_value"))
-            if self.state.get("max_grad_norm") is not None:
-                self.clip_grad_norm_(self.model.parameters(), self.state.get("max_grad_norm"))
-        if self.optimizer is not None:
-            self.optimizer.step()
-            if zero_grad:
-                self.optimizer.zero_grad()
-        if self.scheduler is not None:
-            self.scheduler.step()
-        self.state.steps += 1
-        if batch_size is None:
-            batch_size = self.batch_size_equivalent
-        self.state.iters += batch_size
-        # TODO: Support `drop_last = False`
-        # self.state.iters += self.batch_size_equivalent
-
     def state_dict(self, cls: Callable = dict) -> Mapping:
         r"""
         Return dict of all attributes for checkpoint.
@@ -399,60 +385,12 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
 
         if self.model is None:
             raise ValueError("Model must be defined when calling state_dict")
-        model = self.accelerator.unwrap_model(self.model)
         return cls(
-            runner=self.state.dict(),
-            model=model.state_dict(),
+            runner=self.config.dict(),
+            model=self.unwrap_model(self.model).state_dict(),
             optimizer=self.optimizer.state_dict() if self.optimizer else None,
             scheduler=self.scheduler.state_dict() if self.scheduler else None,
         )
-
-    def prepare(self, *args, device_placement: list[bool] | None = None) -> None:
-        r"""
-        Prepare all objects passed in `args` for distributed training and mixed precision,
-        then return them in the same order.
-        """
-
-        return self.accelerator.prepare(*args, device_placement=device_placement)
-
-    def accumulate(self, model: nn.Module | None = None):
-        r"""
-        Context manager that enables gradient accumulate.
-        """
-
-        model = model or self.model
-        return self.accelerator.accumulate(model)
-
-    def autocast(self):
-        r"""
-        Context manager that enables auto-casting for the forward pass (and maybe backward pass).
-        """
-
-        return self.accelerator.autocast()
-
-    def backward(self, loss) -> None:
-        r"""
-        Backward loss to compute gradients.
-        """
-
-        return self.accelerator.backward(loss)
-
-    def unwrap_model(self, model: nn.Module | None = None) -> nn.Module:
-        r"""
-        Unwrap DDP model.
-
-        Args:
-            model (Optional[nn.Module]):
-                Defaults to `self.model`.
-        """
-
-        if model is not None:
-            model = self.model
-        if self.accelerator is not None:
-            return self.accelerator.unwrap_model(model)
-        if self.distributed:
-            return model.module
-        return model
 
     @property
     def mode(self) -> RunnerMode:
@@ -467,47 +405,8 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
             self.model.train(mode == RunnerMode.train)
 
     @property
-    def batch_size(self) -> int:
-        r"""
-        Batch size.
-
-        Notes:
-            If `train` is in `dataloaders`, then `batch_size` is the batch size of `train`.
-            Otherwise, `batch_size` is the batch size of the first dataloader.
-
-        Returns:
-            (int):
-        """
-
-        batch_size = self.state.get("dataloader.batch_size")
-        if batch_size:
-            return batch_size
-        if self.dataloaders:
-            loader = self.dataloaders.get("train", next(iter(self.dataloaders.values())))
-            if loader.batch_size:
-                return loader.batch_size
-            batch_sampler = loader.batch_sampler if loader.batch_sampler is not None else loader.sampler
-            return batch_sampler.batch_size
-        raise AttributeError("batch_size could not be inferred, since no dataloader found.")
-
-    @property
-    def accum_steps(self) -> int:
-        r"""
-        Gradient accumulation steps.
-
-        Returns:
-            (int):
-        """
-
-        return self.accelerator.gradient_accumulation_steps
-
-    @property
-    def device(self) -> torch.device:
-        r"""
-        Device of runner.
-        """
-
-        return self.accelerator.device
+    def steps(self) -> int:
+        return self.step
 
     @property
     def world_size(self) -> int:
@@ -515,7 +414,7 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
         Number of Processes.
         """
 
-        return self.accelerator.num_processes
+        return self.num_processes
 
     @property
     def rank(self) -> int:
@@ -523,7 +422,7 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
         Process index in all processes.
         """
 
-        return self.accelerator.process_index
+        return self.process_index
 
     @property
     def local_rank(self) -> int:
@@ -531,25 +430,4 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
         Process index in local processes.
         """
 
-        return self.accelerator.local_process_index
-
-    def gather(self, tensor) -> torch.Tensor:
-        r"""
-        Gather tensor.
-        """
-
-        return self.accelerator.gather(tensor)
-
-    def reduce(self, tensor, reduction: str = "sum") -> torch.Tensor:
-        r"""
-        Reduce tensor.
-        """
-
-        return self.accelerator.reduce(tensor, reduction=reduction)
-
-    def __getattr__(self, name: str) -> Any:
-        with suppress(AttributeError):
-            return super().__getattr__(name)
-        if "accelerator" in self.__dict__ and hasattr(self.accelerator, name):
-            return getattr(self.accelerator, name)
-        raise super().__getattribute__(name)
+        return self.local_process_index
