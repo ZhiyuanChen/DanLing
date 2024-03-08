@@ -18,6 +18,7 @@ __all__ = [
     "BaseRunner",
     "AccelerateRunner",
     "TorchRunner",
+    "DataLoader",
     "Registry",
     "GlobalRegistry",
     "Metrics",

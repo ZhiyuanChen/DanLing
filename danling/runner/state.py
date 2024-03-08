@@ -8,6 +8,7 @@ from chanfig import NestedDict
 
 from . import defaults
 from .utils import get_git_hash
+from .utils import Precision
 
 
 class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
@@ -38,6 +39,12 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
         seed (int): Defaults to `randint(0, 2**32 - 1)`.
         deterministic (bool): Ensure [deterministic](https://pytorch.org/docs/stable/notes/randomness.html) operations.
             Defaults to `False`.
+
+    Attributes: Precision:
+        precision (str | None): The floating-point precision for computation. Mutually exclusive with `amp`.
+            Defaults to `None`.
+        amp (str | None): The optimisation level of Automatic Mixed Precision. Mutually exclusive with `precision`.
+            Defaults to `None`.
 
     Attributes: Progress:
         iters (int): The number of data samples processed.
@@ -93,6 +100,13 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
 
     seed: int
     deterministic: bool = False
+
+    precision: Precision = Precision.notset
+    amp = None
+    zero = None
+
+    batch_size: int
+    accum_steps: int = 1
 
     iters: int = 0
     steps: int = 0

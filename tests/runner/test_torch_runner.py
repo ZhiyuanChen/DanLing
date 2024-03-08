@@ -16,7 +16,7 @@ class MNISTConfig(Config):
         self.network.name = "resnet18"
         self.dataset.download = True
         self.dataset.root = "data"
-        self.dataloader.batch_size = 8
+        self.batch_size = 8
         self.epoch_end = 2
         self.optim.name = "adamw"
         self.optim.lr = 1e-3

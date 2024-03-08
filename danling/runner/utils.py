@@ -4,12 +4,17 @@ import os
 import sys
 from contextlib import suppress
 from datetime import datetime
+import socket
+from collections.abc import Callable
 from enum import auto
 from functools import wraps
 from typing import Any
 from warnings import warn
 
 from danling.utils import base62
+from torch import nn
+from yaml import add_representer
+from yaml.representer import SafeRepresenter
 
 try:
     from enum import StrEnum  # type: ignore[attr-defined]
@@ -77,7 +82,45 @@ def get_git_hash() -> str | None:
     return None
 
 
-def on_main_process(func):
+class Precision(StrEnum):
+    r"""
+    `Precision` is an enumeration of data precision in running.
+
+    Attributes:
+        notset: Not set.
+        fp64: Double precision floating point.
+        fp32: Single precision floating point.
+        bf16: Brain floating point.
+        fp16: Half precision floating point.
+        fp8: Quarter precision floating point.
+        int8: 8 bit integer.
+    """
+
+    notset = auto()
+    fp64 = auto()
+    fp32 = auto()
+    bf16 = auto()
+    fp16 = auto()
+    fp8 = auto()
+    int8 = auto()
+
+
+class UniqueList(list):
+    elements: set[Any] = set()
+
+    def append(self, item) -> None:
+        if item not in self.elements:
+            self.elements.add(item)
+            super().append(item)
+
+    def add(self, item) -> None:
+        return self.append(item)
+
+    def __contains__(self, item: object) -> bool:
+        return item in self.elements
+
+
+def on_main_process(func: Callable):
     """
     Decorator to run func only on main process.
     """
@@ -91,7 +134,7 @@ def on_main_process(func):
     return wrapper
 
 
-def on_local_main_process(func):
+def on_local_main_process(func: Callable):
     """
     Decorator to run func only on local main process.
     """
@@ -103,3 +146,29 @@ def on_local_main_process(func):
         return None
 
     return wrapper
+
+
+def get_port() -> str:
+    if "MASTER_PORT" in os.environ:
+        return os.environ["MASTER_PORT"]
+    sock = socket.socket()
+    sock.bind(("", 0))
+    os.environ["MASTER_PORT"] = str(sock.getsockname()[1])
+    warn(f"MASTER_PORT is not set. Setting MASTER_PORT to {os.environ['MASTER_PORT']}")
+    return os.environ["MASTER_PORT"]
+
+
+def is_criterion(module: nn.Module):
+    has_parameters = any(p.requires_grad for p in module.parameters())
+    if has_parameters:
+        return False
+
+    forward_params = list(module.forward.__code__.co_varnames)
+    if "input" in forward_params and "target" in forward_params:
+        return True
+
+    return False
+
+
+add_representer(Precision, SafeRepresenter.represent_str)
+SafeRepresenter.add_representer(Precision, SafeRepresenter.represent_str)

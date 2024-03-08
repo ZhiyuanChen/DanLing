@@ -154,10 +154,10 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     _state: RunnerState
     inited: bool = False
 
-    model: Callable | None = None
-    criterion: Callable | None = None
-    optimizer: Any | None = None
-    scheduler: Any | None = None
+    _model: Callable | None = None
+    _criterion: Callable | None = None
+    _optimizer: Any | None = None
+    _scheduler: Any | None = None
 
     datasets: FlatDict
     datasamplers: FlatDict
@@ -171,6 +171,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     writer: Any | None = None
 
     def __init__(self, config: NestedDict) -> None:
+<<<<<<< Updated upstream
         self.timestamp = get_time_str()
         if "datasets" not in self.__dict__:
             self.datasets = FlatDict()
@@ -186,6 +187,18 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         # must init state at last to avoid name conflicts
         self._state = RunnerState(config)
         self.inited = True
+=======
+        self._mode = RunnerMode.train
+        self.datasets = FlatDict()
+        self.datasamplers = FlatDict()
+        self.dataloaders = FlatDict()
+        self.meters = AverageMeters()
+        self.metrics = None
+        # must init state at last to avoid conflict names
+        self.state = RunnerState(config)
+
+    def __post_init__(self, *args, **kwargs) -> None:
+>>>>>>> Stashed changes
         self.init_distributed()
         if self.state.seed is not None:
             self.set_seed()
@@ -193,20 +206,64 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             self.set_deterministic()
         if self.state.log:
             self.init_logging()
-        self.init_print()
         if self.state.tensorboard:
             self.init_tensorboard()
+<<<<<<< Updated upstream
 
     def init_distributed(self) -> None:
         r"""
         Initialise distributed running environment.
         """
+=======
+        self.init_print()
+
+    @property
+    def mode(self) -> RunnerMode:
+        return self._mode
+>>>>>>> Stashed changes
 
         raise NotImplementedError
 
+<<<<<<< Updated upstream
     def init_deepspeed(  # pylint: disable=too-many-branches, too-many-statements
         self, config: Dict = None  # type: ignore
     ) -> Dict:
+=======
+    @property
+    def model(self) -> Any:
+        return self._model
+
+    @model.setter
+    def model(self, model: Any) -> None:
+        self._model = model
+
+    @property
+    def criterion(self) -> Any:
+        return self._criterion
+
+    @criterion.setter
+    def criterion(self, criterion: Any) -> None:
+        self._criterion = criterion
+
+    @property
+    def optimizer(self) -> Any:
+        return self._optimizer
+
+    @optimizer.setter
+    def optimizer(self, optimizer: Any) -> None:
+        self._optimizer = optimizer
+
+    @property
+    def scheduler(self) -> Any:
+        return self._scheduler
+
+    @scheduler.setter
+    def scheduler(self, scheduler: Any) -> None:
+        self._scheduler = scheduler
+
+    @cached_property
+    def batch_size(self) -> int:
+>>>>>>> Stashed changes
         r"""
         Preprocess DeepSpeed config.
         """
@@ -290,6 +347,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         Set up logging.
         """
 
+<<<<<<< Updated upstream
         os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
         # Why is setting up proper logging so !@?#! ugly?
         logging.config.dictConfig(
@@ -326,6 +384,15 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         logging.captureWarnings(True)
         self.logger = logging.getLogger("runner")
         self.logger.flush = lambda: [h.flush() for h in self.logger.handlers]  # type: ignore
+=======
+        batch_size = self.state.get("batch_size")
+        if batch_size:
+            return batch_size
+        if self.dataloaders:
+            loader = self.dataloaders["train"] if "train" in self.dataloaders else next(iter(self.dataloaders.values()))
+            return loader.batch_size
+        raise AttributeError("batch_size could not be inferred, since no dataloader found.")
+>>>>>>> Stashed changes
 
     def init_print(self, process: int = 0) -> None:
         r"""
@@ -336,15 +403,35 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         Args:
             process: The process to `print` on.
 
+<<<<<<< Updated upstream
         Notes
         -----
         If `self.state.log = True`, the default `print` function will be override by `logging.info`.
         """
+=======
+    @cached_property
+    def accum_steps(self) -> int:
+        r"""
+        Gradient accumulation steps.
+
+        Returns:
+            (int):
+        """
+
+        return self.state.get("accum_steps", 1)
+
+    @cached_property
+    def total_epochs(self) -> int:
+        if self.state.epoch_end:
+            return self.state.epoch_end - self.state.epoch_begin
+        raise ValueError("epoch_end is not specified")
+>>>>>>> Stashed changes
 
         logger = logging.getLogger("print")
         logger.flush = lambda: [h.flush for h in logger.handlers]  # type: ignore
         import builtins as __builtin__  # pylint: disable=C0415
 
+<<<<<<< Updated upstream
         builtin_print = __builtin__.print
 
         @catch
@@ -359,6 +446,9 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
 
     @on_main_process
     def init_tensorboard(self, *args, **kwargs) -> None:
+=======
+    def init_distributed(self) -> None:
+>>>>>>> Stashed changes
         r"""
         Set up Tensoraoard SummaryWriter.
         """
@@ -372,15 +462,24 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             seed: Random seed to set.
                 Defaults to `self.state.seed` (`config.seed`).
 
+<<<<<<< Updated upstream
             bias: Make the seed different for each processes.
+=======
+        return int(os.environ.get("WORLD_SIZE", 1))
+>>>>>>> Stashed changes
 
                 This avoids same data augmentation are applied on every processes.
 
+<<<<<<< Updated upstream
                 Defaults to `self.rank`.
+=======
+        return int(os.environ.get("RANK", -1))
+>>>>>>> Stashed changes
 
                 Set to `False` to disable this feature.
         """
 
+<<<<<<< Updated upstream
         seed = seed or self.state.seed
         bias = bias or self.rank
         if bias:
@@ -388,6 +487,9 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         if np_random is not None:
             np_random.seed(seed)
         random.seed(seed)
+=======
+        return int(os.environ.get("LOCAL_RANK", -1))
+>>>>>>> Stashed changes
 
     def set_deterministic(self) -> None:
         r"""
@@ -869,6 +971,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     def id(self):
         return f"{self.experiment_id:.8}{self.run_id:.8}"
 
+<<<<<<< Updated upstream
     @cached_property
     def uuid(self) -> UUID:
         r"""
@@ -893,6 +996,10 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
 
     @property
     def batch_size(self) -> int:
+=======
+    @on_main_process
+    def init_logging(self) -> None:
+>>>>>>> Stashed changes
         r"""
         Batch size.
 
@@ -1170,6 +1277,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             return self.state.checkpoint_dir
         return os.path.join(self.dir, self.checkpoint_dir_name)
 
+<<<<<<< Updated upstream
     # def __getattribute__(self, name) -> Any:
     #     if name in ("__class__", "__dict__"):
     #         return super().__getattribute__(name)
@@ -1180,6 +1288,13 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     #     if "state" in self and name in self.state:
     #         return self.state[name]
     #     return super().__getattribute__(name)
+=======
+    def format_epoch_result(self, result: NestedDict, epochs: int | None = None, epoch_end: int | None = None) -> str:
+        result = NestedDict(result).clone()
+        epochs = epochs or self.state.epochs
+        epoch_end = epoch_end or self.state.epoch_end
+        return "\n".join([f"{k}:\t{self.format_result(v)}" for k, v in result.items()])
+>>>>>>> Stashed changes
 
     def __getattr__(self, name) -> Any:
         if self.inited:
