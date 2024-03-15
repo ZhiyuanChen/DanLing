@@ -183,6 +183,7 @@ class AccelerateRunner(BaseRunner, Accelerator):  # pylint: disable=too-many-pub
                 interval = iteration - last_print_iteration
                 if self.device == torch.device("cuda"):
                     torch.cuda.synchronize()
+                self.meters.lr.update(self.optimizer.param_groups[0]["lr"])
                 self.meters.time.update((time() - batch_time) / interval)
                 batch_time = time()
                 reduced_loss = self.reduce(loss).item()
@@ -190,9 +191,9 @@ class AccelerateRunner(BaseRunner, Accelerator):  # pylint: disable=too-many-pub
                 self.step_log(split, iteration, length)
                 last_print_iteration = iteration
 
-        result = self.meters.avg
+        result = self.meters.average()
         if self.metrics is not None:
-            result.merge(self.metrics.avg)
+            result.merge(self.metrics.average())
         return result
 
     def advance(self, loss) -> None:
@@ -285,9 +286,9 @@ class AccelerateRunner(BaseRunner, Accelerator):  # pylint: disable=too-many-pub
                 self.step_log(split, iteration, length)
                 last_print_iteration = iteration
 
-        result = self.meters.avg
+        result = self.meters.average()
         if self.metrics is not None:
-            result.merge(self.metrics.avg)
+            result.merge(self.metrics.average())
         self.write_result(result, split, self.config.epochs)
         return result
 

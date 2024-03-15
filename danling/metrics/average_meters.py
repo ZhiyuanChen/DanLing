@@ -39,8 +39,7 @@ class AverageMeter:
         >>> meter.val
         0
         >>> meter.avg
-        Traceback (most recent call last):
-        ZeroDivisionError: division by zero
+        nan
     """
 
     val: float = 0
@@ -66,8 +65,7 @@ class AverageMeter:
             >>> meter.val
             0
             >>> meter.avg
-            Traceback (most recent call last):
-            ZeroDivisionError: division by zero
+            nan
         """
 
         self.val = 0
@@ -109,20 +107,26 @@ class AverageMeter:
     def batch(self):
         world_size = get_world_size()
         if world_size == 1:
-            return self.val
+            return self.val / self.n if self.n != 0 else float("nan")
         synced_tuple = [None for _ in range(world_size)]
         dist.all_gather_object(synced_tuple, (self.val * self.n, self.n))
         val, n = zip(*synced_tuple)
-        return sum(val) / sum(n)
+        count = sum(n)
+        if count == 0:
+            return float("nan")
+        return sum(val) / count
 
     def average(self):
         world_size = get_world_size()
         if world_size == 1:
-            return self.sum / self.count
+            return self.sum / self.count if self.count != 0 else float("nan")
         synced_tuple = [None for _ in range(world_size)]
         dist.all_gather_object(synced_tuple, (self.sum, self.count))
         val, n = zip(*synced_tuple)
-        return sum(val) / sum(n)
+        count = sum(n)
+        if count == 0:
+            return float("nan")
+        return sum(val) / count
 
     @property
     def bat(self):
@@ -175,21 +179,32 @@ class AverageMeters(DefaultDict):
           ('loss'): 0
         )
         >>> meters.avg
-        Traceback (most recent call last):
-        ZeroDivisionError: division by zero
+        NestedDict(
+          ('loss'): nan
+        )
     """
 
     def __init__(self, *args, **kwargs) -> None:
         kwargs.setdefault("default_factory", AverageMeter)
         super().__init__(*args, **kwargs)
 
+    def batch(self):
+        return NestedDict({key: meter.batch() for key, meter in self.items()})
+
+    def average(self):
+        return NestedDict({key: meter.average() for key, meter in self.items()})
+
     @property
-    def val(self) -> NestedDict[str, float]:
-        return NestedDict({key: meter.val for key, meter in self.items()})
+    def bat(self) -> NestedDict[str, float]:
+        return NestedDict({key: meter.bat for key, meter in self.items()})
 
     @property
     def avg(self) -> NestedDict[str, float]:
         return NestedDict({key: meter.avg for key, meter in self.items()})
+
+    @property
+    def val(self) -> NestedDict[str, float]:
+        return NestedDict({key: meter.val for key, meter in self.items()})
 
     @property
     def sum(self) -> NestedDict[str, float]:
@@ -214,8 +229,7 @@ class AverageMeters(DefaultDict):
             >>> meters.loss.val
             0
             >>> meters.loss.avg
-            Traceback (most recent call last):
-            ZeroDivisionError: division by zero
+            nan
         """
 
         for meter in self.values():
