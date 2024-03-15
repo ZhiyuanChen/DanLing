@@ -207,7 +207,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
 
         raise NotImplementedError
 
-    def init_deepspeed(  # pylint: disable=too-many-branches, too-many-configments
+    def deepspeed_config(  # pylint: disable=too-many-branches, too-many-configments
         self, config: Dict = None  # type: ignore
     ) -> Dict:
         r"""

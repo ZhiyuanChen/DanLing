@@ -42,9 +42,6 @@ class AccelerateRunner(BaseRunner, Accelerator):  # pylint: disable=too-many-pub
     `datasets` and `AccelerateRunner` will create `dataloaders` for you.
     `AccelerateRunner` will inspect the `train` flag in corresponding dataset to
     set `shuffle` and `drop_last` automatically.
-
-    Attributes:
-        accelerate: Arguments to pass when building accelerator. Defaults to `{}`.
     """
 
     model: nn.Module
@@ -62,11 +59,8 @@ class AccelerateRunner(BaseRunner, Accelerator):  # pylint: disable=too-many-pub
             config = NestedDict(*args, **kwargs)
         else:
             config = args[0]
-        if "accelerate" not in self:  # class attributes
-            self.accelerate = FlatDict()
-        self.accelerate.update(config.get("accelerate", {}))
         BaseRunner.__init__(self, config)
-        Accelerator.__init__(self)
+        Accelerator.__init__(self, **self.accelerate)
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -85,6 +79,18 @@ class AccelerateRunner(BaseRunner, Accelerator):  # pylint: disable=too-many-pub
             default_kwargs.update(dataloader_kwargs)
         for k, d in self.dataloaders.items():
             self.dataloaders[k] = self.prepare(d)
+
+    @property
+    def accelerate(self) -> FlatDict:
+        config = FlatDict()
+        config.mixed_precision = self.config.get("precision", "no")
+        config.dynamo_backend = self.config.get("dynamo", "NO").upper()
+        config.gradient_accumulation_steps = self.config.get("accum_steps", 1)
+        config.project_dir = self.dir
+        if os.environ.get("ACCELERATE_USE_DEEPSPEED", "false").lower() == "true":
+            deepspeed_config = self.config.get("deepspeed", os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE"))
+            config.deepspeed_plugin = DeepSpeedPlugin(hf_ds_config=self.deepspeed_config(deepspeed_config))
+        return config
 
     @property
     def deepspeed(self) -> dict | None:
@@ -318,9 +324,6 @@ class AccelerateRunner(BaseRunner, Accelerator):  # pylint: disable=too-many-pub
         Initialise process group and set up DDP variables.
         """
 
-        if os.environ.get("ACCELERATE_USE_DEEPSPEED", "false").lower() == "true":
-            deepspeed_config = self.config.get("deepspeed", os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE"))
-            self.accelerate["deepspeed_plugin"] = DeepSpeedPlugin(hf_ds_config=self.init_deepspeed(deepspeed_config))
         if self.distributed:
             object_list = [self.id, self.timestamp]
             dist.broadcast_object_list(object_list)
