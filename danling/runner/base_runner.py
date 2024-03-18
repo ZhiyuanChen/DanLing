@@ -217,7 +217,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         if isinstance(config, str):
             config = NestedDict.load(config)
         if config.get("steps_per_print", "auto") == "auto":
-            config["steps_per_print"] = self.print_interval
+            config["steps_per_print"] = self.log_interval
         if config.get("train_micro_batch_size_per_gpu", "auto") == "auto":
             config["train_micro_batch_size_per_gpu"] = self.batch_size
         if "amp" in config:

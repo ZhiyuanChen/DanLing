@@ -9,23 +9,24 @@ OPTIMIZERS.register(optim.AdamW, "adamw")
 OPTIMIZERS.register(optim.SGD, "sgd")
 
 
-class MNISTConfig(Config):
+class MNISTConfig(dl.Config):
+    epoch_end = 2
+    log = False
+    tensorboard = False
+    log_interval = 1000
+    score_set = "val"
+    score_name = "loss"
+    debug = False
+    patience = 1
+
     def __init__(self):
         self.network.name = "resnet18"
         self.dataset.download = True
         self.dataset.root = "data"
         self.dataloader.batch_size = 8
-        self.epoch_end = 2
         self.optim.name = "adamw"
         self.optim.lr = 1e-3
         self.optim.weight_decay = 1e-4
-        self.log = False
-        self.tensorboard = False
-        self.print_interval = 1000
-        self.score_set = "val"
-        self.score_name = "loss"
-        self.debug = False
-        self.patience = 1
 
     def post(self):
         self.experiment_name = f"{self.network.name}_{self.optim.name}@{self.optim.lr}"

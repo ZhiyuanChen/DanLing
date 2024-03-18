@@ -23,7 +23,7 @@ class MNISTConfig(Config):
         self.optim.weight_decay = 1e-4
         self.log = False
         self.tensorboard = False
-        self.print_interval = 1000
+        self.log_interval = 1000
         self.score_set = "val"
         self.score_name = "loss"
 

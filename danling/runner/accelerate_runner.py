@@ -175,9 +175,7 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
                     self.metrics.update(pred, target)
                 self.step(loss)
 
-            if self.print_interval > 0 and (
-                iteration > 0 and iteration % self.print_interval == 0 or iteration == length
-            ):
+            if self.log_interval > 0 and (iteration > 0 and iteration % self.log_interval == 0 or iteration == length):
                 interval = iteration - last_print_iteration
                 if self.device == torch.device("cuda"):
                     torch.cuda.synchronize()
@@ -247,9 +245,7 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
             if self.metrics is not None:
                 self.metrics.update(pred, target)
 
-            if self.print_interval > 0 and (
-                iteration > 0 and iteration % self.print_interval == 0 or iteration == length
-            ):
+            if self.log_interval > 0 and (iteration > 0 and iteration % self.log_interval == 0 or iteration == length):
                 interval = iteration - last_print_iteration
                 if self.device == torch.device("cuda"):
                     torch.cuda.synchronize()
