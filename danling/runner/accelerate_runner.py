@@ -64,6 +64,7 @@ class AccelerateRunner(BaseRunner, Accelerator):  # pylint: disable=too-many-pub
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        self.project_configuration.set_directories(self.dir)
         self.model, self.criterion, self.optimizer = self.prepare(self.model, self.criterion, self.optimizer)
         self.scheduler = self.prepare(self.scheduler)
         if self.datasets:
@@ -86,7 +87,8 @@ class AccelerateRunner(BaseRunner, Accelerator):  # pylint: disable=too-many-pub
         config.mixed_precision = self.config.get("precision", "no")
         config.dynamo_backend = self.config.get("dynamo", "NO").upper()
         config.gradient_accumulation_steps = self.config.get("accum_steps", 1)
-        config.project_dir = self.dir
+        # Must NOT set project_dir here as timestamp is not synced yet
+        # config.project_dir = self.dir
         if os.environ.get("ACCELERATE_USE_DEEPSPEED", "false").lower() == "true":
             deepspeed_config = self.config.get("deepspeed", os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE"))
             config.deepspeed_plugin = DeepSpeedPlugin(hf_ds_config=self.deepspeed_config(deepspeed_config))

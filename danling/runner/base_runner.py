@@ -189,6 +189,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         self.inited = True
 
     def __post_init__(self):
+        self.init_distributed()
         if self.config.seed is not None:
             self.set_seed()
         if self.config.deterministic:
