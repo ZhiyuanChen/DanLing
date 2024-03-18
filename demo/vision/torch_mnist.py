@@ -14,7 +14,7 @@ class MNISTConfig(dl.Config):
     epoch_end = 2
     log = False
     tensorboard = False
-    print_interval = 1000
+    log_interval = 1000
     score_set = "val"
     score_name = "loss"
     debug = False

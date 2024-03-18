@@ -177,9 +177,7 @@ class AccelerateRunner(BaseRunner, Accelerator):  # pylint: disable=too-many-pub
                     self.metrics.update(pred, target)
                 self.advance(loss)
 
-            if self.print_interval > 0 and (
-                iteration > 0 and iteration % self.print_interval == 0 or iteration == length
-            ):
+            if self.log_interval > 0 and (iteration > 0 and iteration % self.log_interval == 0 or iteration == length):
                 interval = iteration - last_print_iteration
                 if self.device == torch.device("cuda"):
                     torch.cuda.synchronize()
@@ -273,9 +271,7 @@ class AccelerateRunner(BaseRunner, Accelerator):  # pylint: disable=too-many-pub
             if self.metrics is not None:
                 self.metrics.update(pred, target)
 
-            if self.print_interval > 0 and (
-                iteration > 0 and iteration % self.print_interval == 0 or iteration == length
-            ):
+            if self.log_interval > 0 and (iteration > 0 and iteration % self.log_interval == 0 or iteration == length):
                 interval = iteration - last_print_iteration
                 if self.device == torch.device("cuda"):
                     torch.cuda.synchronize()
