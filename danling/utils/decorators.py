@@ -14,7 +14,7 @@ from danling.typing import Exceptions
 
 def flexible_decorator(maybe_decorator: Optional[Callable] = None):
     r"""
-    Decorator to allow bracket-less when no arguments are passed.
+    Meta decorator to allow bracket-less decorator when no arguments are passed.
 
     Examples:
         For decorator defined as follows:
@@ -37,7 +37,7 @@ def flexible_decorator(maybe_decorator: Optional[Callable] = None):
     """
 
     def decorator(func: Callable):
-        @wraps(decorator)
+        @wraps(func)
         def wrapper(*args, **kwargs):
             if len(args) == 1 and isfunction(args[0]):
                 return func(**kwargs)(args[0])
@@ -104,11 +104,18 @@ def catch(  # pylint: disable=keyword-arg-before-vararg
     Examples:
         >>> def file_not_found(*args, **kwargs):
         ...     raise FileNotFoundError
-        >>> file_not_found()
+        >>> func = file_not_found
+        >>> func()
         Traceback (most recent call last):
         FileNotFoundError
         >>> func = catch(OSError)(file_not_found)
-        >>> file_not_found()
+        >>> func()
+        >>> func = catch(IOError)(file_not_found)
+        >>> func()
+        >>> func = catch(ZeroDivisionError)(file_not_found)
+        >>> func()
+        Traceback (most recent call last):
+        FileNotFoundError
     """
 
     def decorator(func):
