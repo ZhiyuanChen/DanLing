@@ -29,8 +29,8 @@ class Config(Config_):
         self.print_interval = 10
         self.train_iterations_per_epoch = 64
         self.val_iterations_per_epoch = 16
-        self.index_set = "val"
-        self.index = "loss"
+        self.score_set = "val"
+        self.score = "loss"
         self.conflict = 1
 
 
