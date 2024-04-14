@@ -109,6 +109,31 @@ def spearman(
     return tmf.spearman_corrcoef(input, target)
 
 
+def matthews_corrcoef(
+    input: Tensor | NestedTensor,
+    target: Tensor | NestedTensor,
+    threshold: float = 0.5,
+    average: str | None = "micro",
+    num_labels: int | None = None,
+    num_classes: int | None = None,
+):
+    lazy_import.check()
+    if num_classes and num_labels:
+        raise ValueError("Only one of num_classes or num_labels can be specified, but not both")
+    task = "binary"
+    if num_classes:
+        task = "multiclass"
+    if num_labels:
+        task = "multilabel"
+    if isinstance(input, NestedTensor):
+        input = torch.cat(input.storage())
+    if isinstance(target, NestedTensor):
+        target = torch.cat(target.storage())
+    return tmf.matthews_corrcoef(
+        input, target, task, threshold=threshold, num_classes=num_classes, num_labels=num_labels
+    )
+
+
 def r2_score(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
