@@ -33,7 +33,8 @@ def multiclass_metrics(num_classes: int, **kwargs):
 def multilabel_metrics(num_labels: int, **kwargs):
     p_auroc = partial(auroc, num_labels=num_labels)
     p_auprc = partial(auprc, num_labels=num_labels)
-    return Metrics(auroc=p_auroc, auprc=p_auprc, acc=accuracy, **kwargs)
+    p_acc = partial(accuracy, num_labels=num_labels)
+    return Metrics(auroc=p_auroc, auprc=p_auprc, acc=p_acc, **kwargs)
 
 
 def regression_metrics(**kwargs):
