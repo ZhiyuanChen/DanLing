@@ -49,6 +49,7 @@ class MNISTRunner(dl.TorchRunner):
         self.optimizer = OPTIMIZERS.build(params=self.model.parameters(), **self.optim)
         self.criterion = nn.CrossEntropyLoss()
 
+        self.metrics = dl.metrics.multiclass_metrics(num_classes=10)
         self.meters.loss.reset()
         self.meters.time.reset()
 
