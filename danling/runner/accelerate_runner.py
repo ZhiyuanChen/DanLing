@@ -188,9 +188,9 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
                 self.step_log(split, iteration, length)
                 last_print_iteration = iteration
 
-        result = self.meters.avg
+        result = self.meters.average()
         if self.metrics is not None:
-            result.merge(self.metrics.avg)
+            result.merge(self.metrics.average())
         return result
 
     def evaluate(self, eval_splits: list[str] | None = None) -> NestedDict:
@@ -260,9 +260,9 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
                 self.step_log(split, iteration, length)
                 last_print_iteration = iteration
 
-        result = self.meters.avg
+        result = self.meters.average()
         if self.metrics is not None:
-            result.merge(self.metrics.avg)
+            result.merge(self.metrics.average())
         self.write_result(result, split, self.state.epochs)
         return result
 

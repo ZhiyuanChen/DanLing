@@ -181,7 +181,6 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         if "results" not in self.__dict__:
             self.results = NestedDict()
         self.meters = AverageMeters()
-        self.metrics = None
         self._mode = RunnerMode.train  # type: ignore[assignment]
         # must init state at last to avoid name conflicts
         self._state = RunnerState(config)
