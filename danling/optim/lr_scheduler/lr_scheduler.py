@@ -23,8 +23,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         total_steps: Total number of steps.
         final_lr_ratio: Final learning rate ratio to initial learning rate.
             Defaults to 1e-3.
-        final_lr: Final learning rate. Deprecated, use `final_lr_ratio` instead.
-            Defaults to None.
+        final_lr: Final learning rate.
         min_lr: Minimal learning rate.
             Defaults to 1e-9.
         strategy: Scaling strategy.
@@ -35,7 +34,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
             Defaults to `steps // 5`.
         last_epoch: The index of last epoch.
             Defaults to -1.
-        method: Method to calculate learning rate given ratio, should be one of "percentile" or "linear".
+        method: Method to calculate learning rate given ratio, should be one of "percentile" or "numerical".
             Defaults to "percentile".
 
     Examples:
@@ -63,7 +62,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         self,
         optimizer: Optimizer,
         total_steps: int,
-        final_lr_ratio: float = 1e-3,
+        final_lr_ratio: Optional[float] = None,
         final_lr: Optional[float] = None,
         min_lr: float = 1e-9,
         strategy: str = "cosine",
@@ -86,8 +85,12 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
             raise ValueError(f"Cooldown steps must be less than total steps, but got {cooldown_steps} > {total_steps}")
         elif cooldown_steps < 0:
             raise ValueError(f"Cooldown steps must be positive, but got {cooldown_steps}")
-        if final_lr_ratio < 0:
+        if final_lr_ratio is not None and final_lr is not None:
+            raise ValueError("Only one of `final_lr_ratio` and `final_lr` should be set, but not both")
+        if final_lr_ratio is not None and final_lr_ratio < 0:
             raise ValueError(f"`final_lr_ratio` must be positive, but got {final_lr_ratio}")
+        if final_lr is not None and final_lr < 0:
+            raise ValueError(f"`final_lr` must be positive, but got {final_lr}")
         if min_lr < 0:
             raise ValueError(f"`min_lr` must be positive, but got {min_lr}")
         self.strategies = {
@@ -95,15 +98,15 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         }
         if strategy not in self.strategies:
             raise ValueError(f"Scaling strategy must be one of {self.strategies.keys()}, but got {strategy}")
-        self.total_steps = total_steps
+
+        if final_lr_ratio is None and final_lr is None:
+            final_lr_ratio = 1e-3
+        if final_lr is not None and min_lr > final_lr:
+            min_lr = final_lr
+
         self.final_lr_ratio = final_lr_ratio
-        if final_lr is not None:
-            warn(
-                "Argument `final_lr` is deprecated, use `final_lr_ratio` instead",
-                category=DeprecationWarning,
-                stacklevel=2,
-            )
         self.final_lr = final_lr
+        self.total_steps = total_steps
         self.min_lr = min_lr
         self.strategy = strategy
         self.method = method
@@ -134,7 +137,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         method = method or self.method
         step_count = step_count or self._step_count
         progress = progress or min(max(step_count / self.total_steps, 0.0), 1.0)
-        final_lr = self.final_lr or lr * self.final_lr_ratio
+        final_lr = self.final_lr if self.final_lr is not None else lr * self.final_lr_ratio  # type: ignore[operator]
         ratio = getattr(self, self.strategy)(progress)
         if method == "percentile":
             lr *= pow(final_lr / lr, ratio)
