@@ -1,6 +1,6 @@
 from danling import metrics, modules, optim, registry, runner, tensors, typing, utils
 
-from .metrics import AverageMeter, AverageMeters
+from .metrics import AverageMeter, MultiTaskAverageMeter
 from .registry import GlobalRegistry, Registry
 from .runner import AccelerateRunner, BaseRunner, TorchRunner
 from .tensors import NestedTensor, PNTensor
@@ -22,7 +22,7 @@ __all__ = [
     "GlobalRegistry",
     "Metrics",
     "AverageMeter",
-    "AverageMeters",
+    "MultiTaskAverageMeter",
     "NestedTensor",
     "PNTensor",
     "save",

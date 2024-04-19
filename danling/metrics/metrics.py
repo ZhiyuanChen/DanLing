@@ -46,7 +46,7 @@ class Metrics(Metric):
         **metrics: Metrics.
 
     Examples:
-        >>> from danling.metrics import auroc, auprc
+        >>> from danling.metrics.functional import auroc, auprc
         >>> metrics = Metrics(auroc=auroc, auprc=auprc)
         >>> metrics
         Metrics('auroc', 'auprc')

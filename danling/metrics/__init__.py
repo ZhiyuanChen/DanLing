@@ -2,7 +2,7 @@ from functools import partial
 
 from lazy_imports import try_import
 
-from .average_meters import AverageMeter, AverageMeters
+from .average_meter import AverageMeter, MultiTaskAverageMeter
 
 with try_import():
     from .functional import accuracy, auprc, auroc, matthews_corrcoef, pearson, r2_score, rmse, spearman
@@ -11,7 +11,7 @@ with try_import():
 __all__ = [
     "Metrics",
     "AverageMeter",
-    "AverageMeters",
+    "MultiTaskAverageMeter",
     "regression_metrics",
     "binary_metrics",
     "multiclass_metrics",

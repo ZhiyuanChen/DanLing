@@ -160,8 +160,4 @@ def rmse(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
 ):
-    if isinstance(input, NestedTensor):
-        input = torch.cat(input.storage())
-    if isinstance(target, NestedTensor):
-        target = torch.cat(target.storage())
-    return tef.mean_squared_error(input, target).sqrt()
+    return mse(input, target).sqrt()

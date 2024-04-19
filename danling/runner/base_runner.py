@@ -15,7 +15,7 @@ from warnings import warn
 
 from chanfig import Config, FlatDict, NestedDict, Variable
 
-from danling.metrics import AverageMeter, AverageMeters, Metrics
+from danling.metrics import AverageMeter, Metrics, MultiTaskAverageMeter
 from danling.typing import File, PathStr
 from danling.utils import catch, ensure_dir, load, save
 
@@ -135,8 +135,8 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         is_local_main_process (bool, property): If current process is the main process of local processes.
 
     Attributes: logging:
-        meters (AverageMeters): Average meters.
-            Initialised to `AverageMeters` by default.
+        meters (MultiTaskAverageMeter): Average meters.
+            Initialised to `MultiTaskAverageMeter` by default.
         metrics (Metrics): Metrics for evaluating.
         logger:
         writer:
@@ -165,7 +165,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     split: str
 
     results: NestedDict
-    meters: AverageMeters
+    meters: MultiTaskAverageMeter
     metrics: Metrics | None = None
     logger: logging.Logger | None = None
     writer: Any | None = None
@@ -180,7 +180,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             self.dataloaders = FlatDict()
         if "results" not in self.__dict__:
             self.results = NestedDict()
-        self.meters = AverageMeters()
+        self.meters = MultiTaskAverageMeter()
         self._mode = RunnerMode.train  # type: ignore[assignment]
         # must init state at last to avoid name conflicts
         self._state = RunnerState(config)

@@ -9,7 +9,7 @@ OPTIMIZERS.register(optim.AdamW, "adamw")
 OPTIMIZERS.register(optim.SGD, "sgd")
 
 
-class MNISTConfig(dl.Config):
+class MNISTConfig(Config):
     epoch_end = 2
     log = False
     tensorboard = False
