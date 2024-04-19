@@ -6,10 +6,11 @@ from .average_meter import AverageMeter, MultiTaskAverageMeter
 
 with try_import():
     from .functional import accuracy, auprc, auroc, matthews_corrcoef, pearson, r2_score, rmse, spearman
-    from .metrics import Metrics
+    from .metrics import Metrics, MultiTaskMetrics
 
 __all__ = [
     "Metrics",
+    "MultiTaskMetrics",
     "AverageMeter",
     "MultiTaskAverageMeter",
     "regression_metrics",
