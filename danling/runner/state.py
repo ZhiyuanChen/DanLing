@@ -104,7 +104,7 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
     step_end: Optional[int] = None
     epoch_end: Optional[int] = None
 
-    score_set: Optional[str] = None
+    score_split: Optional[str] = None
     score_name: str = "loss"
 
     project_root: str = "experiments"

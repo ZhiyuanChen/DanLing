@@ -7,7 +7,7 @@ DEFAULT_IGNORED_KEYS_IN_HASH = {
     "steps",
     "epochs",
     "results",
-    "score_set",
+    "score_split",
     "score",
     "log_interval",
     "save_interval",

@@ -24,7 +24,7 @@ class MNISTConfig(Config):
         self.log = False
         self.tensorboard = False
         self.log_interval = 1000
-        self.score_set = "val"
+        self.score_split = "val"
         self.score_name = "loss"
 
     def post(self):

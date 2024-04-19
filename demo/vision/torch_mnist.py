@@ -14,7 +14,7 @@ class MNISTConfig(dl.Config):
     log = False
     tensorboard = False
     log_interval = 1000
-    score_set = "val"
+    score_split = "val"
     score_name = "loss"
     debug = False
     patience = 1

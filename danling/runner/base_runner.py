@@ -89,7 +89,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             Scores should be in the form of `{epoch: score}`.
         latest_score (float, property): Most recent score, should be in the form of `score`.
         best_score (float, property): Best score, should be in the form of `score`.
-        score_set (Optional[str]): The subset to calculate the score.
+        score_split (Optional[str]): The subset to calculate the score.
             If is `None`, will use the last set of the result.
         score_name (str): The metric name of score.
             Defaults to `"loss"`.
@@ -114,9 +114,9 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     }
     ```
 
-    `scores` are dynamically extracted from `results` by `score_set` and `score_name`.
+    `scores` are dynamically extracted from `results` by `score_split` and `score_name`.
     They represent the core metric that is used in comparing the performance against different models and settings.
-    For the above `results`, If `score_set = "val"`, `score_name = "accuracy"`, then `scores = 0.9`.
+    For the above `results`, If `score_split = "val"`, `score_name = "accuracy"`, then `scores = 0.9`.
 
     Attributes: IO:
         dir (str, property): Directory of the run.
@@ -1076,13 +1076,13 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         r"""
         All scores.
 
-        Scores are extracted from results by `score_set` and `runner.state.score_name`,
-        following `[r[score_set][self.state.score_name] for r in self.results]`.
+        Scores are extracted from results by `score_split` and `runner.state.score_name`,
+        following `[r[score_split][self.state.score_name] for r in self.results]`.
 
         Scores are considered as the index of the performance of the model.
         It is useful to determine the best model and the best hyper-parameters.
 
-        `score_set` is defined in `self.state.score_set`.
+        `score_split` is defined in `self.state.score_split`.
         If it is not set, `DanLing` will use `val` or `validate` if they appear in the `latest_result`.
         If `DanLing` still could not find, it will fall back to the second key in the `latest_result`
         if it contains more that one element, or the first key.
@@ -1093,14 +1093,14 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         if not self.results:
             return None
         subsets = [i for i in self.latest_result.keys() if i not in IGNORED_SET_NAMES]  # type: ignore
-        score_set = self.state.get("score_set")
-        if score_set is None and "val" in subsets:
-            score_set = "val"
-        if score_set is None and "validate" in subsets:
-            score_set = "validate"
-        if score_set is None:
-            score_set = subsets[1] if len(subsets) > 1 else subsets[0]
-        return FlatDict({k: v[score_set][self.state.score_name] for k, v in self.results.items()})
+        score_split = self.state.get("score_split")
+        if score_split is None and "val" in subsets:
+            score_split = "val"
+        if score_split is None and "validate" in subsets:
+            score_split = "validate"
+        if score_split is None:
+            score_split = subsets[1] if len(subsets) > 1 else subsets[0]
+        return FlatDict({k: v[score_split][self.state.score_name] for k, v in self.results.items()})
 
     @property
     def latest_score(self) -> float | None:
