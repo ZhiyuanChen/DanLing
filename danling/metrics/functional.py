@@ -113,7 +113,6 @@ def matthews_corrcoef(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
     threshold: float = 0.5,
-    average: str | None = "micro",
     num_labels: int | None = None,
     num_classes: int | None = None,
 ):
@@ -137,12 +136,17 @@ def matthews_corrcoef(
 def r2_score(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
+    multioutput: str = "uniform_average",
+    num_regressors: int = 0,
 ):
     if isinstance(input, NestedTensor):
         input = torch.cat(input.storage())
     if isinstance(target, NestedTensor):
         target = torch.cat(target.storage())
-    return tef.r2_score(input, target)
+    try:
+        return tef.r2_score(input, target, multioutput=multioutput, num_regressors=num_regressors)
+    except ValueError:
+        return torch.tensor(0, dtype=float).to(input.device)
 
 
 def mse(
