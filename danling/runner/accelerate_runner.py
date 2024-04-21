@@ -87,6 +87,8 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
                 dataloader_kwargs[k].setdefault("drop_last", not getattr(d, "train", True))
                 self.dataloaders[k] = self.prepare(utils.data.DataLoader(d, **dataloader_kwargs[k]))
             default_kwargs.update(dataloader_kwargs)
+        if self.state.get("log_interval") is None:
+            self.state.log_interval = max(len(d) for d in self.dataloaders.values()) // 10
 
     @property
     def deepspeed(self) -> dict | None:
@@ -157,6 +159,7 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
         loader = self.dataloaders[split]
         length = len(loader) - 1
         last_print_iteration = -1
+        log_interval = self.state.get("log_interval", -1)
         self.meters.reset()
         if self.metrics is not None:
             self.metrics.reset()
@@ -176,7 +179,7 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
                     self.metrics.update(pred, target)
                 self.step(loss)
 
-            if self.log_interval > 0 and (iteration > 0 and iteration % self.log_interval == 0 or iteration == length):
+            if log_interval > 0 and (iteration > 0 and iteration % log_interval == 0 or iteration == length):
                 interval = iteration - last_print_iteration
                 if self.device == torch.device("cuda"):
                     torch.cuda.synchronize()
@@ -233,6 +236,7 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
         loader = self.dataloaders[split]
         length = len(loader) - 1
         last_print_iteration = -1
+        log_interval = self.state.get("log_interval", -1)
         self.meters.reset()
         if self.metrics is not None:
             self.metrics.reset()
@@ -246,7 +250,7 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
             if self.metrics is not None:
                 self.metrics.update(pred, target)
 
-            if self.log_interval > 0 and (iteration > 0 and iteration % self.log_interval == 0 or iteration == length):
+            if log_interval > 0 and (iteration > 0 and iteration % log_interval == 0 or iteration == length):
                 interval = iteration - last_print_iteration
                 if self.device == torch.device("cuda"):
                     torch.cuda.synchronize()

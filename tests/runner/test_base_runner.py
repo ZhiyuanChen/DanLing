@@ -26,7 +26,7 @@ class Config(Config_):
         self.log = False
         self.tensorboard = False
         self.gradient_clip = False
-        self.log_interval = 10
+        self.log_interval = None
         self.save_interval = None
         self.train_iterations_per_epoch = 64
         self.val_iterations_per_epoch = 16
