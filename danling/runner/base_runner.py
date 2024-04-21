@@ -765,7 +765,6 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         Print latest and best result.
         """
 
-        print(f"results: {self.results}")
         print(f"latest result: {self.latest_result}")
         print(f"best result: {self.best_result}")
 
