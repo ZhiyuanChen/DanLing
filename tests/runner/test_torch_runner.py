@@ -24,6 +24,7 @@ class MNISTConfig(Config):
         self.log = False
         self.tensorboard = False
         self.log_interval = 1000
+        self.save_interval = None
         self.score_split = "val"
         self.score_name = "loss"
 

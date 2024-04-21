@@ -131,7 +131,8 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
             self.append_result(result)
             print(self.format_epoch_result(result))
             self.save_result()
-            self.save_checkpoint()
+            if self.state.save_interval is not None:
+                self.save_checkpoint(epochs)
             """@nni.report_intermediate_result(self.latest_score)"""
             early_stop_counter = 0 if self.is_best else early_stop_counter + 1
             if early_stop_counter > patience:

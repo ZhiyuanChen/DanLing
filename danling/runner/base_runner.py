@@ -574,7 +574,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
 
     @catch
     @on_main_process
-    def save_checkpoint(self) -> None:
+    def save_checkpoint(self, epochs: int | None = None) -> None:
         r"""
         Save checkpoint to `self.checkpoint_dir`.
 
@@ -586,14 +586,12 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         If `self.is_best` is `True`, the checkpoint will also be copied to `self.checkpoint_dir/best.pth`.
         """
 
+        epochs = epochs or self.state.epochs
+        save_interval = self.state.get("save_interval", -1)
         latest_path = os.path.join(self.checkpoint_dir, "latest.pth")
         self.save(self.state_dict(), latest_path)
-        if (
-            hasattr(self, "save_interval")
-            and self.save_interval > 0
-            and (self.state.epochs + 1) % self.save_interval == 0
-        ):
-            save_path = os.path.join(self.checkpoint_dir, f"epoch-{self.state.epochs}.pth")
+        if save_interval > 0 and (epochs + 1) % save_interval == 0:
+            save_path = os.path.join(self.checkpoint_dir, f"epoch-{epochs}.pth")
             shutil.copy(latest_path, save_path)
         if self.is_best:
             best_path = os.path.join(self.checkpoint_dir, "best.pth")
@@ -1167,7 +1165,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
 
         if "checkpoint_dir" in self.state:
             return self.state.checkpoint_dir
-        return os.path.join(self.dir, self.checkpoint_dir_name)
+        return os.path.join(self.dir, self.state.checkpoint_dir_name)
 
     # def __getattribute__(self, name) -> Any:
     #     if name in ("__class__", "__dict__"):

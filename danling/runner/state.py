@@ -75,7 +75,8 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
         log_interval (int): Interval of printing logs.
             Defaults to -1.
         save_interval (int): Interval of saving intermediate checkpoints.
-            Defaults to -1, never save intermediate checkpoints.
+            Defaults to `None`, never save checkpoints.
+            If <= 0, save only the latest and the best checkpoints.
 
     Notes:
         `RunnerState` is a `NestedDict`, so you can access its attributes by `state["name"]` or `state.name`.
@@ -112,7 +113,7 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
     log: bool = True
     tensorboard: bool = False
     log_interval: int = -1
-    save_interval: int = -1
+    save_interval: Optional[int] = None
 
     distributed: Optional[bool] = None
     dist_backend: Optional[str] = None
