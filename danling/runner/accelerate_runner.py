@@ -85,8 +85,10 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
                 dataloader_kwargs[k].merge(default_kwargs, overwrite=False)
                 dataloader_kwargs[k].setdefault("shuffle", getattr(d, "train", True))
                 dataloader_kwargs[k].setdefault("drop_last", not getattr(d, "train", True))
-                self.dataloaders[k] = self.prepare(utils.data.DataLoader(d, **dataloader_kwargs[k]))
+                self.dataloaders[k] = utils.data.DataLoader(d, **dataloader_kwargs[k])
             default_kwargs.update(dataloader_kwargs)
+        for k, d in self.dataloaders.items():
+            self.dataloaders[k] = self.prepare(d)
         if self.state.get("log_interval") is None:
             self.state.log_interval = max(len(d) for d in self.dataloaders.values()) // 10
 
