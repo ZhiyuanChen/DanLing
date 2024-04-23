@@ -779,7 +779,9 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             self.write_result(result, split)
         return result
 
-    def format_step_result(self, result: NestedDict, split: str, steps: int, length: int) -> str:
+    def format_step_result(
+        self, result: NestedDict, split: str, steps: int, length: int, format_spec: str = ".4f"
+    ) -> str:
         result = NestedDict(result).clone()
         repr_str = ""
         if split is not None:
@@ -790,18 +792,20 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             else:
                 repr_str = f"running in {self.mode} mode on {split} "
         repr_str += f"[{steps}/{length}]\t"
-        return repr_str + self.format_result(result)
+        return repr_str + self.format_result(result, format_spec=format_spec)
 
-    def format_epoch_result(self, result: NestedDict, epochs: int | None = None, epoch_end: int | None = None) -> str:
+    def format_epoch_result(
+        self, result: NestedDict, epochs: int | None = None, epoch_end: int | None = None, format_spec: str = ".4f"
+    ) -> str:
         result = NestedDict(result).clone()
         epochs = epochs or self.state.epochs
         epoch_end = epoch_end or self.state.epoch_end
         repr_str = f"epoch [{epochs}/{epoch_end - 1}]\n" if epochs is not None and epoch_end else ""
-        repr_str += "\n".join([f"{k}:\t{self.format_result(v)}" for k, v in result.items()])
+        repr_str += "\n".join([f"{k}:\t{self.format_result(v, format_spec=format_spec)}" for k, v in result.items()])
         return repr_str
 
-    def format_result(self, result):
-        return "\t".join([f"{k}: {v}" for k, v in result.items()])
+    def format_result(self, result, format_spec: str = ".4f") -> str:
+        return "\t".join([f"{k}: {format(v, format_spec)}" for k, v in result.items()])
 
     def write_result(self, result: NestedDict, split: str, steps: int | None = None):
         if steps is None:
