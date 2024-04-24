@@ -94,7 +94,10 @@ def pearson(
         input = torch.cat(input.storage())
     if isinstance(target, NestedTensor):
         target = torch.cat(target.storage())
-    return tmf.pearson_corrcoef(input, target)
+    try:
+        return tmf.pearson_corrcoef(input, target)
+    except ValueError:
+        return torch.tensor(0, dtype=float).to(input.device)
 
 
 def spearman(
@@ -106,7 +109,10 @@ def spearman(
         input = torch.cat(input.storage())
     if isinstance(target, NestedTensor):
         target = torch.cat(target.storage())
-    return tmf.spearman_corrcoef(input, target)
+    try:
+        return tmf.spearman_corrcoef(input, target)
+    except ValueError:
+        return torch.tensor(0, dtype=float).to(input.device)
 
 
 def matthews_corrcoef(
@@ -128,9 +134,12 @@ def matthews_corrcoef(
         input = torch.cat(input.storage())
     if isinstance(target, NestedTensor):
         target = torch.cat(target.storage())
-    return tmf.matthews_corrcoef(
-        input, target, task, threshold=threshold, num_classes=num_classes, num_labels=num_labels
-    )
+    try:
+        return tmf.matthews_corrcoef(
+            input, target, task, threshold=threshold, num_classes=num_classes, num_labels=num_labels
+        )
+    except ValueError:
+        return torch.tensor(0, dtype=float).to(input.device)
 
 
 def r2_score(
