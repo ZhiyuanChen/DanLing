@@ -178,7 +178,7 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
                 pred = self.model(**input) if isinstance(input, Mapping) else self.model(input)
                 loss = self.criterion(pred, target)
                 if self.metrics is not None:
-                    self.metrics.update(pred, target)
+                    self.metrics.update(pred.squeeze(-1), target)
                 self.step(loss)
 
             if log_interval > 0 and (iteration > 0 and iteration % log_interval == 0 or iteration == length):
@@ -250,7 +250,7 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
             pred = self.model(**input) if isinstance(input, Mapping) else self.model(input)
             loss = self.criterion(pred, target)
             if self.metrics is not None:
-                self.metrics.update(pred, target)
+                self.metrics.update(pred.squeeze(-1), target)
 
             if log_interval > 0 and (iteration > 0 and iteration % log_interval == 0 or iteration == length):
                 interval = iteration - last_print_iteration
@@ -289,7 +289,7 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
         for _, data in tqdm(enumerate(loader), total=len(loader)):
             input = data["input"] if isinstance(data, Mapping) else data[0]
             pred = self.model(**input) if isinstance(input, Mapping) else self.model(input)
-            output.extend(pred.tolist())
+            output.extend(pred.squeeze(-1).tolist())
 
         if self.distributed:
             torch.cuda.synchronize()
