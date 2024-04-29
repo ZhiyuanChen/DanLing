@@ -17,11 +17,11 @@ class PNTensor(Tensor):
     Wrapper for tensors to be converted to `NestedTensor`.
 
     `PNTensor` is a subclass of `torch.Tensor`.
-    It implements two additional methods as `NestedTensor`: `tensor` and `mask`.
+    It implements three additional property as `NestedTensor`: `tensor`, `mask`, and `concat`.
 
     Although it is possible to directly construct `NestedTensor` in dataset,
     the best practice is to do so is in `collate_fn`.
-    `PNTensor` is introduced to smooth the process.
+    `PNTensor` is introduced to smoothen the process.
 
     Convert tensors that will be converted to `NestedTensor` to a `PNTensor`,
     and PyTorch Dataloader will automatically collate `PNTensor` to `NestedTensor`.
@@ -63,6 +63,25 @@ class PNTensor(Tensor):
 
         return torch.ones_like(self)
 
+    @property
+    def contact(self) -> Tensor:
+        r"""
+        Identical to `self`.
+
+        Returns:
+            (torch.Tensor):
+
+        Examples:
+            >>> tensor = torch.tensor([1, 2, 3])
+            >>> pn_tensor = PNTensor([1, 2, 3])
+            >>> bool((tensor == pn_tensor).all())
+            True
+            >>> bool((tensor == pn_tensor.contact).all())
+            True
+        """
+
+        return self
+
     def new_empty(self, *args, **kwargs):
         return PNTensor(super().new_empty(*args, **kwargs))
 
@@ -85,6 +104,7 @@ class NestedTensor:
         _storage: The sequence of tensors.
         tensor: padded tensor.
         mask: mask tensor.
+        concat: concatenated tensor.
         batch_first:  Whether the first dimension of the tensors is the batch dimension.
 
             If `True`, the first dimension is the batch dimension, i.e., `B, N, *`.
@@ -123,6 +143,8 @@ class NestedTensor:
         >>> nested_tensor.mask
         tensor([[ True,  True,  True],
                 [ True,  True, False]])
+        >>> nested_tensor.concat
+        tensor([1, 2, 3, 4, 5])
         >>> nested_tensor.to(torch.float).tensor
         tensor([[1., 2., 3.],
                 [4., 5., 0.]])
@@ -215,6 +237,45 @@ class NestedTensor:
         """
 
         return self._mask(tuple(self._storage), self.batch_first, self.mask_value)
+
+    @property
+    def concat(self) -> Tensor:
+        r"""
+        Concat `tensor` in padding dim.
+
+        This is particularly useful when calculating loss or passing `Linear` to avoid unnecessary computation.
+
+        Returns:
+            (torch.Tensor):
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.randn(9, 8), torch.randn(11, 8)])
+            >>> nested_tensor.concat.shape
+            torch.Size([20, 8])
+            >>> nested_tensor = NestedTensor([torch.randn(9, 9, 8), torch.randn(11, 11, 8)])
+            >>> nested_tensor.concat.shape
+            torch.Size([202, 8])
+            >>> nested_tensor = NestedTensor([torch.randn(9, 9, 8, 6), torch.randn(11, 11, 8, 6)])
+            >>> nested_tensor.concat.shape
+            torch.Size([202, 8, 6])
+            >>> nested_tensor = NestedTensor([torch.randn(9, 9, 8, 7), torch.randn(11, 11, 8, 6)])
+            >>> nested_tensor.concat.shape
+            torch.Size([1293, 8])
+        """
+        shape = list(self.size())
+        shape = shape[1:] if self.batch_first else shape[0] + shape[2:]
+        elem = self._storage[0]
+        if elem.shape == shape:
+            return torch.cat(self._storage, dim=1 if self.batch_first else 0)
+
+        static_dims = set(range(len(shape)))
+        for i, s in enumerate(shape):
+            if not all(t.shape[i] == s for t in self._storage):
+                shape[i] = -1
+                static_dims.remove(i)
+        target_shape = [-1] + [s for s in shape if s != -1]
+        storage = [i.view(target_shape) for i in self._storage]
+        return torch.cat(storage, dim=0 if self.batch_first else 1)
 
     @classmethod
     def from_tensor_mask(cls, tensor: Tensor, mask: Tensor):
