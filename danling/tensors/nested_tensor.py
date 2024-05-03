@@ -198,7 +198,7 @@ class NestedTensor:
         if len(tensors) == 0:
             raise ValueError("tensors must be a non-empty Iterable.")
         if not isinstance(tensors[0], Tensor):
-            tensors = [torch.tensor(tensor) for tensor in tensors]
+            tensors = [PNTensor(tensor) for tensor in tensors]
         self.__storage = tensors
 
     def storage(self):
