@@ -4,7 +4,17 @@ from .metrics import AverageMeter, Metrics, MultiTaskAverageMeter, MultiTaskMetr
 from .registry import GlobalRegistry, Registry
 from .runner import AccelerateRunner, BaseRunner, TorchRunner
 from .tensors import NestedTensor, PNTensor
-from .utils import catch, debug, ensure_dir, flexible_decorator, is_json_serializable, load, method_cache, save
+from .utils import (
+    catch,
+    debug,
+    ensure_dir,
+    flexible_decorator,
+    is_json_serializable,
+    load,
+    load_pandas,
+    method_cache,
+    save,
+)
 
 __all__ = [
     "metrics",
@@ -28,6 +38,7 @@ __all__ = [
     "PNTensor",
     "save",
     "load",
+    "load_pandas",
     "catch",
     "debug",
     "flexible_decorator",
