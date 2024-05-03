@@ -78,7 +78,7 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
         self.scheduler = self.prepare(self.scheduler)
         if self.datasets:
             datasets = {k: d for k, d in self.datasets.items() if k not in self.dataloaders}
-            default_kwargs = self.state.get("dataloader", NestedDict)
+            default_kwargs = self.state.setdefault("dataloader", NestedDict())
             dataloader_kwargs = NestedDict({k: default_kwargs.pop(k) for k in self.datasets if k in default_kwargs})
             for k, d in datasets.items():
                 dataloader_kwargs.setdefault(k, NestedDict())
