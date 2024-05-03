@@ -66,6 +66,7 @@ jobs:
           key: ${{ github.ref }}
           path: .cache
       - run: pip install -r docs/requirements.txt
+      - run: pip install -e .
       - name: Download coverage report
         uses: actions/download-artifact@v3
         with:
@@ -107,7 +108,6 @@ jobs:
   develop:
     if: contains(fromJson('["refs/heads/master", "refs/heads/main"]'), github.ref)
     needs: [lint, test]
-    environment: pypi
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
