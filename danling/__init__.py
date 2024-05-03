@@ -3,7 +3,7 @@ from danling import metrics, modules, optim, registry, runner, tensors, typing, 
 from .metrics import AverageMeter, Metrics, MultiTaskAverageMeter, MultiTaskMetrics
 from .registry import GlobalRegistry, Registry
 from .runner import AccelerateRunner, BaseRunner, TorchRunner
-from .tensors import NestedTensor, PNTensor
+from .tensors import NestedTensor, PNTensor, tensor
 from .utils import (
     catch,
     debug,
@@ -36,6 +36,7 @@ __all__ = [
     "MultiTaskAverageMeter",
     "NestedTensor",
     "PNTensor",
+    "tensor",
     "save",
     "load",
     "load_pandas",

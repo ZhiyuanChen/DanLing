@@ -89,6 +89,7 @@ class Test:
         b /= 1 / i
         assert torch.sum(a - b) < self.epsilon
 
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires PyTorch CUDA")
     @pytest.mark.skipif(torch.__version__ < "1.12", reason="requires PyTorch 1.12 or higher")
     @pytest.mark.parametrize(
         "i",
@@ -108,6 +109,7 @@ class Test:
         a **= i
         assert torch.sum(torch.log(a) / torch.log(b) - i) < self.epsilon
 
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires PyTorch CUDA")
     @pytest.mark.skipif(torch.__version__ < "2.1", reason="requires PyTorch 2.1 or higher")
     @pytest.mark.parametrize(
         "i",
@@ -127,6 +129,7 @@ class Test:
         b >>= i
         assert torch.sum(a - b) < self.epsilon
 
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires PyTorch CUDA")
     @pytest.mark.parametrize(
         "i",
         [

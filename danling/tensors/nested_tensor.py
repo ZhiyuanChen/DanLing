@@ -12,6 +12,10 @@ from .functional import mask_tensor, pad_tensor
 from .utils import TorchFuncRegistry
 
 
+def tensor(data: Any, dtype=None, device=None, requires_grad: bool = False, pin_memory: bool = False) -> PNTensor:
+    return PNTensor(torch.tensor(data, dtype=dtype, device=device, requires_grad=requires_grad, pin_memory=pin_memory))
+
+
 class PNTensor(Tensor):
     r"""
     Wrapper for tensors to be converted to `NestedTensor`.
@@ -198,7 +202,7 @@ class NestedTensor:
         if len(tensors) == 0:
             raise ValueError("tensors must be a non-empty Iterable.")
         if not isinstance(tensors[0], Tensor):
-            tensors = [PNTensor(tensor) for tensor in tensors]
+            tensors = [tensor(t) for t in tensors]
         self.__storage = tensors
 
     def storage(self):
@@ -262,7 +266,7 @@ class NestedTensor:
             >>> nested_tensor.concat.shape
             torch.Size([1293, 8])
         """
-        shape = list(self.size())
+        shape = list(self.size())  # type: ignore[arg-type]
         shape = shape[1:] if self.batch_first else shape[0] + shape[2:]
         elem = self._storage[0]
         if elem.shape == shape:
