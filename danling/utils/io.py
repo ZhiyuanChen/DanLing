@@ -111,7 +111,7 @@ def load(file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
         with open(file, "rb") as fp:
             return pickle.load(fp, *args, **kwargs)  # type: ignore
     if extension in PANDAS_SUPPORTED:
-        load_pandas(file, *args, **kwargs)
+        return load_pandas(file, *args, **kwargs)
     raise ValueError(f"Tying to load {file!r} with unsupported extension={extension!r}")
 
 
