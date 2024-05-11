@@ -883,11 +883,13 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
 
     @cached_property
     def name(self):
-        return f"{self.experiment_name}-{self.run_name}"
+        if "name" in self._state:
+            return self.state["name"]
+        return f"{self.state.experiment_name}-{self.state.run_name}"
 
     @cached_property
     def id(self):
-        return f"{self.experiment_id:.8}{self.run_id:.8}"
+        return f"{self.state.experiment_id:.8}{self.state.run_id:.8}"
 
     @cached_property
     def uuid(self) -> UUID:
