@@ -1,6 +1,8 @@
+from lazy_imports import try_import
+
 from danling import metrics, modules, optim, registry, runner, tensors, typing, utils
 
-from .metrics import AverageMeter, Metrics, MultiTaskAverageMeter, MultiTaskMetrics
+from .metrics import AverageMeter, AverageMeters, MultiTaskAverageMeters
 from .registry import GlobalRegistry, Registry
 from .runner import AccelerateRunner, BaseRunner, TorchRunner
 from .tensors import NestedTensor, PNTensor, tensor
@@ -15,6 +17,9 @@ from .utils import (
     method_cache,
     save,
 )
+
+with try_import():
+    from .metrics import Metrics, MultiTaskMetrics
 
 __all__ = [
     "metrics",
@@ -33,7 +38,8 @@ __all__ = [
     "Metrics",
     "MultiTaskMetrics",
     "AverageMeter",
-    "MultiTaskAverageMeter",
+    "AverageMeters",
+    "MultiTaskAverageMeters",
     "NestedTensor",
     "PNTensor",
     "tensor",

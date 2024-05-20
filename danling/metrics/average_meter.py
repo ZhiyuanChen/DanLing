@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from chanfig import NestedDict
+from chanfig import FlatDict, NestedDict
 from torch import distributed as dist
 
-from .multitask import MultiTaskDict
-from .utils import get_world_size
+from .utils import MetricsDict, MultiTaskDict, get_world_size
 
 
 class AverageMeter:
@@ -144,10 +143,107 @@ class AverageMeter:
         return f"{self.val.__format__(format_spec)} ({self.avg.__format__(format_spec)})"
 
 
-class MultiTaskAverageMeter(MultiTaskDict):
+class AverageMeters(MetricsDict):
     """
     Examples:
-        >>> meters = MultiTaskAverageMeter()
+        >>> meters = AverageMeters()
+        >>> meters.update({"loss": 0.6, "auroc": 0.7, "r2": 0.8})
+        >>> print(f"{meters:.4f}")
+        loss: 0.6000 (0.6000)
+        auroc: 0.7000 (0.7000)
+        r2: 0.8000 (0.8000)
+        >>> meters.update({"loss": {"value": 0.9, "n": 1}})
+        >>> print(f"{meters:.4f}")
+        loss: 0.9000 (0.7500)
+        auroc: 0.7000 (0.7000)
+        r2: 0.8000 (0.8000)
+        >>> meters.sum.dict()
+        {'loss': 1.5, 'auroc': 0.7, 'r2': 0.8}
+        >>> meters.count.dict()
+        {'loss': 2, 'auroc': 1, 'r2': 1}
+        >>> meters.reset()
+        >>> print(f"{meters:.4f}")
+        loss: 0.0000 (nan)
+        auroc: 0.0000 (nan)
+        r2: 0.0000 (nan)
+    """
+
+    def __init__(self, *args, default_factory=AverageMeter, **kwargs) -> None:
+        super().__init__(*args, default_factory=default_factory, **kwargs)
+
+    @property
+    def sum(self) -> FlatDict[str, float]:
+        return FlatDict({key: meter.sum for key, meter in self.all_items()})
+
+    @property
+    def count(self) -> FlatDict[str, int]:
+        return FlatDict({key: meter.count for key, meter in self.all_items()})
+
+    def update(self, values: Dict, *, n: int = 1) -> None:  # pylint: disable=W0237
+        r"""
+        Updates the average and current value in all meters.
+
+        Args:
+            values: Dict of values to be added to the average.
+            n: Number of values to be added.
+
+        Raises:
+            ValueError: If the value is not an instance of (int, float, Mapping).
+
+        Examples:
+            >>> meters = AverageMeters()
+            >>> meters.update({"loss": 0.6, "auroc": 0.7, "r2": 0.8})
+            >>> meters.sum.dict()
+            {'loss': 0.6, 'auroc': 0.7, 'r2': 0.8}
+            >>> meters.count.dict()
+            {'loss': 1, 'auroc': 1, 'r2': 1}
+            >>> meters.update({"loss": {"value": 0.9, "n": 1}})
+            >>> meters.sum.dict()
+            {'loss': 1.5, 'auroc': 0.7, 'r2': 0.8}
+            >>> meters.count.dict()
+            {'loss': 2, 'auroc': 1, 'r2': 1}
+            >>> meters.update({"loss": 0.8, "auroc": 0.9, "r2": 0.8})
+            >>> meters.sum.dict()
+            {'loss': 2.3, 'auroc': 1.6, 'r2': 1.6}
+            >>> meters.count.dict()
+            {'loss': 3, 'auroc': 2, 'r2': 2}
+            >>> meters.update({"auroc": 0.7, "r2": 0.7})
+            >>> meters.sum.dict()
+            {'loss': 2.3, 'auroc': 2.3, 'r2': 2.3}
+            >>> meters.count.dict()
+            {'loss': 3, 'auroc': 3, 'r2': 3}
+            >>> meters.update({"dataset1": {"cls.auroc": 0.9}, "dataset1.reg.r2": 0.8, "dataset2.r2": 0.9})
+            Traceback (most recent call last):
+            ValueError: Expected values to be int, float, or a flat dictionary, but got <class 'dict'>
+            This is likely due to nested dictionary in the values.
+            Nested dictionaries cannot be processed due to the method's design, which uses Mapping to pass both value and count ('n'). Ensure your input is a flat dictionary or a single value.
+            >>> meters.update(dict(loss=""))
+            Traceback (most recent call last):
+            ValueError: Expected values to be int, float, or a flat dictionary, but got <class 'str'>
+        """  # noqa: E501
+
+        for meter, value in values.items():
+            if isinstance(value, (int, float)):
+                self[meter].update(value, n)
+            elif isinstance(value, Dict):
+                value.setdefault("n", n)
+                try:
+                    self[meter].update(**value)
+                except TypeError:
+                    raise ValueError(
+                        f"Expected values to be int, float, or a flat dictionary, but got {type(value)}\n"
+                        "This is likely due to nested dictionary in the values.\n"
+                        "Nested dictionaries cannot be processed due to the method's design, which uses Mapping "
+                        "to pass both value and count ('n'). Ensure your input is a flat dictionary or a single value."
+                    ) from None
+            else:
+                raise ValueError(f"Expected values to be int, float, or a flat dictionary, but got {type(value)}")
+
+
+class MultiTaskAverageMeters(MultiTaskDict):
+    """
+    Examples:
+        >>> meters = MultiTaskAverageMeters()
         >>> meters.update({"loss": 0.6, "dataset1.cls.auroc": 0.7, "dataset1.reg.r2": 0.8, "dataset2.r2": 0.9})
         >>> print(f"{meters:.4f}")
         loss: 0.6000 (0.6000)
@@ -170,7 +266,7 @@ class MultiTaskAverageMeter(MultiTaskDict):
         dataset1.cls.auroc: 0.0000 (nan)
         dataset1.reg.r2: 0.0000 (nan)
         dataset2.r2: 0.0000 (nan)
-        >>> meters = MultiTaskAverageMeter(return_average=True)
+        >>> meters = MultiTaskAverageMeters(return_average=True)
         >>> meters.update({"loss": 0.6, "dataset1.a.auroc": 0.7, "dataset1.b.auroc": 0.8, "dataset2.auroc": 0.9})
         >>> print(f"{meters:.4f}")
         loss: 0.6000 (0.6000)
@@ -205,7 +301,7 @@ class MultiTaskAverageMeter(MultiTaskDict):
             ValueError: If the value is not an instance of (int, float, Mapping).
 
         Examples:
-            >>> meters = MultiTaskAverageMeter()
+            >>> meters = MultiTaskAverageMeters()
             >>> meters.update({"loss": 0.6, "dataset1.cls.auroc": 0.7, "dataset1.reg.r2": 0.8, "dataset2.r2": 0.9})
             >>> meters.sum.dict()
             {'loss': 0.6, 'dataset1': {'cls': {'auroc': 0.7}, 'reg': {'r2': 0.8}}, 'dataset2': {'r2': 0.9}}
@@ -253,7 +349,7 @@ class MultiTaskAverageMeter(MultiTaskDict):
             else:
                 raise ValueError(f"Expected values to be int, float, or a flat dictionary, but got {type(value)}")
 
-    # eval hack, as the default_factory must not be set to make `NestedDict` happy
+    # evil hack, as the default_factory must not be set to make `NestedDict` happy
     # this have some side effects, it will break attribute style intermediate nested dict auto creation
     # but everything has a price
     def get(self, name: Any, default=None) -> Any:

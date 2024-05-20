@@ -13,8 +13,7 @@ from torcheval.metrics import Metric
 
 from danling.tensors import NestedTensor
 
-from .multitask import MultiTaskDict
-from .utils import flist, get_world_size
+from .utils import MultiTaskDict, flist, get_world_size
 
 try:
     from typing import Self  # type: ignore[attr-defined]

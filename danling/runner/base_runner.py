@@ -9,15 +9,18 @@ import shutil
 from collections.abc import Callable, Mapping, Sequence
 from math import ceil
 from sys import version_info
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict
 from uuid import UUID, uuid5
 from warnings import warn
 
 from chanfig import Config, FlatDict, NestedDict, Variable
 
-from danling.metrics import AverageMeter, Metrics, MultiTaskAverageMeter
+from danling.metrics import AverageMeter, AverageMeters
 from danling.typing import File, PathStr
 from danling.utils import catch, ensure_dir, load, save
+
+if TYPE_CHECKING:
+    from danling.metrics import Metrics
 
 try:
     from functools import cached_property
@@ -135,9 +138,9 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         is_local_main_process (bool, property): If current process is the main process of local processes.
 
     Attributes: logging:
-        meters (MultiTaskAverageMeter): Average meters.
-            Initialised to `MultiTaskAverageMeter` by default.
-        metrics (Metrics): Metrics for evaluating.
+        meters (AverageMeters | MultiTaskAverageMeters): Average meters.
+            Initialised to `AverageMeters` by default.
+        metrics (Metrics | MultiTaskMetrics | None): Metrics for evaluating.
         logger:
         writer:
 
@@ -165,7 +168,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     split: str
 
     results: NestedDict
-    meters: MultiTaskAverageMeter
+    meters: AverageMeters
     metrics: Metrics | None = None
     logger: logging.Logger | None = None
     writer: Any | None = None
@@ -180,7 +183,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             self.dataloaders = FlatDict()
         if "results" not in self.__dict__:
             self.results = NestedDict()
-        self.meters = MultiTaskAverageMeter()
+        self.meters = AverageMeters()
         self._mode = RunnerMode.train  # type: ignore[assignment]
         # must init state at last to avoid name conflicts
         self._state = RunnerState(config)
