@@ -64,6 +64,7 @@ repos:
       - id: debug-statements
         exclude: danling/utils/contextmanagers.py
       - id: end-of-file-fixer
+        exclude: LICENSE.header
       - id: fix-byte-order-marker
       - id: fix-encoding-pragma
         args: ["--remove"]
