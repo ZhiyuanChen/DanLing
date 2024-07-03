@@ -39,10 +39,9 @@ def auroc(
     task_weights: Tensor | None = None,
     **kwargs,
 ):
-    if isinstance(input, NestedTensor):
-        input = torch.cat(input.storage())
-    if isinstance(target, NestedTensor):
-        target = torch.cat(target.storage())
+    if num_classes and num_labels:
+        raise ValueError("Only one of num_classes or num_labels can be specified, but not both")
+    input, target = preprocess(input, target)
     if num_labels is None and num_classes is None:
         return tef.binary_auroc(input=input, target=target, weight=weight, **kwargs)
     if num_classes is None:
@@ -64,10 +63,9 @@ def auprc(
     task_weights: Tensor | None = None,
     **kwargs,
 ):
-    if isinstance(input, NestedTensor):
-        input = torch.cat(input.storage())
-    if isinstance(target, NestedTensor):
-        target = torch.cat(target.storage())
+    if num_classes and num_labels:
+        raise ValueError("Only one of num_classes or num_labels can be specified, but not both")
+    input, target = preprocess(input, target)
     if num_labels is None and num_classes is None:
         return tef.binary_auprc(input=input, target=target, **kwargs)
     if num_classes is None:
@@ -89,10 +87,9 @@ def accuracy(
     num_classes: int | None = None,
     **kwargs,
 ):
-    if isinstance(input, NestedTensor):
-        input = torch.cat(input.storage())
-    if isinstance(target, NestedTensor):
-        target = torch.cat(target.storage())
+    if num_classes and num_labels:
+        raise ValueError("Only one of num_classes or num_labels can be specified, but not both")
+    input, target = preprocess(input, target)
     if num_labels is None and num_classes is None:
         return tef.binary_accuracy(input=input, target=target, threshold=threshold, **kwargs)
     if num_classes is None:
@@ -100,36 +97,6 @@ def accuracy(
     if num_labels is None:
         return tef.multiclass_accuracy(input=input, target=target, num_classes=num_classes, average=average, **kwargs)
     raise ValueError("Could not infer the type of the task. Only one of `num_labels`, `num_classes` is allowed.")
-
-
-def pearson(
-    input: Tensor | NestedTensor,
-    target: Tensor | NestedTensor,
-):
-    lazy_import.check()
-    if isinstance(input, NestedTensor):
-        input = torch.cat(input.storage())
-    if isinstance(target, NestedTensor):
-        target = torch.cat(target.storage())
-    try:
-        return tmf.pearson_corrcoef(input, target)
-    except ValueError:
-        return torch.tensor(0, dtype=float).to(input.device)
-
-
-def spearman(
-    input: Tensor | NestedTensor,
-    target: Tensor | NestedTensor,
-):
-    lazy_import.check()
-    if isinstance(input, NestedTensor):
-        input = torch.cat(input.storage())
-    if isinstance(target, NestedTensor):
-        target = torch.cat(target.storage())
-    try:
-        return tmf.spearman_corrcoef(input, target)
-    except ValueError:
-        return torch.tensor(0, dtype=float).to(input.device)
 
 
 def matthews_corrcoef(
@@ -147,14 +114,35 @@ def matthews_corrcoef(
         task = "multiclass"
     if num_labels:
         task = "multilabel"
-    if isinstance(input, NestedTensor):
-        input = torch.cat(input.storage())
-    if isinstance(target, NestedTensor):
-        target = torch.cat(target.storage())
+    input, target = preprocess(input, target)
     try:
         return tmf.matthews_corrcoef(
             input, target, task, threshold=threshold, num_classes=num_classes, num_labels=num_labels
         )
+    except ValueError:
+        return torch.tensor(0, dtype=float).to(input.device)
+
+
+def pearson(
+    input: Tensor | NestedTensor,
+    target: Tensor | NestedTensor,
+):
+    lazy_import.check()
+    input, target = preprocess(input, target)
+    try:
+        return tmf.pearson_corrcoef(input, target)
+    except ValueError:
+        return torch.tensor(0, dtype=float).to(input.device)
+
+
+def spearman(
+    input: Tensor | NestedTensor,
+    target: Tensor | NestedTensor,
+):
+    lazy_import.check()
+    input, target = preprocess(input, target)
+    try:
+        return tmf.spearman_corrcoef(input, target)
     except ValueError:
         return torch.tensor(0, dtype=float).to(input.device)
 
@@ -165,10 +153,7 @@ def r2_score(
     multioutput: str = "uniform_average",
     num_regressors: int = 0,
 ):
-    if isinstance(input, NestedTensor):
-        input = torch.cat(input.storage())
-    if isinstance(target, NestedTensor):
-        target = torch.cat(target.storage())
+    input, target = preprocess(input, target)
     try:
         return tef.r2_score(input, target, multioutput=multioutput, num_regressors=num_regressors)
     except ValueError:
@@ -179,10 +164,7 @@ def mse(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
 ):
-    if isinstance(input, NestedTensor):
-        input = torch.cat(input.storage())
-    if isinstance(target, NestedTensor):
-        target = torch.cat(target.storage())
+    input, target = preprocess(input, target)
     return tef.mean_squared_error(input, target)
 
 
@@ -190,4 +172,15 @@ def rmse(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
 ):
+    input, target = preprocess(input, target)
     return mse(input, target).sqrt()
+
+
+def preprocess(input: Tensor | NestedTensor, target: Tensor | NestedTensor):
+    if isinstance(input, NestedTensor) or isinstance(target, NestedTensor):
+        if isinstance(input, NestedTensor) and isinstance(target, Tensor):
+            target = input.nested_like(target, strict=False)
+        if isinstance(target, NestedTensor) and isinstance(input, Tensor):
+            input = target.nested_like(input, strict=False)
+        input, target = torch.cat(input.storage()), torch.cat(target.storage())
+    return input, target
