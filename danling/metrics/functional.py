@@ -37,11 +37,12 @@ def auroc(
     num_labels: int | None = None,
     num_classes: int | None = None,
     task_weights: Tensor | None = None,
+    ignored_index: int = -100,
     **kwargs,
 ):
     if num_classes and num_labels:
         raise ValueError("Only one of num_classes or num_labels can be specified, but not both")
-    input, target = preprocess(input, target)
+    input, target = preprocess(input, target, ignored_index=ignored_index)
     if num_labels is None and num_classes is None:
         return tef.binary_auroc(input=input, target=target, weight=weight, **kwargs)
     if num_classes is None:
@@ -61,11 +62,12 @@ def auprc(
     num_labels: int | None = None,
     num_classes: int | None = None,
     task_weights: Tensor | None = None,
+    ignored_index: int = -100,
     **kwargs,
 ):
     if num_classes and num_labels:
         raise ValueError("Only one of num_classes or num_labels can be specified, but not both")
-    input, target = preprocess(input, target)
+    input, target = preprocess(input, target, ignored_index=ignored_index)
     if num_labels is None and num_classes is None:
         return tef.binary_auprc(input=input, target=target, **kwargs)
     if num_classes is None:
@@ -85,11 +87,12 @@ def accuracy(
     average: str | None = "micro",
     num_labels: int | None = None,
     num_classes: int | None = None,
+    ignored_index: int = -100,
     **kwargs,
 ):
     if num_classes and num_labels:
         raise ValueError("Only one of num_classes or num_labels can be specified, but not both")
-    input, target = preprocess(input, target)
+    input, target = preprocess(input, target, ignored_index=ignored_index)
     if num_labels is None and num_classes is None:
         return tef.binary_accuracy(input=input, target=target, threshold=threshold, **kwargs)
     if num_classes is None:
@@ -105,6 +108,7 @@ def matthews_corrcoef(
     threshold: float = 0.5,
     num_labels: int | None = None,
     num_classes: int | None = None,
+    ignored_index: int = -100,
 ):
     lazy_import.check()
     if num_classes and num_labels:
@@ -114,7 +118,7 @@ def matthews_corrcoef(
         task = "multiclass"
     if num_labels:
         task = "multilabel"
-    input, target = preprocess(input, target)
+    input, target = preprocess(input, target, ignored_index=ignored_index)
     try:
         return tmf.matthews_corrcoef(
             input, target, task, threshold=threshold, num_classes=num_classes, num_labels=num_labels
@@ -176,11 +180,13 @@ def rmse(
     return mse(input, target).sqrt()
 
 
-def preprocess(input: Tensor | NestedTensor, target: Tensor | NestedTensor):
+def preprocess(input: Tensor | NestedTensor, target: Tensor | NestedTensor, ignored_index: int | None = None):
     if isinstance(input, NestedTensor) or isinstance(target, NestedTensor):
         if isinstance(input, NestedTensor) and isinstance(target, Tensor):
             target = input.nested_like(target, strict=False)
         if isinstance(target, NestedTensor) and isinstance(input, Tensor):
             input = target.nested_like(input, strict=False)
         input, target = torch.cat(input.storage()), torch.cat(target.storage())
+    if ignored_index is not None:
+        input, target = input[target != ignored_index], target[target != ignored_index]
     return input, target
