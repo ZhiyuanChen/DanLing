@@ -331,14 +331,14 @@ class NestedTensor:
             for t, m in zip(tensor, mask)
         )
 
-    def nested_like(self, other: Tensor, unsafe: bool = False) -> NestedTensor:
+    def nested_like(self, tensor: Tensor, strict: bool = True) -> NestedTensor:
         r"""
         Create a new `NestedTensor` from a `Tensor`.
         The newly created `NestedTensor` will have the same shape as current `NestedTensor`.
 
         Args:
-            other: The `Tensor` to be nested.
-            unsafe: Whether to check the shape of `other` and current `NestedTensor`.
+            tensor: The tensor to be converted to `NestedTensor`.
+            strict: Check if the shape of `tensor` is the same as the current `NestedTensor`.
 
         Returns:
             (NestedTensor):
@@ -353,24 +353,24 @@ class NestedTensor:
             >>> f = nested_tensor.nested_like(torch.randn(2, 2))
             Traceback (most recent call last):
             ValueError: The shape of NestedTensor and input tensor does not match, torch.Size([2, 3]) != torch.Size([2, 2])
-            >>> p = nested_tensor.nested_like(torch.randn(2, 2), True)
-            >>> p = nested_tensor.nested_like(torch.randn(3, 3), True)
+            >>> p = nested_tensor.nested_like(torch.randn(2, 2), False)
+            >>> p = nested_tensor.nested_like(torch.randn(3, 3), False)
             Traceback (most recent call last):
             ValueError: The batch size of NestedTensor and input tensor does not match, 2 != 3
         """  # noqa: E501
 
-        if isinstance(other, NestedTensor):
-            return other.clone()
+        if isinstance(tensor, NestedTensor):
+            return tensor.clone()
 
-        if not unsafe and self.shape != other.shape:
+        if strict and self.shape != tensor.shape:
             raise ValueError(
-                f"The shape of NestedTensor and input tensor does not match, {self.shape} != {other.shape}"
+                f"The shape of NestedTensor and input tensor does not match, {self.shape} != {tensor.shape}"
             )
-        if self.size(0) != other.size(0):
+        if self.size(0) != tensor.size(0):
             raise ValueError(
-                f"The batch size of NestedTensor and input tensor does not match, {self.size(0)} != {other.size(0)}"
+                f"The batch size of NestedTensor and input tensor does not match, {self.size(0)} != {tensor.size(0)}"
             )
-        return NestedTensor([o[tuple(slice(0, dim) for dim in t.shape)] for t, o in zip(self._storage, other)])
+        return NestedTensor([o[tuple(slice(0, dim) for dim in t.shape)] for t, o in zip(self._storage, tensor)])
 
     @property
     def device(self) -> torch.device:
@@ -507,7 +507,7 @@ class NestedTensor:
             dim -= 1
         return NestedTensor([i.all(dim=dim, keepdim=keepdim) for i in self._storage])
 
-    def where(self, condition, other) -> NestedTensor:
+    def where(self, condition: Tensor | NestedTensor, other: Tensor | NestedTensor | SupportsFloat) -> NestedTensor:
         r"""
         Return a NestedTensor of elements selected from either self or other, depending on condition.
 
@@ -560,7 +560,7 @@ class NestedTensor:
             return self.tensor, self.mask
         raise ValueError(f"Unsupported index type {type(index)}")
 
-    def __getattr__(self, name) -> Any:
+    def __getattr__(self, name: str) -> Any:
         if not self._storage:
             raise ValueError(f"Unable to get {name} from an empty {self.__class__.__name__}")
         ret = [getattr(i, name) for i in self._storage]
@@ -650,21 +650,21 @@ class NestedTensor:
     def __abs__(self):
         return NestedTensor([abs(value) for value in self._storage], **self._state)
 
-    def __add__(self, other):
+    def __add__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([x + y for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([value + other for value in self._storage], **self._state)
 
-    def __radd__(self, other):
+    def __radd__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([y + x for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([other + value for value in self._storage], **self._state)
 
-    def __iadd__(self, other):
+    def __iadd__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if hasattr(other, "to"):
@@ -677,21 +677,21 @@ class NestedTensor:
                 value += other
         return self
 
-    def __sub__(self, other):
+    def __sub__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([x - y for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([value - other for value in self._storage], **self._state)
 
-    def __rsub__(self, other):
+    def __rsub__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([y - x for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([other - value for value in self._storage], **self._state)
 
-    def __isub__(self, other):
+    def __isub__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if hasattr(other, "to"):
@@ -713,21 +713,21 @@ class NestedTensor:
     def __invert__(self):
         return NestedTensor([~x for x in self._storage])
 
-    def __mul__(self, other):
+    def __mul__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([x * y for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([value * other for value in self._storage], **self._state)
 
-    def __rmul__(self, other):
+    def __rmul__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([y * x for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([other * value for value in self._storage], **self._state)
 
-    def __imul__(self, other):
+    def __imul__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if hasattr(other, "to"):
@@ -740,21 +740,21 @@ class NestedTensor:
                 value *= other
         return self
 
-    def __pow__(self, other):
+    def __pow__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([x**y for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([value**other for value in self._storage], **self._state)
 
-    def __rpow__(self, other):
+    def __rpow__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([y**x for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([other**value for value in self._storage], **self._state)
 
-    def __ipow__(self, other):
+    def __ipow__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if hasattr(other, "to"):
@@ -767,21 +767,21 @@ class NestedTensor:
                 value **= other
         return self
 
-    def __matmul__(self, other):
+    def __matmul__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([x @ y for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([value @ other for value in self._storage], **self._state)
 
-    def __rmatmul__(self, other):
+    def __rmatmul__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([y @ x for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([other @ value for value in self._storage], **self._state)
 
-    def __imatmul__(self, other):
+    def __imatmul__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if hasattr(other, "to"):
@@ -794,21 +794,21 @@ class NestedTensor:
                 value @= other
         return self
 
-    def __truediv__(self, other):
+    def __truediv__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([x / y for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([value / other for value in self._storage], **self._state)
 
-    def __rtruediv__(self, other):
+    def __rtruediv__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([y / x for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([other / value for value in self._storage], **self._state)
 
-    def __itruediv__(self, other):
+    def __itruediv__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if hasattr(other, "to"):
@@ -821,21 +821,21 @@ class NestedTensor:
                 value /= other
         return self
 
-    def __floordiv__(self, other):
+    def __floordiv__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([x // y for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([value // other for value in self._storage], **self._state)
 
-    def __rfloordiv__(self, other):
+    def __rfloordiv__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([y // x for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([other // value for value in self._storage], **self._state)
 
-    def __ifloordiv__(self, other):
+    def __ifloordiv__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if hasattr(other, "to"):
@@ -848,21 +848,21 @@ class NestedTensor:
                 value //= other
         return self
 
-    def __mod__(self, other):
+    def __mod__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([x % y for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([value % other for value in self._storage], **self._state)
 
-    def __rmod__(self, other):
+    def __rmod__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([y % x for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([other % value for value in self._storage], **self._state)
 
-    def __imod__(self, other):
+    def __imod__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if hasattr(other, "to"):
@@ -875,21 +875,21 @@ class NestedTensor:
                 value %= other
         return self
 
-    def __and__(self, other):
+    def __and__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([x & y for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([value & other for value in self._storage], **self._state)
 
-    def __rand__(self, other):
+    def __rand__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([y & x for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([other & value for value in self._storage], **self._state)
 
-    def __iand__(self, other):
+    def __iand__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if hasattr(other, "to"):
@@ -902,21 +902,21 @@ class NestedTensor:
                 value &= other
         return self
 
-    def __or__(self, other):
+    def __or__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([x | y for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([value | other for value in self._storage], **self._state)
 
-    def __ror__(self, other):
+    def __ror__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([y | x for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([other | value for value in self._storage], **self._state)
 
-    def __ior__(self, other):
+    def __ior__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if hasattr(other, "to"):
@@ -929,21 +929,21 @@ class NestedTensor:
                 value |= other
         return self
 
-    def __xor__(self, other):
+    def __xor__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([x ^ y for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([value ^ other for value in self._storage], **self._state)
 
-    def __rxor__(self, other):
+    def __rxor__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([y ^ x for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([other ^ value for value in self._storage], **self._state)
 
-    def __ixor__(self, other):
+    def __ixor__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if hasattr(other, "to"):
@@ -956,21 +956,21 @@ class NestedTensor:
                 value ^= other
         return self
 
-    def __lshift__(self, other):
+    def __lshift__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([x << y for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([value << other for value in self._storage], **self._state)
 
-    def __rlshift__(self, other):
+    def __rlshift__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([y << x for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([other << value for value in self._storage], **self._state)
 
-    def __ilshift__(self, other):
+    def __ilshift__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if hasattr(other, "to"):
@@ -983,21 +983,21 @@ class NestedTensor:
                 value <<= other
         return self
 
-    def __rshift__(self, other):
+    def __rshift__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([x >> y for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([value >> other for value in self._storage], **self._state)
 
-    def __rrshift__(self, other):
+    def __rrshift__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if isinstance(other, NestedTensor):
             return NestedTensor([y >> x for x, y in zip(self._storage, other._storage)], **self._state)
         return NestedTensor([other >> value for value in self._storage], **self._state)
 
-    def __irshift__(self, other):
+    def __irshift__(self, other: Tensor | NestedTensor | SupportsFloat):
         if isinstance(other, Tensor) and self.shape == other.shape:
             other = self.nested_like(other)
         if hasattr(other, "to"):
