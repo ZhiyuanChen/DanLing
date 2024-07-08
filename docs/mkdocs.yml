@@ -30,6 +30,9 @@ nav:
       - IO: utils/io.md
       - basex: utils/basex.md
   - package: package.md
+  - About:
+      - License: about/license.md
+      - Privacy Notice: about/privacy.md
   # - Blog: blog/index.md
 
 theme:
@@ -90,7 +93,7 @@ extra:
       as to measure the effectiveness of our documentation and whether users
       find what they're searching for. With your consent, you're helping us to
       make our documentation better. Please check out our
-      <a href="https://zyc.ai/about/privacy">Privacy Policy</a> for more information.
+      <a href="https://danling.org/about/privacy">Privacy Notice</a> for more information.
   generator: false
   manifest: "manifest.webmanifest"
   # social:
