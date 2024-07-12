@@ -19,7 +19,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from math import nan
 from typing import Any, Callable, Iterable
 
 import torch
@@ -30,6 +29,7 @@ from torcheval.metrics import Metric
 
 from danling.tensors import NestedTensor
 
+from .measure import Measure
 from .utils import MultiTaskDict, flist, get_world_size
 
 try:
@@ -52,7 +52,7 @@ class Metrics(Metric):
     `Metrics` solves this problem by maintaining a shared state for multiple metric functions.
 
     Attributes:
-        metrics: A dictionary of metrics to be computed.
+        measure: A dictionary of metrics to be computed.
         val: Metric results of current batch on current device.
         bat: Metric results of current batch on all devices.
         avg: Metric results of all results on all devices.
@@ -62,8 +62,11 @@ class Metrics(Metric):
         targets: All target tensors.
 
     Args:
-        *args: A single mapping of metrics.
-        **metrics: Metrics.
+        *args: A single mapping of metric functions.
+        return_nested: Whether to return a NestedTensor or a list of Tensors. Defaults to False.
+        ignored_index: The index to be ignored in the target tensor. Defaults to None.
+        device: The device to store the tensors. Defaults to None.
+        **callables: Metric functions.
 
     Examples:
         >>> from danling.metrics.functional import auroc, auprc
@@ -126,7 +129,7 @@ class Metrics(Metric):
         (PNTensor([0.1000, 0.6000, 0.8000, 0.1000, 0.6000]), PNTensor([0, 1, 0, 0, 1]))
     """
 
-    metrics: FlatDict[str, Callable]
+    measure: Measure
     ignored_index: int | None = None
     _input: Tensor
     _target: Tensor
@@ -136,17 +139,15 @@ class Metrics(Metric):
     _target_buffer: flist
     score_name: str
     best_fn: Callable
-    merge_dict: bool = True
     return_nested: bool = False
 
     def __init__(
         self,
         *args,
-        merge_dict: bool | None = None,
         return_nested: bool | None = None,
-        device: torch.device | None = None,
         ignored_index: int | None = None,
-        **metrics: FlatDict[str, Callable],
+        device: torch.device | None = None,
+        **callables: Callable,
     ):
         super().__init__(device=device)
         self._add_state("_input", torch.empty(0))
@@ -155,9 +156,7 @@ class Metrics(Metric):
         self._add_state("_targets", flist())
         self._add_state("_input_buffer", flist())
         self._add_state("_target_buffer", flist())
-        self.metrics = FlatDict(*args, **metrics)
-        if merge_dict is not None:
-            self.merge_dict = merge_dict
+        self.measure = Measure(*args, **callables)
         if return_nested is not None:
             self.return_nested = return_nested
         self.ignored_index = ignored_index
@@ -201,16 +200,16 @@ class Metrics(Metric):
             self._target = target
             self._target_buffer.append(target.cpu())
 
-    def compute(self) -> FlatDict[str, float]:
+    def compute(self) -> FlatDict[str, float | flist]:
         return self.calculate(self.inputs.to(self.device), self.targets.to(self.device))
 
-    def value(self) -> FlatDict[str, float]:
+    def value(self) -> FlatDict[str, float | flist]:
         return self.calculate(self._input, self._target)
 
-    def batch(self) -> FlatDict[str, float]:
+    def batch(self) -> FlatDict[str, float | flist]:
         return self.calculate(self.input, self.target)
 
-    def average(self) -> FlatDict[str, float]:
+    def average(self) -> FlatDict[str, float | flist]:
         return self.calculate(self.inputs.to(self.device), self.targets.to(self.device))
 
     @property
@@ -226,33 +225,8 @@ class Metrics(Metric):
         return self.average()
 
     @torch.inference_mode()
-    def calculate(self, input: Tensor, target: Tensor) -> flist | float:
-        if (
-            isinstance(input, (Tensor, NestedTensor))
-            and input.numel() == 0 == target.numel()
-            or isinstance(input, (list, dict))
-            and len(input) == 0 == len(target)
-        ):
-            return FlatDict({name: nan for name in self.metrics.keys()})
-        ret = FlatDict()
-        for name, metric in self.metrics.items():
-            score = self._calculate(metric, input, target)
-            if isinstance(score, Mapping):
-                if self.merge_dict:
-                    ret.merge(score)
-                else:
-                    for n, s in score.items():
-                        ret[f"{name}.{n}"] = s
-            else:
-                ret[name] = score
-        return ret
-
-    @torch.inference_mode()
-    def _calculate(self, metric, input: Tensor, target: Tensor) -> flist | float:
-        score = metric(input, target)
-        if isinstance(score, Tensor):
-            return score.item() if score.numel() == 1 else flist(score.tolist())
-        return score
+    def calculate(self, input: Tensor, target: Tensor) -> FlatDict[str, flist | float]:
+        return self.measure.compute(input, target)
 
     @torch.inference_mode()
     def merge_state(self, metrics: Iterable):
@@ -266,21 +240,21 @@ class Metrics(Metric):
         world_size = get_world_size()
         if world_size == 1:
             if isinstance(self._input, NestedTensor) and not self.return_nested:
-                return torch.cat(self._input.storage(), 0)
+                return torch.cat(self._input.storage())
             return self._input
         if isinstance(self._input, Tensor):
             synced_tensor = [torch.zeros_like(self._input) for _ in range(world_size)]
             dist.all_gather(synced_tensor, self._input)
-            return torch.cat(synced_tensor, 0)
+            return torch.cat(synced_tensor)
         if isinstance(self._input, NestedTensor):
             synced_tensors = [None for _ in range(world_size)]
             dist.all_gather_object(synced_tensors, self._input.storage())
             synced_tensors = flist(i.to(self.device) for j in synced_tensors for i in j)
             try:
-                return torch.cat(synced_tensors, 0)
+                return torch.cat(synced_tensors)
             except RuntimeError:
                 if self.return_nested:
-                    return NestedTensor(synced_tensor)
+                    return NestedTensor(synced_tensors)
                 return synced_tensors
         raise ValueError(f"Expected _input to be a Tensor or a NestedTensor, but got {type(self._input)}")
 
@@ -289,21 +263,21 @@ class Metrics(Metric):
         world_size = get_world_size()
         if world_size == 1:
             if isinstance(self._target, NestedTensor) and not self.return_nested:
-                return torch.cat(self._target.storage(), 0)
+                return torch.cat(self._target.storage())
             return self._target
         if isinstance(self._target, Tensor):
             synced_tensor = [torch.zeros_like(self._target) for _ in range(world_size)]
             dist.all_gather(synced_tensor, self._target)
-            return torch.cat(synced_tensor, 0)
+            return torch.cat(synced_tensor)
         if isinstance(self._target, NestedTensor):
             synced_tensors = [None for _ in range(world_size)]
             dist.all_gather_object(synced_tensors, self._target.storage())
             synced_tensors = flist(i.to(self.device) for j in synced_tensors for i in j)
             try:
-                return torch.cat(synced_tensors, 0)
+                return torch.cat(synced_tensors)
             except RuntimeError:
                 if self.return_nested:
-                    return NestedTensor(synced_tensor)
+                    return NestedTensor(synced_tensors)
                 return synced_tensors
         raise ValueError(f"Expected _target to be a Tensor or a NestedTensor, but got {type(self._target)}")
 
@@ -321,7 +295,7 @@ class Metrics(Metric):
                 self._inputs.extend(self._input_buffer)
             self._input_buffer = flist()
         try:
-            return torch.cat(self._inputs, 0)
+            return torch.cat(self._inputs)
         except RuntimeError:
             if self.return_nested:
                 return NestedTensor(self._inputs)
@@ -341,20 +315,20 @@ class Metrics(Metric):
                 self._targets.extend(self._target_buffer)
             self._target_buffer = flist()
         try:
-            return torch.cat(self._targets, 0)
+            return torch.cat(self._targets)
         except RuntimeError:
             if self.return_nested:
                 return NestedTensor(self._inputs)
             return self._targets
 
     def __repr__(self):
-        keys = tuple(i for i in self.metrics.keys())
+        keys = tuple(i for i in self.measure.keys())
         return f"{self.__class__.__name__}{keys}"
 
     def __format__(self, format_spec):
         val, avg = self.value(), self.average()
         return "\t".join(
-            [f"{key}: {val[key].__format__(format_spec)} ({avg[key].__format__(format_spec)})" for key in self.metrics]
+            [f"{key}: {val[key].__format__(format_spec)} ({avg[key].__format__(format_spec)})" for key in self.measure]
         )
 
     def reset(self: Self) -> Self:  # pragma: no cover
@@ -423,8 +397,8 @@ class ScoreMetrics(Metrics):  # pylint: disable=abstract-method
         self, *args, score_name: str | None = None, best_fn: Callable | None = max, **metrics: FlatDict[str, Callable]
     ):
         super().__init__(*args, **metrics)
-        self.score_name = score_name or next(iter(self.metrics.keys()))
-        self.metric = self.metrics[self.score_name]
+        self.score_name = score_name or next(iter(self.measure.keys()))
+        self.metric = self.measure[self.score_name]
         self.best_fn = best_fn or max
 
     def get_score(self, scope: str) -> float | flist:
@@ -436,11 +410,11 @@ class ScoreMetrics(Metrics):  # pylint: disable=abstract-method
 
     @property
     def batch_score(self) -> float | flist:
-        return self._calculate(self.metric, self.input, self.target)
+        return self.measure._compute(self.metric, self.input, self.target)
 
     @property
     def average_score(self) -> float | flist:
-        return self._calculate(self.metric, self.inputs, self.targets)
+        return self.measure._compute(self.metric, self.inputs, self.targets)
 
     @property
     def score_name(self) -> str:
@@ -448,8 +422,8 @@ class ScoreMetrics(Metrics):  # pylint: disable=abstract-method
 
     @score_name.setter
     def score_name(self, name) -> None:
-        if name not in self.metrics:
-            raise ValueError(f"score_name must be in {self.metrics.keys()}, but got {name}")
+        if name not in self.measure:
+            raise ValueError(f"score_name must be in {self.measure.keys()}, but got {name}")
         self._score_name = name
 
 
@@ -481,7 +455,7 @@ class MultiTaskMetrics(MultiTaskDict):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, default_factory=MultiTaskMetrics, **kwargs)
 
-    def update(self, values: Mapping[str, Mapping[str, Tensor]]) -> None:  # pylint: disable=W0237
+    def update(self, values: Mapping[str, Mapping[str, Tensor | NestedTensor | list]]) -> None:  # pylint: disable=W0237
         r"""
         Updates the average and current value in all metrics.
 

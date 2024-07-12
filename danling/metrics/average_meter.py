@@ -92,11 +92,15 @@ class AverageMeter:
 
     def update(self, value, n: float = 1) -> None:
         r"""
-        Updates the average and current value in the meter.
+        Updates the meter with a new value and an optional count.
+
+        This function updates the current value, the sum of values, and the count of values
+        with the provided value and count. It is used to keep track of the running average
+        and other statistics.
 
         Args:
-            value: Value to be added to the average.
-            n: Number of values to be added.
+            value (float): The new value to be added to the meter.
+            n (float, optional): The count of the new value. Defaults to 1.
 
         Examples:
             >>> meter = AverageMeter()

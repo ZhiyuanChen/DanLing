@@ -74,7 +74,7 @@ class Test:
         random.seed(0)
         torch.random.manual_seed(0)
         metrics = Metrics(auroc=auroc, auprc=auprc, acc=accuracy)
-        merge_metrics = Metrics(func=demo_dict_metric_func, merge_dict=True)
+        merge_metrics = Metrics(func=demo_dict_metric_func)
         auc, prc, acc = BinaryAUROC(), BinaryAUPRC(), BinaryAccuracy()
         preds, targets = [], []
         for _ in range(10):
@@ -108,7 +108,7 @@ class Test:
         random.seed(0)
         torch.random.manual_seed(0)
         metrics = Metrics(auroc=auroc, auprc=auprc, acc=accuracy)
-        dict_metrics = Metrics(func=demo_dict_metric_func, merge_dict=False)
+        dict_metrics = Metrics(func=demo_dict_metric_func)
         auc, prc, acc = BinaryAUROC(), BinaryAUPRC(), BinaryAccuracy()
         preds, targets = [], []
         lengths_list = [(2, 3, 5, 7), (11, 13, 17, 19)]
@@ -147,8 +147,7 @@ class Test:
         assert average["auprc"] - prc.compute() < self.epsilon
         assert average["acc"] - acc.compute() < self.epsilon
         ret, dict_ret = metrics.average(), dict_metrics.average()
-        for key, value in ret.items():
-            assert dict_ret[f"func.{key}"] == value
+        assert ret == dict_ret
 
     def test_distributed(self, world_size: int = 8):
         self._test_distributed(self._test_distributed_tensor_binary, world_size)
