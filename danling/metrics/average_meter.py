@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Dict
 
 from chanfig import FlatDict, NestedDict
@@ -169,7 +170,7 @@ class AverageMeters(MetricsDict):
         loss: 0.6000 (0.6000)
         auroc: 0.7000 (0.7000)
         r2: 0.8000 (0.8000)
-        >>> meters.update({"loss": {"value": 0.9, "n": 1}})
+        >>> meters['loss'].update(value= 0.9, n= 1)
         >>> print(f"{meters:.4f}")
         loss: 0.9000 (0.7500)
         auroc: 0.7000 (0.7000)
@@ -196,7 +197,7 @@ class AverageMeters(MetricsDict):
     def count(self) -> FlatDict[str, int]:
         return FlatDict({key: meter.count for key, meter in self.all_items()})
 
-    def update(self, values: Dict, *, n: int = 1) -> None:  # pylint: disable=W0237
+    def update(self, *args: Dict, **values: int | float) -> None:  # pylint: disable=W0237
         r"""
         Updates the average and current value in all meters.
 
@@ -205,7 +206,7 @@ class AverageMeters(MetricsDict):
             n: Number of values to be added.
 
         Raises:
-            ValueError: If the value is not an instance of (int, float, Mapping).
+            ValueError: If the value is not an instance of (int, float).
 
         Examples:
             >>> meters = AverageMeters()
@@ -214,7 +215,7 @@ class AverageMeters(MetricsDict):
             {'loss': 0.6, 'auroc': 0.7, 'r2': 0.8}
             >>> meters.count.dict()
             {'loss': 1, 'auroc': 1, 'r2': 1}
-            >>> meters.update({"loss": {"value": 0.9, "n": 1}})
+            >>> meters['loss'].update(value= 0.9, n= 1)
             >>> meters.sum.dict()
             {'loss': 1.5, 'auroc': 0.7, 'r2': 0.8}
             >>> meters.count.dict()
@@ -229,32 +230,20 @@ class AverageMeters(MetricsDict):
             {'loss': 2.3, 'auroc': 2.3, 'r2': 2.3}
             >>> meters.count.dict()
             {'loss': 3, 'auroc': 3, 'r2': 3}
-            >>> meters.update({"dataset1": {"cls.auroc": 0.9}, "dataset1.reg.r2": 0.8, "dataset2.r2": 0.9})
-            Traceback (most recent call last):
-            ValueError: Expected values to be int, float, or a flat dictionary, but got <class 'dict'>
-            This is likely due to nested dictionary in the values.
-            Nested dictionaries cannot be processed due to the method's design, which uses Mapping to pass both value and count ('n'). Ensure your input is a flat dictionary or a single value.
             >>> meters.update(dict(loss=""))
             Traceback (most recent call last):
-            ValueError: Expected values to be int, float, or a flat dictionary, but got <class 'str'>
+            ValueError: Expected values to be int or float, but got <class 'str'>
         """  # noqa: E501
 
+        if args:
+            if len(args) > 1:
+                raise ValueError("Expected only one positional argument, but got multiple.")
+            values = args[0].update(values) or args[0] if values else args[0]
+
         for meter, value in values.items():
-            if isinstance(value, (int, float)):
-                self[meter].update(value, n)
-            elif isinstance(value, Dict):
-                value.setdefault("n", n)
-                try:
-                    self[meter].update(**value)
-                except TypeError:
-                    raise ValueError(
-                        f"Expected values to be int, float, or a flat dictionary, but got {type(value)}\n"
-                        "This is likely due to nested dictionary in the values.\n"
-                        "Nested dictionaries cannot be processed due to the method's design, which uses Mapping "
-                        "to pass both value and count ('n'). Ensure your input is a flat dictionary or a single value."
-                    ) from None
-            else:
-                raise ValueError(f"Expected values to be int, float, or a flat dictionary, but got {type(value)}")
+            if not isinstance(value, (int, float)):
+                raise ValueError(f"Expected values to be int or float, but got {type(value)}")
+            self[meter].update(value)
 
 
 class MultiTaskAverageMeters(MultiTaskDict):
@@ -267,7 +256,7 @@ class MultiTaskAverageMeters(MultiTaskDict):
         dataset1.cls.auroc: 0.7000 (0.7000)
         dataset1.reg.r2: 0.8000 (0.8000)
         dataset2.r2: 0.9000 (0.9000)
-        >>> meters.update({"loss": {"value": 0.9, "n": 1}})
+        >>> meters['loss'].update(0.9, n=1)
         >>> print(f"{meters:.4f}")
         loss: 0.9000 (0.7500)
         dataset1.cls.auroc: 0.7000 (0.7000)
@@ -306,7 +295,7 @@ class MultiTaskAverageMeters(MultiTaskDict):
     def count(self) -> NestedDict[str, int]:
         return NestedDict({key: meter.count for key, meter in self.all_items()})
 
-    def update(self, values: Dict, *, n: int = 1) -> None:  # pylint: disable=W0237
+    def update(self, *args: Dict, **values: float) -> None:  # pylint: disable=W0237
         r"""
         Updates the average and current value in all meters.
 
@@ -324,7 +313,7 @@ class MultiTaskAverageMeters(MultiTaskDict):
             {'loss': 0.6, 'dataset1': {'cls': {'auroc': 0.7}, 'reg': {'r2': 0.8}}, 'dataset2': {'r2': 0.9}}
             >>> meters.count.dict()
             {'loss': 1, 'dataset1': {'cls': {'auroc': 1}, 'reg': {'r2': 1}}, 'dataset2': {'r2': 1}}
-            >>> meters.update({"loss": {"value": 0.9, "n": 1}})
+            >>> meters['loss'].update(value= 0.9, n= 1)
             >>> meters.sum.dict()
             {'loss': 1.5, 'dataset1': {'cls': {'auroc': 0.7}, 'reg': {'r2': 0.8}}, 'dataset2': {'r2': 0.9}}
             >>> meters.count.dict()
@@ -339,32 +328,23 @@ class MultiTaskAverageMeters(MultiTaskDict):
             {'loss': 2.3, 'dataset1': {'cls': {'auroc': 2.3}, 'reg': {'r2': 2.3}}, 'dataset2': {'r2': 2.5}}
             >>> meters.count.dict()
             {'loss': 3, 'dataset1': {'cls': {'auroc': 3}, 'reg': {'r2': 3}}, 'dataset2': {'r2': 3}}
-            >>> meters.update({"dataset1": {"cls.auroc": 0.9}, "dataset1.reg.r2": 0.8, "dataset2.r2": 0.9})
-            Traceback (most recent call last):
-            ValueError: Expected values to be int, float, or a flat dictionary, but got <class 'dict'>
-            This is likely due to nested dictionary in the values.
-            Nested dictionaries cannot be processed due to the method's design, which uses Mapping to pass both value and count ('n'). Ensure your input is a flat dictionary or a single value.
+            >>> meters.update({"dataset1": {"cls.auroc": 0.7}, "dataset1.reg.r2": 0.7, "dataset2.r2": 0.9})
+            >>> meters.sum.dict()
+            {'loss': 2.3, 'dataset1': {'cls': {'auroc': 3.0}, 'reg': {'r2': 3.0}}, 'dataset2': {'r2': 3.4}}
             >>> meters.update(dict(loss=""))
             Traceback (most recent call last):
-            ValueError: Expected values to be int, float, or a flat dictionary, but got <class 'str'>
+            ValueError: Expected values to be int, float, or a Mapping, but got <class 'str'>
         """  # noqa: E501
 
+        if args:
+            if len(args) > 1:
+                raise ValueError("Expected only one positional argument, but got multiple.")
+            values = args[0].update(values) or args[0] if values else args[0]
+
         for meter, value in values.items():
-            if isinstance(value, (int, float)):
-                self[meter].update(value, n)
-            elif isinstance(value, Dict):
-                value.setdefault("n", n)
-                try:
-                    self[meter].update(**value)
-                except TypeError:
-                    raise ValueError(
-                        f"Expected values to be int, float, or a flat dictionary, but got {type(value)}\n"
-                        "This is likely due to nested dictionary in the values.\n"
-                        "Nested dictionaries cannot be processed due to the method's design, which uses Mapping "
-                        "to pass both value and count ('n'). Ensure your input is a flat dictionary or a single value."
-                    ) from None
-            else:
-                raise ValueError(f"Expected values to be int, float, or a flat dictionary, but got {type(value)}")
+            if not isinstance(value, (int, float, Mapping)):
+                raise ValueError(f"Expected values to be int, float, or a Mapping, but got {type(value)}")
+            self[meter].update(value)
 
     # evil hack, as the default_factory must not be set to make `NestedDict` happy
     # this have some side effects, it will break attribute style intermediate nested dict auto creation
