@@ -32,7 +32,7 @@ from warnings import warn
 
 from chanfig import Config, FlatDict, NestedDict, Variable
 
-from danling.metrics import AverageMeter, AverageMeters
+from danling.metrics import AverageMeter, AverageMeters, MetricMeters
 from danling.typing import File, PathStr
 from danling.utils import catch, ensure_dir, load, save
 
@@ -157,7 +157,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     Attributes: logging:
         meters (AverageMeters | MultiTaskAverageMeters): Average meters.
             Initialised to `AverageMeters` by default.
-        metrics (Metrics | MultiTaskMetrics | None): Metrics for evaluating.
+        metrics (Metrics | MultiTaskMetrics | MetricMeters | None): Metrics for evaluating.
         logger:
         writer:
 
@@ -186,7 +186,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
 
     results: NestedDict
     meters: AverageMeters
-    metrics: Metrics | None = None
+    metrics: Metrics | MetricMeters | None = None
     logger: logging.Logger | None = None
     writer: Any | None = None
 

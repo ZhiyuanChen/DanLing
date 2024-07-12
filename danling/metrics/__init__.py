@@ -20,6 +20,7 @@ from functools import partial
 from lazy_imports import try_import
 
 from .average_meter import AverageMeter, AverageMeters, MultiTaskAverageMeters
+from .metric_meter import MetricMeter, MetricMeters, MultiTaskMetricMeters
 
 with try_import() as lazy_import:
     from .functional import accuracy, auprc, auroc, mcc, pearson, r2_score, rmse, spearman
@@ -28,6 +29,9 @@ with try_import() as lazy_import:
 __all__ = [
     "Metrics",
     "MultiTaskMetrics",
+    "MetricMeter",
+    "MetricMeters",
+    "MultiTaskMetricMeters",
     "AverageMeter",
     "AverageMeters",
     "MultiTaskAverageMeters",
