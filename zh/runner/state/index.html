@@ -352,7 +352,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../metrics/metrics/" class="md-tabs__link">
+        <a href="../../metrics/measure/" class="md-tabs__link">
           
   
     
@@ -448,9 +448,7 @@
   
 
 
-  
-
-<nav class="md-nav md-nav--primary md-nav--lifted md-nav--integrated" aria-label="导航栏" data-md-level="0">
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="导航栏" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
     <a href="../../" title="DanLing" class="md-nav__button md-logo" aria-label="DanLing" data-md-component="logo">
       
@@ -665,6 +663,10 @@
       
         
       
+        
+      
+        
+      
     
     
       
@@ -683,7 +685,7 @@
         
   
   
-    <a href="../../metrics/metrics/" class="md-nav__link">
+    <a href="../../metrics/measure/" class="md-nav__link">
       
   
   <span class="md-ellipsis">
@@ -833,6 +835,80 @@
               </div>
             
             
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#danling.runner.state" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-module"></code>&nbsp;state
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" state">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#danling.runner.state.RunnerState" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;RunnerState
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" RunnerState">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#danling.runner.state.RunnerState.experiment_uuid" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;experiment_uuid
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#danling.runner.state.RunnerState.run_uuid" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;run_uuid
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
           
           
             <div class="md-content" data-md-component="content">
@@ -851,7 +927,12 @@
 
 
 
-<a id="danling.runner.state"></a>
+<h2 id="danling.runner.state" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-module"></code>            <span class="doc doc-object-name doc-module-name">danling.runner.state</span>
+
+
+<a href="#danling.runner.state" class="headerlink" title="Permanent link">&para;</a></h2>
+
     <div class="doc doc-contents first">
 
 
@@ -869,16 +950,16 @@
 
 
 
-<h2 id="danling.runner.state.RunnerState" class="doc doc-heading">
-            <code>RunnerState</code>
+<h3 id="danling.runner.state.RunnerState" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">RunnerState</span>
 
 
-<a href="#danling.runner.state.RunnerState" class="headerlink" title="Permanent link">&para;</a></h2>
+<a href="#danling.runner.state.RunnerState" class="headerlink" title="Permanent link">&para;</a></h3>
 
 
     <div class="doc doc-contents ">
             <p class="doc doc-class-bases">
-              Bases: <code><span title="chanfig.NestedDict">NestedDict</span></code></p>
+              Bases: <code><a class="autorefs autorefs-external" title="chanfig.NestedDict" href="https://chanfig.danling.org/zh/nested_dict/#chanfig.NestedDict">NestedDict</a></code></p>
 
 
       <p><code>RunnerState</code> is a <code>NestedDict</code> that contains all states of a <code>Runner</code>.</p>
@@ -886,7 +967,7 @@
 from a state and corresponding weights or even restart a run from a state.</p>
 <p><code>RunnerState</code> is also designed to be serialisable and hashable, so that you can save it to a file.
 <code>RunnerState</code> is saved in checkpoint together with weights by default.</p>
-<p>Since <code>RunnerState</code> is a [<code>NestedDict</code>][chanfig.NestedDict], you can access its attributes by
+<p>Since <code>RunnerState</code> is a <a class="autorefs autorefs-external" href="https://chanfig.danling.org/zh/nested_dict/#chanfig.NestedDict"><code>NestedDict</code></a>, you can access its attributes by
 <code>state["key"]</code> or <code>state.key</code>.</p>
 
 
@@ -903,7 +984,7 @@ from a state and corresponding weights or even restart a run from a state.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runner.state.RunnerState.run_name">run_name</span></code></td>
             <td>
-                  <code>str</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -914,7 +995,7 @@ from a state and corresponding weights or even restart a run from a state.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runner.state.RunnerState.run_id">run_id</span></code></td>
             <td>
-                  <code>str</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -925,7 +1006,7 @@ from a state and corresponding weights or even restart a run from a state.</p>
           <tr class="doc-section-item">
             <td><code><a class="autorefs autorefs-internal" title="danling.runner.state.RunnerState.run_uuid" href="#danling.runner.state.RunnerState.run_uuid">run_uuid</a></code></td>
             <td>
-                  <code>(<span title="uuid.UUID">UUID</span>, property)</code>
+                  <code>(<a class="autorefs autorefs-external" title="uuid.UUID" href="https://docs.python.org/3/library/uuid.html#uuid.UUID">UUID</a>, <a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#property">property</a>)</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -936,7 +1017,7 @@ from a state and corresponding weights or even restart a run from a state.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runner.state.RunnerState.experiment_name">experiment_name</span></code></td>
             <td>
-                  <code>str</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -947,7 +1028,7 @@ from a state and corresponding weights or even restart a run from a state.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runner.state.RunnerState.experiment_id">experiment_id</span></code></td>
             <td>
-                  <code>str</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -959,7 +1040,7 @@ Defaults to <code>"xxxxxxxxxxxxxxxx"</code> if Runner not under a git repo or gi
           <tr class="doc-section-item">
             <td><code><a class="autorefs autorefs-internal" title="danling.runner.state.RunnerState.experiment_uuid" href="#danling.runner.state.RunnerState.experiment_uuid">experiment_uuid</a></code></td>
             <td>
-                  <code>(<span title="uuid.UUID">UUID</span>, property)</code>
+                  <code>(<a class="autorefs autorefs-external" title="uuid.UUID" href="https://docs.python.org/3/library/uuid.html#uuid.UUID">UUID</a>, <a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#property">property</a>)</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -986,7 +1067,7 @@ if Runner not under a git repo or git/gitpython not installed.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runner.state.RunnerState.seed">seed</span></code></td>
             <td>
-                  <code>int</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -997,7 +1078,7 @@ if Runner not under a git repo or git/gitpython not installed.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runner.state.RunnerState.deterministic">deterministic</span></code></td>
             <td>
-                  <code>bool</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1023,7 +1104,7 @@ Defaults to <code>False</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runner.state.RunnerState.iters">iters</span></code></td>
             <td>
-                  <code>int</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1035,7 +1116,7 @@ equals to <code>steps</code> when <code>batch_size = 1</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runner.state.RunnerState.steps">steps</span></code></td>
             <td>
-                  <code>int</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1046,7 +1127,7 @@ equals to <code>steps</code> when <code>batch_size = 1</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runner.state.RunnerState.epochs">epochs</span></code></td>
             <td>
-                  <code>int</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1057,7 +1138,7 @@ equals to <code>steps</code> when <code>batch_size = 1</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runner.state.RunnerState.iter_end">iter_end</span></code></td>
             <td>
-                  <code>int</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1069,7 +1150,7 @@ Note that <code>step_end</code> not initialised since this variable may not appl
           <tr class="doc-section-item">
             <td><code><span title="danling.runner.state.RunnerState.step_end">step_end</span></code></td>
             <td>
-                  <code>int</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1081,7 +1162,7 @@ Note that <code>step_end</code> not initialised since this variable may not appl
           <tr class="doc-section-item">
             <td><code><span title="danling.runner.state.RunnerState.epoch_end">epoch_end</span></code></td>
             <td>
-                  <code>int</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1108,7 +1189,7 @@ Note that <code>epoch_end</code> not initialised since this variable may not app
           <tr class="doc-section-item">
             <td><code><span title="danling.runner.state.RunnerState.project_root">project_root</span></code></td>
             <td>
-                  <code>str</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1140,7 +1221,7 @@ In practice, <code>checkpoint_dir_name</code> is rarely called.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runner.state.RunnerState.log">log</span></code></td>
             <td>
-                  <code>bool</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1152,7 +1233,7 @@ Defaults to <code>True</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runner.state.RunnerState.tensorboard">tensorboard</span></code></td>
             <td>
-                  <code>bool</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1164,7 +1245,7 @@ Defaults to <code>False</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runner.state.RunnerState.log_interval">log_interval</span></code></td>
             <td>
-                  <code>int</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1176,7 +1257,7 @@ Defaults to <code>None</code>, print logs every 1/10 of the longest split.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runner.state.RunnerState.save_interval">save_interval</span></code></td>
             <td>
-                  <code>int</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1503,15 +1584,17 @@ If &lt;= 0, save only the latest and the best checkpoints.</p>
 
 
 
-<h3 id="danling.runner.state.RunnerState.experiment_uuid" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">experiment_uuid</span><span class="p">:</span> <span class="n">UUID</span></code>
+<h4 id="danling.runner.state.RunnerState.experiment_uuid" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">experiment_uuid</span>
+
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-property"><code>property</code></small>
   </span>
 
-<a href="#danling.runner.state.RunnerState.experiment_uuid" class="headerlink" title="Permanent link">&para;</a></h3>
-
+<a href="#danling.runner.state.RunnerState.experiment_uuid" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="doc-signature highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-1">1</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1"></a><span class="n">experiment_uuid</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" title="uuid.UUID" href="https://docs.python.org/3/library/uuid.html#uuid.UUID">UUID</a></span>
+</code></pre></div></td></tr></table></div>
 
     <div class="doc doc-contents ">
 
@@ -1524,15 +1607,17 @@ If &lt;= 0, save only the latest and the best checkpoints.</p>
 
 
 
-<h3 id="danling.runner.state.RunnerState.run_uuid" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">run_uuid</span><span class="p">:</span> <span class="n">UUID</span></code>
+<h4 id="danling.runner.state.RunnerState.run_uuid" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">run_uuid</span>
+
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-property"><code>property</code></small>
   </span>
 
-<a href="#danling.runner.state.RunnerState.run_uuid" class="headerlink" title="Permanent link">&para;</a></h3>
-
+<a href="#danling.runner.state.RunnerState.run_uuid" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="doc-signature highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-1">1</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1"></a><span class="n">run_uuid</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" title="uuid.UUID" href="https://docs.python.org/3/library/uuid.html#uuid.UUID">UUID</a></span>
+</code></pre></div></td></tr></table></div>
 
     <div class="doc doc-contents ">
 
@@ -1669,7 +1754,7 @@ If &lt;= 0, save only the latest and the best checkpoints.</p>
       <div class="md-copyright">
   
     <div class="md-copyright__highlight">
-      All rights reserved &copy; 2021-2023, DanLing Contributors
+      All rights reserved &copy; 2021-Present, DanLing Contributors
     </div>
   
   
@@ -1683,6 +1768,8 @@ If &lt;= 0, save only the latest and the best checkpoints.</p>
     <div class="md-dialog" data-md-component="dialog">
       <div class="md-dialog__inner md-typeset"></div>
     </div>
+    
+      <div class="md-progress" data-md-component="progress" role="progressbar"></div>
     
     
       <div class="md-consent" data-md-component="consent" id="__consent" hidden>
@@ -1759,7 +1846,7 @@ If &lt;= 0, save only the latest and the best checkpoints.</p>
       </div>
       <script>var consent=__md_get("__consent");if(consent)for(var input of document.forms.consent.elements)input.name&&(input.checked=consent[input.name]||!1);else"file:"!==location.protocol&&setTimeout(function(){document.querySelector("[data-md-component=consent]").hidden=!1},250);var action,form=document.forms.consent;for(action of["submit","reset"])form.addEventListener(action,function(e){if(e.preventDefault(),"reset"===e.type)for(var n of document.forms.consent.elements)n.name&&(n.checked=!1);__md_set("__consent",Object.fromEntries(Array.from(new FormData(form).keys()).map(function(e){return[e,!0]}))),location.hash="",location.reload()})</script>
     
-    <script id="__config" type="application/json">{"base": "../../..", "features": ["announce.dismiss", "content.code.annotate", "content.code.copy", "content.tabs.link", "content.tooltips", "header.autohide", "navigation.expand", "navigation.footer", "navigation.indexes", "navigation.prune", "navigation.sections", "navigation.tabs", "navigation.tabs.sticky", "navigation.top", "navigation.tracking", "search.highlight", "search.share", "search.suggest", "toc.follow", "toc.integrate"], "search": "../../../assets/javascripts/workers/search.b8dbb3d2.min.js", "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}}</script>
+    <script id="__config" type="application/json">{"base": "../../..", "features": ["announce.dismiss", "content.code.annotate", "content.code.copy", "content.code.select", "content.tabs.link", "content.tooltips", "header.autohide", "navigation.expand", "navigation.footer", "navigation.indexes", "navigation.instant", "navigation.instant.prefetch", "navigation.instant.progress", "navigation.prune", "navigation.sections", "navigation.tabs", "navigation.tabs.sticky", "navigation.top", "navigation.tracking", "search.highlight", "search.share", "search.suggest", "toc.follow"], "search": "../../../assets/javascripts/workers/search.b8dbb3d2.min.js", "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}}</script>
     
     
       <script src="../../../assets/javascripts/bundle.fe8b6f2b.min.js"></script>
