@@ -18,6 +18,8 @@
 # pylint: disable=redefined-builtin
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import torch
 from lazy_imports import try_import
 from torch import Tensor
@@ -180,7 +182,19 @@ def rmse(
     return mse(input, target).sqrt()
 
 
-def preprocess(input: Tensor | NestedTensor, target: Tensor | NestedTensor, ignored_index: int | None = None):
+def preprocess(
+    input: Tensor | NestedTensor | Sequence, target: Tensor | NestedTensor | Sequence, ignored_index: int | None = None
+):
+    if not isinstance(input, (Tensor, NestedTensor)):
+        try:
+            input = torch.tensor(input)
+        except ValueError:
+            input = NestedTensor(input)
+    if not isinstance(target, (Tensor, NestedTensor)):
+        try:
+            target = torch.tensor(target)
+        except ValueError:
+            target = NestedTensor(target)
     if isinstance(input, NestedTensor) or isinstance(target, NestedTensor):
         if isinstance(input, NestedTensor) and isinstance(target, Tensor):
             target = input.nested_like(target, strict=False)
