@@ -43,13 +43,6 @@
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metrics/average_meter/"/>
     </url>
     <url>
-        <loc>https://danling.org/metrics/measure/</loc>
-        <lastmod>2024-07-12</lastmod>
-        <changefreq>daily</changefreq>
-        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metrics/measure/"/>
-        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metrics/measure/"/>
-    </url>
-    <url>
         <loc>https://danling.org/metrics/metrics/</loc>
         <lastmod>2024-07-12</lastmod>
         <changefreq>daily</changefreq>
@@ -195,13 +188,6 @@
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metrics/average_meter/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metrics/average_meter/"/>
-    </url>
-    <url>
-        <loc>https://danling.org/zh/metrics/measure/</loc>
-        <lastmod>2024-07-12</lastmod>
-        <changefreq>daily</changefreq>
-        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metrics/measure/"/>
-        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metrics/measure/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/metrics/metrics/</loc>
