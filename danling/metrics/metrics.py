@@ -120,9 +120,14 @@ class Metrics(Metric):
         )
         >>> f"{metrics:.4f}"
         'auroc: 0.6667 (0.6667)\tauprc: 0.5000 (0.5556)'
+        >>> metrics = Metrics(auroc=auroc, auprc=auprc, ignored_index=-100)
+        >>> metrics.update([[0.1, 0.4, 0.6, 0.8], [0.1, 0.4, 0.6]], [[0, -100, 1, 0], [0, -100, 1]])
+        >>> metrics.input, metrics.target
+        (PNTensor([0.1000, 0.6000, 0.8000, 0.1000, 0.6000]), PNTensor([0, 1, 0, 0, 1]))
     """
 
     metrics: FlatDict[str, Callable]
+    ignored_index: int | None = None
     _input: Tensor
     _target: Tensor
     _inputs: flist
@@ -140,6 +145,7 @@ class Metrics(Metric):
         merge_dict: bool | None = None,
         return_nested: bool | None = None,
         device: torch.device | None = None,
+        ignored_index: int | None = None,
         **metrics: FlatDict[str, Callable],
     ):
         super().__init__(device=device)
@@ -154,23 +160,44 @@ class Metrics(Metric):
             self.merge_dict = merge_dict
         if return_nested is not None:
             self.return_nested = return_nested
+        self.ignored_index = ignored_index
 
     @torch.inference_mode()
     def update(self, input: Any, target: Any) -> None:  # pylint: disable=W0221
+        # convert input and target to Tensor if they are not
+        if not isinstance(input, (Tensor, NestedTensor)):
+            try:
+                input = torch.tensor(input)
+            except ValueError:
+                input = NestedTensor(input)
+        if not isinstance(target, (Tensor, NestedTensor)):
+            try:
+                target = torch.tensor(target)
+            except ValueError:
+                target = NestedTensor(target)
+        # convert input and target to NestedTensor if one of them is
+        if isinstance(input, NestedTensor) or isinstance(target, NestedTensor):
+            if isinstance(input, NestedTensor) and isinstance(target, Tensor):
+                target = input.nested_like(target, strict=False)
+            if isinstance(target, NestedTensor) and isinstance(input, Tensor):
+                input = target.nested_like(input, strict=False)
+        # remove ignored index
+        if self.ignored_index is not None:
+            if isinstance(input, NestedTensor):
+                indices = [i != self.ignored_index for i in target.storage()]
+                input = NestedTensor([t[i] for t, i in zip(input.storage(), indices)])
+                target = NestedTensor([t[i] for t, i in zip(target.storage(), indices)])
+            else:
+                input, target = input[target != self.ignored_index], target[target != self.ignored_index]
+        # update internal state
         if isinstance(input, NestedTensor):
             self._input = input
             self._input_buffer.extend(input.cpu().storage())
-        else:
-            if not isinstance(input, torch.Tensor):
-                input = torch.tensor(input)
-            self._input = input
-            self._input_buffer.append(input.cpu())
-        if isinstance(target, NestedTensor):
             self._target = target
             self._target_buffer.extend(target.cpu().storage())
         else:
-            if not isinstance(target, torch.Tensor):
-                target = torch.tensor(target)
+            self._input = input
+            self._input_buffer.append(input.cpu())
             self._target = target
             self._target_buffer.append(target.cpu())
 
@@ -337,7 +364,7 @@ class Metrics(Metric):
         the last ``self.to(device)`` call.
         """
         for state_name, default in self._state_name_to_default.items():
-            if isinstance(default, torch.Tensor):
+            if isinstance(default, Tensor):
                 setattr(self, state_name, default.clone().to(self.device))
             elif isinstance(default, list):
                 setattr(
@@ -359,8 +386,8 @@ class Metrics(Metric):
             else:
                 raise TypeError(
                     f"Invalid type for default value for {state_name}. Received {type(default)},"
-                    "but expected ``torch.Tensor``, a list of ``torch.Tensor``,"
-                    "a dictionary with ``torch.Tensor``, int, or float."
+                    "but expected ``Tensor``, a list of ``Tensor``,"
+                    "a dictionary with ``Tensor``, int, or float."
                 )
         return self
 
