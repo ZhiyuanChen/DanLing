@@ -2,7 +2,7 @@ site_name: DanLing
 site_url: https://danling.org
 site_author: DanLing Contributors
 site_description: Scaffold for experienced Machine Learning Researchers
-copyright: All rights reserved &copy; 2021-2023, DanLing Contributors
+copyright: All rights reserved &copy; 2021-Present, DanLing Contributors
 
 repo_name: DanLing
 repo_url: https://github.com/ZhiyuanChen/DanLing
@@ -62,13 +62,16 @@ theme:
     # - content.action.view
     - content.code.annotate
     - content.code.copy
+    - content.code.select
     - content.tabs.link
     - content.tooltips
     - header.autohide
     - navigation.expand
     - navigation.footer
     - navigation.indexes
-    # - navigation.instant
+    - navigation.instant
+    - navigation.instant.prefetch
+    - navigation.instant.progress
     - navigation.prune
     - navigation.sections
     - navigation.tabs
@@ -79,7 +82,7 @@ theme:
     - search.share
     - search.suggest
     - toc.follow
-    - toc.integrate
+    # - toc.integrate
   font: false
 
 extra:
@@ -144,8 +147,8 @@ markdown_extensions:
   - pymdownx.critic
   - pymdownx.details
   - pymdownx.emoji:
-      emoji_index: !!python/name:materialx.emoji.twemoji
-      emoji_generator: !!python/name:materialx.emoji.to_svg
+      emoji_index: !!python/name:materialy.gemoji
+      emoji_generator: !!python/name:materialy.to_png
   - pymdownx.highlight:
       anchor_linenums: true
       auto_title: true
@@ -176,6 +179,20 @@ plugins:
   - mkdocstrings:
       handlers:
         python:
+          options:
+            members_order: source
+            parameter_headings: true
+            show_root_heading: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+          import:
+            - https://docs.python.org/3/objects.inv
+            - https://pytorch.org/docs/stable/objects.inv
+            - https://huggingface.co/docs/transformers/master/en/objects.inv
+            - https://chanfig.danling.org/objects.inv
           rendering:
             members_order: source
   - i18n:
@@ -204,6 +221,7 @@ plugins:
   - search:
       separator: '[\s\u200b\-]'
   - tags
+  # - typeset
 
 watch:
   - ../danling/
