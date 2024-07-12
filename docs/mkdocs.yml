@@ -24,6 +24,7 @@ nav:
   - Metrics:
       - Metrics: metrics/metrics.md
       - AverageMeter: metrics/average_meter.md
+      - Utils: metrics/utils.md
   - Utilities:
       - Decorator: utils/decorators.md
       - Context Manager: utils/contextmanagers.md
@@ -191,8 +192,10 @@ plugins:
           import:
             - https://docs.python.org/3/objects.inv
             - https://pytorch.org/docs/stable/objects.inv
+            - https://pytorch.org/torcheval/stable/objects.inv
             - https://huggingface.co/docs/transformers/master/en/objects.inv
             - https://chanfig.danling.org/objects.inv
+            - https://lightning.ai/docs/torchmetrics/stable/objects.inv
           rendering:
             members_order: source
   - i18n:

@@ -18,9 +18,9 @@
 # pylint: disable=redefined-builtin
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from math import nan
-from typing import Any, Callable, Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 import torch
 from chanfig import DefaultDict, FlatDict
@@ -146,7 +146,7 @@ class Metrics(Metric):
         return_nested: bool | None = None,
         device: torch.device | None = None,
         ignored_index: int | None = None,
-        **metrics: FlatDict[str, Callable],
+        **metrics: Callable,
     ):
         super().__init__(device=device)
         self._add_state("_input", torch.empty(0))
@@ -163,7 +163,7 @@ class Metrics(Metric):
         self.ignored_index = ignored_index
 
     @torch.inference_mode()
-    def update(self, input: Any, target: Any) -> None:  # pylint: disable=W0221
+    def update(self, input: Tensor | NestedTensor | Sequence, target: Tensor | NestedTensor | Sequence) -> None:
         # convert input and target to Tensor if they are not
         if not isinstance(input, (Tensor, NestedTensor)):
             try:
@@ -192,41 +192,41 @@ class Metrics(Metric):
         # update internal state
         if isinstance(input, NestedTensor):
             self._input = input
-            self._input_buffer.extend(input.cpu().storage())
+            self._input_buffer.extend(input.cpu().storage())  # type: ignore[union-attr]
             self._target = target
-            self._target_buffer.extend(target.cpu().storage())
+            self._target_buffer.extend(target.cpu().storage())  # type: ignore[union-attr]
         else:
             self._input = input
-            self._input_buffer.append(input.cpu())
+            self._input_buffer.append(input.cpu())  # type: ignore[union-attr]
             self._target = target
-            self._target_buffer.append(target.cpu())
+            self._target_buffer.append(target.cpu())  # type: ignore[union-attr]
 
-    def compute(self) -> FlatDict[str, float]:
+    def compute(self) -> FlatDict[str, float | flist]:
         return self.calculate(self.inputs.to(self.device), self.targets.to(self.device))
 
-    def value(self) -> FlatDict[str, float]:
+    def value(self) -> FlatDict[str, float | flist]:
         return self.calculate(self._input, self._target)
 
-    def batch(self) -> FlatDict[str, float]:
+    def batch(self) -> FlatDict[str, float | flist]:
         return self.calculate(self.input, self.target)
 
-    def average(self) -> FlatDict[str, float]:
+    def average(self) -> FlatDict[str, float | flist]:
         return self.calculate(self.inputs.to(self.device), self.targets.to(self.device))
 
     @property
-    def val(self) -> FlatDict[str, float]:
+    def val(self) -> FlatDict[str, float | flist]:
         return self.value()
 
     @property
-    def bat(self) -> FlatDict[str, float]:
+    def bat(self) -> FlatDict[str, float | flist]:
         return self.batch()
 
     @property
-    def avg(self) -> FlatDict[str, float]:
+    def avg(self) -> FlatDict[str, float | flist]:
         return self.average()
 
     @torch.inference_mode()
-    def calculate(self, input: Tensor, target: Tensor) -> flist | float:
+    def calculate(self, input: Tensor, target: Tensor) -> FlatDict[str, flist | float]:
         if (
             isinstance(input, (Tensor, NestedTensor))
             and input.numel() == 0 == target.numel()
@@ -280,7 +280,7 @@ class Metrics(Metric):
                 return torch.cat(synced_tensors, 0)
             except RuntimeError:
                 if self.return_nested:
-                    return NestedTensor(synced_tensor)
+                    return NestedTensor(synced_tensors)
                 return synced_tensors
         raise ValueError(f"Expected _input to be a Tensor or a NestedTensor, but got {type(self._input)}")
 
@@ -303,7 +303,7 @@ class Metrics(Metric):
                 return torch.cat(synced_tensors, 0)
             except RuntimeError:
                 if self.return_nested:
-                    return NestedTensor(synced_tensor)
+                    return NestedTensor(synced_tensors)
                 return synced_tensors
         raise ValueError(f"Expected _target to be a Tensor or a NestedTensor, but got {type(self._target)}")
 
@@ -481,7 +481,7 @@ class MultiTaskMetrics(MultiTaskDict):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, default_factory=MultiTaskMetrics, **kwargs)
 
-    def update(self, values: Mapping[str, Mapping[str, Tensor]]) -> None:  # pylint: disable=W0237
+    def update(self, values: Mapping[str, Mapping[str, Tensor | NestedTensor | Sequence]]) -> None:
         r"""
         Updates the average and current value in all metrics.
 
