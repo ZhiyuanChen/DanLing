@@ -456,7 +456,7 @@ class ScoreMetrics(Metrics):  # pylint: disable=abstract-method
 class MultiTaskMetrics(MultiTaskDict):
     r"""
     Examples:
-        >>> from danling.metrics.functional import auroc, auprc, pearson, spearman, accuracy, matthews_corrcoef
+        >>> from danling.metrics.functional import auroc, auprc, pearson, spearman, accuracy, mcc
         >>> metrics = MultiTaskMetrics()
         >>> metrics.dataset1.cls = Metrics(auroc=auroc, auprc=auprc)
         >>> metrics.dataset1.reg = Metrics(pearson=pearson, spearman=spearman)

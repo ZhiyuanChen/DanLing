@@ -102,7 +102,7 @@ def accuracy(
     raise ValueError("Could not infer the type of the task. Only one of `num_labels`, `num_classes` is allowed.")
 
 
-def matthews_corrcoef(
+def mcc(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
     threshold: float = 0.5,
