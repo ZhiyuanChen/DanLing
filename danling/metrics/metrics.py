@@ -476,6 +476,14 @@ class MultiTaskMetrics(MultiTaskDict):
         >>> metrics.update({"dataset1.cls": {"input": [0.1, 0.4, 0.6, 0.8], "target": [0, 0, 1, 0]}, "dataset1.reg": {"input": [0.2, 0.3, 0.5, 0.7], "target": [0.2, 0.4, 0.6, 0.8]}, "dataset2": {"input": [0.2, 0.3, 0.5, 0.7], "target": [0, 0, 1, 0]}})
         >>> f"{metrics:.4f}"
         'dataset1.cls: auroc: 0.6667 (0.7000)\tauprc: 0.5000 (0.5556)\ndataset1.reg: pearson: 0.9898 (0.9146)\tspearman: 1.0000 (0.9222)\ndataset2: auroc: 0.6667 (0.7333)\tauprc: 0.5000 (0.7000)'
+        >>> metrics.update({"dataset1": {"cls": {"input": [0.1, 0.4, 0.6, 0.8]}}})
+        Traceback (most recent call last):
+        ValueError: Expected values to be a flat dictionary, but got <class 'dict'>
+        This is likely due to nested dictionary in the values.
+        Nested dictionaries cannot be processed due to the method's design, which uses Mapping to pass both input and target. Ensure your input is a flat dictionary or a single value.
+        >>> metrics.update(dict(loss=""))
+        Traceback (most recent call last):
+        ValueError: Expected values to be a flat dictionary, but got <class 'str'>
     """  # noqa: E501
 
     def __init__(self, *args, **kwargs):
@@ -490,34 +498,7 @@ class MultiTaskMetrics(MultiTaskDict):
 
         Raises:
             ValueError: If the value is not an instance of (Mapping).
-
-        Examples:
-            >>> from danling.metrics.functional import auroc, auprc, pearson, spearman
-            >>> metrics = MultiTaskMetrics()
-            >>> metrics.dataset1.cls = Metrics(auroc=auroc, auprc=auprc)
-            >>> metrics.dataset1.reg = Metrics(pearson=pearson, spearman=spearman)
-            >>> metrics.dataset2 = Metrics(auroc=auroc, auprc=auprc)
-            >>> metrics.update({"dataset1.cls": {"input": [0.2, 0.4, 0.5, 0.7], "target": [0, 1, 0, 1]}, "dataset1.reg": {"input": [0.1, 0.4, 0.6, 0.8], "target": [0.2, 0.3, 0.5, 0.7]}})
-            >>> f"{metrics:.4f}"
-            'dataset1.cls: auroc: 0.7500 (0.7500)\tauprc: 0.8333 (0.8333)\ndataset1.reg: pearson: 0.9691 (0.9691)\tspearman: 1.0000 (1.0000)\ndataset2: auroc: nan (nan)\tauprc: nan (nan)'
-            >>> metrics.update({"dataset2": {"input": [0.1, 0.4, 0.6, 0.8], "target": [0, 1, 0, 1]}})
-            >>> f"{metrics:.4f}"
-            'dataset1.cls: auroc: 0.7500 (0.7500)\tauprc: 0.8333 (0.8333)\ndataset1.reg: pearson: 0.9691 (0.9691)\tspearman: 1.0000 (1.0000)\ndataset2: auroc: 0.7500 (0.7500)\tauprc: 0.8333 (0.8333)'
-            >>> metrics.update({"dataset1.cls": {"input": [0.1, 0.4, 0.6, 0.8], "target": [0, 0, 1, 0]}})
-            >>> f"{metrics:.4f}"
-            'dataset1.cls: auroc: 0.6667 (0.7000)\tauprc: 0.5000 (0.5556)\ndataset1.reg: pearson: 0.9691 (0.9691)\tspearman: 1.0000 (1.0000)\ndataset2: auroc: 0.7500 (0.7500)\tauprc: 0.8333 (0.8333)'
-            >>> metrics.update({"dataset1.reg": {"input": [0.2, 0.3, 0.5, 0.7], "target": [0.2, 0.4, 0.6, 0.8]}})
-            >>> f"{metrics:.4f}"
-            'dataset1.cls: auroc: 0.6667 (0.7000)\tauprc: 0.5000 (0.5556)\ndataset1.reg: pearson: 0.9898 (0.9146)\tspearman: 1.0000 (0.9222)\ndataset2: auroc: 0.7500 (0.7500)\tauprc: 0.8333 (0.8333)'
-            >>> metrics.update({"dataset1": {"cls": {"input": [0.1, 0.4, 0.6, 0.8]}}})
-            Traceback (most recent call last):
-            ValueError: Expected values to be a flat dictionary, but got <class 'dict'>
-            This is likely due to nested dictionary in the values.
-            Nested dictionaries cannot be processed due to the method's design, which uses Mapping to pass both input and target. Ensure your input is a flat dictionary or a single value.
-            >>> metrics.update(dict(loss=""))
-            Traceback (most recent call last):
-            ValueError: Expected values to be a flat dictionary, but got <class 'str'>
-        """  # noqa: E501
+        """
 
         for metric, value in values.items():
             if isinstance(value, Mapping):
