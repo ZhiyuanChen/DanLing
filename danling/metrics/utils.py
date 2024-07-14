@@ -69,7 +69,7 @@ class MetricsDict(DefaultDict):
             metric.reset()
 
     def __format__(self, format_spec) -> str:
-        return "\n".join(f"{key}: {metric.__format__(format_spec)}" for key, metric in self.all_items())
+        return "\t".join(f"{key}: {metric.__format__(format_spec)}" for key, metric in self.all_items())
 
 
 class MultiTaskDict(NestedDict):
