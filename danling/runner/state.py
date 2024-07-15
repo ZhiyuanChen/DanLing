@@ -142,7 +142,8 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
         for k, v in self.__class__.__dict__.items():
             if not (k.startswith("__") and k.endswith("__")) and (not (isinstance(v, property) or callable(v))):
                 self.set(k, v)
-        self.seed = randint(0, 2**32 - 1)
+        if "seed" not in self:
+            self.seed = randint(0, 2**32 - 1)
         super().__init__(*args, **kwargs)
         if "experiment_id" not in self:
             self.experiment_id = get_git_hash() or defaults.DEFAULT_EXPERIMENT_ID
