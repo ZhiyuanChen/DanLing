@@ -1047,6 +1047,62 @@ class NestedTensor:
     def _dim(self, storage) -> torch.Size:
         return max(t.dim() for t in storage) + 1
 
+    def view(self, *shape) -> Tensor:
+        r"""
+        Returns a torch tensor with a different shape.
+
+        Note:
+            since NestedTensor is a collection of tensors, the view operation is ambiguous.
+
+            Therefore, it is converted to a tensor and then reshaped.
+
+        Args:
+            shape: The desired size of each dimension.
+
+        Returns:
+            (Tensor):
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.view(3, 2)
+            tensor([[1, 2],
+                    [3, 4],
+                    [5, 0]])
+            >>> nested_tensor.view(2, 3)
+            tensor([[1, 2, 3],
+                    [4, 5, 0]])
+        """
+
+        return self.tensor.view(*shape)
+
+    def reshape(self, *shape) -> Tensor:
+        r"""
+        Returns a torch tensor with a different shape.
+
+        Note:
+            since NestedTensor is a collection of tensors, the reshape operation is ambiguous.
+
+            Therefore, it is converted to a tensor and then reshaped.
+
+        Args:
+            shape: The desired size of each dimension.
+
+        Returns:
+            (Tensor):
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.reshape(3, 2)
+            tensor([[1, 2],
+                    [3, 4],
+                    [5, 0]])
+            >>> nested_tensor.reshape(2, 3)
+            tensor([[1, 2, 3],
+                    [4, 5, 0]])
+        """
+
+        return self.tensor.reshape(*shape)
+
 
 NestedTensorFunc = TorchFuncRegistry()
 
