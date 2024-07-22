@@ -14,12 +14,12 @@ keywords = [
   "Deep Learning",
   "Machine Learning",
 ]
-license = {file = "LICENSE"}
+license = { file = "LICENSE" }
 maintainers = [
-    {name = "Zhiyuan Chen", email = "this@zyc.ai"},
+  { name = "Zhiyuan Chen", email = "this@zyc.ai" },
 ]
 authors = [
-    {name = "Zhiyuan Chen", email = "this@zyc.ai"},
+  { name = "Zhiyuan Chen", email = "this@zyc.ai" },
 ]
 requires-python = ">=3.7"
 classifiers = [
@@ -41,34 +41,32 @@ dynamic = [
   "version",
 ]
 dependencies = [
-  'cached-property; python_version < "3.8"',
+  "cached-property; python_version<'3.8'",
   "chanfig>=0.0.96",
   "gitpython",
   "lazy-imports",
-  'strenum; python_version < "3.11"',
+  "strenum; python_version<'3.11'",
   "tqdm",
 ]
-[project.optional-dependencies]
-jax = [
+optional-dependencies.jax = [
   "flax",
   "jax",
 ]
-tensorflow = [
+optional-dependencies.tensorflow = [
   "tensorflow",
 ]
-torch = [
+optional-dependencies.torch = [
   "accelerate",
   "torch",
   "torcheval",
   "torchmetrics",
 ]
-[project.urls]
-documentation = "https://danling.org"
-homepage = "https://danling.org"
-repository = "https://github.com/ZhiyuanChen/DanLing"
+urls.documentation = "https://danling.org"
+urls.homepage = "https://danling.org"
+urls.repository = "https://github.com/ZhiyuanChen/DanLing"
 
 [tool.setuptools]
-packages = ["danling"]
+packages = [ "danling" ]
 
 [tool.setuptools_scm]
 write_to = "danling/_version.py"
@@ -103,18 +101,18 @@ disable = """
 [tool.pylint.reports]
 output-format = "colorized"
 
-[tool.pytest.ini_options]
-addopts = "--doctest-modules --cov"
-
 [tool.pytest]
 norecursedirs = "demo/*"
 
+[tool.pytest.ini_options]
+addopts = "--doctest-modules --cov"
+
 [tool.coverage.run]
 branch = true
-include = ["danling/**"]
+include = [ "danling/**" ]
 
 [tool.coverage.paths]
-source = ["icrawler"]
+source = [ "icrawler" ]
 
 [tool.coverage.xml]
 output = "coverage.xml"
