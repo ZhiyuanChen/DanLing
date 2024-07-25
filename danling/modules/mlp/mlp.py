@@ -50,10 +50,10 @@ class MLP(nn.Module):
             residual=residual,
         )
         if linear_output:
-            layers = [dense(in_features, out_features) for in_features, out_features in zip(features, features[1:-1])]
+            layers = [dense(in_features, out_features) for in_features, out_features in zip(features, features[1:-1])]  # type: ignore[arg-type] # noqa: E501
             layers.append(nn.Linear(features[-2], features[-1], bias=bias))
         else:
-            layers = [dense(in_features, out_features) for in_features, out_features in zip(features, features[1:])]
+            layers = [dense(in_features, out_features) for in_features, out_features in zip(features, features[1:])]  # type: ignore[arg-type] # noqa: E501
         self.layers = nn.Sequential(*layers)
 
     def forward(self, x):
