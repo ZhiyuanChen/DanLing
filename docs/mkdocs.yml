@@ -33,6 +33,7 @@ nav:
       - basex: utils/basex.md
   - package: package.md
   - About:
+      - About: about/index.md
       - License: about/license.md
       - Privacy Notice: about/privacy.md
   # - Blog: blog/index.md
@@ -199,6 +200,7 @@ plugins:
             - https://lightning.ai/docs/torchmetrics/stable/objects.inv
           rendering:
             members_order: source
+  - section-index
   - i18n:
       docs_structure: suffix
       fallback_to_default: true
