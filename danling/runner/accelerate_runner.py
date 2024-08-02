@@ -202,6 +202,8 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
                 interval = iteration - last_print_iteration
                 if self.device == torch.device("cuda"):
                     torch.cuda.synchronize()
+                if self.scheduler is not None:
+                    self.meters.lr.update(self.scheduler.get_last_lr()[0])
                 self.meters.time.update((time() - batch_time) / interval)
                 batch_time = time()
                 reduced_loss = self.reduce(loss).item()

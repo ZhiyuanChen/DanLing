@@ -42,7 +42,7 @@ dynamic = [
 ]
 dependencies = [
   "cached-property; python_version<'3.8'",
-  "chanfig>=0.0.96",
+  "chanfig>=0.0.96,!=0.0.101,!=0.0.102",
   "gitpython",
   "lazy-imports",
   "strenum; python_version<'3.11'",

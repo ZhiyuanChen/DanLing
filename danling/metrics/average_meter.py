@@ -219,41 +219,26 @@ class MultiTaskAverageMeters(MultiTaskDict):
     Examples:
         >>> meters = MultiTaskAverageMeters()
         >>> meters.update({"loss": 0.6, "dataset1.cls.auroc": 0.7, "dataset1.reg.r2": 0.8, "dataset2.r2": 0.9})
-        >>> print(f"{meters:.4f}")
-        loss: 0.6000 (0.6000)
-        dataset1.cls.auroc: 0.7000 (0.7000)
-        dataset1.reg.r2: 0.8000 (0.8000)
-        dataset2.r2: 0.9000 (0.9000)
+        >>> f"{meters:.4f}"
+        'loss: 0.6000 (0.6000)\ndataset1.cls.auroc: 0.7000 (0.7000)\ndataset1.reg.r2: 0.8000 (0.8000)\ndataset2.r2: 0.9000 (0.9000)'
         >>> meters['loss'].update(0.9, n=1)
-        >>> print(f"{meters:.4f}")
-        loss: 0.9000 (0.7500)
-        dataset1.cls.auroc: 0.7000 (0.7000)
-        dataset1.reg.r2: 0.8000 (0.8000)
-        dataset2.r2: 0.9000 (0.9000)
+        >>> f"{meters:.4f}"
+        'loss: 0.9000 (0.7500)\ndataset1.cls.auroc: 0.7000 (0.7000)\ndataset1.reg.r2: 0.8000 (0.8000)\ndataset2.r2: 0.9000 (0.9000)'
         >>> meters.sum.dict()
         {'loss': 1.5, 'dataset1': {'cls': {'auroc': 0.7}, 'reg': {'r2': 0.8}}, 'dataset2': {'r2': 0.9}}
         >>> meters.count.dict()
         {'loss': 2, 'dataset1': {'cls': {'auroc': 1}, 'reg': {'r2': 1}}, 'dataset2': {'r2': 1}}
         >>> meters.reset()
-        >>> print(f"{meters:.4f}")
-        loss: 0.0000 (nan)
-        dataset1.cls.auroc: 0.0000 (nan)
-        dataset1.reg.r2: 0.0000 (nan)
-        dataset2.r2: 0.0000 (nan)
+        >>> f"{meters:.4f}"
+        'loss: 0.0000 (nan)\ndataset1.cls.auroc: 0.0000 (nan)\ndataset1.reg.r2: 0.0000 (nan)\ndataset2.r2: 0.0000 (nan)'
         >>> meters = MultiTaskAverageMeters(return_average=True)
         >>> meters.update({"loss": 0.6, "dataset1.a.auroc": 0.7, "dataset1.b.auroc": 0.8, "dataset2.auroc": 0.9})
-        >>> print(f"{meters:.4f}")
-        loss: 0.6000 (0.6000)
-        dataset1.a.auroc: 0.7000 (0.7000)
-        dataset1.b.auroc: 0.8000 (0.8000)
-        dataset2.auroc: 0.9000 (0.9000)
+        >>> f"{meters:.4f}"
+        'loss: 0.6000 (0.6000)\ndataset1.a.auroc: 0.7000 (0.7000)\ndataset1.b.auroc: 0.8000 (0.8000)\ndataset2.auroc: 0.9000 (0.9000)'
         >>> meters.update({"loss": 0.9, "dataset1.a.auroc": 0.8, "dataset1.b.auroc": 0.9, "dataset2.auroc": 1.0})
-        >>> print(f"{meters:.4f}")
-        loss: 0.9000 (0.7500)
-        dataset1.a.auroc: 0.8000 (0.7500)
-        dataset1.b.auroc: 0.9000 (0.8500)
-        dataset2.auroc: 1.0000 (0.9500)
-    """
+        >>> f"{meters:.4f}"
+        'loss: 0.9000 (0.7500)\ndataset1.a.auroc: 0.8000 (0.7500)\ndataset1.b.auroc: 0.9000 (0.8500)\ndataset2.auroc: 1.0000 (0.9500)'
+    """  # noqa: E501
 
     @property
     def sum(self) -> NestedDict[str, float]:
