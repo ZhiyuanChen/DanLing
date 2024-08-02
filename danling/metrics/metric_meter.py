@@ -136,9 +136,9 @@ class MetricMeters(AverageMeters):
     >>> meters['auroc'].update([0.4, 0.8, 0.6, 0.2], [0, 1, 1, 0])
     >>> meters.avg.dict()
     {'acc': 0.6, 'auroc': 0.775, 'auprc': 0.55}
-    >>> meters.update(dict(loss=""))
+    >>> meters.update(dict(loss=""))  # doctest: +ELLIPSIS
     Traceback (most recent call last):
-    TypeError: MetricMeters.update() missing 1 required positional argument: 'target'
+    TypeError: ...update() missing 1 required positional argument: 'target'
     """
 
     ignored_index: Optional[int] = None
@@ -200,11 +200,11 @@ class MultiTaskMetricMeters(MultiTaskAverageMeters):
           )
           ('dataset2'): MetricMeters('acc',)
         )
-        >>> metrics.update({"dataset1.cls": {"input": [0.2, 0.4, 0.5, 0.7], "target": [0, 1, 0, 1]}, "dataset2": {"input": [0.1, 0.4, 0.6, 0.8], "target": [1, 0, 0, 0]}})
+        >>> metrics.update({"dataset1.cls": {"input": [0.2, 0.4, 0.5, 0.7], "target": [0, 1, 0, 1]}, "dataset2": ([0.1, 0.4, 0.6, 0.8], [1, 0, 0, 0])})
         >>> f"{metrics:.4f}"
         'dataset1.cls: acc: 0.5000 (0.5000)\ndataset2: acc: 0.2500 (0.2500)'
         >>> metrics.setattr("return_average", True)
-        >>> metrics.update({"dataset1.cls": {"input": [0.1, 0.4, 0.6, 0.8], "target": [0, 0, 1, 0]}, "dataset2": {"input": [0.2, 0.3, 0.5, 0.7], "target": [0, 0, 0, 1]}})
+        >>> metrics.update({"dataset1.cls": [[0.1, 0.4, 0.6, 0.8], [0, 0, 1, 0]], "dataset2": {"input": [0.2, 0.3, 0.5, 0.7], "target": [0, 0, 0, 1]}})
         >>> f"{metrics:.4f}"
         'dataset1.cls: acc: 0.7500 (0.6250)\ndataset2: acc: 0.7500 (0.5000)'
     """  # noqa: E501
@@ -225,21 +225,31 @@ class MultiTaskMetricMeters(MultiTaskAverageMeters):
         """
 
         for metric, value in values.items():
-            if isinstance(value, Mapping):
+            if isinstance(value, (Mapping, Sequence)):
                 if metric not in self:
                     raise ValueError(f"Metric {metric} not found in {self}")
                 if isinstance(self[metric], MultiTaskMetricMeters):
                     for met in self[metric].all_values():
-                        met.update(*value)
+                        if isinstance(value, Mapping):
+                            met.update(**value)
+                        elif isinstance(value, Sequence):
+                            met.update(*value)
+                        else:
+                            raise ValueError(f"Expected value to be a Mapping or Sequence, but got {type(value)}")
                 elif isinstance(self[metric], (MetricMeters, MetricMeter)):
-                    self[metric].update(*value)
+                    if isinstance(value, Mapping):
+                        self[metric].update(**value)
+                    elif isinstance(value, Sequence):
+                        self[metric].update(*value)
+                    else:
+                        raise ValueError(f"Expected value to be a Mapping or Sequence, but got {type(value)}")
                 else:
                     raise ValueError(
                         f"Expected {metric} to be an instance of MultiTaskMetricMeters, MetricMeters, "
                         "or MetricMeter, but got {type(self[metric])}"
                     )
             else:
-                raise ValueError(f"Expected values to be a flat dictionary, but got {type(value)}")
+                raise ValueError(f"Expected values to be a Mapping or Sequence, but got {type(value)}")
 
     # MultiTaskAverageMeters.get is hacked
     def get(self, name: Any, default=None) -> Any:

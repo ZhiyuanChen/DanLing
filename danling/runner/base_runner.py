@@ -958,6 +958,10 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         return self.total_epochs * ceil(len(dataset) / self.batch_size) + 1
 
     @cached_property
+    def trainable_steps(self) -> int:
+        return self.total_steps // self.accum_steps
+
+    @cached_property
     def accum_steps(self) -> int:
         r"""
         Accumulated steps.

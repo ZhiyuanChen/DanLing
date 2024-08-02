@@ -37,7 +37,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
 
     Args:
         optimizer: Wrapped optimizer.
-        total_steps: Total number of steps.
+        total_steps: Total number of trainable steps.
         final_lr_ratio: Final learning rate ratio to initial learning rate.
             Defaults to 1e-3.
         final_lr: Final learning rate.
@@ -73,7 +73,14 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         ...     scheduler.step()
         >>> [round(lr, 10) for lr in lrs]
         [0.3330753446, 0.0187302031, 0.000533897, 3.00232e-05, 1e-09]
-    """
+        >>> scheduler = LRScheduler(optimizer, total_steps=5, final_lr_ratio=1e-5, strategy='linear', method='numerical')
+        >>> lrs = []
+        >>> for epoch in range(5):
+        ...     lrs.append(scheduler.get_lr()[0])
+        ...     scheduler.step()
+        >>> [round(lr, 2) for lr in lrs]
+        [0.8, 0.6, 0.4, 0.2, 0.0]
+    """  # noqa: E501
 
     def __init__(
         self,

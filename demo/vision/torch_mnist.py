@@ -44,8 +44,10 @@ class MNISTConfig(Config):
         self.optim.name = "adamw"
         self.optim.lr = 1e-3
         self.optim.weight_decay = 1e-4
+        self.lr_scheduler.strategy = "cosine"
 
     def post(self):
+        self.copy_class_attributes()
         self.experiment_name = f"{self.network.name}_{self.optim.name}@{self.optim.lr}"
 
 
@@ -61,10 +63,14 @@ class MNISTRunner(dl.TorchRunner):
         )
         self.datasets.train = torchvision.datasets.MNIST(train=True, **self.dataset)
         self.datasets.val = torchvision.datasets.MNIST(train=False, **self.dataset)
+        # only run on a few samples to speed up testing process
+        self.datasets.train.data = self.datasets.train.data[:64]
+        self.datasets.val.data = self.datasets.val.data[:64]
 
         self.model = getattr(torchvision.models, self.network.name)(pretrained=False, num_classes=10)
         self.model.conv1 = nn.Conv2d(1, 64, 1, bias=False)
         self.optimizer = OPTIMIZERS.build(params=self.model.parameters(), **self.optim)
+        self.scheduler = dl.optim.LRScheduler(self.optimizer, total_steps=self.trainable_steps, **self.lr_scheduler)
         self.criterion = nn.CrossEntropyLoss()
 
         self.metrics = dl.metrics.multiclass_metrics(num_classes=10)
