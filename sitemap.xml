@@ -99,11 +99,11 @@
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/base_runner/"/>
     </url>
     <url>
-        <loc>https://danling.org/runner/state/</loc>
+        <loc>https://danling.org/runner/config/</loc>
         <lastmod>2024-08-06</lastmod>
         <changefreq>daily</changefreq>
-        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/state/"/>
-        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/state/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/config/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/config/"/>
     </url>
     <url>
         <loc>https://danling.org/runner/utils/</loc>
@@ -260,11 +260,11 @@
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/base_runner/"/>
     </url>
     <url>
-        <loc>https://danling.org/zh/runner/state/</loc>
+        <loc>https://danling.org/zh/runner/config/</loc>
         <lastmod>2024-08-06</lastmod>
         <changefreq>daily</changefreq>
-        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/state/"/>
-        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/state/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/config/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/config/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/runner/utils/</loc>

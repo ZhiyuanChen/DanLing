@@ -569,7 +569,7 @@
         
   
   <span class="md-ellipsis">
-    RunnerState
+    Config
   </span>
   
 
@@ -986,9 +986,9 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#runnerstate" class="md-nav__link">
+  <a href="#config" class="md-nav__link">
     <span class="md-ellipsis">
-      RunnerState
+      Config
     </span>
   </a>
   
@@ -1089,17 +1089,17 @@
 <h1 id="runner">Runner<a class="headerlink" href="#runner" title="Permanent link">&para;</a></h1>
 <p>The Runner of DanLing sets up the basic environment for running neural networks.</p>
 <h2 id="components">Components<a class="headerlink" href="#components" title="Permanent link">&para;</a></h2>
-<p>For cross-platform compatibilities, DanLing features a two-level Runner + RunnerState system.</p>
+<p>For cross-platform compatibilities, DanLing features a two-level Runner + Config system.</p>
 <h3 id="platformrunner">PlatformRunner<a class="headerlink" href="#platformrunner" title="Permanent link">&para;</a></h3>
 <p>PlatformRunner implements platform-specific features like <code>step</code> and <code>prepare</code>.</p>
-<p>The Runner contains all runtime information that is irrelevant to the checkpoint (e.g. <code>world_size</code>, <code>rank</code>, etc.). All other information should be saved in <code>RunnerState</code>.</p>
+<p>The Runner contains all runtime information that is irrelevant to the checkpoint (e.g. <code>world_size</code>, <code>rank</code>, etc.). All other information should be saved in <code>Config</code>.</p>
 <p>Currently, only <a class="autorefs autorefs-internal" href="accelerate_runner/#danling.runner.AccelerateRunner"><code>AccelerateRunner</code></a> is supported.</p>
 <h3 id="baserunner"><a class="autorefs autorefs-internal" href="base_runner/#danling.runner.BaseRunner"><code>BaseRunner</code></a><a class="headerlink" href="#baserunner" title="Permanent link">&para;</a></h3>
-<p><a href="danling.runner.BaseRunner"><code>BaseRunner</code></a> defines shared attributes and implements platform-agnostic features, including <code>init_logging</code>, <code>results</code> and <code>scores</code>.</p>
-<h3 id="runnerstate"><a class="autorefs autorefs-internal" href="state/#danling.runner.state.RunnerState"><code>RunnerState</code></a><a class="headerlink" href="#runnerstate" title="Permanent link">&para;</a></h3>
-<p><a class="autorefs autorefs-internal" href="state/#danling.runner.state.RunnerState"><code>RunnerState</code></a> stores the state of a run (e.g. <code>epochs</code>, <code>run_id</code>, <code>network</code>, etc.).</p>
-<p>With <code>RunnerState</code> and corresponding weights, you can resume a run from any point.
-Therefore, all members in <code>RunnerState</code> will be saved in the checkpoint, and thus should be json serialisable.</p>
+<p><a class="autorefs autorefs-internal" href="base_runner/#danling.runner.BaseRunner"><code>BaseRunner</code></a> defines shared attributes and implements platform-agnostic features, including <code>init_logging</code>, <code>results</code> and <code>scores</code>.</p>
+<h3 id="config"><a class="autorefs autorefs-internal" href="config/#danling.runner.config.Config"><code>Config</code></a><a class="headerlink" href="#config" title="Permanent link">&para;</a></h3>
+<p><a class="autorefs autorefs-internal" href="config/#danling.runner.config.Config"><code>Config</code></a> stores the state of a run (e.g. <code>epoch</code>, <code>run_id</code>, <code>network</code>, etc.).</p>
+<p>With <code>Config</code> and corresponding weights, you can resume a run from any point.
+Therefore, all members in <code>Config</code> will be saved in the checkpoint, and thus should be json serialisable.</p>
 <h2 id="experiments-management">Experiments Management<a class="headerlink" href="#experiments-management" title="Permanent link">&para;</a></h2>
 <p>DanLing Runner is designed for a 3.5-level experiments management system: <strong>Project</strong>, <strong>Group</strong>, <strong>Experiment</strong>, and, <strong>Run</strong>.</p>
 <h3 id="project">Project<a class="headerlink" href="#project" title="Permanent link">&para;</a></h3>
