@@ -1800,7 +1800,9 @@ set <code>shuffle</code> and <code>drop_last</code> automatically.</p>
 <span class="normal"><a href="#__codelineno-0-504">504</a></span>
 <span class="normal"><a href="#__codelineno-0-505">505</a></span>
 <span class="normal"><a href="#__codelineno-0-506">506</a></span>
-<span class="normal"><a href="#__codelineno-0-507">507</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-54" name="__codelineno-0-54"></a><span class="k">class</span> <span class="nc">AccelerateRunner</span><span class="p">(</span><span class="n">BaseRunner</span><span class="p">,</span> <span class="n">Accelerator</span><span class="p">):</span>  <span class="c1"># pylint: disable=too-many-public-methods</span>
+<span class="normal"><a href="#__codelineno-0-507">507</a></span>
+<span class="normal"><a href="#__codelineno-0-508">508</a></span>
+<span class="normal"><a href="#__codelineno-0-509">509</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-54" name="__codelineno-0-54"></a><span class="k">class</span> <span class="nc">AccelerateRunner</span><span class="p">(</span><span class="n">BaseRunner</span><span class="p">,</span> <span class="n">Accelerator</span><span class="p">):</span>  <span class="c1"># pylint: disable=too-many-public-methods</span>
 <a id="__codelineno-0-55" name="__codelineno-0-55"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
 <a id="__codelineno-0-56" name="__codelineno-0-56"></a><span class="sd">    Set up everything for running a job.</span>
 <a id="__codelineno-0-57" name="__codelineno-0-57"></a>
@@ -2253,7 +2255,9 @@ set <code>shuffle</code> and <code>drop_last</code> automatically.</p>
 <a id="__codelineno-0-504" name="__codelineno-0-504"></a>        <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">getenv</span><span class="p">(</span><span class="s2">&quot;ACCELERATE_USE_DEEPSPEED&quot;</span><span class="p">,</span> <span class="s2">&quot;false&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="o">==</span> <span class="s2">&quot;true&quot;</span><span class="p">:</span>
 <a id="__codelineno-0-505" name="__codelineno-0-505"></a>            <span class="n">deepspeed_config</span> <span class="o">=</span> <span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;deepspeed&quot;</span><span class="p">,</span> <span class="n">os</span><span class="o">.</span><span class="n">getenv</span><span class="p">(</span><span class="s2">&quot;ACCELERATE_DEEPSPEED_CONFIG_FILE&quot;</span><span class="p">))</span>
 <a id="__codelineno-0-506" name="__codelineno-0-506"></a>            <span class="n">accelerate</span><span class="o">.</span><span class="n">deepspeed_plugin</span> <span class="o">=</span> <span class="n">DeepSpeedPlugin</span><span class="p">(</span><span class="n">hf_ds_config</span><span class="o">=</span><span class="n">deepspeed_config</span><span class="p">(</span><span class="n">deepspeed_config</span><span class="p">))</span>
-<a id="__codelineno-0-507" name="__codelineno-0-507"></a>        <span class="k">return</span> <span class="n">accelerate</span>
+<a id="__codelineno-0-507" name="__codelineno-0-507"></a>        <span class="k">if</span> <span class="s2">&quot;step_scheduler_with_optimizer&quot;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">accelerate</span><span class="p">:</span>
+<a id="__codelineno-0-508" name="__codelineno-0-508"></a>            <span class="n">accelerate</span><span class="o">.</span><span class="n">step_scheduler_with_optimizer</span> <span class="o">=</span> <span class="kc">False</span>
+<a id="__codelineno-0-509" name="__codelineno-0-509"></a>        <span class="k">return</span> <span class="n">accelerate</span>
 </code></pre></div></td></tr></table></div>
               </details>
 
