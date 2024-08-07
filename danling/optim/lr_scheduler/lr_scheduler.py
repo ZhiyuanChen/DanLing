@@ -52,7 +52,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         last_epoch: The index of last epoch.
             Defaults to -1.
         method: Method to calculate learning rate given ratio, should be one of "percentile" or "numerical".
-            Defaults to "percentile".
+            Defaults to "percentile" if `final_lr_ratio` is set, otherwise "numerical".
 
     Examples:
         >>> from danling.optim import LRScheduler
@@ -93,7 +93,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         warmup_steps: Optional[int] = None,
         cooldown_steps: Optional[int] = None,
         last_epoch: int = -1,
-        method: str = "percentile",
+        method: Optional[str] = None,
     ):
         if total_steps <= 0:
             raise ValueError(f"Total steps must be positive, but got {total_steps}")
@@ -109,10 +109,13 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
             raise ValueError(f"Cooldown steps must be less than total steps, but got {cooldown_steps} > {total_steps}")
         elif cooldown_steps < 0:
             raise ValueError(f"Cooldown steps must be positive, but got {cooldown_steps}")
-        if final_lr_ratio is not None and final_lr is not None:
-            raise ValueError("Only one of `final_lr_ratio` and `final_lr` should be set, but not both")
-        if final_lr_ratio is not None and final_lr_ratio < 0:
-            raise ValueError(f"`final_lr_ratio` must be positive, but got {final_lr_ratio}")
+        if final_lr_ratio is not None:
+            if final_lr is not None:
+                raise ValueError("Only one of `final_lr_ratio` and `final_lr` should be set, but not both")
+            if final_lr_ratio < 0:
+                raise ValueError(f"`final_lr_ratio` must be positive, but got {final_lr_ratio}")
+            if method is None:
+                method = "percentile"
         if final_lr is not None and final_lr < 0:
             raise ValueError(f"`final_lr` must be positive, but got {final_lr}")
         if min_lr < 0:
@@ -125,8 +128,12 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
 
         if final_lr_ratio is None and final_lr is None:
             final_lr_ratio = 1e-3
+            if method is None:
+                method = "percentile"
         if final_lr is not None and min_lr > final_lr:
             min_lr = final_lr
+        if method is None:
+            method = "numerical"
 
         self.final_lr_ratio = final_lr_ratio
         self.final_lr = final_lr

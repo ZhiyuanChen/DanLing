@@ -44,7 +44,7 @@ class MNISTConfig(Config):
         self.optim.name = "adamw"
         self.optim.lr = 1e-3
         self.optim.weight_decay = 1e-4
-        self.lr_scheduler.strategy = "cosine"
+        self.sched.strategy = "cosine"
 
     def post(self):
         self.copy_class_attributes()
@@ -70,7 +70,7 @@ class MNISTRunner(dl.TorchRunner):
         self.model = getattr(torchvision.models, self.network.name)(pretrained=False, num_classes=10)
         self.model.conv1 = nn.Conv2d(1, 64, 1, bias=False)
         self.optimizer = OPTIMIZERS.build(params=self.model.parameters(), **self.optim)
-        self.scheduler = dl.optim.LRScheduler(self.optimizer, total_steps=self.trainable_steps, **self.lr_scheduler)
+        self.scheduler = dl.optim.LRScheduler(self.optimizer, total_steps=self.trainable_steps, **self.sched)
         self.criterion = nn.CrossEntropyLoss()
 
         self.metrics = dl.metrics.multiclass_metrics(num_classes=10)
