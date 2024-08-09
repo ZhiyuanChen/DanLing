@@ -28,12 +28,13 @@ import shutil
 from collections.abc import Callable, Mapping, Sequence
 from math import ceil
 from sys import version_info
-from typing import TYPE_CHECKING, Any, Dict
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid5
 from warnings import warn
 
-from chanfig import Config, FlatDict, NestedDict, Variable
+from chanfig import FlatDict, NestedDict, Variable
 
+from danling import defaults
 from danling.metrics import AverageMeter, AverageMeters, MetricMeters
 from danling.typing import File, PathStr
 from danling.utils import cached_ensure_dir, cached_ensure_parent_dir, cached_property, catch, load, save
@@ -43,124 +44,107 @@ try:
 except ImportError:
     np_random = None
 
-from .state import RunnerState
-from .utils import RunnerMeta, RunnerMode, get_time_str, on_main_process
+from .config import Config
+from .utils import RunnerMeta, RunnerMode, format_result, get_time_str, on_main_process
 
 if TYPE_CHECKING:
     from danling.metrics import Metrics
 
 PY38_PLUS = version_info >= (3, 8)
-IGNORED_SET_NAMES = ("index", "epoch", "step", "iter")
 __APPEND_RESULT_COUNTER__ = 0
 
 
 class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-methods
     r"""
-    Base class for all runners.
+    Base class for DanLing runners.
 
-    `BaseRunner` sets up basic running environment, including `seed`, `deterministic`, and `logging`.
+    The `BaseRunner` class provides a complete infrastructure for managing:
 
-    `BaseRunner` also provides some basic methods, such as, `step`, `state_dict`, `save_checkpoint`, `load_checkpoint`.
+    1. **Experiment Environment**: Sets up reproducible training environment with:
+        - Random seed management
+        - Deterministic execution options
+        - Configurable logging systems
 
-    `BaseRunner` defines all basic attributes and relevant properties such as `scores`, `progress`, etc.
+    2. **Experiment Lifecycle**: Handles the complete experiment workflow:
+        - Model, optimizer, and scheduler setup
+        - Dataset and dataloader management
+        - Training, evaluation, and inference loops
+        - Checkpointing and restoration
+
+    3. **Experiment Tracking**: Provides comprehensive experiment monitoring:
+        - Progress tracking
+        - Metrics computation and logging
+        - Results collection and comparison
+        - Best model selection
+
+    4. **Distributed Training**: Supports various parallel training configurations:
+        - Multi-process distributed training
+        - Gradient accumulation
+        - Mixed precision training
+
+    This class defines standard attributes and methods that can be extended by more
+    specialized runners. It is designed to be modular and configurable to support
+    various experiment requirements.
 
     Attributes: ID:
-        timestamp (str): A time string representing the creation time of run.
-        name (str): `f"{self.state.experiment_name}-{self.state.run_name}"`.
-        id (str): `f"{self.state.experiment_id:.8}{self.state.run_id:.8}"`.
-        uuid (UUID, property): `uuid5(self.state.run_id, self.id)`.
-
-    Attributes: Core:
-        mode (RunnerMode, property): Running mode.
-        state (RunnerState): Running state. See `RunnerState` for details.
-
-    Attributes: Model:
-        model (Callable):
-        criterion (Callable):
-        optimizer:
-        scheduler:
-
-    Attributes: Data:
-        datasets (FlatDict): All datasets, should be in the form of ``{subset: dataset}``.
-            Initialised to `FlatDict` by default.
-        datasamplers (FlatDict): All datasamplers, should be in the form of ``{subset: datasampler}``.
-            Initialised to `FlatDict` by default.
-        dataloaders (FlatDict): All dataloaders, should be in the form of ``{subset: dataloader}``.
-            Initialised to `FlatDict` by default.
-        split (str): Current running split.
-        batch_size (int, property): Number of samples per batch in current running split.
-        batch_size_equivalent (int, property): Total batch_size (`batch_size * world_size * accum_steps`).
-
-    `datasets`, `datasamplers`, `dataloaders` should be a dict with the same keys.
-    Their keys should be `split` (e.g. `train`, `val`, `test`).
-
-    Attributes: Progress:
-        progress (float, property): Running Progress, in `range(0, 1)`.
-
-    Attributes: Results:
-        results (NestedDict): Results include all metric information of the model.
-            Results should be in the form of `{epoch: {subset: {metric: score}}}`.
-        latest_result (NestedDict, property): Most recent result, should be in the form of `{subset: {metric: score}}`.
-        best_result (NestedDict, property): Best result, should be in the form of `{subset: {metric: score}}`.
-        scores (List[float], property): Score is the core metric that is used to evaluate the performance of the model.
-            Scores should be in the form of `{epoch: score}`.
-        latest_score (float, property): Most recent score, should be in the form of `score`.
-        best_score (float, property): Best score, should be in the form of `score`.
-        score_split (Optional[str]): The subset to calculate the score.
-            If is `None`, will use the last set of the result.
-        score_name (str): The metric name of score.
-            Defaults to `"loss"`.
-        is_best (bool, property): If `latest_score == best_score`.
-
-    A `result` is a dict with the same `split` as keys, like `dataloaders`.
-    A typical `result` shall look like this:
-    ```python
-    {
-        "train": {
-            "loss": 0.1,
-            "accuracy": 0.9,
-        },
-        "val": {
-            "loss": 0.2,
-            "accuracy": 0.8,
-        },
-        "test": {
-            "loss": 0.3,
-            "accuracy": 0.7,
-        },
-    }
-    ```
-
-    `scores` are dynamically extracted from `results` by `score_split` and `score_name`.
-    They represent the core metric that is used in comparing the performance against different models and settings.
-    For the above `results`, If `score_split = "val"`, `score_name = "accuracy"`, then `scores = 0.9`.
-
-    Attributes: IO:
-        dir (str, property): Directory of the run.
-            Defaults to `${self.project_root}/${self.name}-${self.id}/${self.timestamp})`.
-        checkpoint_dir (str, property): Directory of checkpoints.
-        log_path (str, property):  Path of log file.
-        checkpoint_dir_name (str): The name of the directory under `runner.dir` to save checkpoints.
-            Defaults to `"checkpoints"`.
-
-    Attributes: Parallel Training:
-        world_size (int, property): Number of processes.
-        rank (int, property): Process index of all processes.
-        local_rank (int, property): Process index of local processes.
-        distributed (bool, property): If runner is running in distributed mode.
-        is_main_process (bool, property): If current process is the main process of all processes.
-        is_local_main_process (bool, property): If current process is the main process of local processes.
-
-    Attributes: logging:
-        meters (AverageMeters | MultiTaskAverageMeters): Average meters.
-            Initialised to `AverageMeters` by default.
-        metrics (Metrics | MultiTaskMetrics | MetricMeters | None): Metrics for evaluating.
-        logger:
-        writer:
+        timestamp: Time string of when the runner was created.
+            Format: `WDHMSUUU-` (Week, Weekday, Hour, Minute, Second, Microsecond)
+        name: Human-readable name combining experiment and run names (`{experiment_name}-{run_name}`).
+        id: Unique identifier generated from experiment and run IDs.
+        uuid: UUID5 generated from the run ID and combined ID.
 
     See Also:
-        [`RunnerState`][danling.runner.runner_state.RunnerState]: The runeer base that stores runtime information.
-        [`BaseRunner`][danling.runner.BaseRunner]: The base runner class.
+        [`Config`][danling.runner.Config]: Configuration for runners.
+
+        [`RunnerMode`][danling.runner.utils.RunnerMode]: Enumeration of runner modes.
+
+    Attributes: Model:
+        model: The model being trained/evaluated.
+        criterion: Loss function used for optimization.
+        optimizer: Optimizer used for parameter updates.
+        scheduler: Learning rate scheduler for adaptive learning rates.
+
+    Attributes: Data:
+        datasets: Dictionary mapping split names to dataset objects.
+        datasamplers: Dictionary mapping split names to data samplers.
+        dataloaders: Dictionary mapping split names to dataloader objects.
+        split: Current active data split.
+        batch_size: Number of samples per batch for current split.
+        batch_size_equivalent: Total effective batch size accounting for distribution.
+
+    Attributes: Progress:
+        progress: Running progress as a value between 0 and 1.
+        steps: Current step count.
+        epochs: Current epoch count.
+        total_steps: Total steps to be performed.
+        total_epochs: Total epochs to be performed.
+
+    Attributes: Results:
+        results: Hierarchical results organized by epoch, split, and metric.
+        latest_result: Most recent evaluation results.
+        best_result: Best evaluation results achieved.
+        scores: Main metric values used for model comparison.
+        latest_score: Most recent score.
+        best_score: Best score achieved.
+        is_best: Whether the latest result is the best so far.
+
+    Attributes: I/O:
+        dir: Root directory for all experiment outputs.
+        checkpoint_dir: Directory for saving model checkpoints.
+        log_file: Path to the log file.
+
+    Attributes: Distributed Training:
+        world_size: Number of processes in distributed training.
+        rank: Global process rank.
+        local_rank: Local process rank on current node.
+        distributed: Whether running in distributed mode.
+        is_main_process: Whether current process is the main process.
+
+    Attributes: Logging and Visualization:
+        meters: Meters for tracking running averages of metrics.
+        metrics: Metric computation objects.
+        logger: Logger for capturing runtime information.
+        writer: Writer for visualizing metrics (e.g., TensorBoard).
     """
 
     # DO NOT set default value in class, as they won't be stored in `__dict__`.
@@ -168,10 +152,11 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     timestamp: str
 
     _mode: RunnerMode
-    _state: RunnerState
+    _config: Config
     inited: bool = False
 
     model: Callable | None = None
+    ema: Callable | None = None
     criterion: Callable | None = None
     optimizer: Any | None = None
     scheduler: Any | None = None
@@ -179,15 +164,19 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     datasets: FlatDict
     datasamplers: FlatDict
     dataloaders: FlatDict
-    split: str
+    split: str | None = None
+    _train_splits: list[str] | None = None
+    _evaluate_splits: list[str] | None = None
 
     results: NestedDict
     meters: AverageMeters
     metrics: Metrics | MetricMeters | None = None
+    train_metrics: Metrics | MetricMeters | None = None
+    evaluate_metrics: Metrics | MetricMeters | None = None
     logger: logging.Logger | None = None
     writer: Any | None = None
 
-    def __init__(self, config: NestedDict) -> None:
+    def __init__(self, config: Config) -> None:
         self.timestamp = get_time_str()
         if "datasets" not in self.__dict__:
             self.datasets = FlatDict()
@@ -198,19 +187,25 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         if "results" not in self.__dict__:
             self.results = NestedDict()
         self.meters = AverageMeters()
-        self._mode = RunnerMode.train  # type: ignore[assignment]
-        # must init state at last to avoid name conflicts
-        self._state = RunnerState(config)
-        self.inited = True
+        self._mode = RunnerMode.train
+        # must init config at last to avoid name conflicts
+        if not isinstance(config, Config):
+            config = Config(config)
+        self._config = config
         self.init_distributed()
-        if self.state.seed is not None:
+        self.inited = True
+        if "checkpoint" in config:
+            self.load_config(config["checkpoint"])
+
+    def __post_init__(self):
+        if self.config.seed is not None:
             self.set_seed()
-        if self.state.deterministic:
+        if self.config.deterministic:
             self.set_deterministic()
-        if self.state.log:
+        if self.config.log:
             self.init_logging()
         self.init_print()
-        if self.state.tensorboard:
+        if self.config.tensorboard:
             self.init_tensorboard()
 
     def init_distributed(self) -> None:
@@ -218,95 +213,12 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         Initialise distributed running environment.
         """
 
-        raise NotImplementedError
-
-    def init_deepspeed(  # pylint: disable=too-many-branches, too-many-statements
-        self, config: Dict = None  # type: ignore
-    ) -> Dict:
-        r"""
-        Preprocess DeepSpeed config.
-        """
-
-        if config is None:
-            config = self.state.get("deepspeed")
-        if config is None:
-            return {}
-        if isinstance(config, str):
-            config = NestedDict.load(config)
-        if config.get("steps_per_print", "auto") == "auto":
-            config["steps_per_print"] = self.state.log_interval
-        if config.get("train_micro_batch_size_per_gpu", "auto") == "auto":
-            config["train_micro_batch_size_per_gpu"] = self.batch_size
-        if "amp" in config:
-            amp = config["amp"]
-            if amp.get("enabled", "auto") == "auto":
-                amp["enabled"] = "true"
-            if amp.get("opt_level", "auto") == "auto":
-                amp["opt_level"] = "O1"
-        if "zero_optimization" in config:
-            zero = config["zero_optimization"]
-            if zero.get("allgather_bucket_size") == "auto":
-                zero["allgather_bucket_size"] = 1e6
-            if zero.get("reduce_bucket_size") == "auto":
-                zero["reduce_bucket_size"] = 1e6
-            if zero.get("stage3_max_live_parameters") == "auto":
-                zero["stage3_max_live_parameters"] = 1e8
-            if zero.get("stage3_max_live_gradients") == "auto":
-                zero["stage3_max_live_gradients"] = 1e8
-            if zero.get("stage3_max_reuse_distance") == "auto":
-                zero["stage3_max_reuse_distance"] = 1e8
-            if zero.get("stage3_prefetch_bucket_size") == "auto":
-                zero["stage3_prefetch_bucket_size"] = 1e6
-            if zero.get("stage3_param_persistence_threshold") == "auto":
-                zero["stage3_param_persistence_threshold"] = 1e8
-            if "amp" in config:
-                if "fp16" not in config:
-                    config["fp16"] = {}
-                if config["fp16"].get("enabled", "auto"):
-                    config["fp16"]["enabled"] = config["amp"]["enabled"]
-                warn(
-                    f"AMP is not compatible with ZeRO. Automatically set 'fp16' to {config['amp']['enabled']}",
-                    stacklevel=2,
-                )
-                del config["amp"]
-        if "optimizer" in config:
-            if "params" not in config["optimizer"]:
-                config["optimizer"]["params"] = {}
-            optimizer = config["optimizer"]["params"]
-            if optimizer.get("lr", "auto") == "auto":
-                optimizer["lr"] = self.state.get("optim.lr", 1e-3)
-            if optimizer.get("weight_decay", "auto") == "auto":
-                optimizer["weight_decay"] = self.state.get("optim.weight_decay", 1e-2)
-            if optimizer.get("betas") == "auto":
-                optimizer["betas"] = (0.9, 0.999)
-            if optimizer.get("eps") == "auto":
-                optimizer["eps"] = 1e-8
-        if "scheduler" in config:
-            if "params" not in config["scheduler"]:
-                config["scheduler"]["params"] = {}
-            scheduler = config["scheduler"]["params"]
-            if scheduler.get("total_num_steps", "auto") == "auto":
-                scheduler["total_num_steps"] = self.total_steps
-            if scheduler.get("warmup_num_steps", "auto") == "auto":
-                scheduler["warmup_num_steps"] = scheduler["total_num_steps"] // 20
-            if scheduler.get("warmup_max_lr", "auto") == "auto":
-                if self.optimizer:
-                    scheduler["warmup_max_lr"] = self.optimizer.param_groups[0]["lr"]
-                elif "optimizer" in config:
-                    scheduler["warmup_max_lr"] = config["optimizer"]["params"]["lr"]
-                else:
-                    raise ValueError("warmup_max_lr is not defined and cannot be inferred")
-            if scheduler.get("warmup_min_lr", "auto") == "auto":
-                scheduler["warmup_min_lr"] = 1e-7
-        return config
-
     @on_main_process
     def init_logging(self) -> None:
         r"""
         Set up logging.
         """
 
-        os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
         # Why is setting up proper logging so !@?#! ugly?
         logging.config.dictConfig(
             {
@@ -326,7 +238,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
                         "level": "DEBUG",
                         "formatter": "standard",
                         "class": "logging.FileHandler",
-                        "filename": self.log_path,
+                        "filename": self.log_file,
                         "mode": "a",
                     },
                 },
@@ -352,9 +264,8 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         Args:
             process: The process to `print` on.
 
-        Notes
-        -----
-        If `self.state.log = True`, the default `print` function will be override by `logging.info`.
+        Note:
+            If `self.config.log = True`, the default `print` function will be override by `logging.info`.
         """
 
         logger = logging.getLogger("print")
@@ -366,7 +277,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         @catch
         def print(*args, force=False, end="\n", file=None, flush=False, **kwargs):  # pylint: disable=redefined-builtin
             if self.rank == process or force:
-                if self.state.log:
+                if self.config.log:
                     if not args:
                         args = [""]
                     logger.info(*args, **kwargs)
@@ -382,30 +293,60 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         """
         raise NotImplementedError
 
-    def set_seed(self, seed: int | None = None, bias: int | None = None) -> None:
+    def set_seed(self, seed: int = None, bias: int = None) -> int:  # type: ignore[assignment]
         r"""
-        Set up random seed.
+        Set random seeds for reproducibility across the application.
+
+        This method configures the random number generators for various libraries
+        to ensure reproducible behavior in experiments. In the base implementation,
+        it sets seeds for Python's built-in `random` module and NumPy's random
+        generators if available.
+
+        Derived runners typically extend this method to set seeds for additional
+        libraries (e.g., PyTorch, TensorFlow).
 
         Args:
-            seed: Random seed to set.
-                Defaults to `self.state.seed` (`config.seed`).
+            seed: The base random seed to use.
+                If None, uses the value from `self.config.seed`.
 
-            bias: Make the seed different for each processes.
+            bias: An offset to add to the seed for process-specific randomness.
+                - If specified, adds this value to the seed
+                - If None, uses `self.rank` (recommended for distributed training)
+                - If False, disables bias (all processes use identical seed)
 
-                This avoids same data augmentation are applied on every processes.
+                Using a per-process bias is important in distributed training to avoid
+                all processes applying identical data augmentation.
 
-                Defaults to `self.rank`.
+        Returns:
+            int: The actual seed that was set (after applying bias)
 
-                Set to `False` to disable this feature.
+        Examples:
+            # Set seed from config
+            runner.set_seed()
+
+            # Set specific seed
+            runner.set_seed(42)
+
+            # Set seed with explicit bias
+            runner.set_seed(42, bias=10)
+
+            # Set same seed for all processes (not recommended for data augmentation)
+            runner.set_seed(42, bias=False)
+
+        Note:
+            - Setting seeds is essential for reproducible experiments
+            - Different biases across processes ensure diverse data augmentation
+            - Subclasses should call `super().set_seed()` if overriding
         """
 
-        seed = seed or self.state.seed
+        seed = seed or self.config.seed  # type: ignore[assignment]
         bias = bias or self.rank
         if bias:
             seed += bias
         if np_random is not None:
             np_random.seed(seed)
         random.seed(seed)
+        return seed
 
     def set_deterministic(self) -> None:
         r"""
@@ -424,8 +365,8 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         Scale learning rate according to [linear scaling rule](https://arxiv.org/abs/1706.02677).
         """
 
-        if lr_scale_factor in self.state:
-            lr_scale_factor = self.state.lr_scale_factor
+        if lr_scale_factor in self.config:
+            lr_scale_factor = self.config.lr_scale_factor
 
         if lr_scale_factor is None:
             if batch_size_base is None:
@@ -438,19 +379,15 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
                 "batch_size_base will be ignored if lr_scale_factor is specified", category=RuntimeWarning, stacklevel=2
             )
         lr = lr * lr_scale_factor
-        self.state.lr_scale_factor = lr_scale_factor
+        self.config.lr_scale_factor = lr_scale_factor
         return lr
 
-    def step(self, loss, batch_size: int | None = None, zero_grad: bool = True) -> None:
+    def advance(self, loss, *args, **kwargs) -> None:
         r"""
         Backward loss and step optimizer & scheduler.
 
-        This method increment `self.state.steps`.
-
-        This method also increment `self.state.iters` when `batch_size` is specified.
-
         Args:
-            zero_grad: Whether to zero the gradients.
+            loss: loss.
         """
 
         raise NotImplementedError
@@ -460,17 +397,17 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         Return dict of all attributes for checkpoint.
         """
 
-        return cls(self.state)
+        return cls(self.config)
 
     def dict(self, cls: Callable = dict) -> Mapping:
         r"""
-        Convert state to Mapping.
+        Convert config to Mapping.
 
         Args:
             cls: Target `clc to convert to.
         """
 
-        return self.state.dict(cls)
+        return self.config.dict(cls)
 
     @catch
     def save(self, obj: Any, file: PathStr, main_process_only: bool = True, *args, **kwargs) -> File:
@@ -499,11 +436,11 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     @catch
     def json(self, file: File, main_process_only: bool = True, *args, **kwargs) -> None:  # pylint: disable=R1710
         r"""
-        Dump Runner State to json file.
+        Dump Runner config to json file.
         """
 
         if main_process_only and self.is_main_process or not main_process_only:
-            return self.state.json(file, *args, **kwargs)
+            return self.config.json(file, *args, **kwargs)
 
     @classmethod
     def from_json(cls, file: File, *args, **kwargs) -> BaseRunner:
@@ -519,10 +456,10 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
 
     def jsons(self, *args, **kwargs) -> str:
         r"""
-        Dump Runner State to json string.
+        Dump Runner config to json string.
         """
 
-        return self.state.jsons(*args, **kwargs)
+        return self.config.jsons(*args, **kwargs)
 
     @classmethod
     def from_jsons(cls, string: str, *args, **kwargs) -> BaseRunner:
@@ -535,11 +472,11 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     @catch
     def yaml(self, file: File, main_process_only: bool = True, *args, **kwargs) -> None:  # pylint: disable=R1710
         r"""
-        Dump Runner State to yaml file.
+        Dump Runner config to yaml file.
         """
 
         if main_process_only and self.is_main_process or not main_process_only:
-            return self.state.yaml(file, *args, **kwargs)
+            return self.config.yaml(file, *args, **kwargs)
 
     @classmethod
     def from_yaml(cls, file: File, *args, **kwargs) -> BaseRunner:
@@ -555,10 +492,10 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
 
     def yamls(self, *args, **kwargs) -> str:
         r"""
-        Dump Runner State to yaml string.
+        Dump Runner config to yaml string.
         """
 
-        return self.state.yamls(*args, **kwargs)
+        return self.config.yamls(*args, **kwargs)
 
     @classmethod
     def from_yamls(cls, string: str, *args, **kwargs) -> BaseRunner:
@@ -593,102 +530,152 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
 
     @catch
     @on_main_process
-    def save_checkpoint(self, epochs: int | None = None) -> None:
+    def save_checkpoint(self, name: str = "latest", epochs: int | None = None, save_best: bool = True) -> None:
         r"""
-        Save checkpoint to `self.checkpoint_dir`.
+        Save the current model state and runner configuration to a checkpoint file.
 
-        The checkpoint will be saved to `self.checkpoint_dir/latest.pth`.
+        This method saves the complete state of the runner, including model weights,
+        optimizer state, scheduler state, and configuration to the checkpoint directory.
+        The method handles various checkpoint naming strategies based on parameters.
 
-        If `self.state.save_interval` is positive and `self.state.epochs + 1` is a multiple of `save_interval`,
-        the checkpoint will also be copied to `self.checkpoint_dir/epoch-{self.state.epochs}.pth`.
+        Args:
+            name: Base name of the checkpoint file (without extension).
+                Defaults to `"latest"`, which creates a checkpoint at `{checkpoint_dir}/latest.pth`.
+            epochs: Epoch number to record in the checkpoint.
+                If None, uses `self.epochs` (current epoch counter).
+            save_best: Whether to also save a copy of the checkpoint as `best.pth`
+                when the current model performance is the best so far (`self.is_best` is True).
+                Defaults to True.
 
-        If `self.is_best` is `True`, the checkpoint will also be copied to `self.checkpoint_dir/best.pth`.
+        Note:
+            - Checkpoints are saved only on the main process in distributed training.
+            - The format is determined by the extension, defaulting to `.pth`.
+            - The checkpoint includes the complete runner state from `self.state_dict()`.
+            - Periodic checkpoints are saved based on `save_interval` configuration:
+              If `self.config.save_interval > 0` and `(epochs + 1) % save_interval == 0`,
+              the checkpoint will be copied to `{checkpoint_dir}/epoch-{epochs}.pth`.
+
+        See Also:
+            [`load_checkpoint`][danling.BaseRunner.load_checkpoint]: Load a saved checkpoint.
+            [`state_dict`][danling.BaseRunner.state_dict]: Get the state dictionary to save.
         """
 
-        epochs = epochs or self.state.epochs
-        save_interval = self.state.get("save_interval", -1)
-        latest_path = os.path.join(self.checkpoint_dir, "latest.pth")
+        epochs = epochs or self.epochs
+        save_interval = self.config.get("save_interval", -1)
+        latest_path = os.path.join(self.checkpoint_dir, f"{name}.pth")
         self.save(self.state_dict(), latest_path)
         if save_interval > 0 and (epochs + 1) % save_interval == 0:
             save_path = os.path.join(self.checkpoint_dir, f"epoch-{epochs}.pth")
             shutil.copy(latest_path, save_path)
-        if self.is_best:
+        if save_best and self.is_best:
             best_path = os.path.join(self.checkpoint_dir, "best.pth")
             shutil.copy(latest_path, best_path)
 
-    def load_checkpoint(
-        self,
-        checkpoint: Mapping | bytes | str | os.PathLike | None = None,
-        auto_resume: bool | None = None,
-        override_state: bool = False,
-        *args,
-        **kwargs,
+    def load_config(
+        self, checkpoint: Mapping | bytes | str | os.PathLike, overwrite: bool = False, *args, **kwargs
     ) -> None:
-        """
-        Load info from checkpoint.
+        r"""
+        Load config from checkpoint.
 
         Args:
             checkpoint: Checkpoint (or its path) to load.
-                Defaults to `self.state.checkpoint`.
-            auto_resume: Automatically resume from latest checkpoint if exists.
-                Defaults to `False`.
-                If is `True` and `checkpoint` is None, will set it to `self.checkpoint_dir/latest.pth`.
-            override_state: If True, override runner state with checkpoint state.
+            overwrite: If `True`, overwrite the current config with the loaded config.
                 Defaults to `False`.
             *args: Additional arguments to pass to `self.load`.
             **kwargs: Additional keyword arguments to pass to `self.load`.
 
         Raises:
             FileNotFoundError: If `checkpoint` does not exists.
-
-        See Also:
-            [`from_checkpoint`][danling.BaseRunner.from_checkpoint]: Build runner from checkpoint.
-            [`load_pretrained`][danling.BaseRunner.load_pretrained]: Load parameters from pretrained checkpoint.
         """
 
-        checkpoint = checkpoint if checkpoint is not None else self.state.get("checkpoint")
-        auto_resume = auto_resume if auto_resume is not None else self.state.get("auto_resume", False)
-
-        # TODO: Support loading checkpoints in other format
-        if checkpoint is not None:
-            if auto_resume:
-                warn(
-                    "latest checkpoint is preempted by value specified in checkpoint",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-            if isinstance(checkpoint, (bytes, str, os.PathLike)):
-                if not os.path.exists(checkpoint):
-                    raise FileNotFoundError(f"checkpoint is set to {checkpoint!r} but does not exist")
-                self.state.checkpoint = checkpoint
-                ckpt = self.load(checkpoint, *args, **kwargs)
-            elif isinstance(checkpoint, Mapping):
-                ckpt = checkpoint
-            else:
-                raise ValueError(f"pretrained is set to {checkpoint!r} but is not a valid checkpoint")
-        elif auto_resume:
-            checkpoint = os.path.join(self.checkpoint_dir, "latest.pth")
-            if os.path.exists(checkpoint):
-                self.state.checkpoint = checkpoint
-                ckpt = self.load(checkpoint, *args, **kwargs)
-            else:
-                warn("latest checkpoint does not exits", category=RuntimeWarning, stacklevel=2)
-                return
+        if isinstance(checkpoint, (bytes, str, os.PathLike)):
+            if not os.path.exists(checkpoint):
+                raise FileNotFoundError(f"checkpoint is set to {checkpoint!r} but does not exist")
+            config = self.load(checkpoint, *args, **kwargs)
+        elif isinstance(checkpoint, Mapping):
+            config = checkpoint
         else:
-            raise ValueError("checkpoint is not specified and auto_resume is not set to True")
+            raise ValueError(f"checkpoint is set to {checkpoint!r} but is not a valid checkpoint")
 
-        # TODO: Wrap state_dict in a dataclass
-        self.state.merge(ckpt["runner"], overwrite=override_state)
-        if self.model is not None and "model" in ckpt:
-            model = self.unwrap_model(self.model)
-            model.load_state_dict(ckpt["model"])
-        if self.optimizer is not None and "optimizer" in ckpt:
-            self.optimizer.load_state_dict(ckpt["optimizer"])
-        if self.scheduler is not None and "scheduler" in ckpt:
-            self.scheduler.load_state_dict(ckpt["scheduler"])
-        self.state.iter_begin = self.state.iters + 1
-        self.state.step_begin = self.state.steps + 1
-        self.state.epoch_begin = self.state.epochs + 1
+        config = config.get("runner", config)
+        self.config.merge(config, overwrite=overwrite)
+        self.step_begin = config["steps"] + 1
+        self.epoch_begin = config["epochs"] + 1
+
+    def load_checkpoint(self, checkpoint: Mapping | bytes | str | os.PathLike, *args, **kwargs) -> None:
+        """
+        Restore model, optimizer, and scheduler states from a saved checkpoint.
+
+        This method loads the complete training state from a checkpoint, including:
+        - Model weights and parameters
+        - Optimizer state (learning rates, momentum buffers, etc.)
+        - Learning rate scheduler state
+
+        The method supports loading from either:
+        - A file path (str, bytes, PathLike)
+        - An already loaded checkpoint dictionary (Mapping)
+
+        Args:
+            checkpoint: The checkpoint to load from, which can be:
+                - A path to the checkpoint file
+                - A pre-loaded checkpoint dictionary
+            *args: Additional arguments passed to the underlying `self.load` method.
+            **kwargs: Additional keyword arguments passed to the underlying `self.load` method.
+                      Common options include `map_location` for controlling device mapping.
+
+        Raises:
+            ValueError: If `self.model` is not defined (must initialize model before loading).
+            ValueError: If `checkpoint` is not a recognized checkpoint format.
+            FileNotFoundError: If the checkpoint file specified does not exist.
+
+        Note:
+            - This method attempts to unwrap the model before loading (useful for distributed training wrappers)
+            - Unlike `load_config`, this method loads both model parameters and optimizer/scheduler states
+            - Missing optimizer or scheduler states in the checkpoint will produce warnings but not errors
+            - The checkpoint is stored in `self.config.checkpoint` for reference
+
+        Example:
+            ```python
+            # Load from a file
+            runner.load_checkpoint('checkpoints/best.pth')
+
+            # Load with device mapping
+            runner.load_checkpoint('checkpoints/latest.pth', map_location='cuda:0')
+            ```
+
+        See Also:
+            [`from_checkpoint`][danling.BaseRunner.from_checkpoint]: Build a new runner instance from checkpoint.
+            [`load_pretrained`][danling.BaseRunner.load_pretrained]: Load only model parameters from a checkpoint.
+            [`save_checkpoint`][danling.BaseRunner.save_checkpoint]: Save current state to a checkpoint.
+        """
+
+        if self.model is None:
+            raise ValueError("model is not defined")
+        if isinstance(checkpoint, (bytes, str, os.PathLike)):
+            if not os.path.exists(checkpoint):
+                raise FileNotFoundError(f"checkpoint is set to {checkpoint!r} but does not exist")
+            ckpt = self.load(checkpoint, *args, **kwargs)
+        elif isinstance(checkpoint, Mapping):
+            ckpt = checkpoint
+        else:
+            raise ValueError(f"checkpoint is set to {checkpoint!r} but is not a valid checkpoint")
+
+        state_dict = ckpt
+        while "model" in state_dict or "module" in state_dict:
+            state_dict = state_dict.get("model", state_dict)
+            state_dict = state_dict.get("module", state_dict)
+        self.unwrap(self.model).load_state_dict(state_dict)
+        if self.optimizer is not None:
+            if "optimizer" in ckpt:
+                self.optimizer.load_state_dict(ckpt["optimizer"])
+            else:
+                warn("optimizer is not in checkpoint", category=RuntimeWarning, stacklevel=2)
+        if self.scheduler is not None:
+            if "scheduler" in ckpt:
+                self.scheduler.load_state_dict(ckpt["scheduler"])
+            else:
+                warn("scheduler is not in checkpoint", category=RuntimeWarning, stacklevel=2)
+        self.config.checkpoint = checkpoint
 
     @classmethod
     def from_checkpoint(cls, checkpoint: Mapping | bytes | str | os.PathLike, *args, **kwargs) -> BaseRunner:
@@ -710,33 +697,33 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             ckpt = checkpoint
         else:
             raise ValueError(f"checkpoint is set to {checkpoint} but is not a valid checkpoint")
-        runner = cls(**ckpt["runner"])
-        runner.load_checkpoint(ckpt, override_state=False)
+        runner = cls(ckpt["runner"])
+        runner.load_checkpoint(ckpt, override_config=False)
         return runner
 
-    def load_pretrained(self, checkpoint: Mapping | bytes | str | os.PathLike | None = None, *args, **kwargs) -> None:
+    def load_pretrained(self, checkpoint: Mapping | bytes | str | os.PathLike, *args, **kwargs) -> None:
         """
-        Load parameters from pretrained checkpoint.
+        Load model from pretrained checkpoint.
 
         This method only loads the model weights.
 
         Args:
             checkpoint: Pretrained checkpoint (or its path) to load.
-                Defaults to `self.state.pretrained`.
             *args: Additional arguments to pass to `self.load`.
             **kwargs: Additional keyword arguments to pass to `self.load`.
 
         Raises:
+            ValueError: If `model` is not defined.
+            ValueError: If `checkpoint` is not a valid checkpoint.
             FileNotFoundError: If `checkpoint` does not exists.
 
         See Also:
-            [`load_checkpoint`][danling.BaseRunner.load_checkpoint]: Load info from checkpoint.
+            [`load_checkpoint`][danling.BaseRunner.load_checkpoint]: Load model, optimizer, and scheduler from
+                checkpoint.
         """
 
-        # TODO: Support loading checkpoints in other format
-        checkpoint = checkpoint if checkpoint is not None else self.state.get("pretrained")
-        if checkpoint is None:
-            raise ValueError("pretrained is not specified")
+        if self.model is None:
+            raise ValueError("model is not defined")
         if isinstance(checkpoint, (bytes, str, os.PathLike)):
             if not os.path.exists(checkpoint):
                 raise FileNotFoundError(f"pretrained is set to {checkpoint!r} but does not exist")
@@ -745,11 +732,32 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             ckpt = checkpoint
         else:
             raise ValueError(f"pretrained is set to {checkpoint!r} but is not a valid checkpoint")
-        if self.model is not None and "model" in ckpt:
-            model = self.unwrap_model(self.model)
-            model.load_state_dict(ckpt["model"])
-        else:
-            raise ValueError(f"Unable to find model weights in {checkpoint!r}")
+
+        state_dict = ckpt
+        while "model" in state_dict or "module" in state_dict:
+            state_dict = state_dict.get("model", state_dict)
+            state_dict = state_dict.get("module", state_dict)
+        self.unwrap(self.model).load_state_dict(state_dict)
+
+    def get_step_result(self) -> NestedDict:
+        result = self.meters.value()
+        if self.metrics is not None:
+            return self._merge_result(result, self.metrics.value())
+        return result
+
+    def get_epoch_result(self) -> NestedDict:
+        result = self.meters.average()
+        if self.metrics is not None:
+            return self._merge_result(result, self.metrics.average())
+        return result
+
+    def _merge_result(self, meter_result, metric_result) -> NestedDict:
+        for key, value in metric_result.items():
+            if isinstance(value, (Mapping)) and len(value) == 1:
+                value = next(iter(value.values()))
+            metric_result[key] = value
+        meter_result.update(metric_result)
+        return meter_result
 
     def append_result(self, result: NestedDict, index: int | None = None) -> None:
         r"""
@@ -762,14 +770,14 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         """
 
         if index is None:
-            index = self.state.epochs
+            index = self.epochs
             global __APPEND_RESULT_COUNTER__  # pylint: disable=global-statement
             __APPEND_RESULT_COUNTER__ += 1
             if index == 0 and __APPEND_RESULT_COUNTER__ > 1:
                 warn(
                     """
-                    Automatically set index to `self.state.epochs`.
-                    Please ensure `self.state.epochs` updates before calling `append_result`
+                    Automatically set index to `self.epochs`.
+                    Please ensure `self.epochs` updates before calling `append_result`
                     """,
                     category=RuntimeWarning,
                     stacklevel=2,
@@ -790,9 +798,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     def step_log(self, split: str, iteration: int, length: int | None = None):
         if length is None:
             length = len(self.dataloaders[split]) - 1
-        result = self.meters.val
-        if self.metrics is not None:
-            result.merge(self.metrics.val)
+        result = self.get_step_result()
         print(self.format_step_result(result, split, iteration, length))
         if self.mode == "train":
             self.write_result(result, split)
@@ -801,13 +807,14 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     def format_step_result(
         self, result: NestedDict, split: str, steps: int, length: int, format_spec: str = ".4f"
     ) -> str:
-        result = NestedDict(result).clone()
         repr_str = ""
         if split is not None:
             if self.mode == "train":
                 repr_str = f"training on {split} "
-            elif self.mode == "eval":
+            elif self.mode == "evaluate":
                 repr_str = f"evaluating on {split} "
+            elif self.mode == "infer":
+                repr_str = f"inferring on {split} "
             else:
                 repr_str = f"running in {self.mode} mode on {split} "
         repr_str += f"[{steps}/{length}]\t"
@@ -816,15 +823,13 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     def format_epoch_result(
         self, result: NestedDict, epochs: int | None = None, epoch_end: int | None = None, format_spec: str = ".4f"
     ) -> str:
-        result = NestedDict(result).clone()
-        epochs = epochs or self.state.epochs
-        epoch_end = epoch_end or self.state.epoch_end
-        repr_str = f"epoch [{epochs}/{epoch_end - 1}]\n" if epochs is not None and epoch_end else ""
-        repr_str += "\n".join([f"{k}:\t{self.format_result(v, format_spec=format_spec)}" for k, v in result.items()])
-        return repr_str
+        epochs = epochs or self.epochs
+        epoch_end = epoch_end or self.epoch_end
+        repr_str = f"epoch [{epochs}/{epoch_end - 1}]" if epochs is not None and epoch_end else ""
+        return repr_str + self.format_result(result, format_spec=format_spec)
 
-    def format_result(self, result, format_spec: str = ".4f") -> str:
-        return "\t".join([f"{k}: {format(v, format_spec)}" for k, v in result.items()])
+    def format_result(self, result: Mapping, format_spec: str = ".4f") -> str:
+        return format_result(result, format_spec=format_spec)
 
     def write_result(self, result: NestedDict, split: str, steps: int | None = None):
         if steps is None:
@@ -880,20 +885,23 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             best_path = os.path.join(self.dir, "best.json")
             shutil.copy(latest_path, best_path)
 
-    @cached_property
-    def name(self):
-        if "name" in self._state:
-            return self.state["name"]
-        return f"{self.state.experiment_name}-{self.state.run_name}"
+    def unwrap(self, model: Any) -> Any:
+        return model
 
     @cached_property
-    def id(self):
-        return f"{self.state.experiment_id:.8}{self.state.run_id:.8}"
+    def name(self) -> str:
+        if "name" in self.config:
+            return self.config["name"]
+        return f"{self.config.experiment_name}-{self.config.run_name}"
+
+    @cached_property
+    def id(self) -> str:
+        return f"{self.config.experiment_id:.8}{self.config.run_id:.8}"
 
     @cached_property
     def uuid(self) -> UUID:
         r"""
-        UUID of the state.
+        UUID of the config.
         """
 
         return uuid5(self.run_uuid, self.id)
@@ -909,8 +917,8 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         self._mode = mode
 
     @property
-    def state(self) -> RunnerState:
-        return self._state
+    def config(self) -> Config:
+        return self._config
 
     @property
     def batch_size(self) -> int:
@@ -918,16 +926,25 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         Batch size.
 
         Note:
-            If `train` is in `dataloaders`, then `batch_size` is the batch size of `train`.
-            Otherwise, `batch_size` is the batch size of the first dataloader.
-
-        Returns:
-            (int):
+            If `self.dataloaders` is specified:
+                - If `self.split` is specified, `batch_size` is the batch size of `self.split`.
+                - If `self.train_splits` is specified, `batch_size` is the batch size of `self.train_splits[0]`.
+                - If `self.evaluate_splits` is specified, `batch_size` is the batch size of `self.evaluate_splits[0]`.
+                - Otherwise, `batch_size` is the batch size of the first dataloader.
+            Otherwise, `batch_size` is the batch size specified in `self.config.dataloader.batch_size`.
         """
 
-        if self.dataloaders and self.split:
-            return self.dataloaders[self.split].batch_size
-        batch_size = self.state.get("dataloader.batch_size")
+        if self.dataloaders:
+            if self.split:
+                split = self.split
+            elif self.train_splits:
+                split = self.train_splits[0]
+            elif self.evaluate_splits:
+                split = self.evaluate_splits[0]
+            else:
+                split = next(iter(self.dataloaders))
+            return self.dataloaders[split].batch_size
+        batch_size = self.config.get("dataloader.batch_size")
         if batch_size:
             return batch_size
         raise AttributeError("batch_size could not be inferred and is not in config")
@@ -935,49 +952,115 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     @property
     def batch_size_equivalent(self) -> int:
         r"""
-        Actual batch size.
+        The effective total batch size across all processes and gradient accumulation steps.
+
+        This property calculates the total number of examples processed in a single
+        optimization step by accounting for:
+        - The base batch size per device
+        - The number of processes (world_size for distributed training)
+        - The number of gradient accumulation steps
+
+        This is particularly useful for:
+        - Learning rate scaling using the linear scaling rule
+        - Calculating the total steps in an epoch
+        - Estimating memory requirements across all devices
 
         Returns:
-            (int): `batch_size` * `world_size` * `accum_steps`
+            (int): Effective batch size calculated as `batch_size * world_size * accum_steps`
         """
 
         return self.batch_size * self.world_size * self.accum_steps
 
-    @cached_property
+    @property
+    def epochs(self) -> int:
+        r"""
+        Current epoch.
+        """
+        return self.config.epochs
+
+    @epochs.setter
+    def epochs(self, epochs: int) -> None:
+        self.config.epochs = epochs
+
+    @property
+    def epoch_begin(self) -> int:
+        return self.config.epoch_begin
+
+    @epoch_begin.setter
+    def epoch_begin(self, epoch_begin: int) -> None:
+        self.config.epoch_begin = epoch_begin
+
+    @property
+    def epoch_end(self) -> int | None:
+        return self.config.epoch_end
+
+    @epoch_end.setter
+    def epoch_end(self, epoch_end: int) -> None:
+        self.config.epoch_end = epoch_end
+
+    @property
     def total_epochs(self) -> int:
-        if self.state.epoch_end:
-            return self.state.epoch_end - self.state.epoch_begin + 1
+        r"""
+        Number of training epochs.
+        """
+        if self.epoch_end:
+            return self.epoch_end - self.epoch_begin
         raise ValueError("epoch_end is not specified")
 
-    @cached_property
+    @property
+    def steps(self) -> int:
+        r"""
+        Current step.
+        """
+        return self.config.steps
+
+    @steps.setter
+    def steps(self, steps: int) -> None:
+        self.config.steps = steps
+
+    @property
+    def step_begin(self) -> int:
+        return self.config.step_begin
+
+    @step_begin.setter
+    def step_begin(self, step_begin: int) -> None:
+        self.config.step_begin = step_begin
+
+    @property
+    def step_end(self) -> int | None:
+        return self.config.step_end
+
+    @step_end.setter
+    def step_end(self, step_end: int) -> None:
+        self.config.step_end = step_end
+
+    @property
     def total_steps(self) -> int:
-        if self.state.step_end:
-            return self.state.step_end - self.state.step_begin
-        dataset = self.datasets.get("train", next(iter(self.datasets.values())))
-        return self.total_epochs * ceil(len(dataset) / self.batch_size / self.world_size)
+        r"""
+        Number of training steps.
+        """
+        if self.step_end:
+            return self.step_end - self.step_begin
+        train_splits = self.train_splits
+        if self.dataloaders and train_splits:
+            return self.total_epochs * sum(len(self.dataloaders[split]) for split in train_splits)
+        if self.datasets and train_splits:
+            datasets_length = sum(len(self.datasets[split]) for split in self.train_splits)
+            return self.total_epochs * ceil(datasets_length / self.batch_size / self.world_size)
+        raise ValueError("total_steps could not be inferred and is not in config")
 
-    @cached_property
-    def trainable_steps(self) -> int:
-        return ceil(self.total_steps / self.accum_steps)
-
-    @cached_property
+    @property
     def accum_steps(self) -> int:
         r"""
-        Accumulated steps.
-
-        Returns:
-            (int):
+        Number of steps to accumulate gradients.
         """
 
-        return self.state.get("accum_steps", 1)
+        return self.config.get("accum_steps", 1)
 
     @property
     def progress(self) -> float:
         r"""
         Training Progress.
-
-        Returns:
-            (float):
 
         Raises:
             RuntimeError: If no terminal is defined.
@@ -986,12 +1069,44 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         return self.steps / self.total_steps
 
     @property
-    def device(self) -> Any:
-        r"""
-        Device of runner.
-        """
+    def train_splits(self) -> list[str]:
+        if self._train_splits is not None:
+            return self._train_splits
+        if "train_splits" in self.config:
+            self._train_splits = self.config["train_splits"]
+            return self._train_splits
+        if self.datasets:
+            train_splits = [k for k, d in self.datasets.items() if getattr(d, "train", False)]
+            if train_splits:
+                self._train_splits = train_splits
+                return train_splits
+            dataset_splits = {k: getattr(d, "split", None) for k, d in self.datasets.items()}
+            train_splits = [k for k, s in dataset_splits.items() if s == "train"]
+            if train_splits:
+                self._train_splits = train_splits
+                return train_splits
+        raise ValueError("train_splits could not be inferred and is not in config")
 
-        return "cpu"
+    @train_splits.setter
+    def train_splits(self, train_splits: list[str]) -> None:
+        self._train_splits = train_splits
+
+    @property
+    def evaluate_splits(self) -> list[str]:
+        if self._evaluate_splits is not None:
+            return self._evaluate_splits
+        if "evaluate_splits" in self.config:
+            self._evaluate_splits = self.config["evaluate_splits"]
+            return self._evaluate_splits
+        if self.datasets:
+            evaluate_splits = [k for k in self.datasets if k not in self.train_splits]
+            self._evaluate_splits = evaluate_splits
+            return evaluate_splits
+        raise ValueError("evaluate_splits could not be inferred and is not in config")
+
+    @evaluate_splits.setter
+    def evaluate_splits(self, evaluate_splits: list[str]) -> None:
+        self._evaluate_splits = evaluate_splits
 
     @property
     def world_size(self) -> int:
@@ -1046,24 +1161,18 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         r"""
         Function to determine the best score from a list of scores.
 
-        By default, the `best_fn` returns `min` if `self.state.score_name` is `loss`,
+        By default, the `best_fn` returns `min` if `self.config.score_name` is `loss`,
         otherwise, returns `max`.
 
         Subclass can override this method to accommodate needs, such as `min`.
-
-        Returns:
-            (callable):
         """
 
-        return max if self.state.score_name != "loss" else min
+        return max if self.config.score_name != "loss" else min
 
     @property
     def best_index(self) -> int:
         r"""
         Find the best index from all scores.
-
-        Returns:
-            (int):
         """
 
         if not self.scores:
@@ -1101,31 +1210,31 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         r"""
         All scores.
 
-        Scores are extracted from results by `score_split` and `runner.state.score_name`,
-        following `[r[score_split][self.state.score_name] for r in self.results]`.
+        Scores are extracted from results by `score_split` and `runner.config.score_name`,
+        following `[r[score_split][self.config.score_name] for r in self.results]`.
 
         Scores are considered as the index of the performance of the model.
         It is useful to determine the best model and the best hyper-parameters.
 
-        `score_split` is defined in `self.state.score_split`.
+        `score_split` is defined in `self.config.score_split`.
         If it is not set, `DanLing` will use `val` or `validate` if they appear in the `latest_result`.
         If `DanLing` still could not find, it will fall back to the second key in the `latest_result`
         if it contains more that one element, or the first key.
 
-        Note that certain keys are ignored when falling back, they are defined in {IGNORED_SET_NAMES}.
+        Note that certain keys are ignored when falling back, they are defined in {defaults.IGNORED_NAMES_IN_METRICS}.
         """
 
         if not self.results:
             return None
-        subsets = [i for i in self.latest_result.keys() if i not in IGNORED_SET_NAMES]  # type: ignore
-        score_split = self.state.get("score_split")
+        subsets = [i for i in self.latest_result.keys() if i not in defaults.IGNORED_NAMES_IN_METRICS]  # type: ignore
+        score_split = self.config.get("score_split")
         if score_split is None and "val" in subsets:
             score_split = "val"
         if score_split is None and "validate" in subsets:
             score_split = "validate"
         if score_split is None:
             score_split = subsets[1] if len(subsets) > 1 else subsets[0]
-        return FlatDict({k: v[score_split][self.state.score_name] for k, v in self.results.items()})
+        return FlatDict({k: v[score_split][self.config.score_name] for k, v in self.results.items()})
 
     @property
     def latest_score(self) -> float | None:
@@ -1152,7 +1261,32 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     @property
     def is_best(self) -> bool:
         r"""
-        If current epoch is the best epoch.
+        Determines whether the latest model checkpoint is the best performing one.
+
+        This property compares the `latest_score` with the `best_score` to determine
+        if the most recent model evaluation represents the best performance achieved
+        so far. The comparison uses a small epsilon (1e-7) to handle floating point
+        comparison issues.
+
+        The property is used by:
+        - `save_checkpoint` method to determine whether to save a "best.pth" checkpoint
+        - Result logging and reporting mechanisms
+        - Early stopping implementations
+
+        Returns:
+            (bool): True if the latest evaluation results represent the best performance
+                 or if no results exist yet, False otherwise.
+
+        Note:
+            - Returns True if no results exist (first evaluation)
+            - Uses numerical comparison with tolerance to avoid floating point issues
+            - The definition of "best" depends on the metric (maximization for accuracy,
+              minimization for loss, etc.) and is handled by the `best_fn` property
+
+        See Also:
+            [`best_score`][danling.BaseRunner.best_score]: The best score achieved so far.
+            [`latest_score`][danling.BaseRunner.latest_score]: The most recent score.
+            [`best_fn`][danling.BaseRunner.best_fn]: Function defining "best" (min/max).
         """
 
         if not self.results:
@@ -1168,18 +1302,18 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         Directory of the run.
         """
 
-        if "dir" in self.state:
-            return self.state.dir
+        if "dir" in self.config:
+            return self.config.dir
         return os.path.join(self.project_root, f"{self.name}-{self.id}", self.timestamp)
 
     @cached_ensure_parent_dir
-    def log_path(self) -> str:
+    def log_file(self) -> str:
         r"""
         Path of log file.
         """
 
-        if "log_path" in self.state:
-            return self.state.log_path
+        if "log_file" in self.config:
+            return self.config.log_file
         return os.path.join(self.dir, "run.log")
 
     @cached_ensure_dir
@@ -1188,9 +1322,9 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         Directory of checkpoints.
         """
 
-        if "checkpoint_dir" in self.state:
-            return self.state.checkpoint_dir
-        return os.path.join(self.dir, self.state.checkpoint_dir_name)
+        if "checkpoint_dir" in self.config:
+            return self.config.checkpoint_dir
+        return os.path.join(self.dir, self.config.checkpoint_dir_name)
 
     # def __getattribute__(self, name) -> Any:
     #     if name in ("__class__", "__dict__"):
@@ -1199,16 +1333,16 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     #         return self.__dict__[name]
     #     if name in dir(self):
     #         return super().__getattribute__(name)
-    #     if "state" in self and name in self.state:
-    #         return self.state[name]
+    #     if "config" in self and name in self.config:
+    #         return self.config[name]
     #     return super().__getattribute__(name)
 
     def __getattr__(self, name) -> Any:
         if self.inited:
-            if name in self._state:
-                return self.state[name]
-            if name in dir(self.state):
-                return getattr(self.state, name)
+            if name in self.config:
+                return self.config[name]
+            if name in dir(self.config):
+                return getattr(self.config, name)
         return super().__getattribute__(name)
 
     def __setattr__(self, name, value) -> None:
@@ -1225,19 +1359,19 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
                 object.__setattr__(self, name, value)
             return
         if self.inited:
-            if name in self.state:
-                if isinstance(self.state[name], Variable):
-                    self.state[name].set(value)
+            if name in self.config:
+                if isinstance(self.config[name], Variable):
+                    self.config[name].set(value)
                 else:
-                    self.state[name] = value
+                    self.config[name] = value
                 return
-            if name in dir(self.state):
-                setattr(self.state, name, value)
+            if name in dir(self.config):
+                setattr(self.config, name, value)
                 return
         object.__setattr__(self, name, value)
 
     def __contains__(self, name) -> bool:
-        return name in dir(self) or ("state" in self.__dict__ and name in dir(self.state))
+        return name in dir(self) or ("config" in self.__dict__ and name in dir(self.config))
 
     def __repr__(self):
         lines = []
