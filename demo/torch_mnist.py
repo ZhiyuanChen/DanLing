@@ -16,7 +16,7 @@
 # See the LICENSE file for more details.
 
 import torchvision
-from chanfig import Config, Registry
+from chanfig import Registry
 from torch import nn, optim
 
 import danling as dl
@@ -26,7 +26,7 @@ OPTIMIZERS.register(optim.AdamW, "adamw")
 OPTIMIZERS.register(optim.SGD, "sgd")
 
 
-class MNISTConfig(Config):
+class MNISTConfig(dl.Config):
     epoch_end: int = 2
     log: bool = False
     tensorboard: bool = False
@@ -52,7 +52,7 @@ class MNISTConfig(Config):
 
 
 class MNISTRunner(dl.TorchRunner):
-    def __init__(self, config: Config):
+    def __init__(self, config: dl.Config):
         super().__init__(config)
 
         self.dataset.transform = torchvision.transforms.Compose(
