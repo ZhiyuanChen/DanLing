@@ -20,17 +20,19 @@
 from typing import Any
 
 import torch
-from chanfig import FlatDict, NestedDict
+from chanfig import FlatDict
 
 
 def to_device(data: Any, device: torch.device):
     r"""Move data to device."""
+    if isinstance(data, torch.Tensor):
+        return data.to(device)
+    if isinstance(data, FlatDict):
+        return data.to(device)
     if isinstance(data, list):
         return [to_device(i, device) for i in data]
     if isinstance(data, tuple):
         return tuple(to_device(i, device) for i in data)
-    if isinstance(data, NestedDict):
-        return NestedDict({k: to_device(v, device) for k, v in data.all_items()})
     if isinstance(data, dict):
         return FlatDict({k: to_device(v, device) for k, v in data.items()})
     if hasattr(data, "to"):

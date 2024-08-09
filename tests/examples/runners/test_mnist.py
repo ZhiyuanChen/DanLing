@@ -22,11 +22,11 @@ from pathlib import Path
 
 import pytest
 
-TORCH_MNIST_PATH = Path(__file__).resolve().parents[2] / "examples" / "runners" / "torch_mnist.py"
+TORCH_MNIST_PATH = Path(__file__).resolve().parents[3] / "examples" / "runners" / "mnist.py"
 
 
 def _load_torch_mnist_module():
-    spec = importlib.util.spec_from_file_location("danling_examples_vision_torch_mnist", TORCH_MNIST_PATH)
+    spec = importlib.util.spec_from_file_location("danling_examples_runners_mnist", TORCH_MNIST_PATH)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load {TORCH_MNIST_PATH}")
     module = importlib.util.module_from_spec(spec)

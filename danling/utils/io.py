@@ -20,7 +20,7 @@
 import json
 import os
 import pickle
-from typing import Any, Dict, List
+from typing import Any
 
 import yaml
 from chanfig import FlatDict
@@ -71,7 +71,7 @@ SQL = ("sql",)
 PANDAS_SUPPORTED = sum([JSON, YAML, CSV, PANDAS, PARQUET, PICKLE, H5, EXCEL, XML, SQL], ())
 
 
-def save(obj: Any, file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) -> File:
+def save(obj: Any, file: PathStr, *args: Any, **kwargs: Any) -> File:
     r"""
     Save any file with supported extensions.
     """
@@ -120,7 +120,7 @@ def save(obj: Any, file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) ->
     return file
 
 
-def load(file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
+def load(file: PathStr, *args: Any, **kwargs: Any) -> Any:
     r"""
     Load any file with supported extensions.
     """
@@ -150,7 +150,7 @@ def load(file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
     raise ValueError(f"Tying to load {file!r} with unsupported extension={extension!r}")
 
 
-def load_pandas(file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) -> Any:
+def load_pandas(file: PathStr, *args: Any, **kwargs: Any) -> Any:
     r"""
     Load any pandas data file with supported extensions.
     """
