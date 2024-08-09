@@ -1,113 +1,113 @@
-# DanLing
-# Copyright (C) 2022-Present  DanLing
+from __future__ import annotations
 
-# This file is part of DanLing.
+from pathlib import Path
 
-# DanLing is free software: you can redistribute it and/or modify
-# it under the terms of the following licenses:
-# - The Unlicense
-# - GNU Affero General Public License v3.0 or later
-# - GNU General Public License v2.0 or later
-# - BSD 4-Clause "Original" or "Old" License
-# - MIT License
-# - Apache License 2.0
+import pytest
 
-# DanLing is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-# See the LICENSE file for more details.
-
-from chanfig import Config as Config_
-from chanfig import NestedDict
-
-import danling as dl
+from danling.runners import RunnerConfig
+from danling.runners.base_runner import BaseRunner
+from danling.runners.utils import get_git_hash
 
 
-class Runner(dl.BaseRunner):
-    conflict: bool = True
-
-    def init_distributed(self) -> None:
-        pass
+class DummyRunner(BaseRunner):
+    pass
 
 
-class Config(Config_):
-    __test__ = False
+class SequencingRunner(BaseRunner):
+    def __init__(self, config):
+        self.calls: list[str] = []
+        super().__init__(config)
 
-    def __init__(self):
-        self.network.name = "resnet18"
-        self.dataset.download = True
-        self.dataset.root = "data"
-        self.dataloader.batch_size = 8
-        self.epoch_end = 2
-        self.optim.name = "adamw"
-        self.optim.lr = 1e-3
-        self.optim.weight_decay = 1e-4
-        self.log = False
-        self.tensorboard = False
-        self.gradient_clip = False
-        self.log_interval = None
-        self.save_interval = None
-        self.train_iterations_per_epoch = 64
-        self.val_iterations_per_epoch = 16
-        self.score_split = "val"
-        self.score = "loss"
-        self.conflict = 1
+    def load_state_dict(self, checkpoint):
+        self.calls.append("state")
+        super().load_state_dict(checkpoint)
+
+    def load_model(self, state_dict, *args, **kwargs):
+        del state_dict, args, kwargs
+        self.calls.append("model")
+
+    def load_optimizer(self, state_dict, *args, **kwargs):
+        del state_dict, args, kwargs
+        self.calls.append("optimizer")
+
+    def load_scheduler(self, state_dict, *args, **kwargs):
+        del state_dict, args, kwargs
+        self.calls.append("scheduler")
 
 
-class Test:
-    config = Config()
-    runner = Runner(config)
+class StreamingLoader:
+    def __iter__(self):
+        return iter(())
 
-    def test_results(self):
-        runner = self.runner
-        runner.results = NestedDict(
+
+def _config(tmp_path: Path, **kwargs):
+    config = {
+        "log": False,
+        "workspace_root": str(tmp_path),
+        "lineage": "lineage-a",
+        "experiment": "experiment-a",
+    }
+    config.update(kwargs)
+    return config
+
+
+def _expected_base_dir(tmp_path: Path, lineage: str) -> Path:
+    git_hash = get_git_hash()
+    if git_hash is None:
+        return tmp_path / lineage
+    return tmp_path / f"{lineage}-{git_hash}"
+
+
+def _config_hash(runner: DummyRunner) -> str:
+    return format(hash(runner.config) & ((1 << 48) - 1), "012x")
+
+
+def test_base_runner_dir_and_log_file_layout(tmp_path: Path) -> None:
+    runner = DummyRunner(_config(tmp_path))
+    try:
+        expected_dir = _expected_base_dir(tmp_path, "lineage-a") / f"{runner.experiment}-{_config_hash(runner)}"
+        assert runner.dir == str(expected_dir)
+        assert runner.log_file == str(expected_dir / "logs" / f"{runner.id}.log")
+        assert runner.name == "lineage-a-experiment-a"
+    finally:
+        runner.close()
+
+
+def test_base_runner_writes_metadata_files(tmp_path: Path) -> None:
+    runner = DummyRunner(_config(tmp_path, epochs=1))
+    try:
+        metadata_dir = (
+            _expected_base_dir(tmp_path, "lineage-a") / f"{runner.experiment}-{_config_hash(runner)}" / "metadata"
+        )
+        assert (metadata_dir / "config.full.yaml").exists()
+        assert (metadata_dir / "config.canonical.yaml").exists()
+        assert (metadata_dir / "git.yaml").exists()
+        assert (metadata_dir / "git.diff").exists()
+    finally:
+        runner.close()
+
+
+def test_base_runner_log_interval_defaults_to_1024_for_unsized_loader() -> None:
+    runner = DummyRunner({"log": False})
+    try:
+        runner.dataloaders["train"] = StreamingLoader()
+        assert runner.log_interval == 1024
+    finally:
+        runner.close()
+
+
+def test_base_runner_load_checkpoint_restores_in_expected_order() -> None:
+    runner = SequencingRunner({"log": False})
+    try:
+        runner.load_checkpoint(
             {
-                0: {
-                    "val": {
-                        "loss": 1.0,
-                        "acc": 0.0,
-                    },
-                },
-                1: {
-                    "val": {
-                        "loss": 0.5,
-                        "acc": 0.5,
-                    },
-                },
-                2: {
-                    "val": {
-                        "loss": 0.2,
-                        "acc": 0.8,
-                    },
-                },
-                3: {
-                    "val": {
-                        "loss": 0.6,
-                        "acc": 0.4,
-                    },
-                },
+                "runner": {"log": False},
+                "state": {"train": {"global_step": 1, "epoch": 0}},
+                "model": {"w": 1},
+                "optimizer": {"opt": 1},
+                "scheduler": {"sched": 1},
             }
         )
-        assert runner.best_result.dict() == {
-            "index": 2,
-            "val": {
-                "loss": 0.2,
-                "acc": 0.8,
-            },
-        }
-        assert runner.latest_result.dict() == {
-            "index": 3,
-            "val": {
-                "loss": 0.6,
-                "acc": 0.4,
-            },
-        }
-        assert runner.best_score == 0.2
-        assert runner.latest_score == 0.6
-
-    def test_conflict(self):
-        runner = self.runner
-        state = runner.state
-        runner.conflict = False
-        assert not runner.conflict
-        assert state.conflict == 1
+        assert runner.calls == ["state", "model", "optimizer", "scheduler"]
+    finally:
+        runner.close()

@@ -1,1 +1,1 @@
---8<-- "danling/tensor/README.md"
+--8<-- "danling/tensors/README.md"

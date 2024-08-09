@@ -17,4 +17,22 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
-DEFAULT_EXCLUDE = (KeyboardInterrupt, SystemExit)
+SEED = 1016
+IGNORED_NAMES_IN_METRICS = ("index", "epochs", "steps")
+IGNORED_NAMES_IN_HASH = {
+    "timestamp",
+    "epoch",
+    "step",
+    "results",
+    "score_split",
+    "score",
+    "log_interval",
+    "checkpoint_interval",
+    "tensorboard",
+    "checkpoint",
+    "auto_resume",
+    "project_root",
+    "project",
+    "lineage",
+    "experiment",
+}

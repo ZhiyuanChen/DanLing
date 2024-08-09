@@ -19,157 +19,150 @@
 
 from __future__ import annotations
 
-from random import randint
-from typing import Optional
-from uuid import UUID, uuid5
+from typing import Any, Mapping
 
-from chanfig import NestedDict
+from danling.runners.config import RunnerConfig
 
-from . import defaults
-from .utils import get_git_hash
+try:
+    from torch.distributed.checkpoint.stateful import Stateful as _StatefulBase
+except ImportError:
+
+    class _StatefulBase:  # type: ignore[no-redef]
+        def state_dict(self) -> dict[str, Any]:
+            raise NotImplementedError
+
+        def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+            raise NotImplementedError
 
 
-class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
-    r"""
-    `RunnerState` is a `NestedDict` that contains all states of a `Runner`.
+class RunnerState(_StatefulBase):
+    def __init__(
+        self,
+        *,
+        config: RunnerConfig | Mapping,
+        train: RunnerTrainState | None = None,
+        elastic: RunnerElasticState | None = None,
+        rng: RunnerRNGState | None = None,
+    ) -> None:
+        if not isinstance(config, RunnerConfig):
+            config = RunnerConfig(config)
+        self.config = config
+        self.train = RunnerTrainState() if train is None else train
+        self.elastic = RunnerElasticState() if elastic is None else elastic
+        self.rng = RunnerRNGState() if rng is None else rng
 
-    `RunnerState` is designed to store all critical information of a Run so that you can resume a run
-    from a state and corresponding weights or even restart a run from a state.
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "train": self.train.state_dict(),
+            "elastic": self.elastic.state_dict(),
+            "rng": self.rng.state_dict(),
+        }
 
-    `RunnerState` is also designed to be serialisable and hashable, so that you can save it to a file.
-    `RunnerState` is saved in checkpoint together with weights by default.
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        train_state = state_dict.get("train")
+        if isinstance(train_state, dict):
+            self.train.load_state_dict(train_state)
 
-    Since `RunnerState` is a [`NestedDict`][chanfig.NestedDict], you can access its attributes by
-    `state["key"]` or `state.key`.
+        elastic_state = state_dict.get("elastic")
+        if isinstance(elastic_state, dict):
+            self.elastic.load_state_dict(elastic_state)
 
-    Attributes: General:
-        run_name (str): Defaults to `"DanLing"`.
-        run_id (str): hex of `self.run_uuid`.
-        run_uuid (UUID, property): `uuid5(self.experiment_id, str(hash(self)))`.
-        experiment_name (str): Defaults to `"DanLing"`.
-        experiment_id (str): git hash of the current HEAD.
-            Defaults to `"xxxxxxxxxxxxxxxx"` if Runner not under a git repo or git/gitpython not installed.
-        experiment_uuid (UUID, property): UUID of `self.experiment_id`.
-            Defaults to `UUID('78787878-7878-7878-7878-787878787878')`
-            if Runner not under a git repo or git/gitpython not installed.
+        rng_state = state_dict.get("rng")
+        if isinstance(rng_state, dict):
+            self.rng.load_state_dict(rng_state)
 
-    Attributes: Reproducibility:
-        seed (int): Defaults to `randint(0, 2**32 - 1)`.
-        deterministic (bool): Ensure [deterministic](https://pytorch.org/docs/stable/notes/randomness.html) operations.
-            Defaults to `False`.
 
-    Attributes: Progress:
-        iters (int): The number of data samples processed.
-            equals to `steps` when `batch_size = 1`.
-        steps (int): The number of `step` calls.
-        epochs (int): The number of complete passes over the datasets.
-        iter_end (int): End running iters.
-            Note that `step_end` not initialised since this variable may not apply to some Runners.
-        step_end (int): End running steps.
-            Note that `step_end` not initialised since this variable may not apply to some Runners.
-        epoch_end (int): End running epochs.
-            Note that `epoch_end` not initialised since this variable may not apply to some Runners.
+class RunnerTrainState:
+    def __init__(
+        self,
+        global_step: int = 0,
+        micro_step: int = 0,
+        epoch: int = 0,
+        tokens_seen: int = 0,
+        samples_seen: int = 0,
+    ) -> None:
+        self.global_step = int(global_step)
+        self.micro_step = int(micro_step)
+        self.epoch = int(epoch)
+        self.tokens_seen = int(tokens_seen)
+        self.samples_seen = int(samples_seen)
 
-    In general you should only use one of `iter_end`, `step_end`, `epoch_end` to indicate the length of running.
+    def state_dict(self) -> dict[str, int]:
+        return {
+            "global_step": self.global_step,
+            "micro_step": self.micro_step,
+            "epoch": self.epoch,
+            "tokens_seen": self.tokens_seen,
+            "samples_seen": self.samples_seen,
+        }
 
-    Attributes: IO:
-        project_root (str): The root directory for all experiments.
-            Defaults to `"experiments"`.
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        if "global_step" in state_dict:
+            self.global_step = int(state_dict["global_step"])
+        if "micro_step" in state_dict:
+            self.micro_step = int(state_dict["micro_step"])
+        if "epoch" in state_dict:
+            self.epoch = int(state_dict["epoch"])
+        if "tokens_seen" in state_dict:
+            self.tokens_seen = int(state_dict["tokens_seen"])
+        if "samples_seen" in state_dict:
+            self.samples_seen = int(state_dict["samples_seen"])
 
-    `project_root` is the root directory of all **Experiments**, and should be consistent across the **Project**.
 
-    `dir` is the directory of a certain **Run**.
+class RunnerElasticState:
+    def __init__(
+        self,
+        restart_count: int = 0,
+        membership_version: int = 0,
+        last_seen_world_size: int = 0,
+    ) -> None:
+        self.restart_count = int(restart_count)
+        self.membership_version = int(membership_version)
+        self.last_seen_world_size = int(last_seen_world_size)
 
-    There is no attributes/properties for **Group** and **Experiment**.
+    def state_dict(self) -> dict[str, int]:
+        return {
+            "restart_count": self.restart_count,
+            "membership_version": self.membership_version,
+            "last_seen_world_size": self.last_seen_world_size,
+        }
 
-    `checkpoint_dir_name` is relative to `dir`, and is passed to generate `checkpoint_dir`
-    (`checkpoint_dir = os.path.join(dir, checkpoint_dir_name)`).
-    In practice, `checkpoint_dir_name` is rarely called.
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        if "restart_count" in state_dict:
+            self.restart_count = int(state_dict["restart_count"])
+        if "membership_version" in state_dict:
+            self.membership_version = int(state_dict["membership_version"])
+        if "last_seen_world_size" in state_dict:
+            self.last_seen_world_size = int(state_dict["last_seen_world_size"])
 
-    Attributes: logging:
-        log (bool): Whether to log the outputs.
-            Defaults to `True`.
-        tensorboard (bool): Whether to use `tensorboard`.
-            Defaults to `False`.
-        log_interval (int): Interval of printing logs.
-            Defaults to `None`, print logs every 1/10 of the longest split.
-        save_interval (int): Interval of saving intermediate checkpoints.
-            Defaults to `None`, never save checkpoints.
-            If <= 0, save only the latest and the best checkpoints.
 
-    Note:
-        `RunnerState` is a `NestedDict`, so you can access its attributes by `state["name"]` or `state.name`.
+class RunnerRNGState:
+    def __init__(
+        self,
+        python: Any | None = None,
+        numpy: Any | None = None,
+        torch_cpu: Any | None = None,
+        torch_cuda: Any | None = None,
+    ) -> None:
+        self.python = python
+        self.numpy = numpy
+        self.torch_cpu = torch_cpu
+        self.torch_cuda = torch_cuda
 
-    See Also:
-        [`BaseRunner`][danling.runners.BaseRunner]: The base runner class.
-    """
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "python": self.python,
+            "numpy": self.numpy,
+            "torch_cpu": self.torch_cpu,
+            "torch_cuda": self.torch_cuda,
+        }
 
-    # DO NOT set default value in class, as they won't be stored in `__dict__`.
-
-    run_name: str = defaults.DEFAULT_RUN_NAME
-    run_id: str
-    experiment_name: str = defaults.DEFAULT_EXPERIMENT_NAME
-    experiment_id: str
-
-    seed: int
-    deterministic: bool = False
-
-    iters: int = 0
-    steps: int = 0
-    epochs: int = 0
-    iter_begin: int = 0
-    step_begin: int = 0
-    epoch_begin: int = 0
-    iter_end: Optional[int] = None
-    step_end: Optional[int] = None
-    epoch_end: Optional[int] = None
-
-    score_split: Optional[str] = None
-    score_name: str = "loss"
-
-    project_root: str = "experiments"
-    checkpoint_dir_name: str = "checkpoints"
-    log: bool = True
-    tensorboard: bool = False
-    log_interval: Optional[int] = None
-    save_interval: Optional[int] = None
-
-    distributed: Optional[bool] = None
-    dist_backend: Optional[str] = None
-    init_method: Optional[str] = None
-    master_addr: Optional[str] = None
-    master_port: Optional[int] = None
-
-    def __init__(self, *args, **kwargs):
-        for k, v in self.__class__.__dict__.items():
-            if not (k.startswith("__") and k.endswith("__")) and (not (isinstance(v, property) or callable(v))):
-                self.set(k, v)
-        if "seed" not in self:
-            self.seed = randint(0, 2**32 - 1)
-        super().__init__(*args, **kwargs)
-        if "experiment_id" not in self:
-            self.experiment_id = get_git_hash() or defaults.DEFAULT_EXPERIMENT_ID
-        if "run_id" not in self:
-            self.run_id = self.run_uuid.hex
-        self.setattr("ignored_keys_in_hash", defaults.DEFAULT_IGNORED_KEYS_IN_HASH)
-
-    @property
-    def experiment_uuid(self) -> UUID:
-        r"""
-        UUID of the experiment.
-        """
-
-        return UUID(bytes=bytes(self.experiment_id.ljust(16, "x")[:16], encoding="ascii"))
-
-    @property
-    def run_uuid(self) -> UUID:
-        r"""
-        UUID of the run.
-        """
-
-        ignored_keys_in_hash = self.getattr("ignored_keys_in_hash", defaults.DEFAULT_IGNORED_KEYS_IN_HASH)
-        state: NestedDict = NestedDict({k: v for k, v in self.dict().items() if k not in ignored_keys_in_hash})
-        return uuid5(self.experiment_uuid, state.yamls())
-
-    def __hash__(self) -> int:
-        return int(self.run_uuid.hex, 16)
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        if "python" in state_dict:
+            self.python = state_dict["python"]
+        if "numpy" in state_dict:
+            self.numpy = state_dict["numpy"]
+        if "torch_cpu" in state_dict:
+            self.torch_cpu = state_dict["torch_cpu"]
+        if "torch_cuda" in state_dict:
+            self.torch_cuda = state_dict["torch_cuda"]

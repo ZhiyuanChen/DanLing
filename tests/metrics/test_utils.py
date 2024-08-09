@@ -117,20 +117,6 @@ def test_merge_metric_entries_prefers_first_positional_then_named_override():
     assert merged == {"acc": 4, "loss": 3, "f1": 5}
 
 
-def test_round_dict_round_methods():
-    values = RoundDict({"a": 1.23456, "b": 9.87654})
-    rounded_in_place = values.round(2)
-    assert rounded_in_place is values
-    assert values["a"] == 1.23
-    assert values["b"] == 9.88
-
-    original = RoundDict({"x": 3.14159, "y": 2.71828})
-    rounded_copy = round(original, 3)
-    assert rounded_copy["x"] == 3.142
-    assert rounded_copy["y"] == 2.718
-    assert original["x"] == 3.14159
-
-
 def test_meters_base_init_validation_and_operations():
     with pytest.raises(TypeError, match="at most one positional mapping argument"):
         _DummyMeters({}, {})

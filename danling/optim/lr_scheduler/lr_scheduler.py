@@ -30,7 +30,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
 
     PyTorch LRScheduler is hard to extend.
     This class is a wrapper of PyTorch LRScheduler, which provides a more general interface.
-    You only needs to add a new method which calculates a learning rate ratio (range from 0 to 1)
+    You only needs to add a new scaling which calculates a learning rate ratio (range from 0 to 1)
     with total progress (range from 0 to 1), and everything else will be done automatically.
 
     Moreover, this class has warmup and cooldown built-in.
@@ -45,7 +45,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         final_lr: Final learning rate.
         min_lr: Minimal learning rate.
             Defaults to 1e-9.
-        strategy: Scaling strategy.
+        method: Scaling method.
             Defaults to "cosine".
         warmup_steps: Number of warmup steps.
             Defaults to `steps // 20`.
@@ -53,7 +53,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
             Defaults to `steps // 5`.
         last_epoch: The index of last epoch.
             Defaults to -1.
-        method: Method to calculate learning rate given ratio, should be one of "percentile" or "numerical".
+        scaling: Method to calculate learning rate given ratio, should be one of "percentile" or "numerical".
             Defaults to "percentile" if `final_lr_ratio` is set, otherwise "numerical".
 
     Examples:
@@ -61,21 +61,21 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         >>> import torch
         >>> from torch import optim
         >>> optimizer = optim.SGD([{'params': torch.tensor([0])}], lr=1, momentum=0.9)
-        >>> scheduler = LRScheduler(optimizer, total_steps=5, final_lr_ratio=1e-5, strategy='linear')
+        >>> scheduler = LRScheduler(optimizer, total_steps=5, final_lr_ratio=1e-5, method='linear')
         >>> lrs = []
         >>> for epoch in range(5):
         ...     lrs.append(scheduler.get_lr()[0])
         ...     scheduler.step()
         >>> [round(lr, 10) for lr in lrs]
         [0.1, 0.01, 0.001, 0.0001, 1e-09]
-        >>> scheduler = LRScheduler(optimizer, total_steps=5, final_lr_ratio=1e-5, strategy='cosine')
+        >>> scheduler = LRScheduler(optimizer, total_steps=5, final_lr_ratio=1e-5, method='cosine')
         >>> lrs = []
         >>> for epoch in range(5):
         ...     lrs.append(scheduler.get_lr()[0])
         ...     scheduler.step()
         >>> [round(lr, 10) for lr in lrs]
         [0.3330753446, 0.0187302031, 0.000533897, 3.00232e-05, 1e-09]
-        >>> scheduler = LRScheduler(optimizer, total_steps=5, final_lr_ratio=1e-5, strategy='linear', method='numerical')
+        >>> scheduler = LRScheduler(optimizer, total_steps=5, final_lr_ratio=1e-5, method='linear', scaling='numerical')
         >>> lrs = []
         >>> for epoch in range(5):
         ...     lrs.append(scheduler.get_lr()[0])
@@ -91,11 +91,11 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         final_lr_ratio: Optional[float] = None,
         final_lr: Optional[float] = None,
         min_lr: float = 1e-9,
-        strategy: str = "cosine",
+        method: str = "cosine",
         warmup_steps: Optional[int] = None,
         cooldown_steps: Optional[int] = None,
         last_epoch: int = -1,
-        method: Optional[str] = None,
+        scaling: Optional[str] = None,
         step_with_optimizer: bool = True,
     ):
         if total_steps <= 0:
@@ -122,8 +122,8 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
                 raise ValueError("Only one of `final_lr_ratio` and `final_lr` should be set, but not both")
             if final_lr_ratio < 0:
                 raise ValueError(f"`final_lr_ratio` must be positive, but got {final_lr_ratio}")
-            if method is None:
-                method = "percentile"
+            if scaling is None:
+                scaling = "percentile"
         if final_lr is not None and final_lr < 0:
             raise ValueError(f"`final_lr` must be positive, but got {final_lr}")
         if min_lr < 0:
@@ -131,24 +131,24 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         self.strategies = {
             k: v for k, v in self.__class__.__dict__.items() if callable(v) and (not k.startswith("_") or k in "get_lr")
         }
-        if strategy not in self.strategies:
-            raise ValueError(f"Scaling strategy must be one of {self.strategies.keys()}, but got {strategy}")
+        if method not in self.strategies:
+            raise ValueError(f"Scaling method must be one of {self.strategies.keys()}, but got {method}")
 
         if final_lr_ratio is None and final_lr is None:
             final_lr_ratio = 1e-3
-            if method is None:
-                method = "percentile"
+            if scaling is None:
+                scaling = "percentile"
         if final_lr is not None and min_lr > final_lr:
             min_lr = final_lr
-        if method is None:
-            method = "numerical"
+        if scaling is None:
+            scaling = "numerical"
 
         self.final_lr_ratio = final_lr_ratio
         self.final_lr = final_lr
         self.total_steps = total_steps
         self.min_lr = min_lr
-        self.strategy = strategy
         self.method = method
+        self.scaling = scaling
         self.warmup_steps = warmup_steps
         self.cooldown_steps = cooldown_steps
         self.cooldown_steps_begin = self.total_steps - self.cooldown_steps
@@ -176,19 +176,19 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         progress: Optional[float] = None,
         warmup_ratio: Optional[float] = None,
         cooldown_ratio: Optional[float] = None,
-        method: Optional[str] = None,
+        scaling: Optional[str] = None,
     ) -> float:
-        method = method or self.method
+        scaling = scaling or self.scaling
         step_count = step_count or self._step_count
         progress = progress or min(max(step_count / self.total_steps, 0.0), 1.0)
         final_lr = self.final_lr if self.final_lr is not None else lr * self.final_lr_ratio  # type: ignore[operator]
-        ratio = getattr(self, self.strategy)(progress)
-        if method == "percentile":
+        ratio = getattr(self, self.method)(progress)
+        if scaling == "percentile":
             lr *= pow(final_lr / lr, ratio)
-        elif method == "numerical":
+        elif scaling == "numerical":
             lr = (1 - ratio) * (lr - final_lr) + final_lr
         else:
-            raise ValueError(f"Method must be one of ['percentile', 'numerical'], but got {method}")
+            raise ValueError(f"Method must be one of ['percentile', 'numerical'], but got {scaling}")
         if self.warmup_steps > step_count > 0:
             warmup_ratio = warmup_ratio or step_count / self.warmup_steps
             lr = warmup_ratio * (lr - self.min_lr) + self.min_lr
@@ -208,7 +208,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
 
     def __repr__(self) -> str:
         return (
-            f"{self.__class__.__name__}({self.strategy}, method={self.method}, "
+            f"{self.__class__.__name__}({self.method}, scaling={self.scaling}, "
             f"final_lr_ratio={self.final_lr_ratio}, total_steps={self.total_steps}, "
             f"warmup_steps={self.warmup_steps}, cooldown_steps={self.cooldown_steps})"
         )

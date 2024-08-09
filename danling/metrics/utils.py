@@ -22,12 +22,12 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from functools import partial
 from math import isnan
-from typing import Any, Generic, Union
+from typing import Any
 
 from chanfig import DefaultDict, NestedDict
 from typing_extensions import Self, TypeVar
 
-from ..utils import flist
+from ..utils.round_dict import RoundDict
 
 try:
     from typing import Self  # noqa: F811
@@ -35,8 +35,6 @@ except ImportError:
     from typing_extensions import Self  # noqa: F811
 
 
-K = TypeVar("K", bound=str, default=str)
-V = TypeVar("V", float, int, flist, Union[float, flist], Union[float, int], default=Union[float, flist])
 TMetric = TypeVar("TMetric")
 
 
@@ -69,20 +67,6 @@ def merge_metric_entries(
     for name, metric in named.items():
         named_metrics[name] = metric
     return named_metrics
-
-
-class RoundDict(NestedDict, Generic[K, V]):
-
-    def round(self, ndigits: int = 4) -> Self:
-        for key, value in self.all_items():
-            self[key] = round(value, ndigits)
-        return self
-
-    def __round__(self, ndigits: int = 4) -> Self:
-        dict = self.empty_like()
-        for key, value in self.all_items():
-            dict[key] = round(value, ndigits)
-        return dict
 
 
 class MetersBase(DefaultDict):
