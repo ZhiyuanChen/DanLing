@@ -26,8 +26,9 @@ from torch import Tensor
 
 from danling.tensors import NestedTensor
 
-with try_import() as lazy_import:
+with try_import() as te:
     from torcheval.metrics import functional as tef
+with try_import() as tm:
     from torchmetrics import functional as tmf
 
 
@@ -42,6 +43,7 @@ def auroc(
     ignored_index: int = -100,
     **kwargs,
 ):
+    te.check()
     if num_classes and num_labels:
         raise ValueError("Only one of num_classes or num_labels can be specified, but not both")
     input, target = preprocess(input, target, ignored_index=ignored_index)
@@ -67,6 +69,7 @@ def auprc(
     ignored_index: int = -100,
     **kwargs,
 ):
+    te.check()
     if num_classes and num_labels:
         raise ValueError("Only one of num_classes or num_labels can be specified, but not both")
     input, target = preprocess(input, target, ignored_index=ignored_index)
@@ -92,6 +95,7 @@ def accuracy(
     ignored_index: int = -100,
     **kwargs,
 ):
+    te.check()
     if num_classes and num_labels:
         raise ValueError("Only one of num_classes or num_labels can be specified, but not both")
     input, target = preprocess(input, target, ignored_index=ignored_index)
@@ -112,7 +116,7 @@ def mcc(
     num_classes: int | None = None,
     ignored_index: int = -100,
 ):
-    lazy_import.check()
+    tm.check()
     if num_classes and num_labels:
         raise ValueError("Only one of num_classes or num_labels can be specified, but not both")
     task = "binary"
@@ -133,7 +137,7 @@ def pearson(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
 ):
-    lazy_import.check()
+    tm.check()
     input, target = preprocess(input, target)
     try:
         return tmf.pearson_corrcoef(input, target)
@@ -145,7 +149,7 @@ def spearman(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
 ):
-    lazy_import.check()
+    tm.check()
     input, target = preprocess(input, target)
     try:
         return tmf.spearman_corrcoef(input, target)
@@ -159,6 +163,7 @@ def r2_score(
     multioutput: str = "uniform_average",
     num_regressors: int = 0,
 ):
+    te.check()
     input, target = preprocess(input, target)
     try:
         return tef.r2_score(input, target, multioutput=multioutput, num_regressors=num_regressors)
@@ -170,6 +175,7 @@ def mse(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
 ):
+    te.check()
     input, target = preprocess(input, target)
     return tef.mean_squared_error(input, target)
 
