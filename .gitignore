@@ -415,7 +415,6 @@ danling/_version.py
 
 # pytest
 data
-examples
 .coverage*
 
 # experiments
