@@ -83,7 +83,7 @@ def print_exc(exc, func, args, kwargs, verbosity: int = 40):  # pylint: disable=
 
     if verbosity >= 0:
         message = traceback.format_exc()
-        message += f"\nencoutered when calling {func}"
+        message += f"\nencountered when calling {func}"
         if verbosity <= 20:
             message += "\n\nstack:\n" + "\n".join(traceback.format_stack()[:-2])
         if verbosity <= 10:

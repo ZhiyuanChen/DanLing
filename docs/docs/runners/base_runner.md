@@ -6,4 +6,4 @@ date: 2022-05-04
 
 # BaseRunner
 
-::: danling.runners.base_runner
+::: danling.runners.BaseRunner

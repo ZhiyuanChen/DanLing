@@ -11,10 +11,11 @@ nav:
   - DanLing: index.md
   - Runners:
       - runners/index.md
-      - RunnerState: runners/state.md
+      - RunnerConfig: runners/config.md
+      - Runner: runners/runner.md
+      - TorchRunner: runners/torch_runner.md
       - BaseRunner: runners/base_runner.md
-      - AccelerateRunner: runners/accelerate_runner.md
-      - Utils: runners/utils.md
+      - Utilities: runners/utils.md
   - Tensors:
       - tensors/index.md
       - NestedTensor: tensors/nested_tensor.md
@@ -204,6 +205,7 @@ plugins:
             - https://docs.python.org/3/objects.inv
             - https://pytorch.org/docs/stable/objects.inv
             - https://huggingface.co/docs/transformers/master/en/objects.inv
+            - https://huggingface.co/docs/accelerate/master/en/objects.inv
             - https://chanfig.danling.org/objects.inv
             - https://lightning.ai/docs/torchmetrics/stable/objects.inv
   - section-index

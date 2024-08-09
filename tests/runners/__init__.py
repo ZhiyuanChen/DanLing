@@ -17,4 +17,4 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
-DEFAULT_EXCLUDE = (KeyboardInterrupt, SystemExit)
+"""Runner tests package."""

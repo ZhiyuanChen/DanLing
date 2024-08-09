@@ -1,1 +1,1 @@
---8<-- "danling/metric/README.md"
+--8<-- "danling/metrics/README.md"

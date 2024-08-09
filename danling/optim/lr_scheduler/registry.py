@@ -36,9 +36,9 @@ class Registry(Registry_):
 
 SCHEDULERS = Registry()
 
-SCHEDULERS.register(partial(LRScheduler, strategy="linear"), "linear")
-SCHEDULERS.register(partial(LRScheduler, strategy="cosine"), "cosine")
-SCHEDULERS.register(partial(LRScheduler, strategy="constant"), "constant")
+SCHEDULERS.register(partial(LRScheduler, method="linear"), "linear")
+SCHEDULERS.register(partial(LRScheduler, method="cosine"), "cosine")
+SCHEDULERS.register(partial(LRScheduler, method="constant"), "constant")
 
 SCHEDULERS.register(lr_scheduler.StepLR, "step")
 SCHEDULERS.register(lr_scheduler.MultiStepLR, "multistep")

@@ -33,13 +33,28 @@ dependencies = [
   "gitpython",
   "lazy-imports",
   "strenum; python_version<'3.11'",
+  "torchdata",
   "tqdm",
+]
+optional-dependencies.accelerate = [
+  "accelerate",
+  "torch",
+  "torchdata",
+  "torcheval",
+  "torchmetrics",
+]
+optional-dependencies.deepspeed = [
+  "deepspeed",
+  "torch",
+  "torchdata",
+  "torcheval",
+  "torchmetrics",
 ]
 optional-dependencies.jax = [ "flax", "jax" ]
 optional-dependencies.tensorflow = [ "tensorflow" ]
 optional-dependencies.torch = [
-  "accelerate",
   "torch",
+  "torchdata",
   "torchmetrics",
 ]
 urls.documentation = "https://danling.org"

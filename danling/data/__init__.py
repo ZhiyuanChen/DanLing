@@ -17,6 +17,8 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
+from .dataloader import DataLoaderDict
+from .loader_wrappers import StepProxyLoader
 from .utils import to_device
 
-__all__ = ["to_device"]
+__all__ = ["to_device", "DataLoaderDict", "StepProxyLoader"]

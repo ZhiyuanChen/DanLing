@@ -17,11 +17,17 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
+from __future__ import annotations
+
+from warnings import warn
+
 from torch import distributed as dist
 
 
-def get_world_size() -> int:
+def get_world_size(group: dist.ProcessGroup | None = None) -> int:
     r"""Return the number of processes in the current process group."""
-    if dist.is_available() and dist.is_initialized():
-        return dist.get_world_size()
+    if dist.is_available():
+        if dist.is_initialized():
+            return dist.get_world_size(group)
+        warn("Distributed process group is not initialized, returning 1")
     return 1
