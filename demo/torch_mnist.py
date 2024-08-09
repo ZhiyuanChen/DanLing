@@ -18,17 +18,15 @@
 # See the LICENSE file for more details.
 
 import torchvision
-from chanfig import Config
 from torch import nn
 
 import danling as dl
 
 
-class MNISTConfig(Config):
+class MNISTConfig(dl.Config):
     epoch_end: int = 2
     log: bool = False
     tensorboard: bool = False
-    log_interval: int = 1000
     score_split: str = "val"
     score_name: str = "loss"
     debug: bool = False
@@ -51,7 +49,7 @@ class MNISTConfig(Config):
 
 
 class MNISTRunner(dl.TorchRunner):
-    def __init__(self, config: Config):
+    def __init__(self, config: dl.Config):
         super().__init__(config)
 
         self.dataset.transform = torchvision.transforms.Compose(
@@ -63,8 +61,8 @@ class MNISTRunner(dl.TorchRunner):
         self.datasets.train = torchvision.datasets.MNIST(train=True, **self.dataset)
         self.datasets.val = torchvision.datasets.MNIST(train=False, **self.dataset)
         # only run on a few samples to speed up testing process
-        self.datasets.train.data = self.datasets.train.data[:64]
-        self.datasets.val.data = self.datasets.val.data[:64]
+        self.datasets.train.data = self.datasets.train.data[:100]
+        self.datasets.val.data = self.datasets.val.data[:100]
 
         self.model = getattr(torchvision.models, self.network.type)(pretrained=False, num_classes=10)
         self.model.conv1 = nn.Conv2d(1, 64, 1, bias=False)
