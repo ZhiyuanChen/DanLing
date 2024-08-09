@@ -42,8 +42,8 @@ def _get_lrs(strategy, method, steps: int = 100, final_lr_ratio: float = 0.001):
         optimizer,
         total_steps=steps,
         final_lr_ratio=final_lr_ratio,
-        strategy=strategy,
-        method=method,
+        method=strategy,
+        scaling=method,
     )
     for _ in range(100):
         lrs.append(scheduler.get_lr()[0])

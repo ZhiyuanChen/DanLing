@@ -6,4 +6,4 @@ date: 2022-05-04
 
 # MetricMeter
 
-::: danling.metrics.metric_meter
+::: danling.metrics.MetricMeter

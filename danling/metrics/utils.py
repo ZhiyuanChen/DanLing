@@ -22,18 +22,18 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from functools import partial
 from math import isfinite, isnan
-from typing import Any, Generic, Literal
+from typing import Any, Literal
 from warnings import warn
 
 import torch
-from chanfig import DefaultDict, FlatDict, NestedDict
+from chanfig import DefaultDict, FlatDict
 from torch import Tensor
 from torch import device as torch_device
 from torch import distributed as dist
 from typing_extensions import Self, TypeVar
 
-K = TypeVar("K", bound=str, default=str)
-V = TypeVar("V", default=Any)
+from ..utils.round_dict import RoundDict
+
 TMetric = TypeVar("TMetric")
 Reduction = Literal["value", "batch", "average"]
 
@@ -102,26 +102,6 @@ def merge_metric_entries(
     for name, metric in named.items():
         named_metrics[name] = metric
     return named_metrics
-
-
-class RoundDict(NestedDict, Generic[K, V]):
-
-    def round(self, ndigits: int = 4) -> Self:
-        for key, value in self.all_items():
-            self[key] = self._round_value(value, ndigits)
-        return self
-
-    def __round__(self, ndigits: int = 4) -> Self:
-        dict = self.empty_like()
-        for key, value in self.all_items():
-            dict[key] = self._round_value(value, ndigits)
-        return dict
-
-    @staticmethod
-    def _round_value(value: Any, ndigits: int):
-        if isinstance(value, Tensor):
-            return value.round(decimals=ndigits)
-        return round(value, ndigits)
 
 
 class MetersBase(DefaultDict):
