@@ -29,7 +29,7 @@ from .metrics import (
     MultiTaskMetricMeters,
 )
 from .optim import OPTIMIZERS, SCHEDULERS, LRScheduler
-from .runner import AccelerateRunner, BaseRunner, TorchRunner
+from .runner import AccelerateRunner, BaseRunner, Config, DeepSpeedRunner, Runner, TorchRunner
 from .tensors import NestedTensor, PNTensor, tensor
 from .utils import (
     catch,
@@ -47,12 +47,15 @@ with try_import():
     from .metrics import Metrics, MultiTaskMetrics
 
 __all__ = [
+    "Config",
+    "Runner",
     "BaseRunner",
-    "AccelerateRunner",
-    "TorchRunner",
     "OPTIMIZERS",
     "SCHEDULERS",
     "LRScheduler",
+    "TorchRunner",
+    "DeepSpeedRunner",
+    "AccelerateRunner",
     "METRICS",
     "Metrics",
     "MultiTaskMetrics",
