@@ -19,28 +19,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
-import sys
-from contextlib import suppress
 from datetime import datetime
 from enum import auto
 from functools import wraps
 from typing import Any
-from warnings import warn
 
-from danling.utils import base62
+import torch
+
+from danling.utils import RoundDict, base62
 
 try:
     from enum import StrEnum  # type: ignore[attr-defined]
 except ImportError:
     from strenum import LowercaseStrEnum as StrEnum  # type: ignore[no-redef]
-
-
-class RunnerMeta(type):
-    def __call__(cls, *args: Any, **kwargs: Any) -> Any:
-        instance = super().__call__(*args, **kwargs)
-        instance.__post_init__()
-        return instance
 
 
 class RunnerMode(StrEnum):  # pylint: disable=too-few-public-methods
@@ -49,13 +42,29 @@ class RunnerMode(StrEnum):  # pylint: disable=too-few-public-methods
 
     Attributes:
         train: Training mode.
-        eval: Evaluation mode.
-        inf: Inference mode.
+        evaluate: Evaluation mode.
+        infer: Inference mode.
     """
 
     train = auto()
-    eval = auto()
-    inf = auto()
+    evaluate = auto()
+    infer = auto()
+
+
+class MetaRunner(type):
+    def __call__(cls, *args: Any, **kwargs: Any) -> Any:
+        instance = super().__call__(*args, **kwargs)
+        instance.__post_init__()
+        return instance
+
+
+def get_precision(precision: str) -> torch.dtype:
+    precision = str(precision).strip().lower().replace("-", "_")
+    if precision in ("fp16", "float16", "half"):
+        return torch.float16
+    if precision in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    raise ValueError(f"unsupported precision: {precision}")
 
 
 def get_time_str() -> str:
@@ -71,30 +80,48 @@ def get_time_str() -> str:
 
 def get_git_hash() -> str | None:
     try:
-        from git.exc import InvalidGitRepositoryError
         from git.repo import Repo
+    except Exception:
+        return None
 
+    try:
+        repo = Repo(path=os.getcwd(), search_parent_directories=True)
+        short_sha = repo.head.commit.hexsha[:8]
+    except Exception:
+        return None
+
+    if not short_sha:
+        return None
+
+    if not bool(repo.is_dirty(untracked_files=False)):
+        return short_sha
+
+    diff_content = ""
+    try:
+        diff_content = str(repo.git.diff("HEAD", "--binary"))
+    except Exception:
+        diff_content = ""
+    if not diff_content:
         try:
-            return Repo(search_parent_directories=True).head.object.hexsha
-        except ImportError:
-            pass  # handle at last
-        except (InvalidGitRepositoryError, ValueError):
-            path = os.path.dirname(os.path.abspath(sys.argv[0]))
-            with suppress(InvalidGitRepositoryError, ValueError):
-                hexsha = Repo(path=path, search_parent_directories=True).head.object.hexsha
-                warn(
-                    "Unable to get git hash from CWD, fallback to git hash of top-level code environment.",
-                    category=RuntimeWarning,
-                    stacklevel=2,
-                )
-                return hexsha
-    except ImportError:
-        warn(
-            "GitPython is not installed, unable to fetch git hash",
-            category=RuntimeWarning,
-            stacklevel=2,
-        )
-    return None
+            diff_content = str(repo.git.status("--porcelain=v1"))
+        except Exception:
+            diff_content = "dirty"
+
+    diff_sha = hashlib.sha1(diff_content.encode("utf-8")).hexdigest()[:10]
+    return f"{short_sha}-d{diff_sha}"
+
+
+def get_git_diff() -> str | None:
+    try:
+        from git.repo import Repo
+    except Exception:
+        return None
+
+    try:
+        repo = Repo(path=os.getcwd(), search_parent_directories=True)
+        return str(repo.git.diff("HEAD", "--binary"))
+    except Exception:
+        return None
 
 
 def on_main_process(func):
@@ -123,3 +150,10 @@ def on_local_main_process(func):
         return None
 
     return wrapper
+
+
+def format_result(result, format_spec: str = ".4f", depth: int = 0) -> str:
+    del depth  # kept for API compatibility
+    if not isinstance(result, RoundDict):
+        result = RoundDict(result).round(4)
+    return format(result, format_spec)

@@ -1,104 +1,219 @@
-# Runner
+# DanLing Runner
 
-The Runner of DanLing sets up the basic environment for running neural networks.
+DanLing runners are now **Torch-only** and focus on scalable distributed training.
 
-## Components
+The new design borrows from TorchTitan's Trainer philosophy:
 
-For cross-platform compatibilities, DanLing features a two-level Runner + RunnerState system.
+- A single, explicit training lifecycle
+- Extension by subclassing `TorchRunner`
+- Backend-specific distributed logic in dedicated subclass runners
+- Minimal shared contracts in `BaseRunner`
 
-### PlatformRunner
+## Core APIs
 
-PlatformRunner implements platform-specific features like `step` and `prepare`.
+- `RunnerConfig`: `chanfig`-based long-term configuration surface
+- `Runner`: stack-selecting entrypoint (`ddp`/`torch`, `fsdp`, `tppp`; default `ddp`)
+- `TorchRunner`: shared Torch training core (single canonical loop)
+- `TorchRunner` / `FsdpRunner` / `TpppRunner`: class-based stack runners
 
-The Runner contains all runtime information that is irrelevant to the checkpoint (e.g. `world_size`, `rank`, etc.). All other information should be saved in `RunnerState`.
+`TpppRunner` topology uses:
 
-Currently, only [`AccelerateRunner`][danling.runners.AccelerateRunner] is supported.
+- `tp_degree`
+- `pp_degree`
+- inferred `dp_degree = WORLD_SIZE / (tp_degree * pp_degree)`
 
-### [`BaseRunner`][danling.runners.BaseRunner]
+Data loading and metric reduction are data-parallel (`dp`) scoped in `TpppRunner`.
 
-[`BaseRunner`](danling.runners.BaseRunner) defines shared attributes and implements platform-agnostic features, including `init_logging`, `results` and `scores`.
+`TpppRunner` exposes topology- and pipeline-aware extension points:
 
-### [`RunnerState`][danling.runners.RunnerState]
+- `build_topology`: validate/construct TP/PP/DP topology from config + world state
+- `init_model_parallel_groups`: initialize model-parallel process groups/device mesh
+- `build_pipeline_schedule`: build `torch.distributed.pipelining` schedule from config
+- `bind_pipeline_modules`: bind local model parts to pipeline stages
+- `build_optimizer`: deduplicate parameters across local model parts before optimizer build
 
-[`RunnerState`][danling.runners.RunnerState] stores the state of a run (e.g. `epochs`, `run_id`, `network`, etc.).
+## BaseRunner contract
 
-With `RunnerState` and corresponding weights, you can resume a run from any point.
-Therefore, all members in `RunnerState` will be saved in the checkpoint, and thus should be json serialisable.
+`BaseRunner` is inheritance-first and keeps only cross-backend functionality.
+There is no plugin/spec registry layer.
 
-## Experiments Management
+Core lifecycle methods (all overridable):
 
-DanLing Runner is designed for a 3.5-level experiments management system: **Project**, **Group**, **Experiment**, and, **Run**.
+- `initialize_state`
+- `initialize_runtime`
+- `initialize_services`
 
-### Project
+Execution API stubs in `BaseRunner` (all overridable):
 
-A project corresponds to your project.
+- `train` / `train_epoch` / `train_steps` / `train_step`
+- `evaluate` / `evaluate_epoch` / `evaluate_steps` / `evaluate_step`
+- `infer`
 
-Generally speaking, there should be only one project for each repository.
+Step-mode semantics:
 
-`project_root` is the root directory of all experiments of a certain project, and should be consistent across the project.
+- `train` dispatches to `train_steps` when `epochs` is unset (`is_step_mode=True`).
+- `evaluate_steps(split, steps=None)` is always bounded-step evaluation.
+  When `steps` is omitted, it defaults to `max(steps_budget // 20, 1)`.
 
-### Group
+Checkpoint/score contracts (all overridable):
 
-A group groups multiple experiments with similar characteristics.
+- `load_model`
+- `read_checkpoint`
+- `load_optimizer` / `load_scheduler`
+- `load_state_dict`
+- `adapt_checkpoint_payload_for_save` / `adapt_checkpoint_payload_for_load`
+- `scores`
+- `best_index`
 
-For example, if you run multiple experiments on learning rate, you may want to group them into a group.
+## Launch modes
 
-Note that Group is a virtual level (which is why it only counts 0.5) and does not correspond to anything.
-There are no attributes/properties for groups.
+- Scratch: `runner = Runner(config)`
+- Resume: `runner = Runner.from_checkpoint(checkpoint)` or `runner.load_checkpoint(checkpoint)`
+- Finetune: `runner = Runner.from_pretrained(config, checkpoint)` or `runner.load_pretrained(checkpoint)`
 
-### Experiment
+## Checkpoint files
 
-An experiment is the basic unit of experiments.
+- `latest.pth`: rolling latest checkpoint
+- `best.pth`: rolling best checkpoint
+- Archived checkpoints (when `checkpoint_interval` is set):
+  - epoch mode: `ckpt-e{epoch:06d}.pth`
+  - step mode: `ckpt-s{global_step:012d}.pth`
 
-Each experiment corresponds to a certain commit, which means the code should be consistent across the experiment.
+Periodic checkpoint attempts are controlled by `checkpoint_interval`.
+When `checkpoint_interval` is unset, runner defaults are used by mode (`epochs`: every epoch, `steps`: budget/20).
 
-DanLing will automatically generate `experiment_id` and `experiment_uuid` based on git revision.
-They are unique for each commit.
+`best` and archived files are updated from `latest` via hardlink-first aliasing (copy fallback), so training is not blocked by alias I/O failures.
 
-You may also set a catchy custom `experiment_name` to identify each experiment.
+Checkpoint persistence internals are implemented under `danling.runners.checkpoints`:
 
-### Run
+- `CheckpointManager`: base contract
+- `FileCheckpointManager`: default async filesystem manager with reliable archive/best queueing plus
+  latest-wins coalescing for non-critical saves
+- `TorchDistributedCheckpointManager`: Torch DCP backend used when `checkpoint_backend="dcp"` in `TorchRunner`
 
-A run is the basic unit of runnings.
+`FsdpRunner` and `TpppRunner` force `checkpoint_backend="dcp"` by default.
 
-Run corresponds to a certain run of an experiment, each run may have different hyperparameters.
+Distributed state-dict invariants:
 
-DanLing will automatically generate `run_id` and `run_uuid` based on `experiment_uuid` and provided config.
-They are unique for each commit and config.
+- FSDP/TPPP distributed runs require DCP state-dict APIs for model/optimizer restore.
+- Checkpoint restore order is model -> optimizer -> scheduler.
+- File checkpoint fallback is only for non-distributed/basic flows.
 
-You may also set a catchy custom `run_name` to identify each experiment.
+Async policy is configured by `checkpoint_async_mode`:
 
-### Identifiers
+- `disabled`: synchronous checkpoint writes
+- `async`: asynchronous uploads
+- `async_with_pinned_mem`: process-based async uploads with staging hook support (`maybe_wait_for_staging`)
 
-DanLing has two properties built-in to help you identify each run.
+When `checkpoint_async_mode` is unset, DanLing falls back to legacy `checkpoint_async` (`True` -> `async`, `False` -> `disabled`).
 
-- `id` by default is the join of `experiment_id`, `run_id`, and `uuid`. It is automatically generated hex-strings and is unique for each run.
-- `name` by default is `experiment_name-run_name`. It is manually specified and easy to read. Note that `name` is not guaranteed to be unique.
+## Directory hierarchy
 
-### Directories
+DanLing now uses an experiment layout with internal runtime IDs:
 
-To help you manage your experiments, DanLing will automatically generate directories for you.
+`workspace_root/lineage[-code_id]/experiment-config_id`
 
-`dir` is the directory of a certain run, defaults to `{dir/name-id}`.
-All run files should be under this directory.
+- `lineage`: top-level lineage namespace
+- `code_id`: git code identity (`<short_sha>` for clean trees, `<short_sha>-d<diff_sha10>` when dirty) appended to lineage when available
+- `experiment`: experiment namespace
+- `config_id`: deterministic hash of canonical config (`hash(config)` derived)
+  By default:
 
-In particular, `checkpoint_dir`, which defaults to `dir/checkpoint_dir_name` contains all checkpoint files.
+- `dir` points to `workspace_root/lineage[-code_id]/experiment-config_id`
+- checkpoints and result snapshots are stored at `dir`
+- logs are stored as `dir/logs/{id}.log`
+- tensorboard logs are stored as `dir/tensorboard/{id}`
+- reproducibility artifacts are stored at `dir/metadata`:
+  - `config.full.yaml`
+  - `config.canonical.yaml`
+  - `config.diff.yaml` (diff against baseline/default config)
+  - `git.yaml`
+  - `git.diff`
+- logging is initialized on the global main process only
 
-As a result, your `project_root` should looks like following:
+The runtime `id` is timestamp-based and not a filesystem directory level.
 
-```bash
-- {project_root}
--     |- {name}-{id} (equivalents to {experiment_name}-{run_name}-{experiment_id}-{run_id}-{uuid})
--       |
--       |- {checkpoint_dir_name}
--       |    |
--       |    |- best.pth
--       |    |- latest.pth
--       |    |- epoch-10.pth
--       |
--       |- run.log
--       |- runner.yaml
--       |- results.json
--       |- latest.json
--       |- best.json
+## Runner state layout
+
+`BaseRunner` uses one checkpointed boundary:
+
+- `RunnerState`: checkpointed training metadata (`train`, `elastic`, `rng`)
+
+Non-checkpointed runtime metadata (`timestamp`, `mode`) and all
+trainable/data/metric objects (`model`, `optimizer`, `datasets`, `dataloaders`, `results`, `meters`, etc.)
+are direct runner attributes for minimal indirection in hot paths.
+
+## Runner Construction
+
+`TorchRunner` is explicit-first: define components in your runner `__init__`.
+
+Example:
+
+```python
+import danling as dl
+from torch import nn
+
+
+class MyRunner(dl.TorchRunner):
+    def __init__(self, config):
+        super().__init__(config)
+        self.model = MyModel(self.config.model)
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = dl.OPTIMIZERS.build(params=self.model.parameters(), **self.config.optim)
+
+config = dl.RunnerConfig()
+runner = MyRunner(config)
 ```
+
+For class-based stack presets:
+
+```python
+import danling as dl
+
+# Default entrypoint is DDP preset:
+runner = dl.Runner(config)  # -> TorchRunner by default
+
+# Explicit preset classes:
+ddp_runner = dl.TorchRunner(config)
+fsdp_runner = dl.FsdpRunner(config)
+tppp_runner = dl.TpppRunner(config)
+
+# Stack selection through Runner:
+cfg = dl.RunnerConfig(config)
+cfg.stack = "fsdp"
+fsdp_from_runner = dl.Runner(cfg)
+```
+
+## Pipeline-aware hooks
+
+`TorchRunner` exposes core training hooks that can be overridden:
+
+- `train_context`
+
+`TpppRunner` wires pipeline execution through `build_pipeline_schedule` and
+`bind_pipeline_modules`, and routes train/eval/infer paths based on whether a
+pipeline schedule is active.
+
+When `pp_degree > 1` and no explicit schedule is provided, `TpppRunner` now
+builds a `torch.distributed.pipelining` schedule internally from
+`config.tppp.pipeline_schedule` (default: `"1F1B"`). The default is intentionally
+non-interleaved for current PP+FSDP stability, with migration to
+`"Interleaved1F1B"` planned after upstream issue
+`pytorch/pytorch#164756` is resolved.
+
+## Platform support
+
+Supported runner stacks:
+
+- `torch` / `ddp`
+- `deepspeed` / `ds` (ZeRO-1/2 focused)
+- `fsdp`
+- `tppp`
+- `dtpp`
+
+## Migration note
+
+This rewrite is intentionally breaking:
+
+- No compatibility layer for legacy DeepSpeed/Accelerate runner APIs
+- No compatibility promise for legacy backend-specific checkpoints
