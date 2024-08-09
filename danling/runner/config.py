@@ -19,27 +19,27 @@
 
 from __future__ import annotations
 
-from random import randint
 from typing import Optional
 from uuid import UUID, uuid5
 
-from chanfig import NestedDict
+import chanfig
 
-from . import defaults
+from danling import defaults
+
 from .utils import get_git_hash
 
 
-class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
+class Config(chanfig.Config):  # pylint: disable=too-many-instance-attributes
     r"""
-    `RunnerState` is a `NestedDict` that contains all states of a `Runner`.
+    `Config` is a [`Config`][chanfig.Config] that contains all states of a `Runner`.
 
-    `RunnerState` is designed to store all critical information of a Run so that you can resume a run
+    `Config` is designed to store all critical information of a Run so that you can resume a run
     from a state and corresponding weights or even restart a run from a state.
 
-    `RunnerState` is also designed to be serialisable and hashable, so that you can save it to a file.
-    `RunnerState` is saved in checkpoint together with weights by default.
+    `Config` is also designed to be serialisable and hashable, so that you can save it to a file.
+    `Config` is saved in checkpoint together with weights by default.
 
-    Since `RunnerState` is a [`NestedDict`][chanfig.NestedDict], you can access its attributes by
+    Since `Config` is a [`Config`][chanfig.Config], you can access its attributes by
     `state["key"]` or `state.key`.
 
     Attributes: General:
@@ -59,18 +59,14 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
             Defaults to `False`.
 
     Attributes: Progress:
-        iters (int): The number of data samples processed.
-            equals to `steps` when `batch_size = 1`.
-        steps (int): The number of `step` calls.
+        steps (int): The number of `steps` calls.
         epochs (int): The number of complete passes over the datasets.
-        iter_end (int): End running iters.
+        step_end (int): End running step.
             Note that `step_end` not initialised since this variable may not apply to some Runners.
-        step_end (int): End running steps.
-            Note that `step_end` not initialised since this variable may not apply to some Runners.
-        epoch_end (int): End running epochs.
+        epoch_end (int): End running epoch.
             Note that `epoch_end` not initialised since this variable may not apply to some Runners.
 
-    In general you should only use one of `iter_end`, `step_end`, `epoch_end` to indicate the length of running.
+    In general you should use either `step_end` or `epoch_end` to indicate the length of running.
 
     Attributes: IO:
         project_root (str): The root directory for all experiments.
@@ -98,7 +94,7 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
             If <= 0, save only the latest and the best checkpoints.
 
     Note:
-        `RunnerState` is a `NestedDict`, so you can access its attributes by `state["name"]` or `state.name`.
+        `Config` is a [`Config`][chanfig.Config], so you can access its attributes by `state["name"]` or `state.name`.
 
     See Also:
         [`BaseRunner`][danling.runner.BaseRunner]: The base runner class.
@@ -106,21 +102,18 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
 
     # DO NOT set default value in class, as they won't be stored in `__dict__`.
 
-    run_name: str = defaults.DEFAULT_RUN_NAME
+    run_name: str = defaults.RUN_NAME
     run_id: str
-    experiment_name: str = defaults.DEFAULT_EXPERIMENT_NAME
+    experiment_name: str = defaults.EXPERIMENT_NAME
     experiment_id: str
 
-    seed: int
+    seed: Optional[int] = None
     deterministic: bool = False
 
-    iters: int = 0
     steps: int = 0
     epochs: int = 0
-    iter_begin: int = 0
     step_begin: int = 0
     epoch_begin: int = 0
-    iter_end: Optional[int] = None
     step_end: Optional[int] = None
     epoch_end: Optional[int] = None
 
@@ -134,24 +127,12 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
     log_interval: Optional[int] = None
     save_interval: Optional[int] = None
 
-    distributed: Optional[bool] = None
-    dist_backend: Optional[str] = None
-    init_method: Optional[str] = None
-    master_addr: Optional[str] = None
-    master_port: Optional[int] = None
-
-    def __init__(self, *args, **kwargs):
-        for k, v in self.__class__.__dict__.items():
-            if not (k.startswith("__") and k.endswith("__")) and (not (isinstance(v, property) or callable(v))):
-                self.set(k, v)
-        if "seed" not in self:
-            self.seed = randint(0, 2**32 - 1)
-        super().__init__(*args, **kwargs)
+    def __post_init__(self):
         if "experiment_id" not in self:
-            self.experiment_id = get_git_hash() or defaults.DEFAULT_EXPERIMENT_ID
+            self.experiment_id = get_git_hash() or defaults.EXPERIMENT_ID
         if "run_id" not in self:
             self.run_id = self.run_uuid.hex
-        self.setattr("ignored_keys_in_hash", defaults.DEFAULT_IGNORED_KEYS_IN_HASH)
+        self.setattr("ignored_keys_in_hash", defaults.IGNORED_NAMES_IN_HASH)
 
     @property
     def experiment_uuid(self) -> UUID:
@@ -167,8 +148,8 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
         UUID of the run.
         """
 
-        ignored_keys_in_hash = self.getattr("ignored_keys_in_hash", defaults.DEFAULT_IGNORED_KEYS_IN_HASH)
-        state: NestedDict = NestedDict({k: v for k, v in self.dict().items() if k not in ignored_keys_in_hash})
+        ignored_keys_in_hash = self.getattr("ignored_keys_in_hash", defaults.IGNORED_NAMES_IN_HASH)
+        state: chanfig.Config = chanfig.Config({k: v for k, v in self.dict().items() if k not in ignored_keys_in_hash})
         return uuid5(self.experiment_uuid, state.yamls())
 
     def __hash__(self) -> int:

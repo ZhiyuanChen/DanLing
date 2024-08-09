@@ -152,6 +152,10 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         self.cooldown_steps = cooldown_steps
         self.cooldown_steps_begin = self.total_steps - self.cooldown_steps
         super().__init__(optimizer, last_epoch)
+        self.optimizer.register_step_post_hook(self.step_post_hook)
+
+    def step_post_hook(self, optimizer: Optimizer, *args, **kwargs):
+        self.step()
 
     def get_lr(self) -> List[float]:
         step_count = self._step_count
