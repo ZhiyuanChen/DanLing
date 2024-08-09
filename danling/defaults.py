@@ -17,14 +17,15 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
-DEFAULT_RUN_NAME = "Run"
-DEFAULT_EXPERIMENT_NAME = "DanLing"
-DEFAULT_EXPERIMENT_ID = "xxxxxxxxxxxxxxxx"
-DEFAULT_IGNORED_KEYS_IN_HASH = {
+RUN_NAME = "Run"
+EXPERIMENT_NAME = "DanLing"
+EXPERIMENT_ID = "xxxxxxxxxxxxxxxx"
+SEED = 1016
+IGNORED_CONFIG_IN_HASH = {
     "timestamp",
-    "iters",
-    "steps",
-    "epochs",
+    "iter",
+    "step",
+    "epoch",
     "results",
     "score_split",
     "score",
