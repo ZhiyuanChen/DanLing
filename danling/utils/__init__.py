@@ -22,7 +22,6 @@ try:
 except ImportError:
     from cached_property import cached_property  # type: ignore
 
-from . import defaults
 from .basex import Base58, Base62, Base64, BaseX, base58, base62, base64
 from .context_managers import debug
 from .decorators import catch, flexible_decorator, method_cache
@@ -55,5 +54,4 @@ __all__ = [
     "base58",
     "base62",
     "base64",
-    "defaults",
 ]
