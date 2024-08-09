@@ -17,7 +17,6 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
-from chanfig import Config as Config_
 from chanfig import NestedDict
 
 import danling as dl
@@ -30,7 +29,7 @@ class Runner(dl.BaseRunner):
         pass
 
 
-class Config(Config_):
+class Config(dl.Config):
     __test__ = False
 
     def __init__(self):
@@ -38,6 +37,7 @@ class Config(Config_):
         self.dataset.download = True
         self.dataset.root = "data"
         self.dataloader.batch_size = 8
+        self.dataloader.num_workers = 0
         self.epoch_end = 2
         self.optim.name = "adamw"
         self.optim.lr = 1e-3
@@ -107,7 +107,7 @@ class Test:
 
     def test_conflict(self):
         runner = self.runner
-        state = runner.state
+        config = runner.config
         runner.conflict = False
         assert not runner.conflict
-        assert state.conflict == 1
+        assert config.conflict == 1
