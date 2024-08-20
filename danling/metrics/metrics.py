@@ -476,14 +476,12 @@ class MultiTaskMetrics(MultiTaskDict):
         >>> metrics.update({"dataset1.cls": {"input": [0.1, 0.4, 0.6, 0.8], "target": [0, 0, 1, 0]}, "dataset1.reg": {"input": [0.2, 0.3, 0.5, 0.7], "target": [0.2, 0.4, 0.6, 0.8]}, "dataset2": {"input": [0.2, 0.3, 0.5, 0.7], "target": [0, 0, 1, 0]}})
         >>> f"{metrics:.4f}"
         'dataset1.cls: auroc: 0.6667 (0.7000)\tauprc: 0.5000 (0.5556)\ndataset1.reg: pearson: 0.9898 (0.9146)\tspearman: 1.0000 (0.9222)\ndataset2: auroc: 0.6667 (0.7333)\tauprc: 0.5000 (0.7000)'
-        >>> metrics.update({"dataset1": {"cls": {"input": [0.1, 0.4, 0.6, 0.8]}}})
+        >>> metrics.update({"dataset1": {"cls": {"input": [0.1, 0.4, 0.6, 0.8], "target": [1, 0, 1, 0]}}})
+        >>> f"{metrics:.4f}"
+        'dataset1.cls: auroc: 0.2500 (0.5286)\tauprc: 0.5000 (0.4789)\ndataset1.reg: pearson: 0.9898 (0.9146)\tspearman: 1.0000 (0.9222)\ndataset2: auroc: 0.6667 (0.7333)\tauprc: 0.5000 (0.7000)'
+        >>> metrics.update(dict(loss=""))  # doctest: +ELLIPSIS
         Traceback (most recent call last):
-        ValueError: Expected values to be a flat dictionary, but got <class 'dict'>
-        This is likely due to nested dictionary in the values.
-        Nested dictionaries cannot be processed due to the method's design, which uses Mapping to pass both input and target. Ensure your input is a flat dictionary or a single value.
-        >>> metrics.update(dict(loss=""))
-        Traceback (most recent call last):
-        ValueError: Expected values to be a flat dictionary, but got <class 'str'>
+        ValueError: Metric loss not found in ...
     """  # noqa: E501
 
     def __init__(self, *args, **kwargs):
@@ -501,17 +499,36 @@ class MultiTaskMetrics(MultiTaskDict):
         """
 
         for metric, value in values.items():
-            if isinstance(value, Mapping):
-                if metric not in self:
-                    raise ValueError(f"Metric {metric} not found in {self}")
-                try:
+            if metric not in self:
+                raise ValueError(f"Metric {metric} not found in {self}")
+            if isinstance(self[metric], MultiTaskMetrics):
+                for name, met in self[metric].items():
+                    if name in value:
+                        val = value[name]
+                        if isinstance(value, Mapping):
+                            met.update(**val)
+                        elif isinstance(value, Sequence):
+                            met.update(*val)
+                        else:
+                            raise ValueError(f"Expected value to be a Mapping or Sequence, but got {type(value)}")
+            elif isinstance(self[metric], (Metrics, Metric)):
+                if isinstance(value, Mapping):
                     self[metric].update(**value)
-                except TypeError:
-                    raise ValueError(
-                        f"Expected values to be a flat dictionary, but got {type(value)}\n"
-                        "This is likely due to nested dictionary in the values.\n"
-                        "Nested dictionaries cannot be processed due to the method's design, which uses Mapping "
-                        "to pass both input and target. Ensure your input is a flat dictionary or a single value."
-                    ) from None
+                elif isinstance(value, Sequence):
+                    self[metric].update(*value)
+                else:
+                    raise ValueError(f"Expected value to be a Mapping or Sequence, but got {type(value)}")
             else:
-                raise ValueError(f"Expected values to be a flat dictionary, but got {type(value)}")
+                raise ValueError(
+                    f"Expected {metric} to be an instance of MultiTaskMetrics, Metrics, or Metric, "
+                    "but got {type(self[metric])}"
+                )
+
+    def set(  # pylint: disable=W0237
+        self,
+        name: str,
+        metric: Metrics | Metric,  # type: ignore[override]
+    ) -> None:
+        if not isinstance(metric, (Metrics, Metric)):
+            raise ValueError(f"Expected {metric} to be an instance of Metrics or Metric, but got {type(metric)}")
+        super().set(name, metric)

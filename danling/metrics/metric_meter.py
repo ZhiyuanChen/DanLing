@@ -207,6 +207,9 @@ class MultiTaskMetricMeters(MultiTaskAverageMeters):
         >>> metrics.update({"dataset1.cls": [[0.1, 0.4, 0.6, 0.8], [0, 0, 1, 0]], "dataset2": {"input": [0.2, 0.3, 0.5, 0.7], "target": [0, 0, 0, 1]}})
         >>> f"{metrics:.4f}"
         'dataset1.cls: acc: 0.7500 (0.6250)\ndataset2: acc: 0.7500 (0.5000)'
+        >>> metrics.update(dict(loss=""))  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ValueError: Metric loss not found in ...
     """  # noqa: E501
 
     def __init__(self, *args, **kwargs):
@@ -225,31 +228,28 @@ class MultiTaskMetricMeters(MultiTaskAverageMeters):
         """
 
         for metric, value in values.items():
-            if isinstance(value, (Mapping, Sequence)):
-                if metric not in self:
-                    raise ValueError(f"Metric {metric} not found in {self}")
-                if isinstance(self[metric], MultiTaskMetricMeters):
-                    for met in self[metric].all_values():
-                        if isinstance(value, Mapping):
-                            met.update(**value)
-                        elif isinstance(value, Sequence):
-                            met.update(*value)
-                        else:
-                            raise ValueError(f"Expected value to be a Mapping or Sequence, but got {type(value)}")
-                elif isinstance(self[metric], (MetricMeters, MetricMeter)):
+            if metric not in self:
+                raise ValueError(f"Metric {metric} not found in {self}")
+            if isinstance(self[metric], MultiTaskMetricMeters):
+                for met in self[metric].all_values():
                     if isinstance(value, Mapping):
-                        self[metric].update(**value)
+                        met.update(**value)
                     elif isinstance(value, Sequence):
-                        self[metric].update(*value)
+                        met.update(*value)
                     else:
                         raise ValueError(f"Expected value to be a Mapping or Sequence, but got {type(value)}")
+            elif isinstance(self[metric], (MetricMeters, MetricMeter)):
+                if isinstance(value, Mapping):
+                    self[metric].update(**value)
+                elif isinstance(value, Sequence):
+                    self[metric].update(*value)
                 else:
-                    raise ValueError(
-                        f"Expected {metric} to be an instance of MultiTaskMetricMeters, MetricMeters, "
-                        "or MetricMeter, but got {type(self[metric])}"
-                    )
+                    raise ValueError(f"Expected value to be a Mapping or Sequence, but got {type(value)}")
             else:
-                raise ValueError(f"Expected values to be a Mapping or Sequence, but got {type(value)}")
+                raise ValueError(
+                    f"Expected {metric} to be an instance of MultiTaskMetricMeters, MetricMeters, "
+                    f"or MetricMeter, but got {type(self[metric])}"
+                )
 
     # MultiTaskAverageMeters.get is hacked
     def get(self, name: Any, default=None) -> Any:
@@ -258,10 +258,12 @@ class MultiTaskMetricMeters(MultiTaskAverageMeters):
     def set(  # pylint: disable=W0237
         self,
         name: str,
-        meter: MetricMeter | MetricMeters | Callable,  # type: ignore[override]
+        metric: MetricMeter | MetricMeters | Callable,  # type: ignore[override]
     ) -> None:
-        if callable(meter):
-            meter = MetricMeter(meter)
-        if not isinstance(meter, (MetricMeter, MetricMeters)):
-            raise ValueError(f"Expected meter to be an instance of MetricMeter or MetricMeters, but got {type(meter)}")
-        super().set(name, meter)
+        if callable(metric):
+            metric = MetricMeter(metric)
+        if not isinstance(metric, (MetricMeter, MetricMeters)):
+            raise ValueError(
+                f"Expected {metric} to be an instance of MetricMeter or MetricMeters, but got {type(metric)}"
+            )
+        super().set(name, metric)
