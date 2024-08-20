@@ -2154,7 +2154,9 @@ TypeError: &hellip;update() missing 1 required positional argument: &lsquo;targe
 <span class="normal"><a href="#__codelineno-0-264">264</a></span>
 <span class="normal"><a href="#__codelineno-0-265">265</a></span>
 <span class="normal"><a href="#__codelineno-0-266">266</a></span>
-<span class="normal"><a href="#__codelineno-0-267">267</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-189" name="__codelineno-0-189"></a><span class="k">class</span> <span class="nc">MultiTaskMetricMeters</span><span class="p">(</span><span class="n">MultiTaskAverageMeters</span><span class="p">):</span>
+<span class="normal"><a href="#__codelineno-0-267">267</a></span>
+<span class="normal"><a href="#__codelineno-0-268">268</a></span>
+<span class="normal"><a href="#__codelineno-0-269">269</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-189" name="__codelineno-0-189"></a><span class="k">class</span> <span class="nc">MultiTaskMetricMeters</span><span class="p">(</span><span class="n">MultiTaskAverageMeters</span><span class="p">):</span>
 <a id="__codelineno-0-190" name="__codelineno-0-190"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
 <a id="__codelineno-0-191" name="__codelineno-0-191"></a><span class="sd">    Examples:</span>
 <a id="__codelineno-0-192" name="__codelineno-0-192"></a><span class="sd">        &gt;&gt;&gt; from danling.metrics.functional import accuracy</span>
@@ -2216,7 +2218,7 @@ TypeError: &hellip;update() missing 1 required positional argument: &lsquo;targe
 <a id="__codelineno-0-248" name="__codelineno-0-248"></a>            <span class="k">else</span><span class="p">:</span>
 <a id="__codelineno-0-249" name="__codelineno-0-249"></a>                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
 <a id="__codelineno-0-250" name="__codelineno-0-250"></a>                    <span class="sa">f</span><span class="s2">&quot;Expected </span><span class="si">{</span><span class="n">metric</span><span class="si">}</span><span class="s2"> to be an instance of MultiTaskMetricMeters, MetricMeters, &quot;</span>
-<a id="__codelineno-0-251" name="__codelineno-0-251"></a>                    <span class="s2">&quot;or MetricMeter, but got {type(self[metric])}&quot;</span>
+<a id="__codelineno-0-251" name="__codelineno-0-251"></a>                    <span class="sa">f</span><span class="s2">&quot;or MetricMeter, but got </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">[</span><span class="n">metric</span><span class="p">])</span><span class="si">}</span><span class="s2">&quot;</span>
 <a id="__codelineno-0-252" name="__codelineno-0-252"></a>                <span class="p">)</span>
 <a id="__codelineno-0-253" name="__codelineno-0-253"></a>
 <a id="__codelineno-0-254" name="__codelineno-0-254"></a>    <span class="c1"># MultiTaskAverageMeters.get is hacked</span>
@@ -2226,13 +2228,15 @@ TypeError: &hellip;update() missing 1 required positional argument: &lsquo;targe
 <a id="__codelineno-0-258" name="__codelineno-0-258"></a>    <span class="k">def</span> <span class="nf">set</span><span class="p">(</span>  <span class="c1"># pylint: disable=W0237</span>
 <a id="__codelineno-0-259" name="__codelineno-0-259"></a>        <span class="bp">self</span><span class="p">,</span>
 <a id="__codelineno-0-260" name="__codelineno-0-260"></a>        <span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
-<a id="__codelineno-0-261" name="__codelineno-0-261"></a>        <span class="n">meter</span><span class="p">:</span> <span class="n">MetricMeter</span> <span class="o">|</span> <span class="n">MetricMeters</span> <span class="o">|</span> <span class="n">Callable</span><span class="p">,</span>  <span class="c1"># type: ignore[override]</span>
+<a id="__codelineno-0-261" name="__codelineno-0-261"></a>        <span class="n">metric</span><span class="p">:</span> <span class="n">MetricMeter</span> <span class="o">|</span> <span class="n">MetricMeters</span> <span class="o">|</span> <span class="n">Callable</span><span class="p">,</span>  <span class="c1"># type: ignore[override]</span>
 <a id="__codelineno-0-262" name="__codelineno-0-262"></a>    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-263" name="__codelineno-0-263"></a>        <span class="k">if</span> <span class="nb">callable</span><span class="p">(</span><span class="n">meter</span><span class="p">):</span>
-<a id="__codelineno-0-264" name="__codelineno-0-264"></a>            <span class="n">meter</span> <span class="o">=</span> <span class="n">MetricMeter</span><span class="p">(</span><span class="n">meter</span><span class="p">)</span>
-<a id="__codelineno-0-265" name="__codelineno-0-265"></a>        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">meter</span><span class="p">,</span> <span class="p">(</span><span class="n">MetricMeter</span><span class="p">,</span> <span class="n">MetricMeters</span><span class="p">)):</span>
-<a id="__codelineno-0-266" name="__codelineno-0-266"></a>            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Expected meter to be an instance of MetricMeter or MetricMeters, but got </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">meter</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-267" name="__codelineno-0-267"></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">meter</span><span class="p">)</span>
+<a id="__codelineno-0-263" name="__codelineno-0-263"></a>        <span class="k">if</span> <span class="nb">callable</span><span class="p">(</span><span class="n">metric</span><span class="p">):</span>
+<a id="__codelineno-0-264" name="__codelineno-0-264"></a>            <span class="n">metric</span> <span class="o">=</span> <span class="n">MetricMeter</span><span class="p">(</span><span class="n">metric</span><span class="p">)</span>
+<a id="__codelineno-0-265" name="__codelineno-0-265"></a>        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">metric</span><span class="p">,</span> <span class="p">(</span><span class="n">MetricMeter</span><span class="p">,</span> <span class="n">MetricMeters</span><span class="p">)):</span>
+<a id="__codelineno-0-266" name="__codelineno-0-266"></a>            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+<a id="__codelineno-0-267" name="__codelineno-0-267"></a>                <span class="sa">f</span><span class="s2">&quot;Expected </span><span class="si">{</span><span class="n">metric</span><span class="si">}</span><span class="s2"> to be an instance of MetricMeter or MetricMeters, but got </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">metric</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span>
+<a id="__codelineno-0-268" name="__codelineno-0-268"></a>            <span class="p">)</span>
+<a id="__codelineno-0-269" name="__codelineno-0-269"></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">metric</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
               </details>
 
@@ -2373,7 +2377,7 @@ TypeError: &hellip;update() missing 1 required positional argument: &lsquo;targe
 <a id="__codelineno-0-248" name="__codelineno-0-248"></a>        <span class="k">else</span><span class="p">:</span>
 <a id="__codelineno-0-249" name="__codelineno-0-249"></a>            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
 <a id="__codelineno-0-250" name="__codelineno-0-250"></a>                <span class="sa">f</span><span class="s2">&quot;Expected </span><span class="si">{</span><span class="n">metric</span><span class="si">}</span><span class="s2"> to be an instance of MultiTaskMetricMeters, MetricMeters, &quot;</span>
-<a id="__codelineno-0-251" name="__codelineno-0-251"></a>                <span class="s2">&quot;or MetricMeter, but got {type(self[metric])}&quot;</span>
+<a id="__codelineno-0-251" name="__codelineno-0-251"></a>                <span class="sa">f</span><span class="s2">&quot;or MetricMeter, but got </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">[</span><span class="n">metric</span><span class="p">])</span><span class="si">}</span><span class="s2">&quot;</span>
 <a id="__codelineno-0-252" name="__codelineno-0-252"></a>            <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
