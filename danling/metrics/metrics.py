@@ -175,6 +175,8 @@ class Metrics(Metric):
                 target = torch.tensor(target)
             except ValueError:
                 target = NestedTensor(target)
+        if input.ndim == target.ndim + 1:
+            input = input.squeeze(-1)
         # convert input and target to NestedTensor if one of them is
         if isinstance(input, NestedTensor) or isinstance(target, NestedTensor):
             if isinstance(input, NestedTensor) and isinstance(target, Tensor):
