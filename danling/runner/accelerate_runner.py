@@ -107,7 +107,7 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
         for k, d in self.dataloaders.items():
             self.dataloaders[k] = self.prepare(d)
         if self.state.get("log_interval") is None:
-            self.state.log_interval = max(len(d) for d in self.dataloaders.values()) // 10
+            self.state.log_interval = max(max(len(d) for d in self.dataloaders.values()) // 10, 1)
 
     @property
     def deepspeed(self) -> dict | None:
