@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-from chanfig import DefaultDict, FlatDict, NestedDict
+from chanfig import DefaultDict, NestedDict
 from torch import distributed as dist
 
 
@@ -43,25 +43,25 @@ class MetricsDict(DefaultDict):
     A `MetricsDict` for better support for `AverageMeters`.
     """
 
-    def value(self) -> FlatDict[str, float]:
-        return FlatDict({key: metric.value() for key, metric in self.all_items()})
+    def value(self) -> NestedDict[str, float]:
+        return NestedDict({key: metric.value() for key, metric in self.all_items()})
 
-    def batch(self) -> FlatDict[str, float]:
-        return FlatDict({key: metric.batch() for key, metric in self.all_items()})
+    def batch(self) -> NestedDict[str, float]:
+        return NestedDict({key: metric.batch() for key, metric in self.all_items()})
 
-    def average(self) -> FlatDict[str, float]:
-        return FlatDict({key: metric.average() for key, metric in self.all_items()})
+    def average(self) -> NestedDict[str, float]:
+        return NestedDict({key: metric.average() for key, metric in self.all_items()})
 
     @property
-    def val(self) -> FlatDict[str, float]:
+    def val(self) -> NestedDict[str, float]:
         return self.value()
 
     @property
-    def bat(self) -> FlatDict[str, float]:
+    def bat(self) -> NestedDict[str, float]:
         return self.batch()
 
     @property
-    def avg(self) -> FlatDict[str, float]:
+    def avg(self) -> NestedDict[str, float]:
         return self.average()
 
     def reset(self) -> None:
