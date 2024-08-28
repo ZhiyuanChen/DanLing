@@ -148,6 +148,7 @@ def pearson(
 ):
     tm.check()
     input, target = preprocess(input, target)
+    input, target = input.view(-1), target.view(-1)
     try:
         return tmf.pearson_corrcoef(input, target)
     except ValueError:
@@ -160,6 +161,7 @@ def spearman(
 ):
     tm.check()
     input, target = preprocess(input, target)
+    input, target = input.view(-1), target.view(-1)
     try:
         return tmf.spearman_corrcoef(input, target)
     except ValueError:

@@ -305,13 +305,13 @@ class Test:
             value, batch = metrics.value(), metrics.batch()
             assert (pred_nt == metrics._input).all()
             assert (target_nt == metrics._target).all()
-            assert sum(torch.tensor(value["pearson"]) - pearson(pred, target)) < self.epsilon
-            assert sum(torch.tensor(value["spearman"]) - spearman(pred, target)) < self.epsilon
+            assert value["pearson"] - pearson(pred, target) < self.epsilon
+            assert value["spearman"] - spearman(pred, target) < self.epsilon
             assert value["rmse"] - rmse(pred, target) < self.epsilon
             pred = torch.cat(self._all_gather(pred_list, world_size))
             target = torch.cat(self._all_gather(target_list, world_size))
-            assert sum(torch.tensor(batch["pearson"]) - pearson(pred, target)) < self.epsilon
-            assert sum(torch.tensor(batch["spearman"]) - spearman(pred, target)) < self.epsilon
+            assert batch["pearson"] - pearson(pred, target) < self.epsilon
+            assert batch["spearman"] - spearman(pred, target) < self.epsilon
             assert batch["rmse"] - rmse(pred, target) < self.epsilon
 
         pred = torch.cat(self._all_gather(preds, world_size))
@@ -319,8 +319,8 @@ class Test:
         average = metrics.average()
         assert (pred == metrics.inputs).all()
         assert (target == metrics.targets).all()
-        assert sum(torch.tensor(average["pearson"]) - pearson(pred, target)) < self.epsilon
-        assert sum(torch.tensor(average["spearman"]) - spearman(pred, target)) < self.epsilon
+        assert average["pearson"] - pearson(pred, target) < self.epsilon
+        assert average["spearman"] - spearman(pred, target) < self.epsilon
         assert average["rmse"] - rmse(pred, target) < self.epsilon
 
         dist.destroy_process_group()
