@@ -23,7 +23,7 @@ from math import nan
 from typing import Callable, Iterable, Optional
 
 import torch
-from chanfig import DefaultDict, FlatDict
+from chanfig import DefaultDict, FlatDict, NestedDict
 from torch import Tensor
 from torch import distributed as dist
 from torcheval.metrics import Metric
@@ -80,17 +80,17 @@ class Metrics(Metric):
         >>> metrics.targets  # ground truth of all data
         tensor([0, 1, 0, 1])
         >>> metrics.val  # Metrics of current batch on current device
-        FlatDict(
+        NestedDict(
           ('auroc'): 0.75
           ('auprc'): 0.8333333730697632
         )
         >>> metrics.bat  # Metrics of current batch on all devices
-        FlatDict(
+        NestedDict(
           ('auroc'): 0.75
           ('auprc'): 0.8333333730697632
         )
         >>> metrics.avg  # Metrics of all data on all devices
-        FlatDict(
+        NestedDict(
           ('auroc'): 0.75
           ('auprc'): 0.8333333730697632
         )
@@ -104,17 +104,17 @@ class Metrics(Metric):
         >>> metrics.targets  # ground truth of all data
         tensor([0, 1, 0, 1, 0, 0, 1, 0])
         >>> metrics.val  # Metrics of current batch on current device
-        FlatDict(
+        NestedDict(
           ('auroc'): 0.6666666666666666
           ('auprc'): 0.5
         )
         >>> metrics.bat  # Metrics of current batch on all devices
-        FlatDict(
+        NestedDict(
           ('auroc'): 0.6666666666666666
           ('auprc'): 0.5
         )
         >>> metrics.avg  # Metrics of all data on all devices
-        FlatDict(
+        NestedDict(
           ('auroc'): 0.6666666666666666
           ('auprc'): 0.5555555820465088
         )
@@ -203,40 +203,40 @@ class Metrics(Metric):
             self._target = target
             self._target_buffer.append(target.cpu())  # type: ignore[union-attr]
 
-    def compute(self) -> FlatDict[str, float | flist]:
+    def compute(self) -> NestedDict[str, float | flist]:
         return self.calculate(self.inputs.to(self.device), self.targets.to(self.device))
 
-    def value(self) -> FlatDict[str, float | flist]:
+    def value(self) -> NestedDict[str, float | flist]:
         return self.calculate(self._input, self._target)
 
-    def batch(self) -> FlatDict[str, float | flist]:
+    def batch(self) -> NestedDict[str, float | flist]:
         return self.calculate(self.input, self.target)
 
-    def average(self) -> FlatDict[str, float | flist]:
+    def average(self) -> NestedDict[str, float | flist]:
         return self.calculate(self.inputs.to(self.device), self.targets.to(self.device))
 
     @property
-    def val(self) -> FlatDict[str, float | flist]:
+    def val(self) -> NestedDict[str, float | flist]:
         return self.value()
 
     @property
-    def bat(self) -> FlatDict[str, float | flist]:
+    def bat(self) -> NestedDict[str, float | flist]:
         return self.batch()
 
     @property
-    def avg(self) -> FlatDict[str, float | flist]:
+    def avg(self) -> NestedDict[str, float | flist]:
         return self.average()
 
     @torch.inference_mode()
-    def calculate(self, input: Tensor, target: Tensor) -> FlatDict[str, flist | float]:
+    def calculate(self, input: Tensor, target: Tensor) -> NestedDict[str, flist | float]:
         if (
             isinstance(input, (Tensor, NestedTensor))
             and input.numel() == 0 == target.numel()
             or isinstance(input, (list, dict))
             and len(input) == 0 == len(target)
         ):
-            return FlatDict({name: nan for name in self.metrics.keys()})
-        ret = FlatDict()
+            return NestedDict({name: nan for name in self.metrics.keys()})
+        ret = NestedDict()
         for name, metric in self.metrics.items():
             score = self._calculate(metric, input, target)
             if isinstance(score, Mapping):
@@ -422,7 +422,7 @@ class ScoreMetrics(Metrics):  # pylint: disable=abstract-method
     best_fn: Callable
 
     def __init__(
-        self, *args, score_name: str | None = None, best_fn: Callable | None = max, **metrics: FlatDict[str, Callable]
+        self, *args, score_name: str | None = None, best_fn: Callable | None = max, **metrics: NestedDict[str, Callable]
     ):
         super().__init__(*args, **metrics)
         self.score_name = score_name or next(iter(self.metrics.keys()))
