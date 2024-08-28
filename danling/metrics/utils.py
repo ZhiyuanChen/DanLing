@@ -77,7 +77,7 @@ class MultiTaskDict(NestedDict):
     A `MultiTaskDict` for better multi-task support For `MultiTaskAverageMeters` and `MultiTaskMetrics`.
     """
 
-    return_average: bool
+    return_average = False
 
     def __init__(self, *args, return_average: bool = False, **kwargs) -> None:
         super().__init__(*args, **kwargs)

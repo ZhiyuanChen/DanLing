@@ -27,16 +27,17 @@ OPTIMIZERS.register(optim.SGD, "sgd")
 
 
 class MNISTConfig(Config):
-    epoch_end = 2
-    log = False
-    tensorboard = False
-    log_interval = 1000
-    score_split = "val"
-    score_name = "loss"
-    debug = False
-    patience = 1
+    epoch_end: int = 2
+    log: bool = False
+    tensorboard: bool = False
+    log_interval: int = 1000
+    score_split: str = "val"
+    score_name: str = "loss"
+    debug: bool = False
+    patience: int = 1
 
     def __init__(self):
+        super().__init__()
         self.network.name = "resnet18"
         self.dataset.download = True
         self.dataset.root = "data"
@@ -47,7 +48,6 @@ class MNISTConfig(Config):
         self.sched.strategy = "cosine"
 
     def post(self):
-        self.copy_class_attributes()
         self.experiment_name = f"{self.network.name}_{self.optim.name}@{self.optim.lr}"
 
 
