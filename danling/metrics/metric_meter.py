@@ -141,7 +141,7 @@ class MetricMeters(AverageMeters):
     TypeError: ...update() missing 1 required positional argument: 'target'
     """
 
-    ignored_index: Optional[int] = None
+    ignored_index = None
 
     def __init__(self, *args, ignored_index: int | None = None, **kwargs) -> None:
         self.setattr("ignored_index", ignored_index)
@@ -155,6 +155,8 @@ class MetricMeters(AverageMeters):
                 kwargs[name] = meter = MetricMeter(meter, ignored_index=self.ignored_index)
             if not isinstance(meter, MetricMeter):
                 raise ValueError(f"Expected {name} to be an instance of MetricMeter, but got {type(meter)}")
+        if ignored_index is not None:
+            self.setattr("ignored_index", ignored_index)
         super().__init__(*args, default_factory=None, **kwargs)  # type: ignore[arg-type]
 
     def update(  # type: ignore[override] # pylint: disable=W0221
