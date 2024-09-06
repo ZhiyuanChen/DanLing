@@ -46,6 +46,13 @@ try:
 except ImportError:
     PANDAS_AVAILABLE = False
 
+try:
+    import pyarrow
+
+    PYARROW_AVAILABLE = True
+except ImportError:
+    PYARROW_AVAILABLE = False
+
 
 PYTORCH = ("pt", "pth")
 NUMPY = ("numpy", "npy", "npz")
@@ -53,12 +60,13 @@ JSON = ("json",)
 YAML = ("yaml", "yml")
 CSV = ("csv", "tsv")
 PANDAS = ("pandas", "pd")
+PARQUET = ("parquet", "pq")
 PICKLE = ("pickle", "pkl")
 H5 = ("h5", "hdf5")
 EXCEL = ("xlsx", "xls")
 XML = ("xml",)
 SQL = ("sql",)
-PANDAS_SUPPORTED = sum([JSON, YAML, CSV, PANDAS, PICKLE, H5, EXCEL, XML, SQL], ())
+PANDAS_SUPPORTED = sum([JSON, YAML, CSV, PANDAS, PARQUET, PICKLE, H5, EXCEL, XML, SQL], ())
 
 
 def save(obj: Any, file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) -> File:
@@ -78,6 +86,13 @@ def save(obj: Any, file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) ->
         if not PANDAS_AVAILABLE:
             raise ImportError(f"Trying to save {obj} to {file!r} but pandas is not installed.")
         pandas.to_pickle(obj, file, *args, **kwargs)
+    elif extension in PARQUET:
+        if isinstance(obj, pandas.DataFrame):
+            obj.to_parquet(file, *args, **kwargs)
+        elif not PYARROW_AVAILABLE:
+            raise ImportError(f"Trying to save {obj} to {file!r} but pyarrow is not installed.")
+        else:
+            pyarrow.parquet.write_table(obj, file, *args, **kwargs)
     elif extension in CSV:
         if isinstance(obj, pandas.DataFrame):
             obj.to_csv(file, *args, **kwargs)
@@ -143,6 +158,8 @@ def load_pandas(file: PathStr, *args: List[Any], **kwargs: Dict[str, Any]) -> An
     extension = os.path.splitext(file)[-1].lower()[1:]
     if extension in PANDAS or extension in PICKLE:
         return pandas.read_pickle(file, *args, **kwargs)
+    if extension in PARQUET:
+        return pandas.read_parquet(file, *args, **kwargs)
     if extension in H5:
         return pandas.read_hdf(file, *args, **kwargs)
     if extension in CSV:
