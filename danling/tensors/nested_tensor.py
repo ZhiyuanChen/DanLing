@@ -282,6 +282,7 @@ class NestedTensor:
             >>> nested_tensor = NestedTensor([torch.randn(9, 9, 8, 7), torch.randn(11, 11, 8, 6)])
             >>> nested_tensor.concat.shape
             torch.Size([1293, 8])
+            >>> nested_tensor = NestedTensor([torch.randn(1, 9, 9, 5), torch.randn(1, 11, 11, 5)])
         """
         shape = list(self.size())  # type: ignore[arg-type]
         shape = shape[1:] if self.batch_first else shape[0] + shape[2:]
@@ -291,11 +292,12 @@ class NestedTensor:
 
         static_dims = set(range(len(shape)))
         for i, s in enumerate(shape):
+
             if not all(t.shape[i] == s for t in self._storage):
                 shape[i] = -1
                 static_dims.remove(i)
         target_shape = [-1] + [s for s in shape if s != -1]
-        storage = [i.view(target_shape) for i in self._storage]
+        storage = [i.reshape(target_shape) for i in self._storage]
         return torch.cat(storage, dim=0 if self.batch_first else 1)
 
     @classmethod

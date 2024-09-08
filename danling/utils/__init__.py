@@ -19,9 +19,14 @@ from . import defaults
 from .basex import Base58, Base62, Base64, BaseX, base58, base62, base64
 from .contextmanagers import debug
 from .decorators import catch, ensure_dir, flexible_decorator, method_cache
+from .distributed import get_world_size
 from .io import is_json_serializable, load, load_pandas, save
+from .lists import defaultlist, flist
 
 __all__ = [
+    "defaultlist",
+    "flist",
+    "get_world_size",
     "catch",
     "flexible_decorator",
     "method_cache",

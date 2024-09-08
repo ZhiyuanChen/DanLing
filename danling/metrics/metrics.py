@@ -29,8 +29,10 @@ from torch import distributed as dist
 from torcheval.metrics import Metric
 
 from danling.tensors import NestedTensor
+from danling.utils import flist, get_world_size
 
-from .utils import MultiTaskDict, flist, get_world_size
+from .preprocesses import preprocess as default_preprocess
+from .utils import MultiTaskDict
 
 try:
     from typing import Self  # type: ignore[attr-defined]
@@ -52,7 +54,8 @@ class Metrics(Metric):
     `Metrics` solves this problem by maintaining a shared state for multiple metric functions.
 
     Attributes:
-        metrics: A dictionary of metrics to be computed.
+        metrics: A dictionary of metrics to be computed.A
+        ignored_index: Index to be ignored in the computation.
         val: Metric results of current batch on current device.
         bat: Metric results of current batch on all devices.
         avg: Metric results of all results on all devices.
@@ -127,6 +130,7 @@ class Metrics(Metric):
     """
 
     metrics: FlatDict[str, Callable]
+    preprocess: Callable
     ignored_index: Optional[int] = None
     _input: Tensor
     _target: Tensor
@@ -146,6 +150,7 @@ class Metrics(Metric):
         return_nested: bool | None = None,
         device: torch.device | None = None,
         ignored_index: int | None = None,
+        preprocess: Callable = default_preprocess,
         **metrics: Callable,
     ):
         super().__init__(device=device)
@@ -156,6 +161,7 @@ class Metrics(Metric):
         self._add_state("_input_buffer", flist())
         self._add_state("_target_buffer", flist())
         self.metrics = FlatDict(*args, **metrics)
+        self.preprocess = preprocess
         if merge_dict is not None:
             self.merge_dict = merge_dict
         if return_nested is not None:
@@ -207,7 +213,9 @@ class Metrics(Metric):
         return self.calculate(self.inputs.to(self.device), self.targets.to(self.device))
 
     def value(self) -> NestedDict[str, float | flist]:
-        return self.calculate(self._input, self._target)
+        input = self._input.concat if isinstance(self._input, NestedTensor) else self._input
+        target = self._target.concat if isinstance(self._target, NestedTensor) else self._target
+        return self.calculate(input, target)
 
     def batch(self) -> NestedDict[str, float | flist]:
         return self.calculate(self.input, self.target)
@@ -237,8 +245,9 @@ class Metrics(Metric):
         ):
             return NestedDict({name: nan for name in self.metrics.keys()})
         ret = NestedDict()
+        input, target = self.preprocess(input, target, ignored_index=self.ignored_index)
         for name, metric in self.metrics.items():
-            score = self._calculate(metric, input, target)
+            score = self._calculate(metric, input, target, preprocess=False)
             if isinstance(score, Mapping):
                 if self.merge_dict:
                     ret.merge(score)
@@ -250,7 +259,9 @@ class Metrics(Metric):
         return ret
 
     @torch.inference_mode()
-    def _calculate(self, metric, input: Tensor, target: Tensor) -> flist | float:
+    def _calculate(self, metric, input: Tensor, target: Tensor, preprocess: bool = True) -> flist | float:
+        if preprocess:
+            input, target = self.preprocess(input, target, ignored_index=self.ignored_index)
         score = metric(input, target)
         if isinstance(score, Tensor):
             return score.item() if score.numel() == 1 else flist(score.tolist())
@@ -268,7 +279,7 @@ class Metrics(Metric):
         world_size = get_world_size()
         if world_size == 1:
             if isinstance(self._input, NestedTensor) and not self.return_nested:
-                return torch.cat(self._input.storage(), 0)
+                return self._input.concat
             return self._input
         if isinstance(self._input, Tensor):
             synced_tensor = [torch.zeros_like(self._input) for _ in range(world_size)]
@@ -281,9 +292,10 @@ class Metrics(Metric):
             try:
                 return torch.cat(synced_tensors, 0)
             except RuntimeError:
+                input = NestedTensor(synced_tensors)
                 if self.return_nested:
-                    return NestedTensor(synced_tensors)
-                return synced_tensors
+                    return input
+                return input.concat
         raise ValueError(f"Expected _input to be a Tensor or a NestedTensor, but got {type(self._input)}")
 
     @property
@@ -291,7 +303,7 @@ class Metrics(Metric):
         world_size = get_world_size()
         if world_size == 1:
             if isinstance(self._target, NestedTensor) and not self.return_nested:
-                return torch.cat(self._target.storage(), 0)
+                return self._target.concat
             return self._target
         if isinstance(self._target, Tensor):
             synced_tensor = [torch.zeros_like(self._target) for _ in range(world_size)]
@@ -304,9 +316,10 @@ class Metrics(Metric):
             try:
                 return torch.cat(synced_tensors, 0)
             except RuntimeError:
+                target = NestedTensor(synced_tensors)
                 if self.return_nested:
-                    return NestedTensor(synced_tensors)
-                return synced_tensors
+                    return target
+                return target.concat
         raise ValueError(f"Expected _target to be a Tensor or a NestedTensor, but got {type(self._target)}")
 
     @property
@@ -325,9 +338,10 @@ class Metrics(Metric):
         try:
             return torch.cat(self._inputs, 0)
         except RuntimeError:
+            inputs = NestedTensor(self._inputs)
             if self.return_nested:
-                return NestedTensor(self._inputs)
-            return self._inputs
+                return inputs
+            return inputs.concat
 
     @property
     def targets(self):
@@ -345,9 +359,10 @@ class Metrics(Metric):
         try:
             return torch.cat(self._targets, 0)
         except RuntimeError:
+            targets = NestedTensor(self._targets)
             if self.return_nested:
-                return NestedTensor(self._inputs)
-            return self._targets
+                return targets
+            return targets.concat
 
     def __repr__(self):
         keys = tuple(i for i in self.metrics.keys())

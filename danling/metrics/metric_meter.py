@@ -24,7 +24,7 @@ from torch import Tensor
 
 from ..tensors import NestedTensor
 from .average_meter import AverageMeter, AverageMeters, MultiTaskAverageMeters
-from .functional import preprocess
+from .preprocesses import preprocess as default_preprocess
 from .utils import MultiTaskDict
 
 
@@ -70,10 +70,14 @@ class MetricMeter(AverageMeter):
     """
 
     metric: Callable
+    preprocess: Callable
     ignored_index: Optional[int] = None
 
-    def __init__(self, metric: Callable, ignored_index: int | None = None) -> None:
+    def __init__(
+        self, metric: Callable, preprocess: Callable = default_preprocess, ignored_index: int | None = None
+    ) -> None:
         self.metric = metric
+        self.preprocess = preprocess
         self.ignored_index = ignored_index
         super().__init__()
 
@@ -100,7 +104,7 @@ class MetricMeter(AverageMeter):
             n: Number of values to be added.
         """
 
-        input, target = preprocess(input, target, ignored_index=self.ignored_index)
+        input, target = self.preprocess(input, target, ignored_index=self.ignored_index)
         super().update(self.metric(input, target).item(), n=len(input))
 
 
@@ -141,9 +145,13 @@ class MetricMeters(AverageMeters):
     TypeError: ...update() missing 1 required positional argument: 'target'
     """
 
+    preprocess: Callable
     ignored_index = None
 
-    def __init__(self, *args, ignored_index: int | None = None, **kwargs) -> None:
+    def __init__(
+        self, *args, preprocess: Callable = default_preprocess, ignored_index: int | None = None, **kwargs
+    ) -> None:
+        self.setattr("preprocess", preprocess)
         self.setattr("ignored_index", ignored_index)
         for meter in args:
             if callable(meter):
@@ -172,7 +180,7 @@ class MetricMeters(AverageMeters):
             target: Target values to compute the metrics.
         """
 
-        input, target = preprocess(input, target, ignored_index=self.ignored_index)
+        input, target = self.preprocess(input, target, ignored_index=self.ignored_index)
         for meter in self.values():
             meter.update(input, target)
 

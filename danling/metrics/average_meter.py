@@ -23,7 +23,9 @@ from typing import Any, Dict, Type
 from chanfig import FlatDict, NestedDict
 from torch import distributed as dist
 
-from .utils import MetricsDict, MultiTaskDict, get_world_size
+from danling.utils import get_world_size
+
+from .utils import MetricsDict, MultiTaskDict
 
 
 class AverageMeter:
