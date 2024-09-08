@@ -90,6 +90,28 @@ def auprc(
     raise ValueError("Could not infer the type of the task. Only one of `num_labels`, `num_classes` is allowed.")
 
 
+def f1_score(
+    input: Tensor | NestedTensor,
+    target: Tensor | NestedTensor,
+    weight: Tensor | None = None,
+    average: str | None = "macro",
+    num_labels: int | None = None,
+    num_classes: int | None = None,
+    task_weights: Tensor | None = None,
+    ignored_index: int | None | NULL = Null,
+    **kwargs,
+):
+    te.check()
+    if num_labels:
+        raise ValueError("f1 score is not supported for multilabel classification")
+    if ignored_index is Null:
+        ignored_index = -100 if num_classes else None
+    input, target = preprocess(input, target, ignored_index=ignored_index)
+    if num_classes is None:
+        return tef.binary_auroc(input=input, target=target, weight=weight, **kwargs)
+    return tef.multiclass_auroc(input=input, target=target, num_classes=num_classes, average=average, **kwargs)
+
+
 def accuracy(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,

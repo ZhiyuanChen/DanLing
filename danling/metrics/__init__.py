@@ -23,7 +23,7 @@ from .average_meter import AverageMeter, AverageMeters, MultiTaskAverageMeters
 from .metric_meter import MetricMeter, MetricMeters, MultiTaskMetricMeters
 
 with try_import() as lazy_import:
-    from .functional import accuracy, auprc, auroc, mcc, pearson, r2_score, rmse, spearman
+    from .functional import accuracy, auprc, auroc, f1_score, mcc, pearson, r2_score, rmse, spearman
     from .metrics import Metrics, MultiTaskMetrics
 
 __all__ = [
@@ -44,7 +44,7 @@ __all__ = [
 
 def binary_metrics(**kwargs):
     lazy_import.check()
-    return Metrics(auroc=auroc, auprc=auprc, acc=accuracy, mcc=mcc, **kwargs)
+    return Metrics(auroc=auroc, auprc=auprc, acc=accuracy, mcc=mcc, f1=f1_score, **kwargs)
 
 
 def multiclass_metrics(num_classes: int, **kwargs):
@@ -53,7 +53,8 @@ def multiclass_metrics(num_classes: int, **kwargs):
     p_auroc = partial(auroc, num_classes=num_classes)
     p_auprc = partial(auprc, num_classes=num_classes)
     p_acc = partial(accuracy, num_classes=num_classes)
-    return Metrics(auroc=p_auroc, auprc=p_auprc, acc=p_acc, mcc=p_mcc, **kwargs)
+    p_f1 = partial(f1_score, num_classes=num_classes)
+    return Metrics(auroc=p_auroc, auprc=p_auprc, acc=p_acc, mcc=p_mcc, f1=p_f1, **kwargs)
 
 
 def multilabel_metrics(num_labels: int, **kwargs):
