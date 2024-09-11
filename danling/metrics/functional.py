@@ -242,4 +242,6 @@ def preprocess(
         input, target = torch.cat(input.storage()), torch.cat(target.storage())
     if ignored_index is not None:
         input, target = input[target != ignored_index], target[target != ignored_index]
+    if input.ndim == target.ndim + 1 and input.size(-1) == 1:
+        input = input.squeeze(-1)
     return input, target

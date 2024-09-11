@@ -30,6 +30,7 @@ from torcheval.metrics import Metric
 
 from danling.tensors import NestedTensor
 
+from .metric_meter import MetricMeter, MetricMeters, MultiTaskMetricMeters
 from .utils import MultiTaskDict, flist, get_world_size
 
 try:
@@ -503,17 +504,15 @@ class MultiTaskMetrics(MultiTaskDict):
         for metric, value in values.items():
             if metric not in self:
                 raise ValueError(f"Metric {metric} not found in {self}")
-            if isinstance(self[metric], MultiTaskMetrics):
-                for name, met in self[metric].items():
-                    if name in value:
-                        val = value[name]
-                        if isinstance(value, Mapping):
-                            met.update(**val)
-                        elif isinstance(value, Sequence):
-                            met.update(*val)
-                        else:
-                            raise ValueError(f"Expected value to be a Mapping or Sequence, but got {type(value)}")
-            elif isinstance(self[metric], (Metrics, Metric)):
+            if isinstance(self[metric], (MultiTaskMetrics, MultiTaskMetricMeters)):
+                for met in self[metric].all_values():
+                    if isinstance(value, Mapping):
+                        met.update(**value)
+                    elif isinstance(value, Sequence):
+                        met.update(*value)
+                    else:
+                        raise ValueError(f"Expected value to be a Mapping or Sequence, but got {type(value)}")
+            elif isinstance(self[metric], (Metrics, Metric, MetricMeters, MetricMeter)):
                 if isinstance(value, Mapping):
                     self[metric].update(**value)
                 elif isinstance(value, Sequence):
@@ -531,6 +530,6 @@ class MultiTaskMetrics(MultiTaskDict):
         name: str,
         metric: Metrics | Metric,  # type: ignore[override]
     ) -> None:
-        if not isinstance(metric, (Metrics, Metric)):
+        if not isinstance(metric, (Metrics, Metric, MetricMeters, MetricMeter)):
             raise ValueError(f"Expected {metric} to be an instance of Metrics or Metric, but got {type(metric)}")
         super().set(name, metric)

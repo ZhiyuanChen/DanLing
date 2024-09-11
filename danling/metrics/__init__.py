@@ -44,7 +44,7 @@ __all__ = [
 
 def binary_metrics(**kwargs):
     lazy_import.check()
-    return Metrics(auroc=auroc, auprc=auprc, acc=accuracy, mcc=mcc, f1=f1_score, **kwargs)
+    return MetricMeters(auroc=auroc, auprc=auprc, acc=accuracy, mcc=mcc, f1=f1_score, **kwargs)
 
 
 def multiclass_metrics(num_classes: int, **kwargs):
@@ -54,7 +54,7 @@ def multiclass_metrics(num_classes: int, **kwargs):
     p_auprc = partial(auprc, num_classes=num_classes)
     p_acc = partial(accuracy, num_classes=num_classes)
     p_f1 = partial(f1_score, num_classes=num_classes)
-    return Metrics(auroc=p_auroc, auprc=p_auprc, acc=p_acc, mcc=p_mcc, f1=p_f1, **kwargs)
+    return MetricMeters(auroc=p_auroc, auprc=p_auprc, acc=p_acc, mcc=p_mcc, f1=p_f1, **kwargs)
 
 
 def multilabel_metrics(num_labels: int, **kwargs):
@@ -63,7 +63,7 @@ def multilabel_metrics(num_labels: int, **kwargs):
     p_auroc = partial(auroc, num_labels=num_labels)
     p_auprc = partial(auprc, num_labels=num_labels)
     p_acc = partial(accuracy, num_labels=num_labels)
-    return Metrics(auroc=p_auroc, auprc=p_auprc, acc=p_acc, mcc=p_mcc, **kwargs)
+    return MetricMeters(auroc=p_auroc, auprc=p_auprc, acc=p_acc, mcc=p_mcc, **kwargs)
 
 
 def regression_metrics(**kwargs):
