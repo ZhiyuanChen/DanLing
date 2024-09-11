@@ -18,7 +18,6 @@
 import os
 import random
 
-import pytest
 import torch
 from torch import distributed as dist
 from torch.multiprocessing import spawn
@@ -28,7 +27,6 @@ from torcheval.metrics.functional import binary_accuracy, binary_auprc, binary_a
 from danling import NestedTensor
 from danling.metrics import Metrics, regression_metrics
 from danling.metrics.functional import accuracy, auprc, auroc, pearson, rmse, spearman
-from danling.metrics.metrics import ScoreMetrics
 
 
 def demo_dict_metric_func(input, target):
@@ -52,23 +50,6 @@ class Test:
         metrics = Metrics()
         assert (metrics.inputs == torch.empty(0)).all()
         assert (metrics.targets == torch.empty(0)).all()
-
-    def test_score_metrics(self):
-        random.seed(0)
-        torch.random.manual_seed(0)
-        metrics = ScoreMetrics(auroc=auroc, auprc=auprc, acc=accuracy)
-        score_name = "auroc"
-        assert metrics.score_name == score_name
-        for _ in range(10):
-            pred = torch.randn(8).sigmoid()
-            target = torch.randint(0, 2, (8,))
-            metrics.update(pred, target)
-            assert metrics.batch_score == metrics.val[score_name] == metrics.get_score("batch")
-            assert metrics.average_score == metrics.avg[score_name] == metrics.get_score("average")
-        with pytest.raises(ValueError):
-            metrics.get_score("total")
-        with pytest.raises(ValueError):
-            metrics.score_name = "f1"
 
     def test_single_tensor_binary(self):
         random.seed(0)

@@ -17,13 +17,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any, Dict, Type
+from typing import Dict, Type
 
-from chanfig import FlatDict, NestedDict
+from chanfig import FlatDict
 from torch import distributed as dist
 
-from .utils import MetricsDict, MultiTaskDict, get_world_size
+from .utils import MetricsDict, get_world_size
 
 
 class AverageMeter:
@@ -40,7 +39,6 @@ class AverageMeter:
     See Also:
         [`MetricMeter`]: Average Meter with metric function built-in.
         [`AverageMeters`]: Manage multiple average meters in one object.
-        [`MultiTaskAverageMeters`]: Manage multiple average meters in one object with multi-task support.
 
     Examples:
         >>> meter = AverageMeter()
@@ -142,7 +140,6 @@ class AverageMeters(MetricsDict):
 
     See Also:
         [`AverageMeter`]: Computes and stores the average and current value.
-        [`MultiTaskAverageMeters`]: Manage multiple average meters in one object with multi-task support.
         [`MetricMeters`]: Manage multiple metric meters in one object.
 
     Examples:
@@ -204,83 +201,4 @@ class AverageMeters(MetricsDict):
     def set(self, name: str, meter: AverageMeter) -> None:  # pylint: disable=W0237
         if not isinstance(meter, AverageMeter):
             raise ValueError(f"Expected meter to be an instance of AverageMeter, but got {type(meter)}")
-        super().set(name, meter)
-
-
-class MultiTaskAverageMeters(MultiTaskDict):
-    r"""
-    Manages multiple average meters in one object with multi-task support.
-
-    See Also:
-        [`AverageMeter`]: Computes and stores the average and current value.
-        [`AverageMeters`]: Manage multiple average meters in one object.
-        [`MetricMeters`]: Manage multiple metric meters in one object.
-
-    Examples:
-        >>> meters = MultiTaskAverageMeters()
-        >>> meters.update({"loss": 0.6, "dataset1.cls.auroc": 0.7, "dataset1.reg.r2": 0.8, "dataset2.r2": 0.9})
-        >>> f"{meters:.4f}"
-        'loss: 0.6000 (0.6000)\ndataset1.cls.auroc: 0.7000 (0.7000)\ndataset1.reg.r2: 0.8000 (0.8000)\ndataset2.r2: 0.9000 (0.9000)'
-        >>> meters['loss'].update(0.9, n=1)
-        >>> f"{meters:.4f}"
-        'loss: 0.9000 (0.7500)\ndataset1.cls.auroc: 0.7000 (0.7000)\ndataset1.reg.r2: 0.8000 (0.8000)\ndataset2.r2: 0.9000 (0.9000)'
-        >>> meters.sum.dict()
-        {'loss': 1.5, 'dataset1': {'cls': {'auroc': 0.7}, 'reg': {'r2': 0.8}}, 'dataset2': {'r2': 0.9}}
-        >>> meters.count.dict()
-        {'loss': 2, 'dataset1': {'cls': {'auroc': 1}, 'reg': {'r2': 1}}, 'dataset2': {'r2': 1}}
-        >>> meters.reset()
-        >>> f"{meters:.4f}"
-        'loss: 0.0000 (nan)\ndataset1.cls.auroc: 0.0000 (nan)\ndataset1.reg.r2: 0.0000 (nan)\ndataset2.r2: 0.0000 (nan)'
-        >>> meters = MultiTaskAverageMeters(return_average=True)
-        >>> meters.update({"loss": 0.6, "dataset1.a.auroc": 0.7, "dataset1.b.auroc": 0.8, "dataset2.auroc": 0.9})
-        >>> f"{meters:.4f}"
-        'loss: 0.6000 (0.6000)\ndataset1.a.auroc: 0.7000 (0.7000)\ndataset1.b.auroc: 0.8000 (0.8000)\ndataset2.auroc: 0.9000 (0.9000)'
-        >>> meters.update({"loss": 0.9, "dataset1.a.auroc": 0.8, "dataset1.b.auroc": 0.9, "dataset2.auroc": 1.0})
-        >>> f"{meters:.4f}"
-        'loss: 0.9000 (0.7500)\ndataset1.a.auroc: 0.8000 (0.7500)\ndataset1.b.auroc: 0.9000 (0.8500)\ndataset2.auroc: 1.0000 (0.9500)'
-    """  # noqa: E501
-
-    @property
-    def sum(self) -> NestedDict[str, float]:
-        return NestedDict({key: meter.sum for key, meter in self.all_items()})
-
-    @property
-    def count(self) -> NestedDict[str, int]:
-        return NestedDict({key: meter.count for key, meter in self.all_items()})
-
-    def update(self, *args: Dict, **values: float) -> None:  # pylint: disable=W0237
-        r"""
-        Updates the average and current value in all meters.
-
-        Args:
-            values: Dict of values to be added to the average.
-            n: Number of values to be added.
-
-        Raises:
-            ValueError: If the value is not an instance of (int, float, Mapping).
-        """  # noqa: E501
-
-        if args:
-            if len(args) > 1:
-                raise ValueError("Expected only one positional argument, but got multiple.")
-            values = args[0].update(values) or args[0] if values else args[0]
-
-        for meter, value in values.items():
-            if not isinstance(value, (int, float, Mapping)):
-                raise ValueError(f"Expected values to be int, float, or a Mapping, but got {type(value)}")
-            self[meter].update(value)
-
-    # evil hack, as the default_factory must not be set to make `NestedDict` happy
-    # this have some side effects, it will break attribute style intermediate nested dict auto creation
-    # but everything has a price
-    def get(self, name: Any, default=None) -> Any:
-        if not name.startswith("_") and not name.endswith("_"):
-            return self.setdefault(name, AverageMeter())
-        return super().get(name, default)
-
-    def set(self, name: str, meter: AverageMeter | AverageMeters) -> None:  # pylint: disable=W0237
-        if not isinstance(meter, (AverageMeter, AverageMeters)):
-            raise ValueError(
-                f"Expected meter to be an instance of AverageMeter or AverageMeters, but got {type(meter)}"
-            )
         super().set(name, meter)

@@ -17,15 +17,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Any, Callable, Optional, Tuple
+from collections.abc import Sequence
+from typing import Callable, Optional
 
 from torch import Tensor
 
 from ..tensors import NestedTensor
-from .average_meter import AverageMeter, AverageMeters, MultiTaskAverageMeters
+from .average_meter import AverageMeter, AverageMeters
 from .functional import preprocess
-from .utils import MultiTaskDict
 
 
 class MetricMeter(AverageMeter):
@@ -186,86 +185,3 @@ class MetricMeters(AverageMeters):
     def __repr__(self):
         keys = tuple(i for i in self.keys())
         return f"{self.__class__.__name__}{keys}"
-
-
-class MultiTaskMetricMeters(MultiTaskAverageMeters):
-    r"""
-    Examples:
-        >>> from danling.metrics.functional import accuracy
-        >>> metrics = MultiTaskMetricMeters()
-        >>> metrics.dataset1.cls = MetricMeters(acc=accuracy)
-        >>> metrics.dataset2 = MetricMeters(acc=accuracy)
-        >>> metrics
-        MultiTaskMetricMeters(<class 'danling.metrics.metric_meter.MultiTaskMetricMeters'>,
-          ('dataset1'): MultiTaskMetricMeters(<class 'danling.metrics.metric_meter.MultiTaskMetricMeters'>,
-            ('cls'): MetricMeters('acc',)
-          )
-          ('dataset2'): MetricMeters('acc',)
-        )
-        >>> metrics.update({"dataset1.cls": {"input": [0.2, 0.4, 0.5, 0.7], "target": [0, 1, 0, 1]}, "dataset2": ([0.1, 0.4, 0.6, 0.8], [1, 0, 0, 0])})
-        >>> f"{metrics:.4f}"
-        'dataset1.cls: acc: 0.5000 (0.5000)\ndataset2: acc: 0.2500 (0.2500)'
-        >>> metrics.setattr("return_average", True)
-        >>> metrics.update({"dataset1.cls": [[0.1, 0.4, 0.6, 0.8], [0, 0, 1, 0]], "dataset2": {"input": [0.2, 0.3, 0.5, 0.7], "target": [0, 0, 0, 1]}})
-        >>> f"{metrics:.4f}"
-        'dataset1.cls: acc: 0.7500 (0.6250)\ndataset2: acc: 0.7500 (0.5000)'
-        >>> metrics.update(dict(loss=""))  # doctest: +ELLIPSIS
-        Traceback (most recent call last):
-        ValueError: Metric loss not found in ...
-    """  # noqa: E501
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, default_factory=MultiTaskMetricMeters, **kwargs)
-
-    def update(  # type: ignore[override] # pylint: disable=W0221
-        self,
-        values: Mapping[str, Mapping[str, Tuple[Tensor | NestedTensor | Sequence, Tensor | NestedTensor | Sequence]]],
-    ) -> None:
-        r"""
-        Updates the average and current value in all meters.
-
-        Args:
-            input: Input values to compute the metrics.
-            target: Target values to compute the metrics.
-        """
-
-        for metric, value in values.items():
-            if metric not in self:
-                raise ValueError(f"Metric {metric} not found in {self}")
-            if isinstance(self[metric], MultiTaskMetricMeters):
-                for met in self[metric].all_values():
-                    if isinstance(value, Mapping):
-                        met.update(**value)
-                    elif isinstance(value, Sequence):
-                        met.update(*value)
-                    else:
-                        raise ValueError(f"Expected value to be a Mapping or Sequence, but got {type(value)}")
-            elif isinstance(self[metric], (MetricMeters, MetricMeter)):
-                if isinstance(value, Mapping):
-                    self[metric].update(**value)
-                elif isinstance(value, Sequence):
-                    self[metric].update(*value)
-                else:
-                    raise ValueError(f"Expected value to be a Mapping or Sequence, but got {type(value)}")
-            else:
-                raise ValueError(
-                    f"Expected {metric} to be an instance of MultiTaskMetricMeters, MetricMeters, "
-                    f"or MetricMeter, but got {type(self[metric])}"
-                )
-
-    # MultiTaskAverageMeters.get is hacked
-    def get(self, name: Any, default=None) -> Any:
-        return MultiTaskDict.get(self, name, default)
-
-    def set(  # pylint: disable=W0237
-        self,
-        name: str,
-        metric: MetricMeter | MetricMeters | Callable,  # type: ignore[override]
-    ) -> None:
-        if callable(metric):
-            metric = MetricMeter(metric)
-        if not isinstance(metric, (MetricMeter, MetricMeters)):
-            raise ValueError(
-                f"Expected {metric} to be an instance of MetricMeter or MetricMeters, but got {type(metric)}"
-            )
-        super().set(name, metric)

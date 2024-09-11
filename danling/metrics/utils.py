@@ -74,7 +74,7 @@ class MetricsDict(DefaultDict):
 
 class MultiTaskDict(NestedDict):
     r"""
-    A `MultiTaskDict` for better multi-task support For `MultiTaskAverageMeters` and `MultiTaskMetrics`.
+    A `MultiTaskDict` for better multi-task support for `MultiTaskMetrics`.
     """
 
     return_average = False
