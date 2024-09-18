@@ -220,6 +220,12 @@ class NestedTensor:
             raise ValueError("tensors must be a non-empty Iterable.")
         if not isinstance(tensors[0], Tensor):
             tensors = [tensor(t) for t in tensors]
+        # if drop_last=False, the last element is likely not a NestedTensor and has an extra batch dimension
+        ndims = {t.ndim for t in tensors[:-1]}
+        if len(ndims) == 1:
+            (ndim,) = ndims
+            if tensors[-1].ndim == ndim + 1 and tensors[-1].size(0) == 1:
+                tensors[-1] = tensors[-1].squeeze(0)
         self.__storage = tensors
 
     def storage(self):
@@ -289,11 +295,9 @@ class NestedTensor:
         elem = self._storage[0]
         if elem.shape == shape:
             return torch.cat(self._storage, dim=1 if self.batch_first else 0)
-
         static_dims = set(range(len(shape)))
         for i, s in enumerate(shape):
-
-            if not all(t.shape[i] == s for t in self._storage):
+            if not all(t.size(i) == s for t in self._storage):
                 shape[i] = -1
                 static_dims.remove(i)
         target_shape = [-1] + [s for s in shape if s != -1]
