@@ -177,7 +177,7 @@ class NestedTensor:
                 [4, 5, 0]]), tensor([[ True,  True,  True],
                 [ True,  True, False]]))
         >>> nested_tensor[1]
-        (tensor([4, 5]), tensor([True, True]))
+        tensor([4, 5])
         >>> nested_tensor[:, 1:]
         NestedTensor([[2, 3],
                 [5, 0]])
@@ -219,7 +219,7 @@ class NestedTensor:
         if len(tensors) == 0:
             raise ValueError("tensors must be a non-empty Iterable.")
         if not isinstance(tensors[0], Tensor):
-            tensors = [tensor(t) for t in tensors]
+            tensors = [torch.tensor(t) for t in tensors]
         # if drop_last=False, the last element is likely not a NestedTensor and has an extra batch dimension
         ndims = {t.ndim for t in tensors[:-1]}
         if len(ndims) == 1:
@@ -556,14 +556,20 @@ class NestedTensor:
             return func(*args, **kwargs)
         return NestedTensorFunc[func](*args, **kwargs)
 
-    def __getitem__(self, index: int | slice | tuple) -> tuple[Tensor, Tensor] | NestedTensor:
+    def __getitem__(self, index: int | slice | list | tuple) -> Tensor | tuple[Tensor, Tensor] | NestedTensor:
+        if isinstance(index, int):
+            return self._storage[index]
+        if isinstance(index, (slice, list)):
+            storage = tuple(self._storage[index] if isinstance(index, slice) else [self._storage[i] for i in index])
+            pad = pad_tensor(
+                storage, size=self._size(storage), batch_first=self.batch_first, padding_value=float(self.padding_value)
+            )
+            mask = mask_tensor(
+                storage, size=self._size(storage), batch_first=self.batch_first, mask_value=self.mask_value
+            )
+            return pad, mask
         if isinstance(index, tuple):
             return NestedTensor([t[index[0]][index[1:]] for t in self._storage])
-        if isinstance(index, (int, slice)):
-            ret = self._storage[index]
-            if isinstance(ret, Tensor):
-                return ret, torch.ones_like(ret, dtype=torch.bool)
-            return self.tensor, self.mask
         raise ValueError(f"Unsupported index type {type(index)}")
 
     def __getattr__(self, name: str) -> Any:

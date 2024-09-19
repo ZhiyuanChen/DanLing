@@ -126,7 +126,7 @@ class Metrics(Metric):
         >>> metrics = Metrics(auroc=auroc, auprc=auprc, ignored_index=-100)
         >>> metrics.update([[0.1, 0.4, 0.6, 0.8], [0.1, 0.4, 0.6]], [[0, -100, 1, 0], [0, -100, 1]])
         >>> metrics.input, metrics.target
-        (PNTensor([0.1000, 0.6000, 0.8000, 0.1000, 0.6000]), PNTensor([0, 1, 0, 0, 1]))
+        (tensor([0.1000, 0.6000, 0.8000, 0.1000, 0.6000]), tensor([0, 1, 0, 0, 1]))
     """
 
     metrics: FlatDict[str, Callable]
