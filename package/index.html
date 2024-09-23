@@ -40,7 +40,7 @@
         <link rel="alternate" type="application/rss+xml" title="RSS feed of updated content" href="../feed_rss_updated.xml">
       
       <link rel="icon" href="../assets/images/logo.ico">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.5.35">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.5.36">
     
     
       
@@ -48,7 +48,7 @@
       
     
     
-      <link rel="stylesheet" href="../assets/stylesheets/main.35f28582.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.06209087.min.css">
       
         
         <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
@@ -1614,9 +1614,9 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#danling.TorchRunner.inference" class="md-nav__link">
+  <a href="#danling.TorchRunner.infer" class="md-nav__link">
     <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;inference
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;infer
     </span>
   </a>
   
@@ -2893,9 +2893,9 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#danling.TorchRunner.inference" class="md-nav__link">
+  <a href="#danling.TorchRunner.infer" class="md-nav__link">
     <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;inference
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;infer
     </span>
   </a>
   
@@ -14097,7 +14097,7 @@ distributed training experience.</p>
 <a id="__codelineno-0-269" name="__codelineno-0-269"></a>        <span class="k">return</span> <span class="n">pred</span><span class="p">,</span> <span class="n">loss</span>
 <a id="__codelineno-0-270" name="__codelineno-0-270"></a>
 <a id="__codelineno-0-271" name="__codelineno-0-271"></a>    <span class="nd">@torch</span><span class="o">.</span><span class="n">inference_mode</span><span class="p">()</span>
-<a id="__codelineno-0-272" name="__codelineno-0-272"></a>    <span class="k">def</span> <span class="nf">inference</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">split</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;inf&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">:</span>
+<a id="__codelineno-0-272" name="__codelineno-0-272"></a>    <span class="k">def</span> <span class="nf">infer</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">split</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;inf&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">:</span>
 <a id="__codelineno-0-273" name="__codelineno-0-273"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
 <a id="__codelineno-0-274" name="__codelineno-0-274"></a><span class="sd">        Perform inference on `split`.</span>
 <a id="__codelineno-0-275" name="__codelineno-0-275"></a>
@@ -15063,12 +15063,12 @@ Defaults to <code>["eval"]</code>.</p>
 <div class="doc doc-object doc-function">
 
 
-<h4 id="danling.TorchRunner.inference" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">inference</span>
+<h4 id="danling.TorchRunner.infer" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">infer</span>
 
 
-<a href="#danling.TorchRunner.inference" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="doc-signature highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-1">1</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1"></a><span class="nf">inference</span><span class="p">(</span><span class="n">split</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></span> <span class="o">=</span> <span class="s1">&#39;inf&#39;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#list">list</a></span>
+<a href="#danling.TorchRunner.infer" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="doc-signature highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-1">1</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1"></a><span class="nf">infer</span><span class="p">(</span><span class="n">split</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></span> <span class="o">=</span> <span class="s1">&#39;inf&#39;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#list">list</a></span>
 </code></pre></div></td></tr></table></div>
 
     <div class="doc doc-contents ">
@@ -15136,7 +15136,7 @@ Defaults to <code>["eval"]</code>.</p>
 <span class="normal"><a href="#__codelineno-0-293">293</a></span>
 <span class="normal"><a href="#__codelineno-0-294">294</a></span>
 <span class="normal"><a href="#__codelineno-0-295">295</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-271" name="__codelineno-0-271"></a><span class="nd">@torch</span><span class="o">.</span><span class="n">inference_mode</span><span class="p">()</span>
-<a id="__codelineno-0-272" name="__codelineno-0-272"></a><span class="k">def</span> <span class="nf">inference</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">split</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;inf&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">:</span>
+<a id="__codelineno-0-272" name="__codelineno-0-272"></a><span class="k">def</span> <span class="nf">infer</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">split</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;inf&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">:</span>
 <a id="__codelineno-0-273" name="__codelineno-0-273"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
 <a id="__codelineno-0-274" name="__codelineno-0-274"></a><span class="sd">    Perform inference on `split`.</span>
 <a id="__codelineno-0-275" name="__codelineno-0-275"></a>
