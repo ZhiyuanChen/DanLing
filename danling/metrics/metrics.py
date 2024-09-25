@@ -200,14 +200,14 @@ class Metrics(Metric):
         # update internal state
         if isinstance(input, NestedTensor):
             self._input = input
-            self._input_buffer.extend(input.cpu().storage())  # type: ignore[union-attr]
+            self._input_buffer.extend(input.detach().cpu().storage())  # type: ignore[union-attr]
             self._target = target
-            self._target_buffer.extend(target.cpu().storage())  # type: ignore[union-attr]
+            self._target_buffer.extend(target.detach().cpu().storage())  # type: ignore[union-attr]
         else:
             self._input = input
-            self._input_buffer.append(input.cpu())  # type: ignore[union-attr]
+            self._input_buffer.append(input.detach().cpu())  # type: ignore[union-attr]
             self._target = target
-            self._target_buffer.append(target.cpu())  # type: ignore[union-attr]
+            self._target_buffer.append(target.detach().cpu())  # type: ignore[union-attr]
 
     def compute(self) -> NestedDict[str, float | flist]:
         return self.calculate(self.inputs.to(self.device), self.targets.to(self.device))
