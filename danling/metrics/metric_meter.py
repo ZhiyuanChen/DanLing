@@ -64,7 +64,7 @@ class MetricMeter(AverageMeter):
         10
         >>> meter.reset()
         >>> meter.val
-        0
+        0.0
         >>> meter.avg
         nan
     """
@@ -81,16 +81,6 @@ class MetricMeter(AverageMeter):
         self.ignored_index = ignored_index
         super().__init__()
 
-    def reset(self) -> None:
-        r"""
-        Resets the meter.
-        """
-
-        self.val = 0
-        self.n = 1
-        self.sum = 0
-        self.count = 0
-
     def update(  # type: ignore[override] # pylint: disable=W0237
         self,
         input: Tensor | NestedTensor | Sequence,  # pylint: disable=W0622
@@ -103,9 +93,9 @@ class MetricMeter(AverageMeter):
             value: Value to be added to the average.
             n: Number of values to be added.
         """
-
         input, target = self.preprocess(input, target, ignored_index=self.ignored_index)
-        super().update(self.metric(input, target).item(), n=len(input))
+        n = len(input)
+        super().update(self.metric(input, target).item() * n, n=n)
 
 
 class MetricMeters(AverageMeters):
@@ -227,7 +217,7 @@ class MultiTaskMetricMeters(MultiTaskAverageMeters):
 
     def update(  # type: ignore[override] # pylint: disable=W0221
         self,
-        values: Mapping[str, Mapping[str, Tuple[Tensor | NestedTensor | Sequence, Tensor | NestedTensor | Sequence]]],
+        values: Mapping[str, Tuple[Tensor | NestedTensor | Sequence, Tensor | NestedTensor | Sequence]],
     ) -> None:
         r"""
         Updates the average and current value in all meters.
