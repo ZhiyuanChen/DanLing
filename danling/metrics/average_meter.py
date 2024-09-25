@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Dict, Type
 
+import torch
 from chanfig import FlatDict, NestedDict
 from torch import distributed as dist
 
@@ -62,12 +63,12 @@ class AverageMeter:
         2
         >>> meter.reset()
         >>> meter.val
-        0
+        0.0
         >>> meter.avg
         nan
     """
 
-    val: float = 0
+    v: float = 0
     n: float = 1
     sum: float = 0
     count: float = 0
@@ -80,7 +81,7 @@ class AverageMeter:
         Resets the meter.
         """
 
-        self.val = 0
+        self.v = 0
         self.n = 1
         self.sum = 0
         self.count = 0
@@ -94,37 +95,39 @@ class AverageMeter:
             n: Number of values to be added.
         """
 
-        self.val = value
+        self.v = value
         self.n = n
-        self.sum += value * n
+        self.sum += value
         self.count += n
 
     def value(self):
-        return self.val
+        return self.v / self.n if self.n != 0 else float("nan")
 
     def batch(self):
         world_size = get_world_size()
-        if world_size == 1:
-            return self.val / self.n if self.n != 0 else float("nan")
-        synced_tuple = [None for _ in range(world_size)]
-        dist.all_gather_object(synced_tuple, (self.val * self.n, self.n))
-        val, n = zip(*synced_tuple)
-        count = sum(n)
+        if world_size <= 1:
+            return self.value()
+        synced_tensor = torch.tensor([self.v * self.n, self.n], dtype=torch.float64).cuda()
+        dist.all_reduce(synced_tensor)
+        val, count = synced_tensor
         if count == 0:
             return float("nan")
-        return sum(val) / count
+        return (val / count).item()
 
     def average(self):
         world_size = get_world_size()
-        if world_size == 1:
+        if world_size <= 1:
             return self.sum / self.count if self.count != 0 else float("nan")
-        synced_tuple = [None for _ in range(world_size)]
-        dist.all_gather_object(synced_tuple, (self.sum, self.count))
-        val, n = zip(*synced_tuple)
-        count = sum(n)
+        synced_tensor = torch.tensor([self.sum, self.count], dtype=torch.float64).cuda()
+        dist.all_reduce(synced_tensor)
+        val, count = synced_tensor
         if count == 0:
             return float("nan")
-        return sum(val) / count
+        return (val / count).item()
+
+    @property
+    def val(self):
+        return self.value()
 
     @property
     def bat(self):
