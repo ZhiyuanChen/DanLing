@@ -256,24 +256,30 @@ class Test:
     def test_0dim(self):
         length = 5
         nested_tensor = NestedTensor(range(length))
+        tensor, mask = nested_tensor.tensor_mask
         assert len(nested_tensor) == length
         assert nested_tensor == torch.arange(length)
+        assert (tensor == torch.arange(length)).all()
         assert (nested_tensor.tensor == torch.arange(length)).all()
+        assert (mask == torch.ones(length)).all()
         assert (nested_tensor.mask == torch.ones(length)).all()
 
     def test_1dim(self):
+        torch.random.manual_seed(self.seed)
         lengths = [2, 3, 5, 7]
         additional_length = 11
         channels = 8
         nested_tensor = NestedTensor(torch.randn(length, channels) for length in lengths)
-        assert nested_tensor.tensor.shape == torch.Size((len(lengths), max(lengths), channels))
-        assert nested_tensor.mask.shape == torch.Size((len(lengths), max(lengths)))
-        assert torch.sum(nested_tensor @ nested_tensor.T - nested_tensor.tensor @ nested_tensor.T) < self.epsilon
+        tensor, mask = nested_tensor.tensor_mask
+        assert tensor.shape == nested_tensor.tensor.shape == torch.Size((len(lengths), max(lengths), channels))
+        assert mask.shape == nested_tensor.mask.shape == torch.Size((len(lengths), max(lengths)))
+        assert torch.sum(tensor @ nested_tensor.T - nested_tensor.tensor @ nested_tensor.T) < self.epsilon
         lengths.append(additional_length)
         nested_tensor.storage().append(torch.randn(additional_length, channels))
+        tensor, mask = nested_tensor.tensor_mask
         assert nested_tensor.tensor.shape == torch.Size((len(lengths), max(lengths), channels))
         assert nested_tensor.mask.shape == torch.Size((len(lengths), max(lengths)))
-        assert torch.sum(nested_tensor.tensor @ nested_tensor.T - nested_tensor @ nested_tensor.T) < self.epsilon
+        assert torch.sum(nested_tensor.tensor @ nested_tensor.T - tensor @ nested_tensor.T) < self.epsilon
 
     def test_torch_func(self):
         a = self.nested_tensor.clone()

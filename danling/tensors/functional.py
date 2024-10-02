@@ -29,6 +29,7 @@ def tensor_mask(
     batch_first: bool = True,
     padding_value: float = 0.0,
     mask_value: bool = False,
+    squeeze_channel: bool = True,
 ) -> Tuple[Tensor, Tensor]:
     r"""
     Build a padded tensor and corresponding tensor mask with a sequence of tensors and desired size.
@@ -42,6 +43,7 @@ def tensor_mask(
             Defaults to `0.0`.
         mask_value: mask value in the mask tensor.
             Defaults to `False`.
+        squeeze_channel: whether to squeeze the channel dimension if it is 1.
 
     Returns:
         (tuple[Tensor, Tensor]): padded tensor and corresponding tensor mask
@@ -58,12 +60,16 @@ def tensor_mask(
     """
 
     tensor = torch.full(size, fill_value=padding_value, dtype=tensors[0].dtype, device=tensors[0].device)
+    if squeeze_channel and tensors[0].ndim > 1 and len({t.size(-1) for t in tensors}) == 1:
+        size = size[:-1]
     mask = torch.full(size, fill_value=mask_value, dtype=torch.bool, device=tensors[0].device)
     for i, t in enumerate(tensors):
         tensor[i][tuple(slice(0, t.shape[dim]) for dim in range(len(size) - 1))] = t  # type: ignore
         mask[i][tuple(slice(0, t.shape[dim]) for dim in range(len(size) - 1))] = not mask_value
     if not batch_first:
         tensor, mask = tensor.transpose(0, 1), mask.transpose(0, 1)
+    if squeeze_channel and mask.size(-1) == 1:
+        mask = mask.squeeze(-1)
     return tensor, mask
 
 
@@ -91,7 +97,14 @@ def pad_tensor(tensors: Sequence, size: torch.Size, *, batch_first: bool = True,
     return ret
 
 
-def mask_tensor(tensors: Sequence, size: torch.Size, *, batch_first: bool = True, mask_value: bool = False) -> Tensor:
+def mask_tensor(
+    tensors: Sequence,
+    size: torch.Size,
+    *,
+    batch_first: bool = True,
+    mask_value: bool = False,
+    squeeze_channel: bool = True,
+) -> Tensor:
     r"""
     Build a tensor mask with a sequence of tensors and desired size.
 
@@ -102,11 +115,14 @@ def mask_tensor(tensors: Sequence, size: torch.Size, *, batch_first: bool = True
             Defaults to `True`.
         mask_value: mask value in the mask tensor.
             Defaults to `False`.
+        squeeze_channel: whether to squeeze the channel dimension if it is 1.
 
     Returns:
         (Tensor): tensor mask
     """
 
+    if squeeze_channel and tensors[0].ndim > 1 and len({t.size(-1) for t in tensors}) == 1:
+        size = size[:-1]
     ret = torch.full(size, fill_value=mask_value, dtype=torch.bool, device=tensors[0].device)
     for i, t in enumerate(tensors):
         ret[i][tuple(slice(0, t.shape[dim]) for dim in range(len(size) - 1))] = not mask_value

@@ -18,14 +18,15 @@
 # pylint: disable=protected-access
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable, Mapping, Sequence, SupportsFloat
+from collections.abc import Mapping, Sequence
+from typing import Any, Callable, Iterable, SupportsFloat, Tuple
 
 import torch
 from torch import Tensor
 from torch.utils.data._utils.collate import default_collate_fn_map
 
 from ..utils import method_cache
-from .functional import mask_tensor, pad_tensor
+from .functional import mask_tensor, pad_tensor, tensor_mask
 from .utils import TorchFuncRegistry
 
 
@@ -230,6 +231,24 @@ class NestedTensor:
 
     def storage(self):
         return self._storage
+
+    @property
+    def tensor_mask(self) -> Tuple[Tensor, Tensor]:
+        r"""
+        Return a tuple of padded tensor and mask tensor.
+
+        Returns:
+            (torch.Tensor):
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.tensor_mask
+            (tensor([[1, 2, 3],
+                    [4, 5, 0]]), tensor([[ True,  True,  True],
+                    [ True,  True, False]]))
+        """
+
+        return self._tensor_mask(tuple(self._storage), self.batch_first, self.padding_value, self.mask_value)
 
     @property
     def tensor(self) -> Tensor:
@@ -1023,6 +1042,20 @@ class NestedTensor:
         return self
 
     @method_cache(maxsize=1)
+    def _tensor_mask(self, storage: tuple, batch_first: bool, padding_value: SupportsFloat, mask_value: bool) -> Tensor:
+        if storage[0].dim() == 0:
+            return torch.stack(storage, dim=0), torch.full(
+                (len(storage),), not mask_value, dtype=torch.bool, device=self.device
+            )
+        return tensor_mask(
+            storage,
+            size=self.size(),
+            batch_first=batch_first,
+            padding_value=float(padding_value),
+            mask_value=mask_value,
+        )
+
+    @method_cache(maxsize=1)
     def _tensor(self, storage: tuple, batch_first: bool, padding_value: SupportsFloat) -> Tensor:
         if storage[0].dim() == 0:
             return torch.stack(storage, dim=0)
@@ -1032,11 +1065,7 @@ class NestedTensor:
     def _mask(self, storage: tuple, batch_first: bool, mask_value: bool) -> Tensor:
         if storage[0].dim() == 0:
             return torch.full((len(storage),), not mask_value, dtype=torch.bool, device=self.device)
-        size = self.size()
-        # ignore channel dimension
-        if storage[0].dim() > 1 and len({t.size(-1) for t in storage}) == 1:
-            size = size[:-1]  # type: ignore
-        return mask_tensor(storage, size=size, batch_first=batch_first, mask_value=mask_value)
+        return mask_tensor(storage, size=self.size(), batch_first=batch_first, mask_value=mask_value)
 
     @method_cache(maxsize=1)
     def _device(self, storage) -> torch.device:
