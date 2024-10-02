@@ -27,6 +27,7 @@ with try_import() as lazy_import:
     from .functional import accuracy, auprc, auroc, f1_score, mcc, pearson, r2_score, rmse, spearman
     from .metrics import Metrics, MultiTaskMetrics
 
+
 __all__ = [
     "Metrics",
     "MultiTaskMetrics",

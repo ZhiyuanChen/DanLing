@@ -213,8 +213,8 @@ class TestMetricsSingle:
             for metric in metric_map.values():
                 metric.update(pred.view(-1, num_outputs), target.view(-1, num_outputs))
             value, average = metrics.value(), metrics.average()
-            assert (pred_nt == metrics._input).all()
-            assert (target_nt == metrics._target).all()
+            assert (pred_nt.concat == metrics.input).all()
+            assert (target_nt.concat == metrics.target).all()
             pred = torch.cat(pred_list)
             target = torch.cat(target_list)
             for key, func in function_map.items():
@@ -282,13 +282,13 @@ class TestMetricsSingle:
             merge_metrics.update(pred_nt, target_nt)
             for metric in metric_map.values():
                 metric.update(pred, target)
-            value, batch, average = metrics.value(), metrics.batch(), metrics.average()
-            assert (pred_nt == metrics._input).all()
-            assert (target_nt == metrics._target).all()
+            value, average = metrics.value(), metrics.average()
+            assert (pred_nt.concat == metrics.input).all()
+            assert (target_nt.concat == metrics.target).all()
             pred = torch.cat(pred_list)
             target = torch.cat(target_list)
             for key, func in function_map.items():
-                assert batch[key] - func(pred, target) < self.epsilon
+                assert value[key] - func(pred, target) < self.epsilon
             for key, metric in metric_map.items():
                 assert average[key] - metric.compute() < self.epsilon
         assert (torch.cat(preds) == metrics.inputs).all()
@@ -352,8 +352,8 @@ class TestMetricsSingle:
             for metric in metric_map.values():
                 metric.update(pred, target)
             value, average = metrics.value(), metrics.average()
-            assert (pred_nt == metrics._input).all()
-            assert (target_nt == metrics._target).all()
+            assert (pred_nt.concat == metrics.input).all()
+            assert (target_nt.concat == metrics.target).all()
             pred = torch.cat(pred_list)
             target = torch.cat(target_list)
             for key, func in function_map.items():
@@ -418,8 +418,8 @@ class TestMetricsSingle:
             for metric in metric_map.values():
                 metric.update(pred, target)
             value, average = metrics.value(), metrics.average()
-            assert (pred_nt == metrics._input).all()
-            assert (target_nt == metrics._target).all()
+            assert (pred_nt.concat == metrics.input).all()
+            assert (target_nt.concat == metrics.target).all()
             pred = torch.cat(pred_list)
             target = torch.cat(target_list)
             for key, func in function_map.items():
@@ -455,18 +455,18 @@ class TestMetricsDistributed:
             metrics.update(pred, target)
             assert (pred == metrics.input[length * rank : length * (rank + 1)]).all()  # noqa: E203
             assert (target == metrics.target[length * rank : length * (rank + 1)]).all()  # noqa: E203
-            value, batch, average = metrics.value(), metrics.batch(), metrics.average()
+            value, average = metrics.value(), metrics.average()
+            pred = torch.cat(self._gather_tensor([pred], world_size))
+            target = torch.cat(self._gather_tensor([target], world_size))
             for key, func in function_map.items():
                 assert value[key] - func(pred, target) < self.epsilon
-            pred = torch.cat(self._gather_tensors([pred], world_size))
-            target = torch.cat(self._gather_tensors([target], world_size))
-            for key, func in function_map.items():
-                assert batch[key] - func(pred, target) < self.epsilon
+            # for key, func in function_map.items():
+            #     assert batch[key] - func(pred, target) < self.epsilon
             for key, metric in metric_map.items():
                 metric.update(pred, target)
                 assert average[key] - metric.compute() < self.epsilon
-        pred = torch.cat(self._all_gather(preds, world_size))
-        target = torch.cat(self._all_gather(targets, world_size))
+        pred = torch.cat(self._gather_object(preds, world_size))
+        target = torch.cat(self._gather_object(targets, world_size))
         average = metrics.average()
         for key, func in function_map.items():
             assert average[key] - func(pred, target) < self.epsilon
@@ -498,20 +498,20 @@ class TestMetricsDistributed:
             pred_nt, target_nt = NestedTensor(pred_list), NestedTensor(target_list)
             pred, target = torch.cat(pred_list), torch.cat(target_list)
             metrics.update(pred_nt, target_nt)
-            assert (pred_nt == metrics._input).all()
-            assert (target_nt == metrics._target).all()
-            value, batch, average = metrics.value(), metrics.batch(), metrics.average()
+            value, average = metrics.value(), metrics.average()
+            pred = torch.cat(self._gather_object(pred_list, world_size))
+            target = torch.cat(self._gather_object(target_list, world_size))
+            assert (pred == metrics.input).all()
+            assert (target == metrics.target).all()
             for key, func in function_map.items():
                 assert value[key] - func(pred, target) < self.epsilon
-            pred = torch.cat(self._all_gather(pred_list, world_size))
-            target = torch.cat(self._all_gather(target_list, world_size))
-            for key, func in function_map.items():
-                assert batch[key] - func(pred, target) < self.epsilon
+            # for key, func in function_map.items():
+            #     assert batch[key] - func(pred, target) < self.epsilon
             for key, metric in metric_map.items():
                 metric.update(pred, target)
                 assert average[key] - metric.compute() < self.epsilon
-        pred = torch.cat(self._all_gather(preds, world_size))
-        target = torch.cat(self._all_gather(targets, world_size))
+        pred = torch.cat(self._gather_object(preds, world_size))
+        target = torch.cat(self._gather_object(targets, world_size))
         average = metrics.average()
         for key, func in function_map.items():
             assert average[key] - func(pred, target) < self.epsilon
@@ -545,20 +545,20 @@ class TestMetricsDistributed:
             pred_nt, target_nt = NestedTensor(pred_list), NestedTensor(target_list)
             pred, target = torch.cat(pred_list), torch.cat(target_list)
             metrics.update(pred_nt, target_nt)
-            assert (pred_nt == metrics._input).all()
-            assert (target_nt == metrics._target).all()
-            value, batch, average = metrics.value(), metrics.batch(), metrics.average()
+            value, average = metrics.value(), metrics.average()
+            pred = torch.cat(self._gather_object(pred_list, world_size))
+            target = torch.cat(self._gather_object(target_list, world_size))
+            assert (pred == metrics.input).all()
+            assert (target == metrics.target).all()
             for key, func in function_map.items():
                 assert value[key] - func(pred, target) < self.epsilon
-            pred = torch.cat(self._all_gather(pred_list, world_size))
-            target = torch.cat(self._all_gather(target_list, world_size))
-            for key, func in function_map.items():
-                assert batch[key] - func(pred, target) < self.epsilon
+            # for key, func in function_map.items():
+            #     assert batch[key] - func(pred, target) < self.epsilon
             for key, metric in metric_map.items():
                 metric.update(pred, target)
                 assert average[key] - metric.compute() < self.epsilon
-        pred = torch.cat(self._all_gather(preds, world_size))
-        target = torch.cat(self._all_gather(targets, world_size))
+        pred = torch.cat(self._gather_object(preds, world_size))
+        target = torch.cat(self._gather_object(targets, world_size))
         average = metrics.average()
         for key, func in function_map.items():
             assert average[key] - func(pred, target) < self.epsilon
@@ -591,20 +591,20 @@ class TestMetricsDistributed:
             pred_nt, target_nt = NestedTensor(pred_list), NestedTensor(target_list)
             pred, target = torch.cat(pred_list), torch.cat(target_list)
             metrics.update(pred_nt, target_nt)
-            assert (pred_nt == metrics._input).all()
-            assert (target_nt == metrics._target).all()
-            value, batch, average = metrics.value(), metrics.batch(), metrics.average()
+            value, average = metrics.value(), metrics.average()
+            pred = torch.cat(self._gather_object(pred_list, world_size))
+            target = torch.cat(self._gather_object(target_list, world_size))
+            assert (pred == metrics.input).all()
+            assert (target == metrics.target).all()
             for key, func in function_map.items():
                 assert value[key] - func(pred, target).mean() < self.epsilon
-            pred = torch.cat(self._all_gather(pred_list, world_size))
-            target = torch.cat(self._all_gather(target_list, world_size))
-            for key, func in function_map.items():
-                assert batch[key] - func(pred, target).mean() < self.epsilon
+            # for key, func in function_map.items():
+            #     assert batch[key] - func(pred, target).mean() < self.epsilon
             for key, metric in metric_map.items():
                 metric.update(pred.view(-1, num_outputs), target.view(-1, num_outputs))
                 assert average[key] - metric.compute().mean() < self.epsilon
-        pred = torch.cat(self._all_gather(preds, world_size))
-        target = torch.cat(self._all_gather(targets, world_size))
+        pred = torch.cat(self._gather_object(preds, world_size))
+        target = torch.cat(self._gather_object(targets, world_size))
         average = metrics.average()
         for key, func in function_map.items():
             assert average[key] - func(pred, target).mean() < self.epsilon
@@ -618,13 +618,13 @@ class TestMetricsDistributed:
         os.environ["MASTER_PORT"] = str(29501)
         spawn(func, args=(world_size,), nprocs=world_size)
 
-    def _gather_tensors(self, tensor, world_size):
+    def _gather_tensor(self, tensor, world_size):
         tensor = torch.cat(tensor)
         synced_tensor = [torch.zeros_like(tensor) for _ in range(world_size)]
         dist.all_gather(synced_tensor, tensor)
         return synced_tensor
 
-    def _all_gather(self, tensors, world_size):
+    def _gather_object(self, tensors, world_size):
         synced_tensor = [None for _ in range(world_size)]
         dist.all_gather_object(synced_tensor, tensors)
         return [i for t in synced_tensor for i in t]
