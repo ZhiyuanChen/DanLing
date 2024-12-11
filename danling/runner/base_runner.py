@@ -687,9 +687,9 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             self.optimizer.load_state_dict(ckpt["optimizer"])
         if self.scheduler is not None and "scheduler" in ckpt:
             self.scheduler.load_state_dict(ckpt["scheduler"])
-        self.state.iter_begin = self.state.iters
-        self.state.step_begin = self.state.steps
-        self.state.epoch_begin = self.state.epochs
+        self.state.iter_begin = self.state.iters + 1
+        self.state.step_begin = self.state.steps + 1
+        self.state.epoch_begin = self.state.epochs + 1
 
     @classmethod
     def from_checkpoint(cls, checkpoint: Mapping | bytes | str | os.PathLike, *args, **kwargs) -> BaseRunner:
@@ -1069,8 +1069,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
 
         if not self.scores:
             return 0
-        values = list(self.scores.values())
-        return self.best_fn(range(len(values)), key=values.__getitem__)
+        return self.best_fn(reversed(self.scores), key=self.scores.get)
 
     @property
     def latest_result(self) -> NestedDict | None:
