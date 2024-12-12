@@ -370,6 +370,8 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         def print(*args, force=False, end="\n", file=None, flush=False, **kwargs):  # pylint: disable=redefined-builtin
             if self.rank == process or force:
                 if self.state.log:
+                    if not args:
+                        args = [""]
                     logger.info(*args, **kwargs)
                 else:
                     builtin_print(*args, end=end, file=file, flush=flush, **kwargs)
