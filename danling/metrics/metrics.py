@@ -119,7 +119,7 @@ class Metrics(Metric):
     """
 
     metrics: FlatDict[str, Callable]
-    preprocess: Callable
+    preprocess: Optional[Callable] = None
     ignored_index: Optional[int] = None
     _input: Tensor
     _target: Tensor
@@ -182,6 +182,7 @@ class Metrics(Metric):
             else:
                 raise ValueError(f"Unknown input and target: {input}, {target}")
             self.flatten = True
+        # If the batch has only 1 sample at the end of an epoch, we need to flatten the input and target
         elif self.flatten:
             target = target.flatten()
             input = input.flatten() if input.numel() == target.numel() else input.view(*target.shape, -1)
@@ -196,6 +197,8 @@ class Metrics(Metric):
         if self.world_size > 1:
             input, target = self._sync(input), self._sync(target)
         input, target = input.detach().to(self.device), target.detach().to(self.device)
+        if self.preprocess is not None:
+            input, target = self.preprocess(input, target, ignored_index=self.ignored_index)
         self._input = input
         self._target = target
         self._inputs = torch.cat([self._inputs, input]).to(input.dtype)
@@ -228,9 +231,8 @@ class Metrics(Metric):
         ):
             return NestedDict({name: nan for name in self.metrics.keys()})
         ret = NestedDict()
-        input, target = self.preprocess(input, target, ignored_index=self.ignored_index)
         for name, metric in self.metrics.items():
-            score = self._calculate(metric, input, target, preprocess=False)
+            score = self._calculate(metric, input, target)
             if isinstance(score, Mapping):
                 if self.merge_dict:
                     ret.merge(score)
@@ -242,9 +244,7 @@ class Metrics(Metric):
         return ret
 
     @torch.inference_mode()
-    def _calculate(self, metric, input: Tensor, target: Tensor, preprocess: bool = True) -> flist | float:
-        if preprocess:
-            input, target = self.preprocess(input, target, ignored_index=self.ignored_index)
+    def _calculate(self, metric, input: Tensor, target: Tensor) -> flist | float:
         score = metric(input, target)
         if isinstance(score, Tensor):
             return score.item() if score.numel() == 1 else flist(score.tolist())

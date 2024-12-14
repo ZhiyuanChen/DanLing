@@ -70,11 +70,11 @@ class MetricMeter(AverageMeter):
     """
 
     metric: Callable
-    preprocess: Callable
+    preprocess: Optional[Callable] = None
     ignored_index: Optional[int] = None
 
     def __init__(
-        self, metric: Callable, preprocess: Callable = default_preprocess, ignored_index: int | None = None
+        self, metric: Callable, preprocess: Callable | None = default_preprocess, ignored_index: int | None = None
     ) -> None:
         self.metric = metric
         self.preprocess = preprocess
@@ -93,7 +93,8 @@ class MetricMeter(AverageMeter):
             value: Value to be added to the average.
             n: Number of values to be added.
         """
-        input, target = self.preprocess(input, target, ignored_index=self.ignored_index)
+        if self.preprocess is not None:
+            input, target = self.preprocess(input, target, ignored_index=self.ignored_index)
         n = len(input)
         super().update(self.metric(input, target).item() * n, n=n)
 
@@ -135,27 +136,20 @@ class MetricMeters(AverageMeters):
     TypeError: ...update() missing 1 required positional argument: 'target'
     """
 
-    preprocess: Callable
+    preprocess = None
     ignored_index = None
 
     def __init__(
-        self, *args, preprocess: Callable = default_preprocess, ignored_index: int | None = None, **kwargs
+        self, preprocess: Callable | None = default_preprocess, ignored_index: int | None = None, **meters
     ) -> None:
         self.setattr("preprocess", preprocess)
         self.setattr("ignored_index", ignored_index)
-        for meter in args:
+        for name, meter in meters.items():
             if callable(meter):
-                meter = MetricMeter(meter, ignored_index=self.ignored_index)
-            if not isinstance(meter, MetricMeter):
-                raise ValueError(f"Expected meter to be an instance of MetricMeter, but got {type(meter)}")
-        for name, meter in kwargs.items():
-            if callable(meter):
-                kwargs[name] = meter = MetricMeter(meter, ignored_index=self.ignored_index)
+                meters[name] = meter = MetricMeter(meter, preprocess=None, ignored_index=self.ignored_index)
             if not isinstance(meter, MetricMeter):
                 raise ValueError(f"Expected {name} to be an instance of MetricMeter, but got {type(meter)}")
-        if ignored_index is not None:
-            self.setattr("ignored_index", ignored_index)
-        super().__init__(*args, default_factory=None, **kwargs)  # type: ignore[arg-type]
+        super().__init__(default_factory=None, **meters)  # type: ignore[arg-type]
 
     def update(  # type: ignore[override] # pylint: disable=W0221
         self,
@@ -170,13 +164,14 @@ class MetricMeters(AverageMeters):
             target: Target values to compute the metrics.
         """
 
-        input, target = self.preprocess(input, target, ignored_index=self.ignored_index)
+        if self.preprocess is not None:
+            input, target = self.preprocess(input, target, ignored_index=self.ignored_index)
         for meter in self.values():
             meter.update(input, target)
 
     def set(self, name: str, meter: MetricMeter | Callable) -> None:  # type: ignore[override] # pylint: disable=W0237
         if callable(meter):
-            meter = MetricMeter(meter, ignored_index=self.ignored_index)
+            meter = MetricMeter(meter, preprocess=None, ignored_index=self.ignored_index)
         if not isinstance(meter, MetricMeter):
             raise ValueError(f"Expected meter to be an instance of MetricMeter, but got {type(meter)}")
         super().set(name, meter)
@@ -260,9 +255,13 @@ class MultiTaskMetricMeters(MultiTaskAverageMeters):
         name: str,
         metric: MetricMeter | MetricMeters | Callable,  # type: ignore[override]
     ) -> None:
-        if callable(metric):
+        from .metrics import Metrics
+
+        if isinstance(metric, Metrics):
+            metric = MetricMeters(preprocess=metric.preprocess, ignored_index=metric.ignored_index, **metric.metrics)
+        elif callable(metric):
             metric = MetricMeter(metric)
-        if not isinstance(metric, (MetricMeter, MetricMeters)):
+        elif not isinstance(metric, (MetricMeter, MetricMeters)):
             raise ValueError(
                 f"Expected {metric} to be an instance of MetricMeter or MetricMeters, but got {type(metric)}"
             )

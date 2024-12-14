@@ -50,6 +50,8 @@ class AverageMeter:
         >>> meter.update(0.7)
         >>> meter.val
         0.7
+        >>> meter.bat
+        0.7
         >>> meter.avg
         0.7
         >>> meter.update(0.9)
@@ -167,14 +169,11 @@ class AverageMeters(MetricsDict):
         'loss: 0.0000 (nan)\tauroc: 0.0000 (nan)\tr2: 0.0000 (nan)'
     """
 
-    def __init__(self, *args, default_factory: Type[AverageMeter] = AverageMeter, **kwargs) -> None:
-        for meter in args:
-            if not isinstance(meter, AverageMeter):
-                raise ValueError(f"Expected meter to be an instance of AverageMeter, but got {type(meter)}")
-        for name, meter in kwargs.items():
+    def __init__(self, default_factory: Type[AverageMeter] = AverageMeter, **meters) -> None:
+        for name, meter in meters.items():
             if not isinstance(meter, AverageMeter):
                 raise ValueError(f"Expected {name} to be an instance of AverageMeter, but got {type(meter)}")
-        super().__init__(*args, default_factory=default_factory, **kwargs)
+        super().__init__(default_factory=default_factory, **meters)
 
     @property
     def sum(self) -> FlatDict[str, float]:
@@ -288,4 +287,4 @@ class MultiTaskAverageMeters(MultiTaskDict):
             raise ValueError(
                 f"Expected meter to be an instance of AverageMeter or AverageMeters, but got {type(meter)}"
             )
-        super().set(name, meter)
+        super().set(name, meter, convert_mapping=False)

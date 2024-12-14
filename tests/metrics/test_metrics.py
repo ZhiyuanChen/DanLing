@@ -209,7 +209,7 @@ class TestMetricsSingle:
             targets.extend(target_list)
             pred_nt, target_nt = NestedTensor(pred_list), NestedTensor(target_list)
             pred, target = torch.cat(pred_list), torch.cat(target_list)
-            metrics.update(pred_nt, target_nt)
+            metrics.update(pred_nt.tensor, target_nt)
             for metric in metric_map.values():
                 metric.update(pred.view(-1, num_outputs), target.view(-1, num_outputs))
             value, average = metrics.value(), metrics.average()
@@ -278,7 +278,7 @@ class TestMetricsSingle:
             targets.extend(target_list)
             pred_nt, target_nt = NestedTensor(pred_list), NestedTensor(target_list)
             pred, target = torch.cat(pred_list), torch.cat(target_list)
-            metrics.update(pred_nt, target_nt)
+            metrics.update(pred_nt, target_nt.tensor)
             merge_metrics.update(pred_nt, target_nt)
             for metric in metric_map.values():
                 metric.update(pred, target)
