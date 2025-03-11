@@ -15,10 +15,16 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
+try:
+    from functools import cached_property
+except ImportError:
+    from cached_property import cached_property  # type: ignore
+
 from . import defaults
 from .basex import Base58, Base62, Base64, BaseX, base58, base62, base64
 from .contextmanagers import debug
-from .decorators import catch, ensure_dir, flexible_decorator, method_cache
+from .decorators import catch, flexible_decorator, method_cache
+from .descriptors import cached_ensure_dir, cached_ensure_parent_dir, ensure_dir, ensure_parent_dir
 from .distributed import get_world_size
 from .io import is_json_serializable, load, load_pandas, save
 from .lists import defaultlist, flist
@@ -28,9 +34,13 @@ __all__ = [
     "flist",
     "get_world_size",
     "catch",
+    "cached_property",
     "flexible_decorator",
     "method_cache",
     "ensure_dir",
+    "ensure_parent_dir",
+    "cached_ensure_dir",
+    "cached_ensure_parent_dir",
     "save",
     "load",
     "load_pandas",

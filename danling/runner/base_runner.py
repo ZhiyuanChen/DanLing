@@ -34,15 +34,7 @@ from chanfig import Config, FlatDict, NestedDict, Variable
 
 from danling.metrics import AverageMeter, AverageMeters, MetricMeters
 from danling.typing import File, PathStr
-from danling.utils import catch, ensure_dir, load, save
-
-if TYPE_CHECKING:
-    from danling.metrics import Metrics
-
-try:
-    from functools import cached_property
-except ImportError:
-    from cached_property import cached_property  # type: ignore
+from danling.utils import cached_ensure_dir, cached_ensure_parent_dir, cached_property, catch, load, save
 
 try:
     from numpy import random as np_random
@@ -51,6 +43,9 @@ except ImportError:
 
 from .state import RunnerState
 from .utils import RunnerMeta, RunnerMode, get_time_str, on_main_process
+
+if TYPE_CHECKING:
+    from danling.metrics import Metrics
 
 PY38_PLUS = version_info >= (3, 8)
 IGNORED_SET_NAMES = ("index", "epoch", "step", "iter")
@@ -1165,8 +1160,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         except TypeError:
             return True
 
-    @property
-    @ensure_dir
+    @cached_ensure_dir
     def dir(self) -> str:
         r"""
         Directory of the run.
@@ -1176,7 +1170,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             return self.state.dir
         return os.path.join(self.project_root, f"{self.name}-{self.id}", self.timestamp)
 
-    @cached_property
+    @cached_ensure_parent_dir
     def log_path(self) -> str:
         r"""
         Path of log file.
@@ -1186,8 +1180,7 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
             return self.state.log_path
         return os.path.join(self.dir, "run.log")
 
-    @property
-    @ensure_dir
+    @cached_ensure_dir
     def checkpoint_dir(self) -> str:
         r"""
         Directory of checkpoints.

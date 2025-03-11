@@ -15,13 +15,12 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
+
 from __future__ import annotations
 
 import traceback
 from functools import lru_cache, wraps
 from inspect import isfunction
-from os import makedirs
-from os.path import abspath
 from sys import stderr
 from typing import Callable, Optional
 from weakref import ref
@@ -182,26 +181,3 @@ def method_cache(maxsize: int | None = 128, typed: bool = False):
         return wrapper
 
     return decorator
-
-
-def ensure_dir(func):
-    r"""
-    Decorator to ensure a directory property exists.
-
-    Note:
-        Please avoid using this with `cached_property`.
-
-    Examples:
-        >>> @property
-        ... @ensure_dir
-        ... def dir(self) -> str:
-        ...     return os.path.join("path", "to", "dir")
-    """
-
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        path = abspath(func(*args, **kwargs))
-        makedirs(path, exist_ok=True)
-        return path
-
-    return wrapper
