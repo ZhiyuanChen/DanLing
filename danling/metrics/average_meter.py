@@ -24,6 +24,7 @@ from typing import Any, Dict, Type
 
 import torch
 from chanfig import FlatDict, NestedDict
+from torch import Tensor
 from torch import distributed as dist
 
 from danling.utils import get_world_size
@@ -203,6 +204,8 @@ class AverageMeters(MetricsDict):
             values = args[0].update(values) or args[0] if values else args[0]
 
         for meter, value in values.items():
+            if isinstance(value, Tensor):
+                value = value.item()
             if not isinstance(value, (int, float)):
                 raise ValueError(f"Expected values to be int or float, but got {type(value)}")
             self[meter].update(value)
