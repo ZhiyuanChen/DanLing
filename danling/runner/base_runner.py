@@ -1242,6 +1242,8 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
     def __repr__(self):
         lines = []
         for key, value in self.__dict__.items():
+            if key.startswith("_") or key.endswith("_") or key == "inited":
+                continue
             value_str = repr(value)
             value_str = self._add_indent(value_str)
             lines.append("(" + key + "): " + value_str)
