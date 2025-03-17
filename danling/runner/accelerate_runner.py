@@ -495,7 +495,7 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
         r"""
         Batch size.
 
-        Notes:
+        Note:
             If `train` is in `dataloaders`, then `batch_size` is the batch size of `train`.
             Otherwise, `batch_size` is the batch size of the first dataloader.
 

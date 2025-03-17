@@ -97,7 +97,7 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
             Defaults to `None`, never save checkpoints.
             If <= 0, save only the latest and the best checkpoints.
 
-    Notes:
+    Note:
         `RunnerState` is a `NestedDict`, so you can access its attributes by `state["name"]` or `state.name`.
 
     See Also:

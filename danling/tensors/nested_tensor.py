@@ -147,7 +147,7 @@ class NestedTensor:
         ValueError: If `tensors` is not an iterable.
         ValueError: If `tensors` is empty.
 
-    Notes:
+    Note:
         We have rewritten the `__getattr__` function to support as much native tensor operations as possible.
         However, not all operations are tested.
 
