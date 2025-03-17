@@ -79,17 +79,18 @@ def get_git_hash() -> str | None:
         except ImportError:
             pass  # handle at last
         except (InvalidGitRepositoryError, ValueError):
-            warn(
-                "Unable to get git hash from CWD, fallback to git has of top-level code environment.",
-                category=RuntimeWarning,
-                stacklevel=2,
-            )
             path = os.path.dirname(os.path.abspath(sys.argv[0]))
             with suppress(InvalidGitRepositoryError, ValueError):
-                return Repo(path=path, search_parent_directories=True).head.object.hexsha
+                hexsha = Repo(path=path, search_parent_directories=True).head.object.hexsha
+                warn(
+                    "Unable to get git hash from CWD, fallback to git hash of top-level code environment.",
+                    category=RuntimeWarning,
+                    stacklevel=2,
+                )
+                return hexsha
     except ImportError:
         warn(
-            "GitPython is not installed, unable to fing git hash",
+            "GitPython is not installed, unable to fetch git hash",
             category=RuntimeWarning,
             stacklevel=2,
         )
