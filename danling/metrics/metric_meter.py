@@ -36,7 +36,8 @@ class MetricMeter(AverageMeter):
 
     Attributes:
         metric: Metric function for computing the value.
-        ignored_index: Index to be ignored in the computation.
+        ignore_index: Index to be ignored in the computation.
+        ignore_nan: Whether to ignore NaN values in the computation.
         val: Results of current batch on current device.
         bat: Results of current batch on all devices.
         avg: Results of all results on all devices.
@@ -73,14 +74,22 @@ class MetricMeter(AverageMeter):
 
     metric: Callable
     preprocess: Optional[Callable] = None
-    ignored_index: Optional[int] = None
+    ignore_index: int = -100
+    ignore_nan: bool = True
 
     def __init__(
-        self, metric: Callable, preprocess: Callable | None = default_preprocess, ignored_index: int | None = None
+        self,
+        metric: Callable,
+        preprocess: Callable | None = default_preprocess,
+        ignore_index: int | None = None,
+        ignore_nan: bool | None = None,
     ) -> None:
         self.metric = metric
         self.preprocess = preprocess
-        self.ignored_index = ignored_index
+        if ignore_index is not None:
+            self.ignore_index = ignore_index
+        if ignore_nan is not None:
+            self.ignore_nan = ignore_nan
         super().__init__()
 
     def update(  # type: ignore[override] # pylint: disable=W0237
@@ -96,7 +105,7 @@ class MetricMeter(AverageMeter):
             n: Number of values to be added.
         """
         if self.preprocess is not None:
-            input, target = self.preprocess(input, target, ignored_index=self.ignored_index)
+            input, target = self.preprocess(input, target, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan)
         n = len(input)
         super().update(self.metric(input, target).item() * n, n=n)
 
@@ -106,8 +115,10 @@ class MetricMeters(AverageMeters):
     Manages multiple metric meters in one object.
 
     Attributes:
-        ignored_index: Index to be ignored in the computation.
+        ignore_index: Index to be ignored in the computation.
             Defaults to None.
+        ignore_nan: Whether to ignore NaN values in the computation.
+            Defaults to False.
 
     See Also:
         [`MetricMeter`]: Computes metrics and averages them over time.
@@ -139,16 +150,26 @@ class MetricMeters(AverageMeters):
     """
 
     preprocess = None
-    ignored_index = None
+    ignore_index = -100
+    ignore_nan = True
 
     def __init__(
-        self, preprocess: Callable | None = default_preprocess, ignored_index: int | None = None, **meters
+        self,
+        preprocess: Callable | None = default_preprocess,
+        ignore_index: int | None = None,
+        ignore_nan: bool | None = None,
+        **meters,
     ) -> None:
         self.setattr("preprocess", preprocess)
-        self.setattr("ignored_index", ignored_index)
+        if ignore_index is not None:
+            self.setattr("ignore_index", ignore_index)
+        if ignore_nan is not None:
+            self.setattr("ignore_nan", ignore_nan)
         for name, meter in meters.items():
             if callable(meter):
-                meters[name] = meter = MetricMeter(meter, preprocess=None, ignored_index=self.ignored_index)
+                meters[name] = meter = MetricMeter(
+                    meter, preprocess=None, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan
+                )
             if not isinstance(meter, MetricMeter):
                 raise ValueError(f"Expected {name} to be an instance of MetricMeter, but got {type(meter)}")
         super().__init__(default_factory=None, **meters)  # type: ignore[arg-type]
@@ -167,13 +188,13 @@ class MetricMeters(AverageMeters):
         """
 
         if self.preprocess is not None:
-            input, target = self.preprocess(input, target, ignored_index=self.ignored_index)
+            input, target = self.preprocess(input, target, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan)
         for meter in self.values():
             meter.update(input, target)
 
     def set(self, name: str, meter: MetricMeter | Callable) -> None:  # type: ignore[override] # pylint: disable=W0237
         if callable(meter):
-            meter = MetricMeter(meter, preprocess=None, ignored_index=self.ignored_index)
+            meter = MetricMeter(meter, preprocess=None, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan)
         if not isinstance(meter, MetricMeter):
             raise ValueError(f"Expected meter to be an instance of MetricMeter, but got {type(meter)}")
         super().set(name, meter)
@@ -260,7 +281,7 @@ class MultiTaskMetricMeters(MultiTaskAverageMeters):
         from .metrics import Metrics
 
         if isinstance(metric, Metrics):
-            metric = MetricMeters(preprocess=metric.preprocess, ignored_index=metric.ignored_index, **metric.metrics)
+            metric = MetricMeters(preprocess=metric.preprocess, ignore_index=metric.ignore_index, **metric.metrics)
         elif callable(metric):
             metric = MetricMeter(metric)
         elif not isinstance(metric, (MetricMeter, MetricMeters)):

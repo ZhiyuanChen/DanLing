@@ -21,7 +21,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from warnings import warn
 
 import torch
 from torch import Tensor
@@ -40,7 +39,10 @@ def infer_task(num_classes: int | None, num_labels: int | None):
 
 
 def preprocess(
-    input: Tensor | NestedTensor | Sequence, target: Tensor | NestedTensor | Sequence, ignored_index: int | None = None
+    input: Tensor | NestedTensor | Sequence,
+    target: Tensor | NestedTensor | Sequence,
+    ignore_index: int | None = None,
+    ignore_nan: bool = False,
 ):
     if not isinstance(input, (Tensor, NestedTensor)):
         try:
@@ -58,8 +60,14 @@ def preprocess(
         if isinstance(target, NestedTensor) and isinstance(input, Tensor):
             input = target.nested_like(input, strict=False)
         input, target = input.concat, target.concat
-    if ignored_index is not None:
-        input, target = input[target != ignored_index], target[target != ignored_index]
+    if ignore_index is not None:
+        mask = target != ignore_index
+        input, target = input[mask], target[mask]
+    if ignore_nan:
+        mask = ~(torch.isnan(target))
+        input, target = input[mask], target[mask]
+    if input.numel() == target.numel():
+        return input.squeeze(), target.squeeze()
     return input, target
 
 
@@ -67,20 +75,22 @@ def preprocess_regression(
     input: Tensor | NestedTensor | Sequence,
     target: Tensor | NestedTensor | Sequence,
     num_outputs: int = 1,
-    ignored_index: None = None,
+    ignore_nan: bool = True,
+    ignore_index: int | None = None,
 ):
-    if ignored_index is not None:
-        warn("`ignored_index` is not used for regression tasks.")
-    input, target = preprocess(input, target)
+    input, target = preprocess(input, target, ignore_nan=ignore_nan)
     if num_outputs > 1:
         return input.view(-1, num_outputs), target.view(-1, num_outputs)
     return input.view(-1), target.view(-1)
 
 
 def preprocess_binary(
-    input: Tensor | NestedTensor | Sequence, target: Tensor | NestedTensor | Sequence, ignored_index: int | None = None
+    input: Tensor | NestedTensor | Sequence,
+    target: Tensor | NestedTensor | Sequence,
+    ignore_index: int | None = -100,
+    ignore_nan: bool = False,
 ):
-    input, target = preprocess(input, target, ignored_index=ignored_index)
+    input, target = preprocess(input, target, ignore_index=ignore_index)
     input, target = input.view(-1), target.view(-1)
     if input.max() > 1 or input.min() < 0:
         input = input.sigmoid()
@@ -91,9 +101,10 @@ def preprocess_multiclass(
     input: Tensor | NestedTensor | Sequence,
     target: Tensor | NestedTensor | Sequence,
     num_classes: int,
-    ignored_index: int | None = None,
+    ignore_index: int | None = -100,
+    ignore_nan: bool = False,
 ):
-    input, target = preprocess(input, target, ignored_index=ignored_index)
+    input, target = preprocess(input, target, ignore_index=ignore_index)
     input, target = input.view(-1, num_classes), target.view(-1)
     if input.max() > 1 or input.min() < 0:
         input = input.softmax(dim=-1)
@@ -104,9 +115,10 @@ def preprocess_multilabel(
     input: Tensor | NestedTensor | Sequence,
     target: Tensor | NestedTensor | Sequence,
     num_labels: int,
-    ignored_index: int | None = None,
+    ignore_index: int | None = -100,
+    ignore_nan: bool = False,
 ):
-    input, target = preprocess(input, target, ignored_index=ignored_index)
+    input, target = preprocess(input, target, ignore_index=ignore_index)
     input, target = input.view(-1, num_labels), target.view(-1, num_labels)
     if input.max() > 1 or input.min() < 0:
         input = input.sigmoid()
