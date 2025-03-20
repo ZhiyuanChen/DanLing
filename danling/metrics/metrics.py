@@ -57,7 +57,8 @@ class Metrics(Metric):
 
     Attributes:
         metrics: A dictionary of metrics to be computed.A
-        ignored_index: Index to be ignored in the computation.
+        ignore_index: Index to be ignored in the computation.
+        ignore_nan: Whether to ignore NaN values in the computation.
         val: Metric results of current batch on current device.
         avg: Metric results of all results on all devices.
         input: The input tensor of latest batch.
@@ -114,7 +115,7 @@ class Metrics(Metric):
         )
         >>> f"{metrics:.4f}"
         'auroc: 0.6667 (0.6667)\tauprc: 0.5000 (0.5556)'
-        >>> metrics = Metrics(auroc=auroc, auprc=auprc, ignored_index=-100)
+        >>> metrics = Metrics(auroc=auroc, auprc=auprc, ignore_index=-100)
         >>> metrics.update([[0.1, 0.4, 0.6, 0.8], [0.1, 0.4, 0.6]], [[0, -100, 1, 0], [0, -100, 1]])
         >>> metrics.input, metrics.target
         (tensor([0.1000, 0.6000, 0.8000, 0.1000, 0.6000]), tensor([0, 1, 0, 0, 1]))
@@ -122,7 +123,8 @@ class Metrics(Metric):
 
     metrics: FlatDict[str, Callable]
     preprocess: Optional[Callable] = None
-    ignored_index: Optional[int] = None
+    ignore_index: int = -100
+    ignore_nan: bool = True
     _input: Tensor
     _target: Tensor
     _inputs: Tensor
@@ -139,7 +141,8 @@ class Metrics(Metric):
         merge_dict: bool | None = None,
         return_nested: bool | None = None,
         device: torch.device | None = None,
-        ignored_index: int | None = None,
+        ignore_index: int | None = None,
+        ignore_nan: bool | None = None,
         preprocess: Callable = default_preprocess,
         **metrics: Callable,
     ):
@@ -155,7 +158,10 @@ class Metrics(Metric):
             self.merge_dict = merge_dict
         if return_nested is not None:
             self.return_nested = return_nested
-        self.ignored_index = ignored_index
+        if ignore_index is not None:
+            self.ignore_index = ignore_index
+        if ignore_nan is not None:
+            self.ignore_nan = ignore_nan
 
     def update(self, input: Tensor | NestedTensor | Sequence, target: Tensor | NestedTensor | Sequence) -> None:
         # convert input and target to Tensor if they are not
@@ -184,23 +190,14 @@ class Metrics(Metric):
             else:
                 raise ValueError(f"Unknown input and target: {input}, {target}")
             self.flatten = True
-        # If the batch has only 1 sample at the end of an epoch, we need to flatten the input and target
         elif self.flatten:
             target = target.flatten()
             input = input.flatten() if input.numel() == target.numel() else input.view(*target.shape, -1)
-        # remove ignored index
-        if self.ignored_index is not None:
-            if isinstance(input, NestedTensor):
-                indices = [i != self.ignored_index for i in target.storage()]
-                input = NestedTensor([t[i] for t, i in zip(input.storage(), indices)])
-                target = NestedTensor([t[i] for t, i in zip(target.storage(), indices)])
-            else:
-                input, target = input[target != self.ignored_index], target[target != self.ignored_index]
+        if self.preprocess is not None:
+            input, target = self.preprocess(input, target, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan)
         if self.world_size > 1:
             input, target = self._sync(input), self._sync(target)
         input, target = input.detach().to(self.device), target.detach().to(self.device)
-        if self.preprocess is not None:
-            input, target = self.preprocess(input, target, ignored_index=self.ignored_index)
         self._input = input
         self._target = target
         self._inputs = torch.cat([self._inputs, input]).to(input.dtype)
