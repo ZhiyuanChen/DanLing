@@ -23,7 +23,13 @@ from lazy_imports import try_import
 
 from .average_meter import AverageMeter, AverageMeters, MultiTaskAverageMeters
 from .metric_meter import MetricMeter, MetricMeters, MultiTaskMetricMeters
-from .preprocesses import preprocess_binary, preprocess_multiclass, preprocess_multilabel, preprocess_regression
+from .preprocesses import (
+    preprocess,
+    preprocess_binary,
+    preprocess_multiclass,
+    preprocess_multilabel,
+    preprocess_regression,
+)
 
 with try_import() as lazy_import:
     from .functional import accuracy, auprc, auroc, f1_score, mcc, pearson, r2_score, rmse, spearman
@@ -43,6 +49,11 @@ __all__ = [
     "binary_metrics",
     "multiclass_metrics",
     "multilabel_metrics",
+    "preprocess",
+    "preprocess_binary",
+    "preprocess_multiclass",
+    "preprocess_multilabel",
+    "preprocess_regression",
 ]
 
 
@@ -85,13 +96,13 @@ def multilabel_metrics(num_labels: int, **kwargs):
     )
 
 
-def regression_metrics(num_outputs: int = 1, **kwargs):
+def regression_metrics(num_outputs: int = 1, ignore_nan: bool = False, **kwargs):
     lazy_import.check()
     return Metrics(
-        pearson=partial(pearson, num_outputs=num_outputs, preprocess=False),
-        spearman=partial(spearman, num_outputs=num_outputs, preprocess=False),
-        r2=partial(r2_score, num_outputs=num_outputs, preprocess=False),
-        rmse=partial(rmse, num_outputs=num_outputs, preprocess=False),
-        preprocess=partial(preprocess_regression, num_outputs=num_outputs),
+        pearson=partial(pearson, num_outputs=num_outputs, preprocess=False, ignore_nan=ignore_nan),
+        spearman=partial(spearman, num_outputs=num_outputs, preprocess=False, ignore_nan=ignore_nan),
+        r2=partial(r2_score, num_outputs=num_outputs, preprocess=False, ignore_nan=ignore_nan),
+        rmse=partial(rmse, num_outputs=num_outputs, preprocess=False, ignore_nan=ignore_nan),
+        preprocess=partial(preprocess_regression, num_outputs=num_outputs, ignore_nan=ignore_nan),
         **kwargs,
     )
