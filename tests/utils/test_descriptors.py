@@ -42,27 +42,26 @@ class Class:
         return os.path.join("temp", "test")
 
 
-class Test:
+def test_ensure_dir():
+    obj = Class()
+    assert os.path.exists(obj.ensure_dir)
+    os.rmdir(obj.cached_ensure_dir)
+    # Run twice for cached version to ensure caching won't break `makedirs`
+    assert os.path.exists(obj.cached_ensure_dir)
+    os.rmdir(obj.ensure_dir)
+    assert os.path.exists(obj.cached_ensure_dir)
+    os.rmdir(obj.ensure_dir)
 
-    def test_ensure_dir(self):
-        obj = Class()
-        assert os.path.exists(obj.ensure_dir)
-        os.rmdir(obj.cached_ensure_dir)
-        # Run twice for cached version to ensure caching won't break `makedirs`
-        assert os.path.exists(obj.cached_ensure_dir)
-        os.rmdir(obj.ensure_dir)
-        assert os.path.exists(obj.cached_ensure_dir)
-        os.rmdir(obj.ensure_dir)
 
-    def test_ensure_parent_dir(self):
-        obj = Class()
-        parent_dir = os.path.dirname(obj.ensure_parent_dir)
-        assert os.path.exists(parent_dir)
-        os.rmdir(parent_dir)
-        # Run twice for cached version to ensure caching won't break `makedirs`
-        parent_dir = os.path.dirname(obj.cached_ensure_parent_dir)
-        assert os.path.exists(parent_dir)
-        os.rmdir(parent_dir)
-        parent_dir = os.path.dirname(obj.cached_ensure_parent_dir)
-        assert os.path.exists(parent_dir)
-        os.rmdir(parent_dir)
+def test_ensure_parent_dir():
+    obj = Class()
+    parent_dir = os.path.dirname(obj.ensure_parent_dir)
+    assert os.path.exists(parent_dir)
+    os.rmdir(parent_dir)
+    # Run twice for cached version to ensure caching won't break `makedirs`
+    parent_dir = os.path.dirname(obj.cached_ensure_parent_dir)
+    assert os.path.exists(parent_dir)
+    os.rmdir(parent_dir)
+    parent_dir = os.path.dirname(obj.cached_ensure_parent_dir)
+    assert os.path.exists(parent_dir)
+    os.rmdir(parent_dir)

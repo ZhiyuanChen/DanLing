@@ -48,16 +48,12 @@ class Test:
             scheduler.step()
         return [round(lr, 4) for lr in lrs]
 
-    def test_cosine_percentile(self):
+    def test_cosine(self):
         assert self._get_lrs("cosine", "percentile") == LR_COSINE_PERCENTILE_100
-
-    def test_cosine_numerical(self):
         assert self._get_lrs("cosine", "numerical") == LR_COSINE_NUMERICAL_100
 
-    def test_linear_percentile(self):
+    def test_linear(self):
         assert self._get_lrs("linear", "percentile") == LR_LINEAR_PERCENTILE_100
-
-    def test_linear_numerical(self):
         assert self._get_lrs("linear", "numerical") == LR_LINEAR_NUMERICAL_100
 
     def test_constant(self):
