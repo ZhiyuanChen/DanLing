@@ -22,6 +22,7 @@ from lazy_imports import try_import
 from danling import metrics, modules, optim, registry, runner, tensors, typing, utils
 
 from .metrics import (
+    METRICS,
     AverageMeter,
     AverageMeters,
     MetricMeter,
@@ -63,6 +64,7 @@ __all__ = [
     "LRScheduler",
     "Registry",
     "GlobalRegistry",
+    "METRICS",
     "Metrics",
     "MultiTaskMetrics",
     "MetricMeter",
