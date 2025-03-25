@@ -143,7 +143,7 @@ class Metrics(Metric):
         device: torch.device | None = None,
         ignore_index: int | None = None,
         ignore_nan: bool | None = None,
-        preprocess: Callable = default_preprocess,
+        preprocess: Callable | None = None,
         **metrics: Callable,
     ):
         super().__init__(device=device)
@@ -152,7 +152,27 @@ class Metrics(Metric):
         self._add_state("_inputs", torch.empty(0))
         self._add_state("_targets", torch.empty(0))
         self.world_size = get_world_size()
-        self.metrics = FlatDict(*args, **metrics)
+        if args:
+            from .metric_meter import MetricMeters
+
+            if len(args) == 1 and isinstance(args[0], MetricMeters):
+                meters = args[0]
+                for name, meter in meters.items():
+                    metrics.setdefault(name, meter.metric)
+                if preprocess is None:
+                    preprocess = meters.getattr("preprocess")
+                if ignore_index is None:
+                    ignore_index = meters.getattr("ignore_index")
+                if ignore_nan is None:
+                    ignore_nan = meters.getattr("ignore_nan")
+            else:
+                for metric in args:
+                    if not callable(metric):
+                        raise ValueError(f"Expected metric to be callable, but got {type(metric)}")
+                    metrics.setdefault(metric.__name__, metric)
+        self.metrics = FlatDict(metrics)
+        if preprocess is None:
+            preprocess = default_preprocess
         self.preprocess = preprocess
         if merge_dict is not None:
             self.merge_dict = merge_dict

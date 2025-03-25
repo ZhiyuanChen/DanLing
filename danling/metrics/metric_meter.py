@@ -155,11 +155,32 @@ class MetricMeters(AverageMeters):
 
     def __init__(
         self,
-        preprocess: Callable | None = default_preprocess,
+        *args,
         ignore_index: int | None = None,
         ignore_nan: bool | None = None,
+        preprocess: Callable | None = None,
         **meters,
     ) -> None:
+        if args:
+            from .metrics import Metrics
+
+            if len(args) == 1 and isinstance(args[0], Metrics):
+                metrics = args[0]
+                for name, metric in metrics.metrics.items():
+                    meters.setdefault(name, metric)
+                if preprocess is None:
+                    preprocess = metrics.preprocess
+                if ignore_index is None:
+                    ignore_index = metrics.ignore_index
+                if ignore_nan is None:
+                    ignore_nan = metrics.ignore_nan
+            else:
+                for metric in args:
+                    if not callable(metric):
+                        raise ValueError(f"Expected metric to be callable, but got {type(metric)}")
+                    meters.setdefault(metric.__name__, metric)
+        if preprocess is None:
+            preprocess = default_preprocess
         self.setattr("preprocess", preprocess)
         if ignore_index is not None:
             self.setattr("ignore_index", ignore_index)
