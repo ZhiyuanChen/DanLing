@@ -18,14 +18,10 @@
 # See the LICENSE file for more details.
 
 import torchvision
-from chanfig import Config, Registry
-from torch import nn, optim
+from chanfig import Config
+from torch import nn
 
 import danling as dl
-
-OPTIMIZERS = Registry()
-OPTIMIZERS.register(optim.AdamW, "adamw")
-OPTIMIZERS.register(optim.SGD, "sgd")
 
 
 class MNISTConfig(Config):
@@ -40,17 +36,18 @@ class MNISTConfig(Config):
 
     def __init__(self):
         super().__init__()
-        self.network.name = "resnet18"
+        self.network.type = "resnet18"
         self.dataset.download = True
         self.dataset.root = "data"
         self.dataloader.batch_size = 8
-        self.optim.name = "adamw"
+        self.optim.type = "adamw"
         self.optim.lr = 1e-3
         self.optim.weight_decay = 1e-4
-        self.sched.strategy = "cosine"
+        self.sched.type = "cosine"
 
     def post(self):
-        self.experiment_name = f"{self.network.name}_{self.optim.name}@{self.optim.lr}"
+        super().post()
+        self.experiment_name = f"{self.network.type}_{self.optim.type}@{self.optim.lr}"
 
 
 class MNISTRunner(dl.TorchRunner):
@@ -69,10 +66,10 @@ class MNISTRunner(dl.TorchRunner):
         self.datasets.train.data = self.datasets.train.data[:64]
         self.datasets.val.data = self.datasets.val.data[:64]
 
-        self.model = getattr(torchvision.models, self.network.name)(pretrained=False, num_classes=10)
+        self.model = getattr(torchvision.models, self.network.type)(pretrained=False, num_classes=10)
         self.model.conv1 = nn.Conv2d(1, 64, 1, bias=False)
-        self.optimizer = OPTIMIZERS.build(params=self.model.parameters(), **self.optim)
-        self.scheduler = dl.optim.LRScheduler(self.optimizer, total_steps=self.trainable_steps, **self.sched)
+        self.optimizer = dl.optim.OPTIMIZERS.build(params=self.model.parameters(), **self.optim)
+        self.scheduler = dl.optim.SCHEDULERS.build(self.optimizer, total_steps=self.total_steps, **self.sched)
         self.criterion = nn.CrossEntropyLoss()
 
         self.metrics = dl.metrics.multiclass_metrics(num_classes=10)

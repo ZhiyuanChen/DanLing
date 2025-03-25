@@ -17,6 +17,7 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
-from .lr_scheduler import LRScheduler
+from .lr_scheduler import SCHEDULERS, LRScheduler
+from .registry import OPTIMIZERS
 
-__all__ = ["LRScheduler"]
+__all__ = ["LRScheduler", "OPTIMIZERS", "SCHEDULERS"]

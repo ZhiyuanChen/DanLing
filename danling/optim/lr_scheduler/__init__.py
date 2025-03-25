@@ -18,5 +18,6 @@
 # See the LICENSE file for more details.
 
 from .lr_scheduler import LRScheduler
+from .registry import SCHEDULERS
 
-__all__ = ["LRScheduler"]
+__all__ = ["LRScheduler", "SCHEDULERS"]
