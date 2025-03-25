@@ -29,7 +29,6 @@ from .metrics import (
     MultiTaskMetricMeters,
 )
 from .optim import OPTIMIZERS, SCHEDULERS, LRScheduler
-from .registry import GlobalRegistry, Registry
 from .runner import AccelerateRunner, BaseRunner, TorchRunner
 from .tensors import NestedTensor, PNTensor, tensor
 from .utils import (
@@ -54,8 +53,6 @@ __all__ = [
     "OPTIMIZERS",
     "SCHEDULERS",
     "LRScheduler",
-    "Registry",
-    "GlobalRegistry",
     "METRICS",
     "Metrics",
     "MultiTaskMetrics",
