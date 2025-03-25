@@ -19,8 +19,6 @@
 
 from lazy_imports import try_import
 
-from danling import metrics, modules, optim, registry, runner, tensors, typing, utils
-
 from .metrics import (
     METRICS,
     AverageMeter,
@@ -30,7 +28,7 @@ from .metrics import (
     MultiTaskAverageMeters,
     MultiTaskMetricMeters,
 )
-from .optim import LRScheduler
+from .optim import OPTIMIZERS, SCHEDULERS, LRScheduler
 from .registry import GlobalRegistry, Registry
 from .runner import AccelerateRunner, BaseRunner, TorchRunner
 from .tensors import NestedTensor, PNTensor, tensor
@@ -50,17 +48,11 @@ with try_import():
     from .metrics import Metrics, MultiTaskMetrics
 
 __all__ = [
-    "metrics",
-    "modules",
-    "optim",
-    "registry",
-    "runner",
-    "tensors",
-    "utils",
-    "typing",
     "BaseRunner",
     "AccelerateRunner",
     "TorchRunner",
+    "OPTIMIZERS",
+    "SCHEDULERS",
     "LRScheduler",
     "Registry",
     "GlobalRegistry",
