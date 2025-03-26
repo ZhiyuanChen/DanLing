@@ -18,6 +18,6 @@
 # See the LICENSE file for more details.
 
 from .nested_tensor import NestedTensor, PNTensor, tensor
-from .utils import TorchFuncRegistry
+from .utils import TorchFuncRegistry, convert_tensor_precision
 
-__all__ = ["NestedTensor", "PNTensor", "tensor", "TorchFuncRegistry"]
+__all__ = ["NestedTensor", "PNTensor", "tensor", "TorchFuncRegistry", "convert_tensor_precision"]
