@@ -44,7 +44,7 @@ with try_import() as tm:
 
 torch.manual_seed(0)
 
-ATOL = 1e-6
+ATOL = 1e-4
 
 
 def test_auroc():

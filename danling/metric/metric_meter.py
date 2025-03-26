@@ -24,6 +24,7 @@ from functools import partial
 from inspect import signature
 from typing import Any, Callable, Optional, Tuple
 
+import torch
 from torch import Tensor
 
 from ..tensor import NestedTensor
@@ -38,8 +39,6 @@ class MetricMeter(AverageMeter):
 
     Attributes:
         metric: Metric function for computing the value.
-        ignore_index: Index to be ignored in the computation.
-        ignore_nan: Whether to ignore NaN values in the computation.
         val: Results of current batch on current device.
         bat: Results of current batch on all devices.
         avg: Results of all results on all devices.
@@ -79,6 +78,8 @@ class MetricMeter(AverageMeter):
     preprocess: Optional[Callable] = None
     ignore_index: int = -100
     ignore_nan: bool = True
+    device: torch.device | None = None
+    precision: str | None = "auto"
 
     def __init__(
         self,
@@ -86,6 +87,8 @@ class MetricMeter(AverageMeter):
         preprocess: Callable | None = default_preprocess,
         ignore_index: int | None = None,
         ignore_nan: bool | None = None,
+        device: torch.device | None = None,
+        precision: str | None = "auto",
     ) -> None:
         super().__init__()
         self.preprocess = preprocess
@@ -93,6 +96,8 @@ class MetricMeter(AverageMeter):
             self.ignore_index = ignore_index
         if ignore_nan is not None:
             self.ignore_nan = ignore_nan
+        self.precision = precision
+        self.device = device
         if preprocess is not None and "preprocess" in signature(metric).parameters:
             metric = partial(metric, preprocess=None)
         self.metric = metric
@@ -111,7 +116,14 @@ class MetricMeter(AverageMeter):
             n: Number of values to be added.
         """
         if self.preprocess is not None and not preprocessed:
-            input, target = self.preprocess(input, target, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan)
+            input, target = self.preprocess(
+                input,
+                target,
+                ignore_index=self.ignore_index,
+                ignore_nan=self.ignore_nan,
+                device=self.device,
+                precision=self.precision,
+            )
         n = len(input)
         super().update(self.metric(input, target).item() * n, n=n)
 
@@ -126,11 +138,17 @@ class MetricMeters(AverageMeters):
     r"""
     Manages multiple metric meters in one object.
 
-    Attributes:
-        ignore_index: Index to be ignored in the computation.
-            Defaults to None.
-        ignore_nan: Whether to ignore NaN values in the computation.
-            Defaults to False.
+    Args:
+        *args: A single mapping of metrics.
+        ignore_index: Index to be ignored in the computation, for classification tasks.
+        ignore_nan: Whether to ignore NaN values in the computation, for regression tasks.
+        device: The device to run the metrics.
+        precision: Precision of the input and target tensors. Precision will be auto converted,
+            for example, for classification tasks, if the precision is `float32`, the input will
+            be converted to `float32`, and the target will be converted to `int32`.
+            If `"auto"`, the precision will be automatically converted to the best precision.
+            If `None`, no precision conversion will be performed.
+        **metrics: Metrics.
 
     See Also:
         [`MetricMeter`]: Computes metrics and averages them over time.
@@ -171,6 +189,8 @@ class MetricMeters(AverageMeters):
         preprocess: Callable | None = default_preprocess,
         ignore_index: int | None = None,
         ignore_nan: bool | None = None,
+        device: torch.device | None = None,
+        precision: str | None = "auto",
         **meters,
     ) -> None:
         if args:
@@ -196,6 +216,8 @@ class MetricMeters(AverageMeters):
             self.setattr("ignore_index", ignore_index)
         if ignore_nan is not None:
             self.setattr("ignore_nan", ignore_nan)
+        self.setattr("device", device)
+        self.setattr("precision", precision)
         for name, meter in meters.items():
             if callable(meter):
                 meters[name] = meter = self.build_metric_meter_from_callable(meter)
@@ -218,7 +240,14 @@ class MetricMeters(AverageMeters):
 
         preprocessed = False
         if self.preprocess is not None:
-            input, target = self.preprocess(input, target, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan)
+            input, target = self.preprocess(
+                input,
+                target,
+                ignore_index=self.ignore_index,
+                ignore_nan=self.ignore_nan,
+                device=self.device,
+                precision=self.precision,
+            )
             preprocessed = True
         for meter in self.values():
             meter.update(input, target, preprocessed=preprocessed)
@@ -235,7 +264,14 @@ class MetricMeters(AverageMeters):
             raise ValueError(f"Expected func to be callable, but got {type(func)}")
         if "preprocess" in signature(func).parameters:
             func = partial(func, preprocess=False)
-        return MetricMeter(func, preprocess=self.preprocess, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan)
+        return MetricMeter(
+            func,
+            preprocess=self.preprocess,
+            ignore_index=self.ignore_index,
+            ignore_nan=self.ignore_nan,
+            device=self.device,
+            precision=self.precision,
+        )
 
     def __repr__(self):
         keys = tuple(i for i in self.keys())

@@ -59,8 +59,6 @@ class Metrics(Metric):
 
     Attributes:
         metrics: A dictionary of metrics to be computed.A
-        ignore_index: Index to be ignored in the computation.
-        ignore_nan: Whether to ignore NaN values in the computation.
         val: Metric results of current batch on current device.
         avg: Metric results of all results on all devices.
         input: The input tensor of latest batch.
@@ -72,11 +70,17 @@ class Metrics(Metric):
         *args: A single mapping of metrics.
         ignore_index: Index to be ignored in the computation, for classification tasks.
         ignore_nan: Whether to ignore NaN values in the computation, for regression tasks.
+        device: The device to run the metrics.
+        precision: Precision of the input and target tensors. Precision will be auto converted,
+            for example, for classification tasks, if the precision is `float32`, the input will
+            be converted to `float32`, and the target will be converted to `int32`.
+            If `"auto"`, the precision will be automatically converted to the best precision.
+            If `None`, no precision conversion will be performed.
         **metrics: Metrics.
 
     Examples:
         >>> from danling.metric.functional import auroc, auprc
-        >>> metrics = Metrics(auroc=auroc, auprc=auprc)
+        >>> metrics = Metrics(auroc=auroc, auprc=auprc, precision=None)
         >>> metrics
         Metrics('auroc', 'auprc')
         >>> metrics.update([0.2, 0.3, 0.5, 0.7], [0, 1, 0, 1])
@@ -119,7 +123,7 @@ class Metrics(Metric):
         )
         >>> f"{metrics:.4f}"
         'auroc: 0.6667 (0.6667)\tauprc: 0.5000 (0.5556)'
-        >>> metrics = Metrics(auroc=auroc, auprc=auprc, ignore_index=-100)
+        >>> metrics = Metrics(auroc=auroc, auprc=auprc, ignore_index=-100, precision=None)
         >>> metrics.update([[0.1, 0.4, 0.6, 0.8], [0.1, 0.4, 0.6]], [[0, -100, 1, 0], [0, -100, 1]])
         >>> metrics.input, metrics.target
         (tensor([0.1000, 0.6000, 0.8000, 0.1000, 0.6000]), tensor([0, 1, 0, 0, 1]))
@@ -137,10 +141,11 @@ class Metrics(Metric):
     def __init__(
         self,
         *args,
-        device: torch.device | None = None,
+        preprocess: Callable | None = default_preprocess,
         ignore_index: int | None = None,
         ignore_nan: bool | None = None,
-        preprocess: Callable | None = None,
+        device: torch.device | None = None,
+        precision: str | None = "auto",
         **metrics: Callable,
     ):
         super().__init__(device=device)
@@ -157,24 +162,27 @@ class Metrics(Metric):
                 meters = args[0]
                 for name, meter in meters.items():
                     metrics.setdefault(name, meter.metric)
-                if preprocess is None:
-                    preprocess = meters.getattr("preprocess")
+                if preprocess is default_preprocess:
+                    preprocess = meters.preprocess
                 if ignore_index is None:
                     ignore_index = meters.ignore_index
                 if ignore_nan is None:
                     ignore_nan = meters.ignore_nan
+                if device is None:
+                    device = meters.device
+                if precision == "auto":
+                    precision = meters.precision
             else:
                 for metric in args:
                     if not callable(metric):
                         raise ValueError(f"Expected metric to be callable, but got {type(metric)}")
                     metrics.setdefault(metric.__name__, metric)
-        if preprocess is None:
-            preprocess = default_preprocess
         self.preprocess = preprocess
         if ignore_index is not None:
             self.ignore_index = ignore_index
         if ignore_nan is not None:
             self.ignore_nan = ignore_nan
+        self.precision = precision
         for name, metric in metrics.items():
             self.metrics[name] = apply_preprocess_to_callable(metric, self)
 
@@ -205,7 +213,9 @@ class Metrics(Metric):
             else:
                 raise ValueError(f"Unknown input and target: {input}, {target}")
         if self.preprocess is not None:
-            input, target = self.preprocess(input, target, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan)
+            input, target = self.preprocess(
+                input, target, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan, precision=self.precision
+            )
         if self.world_size > 1:
             input, target = self._sync(input), self._sync(target)
         input, target = input.detach().to(self.device), target.detach().to(self.device)
@@ -241,6 +251,8 @@ class Metrics(Metric):
         ):
             return NestedDict({name: nan for name in self.metrics.keys()})
         ret = NestedDict()
+        if input.is_floating_point() and target.is_floating_point():
+            input, target = input.to(torch.float32), target.to(torch.float32)
         for name, metric in self.metrics.items():
             score = self._calculate(metric, input, target)
             if isinstance(score, Mapping):
@@ -390,7 +402,7 @@ class ScoreMetrics(Metrics):  # pylint: disable=abstract-method
         return self._score_name
 
     @score_name.setter
-    def score_name(self, name) -> None:
+    def score_name(self, name: str) -> None:
         if name not in self.metrics:
             raise ValueError(f"score_name must be in {self.metrics.keys()}, but got {name}")
         self._score_name = name
@@ -411,12 +423,12 @@ class MultiTaskMetrics(MultiTaskDict):
     Examples:
         >>> from danling.metric.functional import auroc, auprc, pearson, spearman, accuracy, mcc
         >>> metrics = MultiTaskMetrics()
-        >>> metrics.dataset1.cls = Metrics(auroc=auroc, auprc=auprc)
-        >>> metrics.dataset1.reg = Metrics(pearson=pearson, spearman=spearman)
-        >>> metrics.dataset2 = Metrics(auroc=auroc, auprc=auprc)
-        >>> metrics
-        MultiTaskMetrics(<class 'danling.metric.metrics.MultiTaskMetrics'>,
-          ('dataset1'): MultiTaskMetrics(<class 'danling.metric.metrics.MultiTaskMetrics'>,
+        >>> metrics.dataset1.cls = Metrics(auroc=auroc, auprc=auprc, precision=None)
+        >>> metrics.dataset1.reg = Metrics(pearson=pearson, spearman=spearman, precision=None)
+        >>> metrics.dataset2 = Metrics(auroc=auroc, auprc=auprc, precision=None)
+        >>> metrics  # doctest: +ELLIPSIS
+        MultiTaskMetrics(...
+          ('dataset1'): MultiTaskMetrics(...
             ('cls'): Metrics('auroc', 'auprc')
             ('reg'): Metrics('pearson', 'spearman')
           )

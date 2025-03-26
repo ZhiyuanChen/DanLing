@@ -36,6 +36,20 @@ DTYPE_MAP = {
     "int64": torch.int64,
 }
 
+FLOAT_INT_MAP = {
+    "float16": "int16",
+    "float32": "int32",
+    "float64": "int64",
+    "float8": "int8",
+}
+
+INT_FLOAT_MAP = {
+    "int16": "float16",
+    "int32": "float32",
+    "int64": "float64",
+    "int8": "float8",
+}
+
 try:
     _ = torch.bfloat16
     _ = torch.zeros(1, dtype=torch.bfloat16)
@@ -69,6 +83,11 @@ def convert_tensor_precision(tensor: Tensor, precision: str | None = "auto") -> 
         return tensor
 
     if precision in DTYPE_MAP:
+        precision = (
+            INT_FLOAT_MAP.get(precision, precision)
+            if tensor.is_floating_point()
+            else FLOAT_INT_MAP.get(precision, precision)
+        )
         if precision == "float8":
             warnings.warn("float8 has limited support, use with caution.", RuntimeWarning, stacklevel=2)
         return tensor.to(dtype=DTYPE_MAP[precision])
@@ -77,13 +96,14 @@ def convert_tensor_precision(tensor: Tensor, precision: str | None = "auto") -> 
     if tensor.is_floating_point():
         if maximum <= HALF_MAX and minimum >= HALF_MIN:
             return tensor.to(dtype=torch.float16)
-        return torch.bfloat16 if BFLOAT16_AVAILABLE else torch.float32
+        dtype = torch.bfloat16 if BFLOAT16_AVAILABLE else torch.float32
+        return tensor.to(dtype=dtype)
     else:
-        if maximum <= CHAR_MAX and minimum >= CHAR_MIN:
-            return tensor.to(dtype=torch.int8)
         if maximum <= SHORT_MAX and minimum >= SHORT_MIN:
             return tensor.to(dtype=torch.int16)
-        return tensor.to(dtype=torch.int32)
+        if maximum <= INT_MAX and minimum >= INT_MIN:
+            return tensor.to(dtype=torch.int32)
+        return tensor.to(dtype=torch.int64)
     return tensor
 
 

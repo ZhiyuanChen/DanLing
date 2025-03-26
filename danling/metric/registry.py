@@ -23,7 +23,16 @@ from __future__ import annotations
 
 from chanfig import Registry as Registry_
 
-from .factory import binary_metrics, multiclass_metrics, multilabel_metrics, regression_metrics
+from .factory import (
+    binary_metric_meters,
+    binary_metrics,
+    multiclass_metric_meters,
+    multiclass_metrics,
+    multilabel_metric_meters,
+    multilabel_metrics,
+    regression_metrics,
+)
+from .metric_meter import MetricMeters
 from .metrics import Metrics
 
 
@@ -37,7 +46,7 @@ class Registry(Registry_):
         num_classes: int | None = None,
         num_outputs: int | None = None,
         **kwargs,
-    ) -> Metrics:
+    ) -> Metrics | MetricMeters:
         type = type.lower()
         if type == "multilabel":
             return self.init(self.lookup(type), num_labels=num_labels, **kwargs)
@@ -50,8 +59,13 @@ class Registry(Registry_):
         return self.init(self.lookup(type), **kwargs)
 
 
-METRICS = Registry(key="type")
+METRICS = Registry()
 METRICS.register(binary_metrics, "binary")
 METRICS.register(multiclass_metrics, "multiclass")
 METRICS.register(multilabel_metrics, "multilabel")
 METRICS.register(regression_metrics, "regression")
+
+METRIC_METERS = Registry()
+METRIC_METERS.register(binary_metric_meters, "binary")
+METRIC_METERS.register(multiclass_metric_meters, "multiclass")
+METRIC_METERS.register(multilabel_metric_meters, "multilabel")
