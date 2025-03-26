@@ -22,6 +22,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable, Optional, Tuple
 
+import torch
 from torch import Tensor
 
 from ..tensors import NestedTensor
@@ -156,9 +157,11 @@ class MetricMeters(AverageMeters):
     def __init__(
         self,
         *args,
+        preprocess: Callable | None = None,
         ignore_index: int | None = None,
         ignore_nan: bool | None = None,
-        preprocess: Callable | None = None,
+        device: torch.device | None = None,
+        precision: str | None = None,
         **meters,
     ) -> None:
         if args:
@@ -186,6 +189,8 @@ class MetricMeters(AverageMeters):
             self.setattr("ignore_index", ignore_index)
         if ignore_nan is not None:
             self.setattr("ignore_nan", ignore_nan)
+        self.setattr("device", device)
+        self.setattr("precision", precision)
         for name, meter in meters.items():
             if callable(meter):
                 meters[name] = meter = MetricMeter(

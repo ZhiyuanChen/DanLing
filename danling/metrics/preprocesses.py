@@ -25,7 +25,7 @@ from collections.abc import Sequence
 import torch
 from torch import Tensor
 
-from danling.tensors import NestedTensor
+from danling.tensors import NestedTensor, convert_tensor_precision
 
 
 def infer_task(num_classes: int | None, num_labels: int | None):
@@ -43,6 +43,8 @@ def preprocess(
     target: Tensor | NestedTensor | Sequence,
     ignore_index: int | None = None,
     ignore_nan: bool = False,
+    device: torch.device | None = None,
+    precision: str | None = "auto",
 ):
     if not isinstance(input, (Tensor, NestedTensor)):
         try:
@@ -60,6 +62,11 @@ def preprocess(
         if isinstance(target, NestedTensor) and isinstance(input, Tensor):
             input = target.nested_like(input, strict=False)
         input, target = input.concat, target.concat
+    if device is not None:
+        input, target = input.to(device), target.to(device)
+    if precision is not None:
+        input = convert_tensor_precision(input, precision)
+        target = target.to(input.dtype)
     if ignore_index is not None:
         mask = target != ignore_index
         input, target = input[mask], target[mask]
@@ -77,8 +84,9 @@ def preprocess_regression(
     num_outputs: int = 1,
     ignore_nan: bool = True,
     ignore_index: int | None = None,
+    **kwargs,
 ):
-    input, target = preprocess(input, target, ignore_nan=ignore_nan)
+    input, target = preprocess(input, target, ignore_nan=ignore_nan, **kwargs)
     if num_outputs > 1:
         return input.view(-1, num_outputs), target.view(-1, num_outputs)
     return input.view(-1), target.view(-1)
@@ -89,8 +97,9 @@ def preprocess_binary(
     target: Tensor | NestedTensor | Sequence,
     ignore_index: int | None = -100,
     ignore_nan: bool = False,
+    **kwargs,
 ):
-    input, target = preprocess(input, target, ignore_index=ignore_index)
+    input, target = preprocess(input, target, ignore_index=ignore_index, **kwargs)
     input, target = input.view(-1), target.view(-1)
     if input.max() > 1 or input.min() < 0:
         input = input.sigmoid()
@@ -103,8 +112,9 @@ def preprocess_multiclass(
     num_classes: int,
     ignore_index: int | None = -100,
     ignore_nan: bool = False,
+    **kwargs,
 ):
-    input, target = preprocess(input, target, ignore_index=ignore_index)
+    input, target = preprocess(input, target, ignore_index=ignore_index, **kwargs)
     input, target = input.view(-1, num_classes), target.view(-1)
     if input.max() > 1 or input.min() < 0:
         input = input.softmax(dim=-1)
@@ -117,8 +127,9 @@ def preprocess_multilabel(
     num_labels: int,
     ignore_index: int | None = -100,
     ignore_nan: bool = False,
+    **kwargs,
 ):
-    input, target = preprocess(input, target, ignore_index=ignore_index)
+    input, target = preprocess(input, target, ignore_index=ignore_index, **kwargs)
     input, target = input.view(-1, num_labels), target.view(-1, num_labels)
     if input.max() > 1 or input.min() < 0:
         input = input.sigmoid()
