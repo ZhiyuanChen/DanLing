@@ -534,8 +534,8 @@ def _test_nested_tensor_binary(rank, world_size):
         value, average = metrics.value(), metrics.average()
         pred = torch.cat(_gather_object(pred_list, world_size))
         target = torch.cat(_gather_object(target_list, world_size))
-        assert (pred == metrics.input).all()
-        assert (target == metrics.target).all()
+        assert torch.allclose(pred, metrics.input)
+        assert torch.allclose(target, metrics.target)
         for key, func in function_map.items():
             assert value[key] - func(pred, target) < EPSILON
         # for key, func in function_map.items():
@@ -583,8 +583,8 @@ def _test_nested_tensor_regression(rank, world_size):
         value, average = metrics.value(), metrics.average()
         pred = torch.cat(_gather_object(pred_list, world_size))
         target = torch.cat(_gather_object(target_list, world_size))
-        assert (pred == metrics.input).all()
-        assert (target == metrics.target).all()
+        assert torch.allclose(pred, metrics.input)
+        assert torch.allclose(target, metrics.target)
         for key, func in function_map.items():
             assert value[key] - func(pred, target) < EPSILON
         # for key, func in function_map.items():
@@ -631,8 +631,8 @@ def _test_nested_tensor_multi_regression(rank, world_size):
         value, average = metrics.value(), metrics.average()
         pred = torch.cat(_gather_object(pred_list, world_size))
         target = torch.cat(_gather_object(target_list, world_size))
-        assert (pred == metrics.input).all()
-        assert (target == metrics.target).all()
+        assert torch.allclose(pred, metrics.input)
+        assert torch.allclose(target, metrics.target)
         for key, func in function_map.items():
             assert value[key] - func(pred, target).mean() < EPSILON
         # for key, func in function_map.items():

@@ -30,7 +30,7 @@ from torch import Tensor
 from torch import distributed as dist
 from torcheval.metrics import Metric
 
-from danling.tensors import NestedTensor
+from danling.tensors import NestedTensor, convert_tensor_precision
 from danling.utils import flist, get_world_size
 
 from .preprocesses import preprocess as default_preprocess
@@ -140,18 +140,13 @@ class Metrics(Metric):
         *args,
         merge_dict: bool | None = None,
         return_nested: bool | None = None,
-        device: torch.device | None = None,
+        preprocess: Callable | None = None,
         ignore_index: int | None = None,
         ignore_nan: bool | None = None,
-        preprocess: Callable | None = None,
+        device: torch.device | None = None,
+        precision: str | None = "auto",
         **metrics: Callable,
     ):
-        super().__init__(device=device)
-        self._add_state("_input", torch.empty(0))
-        self._add_state("_target", torch.empty(0))
-        self._add_state("_inputs", torch.empty(0))
-        self._add_state("_targets", torch.empty(0))
-        self.world_size = get_world_size()
         if args:
             from .metric_meter import MetricMeters
 
@@ -165,11 +160,21 @@ class Metrics(Metric):
                     ignore_index = meters.getattr("ignore_index")
                 if ignore_nan is None:
                     ignore_nan = meters.getattr("ignore_nan")
+                if device is None:
+                    device = meters.getattr("device")
+                if precision == "auto":
+                    precision = meters.getattr("precision")
             else:
                 for metric in args:
                     if not callable(metric):
                         raise ValueError(f"Expected metric to be callable, but got {type(metric)}")
                     metrics.setdefault(metric.__name__, metric)
+        super().__init__(device=device)
+        self._add_state("_input", torch.empty(0))
+        self._add_state("_target", torch.empty(0))
+        self._add_state("_inputs", torch.empty(0))
+        self._add_state("_targets", torch.empty(0))
+        self.world_size = get_world_size()
         self.metrics = FlatDict(metrics)
         if preprocess is None:
             preprocess = default_preprocess
@@ -182,6 +187,7 @@ class Metrics(Metric):
             self.ignore_index = ignore_index
         if ignore_nan is not None:
             self.ignore_nan = ignore_nan
+        self.precision = precision
 
     def update(self, input: Tensor | NestedTensor | Sequence, target: Tensor | NestedTensor | Sequence) -> None:
         # convert input and target to Tensor if they are not
@@ -218,6 +224,8 @@ class Metrics(Metric):
         if self.world_size > 1:
             input, target = self._sync(input), self._sync(target)
         input, target = input.detach().to(self.device), target.detach().to(self.device)
+        input = convert_tensor_precision(input, precision=self.precision)
+        target = target.to(input.dtype)
         self._input = input
         self._target = target
         self._inputs = torch.cat([self._inputs, input]).to(input.dtype)

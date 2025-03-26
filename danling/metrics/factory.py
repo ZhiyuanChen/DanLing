@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from functools import partial
 
+import torch
 from lazy_imports import try_import
 
 from .metric_meter import MetricMeters
@@ -31,7 +32,9 @@ with try_import() as lazy_import:
     from .metrics import Metrics
 
 
-def binary_metrics(ignore_index: int | None = -100, **kwargs):
+def binary_metrics(
+    ignore_index: int | None = -100, device: torch.device | None = None, precision: str | None = "auto", **kwargs
+):
     lazy_import.check()
     return Metrics(
         auroc=partial(auroc, task="binary", preprocess=False),
@@ -39,12 +42,30 @@ def binary_metrics(ignore_index: int | None = -100, **kwargs):
         acc=partial(accuracy, task="binary", preprocess=False),
         mcc=partial(mcc, task="binary", preprocess=False),
         f1=partial(f1_score, task="binary", preprocess=False),
-        preprocess=partial(preprocess_binary, ignore_index=ignore_index),
+        preprocess=partial(preprocess_binary, ignore_index=ignore_index, device=device, precision=precision),
         **kwargs,
     )
 
 
-def multiclass_metrics(num_classes: int, ignore_index: int | None = -100, **kwargs):
+def binary_metric_meters(
+    ignore_index: int | None = -100, device: torch.device | None = None, precision: str | None = "auto", **kwargs
+):
+    lazy_import.check()
+    return MetricMeters(
+        acc=partial(accuracy, task="binary", preprocess=False),
+        f1=partial(f1_score, task="binary", preprocess=False),
+        preprocess=partial(preprocess_binary, ignore_index=ignore_index, device=device, precision=precision),
+        **kwargs,
+    )
+
+
+def multiclass_metrics(
+    num_classes: int,
+    ignore_index: int | None = -100,
+    device: torch.device | None = None,
+    precision: str | None = "auto",
+    **kwargs,
+):
     lazy_import.check()
     return Metrics(
         auroc=partial(auroc, task="multiclass", num_classes=num_classes, preprocess=False),
@@ -52,22 +73,46 @@ def multiclass_metrics(num_classes: int, ignore_index: int | None = -100, **kwar
         acc=partial(accuracy, task="multiclass", num_classes=num_classes, preprocess=False),
         mcc=partial(mcc, task="multiclass", num_classes=num_classes, preprocess=False),
         f1=partial(f1_score, task="multiclass", num_classes=num_classes, preprocess=False),
-        preprocess=partial(preprocess_multiclass, num_classes=num_classes, ignore_index=ignore_index),
+        preprocess=partial(
+            preprocess_multiclass,
+            num_classes=num_classes,
+            ignore_index=ignore_index,
+            device=device,
+            precision=precision,
+        ),
         **kwargs,
     )
 
 
-def multiclass_metric_meters(num_classes: int, ignore_index: int | None = -100, **kwargs):
+def multiclass_metric_meters(
+    num_classes: int,
+    ignore_index: int | None = -100,
+    device: torch.device | None = None,
+    precision: str | None = "auto",
+    **kwargs,
+):
     lazy_import.check()
     return MetricMeters(
         acc=partial(accuracy, task="multiclass", num_classes=num_classes, preprocess=False),
         f1=partial(f1_score, task="multiclass", num_classes=num_classes, preprocess=False),
-        preprocess=partial(preprocess_multiclass, num_classes=num_classes, ignore_index=ignore_index),
+        preprocess=partial(
+            preprocess_multiclass,
+            num_classes=num_classes,
+            ignore_index=ignore_index,
+            device=device,
+            precision=precision,
+        ),
         **kwargs,
     )
 
 
-def multilabel_metrics(num_labels: int, ignore_index: int | None = -100, **kwargs):
+def multilabel_metrics(
+    num_labels: int,
+    ignore_index: int | None = -100,
+    device: torch.device | None = None,
+    precision: str | None = "auto",
+    **kwargs,
+):
     lazy_import.check()
     return Metrics(
         auroc=partial(auroc, task="multilabel", num_labels=num_labels, preprocess=False),
@@ -75,28 +120,46 @@ def multilabel_metrics(num_labels: int, ignore_index: int | None = -100, **kwarg
         acc=partial(accuracy, task="multilabel", num_labels=num_labels, preprocess=False),
         mcc=partial(mcc, task="multilabel", num_labels=num_labels, preprocess=False),
         f1=partial(f1_score, task="multilabel", num_labels=num_labels, preprocess=False),
-        preprocess=partial(preprocess_multilabel, num_labels=num_labels, ignore_index=ignore_index),
+        preprocess=partial(
+            preprocess_multilabel, num_labels=num_labels, ignore_index=ignore_index, device=device, precision=precision
+        ),
         **kwargs,
     )
 
 
-def multilabel_metric_meters(num_labels: int, ignore_index: int | None = -100, **kwargs):
+def multilabel_metric_meters(
+    num_labels: int,
+    ignore_index: int | None = -100,
+    device: torch.device | None = None,
+    precision: str | None = "auto",
+    **kwargs,
+):
     lazy_import.check()
     return MetricMeters(
         acc=partial(accuracy, task="multilabel", num_labels=num_labels, preprocess=False),
         f1=partial(f1_score, task="multilabel", num_labels=num_labels, preprocess=False),
-        preprocess=partial(preprocess_multilabel, num_labels=num_labels, ignore_index=ignore_index),
+        preprocess=partial(
+            preprocess_multilabel, num_labels=num_labels, ignore_index=ignore_index, device=device, precision=precision
+        ),
         **kwargs,
     )
 
 
-def regression_metrics(num_outputs: int = 1, ignore_nan: bool = True, **kwargs):
+def regression_metrics(
+    num_outputs: int = 1,
+    ignore_nan: bool = True,
+    device: torch.device | None = None,
+    precision: str | None = "auto",
+    **kwargs,
+):
     lazy_import.check()
     return Metrics(
         pearson=partial(pearson, num_outputs=num_outputs, preprocess=False),
         spearman=partial(spearman, num_outputs=num_outputs, preprocess=False),
         r2=partial(r2_score, num_outputs=num_outputs, preprocess=False),
         rmse=partial(rmse, num_outputs=num_outputs, preprocess=False),
-        preprocess=partial(preprocess_regression, num_outputs=num_outputs, ignore_nan=ignore_nan),
+        preprocess=partial(
+            preprocess_regression, num_outputs=num_outputs, ignore_nan=ignore_nan, device=device, precision=precision
+        ),
         **kwargs,
     )

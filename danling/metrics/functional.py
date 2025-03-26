@@ -52,6 +52,8 @@ def auroc(
     task: str | None = None,
     preprocess: bool = True,
     ignore_index: int | None = -100,
+    device: torch.device | None = None,
+    precision: str | None = "auto",
     **kwargs,
 ):
     te.check()
@@ -59,15 +61,21 @@ def auroc(
         task = infer_task(num_classes, num_labels)
     if task == "binary":
         if preprocess:
-            input, target = preprocess_binary(input, target, ignore_index=ignore_index)
+            input, target = preprocess_binary(
+                input, target, ignore_index=ignore_index, device=device, precision=precision
+            )
         return tef.binary_auroc(input=input, target=target, weight=weight, **kwargs)
     if task == "multiclass":
         if preprocess:
-            input, target = preprocess_multiclass(input, target, num_classes, ignore_index=ignore_index)
+            input, target = preprocess_multiclass(
+                input, target, num_classes, ignore_index=ignore_index, device=device, precision=precision
+            )
         return tef.multiclass_auroc(input=input, target=target, num_classes=num_classes, average=average, **kwargs)
     if task == "multilabel":
         if preprocess:
-            input, target = preprocess_multilabel(input, target, num_labels, ignore_index=ignore_index)
+            input, target = preprocess_multilabel(
+                input, target, num_labels, ignore_index=ignore_index, device=device, precision=precision
+            )
         ret = tef.binary_auroc(input=input.T, target=target.T, num_tasks=num_labels, weight=weight, **kwargs)
         if task_weights is not None:
             return ret @ task_weights.double()
@@ -85,6 +93,8 @@ def auprc(
     task: str | None = None,
     preprocess: bool = True,
     ignore_index: int | None = -100,
+    device: torch.device | None = None,
+    precision: str | None = "auto",
     **kwargs,
 ):
     te.check()
@@ -92,15 +102,21 @@ def auprc(
         task = infer_task(num_classes, num_labels)
     if task == "binary":
         if preprocess:
-            input, target = preprocess_binary(input, target, ignore_index=ignore_index)
+            input, target = preprocess_binary(
+                input, target, ignore_index=ignore_index, device=device, precision=precision
+            )
         return tef.binary_auprc(input=input, target=target, **kwargs)
     if task == "multiclass":
         if preprocess:
-            input, target = preprocess_multiclass(input, target, num_classes, ignore_index=ignore_index)
+            input, target = preprocess_multiclass(
+                input, target, num_classes, ignore_index=ignore_index, device=device, precision=precision
+            )
         return tef.multiclass_auprc(input=input, target=target, num_classes=num_classes, average=average, **kwargs)
     if task == "multilabel":
         if preprocess:
-            input, target = preprocess_multilabel(input, target, num_labels, ignore_index=ignore_index)
+            input, target = preprocess_multilabel(
+                input, target, num_labels, ignore_index=ignore_index, device=device, precision=precision
+            )
         ret = tef.multilabel_auprc(input=input, target=target, num_labels=num_labels, average=average, **kwargs)
         if task_weights is not None:
             return ret @ task_weights.double()
@@ -119,6 +135,8 @@ def f1_score(
     task: str | None = None,
     preprocess: bool = True,
     ignore_index: int | None = -100,
+    device: torch.device | None = None,
+    precision: str | None = "auto",
     **kwargs,
 ):
     te.check()
@@ -126,15 +144,21 @@ def f1_score(
         task = infer_task(num_classes, num_labels)
     if task == "binary":
         if preprocess:
-            input, target = preprocess_binary(input, target, ignore_index=ignore_index)
+            input, target = preprocess_binary(
+                input, target, ignore_index=ignore_index, device=device, precision=precision
+            )
         return tef.binary_f1_score(input=input, target=target, threshold=threshold, **kwargs)
     if task == "multiclass":
         if preprocess:
-            input, target = preprocess_multiclass(input, target, num_classes, ignore_index=ignore_index)
+            input, target = preprocess_multiclass(
+                input, target, num_classes, ignore_index=ignore_index, device=device, precision=precision
+            )
         return tef.multiclass_f1_score(input=input, target=target, num_classes=num_classes, average=average, **kwargs)
     if task == "multilabel":
         if preprocess:
-            input, target = preprocess_multilabel(input, target, num_labels, ignore_index=ignore_index)
+            input, target = preprocess_multilabel(
+                input, target, num_labels, ignore_index=ignore_index, device=device, precision=precision
+            )
         ret = tmf.classification.multilabel_f1_score(input, target, num_labels=num_labels, average=average, **kwargs)
         if task_weights is not None:
             return ret @ task_weights.double()
@@ -152,6 +176,8 @@ def accuracy(
     task: str | None = None,
     preprocess: bool = True,
     ignore_index: int | None = -100,
+    device: torch.device | None = None,
+    precision: str | None = "auto",
     **kwargs,
 ):
     te.check()
@@ -159,15 +185,21 @@ def accuracy(
         task = infer_task(num_classes, num_labels)
     if task == "binary":
         if preprocess:
-            input, target = preprocess_binary(input, target, ignore_index=ignore_index)
+            input, target = preprocess_binary(
+                input, target, ignore_index=ignore_index, device=device, precision=precision
+            )
         return tef.binary_accuracy(input=input, target=target, threshold=threshold, **kwargs)
     if num_labels is None:
         if preprocess:
-            input, target = preprocess_multiclass(input, target, num_classes, ignore_index=ignore_index)
+            input, target = preprocess_multiclass(
+                input, target, num_classes, ignore_index=ignore_index, device=device, precision=precision
+            )
         return tef.multiclass_accuracy(input=input, target=target, num_classes=num_classes, average=average, **kwargs)
     if num_classes is None:
         if preprocess:
-            input, target = preprocess_multilabel(input, target, num_labels, ignore_index=ignore_index)
+            input, target = preprocess_multilabel(
+                input, target, num_labels, ignore_index=ignore_index, device=device, precision=precision
+            )
         return tef.multilabel_accuracy(input=input, target=target, threshold=threshold, **kwargs)
     raise ValueError(f"Task should be one of binary, multiclass, or multilabel, but got {task}")
 
@@ -181,6 +213,8 @@ def mcc(
     task: str | None = None,
     preprocess: bool = True,
     ignore_index: int | None = -100,
+    device: torch.device | None = None,
+    precision: str | None = "auto",
     **kwargs,
 ):
     tm.check()
@@ -188,11 +222,17 @@ def mcc(
         task = infer_task(num_classes, num_labels)
     if preprocess:
         if task == "binary":
-            input, target = preprocess_binary(input, target, ignore_index=ignore_index)
+            input, target = preprocess_binary(
+                input, target, ignore_index=ignore_index, device=device, precision=precision
+            )
         elif task == "multiclass":
-            input, target = preprocess_multiclass(input, target, num_classes, ignore_index=ignore_index)
+            input, target = preprocess_multiclass(
+                input, target, num_classes, ignore_index=ignore_index, device=device, precision=precision
+            )
         elif task == "multilabel":
-            input, target = preprocess_multilabel(input, target, num_labels, ignore_index=ignore_index)
+            input, target = preprocess_multilabel(
+                input, target, num_labels, ignore_index=ignore_index, device=device, precision=precision
+            )
     try:
         return tmf.matthews_corrcoef(
             input, target, task, threshold=threshold, num_classes=num_classes, num_labels=num_labels, **kwargs
@@ -208,11 +248,15 @@ def pearson(
     task_weights: Tensor | None = None,
     preprocess: bool = True,
     ignore_nan: bool = False,
+    device: torch.device | None = None,
+    precision: str | None = "auto",
     **kwargs,
 ):
     tm.check()
     if preprocess:
-        input, target = preprocess_regression(input, target, num_outputs=num_outputs, ignore_nan=ignore_nan)
+        input, target = preprocess_regression(
+            input, target, num_outputs=num_outputs, ignore_nan=ignore_nan, device=device, precision=precision
+        )
     try:
         ret = tmf.pearson_corrcoef(input, target, **kwargs)
         if task_weights is not None:
@@ -229,11 +273,15 @@ def spearman(
     task_weights: Tensor | None = None,
     preprocess: bool = True,
     ignore_nan: bool = False,
+    device: torch.device | None = None,
+    precision: str | None = "auto",
     **kwargs,
 ):
     tm.check()
     if preprocess:
-        input, target = preprocess_regression(input, target, num_outputs=num_outputs, ignore_nan=ignore_nan)
+        input, target = preprocess_regression(
+            input, target, num_outputs=num_outputs, ignore_nan=ignore_nan, device=device, precision=precision
+        )
     try:
         ret = tmf.spearman_corrcoef(input, target, **kwargs)
         if task_weights is not None:
@@ -251,11 +299,15 @@ def r2_score(
     multioutput: str = "raw_values",
     preprocess: bool = True,
     ignore_nan: bool = False,
+    device: torch.device | None = None,
+    precision: str | None = "auto",
     **kwargs,
 ):
     te.check()
     if preprocess:
-        input, target = preprocess_regression(input, target, num_outputs=num_outputs, ignore_nan=ignore_nan)
+        input, target = preprocess_regression(
+            input, target, num_outputs=num_outputs, ignore_nan=ignore_nan, device=device, precision=precision
+        )
     try:
         ret = tef.r2_score(input, target, multioutput=multioutput, **kwargs)
         if multioutput != "raw_values":
@@ -275,11 +327,15 @@ def mse(
     multioutput: str = "raw_values",
     preprocess: bool = True,
     ignore_nan: bool = False,
+    device: torch.device | None = None,
+    precision: str | None = "auto",
     **kwargs,
 ):
     te.check()
     if preprocess:
-        input, target = preprocess_regression(input, target, num_outputs=num_outputs, ignore_nan=ignore_nan)
+        input, target = preprocess_regression(
+            input, target, num_outputs=num_outputs, ignore_nan=ignore_nan, device=device, precision=precision
+        )
     ret = tef.mean_squared_error(input, target, **kwargs)
     if multioutput != "raw_values":
         return ret
@@ -296,11 +352,15 @@ def rmse(
     multioutput: str = "raw_values",
     preprocess: bool = True,
     ignore_nan: bool = False,
+    device: torch.device | None = None,
+    precision: str | None = "auto",
     **kwargs,
 ):
     te.check()
     if preprocess:
-        input, target = preprocess_regression(input, target, num_outputs=num_outputs, ignore_nan=ignore_nan)
+        input, target = preprocess_regression(
+            input, target, num_outputs=num_outputs, ignore_nan=ignore_nan, device=device, precision=precision
+        )
     ret = tef.mean_squared_error(input, target, **kwargs).sqrt()
     if multioutput != "raw_values":
         return ret

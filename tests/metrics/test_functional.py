@@ -42,7 +42,9 @@ with try_import() as tm:
     from torchmetrics.functional import matthews_corrcoef, pearson_corrcoef, spearman_corrcoef
     from torchmetrics.functional.classification import multilabel_auroc, multilabel_f1_score
 
-EPSILON = 1e-6
+torch.manual_seed(0)
+
+EPSILON = 1e-4
 
 
 def test_auroc():

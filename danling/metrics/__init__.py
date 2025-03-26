@@ -30,7 +30,7 @@ from .preprocesses import (
     preprocess_multilabel,
     preprocess_regression,
 )
-from .registry import METRICS
+from .registry import METRIC_METERS, METRICS
 
 __all__ = [
     "Metrics",
@@ -42,6 +42,7 @@ __all__ = [
     "AverageMeters",
     "MultiTaskAverageMeters",
     "METRICS",
+    "METRIC_METERS",
     "regression_metrics",
     "binary_metrics",
     "multiclass_metrics",

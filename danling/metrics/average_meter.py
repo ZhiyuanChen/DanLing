@@ -31,6 +31,11 @@ from danling.utils import get_world_size
 
 from .utils import MetricsDict, MultiTaskDict
 
+try:
+    from typing import Self  # type: ignore[attr-defined]
+except ImportError:
+    from typing_extensions import Self
+
 
 class AverageMeter:
     r"""
@@ -81,7 +86,7 @@ class AverageMeter:
     def __init__(self) -> None:
         self.reset()
 
-    def reset(self) -> None:
+    def reset(self) -> Self:
         r"""
         Resets the meter.
         """
@@ -90,6 +95,8 @@ class AverageMeter:
         self.n = 1
         self.sum = 0
         self.count = 0
+
+        return self
 
     def update(self, value, n: float = 1) -> None:
         r"""

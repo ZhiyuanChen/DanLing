@@ -20,6 +20,7 @@
 from lazy_imports import try_import
 
 from .metrics import (
+    METRIC_METERS,
     METRICS,
     AverageMeter,
     AverageMeters,
@@ -56,6 +57,7 @@ __all__ = [
     "METRICS",
     "Metrics",
     "MultiTaskMetrics",
+    "METRIC_METERS",
     "MetricMeter",
     "MetricMeters",
     "MultiTaskMetricMeters",
