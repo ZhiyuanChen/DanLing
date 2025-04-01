@@ -21,6 +21,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from functools import partial
+from inspect import signature
 from math import nan
 from typing import Callable, Iterable, Optional
 
@@ -142,6 +144,7 @@ class Metrics(Metric):
         **metrics: Callable,
     ):
         super().__init__(device=device)
+        self.metrics = FlatDict()
         self._add_state("_input", torch.empty(0))
         self._add_state("_target", torch.empty(0))
         self._add_state("_inputs", torch.empty(0))
@@ -157,15 +160,14 @@ class Metrics(Metric):
                 if preprocess is None:
                     preprocess = meters.getattr("preprocess")
                 if ignore_index is None:
-                    ignore_index = meters.getattr("ignore_index")
+                    ignore_index = meters.ignore_index
                 if ignore_nan is None:
-                    ignore_nan = meters.getattr("ignore_nan")
+                    ignore_nan = meters.ignore_nan
             else:
                 for metric in args:
                     if not callable(metric):
                         raise ValueError(f"Expected metric to be callable, but got {type(metric)}")
                     metrics.setdefault(metric.__name__, metric)
-        self.metrics = FlatDict(metrics)
         if preprocess is None:
             preprocess = default_preprocess
         self.preprocess = preprocess
@@ -173,6 +175,8 @@ class Metrics(Metric):
             self.ignore_index = ignore_index
         if ignore_nan is not None:
             self.ignore_nan = ignore_nan
+        for name, metric in metrics.items():
+            self.metrics[name] = self._preprocess_callable(metric)
 
     def update(self, input: Tensor | NestedTensor | Sequence, target: Tensor | NestedTensor | Sequence) -> None:
         # convert input and target to Tensor if they are not
@@ -330,6 +334,13 @@ class Metrics(Metric):
                 )
         return self
 
+    def _preprocess_callable(self, func: Callable) -> Callable:
+        if not callable(func):
+            raise ValueError(f"Expected func to be callable, but got {type(func)}")
+        if "preprocess" not in signature(func).parameters:
+            return func
+        return partial(func, preprocess=self.preprocess is None)
+
 
 class ScoreMetrics(Metrics):  # pylint: disable=abstract-method
     r"""
@@ -481,6 +492,15 @@ class MultiTaskMetrics(MultiTaskDict):
         name: str,
         metric: Metrics | Metric,  # type: ignore[override]
     ) -> None:
+        from .metric_meter import MetricMeters
+
+        if isinstance(metric, MetricMeters):
+            metric = Metrics(
+                preprocess=metric.preprocess,
+                ignore_index=metric.ignore_index,
+                ignore_nan=metric.ignore_nan,
+                **{name: meter.metric for name, meter in metric.items()},
+            )
         if not isinstance(metric, (Metrics, Metric)):
             raise ValueError(f"Expected {metric} to be an instance of Metrics or Metric, but got {type(metric)}")
         super().set(name, metric)
