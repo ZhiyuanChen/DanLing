@@ -4,6 +4,6 @@ authors:
 date: 2022-05-04
 ---
 
-# PNTensor
+# Metrics
 
-::: danling.tensors.PNTensor
+::: danling.metric.metrics

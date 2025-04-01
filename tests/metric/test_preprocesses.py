@@ -21,7 +21,7 @@ import pytest
 import torch
 from pytest import raises
 
-from danling.metrics.preprocesses import (
+from danling.metric.preprocesses import (
     infer_task,
     preprocess,
     preprocess_binary,
@@ -29,7 +29,7 @@ from danling.metrics.preprocesses import (
     preprocess_multilabel,
     preprocess_regression,
 )
-from danling.tensors import NestedTensor
+from danling.tensor import NestedTensor
 
 
 def test_infer_task():

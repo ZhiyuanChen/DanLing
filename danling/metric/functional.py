@@ -25,7 +25,7 @@ import torch
 from lazy_imports import try_import
 from torch import Tensor
 
-from danling.tensors import NestedTensor
+from danling.tensor import NestedTensor
 
 with try_import() as te:
     from torcheval.metrics import functional as tef

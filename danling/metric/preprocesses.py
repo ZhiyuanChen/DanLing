@@ -25,7 +25,7 @@ from collections.abc import Sequence
 import torch
 from torch import Tensor
 
-from danling.tensors import NestedTensor
+from danling.tensor import NestedTensor
 
 
 def infer_task(num_classes: int | None, num_labels: int | None):
