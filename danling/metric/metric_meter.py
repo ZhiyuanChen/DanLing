@@ -20,6 +20,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from functools import partial
+from inspect import signature
 from typing import Any, Callable, Optional, Tuple
 
 from torch import Tensor
@@ -85,18 +87,21 @@ class MetricMeter(AverageMeter):
         ignore_index: int | None = None,
         ignore_nan: bool | None = None,
     ) -> None:
-        self.metric = metric
+        super().__init__()
         self.preprocess = preprocess
         if ignore_index is not None:
             self.ignore_index = ignore_index
         if ignore_nan is not None:
             self.ignore_nan = ignore_nan
-        super().__init__()
+        if preprocess is not None and "preprocess" in signature(metric).parameters:
+            metric = partial(metric, preprocess=None)
+        self.metric = metric
 
     def update(  # type: ignore[override] # pylint: disable=W0237
         self,
         input: Tensor | NestedTensor | Sequence,  # pylint: disable=W0622
         target: Tensor | NestedTensor | Sequence,
+        preprocessed: bool = False,
     ) -> None:
         r"""
         Updates the average and current value in the meter.
@@ -105,13 +110,16 @@ class MetricMeter(AverageMeter):
             value: Value to be added to the average.
             n: Number of values to be added.
         """
-        if self.preprocess is not None:
+        if self.preprocess is not None and not preprocessed:
             input, target = self.preprocess(input, target, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan)
         n = len(input)
         super().update(self.metric(input, target).item() * n, n=n)
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self.metric.__name__})"
+        metric = self.metric
+        if isinstance(metric, partial):
+            metric = metric.func
+        return f"{self.__class__.__name__}({metric.__name__})"
 
 
 class MetricMeters(AverageMeters):
@@ -160,9 +168,9 @@ class MetricMeters(AverageMeters):
     def __init__(
         self,
         *args,
+        preprocess: Callable | None = default_preprocess,
         ignore_index: int | None = None,
         ignore_nan: bool | None = None,
-        preprocess: Callable | None = None,
         **meters,
     ) -> None:
         if args:
@@ -172,7 +180,7 @@ class MetricMeters(AverageMeters):
                 metrics = args[0]
                 for name, metric in metrics.metrics.items():
                     meters.setdefault(name, metric)
-                if preprocess is None:
+                if preprocess is default_preprocess:
                     preprocess = metrics.preprocess
                 if ignore_index is None:
                     ignore_index = metrics.ignore_index
@@ -183,8 +191,6 @@ class MetricMeters(AverageMeters):
                     if not callable(metric):
                         raise ValueError(f"Expected metric to be callable, but got {type(metric)}")
                     meters.setdefault(metric.__name__, metric)
-        if preprocess is None:
-            preprocess = default_preprocess
         self.setattr("preprocess", preprocess)
         if ignore_index is not None:
             self.setattr("ignore_index", ignore_index)
@@ -192,9 +198,7 @@ class MetricMeters(AverageMeters):
             self.setattr("ignore_nan", ignore_nan)
         for name, meter in meters.items():
             if callable(meter):
-                meters[name] = meter = MetricMeter(
-                    meter, preprocess=None, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan
-                )
+                meters[name] = meter = self._preprocess_callable(meter)
             if not isinstance(meter, MetricMeter):
                 raise ValueError(f"Expected {name} to be an instance of MetricMeter, but got {type(meter)}")
         super().__init__(default_factory=None, **meters)  # type: ignore[arg-type]
@@ -212,17 +216,26 @@ class MetricMeters(AverageMeters):
             target: Target values to compute the metrics.
         """
 
+        preprocessed = False
         if self.preprocess is not None:
             input, target = self.preprocess(input, target, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan)
+            preprocessed = True
         for meter in self.values():
-            meter.update(input, target)
+            meter.update(input, target, preprocessed=preprocessed)
 
     def set(self, name: str, meter: MetricMeter | Callable) -> None:  # type: ignore[override] # pylint: disable=W0237
         if callable(meter):
-            meter = MetricMeter(meter, preprocess=None, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan)
+            meter = self._preprocess_callable(meter)
         if not isinstance(meter, MetricMeter):
             raise ValueError(f"Expected meter to be an instance of MetricMeter, but got {type(meter)}")
         super().set(name, meter)
+
+    def _preprocess_callable(self, func: Callable) -> MetricMeter:
+        if not callable(func):
+            raise ValueError(f"Expected func to be callable, but got {type(func)}")
+        if "preprocess" in signature(func).parameters:
+            func = partial(func, preprocess=self.preprocess is None)
+        return MetricMeter(func, preprocess=self.preprocess, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan)
 
     def __repr__(self):
         keys = tuple(i for i in self.keys())
