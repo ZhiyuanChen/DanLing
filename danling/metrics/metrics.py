@@ -68,6 +68,8 @@ class Metrics(Metric):
 
     Args:
         *args: A single mapping of metrics.
+        ignore_index: Index to be ignored in the computation, for classification tasks.
+        ignore_nan: Whether to ignore NaN values in the computation, for regression tasks.
         **metrics: Metrics.
 
     Examples:
@@ -129,17 +131,10 @@ class Metrics(Metric):
     _target: Tensor
     _inputs: Tensor
     _targets: Tensor
-    score_name: str
-    best_fn: Callable
-    merge_dict: bool = True
-    return_nested: bool = False
-    flatten: bool = False
 
     def __init__(
         self,
         *args,
-        merge_dict: bool | None = None,
-        return_nested: bool | None = None,
         device: torch.device | None = None,
         ignore_index: int | None = None,
         ignore_nan: bool | None = None,
@@ -174,10 +169,6 @@ class Metrics(Metric):
         if preprocess is None:
             preprocess = default_preprocess
         self.preprocess = preprocess
-        if merge_dict is not None:
-            self.merge_dict = merge_dict
-        if return_nested is not None:
-            self.return_nested = return_nested
         if ignore_index is not None:
             self.ignore_index = ignore_index
         if ignore_nan is not None:
@@ -209,10 +200,6 @@ class Metrics(Metric):
                 input = input[mask]
             else:
                 raise ValueError(f"Unknown input and target: {input}, {target}")
-            self.flatten = True
-        elif self.flatten:
-            target = target.flatten()
-            input = input.flatten() if input.numel() == target.numel() else input.view(*target.shape, -1)
         if self.preprocess is not None:
             input, target = self.preprocess(input, target, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan)
         if self.world_size > 1:
@@ -253,11 +240,7 @@ class Metrics(Metric):
         for name, metric in self.metrics.items():
             score = self._calculate(metric, input, target)
             if isinstance(score, Mapping):
-                if self.merge_dict:
-                    ret.merge(score)
-                else:
-                    for n, s in score.items():
-                        ret[f"{name}.{n}"] = s
+                ret.merge(score)
             else:
                 ret[name] = score
         return ret
@@ -373,7 +356,7 @@ class ScoreMetrics(Metrics):  # pylint: disable=abstract-method
     """
 
     _score_name: str
-    best_fn: Callable
+    _best_fn: Callable
 
     def __init__(
         self, *args, score_name: str | None = None, best_fn: Callable | None = max, **metrics: NestedDict[str, Callable]
@@ -407,6 +390,16 @@ class ScoreMetrics(Metrics):  # pylint: disable=abstract-method
         if name not in self.metrics:
             raise ValueError(f"score_name must be in {self.metrics.keys()}, but got {name}")
         self._score_name = name
+
+    @property
+    def best_fn(self) -> Callable:
+        return self._best_fn
+
+    @best_fn.setter
+    def best_fn(self, fn: Callable) -> None:
+        if not callable(fn):
+            raise ValueError(f"best_fn must be callable, but got {type(fn)}")
+        self._best_fn = fn
 
 
 class MultiTaskMetrics(MultiTaskDict):

@@ -235,7 +235,7 @@ def test_nested_tensor_regression():
 def test_tensor_binary():
     random.seed(0)
     torch.random.manual_seed(0)
-    merge_metrics = Metrics(func=demo_dict_metric_func, merge_dict=True)
+    merge_metrics = Metrics(func=demo_dict_metric_func)
     metrics = binary_metrics()
     metric_map = build_metric_map("binary")
     function_map = build_function_map("binary")
@@ -270,7 +270,7 @@ def test_tensor_binary():
 def test_nested_tensor_binary():
     random.seed(0)
     torch.random.manual_seed(0)
-    merge_metrics = Metrics(func=demo_dict_metric_func, merge_dict=False)
+    merge_metrics = Metrics(func=demo_dict_metric_func)
     metrics = binary_metrics()
     metric_map = build_metric_map("binary")
     function_map = build_function_map("binary")
@@ -304,7 +304,7 @@ def test_nested_tensor_binary():
         assert average[key] - metric.compute() < EPSILON
     ret, dict_ret = metrics.average(), merge_metrics.average()
     for key, value in ret.items():
-        assert dict_ret[f"func.{key}"] == value
+        assert dict_ret[key] == value
 
 
 def test_tensor_multiclass():
