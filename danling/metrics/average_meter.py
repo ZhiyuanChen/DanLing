@@ -31,6 +31,11 @@ from danling.utils import get_world_size
 
 from .utils import MetricsDict, MultiTaskDict
 
+try:
+    from typing import Self  # type: ignore[attr-defined]
+except ImportError:
+    from typing_extensions import Self
+
 
 class AverageMeter:
     r"""
@@ -67,6 +72,7 @@ class AverageMeter:
         >>> meter.count
         2
         >>> meter.reset()
+        AverageMeter(val=0.0, avg=nan)
         >>> meter.val
         0.0
         >>> meter.avg
@@ -81,7 +87,7 @@ class AverageMeter:
     def __init__(self) -> None:
         self.reset()
 
-    def reset(self) -> None:
+    def reset(self) -> Self:
         r"""
         Resets the meter.
         """
@@ -90,6 +96,7 @@ class AverageMeter:
         self.n = 1
         self.sum = 0
         self.count = 0
+        return self
 
     def update(self, value, n: float = 1) -> None:
         r"""
@@ -142,8 +149,11 @@ class AverageMeter:
     def avg(self):
         return self.average()
 
-    def __format__(self, format_spec) -> str:
+    def __format__(self, format_spec: str) -> str:
         return f"{self.val.__format__(format_spec)} ({self.avg.__format__(format_spec)})"
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(val={self.val}, avg={self.avg})"
 
 
 class AverageMeters(MetricsDict):
@@ -168,6 +178,7 @@ class AverageMeters(MetricsDict):
         >>> meters.count.dict()
         {'loss': 2, 'auroc': 1, 'r2': 1}
         >>> meters.reset()
+        AverageMeters(...)
         >>> f"{meters:.4f}"
         'loss: 0.0000 (nan)\tauroc: 0.0000 (nan)\tr2: 0.0000 (nan)'
     """
@@ -237,7 +248,8 @@ class MultiTaskAverageMeters(MultiTaskDict):
         {'loss': 1.5, 'dataset1': {'cls': {'auroc': 0.7}, 'reg': {'r2': 0.8}}, 'dataset2': {'r2': 0.9}}
         >>> meters.count.dict()
         {'loss': 2, 'dataset1': {'cls': {'auroc': 1}, 'reg': {'r2': 1}}, 'dataset2': {'r2': 1}}
-        >>> meters.reset()
+        >>> meters.reset()  # doctest:+ELLIPSIS
+        MultiTaskAverageMeters(...)
         >>> f"{meters:.4f}"
         'loss: 0.0000 (nan)\ndataset1.cls.auroc: 0.0000 (nan)\ndataset1.reg.r2: 0.0000 (nan)\ndataset2.r2: 0.0000 (nan)'
         >>> meters = MultiTaskAverageMeters(return_average=True)

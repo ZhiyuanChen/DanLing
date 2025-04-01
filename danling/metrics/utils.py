@@ -21,6 +21,11 @@ from __future__ import annotations
 
 from chanfig import DefaultDict, NestedDict
 
+try:
+    from typing import Self  # type: ignore[attr-defined]
+except ImportError:
+    from typing_extensions import Self
+
 
 class MetricsDict(DefaultDict):
     r"""
@@ -48,11 +53,12 @@ class MetricsDict(DefaultDict):
     def avg(self) -> NestedDict[str, float]:
         return self.average()
 
-    def reset(self) -> None:
+    def reset(self) -> Self:
         for metric in self.all_values():
             metric.reset()
+        return self
 
-    def __format__(self, format_spec) -> str:
+    def __format__(self, format_spec: str) -> str:
         return "\t".join(f"{key}: {metric.__format__(format_spec)}" for key, metric in self.all_items())
 
 
@@ -106,9 +112,10 @@ class MultiTaskDict(NestedDict):
     def avg(self) -> NestedDict[str, float]:
         return self.average()
 
-    def reset(self) -> None:
+    def reset(self) -> Self:
         for metric in self.all_values():
             metric.reset()
+        return self
 
-    def __format__(self, format_spec) -> str:
+    def __format__(self, format_spec: str) -> str:
         return "\n".join(f"{key}: {metric.__format__(format_spec)}" for key, metric in self.all_items())
