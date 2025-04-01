@@ -20,8 +20,8 @@
 import torch
 from lazy_imports import try_import
 
-from danling.metrics.functional import accuracy, auprc, auroc, f1_score, mcc, mse, pearson, r2_score, rmse, spearman
-from danling.tensors import NestedTensor
+from danling.metric.functional import accuracy, auprc, auroc, f1_score, mcc, mse, pearson, r2_score, rmse, spearman
+from danling.tensor import NestedTensor
 
 with try_import() as te:
     from torcheval.metrics.functional import (

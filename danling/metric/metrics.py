@@ -30,7 +30,7 @@ from torch import Tensor
 from torch import distributed as dist
 from torcheval.metrics import Metric
 
-from danling.tensors import NestedTensor
+from danling.tensor import NestedTensor
 from danling.utils import flist, get_world_size
 
 from .preprocesses import preprocess as default_preprocess
@@ -73,7 +73,7 @@ class Metrics(Metric):
         **metrics: Metrics.
 
     Examples:
-        >>> from danling.metrics.functional import auroc, auprc
+        >>> from danling.metric.functional import auroc, auprc
         >>> metrics = Metrics(auroc=auroc, auprc=auprc)
         >>> metrics
         Metrics('auroc', 'auprc')
@@ -405,14 +405,14 @@ class ScoreMetrics(Metrics):  # pylint: disable=abstract-method
 class MultiTaskMetrics(MultiTaskDict):
     r"""
     Examples:
-        >>> from danling.metrics.functional import auroc, auprc, pearson, spearman, accuracy, mcc
+        >>> from danling.metric.functional import auroc, auprc, pearson, spearman, accuracy, mcc
         >>> metrics = MultiTaskMetrics()
         >>> metrics.dataset1.cls = Metrics(auroc=auroc, auprc=auprc)
         >>> metrics.dataset1.reg = Metrics(pearson=pearson, spearman=spearman)
         >>> metrics.dataset2 = Metrics(auroc=auroc, auprc=auprc)
         >>> metrics
-        MultiTaskMetrics(<class 'danling.metrics.metrics.MultiTaskMetrics'>,
-          ('dataset1'): MultiTaskMetrics(<class 'danling.metrics.metrics.MultiTaskMetrics'>,
+        MultiTaskMetrics(<class 'danling.metric.metrics.MultiTaskMetrics'>,
+          ('dataset1'): MultiTaskMetrics(<class 'danling.metric.metrics.MultiTaskMetrics'>,
             ('cls'): Metrics('auroc', 'auprc')
             ('reg'): Metrics('pearson', 'spearman')
           )

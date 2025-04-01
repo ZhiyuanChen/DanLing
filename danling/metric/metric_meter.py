@@ -24,7 +24,7 @@ from typing import Any, Callable, Optional, Tuple
 
 from torch import Tensor
 
-from ..tensors import NestedTensor
+from ..tensor import NestedTensor
 from .average_meter import AverageMeter, AverageMeters, MultiTaskAverageMeters
 from .preprocesses import preprocess as default_preprocess
 from .utils import MultiTaskDict
@@ -49,7 +49,7 @@ class MetricMeter(AverageMeter):
         [`MetricMeters`]: Manage multiple metric meters in one object.
 
     Examples:
-        >>> from danling.metrics.functional import accuracy
+        >>> from danling.metric.functional import accuracy
         >>> meter = MetricMeter(accuracy)
         >>> meter.update([0.1, 0.8, 0.6, 0.2], [0, 1, 0, 0])
         >>> meter.val
@@ -128,7 +128,7 @@ class MetricMeters(AverageMeters):
         [`MetricMeter`]: Computes metrics and averages them over time.
         [`AverageMeters`]: Average meters for computed values.
 
-    >>> from danling.metrics.functional import accuracy, auroc, auprc
+    >>> from danling.metric.functional import accuracy, auroc, auprc
     >>> meters = MetricMeters(acc=accuracy, auroc=auroc, auprc=auprc)
     >>> meters.update([0.1, 0.8, 0.6, 0.2], [0, 1, 0, 0])
     >>> meters.sum.dict()
@@ -232,13 +232,13 @@ class MetricMeters(AverageMeters):
 class MultiTaskMetricMeters(MultiTaskAverageMeters):
     r"""
     Examples:
-        >>> from danling.metrics.functional import accuracy
+        >>> from danling.metric.functional import accuracy
         >>> metrics = MultiTaskMetricMeters()
         >>> metrics.dataset1.cls = MetricMeters(acc=accuracy)
         >>> metrics.dataset2 = MetricMeters(acc=accuracy)
         >>> metrics
-        MultiTaskMetricMeters(<class 'danling.metrics.metric_meter.MultiTaskMetricMeters'>,
-          ('dataset1'): MultiTaskMetricMeters(<class 'danling.metrics.metric_meter.MultiTaskMetricMeters'>,
+        MultiTaskMetricMeters(<class 'danling.metric.metric_meter.MultiTaskMetricMeters'>,
+          ('dataset1'): MultiTaskMetricMeters(<class 'danling.metric.metric_meter.MultiTaskMetricMeters'>,
             ('cls'): MetricMeters('acc',)
           )
           ('dataset2'): MetricMeters('acc',)

@@ -22,8 +22,8 @@ import random
 import pytest
 import torch
 
-from danling.tensors import NestedTensor
-from danling.tensors.nested_tensor import NestedTensorFuncWrapper
+from danling.tensor import NestedTensor
+from danling.tensor.nested_tensor import NestedTensorFuncWrapper
 
 random.seed(0)
 torch.manual_seed(0)
