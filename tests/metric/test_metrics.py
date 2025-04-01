@@ -56,9 +56,9 @@ from torchmetrics.functional.regression import pearson_corrcoef, r2_score, spear
 from torchmetrics.regression import SpearmanCorrCoef
 
 from danling import NestedTensor
-from danling.metrics import Metrics, binary_metrics, multiclass_metrics, multilabel_metrics, regression_metrics
-from danling.metrics.functional import accuracy, auprc, auroc, f1_score, mcc
-from danling.metrics.metrics import ScoreMetrics
+from danling.metric import Metrics, binary_metrics, multiclass_metrics, multilabel_metrics, regression_metrics
+from danling.metric.functional import accuracy, auprc, auroc, f1_score, mcc
+from danling.metric.metrics import ScoreMetrics
 
 # Shared constant for test tolerances
 EPSILON = 1e-6

@@ -4,6 +4,6 @@ authors:
 date: 2022-05-04
 ---
 
-# AverageMeter
+# PNTensor
 
-::: danling.metrics.average_meter
+::: danling.tensor.PNTensor
