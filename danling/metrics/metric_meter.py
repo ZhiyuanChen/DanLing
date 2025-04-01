@@ -66,6 +66,7 @@ class MetricMeter(AverageMeter):
         >>> meter.count
         10
         >>> meter.reset()
+        MetricMeter(accuracy)
         >>> meter.val
         0.0
         >>> meter.avg
@@ -108,6 +109,9 @@ class MetricMeter(AverageMeter):
             input, target = self.preprocess(input, target, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan)
         n = len(input)
         super().update(self.metric(input, target).item() * n, n=n)
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.metric.__name__})"
 
 
 class MetricMeters(AverageMeters):
