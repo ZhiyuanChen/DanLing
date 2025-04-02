@@ -1269,7 +1269,16 @@ This module is designed to work seamlessly with PyTorch and supports both single
 <h2 id="choosing-the-right-metric-class">Choosing the Right Metric Class<a class="headerlink" href="#choosing-the-right-metric-class" title="Permanent link">&para;</a></h2>
 <p>DanLing provides <a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;Metrics&lt;/span&gt;" href="metrics/#danling.metric.metrics.Metrics"><code>Metrics</code></a> and <a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;MetricMeters&lt;/span&gt;" href="metric_meter/#danling.metric.metric_meter.MetricMeters"><code>MetricMeters</code></a> for different use cases.
 Understanding the differences will help you choose the right one for your specific needs.</p>
-<p>!!! info &ldquo;Use <a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;Metrics&lt;/span&gt;" href="metrics/#danling.metric.metrics.Metrics"><code>Metrics</code></a> when&rdquo; - You need metrics that require the entire dataset (like AUROC, Spearman correlation) - You want to maintain the full history of predictions and labels - Memory is not a constraint for your dataset size - You need metrics that cannot be meaningfully averaged batch-by-batch - Precision is top priority</p>
+<div class="admonition info">
+<p class="admonition-title">Use <a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;Metrics&lt;/span&gt;" href="metrics/#danling.metric.metrics.Metrics"><code>Metrics</code></a> when</p>
+<ul>
+<li>You need metrics that require the entire dataset (like AUROC, Spearman correlation)</li>
+<li>You want to maintain the full history of predictions and labels</li>
+<li>Memory is not a constraint for your dataset size</li>
+<li>You need metrics that cannot be meaningfully averaged batch-by-batch</li>
+<li>Precision is top priority</li>
+</ul>
+</div>
 <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-3-1"> 1</a></span>
 <span class="normal"><a href="#__codelineno-3-2"> 2</a></span>
 <span class="normal"><a href="#__codelineno-3-3"> 3</a></span>
@@ -1301,7 +1310,16 @@ Understanding the differences will help you choose the right one for your specif
 <li>Correlation measures (Pearson, Spearman)</li>
 <li>Final model assessment</li>
 </ul>
-<p>!!! info &ldquo;Use <a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;MetricMeters&lt;/span&gt;" href="metric_meter/#danling.metric.metric_meter.MetricMeters"><code>MetricMeters</code></a> when&rdquo; - You need to track metrics that can be averaged across batches (like accuracy, loss) - Memory efficiency is important (doesn&rsquo;t store all predictions) - Speed matters (syncing predictions across the entire process group takes time) - You want simple averaging of metrics across iterations - Approximation is good enough</p>
+<div class="admonition info">
+<p class="admonition-title">Use <a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;MetricMeters&lt;/span&gt;" href="metric_meter/#danling.metric.metric_meter.MetricMeters"><code>MetricMeters</code></a> when</p>
+<ul>
+<li>You need to track metrics that can be averaged across batches (like accuracy, loss)</li>
+<li>Memory efficiency is important (doesn&rsquo;t store all predictions)</li>
+<li>Speed matters (syncing predictions across the entire process group takes time)</li>
+<li>You want simple averaging of metrics across iterations</li>
+<li>Approximation is good enough</li>
+</ul>
+</div>
 <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-4-1"> 1</a></span>
 <span class="normal"><a href="#__codelineno-4-2"> 2</a></span>
 <span class="normal"><a href="#__codelineno-4-3"> 3</a></span>
