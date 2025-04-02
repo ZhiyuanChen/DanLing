@@ -19,9 +19,11 @@
 
 from __future__ import annotations
 
-from .average_meter import AverageMeter, AverageMeters, MultiTaskAverageMeters
-from .factory import binary_metrics, multiclass_metrics, multilabel_metrics, regression_metrics
-from .functional.preprocess import (
+from .binary import binary_accuracy, binary_auprc, binary_auroc, binary_f1_score
+from .classification import accuracy, auprc, auroc, f1_score, mcc
+from .multiclass import multiclass_accuracy, multiclass_auprc, multiclass_auroc, multiclass_f1_score
+from .multilabel import multilabel_accuracy, multilabel_auprc, multilabel_auroc, multilabel_f1_score
+from .preprocess import (
     base_preprocess,
     preprocess_binary,
     preprocess_classification,
@@ -29,26 +31,33 @@ from .functional.preprocess import (
     preprocess_multilabel,
     preprocess_regression,
 )
-from .metric_meter import MetricMeter, MetricMeters, MultiTaskMetricMeters
-from .metrics import Metrics, MultiTaskMetrics
-from .registry import METRICS
+from .regression import mse, pearson, r2_score, rmse, spearman
 
 __all__ = [
-    "Metrics",
-    "MultiTaskMetrics",
-    "MetricMeter",
-    "MetricMeters",
-    "MultiTaskMetricMeters",
-    "AverageMeter",
-    "AverageMeters",
-    "MultiTaskAverageMeters",
-    "METRICS",
-    "regression_metrics",
-    "binary_metrics",
-    "multiclass_metrics",
-    "multilabel_metrics",
-    "preprocess_regression",
+    "accuracy",
+    "auprc",
+    "auroc",
+    "f1_score",
+    "mcc",
+    "mse",
+    "pearson",
+    "r2_score",
+    "rmse",
+    "spearman",
+    "binary_accuracy",
+    "binary_auprc",
+    "binary_auroc",
+    "binary_f1_score",
+    "multiclass_accuracy",
+    "multiclass_auprc",
+    "multiclass_auroc",
+    "multiclass_f1_score",
+    "multilabel_accuracy",
+    "multilabel_auprc",
+    "multilabel_auroc",
+    "multilabel_f1_score",
     "preprocess_classification",
+    "preprocess_regression",
     "preprocess_binary",
     "preprocess_multiclass",
     "preprocess_multilabel",

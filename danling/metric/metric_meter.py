@@ -28,7 +28,6 @@ from torch import Tensor
 
 from ..tensor import NestedTensor
 from .average_meter import AverageMeter, AverageMeters, MultiTaskAverageMeters
-from .preprocesses import preprocess as default_preprocess
 from .utils import MultiTaskDict
 
 
@@ -83,7 +82,7 @@ class MetricMeter(AverageMeter):
     def __init__(
         self,
         metric: Callable,
-        preprocess: Callable | None = default_preprocess,
+        preprocess: Callable | None = None,
         ignore_index: int | None = None,
         ignore_nan: bool | None = None,
     ) -> None:
@@ -136,8 +135,8 @@ class MetricMeters(AverageMeters):
         [`MetricMeter`]: Computes metrics and averages them over time.
         [`AverageMeters`]: Average meters for computed values.
 
-    >>> from danling.metric.functional import accuracy, auroc, auprc
-    >>> meters = MetricMeters(acc=accuracy, auroc=auroc, auprc=auprc)
+    >>> from danling.metric.functional import accuracy, auroc, auprc, base_preprocess
+    >>> meters = MetricMeters(acc=accuracy, auroc=auroc, auprc=auprc, preprocess=base_preprocess)
     >>> meters.update([0.1, 0.8, 0.6, 0.2], [0, 1, 0, 0])
     >>> meters.sum.dict()
     {'acc': 3.0, 'auroc': 4.0, 'auprc': 4.0}
@@ -168,7 +167,7 @@ class MetricMeters(AverageMeters):
     def __init__(
         self,
         *args,
-        preprocess: Callable | None = default_preprocess,
+        preprocess: Callable | None = None,
         ignore_index: int | None = None,
         ignore_nan: bool | None = None,
         **meters,
@@ -180,7 +179,7 @@ class MetricMeters(AverageMeters):
                 metrics = args[0]
                 for name, metric in metrics.metrics.items():
                     meters.setdefault(name, metric)
-                if preprocess is default_preprocess:
+                if preprocess is None:
                     preprocess = metrics.preprocess
                 if ignore_index is None:
                     ignore_index = metrics.ignore_index
