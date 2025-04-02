@@ -45,37 +45,34 @@ except ImportError:
 
 class Metrics(Metric):
     r"""
-    Metric class wraps around multiple metrics that share the same states.
+    A comprehensive metric tracking system that maintains the complete history of predictions and labels.
 
-    Typically, there are many metrics that we want to compute for a single task.
-    For example, we usually needs to compute `pearson` and `spearman` for a regression task.
-    Unlike `accuracy`, which can uses an average meter to compute the average accuracy,
-    `pearson` and `spearman` cannot be computed by averaging the results of multiple batches.
-    They need access to all the data to compute the correct results.
-    And saving all intermediate results for each tasks is quite inefficient.
-
-    `Metrics` solves this problem by maintaining a shared state for multiple metric functions.
+    Metrics is designed for computing evaluations that require access to the entire dataset history,
+    such as AUROC, Pearson correlation, or other metrics that cannot be meaningfully averaged batch-by-batch.
 
     Attributes:
-        metrics: A dictionary of metrics to be computed.A
-        ignore_index: Index to be ignored in the computation.
-        ignore_nan: Whether to ignore NaN values in the computation.
-        val: Metric results of current batch on current device.
-        avg: Metric results of all results on all devices.
-        input: The input tensor of latest batch.
-        target: The target tensor of latest batch.
-        inputs: All input tensors.
-        targets: All target tensors.
+        metrics: A dictionary of metric functions to be computed
+        preprocess: Optional preprocessing function to apply to inputs and targets
+        ignore_index: Value to ignore in classification tasks (e.g., -100 for padding)
+        ignore_nan: Whether to ignore NaN values in regression tasks
+        val: Metrics computed on the current batch only
+        avg: Metrics computed on all accumulated data
+        input: The input tensor from the latest batch
+        target: The target tensor from the latest batch
+        inputs: Concatenation of all input tensors seen so far
+        targets: Concatenation of all target tensors seen so far
 
     Args:
-        *args: A single mapping of metrics.
-        ignore_index: Index to be ignored in the computation, for classification tasks.
-        ignore_nan: Whether to ignore NaN values in the computation, for regression tasks.
-        **metrics: Metrics.
+        *args: A single mapping of metrics or callable metric functions
+        device: Device to store tensors on
+        ignore_index: Value to ignore in classification tasks
+        ignore_nan: Whether to ignore NaN values in regression tasks
+        preprocess: Function to preprocess inputs before computing metrics
+        **metrics: Named metric functions to compute
 
     Examples:
         >>> from danling.metric.functional import auroc, auprc, base_preprocess
-        >>> metrics = Metrics(auroc=auroc, auprc=auprc)
+        >>> metrics = Metrics(auroc=auroc, auprc=auprc, preprocess=base_preprocess)
         >>> metrics
         Metrics('auroc', 'auprc')
         >>> metrics.update([0.2, 0.3, 0.5, 0.7], [0, 1, 0, 1])
@@ -122,6 +119,19 @@ class Metrics(Metric):
         >>> metrics.update([[0.1, 0.4, 0.6, 0.8], [0.1, 0.4, 0.6]], [[0, -100, 1, 0], [0, -100, 1]])
         >>> metrics.input, metrics.target
         (tensor([0.1000, 0.6000, 0.8000, 0.1000, 0.6000]), tensor([0, 1, 0, 0, 1]))
+
+    Notes:
+        - `Metrics` stores the complete prediction and target history, which is memory-intensive
+          but necessary for metrics like AUROC that operate on the entire dataset.
+        - For metrics that can be meaningfully averaged batch-by-batch (like accuracy),
+          consider using [`MetricMeter`][danling.metric.metric_meter.MetricMeter] for better memory efficiency.
+        - The `ignore_index` parameter is useful for handling masked or padded values in classification tasks.
+        - The `ignore_nan` parameter helps handle missing values in regression tasks.
+        - All metrics are synchronized across devices in distributed training environments.
+
+    See Also:
+        - [`MetricMeters`][danling.metric.metric_meter.MetricMeters]:
+            Memory-efficient metric tracker that averages multiple metrics batch-by-batch.
     """
 
     metrics: FlatDict[str, Callable]
@@ -176,36 +186,20 @@ class Metrics(Metric):
             self.metrics[name] = self._preprocess_callable(metric)
 
     def update(self, input: Tensor | NestedTensor | Sequence, target: Tensor | NestedTensor | Sequence) -> None:
-        # convert input and target to Tensor if they are not
-        if not isinstance(input, (Tensor, NestedTensor)):
-            try:
-                input = torch.tensor(input)
-            except ValueError:
-                input = NestedTensor(input)
-        if not isinstance(target, (Tensor, NestedTensor)):
-            try:
-                target = torch.tensor(target)
-            except ValueError:
-                target = NestedTensor(target)
-        if input.ndim == target.ndim + 1:
-            input = input.squeeze(-1)
-        # convert input and target to NestedTensor if one of them is
-        if isinstance(input, NestedTensor) or isinstance(target, NestedTensor):
-            if isinstance(target, NestedTensor) and isinstance(input, NestedTensor):
-                input, target = input.concat, target.concat
-            elif isinstance(input, NestedTensor):
-                input, mask = input.concat, input.mask
-                target = target[mask]
-            elif isinstance(target, NestedTensor):
-                target, mask = target.concat, target.mask
-                input = input[mask]
-            else:
-                raise ValueError(f"Unknown input and target: {input}, {target}")
         if self.preprocess is not None:
             input, target = self.preprocess(input, target, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan)
         if self.world_size > 1:
             input, target = self._sync(input), self._sync(target)
-        input, target = input.detach().to(self.device), target.detach().to(self.device)
+        if (
+            isinstance(input, Tensor | NestedTensor)
+            and isinstance(target, Tensor | NestedTensor)
+            and input.ndim == target.ndim + 1
+        ):
+            input = input.squeeze(-1)
+        if isinstance(input, Tensor | NestedTensor):
+            input = input.detach().to(self.device)
+        if isinstance(target, Tensor | NestedTensor):
+            target = target.detach().to(self.device)
         self._input = input
         self._target = target
         self._inputs = torch.cat([self._inputs, input]).to(input.dtype)
@@ -272,19 +266,19 @@ class Metrics(Metric):
         return torch.cat(slices, dim=0)
 
     @property
-    def input(self):
+    def input(self) -> Tensor:
         return self._input
 
     @property
-    def target(self):
+    def target(self) -> Tensor:
         return self._target
 
     @property
-    def inputs(self):
+    def inputs(self) -> Tensor:
         return self._inputs
 
     @property
-    def targets(self):
+    def targets(self) -> Tensor:
         return self._targets
 
     def __repr__(self):
@@ -361,6 +355,12 @@ class ScoreMetrics(Metrics):  # pylint: disable=abstract-method
         score_name: The name of the metric that we use to compute the score. Defaults to the first metric.
         best_fn: A function that takes a list of values and returns the best value. Defaults to `max`.
         **metrics: Metrics.
+
+    Notes:
+        - `ScoreMetrics` adds the ability to designate one metric as the "score" metric
+        - The score metric is typically used for model selection or early stopping
+        - `best_fn` determines how to select the "best" score (e.g., max for accuracy, min for loss)
+        - Access the score using `metrics.batch_score` or `metrics.average_score`
     """
 
     _score_name: str
@@ -412,15 +412,24 @@ class ScoreMetrics(Metrics):  # pylint: disable=abstract-method
 
 class MultiTaskMetrics(MultiTaskDict):
     r"""
+    A container for managing multiple `Metrics` for multiple tasks.
+
+    Typically, we have multiple tasks, and each task has multiple metrics.
+    For example, a multi-task model might have a classification task and a regression task.
+    We want to compute auroc and accuracy for the classification task,
+    and pearson and rmse for the regression task.
+
+    `MultiTaskMetrics` is a mapping from task names to `Metrics` instances.
+
     Examples:
-        >>> from danling.metric.functional import auroc, auprc, pearson, spearman, accuracy, mcc
+        >>> from danling.metric.functional import auroc, auprc, pearson, spearman, accuracy, mcc, base_preprocess
         >>> metrics = MultiTaskMetrics()
-        >>> metrics.dataset1.cls = Metrics(auroc=auroc, auprc=auprc)
-        >>> metrics.dataset1.reg = Metrics(pearson=pearson, spearman=spearman)
-        >>> metrics.dataset2 = Metrics(auroc=auroc, auprc=auprc)
-        >>> metrics
-        MultiTaskMetrics(<class 'danling.metric.metrics.MultiTaskMetrics'>,
-          ('dataset1'): MultiTaskMetrics(<class 'danling.metric.metrics.MultiTaskMetrics'>,
+        >>> metrics.dataset1.cls = Metrics(auroc=auroc, auprc=auprc, preprocess=base_preprocess)
+        >>> metrics.dataset1.reg = Metrics(pearson=pearson, spearman=spearman, preprocess=base_preprocess)
+        >>> metrics.dataset2 = Metrics(auroc=auroc, auprc=auprc, preprocess=base_preprocess)
+        >>> metrics  # doctest: +ELLIPSIS
+        MultiTaskMetrics(...
+          ('dataset1'): MultiTaskMetrics(...
             ('cls'): Metrics('auroc', 'auprc')
             ('reg'): Metrics('pearson', 'spearman')
           )
@@ -439,6 +448,16 @@ class MultiTaskMetrics(MultiTaskDict):
         >>> metrics.update(dict(loss=""))  # doctest: +ELLIPSIS
         Traceback (most recent call last):
         ValueError: Metric loss not found in ...
+
+    Notes:
+        - `MultiTaskMetrics` is a container for managing multiple `Metrics` instances
+        - Each task has its own `Metrics` instance for tracking task-specific metrics
+        - Updates are passed as a dictionary mapping task names to (input, target) pairs
+        - Access values using attribute notation: `metrics.task_name.metric_name`
+
+    See Also:
+        - [`MultiTaskMetricMeters`][danling.metric.metric_meter.MultiTaskMetricMeters]:
+            Memory-efficient metric tracker that averages multiple metrics batch-by-batch for multi-task learning.
     """  # noqa: E501
 
     def __init__(self, *args, **kwargs):

@@ -33,21 +33,28 @@ from .utils import MultiTaskDict
 
 class MetricMeter(AverageMeter):
     r"""
-    Computes metrics and averages them over time.
+    A memory-efficient metric tracker that computes and averages metrics across batches.
+
+    MetricMeter applies a metric function to each batch and maintains running averages
+    without storing the complete history of predictions and labels. This makes it ideal for
+    metrics that can be meaningfully averaged across batches (like accuracy or loss).
 
     Attributes:
-        metric: Metric function for computing the value.
-        ignore_index: Index to be ignored in the computation.
-        ignore_nan: Whether to ignore NaN values in the computation.
-        val: Results of current batch on current device.
-        bat: Results of current batch on all devices.
-        avg: Results of all results on all devices.
-        sum: Sum of values.
-        count: Number of values.
+        metric: The metric function to compute on each batch
+        preprocess: Optional preprocessing function to apply to inputs and targets
+        ignore_index: Value to ignore in classification tasks (e.g., -100 for padding)
+        ignore_nan: Whether to ignore NaN values in regression tasks
+        val: Result from the most recent batch
+        bat: Result from the most recent batch, synchronized across devices
+        avg: Weighted average of all results so far
+        sum: Running sum of (metric × batch_size) values
+        count: Running sum of batch sizes
 
-    See Also:
-        [`AverageMeter`]: Average meter for computed values.
-        [`MetricMeters`]: Manage multiple metric meters in one object.
+    Args:
+        metric: Function that computes a metric given input and target tensors
+        preprocess: Function to preprocess inputs before computing the metric
+        ignore_index: Value to ignore in classification tasks
+        ignore_nan: Whether to ignore NaN values in regression tasks
 
     Examples:
         >>> from danling.metric.functional import accuracy
@@ -69,9 +76,21 @@ class MetricMeter(AverageMeter):
         >>> meter.reset()
         MetricMeter(accuracy)
         >>> meter.val
-        0.0
+        nan
         >>> meter.avg
         nan
+
+    Notes:
+        - MetricMeter is more memory-efficient than [`Metrics`][danling.metric.metrics.Metrics]
+          because it only stores running statistics
+        - Only suitable for metrics that can be meaningfully averaged batch-by-batch
+        - Not suitable for metrics like AUROC that need the entire dataset
+        - The metric function should accept input and target tensors and return a scalar value
+        - For multiple metrics, use [`MetricMeters`][danling.metric.metric_meter.MetricMeters]
+
+    See Also:
+        - [`AverageMeter`][danling.metric.average_meter.AverageMeter]:
+            A lightweight utility to compute and store running averages of values.
     """
 
     metric: Callable
@@ -112,7 +131,10 @@ class MetricMeter(AverageMeter):
         if self.preprocess is not None and not preprocessed:
             input, target = self.preprocess(input, target, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan)
         n = len(input)
-        super().update(self.metric(input, target).item() * n, n=n)
+        value = self.metric(input, target)
+        if isinstance(value, Tensor):
+            value = value.item()
+        super().update(value=value, n=n)
 
     def __repr__(self):
         metric = self.metric
@@ -123,41 +145,65 @@ class MetricMeter(AverageMeter):
 
 class MetricMeters(AverageMeters):
     r"""
-    Manages multiple metric meters in one object.
+    A container for managing multiple MetricMeter instances with shared preprocessing.
+
+    MetricMeters allows you to organize and track multiple metrics in a unified interface,
+    with consistent preprocessing applied to all inputs before computing each metric.
+    This is particularly useful when you want to track several metrics that can be
+    meaningfully averaged across batches.
 
     Attributes:
-        ignore_index: Index to be ignored in the computation.
-            Defaults to None.
-        ignore_nan: Whether to ignore NaN values in the computation.
-            Defaults to False.
+        preprocess: Shared preprocessing function for all meters
+        ignore_index: Value to ignore in classification tasks
+        ignore_nan: Whether to ignore NaN values in regression tasks
+        val: Dictionary of current values from all meters
+        avg: Dictionary of running averages from all meters
+        sum: Dictionary of sums from all meters
+        count: Dictionary of counts from all meters
+
+    Args:
+        *args: Either metric functions or a Metrics instance to extract metrics from
+        preprocess: Preprocessing function to apply to inputs before computing metrics
+        ignore_index: Value to ignore in classification tasks
+        ignore_nan: Whether to ignore NaN values in regression tasks
+        **meters: Named MetricMeter instances or metric functions
+
+    Examples:
+        >>> from danling.metric.functional import accuracy, auroc, auprc, base_preprocess
+        >>> meters = MetricMeters(acc=accuracy, auroc=auroc, auprc=auprc, preprocess=base_preprocess)
+        >>> meters.update([0.1, 0.8, 0.6, 0.2], [0, 1, 0, 0])
+        >>> meters.sum.dict()
+        {'acc': 3.0, 'auroc': 4.0, 'auprc': 4.0}
+        >>> meters.count.dict()
+        {'acc': 4, 'auroc': 4, 'auprc': 4}
+        >>> meters['auroc'].update([0.2, 0.8], [0, 1])
+        >>> meters.sum.dict()
+        {'acc': 3.0, 'auroc': 6.0, 'auprc': 4.0}
+        >>> meters.count.dict()
+        {'acc': 4, 'auroc': 6, 'auprc': 4}
+        >>> meters.update([[0.1, 0.7, 0.3, 0.2], [0.8, 0.4]], [[0, 0, 1, 0], [0, 0]])
+        >>> meters.sum.dict()
+        {'acc': 6.0, 'auroc': 8.4, 'auprc': 5.5}
+        >>> meters.count.dict()
+        {'acc': 10, 'auroc': 12, 'auprc': 10}
+        >>> meters['auroc'].update([0.4, 0.8, 0.6, 0.2], [0, 1, 1, 0])
+        >>> meters.avg.dict()
+        {'acc': 0.6, 'auroc': 0.775, 'auprc': 0.55}
+        >>> meters.update(dict(loss=""))  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        TypeError: ...update() missing 1 required positional argument: 'target'
+
+    Notes:
+        - `MetricMeters` manages multiple `MetricMeter` instances with shared preprocessing
+        - Each metric is computed independently but uses the same inputs
+        - All meters are updated simultaneously when you call `update()`
+        - Individual meters can be accessed like dictionary items or attributes
 
     See Also:
-        [`MetricMeter`]: Computes metrics and averages them over time.
-        [`AverageMeters`]: Average meters for computed values.
-
-    >>> from danling.metric.functional import accuracy, auroc, auprc, base_preprocess
-    >>> meters = MetricMeters(acc=accuracy, auroc=auroc, auprc=auprc, preprocess=base_preprocess)
-    >>> meters.update([0.1, 0.8, 0.6, 0.2], [0, 1, 0, 0])
-    >>> meters.sum.dict()
-    {'acc': 3.0, 'auroc': 4.0, 'auprc': 4.0}
-    >>> meters.count.dict()
-    {'acc': 4, 'auroc': 4, 'auprc': 4}
-    >>> meters['auroc'].update([0.2, 0.8], [0, 1])
-    >>> meters.sum.dict()
-    {'acc': 3.0, 'auroc': 6.0, 'auprc': 4.0}
-    >>> meters.count.dict()
-    {'acc': 4, 'auroc': 6, 'auprc': 4}
-    >>> meters.update([[0.1, 0.7, 0.3, 0.2], [0.8, 0.4]], [[0, 0, 1, 0], [0, 0]])
-    >>> meters.sum.dict()
-    {'acc': 6.0, 'auroc': 8.4, 'auprc': 5.5}
-    >>> meters.count.dict()
-    {'acc': 10, 'auroc': 12, 'auprc': 10}
-    >>> meters['auroc'].update([0.4, 0.8, 0.6, 0.2], [0, 1, 1, 0])
-    >>> meters.avg.dict()
-    {'acc': 0.6, 'auroc': 0.775, 'auprc': 0.55}
-    >>> meters.update(dict(loss=""))  # doctest: +ELLIPSIS
-    Traceback (most recent call last):
-    TypeError: ...update() missing 1 required positional argument: 'target'
+        - [`AverageMeters`][danling.metric.average_meter.AverageMeters]:
+            A container for managing multiple average meters in one object.
+        - [`Metrics`][danling.metric.metrics.Metrics]:
+            Metric tracker that stores the complete prediction and target history.
     """
 
     preprocess = None
@@ -219,6 +265,16 @@ class MetricMeters(AverageMeters):
         if self.preprocess is not None:
             input, target = self.preprocess(input, target, ignore_index=self.ignore_index, ignore_nan=self.ignore_nan)
             preprocessed = True
+        if (
+            isinstance(input, Tensor | NestedTensor)
+            and isinstance(target, Tensor | NestedTensor)
+            and input.ndim == target.ndim + 1
+        ):
+            input = input.squeeze(-1)
+        if isinstance(input, Tensor | NestedTensor):
+            input = input.detach().to("cpu")
+        if isinstance(target, Tensor | NestedTensor):
+            target = target.detach().to("cpu")
         for meter in self.values():
             meter.update(input, target, preprocessed=preprocessed)
 
@@ -265,6 +321,18 @@ class MultiTaskMetricMeters(MultiTaskAverageMeters):
         >>> metrics.update(dict(loss=""))  # doctest: +ELLIPSIS
         Traceback (most recent call last):
         ValueError: Metric loss not found in ...
+
+    Notes:
+        - `MultiTaskMetricMeters` manages nested hierarchies of MetricMeters for multiple tasks/datasets
+        - Supports hierarchical access using dot notation or dictionary-style access
+        - All metrics are updated simultaneously with a single `update()` call
+        - Provides a structured way to track metrics across different tasks or model components
+
+    See Also:
+        - [`MultiTaskAverageMeters`][danling.metric.average_meter.MultiTaskAverageMeters]:
+            A container for managing multiple average meters in one object for multi-task learning.
+        - [`MultiTaskMetrics`][danling.metric.metrics.MultiTaskMetrics]:
+            Metric tracker that stores the complete prediction and target history for multi-task learning.
     """  # noqa: E501
 
     def __init__(self, *args, **kwargs):

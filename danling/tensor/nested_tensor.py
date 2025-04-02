@@ -1151,10 +1151,19 @@ NestedTensorFunc = TorchFuncRegistry()
 
 
 @NestedTensorFunc.implement(torch.cat)
-def cat(tensors, dim: int = 0):
+def cat(tensors: Tuple[NestedTensor | Tensor, ...], dim: int = 0):
     if dim != 0:
         raise NotImplementedError(f"NestedTensor only supports cat when dim=0, but got {dim}")
-    return NestedTensor([t for tensor in tensors for t in tensor._storage], tensors[0]._state)
+    storage = []
+    state: Mapping = {}
+    for tensor in tensors:
+        if isinstance(tensor, NestedTensor):
+            storage.extend(tensor._storage)
+            if not state:
+                state = tensor._state
+        else:
+            storage.append(tensor)
+    return NestedTensor(storage, **state)
 
 
 @NestedTensorFunc.implement(torch.isin)

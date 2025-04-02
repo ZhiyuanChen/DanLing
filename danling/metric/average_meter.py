@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from math import nan
 from typing import Any, Dict, Type
 
 import torch
@@ -39,26 +40,24 @@ except ImportError:
 
 class AverageMeter:
     r"""
-    Computes and stores the average and current value.
+    A lightweight utility to compute and store running averages of values.
+
+    AverageMeter provides an efficient way to track running statistics (current value, sum, count, average)
+    with minimal memory overhead and support for distributed environments.
 
     Attributes:
-        val: Results of current batch on current device.
-        bat: Results of current batch on all devices.
-        avg: Results of all results on all devices.
-        sum: Sum of values.
-        count: Number of values.
-
-    See Also:
-        [`MetricMeter`]: Average Meter with metric function built-in.
-        [`AverageMeters`]: Manage multiple average meters in one object.
-        [`MultiTaskAverageMeters`]: Manage multiple average meters in one object with multi-task support.
+        val: Most recent value added to the meter
+        bat: Most recent value, synchronized across distributed processes
+        avg: Running average of all values, weighted by counts
+        sum: Sum of all values added to the meter
+        count: Total count of values added (considering weights)
 
     Examples:
         >>> meter = AverageMeter()
         >>> meter.update(0.7)
         >>> meter.val
         0.7
-        >>> meter.bat
+        >>> meter.bat  # Same as val in non-distributed settings
         0.7
         >>> meter.avg
         0.7
@@ -71,18 +70,22 @@ class AverageMeter:
         1.6
         >>> meter.count
         2
-        >>> meter.reset()
-        AverageMeter(val=0.0, avg=nan)
-        >>> meter.val
-        0.0
+        >>> # Weighted update
+        >>> meter.update(value=0.5, n=3)
         >>> meter.avg
-        nan
+        0.62
+        >>> meter.reset()
+        AverageMeter(val=nan, avg=nan)
+
+    See Also:
+        - [`MetricMeter`][danling.metric.metric_meter.MetricMeter]:
+            Memory-efficient metric tracker that averages metrics batch-by-batch.
     """
 
-    v: float = 0
-    n: float = 1
-    sum: float = 0
-    count: float = 0
+    v: float = 0.0
+    n: int = 1
+    sum: float = 0.0
+    count: int = 0
 
     def __init__(self) -> None:
         self.reset()
@@ -92,13 +95,13 @@ class AverageMeter:
         Resets the meter.
         """
 
-        self.v = 0
+        self.v = 0.0
         self.n = 1
-        self.sum = 0
+        self.sum = 0.0
         self.count = 0
         return self
 
-    def update(self, value, n: float = 1) -> None:
+    def update(self, value: float | int, n: int = 1) -> None:
         r"""
         Updates the average and current value in the meter.
 
@@ -109,44 +112,46 @@ class AverageMeter:
 
         self.v = value
         self.n = n
-        self.sum += value
+        self.sum += value * n
         self.count += n
 
-    def value(self):
-        return self.v / self.n if self.n != 0 else float("nan")
+    def value(self) -> float:
+        if self.count == 0:
+            return nan
+        return self.v
 
-    def batch(self):
+    def batch(self) -> float:
         world_size = get_world_size()
         if world_size <= 1:
             return self.value()
-        synced_tensor = torch.tensor([self.v * self.n, self.n], dtype=torch.float64).cuda()
+        synced_tensor = torch.tensor([self.v, self.n], dtype=torch.float64).cuda()
         dist.all_reduce(synced_tensor)
         val, count = synced_tensor
         if count == 0:
-            return float("nan")
+            return nan
         return (val / count).item()
 
-    def average(self):
+    def average(self) -> float:
         world_size = get_world_size()
         if world_size <= 1:
-            return self.sum / self.count if self.count != 0 else float("nan")
+            return self.sum / self.count if self.count != 0 else nan
         synced_tensor = torch.tensor([self.sum, self.count], dtype=torch.float64).cuda()
         dist.all_reduce(synced_tensor)
         val, count = synced_tensor
         if count == 0:
-            return float("nan")
+            return nan
         return (val / count).item()
 
     @property
-    def val(self):
+    def val(self) -> float:
         return self.value()
 
     @property
-    def bat(self):
+    def bat(self) -> float:
         return self.batch()
 
     @property
-    def avg(self):
+    def avg(self) -> float:
         return self.average()
 
     def __format__(self, format_spec: str) -> str:
@@ -159,11 +164,6 @@ class AverageMeter:
 class AverageMeters(MetricsDict):
     r"""
     Manages multiple average meters in one object.
-
-    See Also:
-        [`AverageMeter`]: Computes and stores the average and current value.
-        [`MultiTaskAverageMeters`]: Manage multiple average meters in one object with multi-task support.
-        [`MetricMeters`]: Manage multiple metric meters in one object.
 
     Examples:
         >>> meters = AverageMeters()
@@ -180,7 +180,11 @@ class AverageMeters(MetricsDict):
         >>> meters.reset()
         AverageMeters(...)
         >>> f"{meters:.4f}"
-        'loss: 0.0000 (nan)\tauroc: 0.0000 (nan)\tr2: 0.0000 (nan)'
+        'loss: nan (nan)\tauroc: nan (nan)\tr2: nan (nan)'
+
+    See Also:
+        - [`MetricMeters`][danling.metric.metric_meter.MetricMeters]:
+            Memory-efficient metric tracker that averages multiple metrics batch-by-batch.
     """
 
     def __init__(self, default_factory: Type[AverageMeter] = AverageMeter, **meters) -> None:
@@ -229,12 +233,7 @@ class AverageMeters(MetricsDict):
 
 class MultiTaskAverageMeters(MultiTaskDict):
     r"""
-    Manages multiple average meters in one object with multi-task support.
-
-    See Also:
-        [`AverageMeter`]: Computes and stores the average and current value.
-        [`AverageMeters`]: Manage multiple average meters in one object.
-        [`MetricMeters`]: Manage multiple metric meters in one object.
+    Manages multiple average meters in one object for multi-task learning.
 
     Examples:
         >>> meters = MultiTaskAverageMeters()
@@ -251,7 +250,7 @@ class MultiTaskAverageMeters(MultiTaskDict):
         >>> meters.reset()  # doctest:+ELLIPSIS
         MultiTaskAverageMeters(...)
         >>> f"{meters:.4f}"
-        'loss: 0.0000 (nan)\ndataset1.cls.auroc: 0.0000 (nan)\ndataset1.reg.r2: 0.0000 (nan)\ndataset2.r2: 0.0000 (nan)'
+        'loss: nan (nan)\ndataset1.cls.auroc: nan (nan)\ndataset1.reg.r2: nan (nan)\ndataset2.r2: nan (nan)'
         >>> meters = MultiTaskAverageMeters(return_average=True)
         >>> meters.update({"loss": 0.6, "dataset1.a.auroc": 0.7, "dataset1.b.auroc": 0.8, "dataset2.auroc": 0.9})
         >>> f"{meters:.4f}"
@@ -259,6 +258,10 @@ class MultiTaskAverageMeters(MultiTaskDict):
         >>> meters.update({"loss": 0.9, "dataset1.a.auroc": 0.8, "dataset1.b.auroc": 0.9, "dataset2.auroc": 1.0})
         >>> f"{meters:.4f}"
         'loss: 0.9000 (0.7500)\ndataset1.a.auroc: 0.8000 (0.7500)\ndataset1.b.auroc: 0.9000 (0.8500)\ndataset2.auroc: 1.0000 (0.9500)'
+
+    See Also:
+        - [`MultiTaskMetricMeters`][danling.metric.metric_meter.MultiTaskMetricMeters]:
+            Memory-efficient metric tracker that averages multiple metrics batch-by-batch for multi-task learning.
     """  # noqa: E501
 
     @property
