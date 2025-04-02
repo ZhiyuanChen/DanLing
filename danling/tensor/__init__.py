@@ -17,7 +17,22 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
-from .nested_tensor import NestedTensor, PNTensor, tensor
-from .utils import TorchFuncRegistry
+from __future__ import annotations
 
-__all__ = ["NestedTensor", "PNTensor", "tensor", "TorchFuncRegistry"]
+from typing import Callable
+
+from torch.utils.data._utils.collate import default_collate_fn_map
+
+from .functions import TorchFuncRegistry
+from .nested_tensor import NestedTensor
+from .tensor import PNTensor, tensor
+from .utils import mask_tensor, pad_tensor, tensor_mask
+
+__all__ = ["NestedTensor", "PNTensor", "tensor", "TorchFuncRegistry", "tensor_mask", "pad_tensor", "mask_tensor"]
+
+
+def collate_pn_tensor_fn(batch, *, collate_fn_map: dict[type | tuple[type, ...], Callable] | None = None):
+    return NestedTensor(batch)
+
+
+default_collate_fn_map[PNTensor] = collate_pn_tensor_fn
