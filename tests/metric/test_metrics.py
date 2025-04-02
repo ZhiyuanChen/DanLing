@@ -182,16 +182,16 @@ def test_tensor_regression():
         targets.append(target)
         metrics.update(pred, target)
         for metric in metric_map.values():
-            metric.update(pred.view(-1), target.view(-1))
+            metric.update(pred.flatten(), target.flatten())
         value, average = metrics.value(), metrics.average()
-        assert torch.allclose(pred.view(-1), metrics.input.view(-1), rtol=RTOL, atol=ATOL)
-        assert torch.allclose(target.view(-1), metrics.target.view(-1), rtol=RTOL, atol=ATOL)
+        assert torch.allclose(pred.flatten(), metrics.input.flatten(), rtol=RTOL, atol=ATOL)
+        assert torch.allclose(target.flatten(), metrics.target.flatten(), rtol=RTOL, atol=ATOL)
         for key, func in function_map.items():
-            assert value[key] - func(pred.view(-1), target.view(-1)) < ATOL
+            assert value[key] - func(pred.flatten(), target.flatten()) < ATOL
         for key, metric in metric_map.items():
             assert average[key] - metric.compute() < ATOL
-    assert torch.allclose(torch.cat(preds).view(-1), metrics.inputs.view(-1), rtol=RTOL, atol=ATOL)
-    assert torch.allclose(torch.cat(targets).view(-1), metrics.targets.view(-1), rtol=RTOL, atol=ATOL)
+    assert torch.allclose(torch.cat(preds).flatten(), metrics.inputs.flatten(), rtol=RTOL, atol=ATOL)
+    assert torch.allclose(torch.cat(targets).flatten(), metrics.targets.flatten(), rtol=RTOL, atol=ATOL)
     for key, metric in metric_map.items():
         assert average[key] - metric.compute() < ATOL
 
