@@ -261,7 +261,7 @@ def test_arise():
         _ = NestedTensorFuncWrapper(False, False)
     with pytest.raises(ValueError):
         temp = a.clone()
-        temp.storage().clear()
+        temp._storage = ()
         _ = temp.int()
 
 
@@ -287,7 +287,7 @@ def test_1dim():
     assert mask.shape == nested_tensor.mask.shape == torch.Size((len(lengths), max(lengths)))
     assert torch.sum(tensor @ nested_tensor.T - nested_tensor.tensor @ nested_tensor.T) < EPSILON
     lengths.append(additional_length)
-    nested_tensor.storage().append(torch.randn(additional_length, channels))
+    nested_tensor = torch.cat([nested_tensor, torch.randn(additional_length, channels)])
     tensor, mask = nested_tensor.tensor_mask
     assert nested_tensor.tensor.shape == torch.Size((len(lengths), max(lengths), channels))
     assert nested_tensor.mask.shape == torch.Size((len(lengths), max(lengths)))
