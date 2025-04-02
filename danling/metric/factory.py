@@ -23,8 +23,13 @@ from functools import partial
 
 from lazy_imports import try_import
 
+from .functional.preprocess import (
+    preprocess_binary,
+    preprocess_multiclass,
+    preprocess_multilabel,
+    preprocess_regression,
+)
 from .metric_meter import MetricMeters
-from .preprocesses import preprocess_binary, preprocess_multiclass, preprocess_multilabel, preprocess_regression
 
 with try_import() as lazy_import:
     from .functional import accuracy, auprc, auroc, f1_score, mcc, pearson, r2_score, rmse, spearman

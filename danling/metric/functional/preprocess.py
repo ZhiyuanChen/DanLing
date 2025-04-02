@@ -21,24 +21,20 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from copy import copy
+from functools import wraps
+from inspect import signature
+from typing import Callable
 
 import torch
 from torch import Tensor
 
 from danling.tensor import NestedTensor
 
-
-def infer_task(num_classes: int | None, num_labels: int | None):
-    if num_classes is not None and num_labels is not None:
-        raise ValueError("Only one of `num_classes` or `num_labels` can be provided.")
-    if num_classes is not None:
-        return "multiclass"
-    if num_labels is not None:
-        return "multilabel"
-    return "binary"
+from .utils import infer_task
 
 
-def preprocess(
+def base_preprocess(
     input: Tensor | NestedTensor | Sequence,
     target: Tensor | NestedTensor | Sequence,
     ignore_index: int | None = None,
@@ -78,10 +74,30 @@ def preprocess_regression(
     ignore_nan: bool = True,
     ignore_index: int | None = None,
 ):
-    input, target = preprocess(input, target, ignore_nan=ignore_nan)
+    input, target = base_preprocess(input, target, ignore_nan=ignore_nan)
     if num_outputs > 1:
         return input.view(-1, num_outputs), target.view(-1, num_outputs)
-    return input.view(-1), target.view(-1)
+    return input.flatten(), target.flatten()
+
+
+def preprocess_classification(
+    input: Tensor | NestedTensor | Sequence,
+    target: Tensor | NestedTensor | Sequence,
+    task: str | None = None,
+    num_labels: int | None = None,
+    num_classes: int | None = None,
+    ignore_index: int | None = -100,
+    ignore_nan: bool = False,
+):
+    if task is None:
+        task = infer_task(num_classes, num_labels)
+    if task == "binary":
+        return preprocess_binary(input, target, ignore_index=ignore_index)
+    if task == "multiclass":
+        return preprocess_multiclass(input, target, num_classes=num_classes, ignore_index=ignore_index)  # type: ignore
+    if task == "multilabel":
+        return preprocess_multilabel(input, target, num_labels=num_labels, ignore_index=ignore_index)  # type: ignore
+    raise ValueError(f"Invalid task: {task}")
 
 
 def preprocess_binary(
@@ -90,8 +106,8 @@ def preprocess_binary(
     ignore_index: int | None = -100,
     ignore_nan: bool = False,
 ):
-    input, target = preprocess(input, target, ignore_index=ignore_index)
-    input, target = input.view(-1), target.view(-1)
+    input, target = base_preprocess(input, target, ignore_index=ignore_index)
+    input, target = input.flatten(), target.flatten()
     if input.max() > 1 or input.min() < 0:
         input = input.sigmoid()
     return input, target
@@ -104,8 +120,8 @@ def preprocess_multiclass(
     ignore_index: int | None = -100,
     ignore_nan: bool = False,
 ):
-    input, target = preprocess(input, target, ignore_index=ignore_index)
-    input, target = input.view(-1, num_classes), target.view(-1)
+    input, target = base_preprocess(input, target, ignore_index=ignore_index)
+    input, target = input.view(-1, num_classes), target.flatten()
     if input.max() > 1 or input.min() < 0:
         input = input.softmax(dim=-1)
     return input, target
@@ -118,8 +134,48 @@ def preprocess_multilabel(
     ignore_index: int | None = -100,
     ignore_nan: bool = False,
 ):
-    input, target = preprocess(input, target, ignore_index=ignore_index)
+    input, target = base_preprocess(input, target, ignore_index=ignore_index)
     input, target = input.view(-1, num_labels), target.view(-1, num_labels)
     if input.max() > 1 or input.min() < 0:
         input = input.sigmoid()
     return input, target
+
+
+def with_preprocess(preprocess_fn: Callable, **default_kwargs):
+    """
+    Decorator to apply preprocessing to metric functions.
+
+    Args:
+        preprocess_fn: The preprocessing function to apply
+        **default_kwargs: Default values for the preprocessing function's parameters
+
+    Returns:
+        Decorated function with preprocessing capability
+    """
+    preprocess_params = set(signature(preprocess_fn).parameters.keys()) - {"input", "target"}
+
+    def decorator(metric_fn: Callable) -> Callable:
+
+        @wraps(metric_fn)
+        def wrapper(
+            input: Tensor | NestedTensor | Sequence,
+            target: Tensor | NestedTensor | Sequence,
+            *,
+            preprocess: bool = True,
+            **kwargs,
+        ):
+            metric_kwargs = {k: v for k, v in kwargs.items() if k not in default_kwargs}
+
+            if not preprocess:
+                return metric_fn(input, target, **metric_kwargs)
+
+            preprocess_kwargs = copy(default_kwargs)
+            for key in preprocess_params:
+                if key in kwargs:
+                    preprocess_kwargs[key] = kwargs[key]
+            input, target = preprocess_fn(input, target, **preprocess_kwargs)
+            return metric_fn(input, target, **metric_kwargs)
+
+        return wrapper
+
+    return decorator
