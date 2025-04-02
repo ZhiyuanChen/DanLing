@@ -35,7 +35,6 @@ from torcheval.metrics import Metric
 from danling.tensor import NestedTensor
 from danling.utils import flist, get_world_size
 
-from .preprocesses import preprocess as default_preprocess
 from .utils import MultiTaskDict
 
 try:
@@ -75,7 +74,7 @@ class Metrics(Metric):
         **metrics: Metrics.
 
     Examples:
-        >>> from danling.metric.functional import auroc, auprc
+        >>> from danling.metric.functional import auroc, auprc, base_preprocess
         >>> metrics = Metrics(auroc=auroc, auprc=auprc)
         >>> metrics
         Metrics('auroc', 'auprc')
@@ -119,7 +118,7 @@ class Metrics(Metric):
         )
         >>> f"{metrics:.4f}"
         'auroc: 0.6667 (0.6667)\tauprc: 0.5000 (0.5556)'
-        >>> metrics = Metrics(auroc=auroc, auprc=auprc, ignore_index=-100)
+        >>> metrics = Metrics(auroc=auroc, auprc=auprc, preprocess=base_preprocess)
         >>> metrics.update([[0.1, 0.4, 0.6, 0.8], [0.1, 0.4, 0.6]], [[0, -100, 1, 0], [0, -100, 1]])
         >>> metrics.input, metrics.target
         (tensor([0.1000, 0.6000, 0.8000, 0.1000, 0.6000]), tensor([0, 1, 0, 0, 1]))
@@ -168,8 +167,6 @@ class Metrics(Metric):
                     if not callable(metric):
                         raise ValueError(f"Expected metric to be callable, but got {type(metric)}")
                     metrics.setdefault(metric.__name__, metric)
-        if preprocess is None:
-            preprocess = default_preprocess
         self.preprocess = preprocess
         if ignore_index is not None:
             self.ignore_index = ignore_index
