@@ -352,19 +352,16 @@
   
   
   
-    
-    
-      <li class="md-tabs__item">
-        <a href="../../metric/metrics/" class="md-tabs__link">
-          
+    <li class="md-tabs__item">
+      <a href="../../metric/" class="md-tabs__link">
+        
   
     
   
   Metric
 
-        </a>
-      </li>
-    
+      </a>
+    </li>
   
 
       
@@ -898,6 +895,10 @@
       
         
       
+        
+      
+        
+      
     
     
       
@@ -1141,8 +1142,7 @@
 
 
         <p>Dynamic runner class that selects the appropriate platform based on configuration.</p>
-<p>This runner dynamically changes its class to combine with the appropriate platform
-(torch, accelerate, or deepspeed) based on the &lsquo;platform&rsquo; configuration option.</p>
+<p>This runner dynamically modifies the <code>__class__</code> attribute to adapt to the platform.</p>
 <p>It&rsquo;s safe (and recommended) to inherit from this class to extend the Runner.</p>
 <p>Valid platform options are:</p>
 <ul>
@@ -1164,9 +1164,9 @@
   <summary>See Also</summary>
   <ul>
 <li><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;danling.runner.BaseRunner&lt;/span&gt;" href="../../../runner/base_runner/#danling.runner.BaseRunner"><code>BaseRunner</code></a>: Base class for all runners.</li>
-<li><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;danling.runner.TorchRunner&lt;/span&gt;" href="../../../runner/torch_runner/#danling.runner.TorchRunner"><code>TorchRunner</code></a>: Runner for PyTorch.</li>
-<li><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;danling.runner.AccelerateRunner&lt;/span&gt;" href="../../../runner/accelerate_runner/#danling.runner.AccelerateRunner"><code>AccelerateRunner</code></a>: Runner for Accelerate.</li>
-<li><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;danling.runner.DeepSpeedRunner&lt;/span&gt;" href="../../../runner/deepspeed_runner/#danling.runner.DeepSpeedRunner"><code>DeepSpeedRunner</code></a>: Runner for DeepSpeed.</li>
+<li><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;danling.runner.TorchRunner&lt;/span&gt;" href="../../../runner/torch_runner/#danling.runner.TorchRunner"><code>TorchRunner</code></a>: PyTorch runner.</li>
+<li><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;danling.runner.AccelerateRunner&lt;/span&gt;" href="../../../runner/accelerate_runner/#danling.runner.AccelerateRunner"><code>AccelerateRunner</code></a>: PyTorch runner with Accelerate.</li>
+<li><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;danling.runner.DeepSpeedRunner&lt;/span&gt;" href="../../../runner/deepspeed_runner/#danling.runner.DeepSpeedRunner"><code>DeepSpeedRunner</code></a>: PyTorch runner with DeepSpeed.</li>
 </ul>
 </details>
 
@@ -1220,52 +1220,50 @@
 <span class="normal"><a href="#__codelineno-0-77">77</a></span>
 <span class="normal"><a href="#__codelineno-0-78">78</a></span>
 <span class="normal"><a href="#__codelineno-0-79">79</a></span>
-<span class="normal"><a href="#__codelineno-0-80">80</a></span>
-<span class="normal"><a href="#__codelineno-0-81">81</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-37" name="__codelineno-0-37"></a><span class="k">class</span> <span class="nc">Runner</span><span class="p">(</span><span class="n">BaseRunner</span><span class="p">):</span>
+<span class="normal"><a href="#__codelineno-0-80">80</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-37" name="__codelineno-0-37"></a><span class="k">class</span> <span class="nc">Runner</span><span class="p">(</span><span class="n">BaseRunner</span><span class="p">):</span>
 <a id="__codelineno-0-38" name="__codelineno-0-38"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
 <a id="__codelineno-0-39" name="__codelineno-0-39"></a><span class="sd">    Dynamic runner class that selects the appropriate platform based on configuration.</span>
 <a id="__codelineno-0-40" name="__codelineno-0-40"></a>
-<a id="__codelineno-0-41" name="__codelineno-0-41"></a><span class="sd">    This runner dynamically changes its class to combine with the appropriate platform</span>
-<a id="__codelineno-0-42" name="__codelineno-0-42"></a><span class="sd">    (torch, accelerate, or deepspeed) based on the &#39;platform&#39; configuration option.</span>
-<a id="__codelineno-0-43" name="__codelineno-0-43"></a>
-<a id="__codelineno-0-44" name="__codelineno-0-44"></a><span class="sd">    It&#39;s safe (and recommended) to inherit from this class to extend the Runner.</span>
-<a id="__codelineno-0-45" name="__codelineno-0-45"></a>
-<a id="__codelineno-0-46" name="__codelineno-0-46"></a><span class="sd">    Valid platform options are:</span>
-<a id="__codelineno-0-47" name="__codelineno-0-47"></a>
-<a id="__codelineno-0-48" name="__codelineno-0-48"></a><span class="sd">    - &quot;auto&quot; (default)</span>
-<a id="__codelineno-0-49" name="__codelineno-0-49"></a><span class="sd">    - &quot;torch&quot;</span>
-<a id="__codelineno-0-50" name="__codelineno-0-50"></a><span class="sd">    - &quot;accelerate&quot;</span>
-<a id="__codelineno-0-51" name="__codelineno-0-51"></a><span class="sd">    - &quot;deepspeed&quot;</span>
-<a id="__codelineno-0-52" name="__codelineno-0-52"></a>
-<a id="__codelineno-0-53" name="__codelineno-0-53"></a><span class="sd">    Examples:</span>
-<a id="__codelineno-0-54" name="__codelineno-0-54"></a><span class="sd">        &gt;&gt;&gt; config = Config({&quot;platform&quot;: &quot;accelerate&quot;})</span>
-<a id="__codelineno-0-55" name="__codelineno-0-55"></a><span class="sd">        &gt;&gt;&gt; runner = Runner(config)</span>
-<a id="__codelineno-0-56" name="__codelineno-0-56"></a>
-<a id="__codelineno-0-57" name="__codelineno-0-57"></a><span class="sd">    See Also:</span>
-<a id="__codelineno-0-58" name="__codelineno-0-58"></a><span class="sd">        - [`BaseRunner`][danling.runner.BaseRunner]: Base class for all runners.</span>
-<a id="__codelineno-0-59" name="__codelineno-0-59"></a><span class="sd">        - [`TorchRunner`][danling.runner.TorchRunner]: Runner for PyTorch.</span>
-<a id="__codelineno-0-60" name="__codelineno-0-60"></a><span class="sd">        - [`AccelerateRunner`][danling.runner.AccelerateRunner]: Runner for Accelerate.</span>
-<a id="__codelineno-0-61" name="__codelineno-0-61"></a><span class="sd">        - [`DeepSpeedRunner`][danling.runner.DeepSpeedRunner]: Runner for DeepSpeed.</span>
-<a id="__codelineno-0-62" name="__codelineno-0-62"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-63" name="__codelineno-0-63"></a>
-<a id="__codelineno-0-64" name="__codelineno-0-64"></a>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">Config</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-65" name="__codelineno-0-65"></a>        <span class="n">platform</span> <span class="o">=</span> <span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;platform&quot;</span><span class="p">,</span> <span class="s2">&quot;auto&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span>
-<a id="__codelineno-0-66" name="__codelineno-0-66"></a>
-<a id="__codelineno-0-67" name="__codelineno-0-67"></a>        <span class="k">if</span> <span class="n">platform</span> <span class="o">==</span> <span class="s2">&quot;auto&quot;</span><span class="p">:</span>
-<a id="__codelineno-0-68" name="__codelineno-0-68"></a>            <span class="n">platform</span> <span class="o">=</span> <span class="s2">&quot;deepspeed&quot;</span> <span class="k">if</span> <span class="n">ds</span><span class="o">.</span><span class="n">is_successful</span><span class="p">()</span> <span class="k">else</span> <span class="s2">&quot;torch&quot;</span>
-<a id="__codelineno-0-69" name="__codelineno-0-69"></a>
-<a id="__codelineno-0-70" name="__codelineno-0-70"></a>        <span class="k">if</span> <span class="n">platform</span> <span class="o">==</span> <span class="s2">&quot;accelerate&quot;</span><span class="p">:</span>
-<a id="__codelineno-0-71" name="__codelineno-0-71"></a>            <span class="n">ac</span><span class="o">.</span><span class="n">check</span><span class="p">()</span>
-<a id="__codelineno-0-72" name="__codelineno-0-72"></a>            <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="s2">&quot;AccelerateRunner&quot;</span><span class="p">,</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="p">,</span> <span class="n">AccelerateRunner</span><span class="p">),</span> <span class="p">{})</span>
-<a id="__codelineno-0-73" name="__codelineno-0-73"></a>        <span class="k">elif</span> <span class="n">platform</span> <span class="o">==</span> <span class="s2">&quot;deepspeed&quot;</span><span class="p">:</span>
-<a id="__codelineno-0-74" name="__codelineno-0-74"></a>            <span class="n">ds</span><span class="o">.</span><span class="n">check</span><span class="p">()</span>
-<a id="__codelineno-0-75" name="__codelineno-0-75"></a>            <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="s2">&quot;DeepSpeedRunner&quot;</span><span class="p">,</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="p">,</span> <span class="n">DeepSpeedRunner</span><span class="p">),</span> <span class="p">{})</span>
-<a id="__codelineno-0-76" name="__codelineno-0-76"></a>        <span class="k">elif</span> <span class="n">platform</span> <span class="o">==</span> <span class="s2">&quot;torch&quot;</span><span class="p">:</span>
-<a id="__codelineno-0-77" name="__codelineno-0-77"></a>            <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="s2">&quot;TorchRunner&quot;</span><span class="p">,</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="p">,</span> <span class="n">TorchRunner</span><span class="p">),</span> <span class="p">{})</span>
-<a id="__codelineno-0-78" name="__codelineno-0-78"></a>        <span class="k">else</span><span class="p">:</span>
-<a id="__codelineno-0-79" name="__codelineno-0-79"></a>            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Unknown platform: </span><span class="si">{</span><span class="n">platform</span><span class="si">}</span><span class="s2">. Valid options are: torch, accelerate, deepspeed&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-80" name="__codelineno-0-80"></a>
-<a id="__codelineno-0-81" name="__codelineno-0-81"></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+<a id="__codelineno-0-41" name="__codelineno-0-41"></a><span class="sd">    This runner dynamically modifies the `__class__` attribute to adapt to the platform.</span>
+<a id="__codelineno-0-42" name="__codelineno-0-42"></a>
+<a id="__codelineno-0-43" name="__codelineno-0-43"></a><span class="sd">    It&#39;s safe (and recommended) to inherit from this class to extend the Runner.</span>
+<a id="__codelineno-0-44" name="__codelineno-0-44"></a>
+<a id="__codelineno-0-45" name="__codelineno-0-45"></a><span class="sd">    Valid platform options are:</span>
+<a id="__codelineno-0-46" name="__codelineno-0-46"></a>
+<a id="__codelineno-0-47" name="__codelineno-0-47"></a><span class="sd">    - &quot;auto&quot; (default)</span>
+<a id="__codelineno-0-48" name="__codelineno-0-48"></a><span class="sd">    - &quot;torch&quot;</span>
+<a id="__codelineno-0-49" name="__codelineno-0-49"></a><span class="sd">    - &quot;accelerate&quot;</span>
+<a id="__codelineno-0-50" name="__codelineno-0-50"></a><span class="sd">    - &quot;deepspeed&quot;</span>
+<a id="__codelineno-0-51" name="__codelineno-0-51"></a>
+<a id="__codelineno-0-52" name="__codelineno-0-52"></a><span class="sd">    Examples:</span>
+<a id="__codelineno-0-53" name="__codelineno-0-53"></a><span class="sd">        &gt;&gt;&gt; config = Config({&quot;platform&quot;: &quot;accelerate&quot;})</span>
+<a id="__codelineno-0-54" name="__codelineno-0-54"></a><span class="sd">        &gt;&gt;&gt; runner = Runner(config)</span>
+<a id="__codelineno-0-55" name="__codelineno-0-55"></a>
+<a id="__codelineno-0-56" name="__codelineno-0-56"></a><span class="sd">    See Also:</span>
+<a id="__codelineno-0-57" name="__codelineno-0-57"></a><span class="sd">        - [`BaseRunner`][danling.runner.BaseRunner]: Base class for all runners.</span>
+<a id="__codelineno-0-58" name="__codelineno-0-58"></a><span class="sd">        - [`TorchRunner`][danling.runner.TorchRunner]: PyTorch runner.</span>
+<a id="__codelineno-0-59" name="__codelineno-0-59"></a><span class="sd">        - [`AccelerateRunner`][danling.runner.AccelerateRunner]: PyTorch runner with Accelerate.</span>
+<a id="__codelineno-0-60" name="__codelineno-0-60"></a><span class="sd">        - [`DeepSpeedRunner`][danling.runner.DeepSpeedRunner]: PyTorch runner with DeepSpeed.</span>
+<a id="__codelineno-0-61" name="__codelineno-0-61"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-62" name="__codelineno-0-62"></a>
+<a id="__codelineno-0-63" name="__codelineno-0-63"></a>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">Config</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-64" name="__codelineno-0-64"></a>        <span class="n">platform</span> <span class="o">=</span> <span class="n">config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;platform&quot;</span><span class="p">,</span> <span class="s2">&quot;auto&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span>
+<a id="__codelineno-0-65" name="__codelineno-0-65"></a>
+<a id="__codelineno-0-66" name="__codelineno-0-66"></a>        <span class="k">if</span> <span class="n">platform</span> <span class="o">==</span> <span class="s2">&quot;auto&quot;</span><span class="p">:</span>
+<a id="__codelineno-0-67" name="__codelineno-0-67"></a>            <span class="n">platform</span> <span class="o">=</span> <span class="s2">&quot;deepspeed&quot;</span> <span class="k">if</span> <span class="n">ds</span><span class="o">.</span><span class="n">is_successful</span><span class="p">()</span> <span class="k">else</span> <span class="s2">&quot;torch&quot;</span>
+<a id="__codelineno-0-68" name="__codelineno-0-68"></a>
+<a id="__codelineno-0-69" name="__codelineno-0-69"></a>        <span class="k">if</span> <span class="n">platform</span> <span class="o">==</span> <span class="s2">&quot;accelerate&quot;</span><span class="p">:</span>
+<a id="__codelineno-0-70" name="__codelineno-0-70"></a>            <span class="n">ac</span><span class="o">.</span><span class="n">check</span><span class="p">()</span>
+<a id="__codelineno-0-71" name="__codelineno-0-71"></a>            <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="s2">&quot;AccelerateRunner&quot;</span><span class="p">,</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="p">,</span> <span class="n">AccelerateRunner</span><span class="p">),</span> <span class="p">{})</span>
+<a id="__codelineno-0-72" name="__codelineno-0-72"></a>        <span class="k">elif</span> <span class="n">platform</span> <span class="o">==</span> <span class="s2">&quot;deepspeed&quot;</span><span class="p">:</span>
+<a id="__codelineno-0-73" name="__codelineno-0-73"></a>            <span class="n">ds</span><span class="o">.</span><span class="n">check</span><span class="p">()</span>
+<a id="__codelineno-0-74" name="__codelineno-0-74"></a>            <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="s2">&quot;DeepSpeedRunner&quot;</span><span class="p">,</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="p">,</span> <span class="n">DeepSpeedRunner</span><span class="p">),</span> <span class="p">{})</span>
+<a id="__codelineno-0-75" name="__codelineno-0-75"></a>        <span class="k">elif</span> <span class="n">platform</span> <span class="o">==</span> <span class="s2">&quot;torch&quot;</span><span class="p">:</span>
+<a id="__codelineno-0-76" name="__codelineno-0-76"></a>            <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="s2">&quot;TorchRunner&quot;</span><span class="p">,</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="p">,</span> <span class="n">TorchRunner</span><span class="p">),</span> <span class="p">{})</span>
+<a id="__codelineno-0-77" name="__codelineno-0-77"></a>        <span class="k">else</span><span class="p">:</span>
+<a id="__codelineno-0-78" name="__codelineno-0-78"></a>            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Unknown platform: </span><span class="si">{</span><span class="n">platform</span><span class="si">}</span><span class="s2">. Valid options are: torch, accelerate, deepspeed&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-79" name="__codelineno-0-79"></a>
+<a id="__codelineno-0-80" name="__codelineno-0-80"></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
               </details>
 

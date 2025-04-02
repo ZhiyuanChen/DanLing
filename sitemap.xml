@@ -2,364 +2,406 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
     <url>
         <loc>https://danling.org/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/"/>
     </url>
     <url>
         <loc>https://danling.org/package/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/package/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/package/"/>
     </url>
     <url>
         <loc>https://danling.org/about/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/about/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/about/"/>
     </url>
     <url>
         <loc>https://danling.org/about/license/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/about/license/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/about/license/"/>
     </url>
     <url>
         <loc>https://danling.org/about/privacy/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/about/privacy/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/about/privacy/"/>
     </url>
     <url>
         <loc>https://danling.org/blog/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/blog/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/blog/"/>
     </url>
     <url>
+        <loc>https://danling.org/metric/</loc>
+        <lastmod>2025-04-02</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metric/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metric/"/>
+    </url>
+    <url>
         <loc>https://danling.org/metric/average_meter/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metric/average_meter/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metric/average_meter/"/>
     </url>
     <url>
+        <loc>https://danling.org/metric/factory/</loc>
+        <lastmod>2025-04-02</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metric/factory/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metric/factory/"/>
+    </url>
+    <url>
+        <loc>https://danling.org/metric/functional/</loc>
+        <lastmod>2025-04-02</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metric/functional/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metric/functional/"/>
+    </url>
+    <url>
         <loc>https://danling.org/metric/metric_meter/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metric/metric_meter/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metric/metric_meter/"/>
     </url>
     <url>
         <loc>https://danling.org/metric/metrics/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metric/metrics/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metric/metrics/"/>
     </url>
     <url>
         <loc>https://danling.org/metric/utils/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metric/utils/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metric/utils/"/>
     </url>
     <url>
         <loc>https://danling.org/optim/lr_scheduler/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/optim/lr_scheduler/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/optim/lr_scheduler/"/>
     </url>
     <url>
         <loc>https://danling.org/runner/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/"/>
     </url>
     <url>
         <loc>https://danling.org/runner/accelerate_runner/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/accelerate_runner/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/accelerate_runner/"/>
     </url>
     <url>
         <loc>https://danling.org/runner/base_runner/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/base_runner/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/base_runner/"/>
     </url>
     <url>
         <loc>https://danling.org/runner/config/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/config/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/config/"/>
     </url>
     <url>
         <loc>https://danling.org/runner/deepspeed_runner/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/deepspeed_runner/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/deepspeed_runner/"/>
     </url>
     <url>
         <loc>https://danling.org/runner/runner/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/runner/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/runner/"/>
     </url>
     <url>
         <loc>https://danling.org/runner/torch_runner/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/torch_runner/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/torch_runner/"/>
     </url>
     <url>
         <loc>https://danling.org/runner/utils/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/utils/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/utils/"/>
     </url>
     <url>
         <loc>https://danling.org/tensor/nested_tensor/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/tensor/nested_tensor/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/tensor/nested_tensor/"/>
     </url>
     <url>
         <loc>https://danling.org/tensor/pn_tensor/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/tensor/pn_tensor/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/tensor/pn_tensor/"/>
     </url>
     <url>
         <loc>https://danling.org/tensor/torch_func_registry/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/tensor/torch_func_registry/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/tensor/torch_func_registry/"/>
     </url>
     <url>
         <loc>https://danling.org/utils/basex/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/utils/basex/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/utils/basex/"/>
     </url>
     <url>
         <loc>https://danling.org/utils/contextmanagers/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/utils/contextmanagers/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/utils/contextmanagers/"/>
     </url>
     <url>
         <loc>https://danling.org/utils/decorators/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/utils/decorators/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/utils/decorators/"/>
     </url>
     <url>
         <loc>https://danling.org/utils/io/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/utils/io/"/>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/utils/io/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/package/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/package/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/package/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/about/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/about/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/about/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/about/license/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/about/license/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/about/license/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/about/privacy/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/about/privacy/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/about/privacy/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/blog/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/blog/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/blog/"/>
     </url>
     <url>
+        <loc>https://danling.org/zh/metric/</loc>
+        <lastmod>2025-04-02</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metric/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metric/"/>
+    </url>
+    <url>
         <loc>https://danling.org/zh/metric/average_meter/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metric/average_meter/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metric/average_meter/"/>
     </url>
     <url>
+        <loc>https://danling.org/zh/metric/factory/</loc>
+        <lastmod>2025-04-02</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metric/factory/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metric/factory/"/>
+    </url>
+    <url>
+        <loc>https://danling.org/zh/metric/functional/</loc>
+        <lastmod>2025-04-02</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metric/functional/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metric/functional/"/>
+    </url>
+    <url>
         <loc>https://danling.org/zh/metric/metric_meter/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metric/metric_meter/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metric/metric_meter/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/metric/metrics/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metric/metrics/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metric/metrics/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/metric/utils/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/metric/utils/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/metric/utils/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/optim/lr_scheduler/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/optim/lr_scheduler/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/optim/lr_scheduler/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/runner/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/runner/accelerate_runner/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/accelerate_runner/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/accelerate_runner/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/runner/base_runner/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/base_runner/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/base_runner/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/runner/config/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/config/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/config/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/runner/deepspeed_runner/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/deepspeed_runner/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/deepspeed_runner/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/runner/runner/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/runner/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/runner/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/runner/torch_runner/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/torch_runner/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/torch_runner/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/runner/utils/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/utils/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/utils/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/tensor/nested_tensor/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/tensor/nested_tensor/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/tensor/nested_tensor/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/tensor/pn_tensor/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/tensor/pn_tensor/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/tensor/pn_tensor/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/tensor/torch_func_registry/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/tensor/torch_func_registry/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/tensor/torch_func_registry/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/utils/basex/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/utils/basex/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/utils/basex/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/utils/contextmanagers/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/utils/contextmanagers/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/utils/contextmanagers/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/utils/decorators/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/utils/decorators/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/utils/decorators/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/utils/io/</loc>
-        <lastmod>2025-04-01</lastmod>
+        <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/utils/io/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/utils/io/"/>
