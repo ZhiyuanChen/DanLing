@@ -30,6 +30,7 @@ from .preprocess import (
     preprocess_multiclass,
     preprocess_multilabel,
     preprocess_regression,
+    with_preprocess,
 )
 from .regression import mse, pearson, r2_score, rmse, spearman
 
@@ -62,4 +63,5 @@ __all__ = [
     "preprocess_multiclass",
     "preprocess_multilabel",
     "base_preprocess",
+    "with_preprocess",
 ]
