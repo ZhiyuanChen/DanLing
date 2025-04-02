@@ -33,7 +33,7 @@
         <link rel="prev" href="../pn_tensor/">
       
       
-        <link rel="next" href="../../optim/lr_scheduler/">
+        <link rel="next" href="../functional/">
       
       
         <link rel="alternate" type="application/rss+xml" title="RSS 订阅" href="../../../feed_rss_created.xml">
@@ -312,19 +312,16 @@
     
   
   
-    
-    
-      <li class="md-tabs__item md-tabs__item--active">
-        <a href="../nested_tensor/" class="md-tabs__link">
-          
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="../" class="md-tabs__link">
+        
   
     
   
   Tensor
 
-        </a>
-      </li>
-    
+      </a>
+    </li>
   
 
       
@@ -571,6 +568,8 @@
       
         
       
+        
+      
     
     
       
@@ -591,8 +590,10 @@
         <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
         
           
-          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
-            
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
   
   <span class="md-ellipsis">
     Tensor
@@ -600,8 +601,14 @@
   </span>
   
 
-            <span class="md-nav__icon md-icon"></span>
-          </label>
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_3">
@@ -729,9 +736,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#danling.tensor.TorchFuncRegistry.implement(function)" class="md-nav__link">
+  <a href="#danling.tensor.TorchFuncRegistry.implement(torch_function)" class="md-nav__link">
     <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-parameter"></code>&nbsp;function
+      <code class="doc-symbol doc-symbol-toc doc-symbol-parameter"></code>&nbsp;torch_function
     </span>
   </a>
   
@@ -751,6 +758,28 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../functional/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    functional
+    
+  </span>
+  
+
+      </a>
     </li>
   
 
@@ -1049,9 +1078,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#danling.tensor.TorchFuncRegistry.implement(function)" class="md-nav__link">
+  <a href="#danling.tensor.TorchFuncRegistry.implement(torch_function)" class="md-nav__link">
     <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-parameter"></code>&nbsp;function
+      <code class="doc-symbol doc-symbol-toc doc-symbol-parameter"></code>&nbsp;torch_function
     </span>
   </a>
   
@@ -1105,7 +1134,37 @@
               Bases: <code><a class="autorefs autorefs-external" title="&lt;code&gt;chanfig.Registry&lt;/code&gt;" href="https://chanfig.danling.org/zh/registry/#chanfig.registry.Registry">Registry</a></code></p>
 
 
-        <p><code>TorchFuncRegistry</code> for extending PyTorch Tensor.</p>
+        <p>Registry for extending PyTorch functions to work with custom tensor types like NestedTensor.</p>
+<p><code>TorchFuncRegistry</code> provides a clean interface for implementing PyTorch function
+overrides for custom tensor types such as NestedTensor. It&rsquo;s used internally by
+NestedTensor to register implementations for various torch functions like
+torch.cat, torch.mean, torch.stack, etc.</p>
+<p>This mechanism enables NestedTensor to behave like a regular torch.Tensor
+when used with standard PyTorch functions by providing custom implementations
+that understand the NestedTensor structure.</p>
+<p>Usage:
+<div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-1"> 1</a></span>
+<span class="normal"><a href="#__codelineno-0-2"> 2</a></span>
+<span class="normal"><a href="#__codelineno-0-3"> 3</a></span>
+<span class="normal"><a href="#__codelineno-0-4"> 4</a></span>
+<span class="normal"><a href="#__codelineno-0-5"> 5</a></span>
+<span class="normal"><a href="#__codelineno-0-6"> 6</a></span>
+<span class="normal"><a href="#__codelineno-0-7"> 7</a></span>
+<span class="normal"><a href="#__codelineno-0-8"> 8</a></span>
+<span class="normal"><a href="#__codelineno-0-9"> 9</a></span>
+<span class="normal"><a href="#__codelineno-0-10">10</a></span>
+<span class="normal"><a href="#__codelineno-0-11">11</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1"></a><span class="c1"># Create a registry</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2"></a><span class="n">registry</span> <span class="o">=</span> <span class="n">TorchFuncRegistry</span><span class="p">(</span><span class="s2">&quot;my_tensor_registry&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4"></a><span class="c1"># Register an implementation for torch.mean</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5"></a><span class="nd">@registry</span><span class="o">.</span><span class="n">implement</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">mean</span><span class="p">)</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6"></a><span class="k">def</span> <span class="nf">mean_implementation</span><span class="p">(</span><span class="nb">input</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">keepdim</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7"></a>    <span class="c1"># Custom implementation for your tensor type</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8"></a>    <span class="k">pass</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9"></a>
+<a id="__codelineno-0-10" name="__codelineno-0-10"></a><span class="c1"># The registry can be used to look up the implementation</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11"></a><span class="n">registry</span><span class="p">[</span><span class="n">torch</span><span class="o">.</span><span class="n">mean</span><span class="p">]</span>  <span class="c1"># Returns mean_implementation</span>
+</code></pre></div></td></tr></table></div></p>
 
 
 
@@ -1153,45 +1212,111 @@
 <span class="normal"><a href="#__codelineno-0-61">61</a></span>
 <span class="normal"><a href="#__codelineno-0-62">62</a></span>
 <span class="normal"><a href="#__codelineno-0-63">63</a></span>
-<span class="normal"><a href="#__codelineno-0-64">64</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-26" name="__codelineno-0-26"></a><span class="k">class</span> <span class="nc">TorchFuncRegistry</span><span class="p">(</span><span class="n">Registry</span><span class="p">):</span>  <span class="c1"># pylint: disable=too-few-public-methods</span>
+<span class="normal"><a href="#__codelineno-0-64">64</a></span>
+<span class="normal"><a href="#__codelineno-0-65">65</a></span>
+<span class="normal"><a href="#__codelineno-0-66">66</a></span>
+<span class="normal"><a href="#__codelineno-0-67">67</a></span>
+<span class="normal"><a href="#__codelineno-0-68">68</a></span>
+<span class="normal"><a href="#__codelineno-0-69">69</a></span>
+<span class="normal"><a href="#__codelineno-0-70">70</a></span>
+<span class="normal"><a href="#__codelineno-0-71">71</a></span>
+<span class="normal"><a href="#__codelineno-0-72">72</a></span>
+<span class="normal"><a href="#__codelineno-0-73">73</a></span>
+<span class="normal"><a href="#__codelineno-0-74">74</a></span>
+<span class="normal"><a href="#__codelineno-0-75">75</a></span>
+<span class="normal"><a href="#__codelineno-0-76">76</a></span>
+<span class="normal"><a href="#__codelineno-0-77">77</a></span>
+<span class="normal"><a href="#__codelineno-0-78">78</a></span>
+<span class="normal"><a href="#__codelineno-0-79">79</a></span>
+<span class="normal"><a href="#__codelineno-0-80">80</a></span>
+<span class="normal"><a href="#__codelineno-0-81">81</a></span>
+<span class="normal"><a href="#__codelineno-0-82">82</a></span>
+<span class="normal"><a href="#__codelineno-0-83">83</a></span>
+<span class="normal"><a href="#__codelineno-0-84">84</a></span>
+<span class="normal"><a href="#__codelineno-0-85">85</a></span>
+<span class="normal"><a href="#__codelineno-0-86">86</a></span>
+<span class="normal"><a href="#__codelineno-0-87">87</a></span>
+<span class="normal"><a href="#__codelineno-0-88">88</a></span>
+<span class="normal"><a href="#__codelineno-0-89">89</a></span>
+<span class="normal"><a href="#__codelineno-0-90">90</a></span>
+<span class="normal"><a href="#__codelineno-0-91">91</a></span>
+<span class="normal"><a href="#__codelineno-0-92">92</a></span>
+<span class="normal"><a href="#__codelineno-0-93">93</a></span>
+<span class="normal"><a href="#__codelineno-0-94">94</a></span>
+<span class="normal"><a href="#__codelineno-0-95">95</a></span>
+<span class="normal"><a href="#__codelineno-0-96">96</a></span>
+<span class="normal"><a href="#__codelineno-0-97">97</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-26" name="__codelineno-0-26"></a><span class="k">class</span> <span class="nc">TorchFuncRegistry</span><span class="p">(</span><span class="n">Registry</span><span class="p">):</span>  <span class="c1"># pylint: disable=too-few-public-methods</span>
 <a id="__codelineno-0-27" name="__codelineno-0-27"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-28" name="__codelineno-0-28"></a><span class="sd">    `TorchFuncRegistry` for extending PyTorch Tensor.</span>
-<a id="__codelineno-0-29" name="__codelineno-0-29"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-30" name="__codelineno-0-30"></a>
-<a id="__codelineno-0-31" name="__codelineno-0-31"></a>    <span class="k">def</span> <span class="nf">implement</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">torch_function</span><span class="p">:</span> <span class="n">Callable</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">:</span>
-<a id="__codelineno-0-32" name="__codelineno-0-32"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-33" name="__codelineno-0-33"></a><span class="sd">        Implement an implementation for a torch function.</span>
+<a id="__codelineno-0-28" name="__codelineno-0-28"></a><span class="sd">    Registry for extending PyTorch functions to work with custom tensor types like NestedTensor.</span>
+<a id="__codelineno-0-29" name="__codelineno-0-29"></a>
+<a id="__codelineno-0-30" name="__codelineno-0-30"></a><span class="sd">    `TorchFuncRegistry` provides a clean interface for implementing PyTorch function</span>
+<a id="__codelineno-0-31" name="__codelineno-0-31"></a><span class="sd">    overrides for custom tensor types such as NestedTensor. It&#39;s used internally by</span>
+<a id="__codelineno-0-32" name="__codelineno-0-32"></a><span class="sd">    NestedTensor to register implementations for various torch functions like</span>
+<a id="__codelineno-0-33" name="__codelineno-0-33"></a><span class="sd">    torch.cat, torch.mean, torch.stack, etc.</span>
 <a id="__codelineno-0-34" name="__codelineno-0-34"></a>
-<a id="__codelineno-0-35" name="__codelineno-0-35"></a><span class="sd">        Args:</span>
-<a id="__codelineno-0-36" name="__codelineno-0-36"></a><span class="sd">            function: The torch function to implement.</span>
-<a id="__codelineno-0-37" name="__codelineno-0-37"></a>
-<a id="__codelineno-0-38" name="__codelineno-0-38"></a><span class="sd">        Returns:</span>
-<a id="__codelineno-0-39" name="__codelineno-0-39"></a><span class="sd">            function: The registered function.</span>
-<a id="__codelineno-0-40" name="__codelineno-0-40"></a>
-<a id="__codelineno-0-41" name="__codelineno-0-41"></a><span class="sd">        Raises:</span>
-<a id="__codelineno-0-42" name="__codelineno-0-42"></a><span class="sd">            ValueError: If the function with the same name already registered and `TorchFuncRegistry.override=False`.</span>
+<a id="__codelineno-0-35" name="__codelineno-0-35"></a><span class="sd">    This mechanism enables NestedTensor to behave like a regular torch.Tensor</span>
+<a id="__codelineno-0-36" name="__codelineno-0-36"></a><span class="sd">    when used with standard PyTorch functions by providing custom implementations</span>
+<a id="__codelineno-0-37" name="__codelineno-0-37"></a><span class="sd">    that understand the NestedTensor structure.</span>
+<a id="__codelineno-0-38" name="__codelineno-0-38"></a>
+<a id="__codelineno-0-39" name="__codelineno-0-39"></a><span class="sd">    Usage:</span>
+<a id="__codelineno-0-40" name="__codelineno-0-40"></a><span class="sd">    ```python</span>
+<a id="__codelineno-0-41" name="__codelineno-0-41"></a><span class="sd">    # Create a registry</span>
+<a id="__codelineno-0-42" name="__codelineno-0-42"></a><span class="sd">    registry = TorchFuncRegistry(&quot;my_tensor_registry&quot;)</span>
 <a id="__codelineno-0-43" name="__codelineno-0-43"></a>
-<a id="__codelineno-0-44" name="__codelineno-0-44"></a><span class="sd">        Examples:</span>
-<a id="__codelineno-0-45" name="__codelineno-0-45"></a><span class="sd">            &gt;&gt;&gt; import torch</span>
-<a id="__codelineno-0-46" name="__codelineno-0-46"></a><span class="sd">            &gt;&gt;&gt; registry = TorchFuncRegistry(&quot;test&quot;)</span>
-<a id="__codelineno-0-47" name="__codelineno-0-47"></a><span class="sd">            &gt;&gt;&gt; @registry.implement(torch.mean)</span>
-<a id="__codelineno-0-48" name="__codelineno-0-48"></a><span class="sd">            ... def mean(input):</span>
-<a id="__codelineno-0-49" name="__codelineno-0-49"></a><span class="sd">            ...     raise input.mean()</span>
-<a id="__codelineno-0-50" name="__codelineno-0-50"></a><span class="sd">            &gt;&gt;&gt; registry  # doctest: +ELLIPSIS</span>
-<a id="__codelineno-0-51" name="__codelineno-0-51"></a><span class="sd">            TorchFuncRegistry(</span>
-<a id="__codelineno-0-52" name="__codelineno-0-52"></a><span class="sd">              (&lt;built-in method mean of type object at ...&gt;): &lt;function mean at ...&gt;</span>
-<a id="__codelineno-0-53" name="__codelineno-0-53"></a><span class="sd">            )</span>
-<a id="__codelineno-0-54" name="__codelineno-0-54"></a><span class="sd">        &quot;&quot;&quot;</span>
-<a id="__codelineno-0-55" name="__codelineno-0-55"></a>
-<a id="__codelineno-0-56" name="__codelineno-0-56"></a>        <span class="k">if</span> <span class="n">torch_function</span> <span class="ow">in</span> <span class="bp">self</span> <span class="ow">and</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">override</span><span class="p">:</span>
-<a id="__codelineno-0-57" name="__codelineno-0-57"></a>            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Torch function </span><span class="si">{</span><span class="n">torch_function</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2"> already registered.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-44" name="__codelineno-0-44"></a><span class="sd">    # Register an implementation for torch.mean</span>
+<a id="__codelineno-0-45" name="__codelineno-0-45"></a><span class="sd">    @registry.implement(torch.mean)</span>
+<a id="__codelineno-0-46" name="__codelineno-0-46"></a><span class="sd">    def mean_implementation(input, dim=None, keepdim=False, **kwargs):</span>
+<a id="__codelineno-0-47" name="__codelineno-0-47"></a><span class="sd">        # Custom implementation for your tensor type</span>
+<a id="__codelineno-0-48" name="__codelineno-0-48"></a><span class="sd">        pass</span>
+<a id="__codelineno-0-49" name="__codelineno-0-49"></a>
+<a id="__codelineno-0-50" name="__codelineno-0-50"></a><span class="sd">    # The registry can be used to look up the implementation</span>
+<a id="__codelineno-0-51" name="__codelineno-0-51"></a><span class="sd">    registry[torch.mean]  # Returns mean_implementation</span>
+<a id="__codelineno-0-52" name="__codelineno-0-52"></a><span class="sd">    ```</span>
+<a id="__codelineno-0-53" name="__codelineno-0-53"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-54" name="__codelineno-0-54"></a>
+<a id="__codelineno-0-55" name="__codelineno-0-55"></a>    <span class="k">def</span> <span class="nf">implement</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">torch_function</span><span class="p">:</span> <span class="n">Callable</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">:</span>
+<a id="__codelineno-0-56" name="__codelineno-0-56"></a><span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-57" name="__codelineno-0-57"></a><span class="sd">        Register a custom implementation for a PyTorch function.</span>
 <a id="__codelineno-0-58" name="__codelineno-0-58"></a>
-<a id="__codelineno-0-59" name="__codelineno-0-59"></a>        <span class="nd">@wraps</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">register</span><span class="p">)</span>
-<a id="__codelineno-0-60" name="__codelineno-0-60"></a>        <span class="k">def</span> <span class="nf">register</span><span class="p">(</span><span class="n">function</span><span class="p">):</span>
-<a id="__codelineno-0-61" name="__codelineno-0-61"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">torch_function</span><span class="p">,</span> <span class="n">function</span><span class="p">)</span>
-<a id="__codelineno-0-62" name="__codelineno-0-62"></a>            <span class="k">return</span> <span class="n">function</span>
+<a id="__codelineno-0-59" name="__codelineno-0-59"></a><span class="sd">        Use this decorator to provide implementations for PyTorch functions</span>
+<a id="__codelineno-0-60" name="__codelineno-0-60"></a><span class="sd">        that will work with custom tensor types like NestedTensor. This is</span>
+<a id="__codelineno-0-61" name="__codelineno-0-61"></a><span class="sd">        the key mechanism that allows NestedTensor to integrate seamlessly</span>
+<a id="__codelineno-0-62" name="__codelineno-0-62"></a><span class="sd">        with the PyTorch ecosystem.</span>
 <a id="__codelineno-0-63" name="__codelineno-0-63"></a>
-<a id="__codelineno-0-64" name="__codelineno-0-64"></a>        <span class="k">return</span> <span class="n">register</span>
+<a id="__codelineno-0-64" name="__codelineno-0-64"></a><span class="sd">        Args:</span>
+<a id="__codelineno-0-65" name="__codelineno-0-65"></a><span class="sd">            torch_function: The original PyTorch function to override (e.g., torch.mean, torch.cat)</span>
+<a id="__codelineno-0-66" name="__codelineno-0-66"></a>
+<a id="__codelineno-0-67" name="__codelineno-0-67"></a><span class="sd">        Returns:</span>
+<a id="__codelineno-0-68" name="__codelineno-0-68"></a><span class="sd">            Callable: A decorator function that registers the implementation</span>
+<a id="__codelineno-0-69" name="__codelineno-0-69"></a>
+<a id="__codelineno-0-70" name="__codelineno-0-70"></a><span class="sd">        Raises:</span>
+<a id="__codelineno-0-71" name="__codelineno-0-71"></a><span class="sd">            ValueError: If the function is already registered and override=False</span>
+<a id="__codelineno-0-72" name="__codelineno-0-72"></a>
+<a id="__codelineno-0-73" name="__codelineno-0-73"></a><span class="sd">        Examples:</span>
+<a id="__codelineno-0-74" name="__codelineno-0-74"></a><span class="sd">            &gt;&gt;&gt; import torch</span>
+<a id="__codelineno-0-75" name="__codelineno-0-75"></a><span class="sd">            &gt;&gt;&gt; registry = TorchFuncRegistry(&quot;test&quot;)</span>
+<a id="__codelineno-0-76" name="__codelineno-0-76"></a><span class="sd">            &gt;&gt;&gt; @registry.implement(torch.mean)</span>
+<a id="__codelineno-0-77" name="__codelineno-0-77"></a><span class="sd">            ... def mean(input):</span>
+<a id="__codelineno-0-78" name="__codelineno-0-78"></a><span class="sd">            ...     return input.mean()</span>
+<a id="__codelineno-0-79" name="__codelineno-0-79"></a><span class="sd">            &gt;&gt;&gt; registry[torch.mean]  # doctest: +ELLIPSIS</span>
+<a id="__codelineno-0-80" name="__codelineno-0-80"></a><span class="sd">            &lt;function mean at ...&gt;</span>
+<a id="__codelineno-0-81" name="__codelineno-0-81"></a>
+<a id="__codelineno-0-82" name="__codelineno-0-82"></a><span class="sd">        Note:</span>
+<a id="__codelineno-0-83" name="__codelineno-0-83"></a><span class="sd">            This is primarily used internally by NestedTensor.__torch_function__</span>
+<a id="__codelineno-0-84" name="__codelineno-0-84"></a><span class="sd">            to provide implementations for various PyTorch functions. You can</span>
+<a id="__codelineno-0-85" name="__codelineno-0-85"></a><span class="sd">            use the same mechanism to extend NestedTensor with additional</span>
+<a id="__codelineno-0-86" name="__codelineno-0-86"></a><span class="sd">            function implementations.</span>
+<a id="__codelineno-0-87" name="__codelineno-0-87"></a><span class="sd">        &quot;&quot;&quot;</span>
+<a id="__codelineno-0-88" name="__codelineno-0-88"></a>
+<a id="__codelineno-0-89" name="__codelineno-0-89"></a>        <span class="k">if</span> <span class="n">torch_function</span> <span class="ow">in</span> <span class="bp">self</span> <span class="ow">and</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">override</span><span class="p">:</span>
+<a id="__codelineno-0-90" name="__codelineno-0-90"></a>            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Torch function </span><span class="si">{</span><span class="n">torch_function</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2"> already registered.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-91" name="__codelineno-0-91"></a>
+<a id="__codelineno-0-92" name="__codelineno-0-92"></a>        <span class="nd">@wraps</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">register</span><span class="p">)</span>
+<a id="__codelineno-0-93" name="__codelineno-0-93"></a>        <span class="k">def</span> <span class="nf">register</span><span class="p">(</span><span class="n">function</span><span class="p">):</span>
+<a id="__codelineno-0-94" name="__codelineno-0-94"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">torch_function</span><span class="p">,</span> <span class="n">function</span><span class="p">)</span>
+<a id="__codelineno-0-95" name="__codelineno-0-95"></a>            <span class="k">return</span> <span class="n">function</span>
+<a id="__codelineno-0-96" name="__codelineno-0-96"></a>
+<a id="__codelineno-0-97" name="__codelineno-0-97"></a>        <span class="k">return</span> <span class="n">register</span>
 </code></pre></div></td></tr></table></div>
               </details>
 
@@ -1215,12 +1340,16 @@
 
 
 <a href="#danling.tensor.TorchFuncRegistry.implement" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="doc-signature highlight"><span class="filename">Python</span><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">implement</span><span class="p">(</span><span class="n"><span title="danling.tensor.TorchFuncRegistry.implement(torch_function)">torch_function</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" title="&lt;code&gt;typing.Callable&lt;/code&gt;" href="https://docs.python.org/3/library/typing.html#typing.Callable">Callable</a></span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-external" title="&lt;code&gt;typing.Callable&lt;/code&gt;" href="https://docs.python.org/3/library/typing.html#typing.Callable">Callable</a></span>
+<div class="doc-signature highlight"><span class="filename">Python</span><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">implement</span><span class="p">(</span><span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;torch_function&lt;/code&gt; (&lt;code&gt;danling.tensor.TorchFuncRegistry.implement(torch_function)&lt;/code&gt;)" href="../../../tensor/torch_func_registry/#danling.tensor.TorchFuncRegistry.implement(torch_function)">torch_function</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" title="&lt;code&gt;typing.Callable&lt;/code&gt;" href="https://docs.python.org/3/library/typing.html#typing.Callable">Callable</a></span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-external" title="&lt;code&gt;typing.Callable&lt;/code&gt;" href="https://docs.python.org/3/library/typing.html#typing.Callable">Callable</a></span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
 
-        <p>Implement an implementation for a torch function.</p>
+        <p>Register a custom implementation for a PyTorch function.</p>
+<p>Use this decorator to provide implementations for PyTorch functions
+that will work with custom tensor types like NestedTensor. This is
+the key mechanism that allows NestedTensor to integrate seamlessly
+with the PyTorch ecosystem.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -1236,13 +1365,14 @@
       <tbody>
           <tr class="doc-section-item">
             <td>
-<h4 id="danling.tensor.TorchFuncRegistry.implement(function)" class="doc doc-heading doc-heading-parameter">                  <code>function</code>
-<a href="#danling.tensor.TorchFuncRegistry.implement(function)" class="headerlink" title="Permanent link">&para;</a></h4>            </td>
+<h4 id="danling.tensor.TorchFuncRegistry.implement(torch_function)" class="doc doc-heading doc-heading-parameter">                  <code>torch_function</code>
+<a href="#danling.tensor.TorchFuncRegistry.implement(torch_function)" class="headerlink" title="Permanent link">&para;</a></h4>            </td>
             <td>
+                  <code><a class="autorefs autorefs-external" title="&lt;code&gt;typing.Callable&lt;/code&gt;" href="https://docs.python.org/3/library/typing.html#typing.Callable">Callable</a></code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The torch function to implement.</p>
+                <p>The original PyTorch function to override (e.g., torch.mean, torch.cat)</p>
               </div>
             </td>
             <td>
@@ -1263,12 +1393,12 @@
       </thead>
       <tbody>
           <tr class="doc-section-item">
-<td><code>function</code></td>            <td>
+<td><code>Callable</code></td>            <td>
                   <code><a class="autorefs autorefs-external" title="&lt;code&gt;typing.Callable&lt;/code&gt;" href="https://docs.python.org/3/library/typing.html#typing.Callable">Callable</a></code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The registered function.</p>
+                <p>A decorator function that registers the implementation</p>
               </div>
             </td>
           </tr>
@@ -1291,7 +1421,7 @@
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If the function with the same name already registered and <code>TorchFuncRegistry.override=False</code>.</p>
+                <p>If the function is already registered and override=False</p>
               </div>
             </td>
           </tr>
@@ -1306,47 +1436,27 @@
 <span class="normal"><a href="#__codelineno-0-4">4</a></span>
 <span class="normal"><a href="#__codelineno-0-5">5</a></span>
 <span class="normal"><a href="#__codelineno-0-6">6</a></span>
-<span class="normal"><a href="#__codelineno-0-7">7</a></span>
-<span class="normal"><a href="#__codelineno-0-8">8</a></span>
-<span class="normal"><a href="#__codelineno-0-9">9</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1"></a><span class="gp">&gt;&gt;&gt; </span><span class="kn">import</span> <span class="nn">torch</span>
+<span class="normal"><a href="#__codelineno-0-7">7</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1"></a><span class="gp">&gt;&gt;&gt; </span><span class="kn">import</span> <span class="nn">torch</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">registry</span> <span class="o">=</span> <span class="n">TorchFuncRegistry</span><span class="p">(</span><span class="s2">&quot;test&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3"></a><span class="gp">&gt;&gt;&gt; </span><span class="nd">@registry</span><span class="o">.</span><span class="n">implement</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">mean</span><span class="p">)</span>
 <a id="__codelineno-0-4" name="__codelineno-0-4"></a><span class="gp">... </span><span class="k">def</span> <span class="nf">mean</span><span class="p">(</span><span class="nb">input</span><span class="p">):</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5"></a><span class="gp">... </span>    <span class="k">raise</span> <span class="nb">input</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">registry</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7"></a><span class="go">TorchFuncRegistry(</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8"></a><span class="go">  (&lt;built-in method mean of type object at ...&gt;): &lt;function mean at ...&gt;</span>
-<a id="__codelineno-0-9" name="__codelineno-0-9"></a><span class="go">)</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5"></a><span class="gp">... </span>    <span class="k">return</span> <span class="nb">input</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">registry</span><span class="p">[</span><span class="n">torch</span><span class="o">.</span><span class="n">mean</span><span class="p">]</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7"></a><span class="go">&lt;function mean at ...&gt;</span>
 </code></pre></div></td></tr></table></div>
 
 
+<details class="note" open>
+  <summary>Note</summary>
+  <p>This is primarily used internally by NestedTensor.<strong>torch_function</strong>
+to provide implementations for various PyTorch functions. You can
+use the same mechanism to extend NestedTensor with additional
+function implementations.</p>
+</details>
+
             <details class="quote">
               <summary>Source code in <code>danling/tensor/utils.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-31">31</a></span>
-<span class="normal"><a href="#__codelineno-0-32">32</a></span>
-<span class="normal"><a href="#__codelineno-0-33">33</a></span>
-<span class="normal"><a href="#__codelineno-0-34">34</a></span>
-<span class="normal"><a href="#__codelineno-0-35">35</a></span>
-<span class="normal"><a href="#__codelineno-0-36">36</a></span>
-<span class="normal"><a href="#__codelineno-0-37">37</a></span>
-<span class="normal"><a href="#__codelineno-0-38">38</a></span>
-<span class="normal"><a href="#__codelineno-0-39">39</a></span>
-<span class="normal"><a href="#__codelineno-0-40">40</a></span>
-<span class="normal"><a href="#__codelineno-0-41">41</a></span>
-<span class="normal"><a href="#__codelineno-0-42">42</a></span>
-<span class="normal"><a href="#__codelineno-0-43">43</a></span>
-<span class="normal"><a href="#__codelineno-0-44">44</a></span>
-<span class="normal"><a href="#__codelineno-0-45">45</a></span>
-<span class="normal"><a href="#__codelineno-0-46">46</a></span>
-<span class="normal"><a href="#__codelineno-0-47">47</a></span>
-<span class="normal"><a href="#__codelineno-0-48">48</a></span>
-<span class="normal"><a href="#__codelineno-0-49">49</a></span>
-<span class="normal"><a href="#__codelineno-0-50">50</a></span>
-<span class="normal"><a href="#__codelineno-0-51">51</a></span>
-<span class="normal"><a href="#__codelineno-0-52">52</a></span>
-<span class="normal"><a href="#__codelineno-0-53">53</a></span>
-<span class="normal"><a href="#__codelineno-0-54">54</a></span>
-<span class="normal"><a href="#__codelineno-0-55">55</a></span>
+              <div class="highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-55">55</a></span>
 <span class="normal"><a href="#__codelineno-0-56">56</a></span>
 <span class="normal"><a href="#__codelineno-0-57">57</a></span>
 <span class="normal"><a href="#__codelineno-0-58">58</a></span>
@@ -1355,40 +1465,82 @@
 <span class="normal"><a href="#__codelineno-0-61">61</a></span>
 <span class="normal"><a href="#__codelineno-0-62">62</a></span>
 <span class="normal"><a href="#__codelineno-0-63">63</a></span>
-<span class="normal"><a href="#__codelineno-0-64">64</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-31" name="__codelineno-0-31"></a><span class="k">def</span> <span class="nf">implement</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">torch_function</span><span class="p">:</span> <span class="n">Callable</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">:</span>
-<a id="__codelineno-0-32" name="__codelineno-0-32"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
-<a id="__codelineno-0-33" name="__codelineno-0-33"></a><span class="sd">    Implement an implementation for a torch function.</span>
-<a id="__codelineno-0-34" name="__codelineno-0-34"></a>
-<a id="__codelineno-0-35" name="__codelineno-0-35"></a><span class="sd">    Args:</span>
-<a id="__codelineno-0-36" name="__codelineno-0-36"></a><span class="sd">        function: The torch function to implement.</span>
-<a id="__codelineno-0-37" name="__codelineno-0-37"></a>
-<a id="__codelineno-0-38" name="__codelineno-0-38"></a><span class="sd">    Returns:</span>
-<a id="__codelineno-0-39" name="__codelineno-0-39"></a><span class="sd">        function: The registered function.</span>
-<a id="__codelineno-0-40" name="__codelineno-0-40"></a>
-<a id="__codelineno-0-41" name="__codelineno-0-41"></a><span class="sd">    Raises:</span>
-<a id="__codelineno-0-42" name="__codelineno-0-42"></a><span class="sd">        ValueError: If the function with the same name already registered and `TorchFuncRegistry.override=False`.</span>
-<a id="__codelineno-0-43" name="__codelineno-0-43"></a>
-<a id="__codelineno-0-44" name="__codelineno-0-44"></a><span class="sd">    Examples:</span>
-<a id="__codelineno-0-45" name="__codelineno-0-45"></a><span class="sd">        &gt;&gt;&gt; import torch</span>
-<a id="__codelineno-0-46" name="__codelineno-0-46"></a><span class="sd">        &gt;&gt;&gt; registry = TorchFuncRegistry(&quot;test&quot;)</span>
-<a id="__codelineno-0-47" name="__codelineno-0-47"></a><span class="sd">        &gt;&gt;&gt; @registry.implement(torch.mean)</span>
-<a id="__codelineno-0-48" name="__codelineno-0-48"></a><span class="sd">        ... def mean(input):</span>
-<a id="__codelineno-0-49" name="__codelineno-0-49"></a><span class="sd">        ...     raise input.mean()</span>
-<a id="__codelineno-0-50" name="__codelineno-0-50"></a><span class="sd">        &gt;&gt;&gt; registry  # doctest: +ELLIPSIS</span>
-<a id="__codelineno-0-51" name="__codelineno-0-51"></a><span class="sd">        TorchFuncRegistry(</span>
-<a id="__codelineno-0-52" name="__codelineno-0-52"></a><span class="sd">          (&lt;built-in method mean of type object at ...&gt;): &lt;function mean at ...&gt;</span>
-<a id="__codelineno-0-53" name="__codelineno-0-53"></a><span class="sd">        )</span>
-<a id="__codelineno-0-54" name="__codelineno-0-54"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-55" name="__codelineno-0-55"></a>
-<a id="__codelineno-0-56" name="__codelineno-0-56"></a>    <span class="k">if</span> <span class="n">torch_function</span> <span class="ow">in</span> <span class="bp">self</span> <span class="ow">and</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">override</span><span class="p">:</span>
-<a id="__codelineno-0-57" name="__codelineno-0-57"></a>        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Torch function </span><span class="si">{</span><span class="n">torch_function</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2"> already registered.&quot;</span><span class="p">)</span>
+<span class="normal"><a href="#__codelineno-0-64">64</a></span>
+<span class="normal"><a href="#__codelineno-0-65">65</a></span>
+<span class="normal"><a href="#__codelineno-0-66">66</a></span>
+<span class="normal"><a href="#__codelineno-0-67">67</a></span>
+<span class="normal"><a href="#__codelineno-0-68">68</a></span>
+<span class="normal"><a href="#__codelineno-0-69">69</a></span>
+<span class="normal"><a href="#__codelineno-0-70">70</a></span>
+<span class="normal"><a href="#__codelineno-0-71">71</a></span>
+<span class="normal"><a href="#__codelineno-0-72">72</a></span>
+<span class="normal"><a href="#__codelineno-0-73">73</a></span>
+<span class="normal"><a href="#__codelineno-0-74">74</a></span>
+<span class="normal"><a href="#__codelineno-0-75">75</a></span>
+<span class="normal"><a href="#__codelineno-0-76">76</a></span>
+<span class="normal"><a href="#__codelineno-0-77">77</a></span>
+<span class="normal"><a href="#__codelineno-0-78">78</a></span>
+<span class="normal"><a href="#__codelineno-0-79">79</a></span>
+<span class="normal"><a href="#__codelineno-0-80">80</a></span>
+<span class="normal"><a href="#__codelineno-0-81">81</a></span>
+<span class="normal"><a href="#__codelineno-0-82">82</a></span>
+<span class="normal"><a href="#__codelineno-0-83">83</a></span>
+<span class="normal"><a href="#__codelineno-0-84">84</a></span>
+<span class="normal"><a href="#__codelineno-0-85">85</a></span>
+<span class="normal"><a href="#__codelineno-0-86">86</a></span>
+<span class="normal"><a href="#__codelineno-0-87">87</a></span>
+<span class="normal"><a href="#__codelineno-0-88">88</a></span>
+<span class="normal"><a href="#__codelineno-0-89">89</a></span>
+<span class="normal"><a href="#__codelineno-0-90">90</a></span>
+<span class="normal"><a href="#__codelineno-0-91">91</a></span>
+<span class="normal"><a href="#__codelineno-0-92">92</a></span>
+<span class="normal"><a href="#__codelineno-0-93">93</a></span>
+<span class="normal"><a href="#__codelineno-0-94">94</a></span>
+<span class="normal"><a href="#__codelineno-0-95">95</a></span>
+<span class="normal"><a href="#__codelineno-0-96">96</a></span>
+<span class="normal"><a href="#__codelineno-0-97">97</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-55" name="__codelineno-0-55"></a><span class="k">def</span> <span class="nf">implement</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">torch_function</span><span class="p">:</span> <span class="n">Callable</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">:</span>
+<a id="__codelineno-0-56" name="__codelineno-0-56"></a><span class="w">    </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;</span>
+<a id="__codelineno-0-57" name="__codelineno-0-57"></a><span class="sd">    Register a custom implementation for a PyTorch function.</span>
 <a id="__codelineno-0-58" name="__codelineno-0-58"></a>
-<a id="__codelineno-0-59" name="__codelineno-0-59"></a>    <span class="nd">@wraps</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">register</span><span class="p">)</span>
-<a id="__codelineno-0-60" name="__codelineno-0-60"></a>    <span class="k">def</span> <span class="nf">register</span><span class="p">(</span><span class="n">function</span><span class="p">):</span>
-<a id="__codelineno-0-61" name="__codelineno-0-61"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">torch_function</span><span class="p">,</span> <span class="n">function</span><span class="p">)</span>
-<a id="__codelineno-0-62" name="__codelineno-0-62"></a>        <span class="k">return</span> <span class="n">function</span>
+<a id="__codelineno-0-59" name="__codelineno-0-59"></a><span class="sd">    Use this decorator to provide implementations for PyTorch functions</span>
+<a id="__codelineno-0-60" name="__codelineno-0-60"></a><span class="sd">    that will work with custom tensor types like NestedTensor. This is</span>
+<a id="__codelineno-0-61" name="__codelineno-0-61"></a><span class="sd">    the key mechanism that allows NestedTensor to integrate seamlessly</span>
+<a id="__codelineno-0-62" name="__codelineno-0-62"></a><span class="sd">    with the PyTorch ecosystem.</span>
 <a id="__codelineno-0-63" name="__codelineno-0-63"></a>
-<a id="__codelineno-0-64" name="__codelineno-0-64"></a>    <span class="k">return</span> <span class="n">register</span>
+<a id="__codelineno-0-64" name="__codelineno-0-64"></a><span class="sd">    Args:</span>
+<a id="__codelineno-0-65" name="__codelineno-0-65"></a><span class="sd">        torch_function: The original PyTorch function to override (e.g., torch.mean, torch.cat)</span>
+<a id="__codelineno-0-66" name="__codelineno-0-66"></a>
+<a id="__codelineno-0-67" name="__codelineno-0-67"></a><span class="sd">    Returns:</span>
+<a id="__codelineno-0-68" name="__codelineno-0-68"></a><span class="sd">        Callable: A decorator function that registers the implementation</span>
+<a id="__codelineno-0-69" name="__codelineno-0-69"></a>
+<a id="__codelineno-0-70" name="__codelineno-0-70"></a><span class="sd">    Raises:</span>
+<a id="__codelineno-0-71" name="__codelineno-0-71"></a><span class="sd">        ValueError: If the function is already registered and override=False</span>
+<a id="__codelineno-0-72" name="__codelineno-0-72"></a>
+<a id="__codelineno-0-73" name="__codelineno-0-73"></a><span class="sd">    Examples:</span>
+<a id="__codelineno-0-74" name="__codelineno-0-74"></a><span class="sd">        &gt;&gt;&gt; import torch</span>
+<a id="__codelineno-0-75" name="__codelineno-0-75"></a><span class="sd">        &gt;&gt;&gt; registry = TorchFuncRegistry(&quot;test&quot;)</span>
+<a id="__codelineno-0-76" name="__codelineno-0-76"></a><span class="sd">        &gt;&gt;&gt; @registry.implement(torch.mean)</span>
+<a id="__codelineno-0-77" name="__codelineno-0-77"></a><span class="sd">        ... def mean(input):</span>
+<a id="__codelineno-0-78" name="__codelineno-0-78"></a><span class="sd">        ...     return input.mean()</span>
+<a id="__codelineno-0-79" name="__codelineno-0-79"></a><span class="sd">        &gt;&gt;&gt; registry[torch.mean]  # doctest: +ELLIPSIS</span>
+<a id="__codelineno-0-80" name="__codelineno-0-80"></a><span class="sd">        &lt;function mean at ...&gt;</span>
+<a id="__codelineno-0-81" name="__codelineno-0-81"></a>
+<a id="__codelineno-0-82" name="__codelineno-0-82"></a><span class="sd">    Note:</span>
+<a id="__codelineno-0-83" name="__codelineno-0-83"></a><span class="sd">        This is primarily used internally by NestedTensor.__torch_function__</span>
+<a id="__codelineno-0-84" name="__codelineno-0-84"></a><span class="sd">        to provide implementations for various PyTorch functions. You can</span>
+<a id="__codelineno-0-85" name="__codelineno-0-85"></a><span class="sd">        use the same mechanism to extend NestedTensor with additional</span>
+<a id="__codelineno-0-86" name="__codelineno-0-86"></a><span class="sd">        function implementations.</span>
+<a id="__codelineno-0-87" name="__codelineno-0-87"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-88" name="__codelineno-0-88"></a>
+<a id="__codelineno-0-89" name="__codelineno-0-89"></a>    <span class="k">if</span> <span class="n">torch_function</span> <span class="ow">in</span> <span class="bp">self</span> <span class="ow">and</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">override</span><span class="p">:</span>
+<a id="__codelineno-0-90" name="__codelineno-0-90"></a>        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Torch function </span><span class="si">{</span><span class="n">torch_function</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2"> already registered.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-91" name="__codelineno-0-91"></a>
+<a id="__codelineno-0-92" name="__codelineno-0-92"></a>    <span class="nd">@wraps</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">register</span><span class="p">)</span>
+<a id="__codelineno-0-93" name="__codelineno-0-93"></a>    <span class="k">def</span> <span class="nf">register</span><span class="p">(</span><span class="n">function</span><span class="p">):</span>
+<a id="__codelineno-0-94" name="__codelineno-0-94"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">torch_function</span><span class="p">,</span> <span class="n">function</span><span class="p">)</span>
+<a id="__codelineno-0-95" name="__codelineno-0-95"></a>        <span class="k">return</span> <span class="n">function</span>
+<a id="__codelineno-0-96" name="__codelineno-0-96"></a>
+<a id="__codelineno-0-97" name="__codelineno-0-97"></a>    <span class="k">return</span> <span class="n">register</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -1527,13 +1679,13 @@
         
         
           
-          <a href="../../optim/lr_scheduler/" class="md-footer__link md-footer__link--next" aria-label="下一页: LRScheduler">
+          <a href="../functional/" class="md-footer__link md-footer__link--next" aria-label="下一页: functional">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 下一页
               </span>
               <div class="md-ellipsis">
-                LRScheduler
+                functional
               </div>
             </div>
             <div class="md-footer__button md-icon">

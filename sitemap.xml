@@ -155,6 +155,20 @@
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/utils/"/>
     </url>
     <url>
+        <loc>https://danling.org/tensor/</loc>
+        <lastmod>2025-04-02</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/tensor/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/tensor/"/>
+    </url>
+    <url>
+        <loc>https://danling.org/tensor/functional/</loc>
+        <lastmod>2025-04-02</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/tensor/functional/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/tensor/functional/"/>
+    </url>
+    <url>
         <loc>https://danling.org/tensor/nested_tensor/</loc>
         <lastmod>2025-04-02</lastmod>
         <changefreq>daily</changefreq>
@@ -356,6 +370,20 @@
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/runner/utils/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/runner/utils/"/>
+    </url>
+    <url>
+        <loc>https://danling.org/zh/tensor/</loc>
+        <lastmod>2025-04-02</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/tensor/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/tensor/"/>
+    </url>
+    <url>
+        <loc>https://danling.org/zh/tensor/functional/</loc>
+        <lastmod>2025-04-02</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://danling.org/zh/tensor/functional/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://danling.org/tensor/functional/"/>
     </url>
     <url>
         <loc>https://danling.org/zh/tensor/nested_tensor/</loc>
