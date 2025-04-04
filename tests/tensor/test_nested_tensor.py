@@ -310,3 +310,39 @@ def test_where():
     assert (a.where(a > 3, -1.0) == NestedTensor([[-1.0, -1.0, 4.0], [5.0, 6.0]])).all()
     assert (a.where(a.tensor > 3, -1.0) == NestedTensor([[-1.0, -1.0, 4.0], [5.0, 6.0]])).all()
     assert (a.where(torch.tensor(False), 1) == NestedTensor([[1, 1, 1], [1, 1]])).all()
+
+
+def test_from_concat():
+    # Test basic 1D case
+    concat_tensor = torch.tensor([1, 2, 3, 4, 5])
+    lengths = [3, 2]
+    nested_tensor = NestedTensor.from_concat(concat_tensor, lengths)
+    assert nested_tensor.tolist() == [[1, 2, 3], [4, 5]]
+    assert torch.all(nested_tensor.concat == concat_tensor)
+
+    # Test 2D case
+    concat_tensor = torch.tensor([[1, 2], [3, 4], [5, 6], [7, 8], [9, 10]])
+    lengths = [3, 2]
+    nested_tensor = NestedTensor.from_concat(concat_tensor, lengths)
+    assert nested_tensor.tolist() == [[[1, 2], [3, 4], [5, 6]], [[7, 8], [9, 10]]]
+    assert torch.all(nested_tensor.concat == concat_tensor)
+
+    # Test with custom padding value
+    concat_tensor = torch.tensor([1, 2, 3, 4])
+    lengths = [3, 1]
+    nested_tensor = NestedTensor.from_concat(concat_tensor, lengths, padding_value=-1)
+    assert nested_tensor.tolist() == [[1, 2, 3], [4]]
+    assert nested_tensor.tensor.tolist() == [[1, 2, 3], [4, -1, -1]]
+
+    # Test with lengths as tensor
+    concat_tensor = torch.tensor([1, 2, 3, 4, 5, 6])
+    lengths = torch.tensor([2, 1, 3])
+    nested_tensor = NestedTensor.from_concat(concat_tensor, lengths)
+    assert nested_tensor.tolist() == [[1, 2], [3], [4, 5, 6]]
+
+    # Test error cases
+    with pytest.raises(ValueError):
+        NestedTensor.from_concat(torch.tensor([1, 2, 3]), [])
+
+    with pytest.raises(ValueError):
+        NestedTensor.from_concat(torch.tensor([1, 2, 3]), [2, 2])

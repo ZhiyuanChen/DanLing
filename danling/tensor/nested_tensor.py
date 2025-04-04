@@ -31,6 +31,11 @@ from .functions import NestedTensorFuncRegistry, NestedTensorFuncWrapper
 from .utils import mask_tensor, pad_tensor, tensor_mask
 
 try:
+    from typing import Self  # type: ignore[attr-defined]
+except ImportError:
+    from typing_extensions import Self
+
+try:
     from torch import nested
 except ImportError:
     nested = None
@@ -107,7 +112,7 @@ class NestedTensor:
 
         Conversion to Python types:
         >>> nested_tensor.tolist()
-        [[1.0, 2.0, 3.0], [4.0, 5.0]]
+        [[1, 2, 3], [4, 5]]
 
         Creating from Python lists:
         >>> NestedTensor(*[[1, 2, 3], [4, 5]])
@@ -119,7 +124,7 @@ class NestedTensor:
 
     dtype: torch.dtype | None = None
     device: torch.device | None = None
-    requires_grad: bool = False
+    requires_grad: bool | None = None
     _pin_memory: bool = False
 
     batch_first: bool = True
@@ -131,7 +136,7 @@ class NestedTensor:
         *tensors: Iterable[Tensor],
         dtype: torch.dtype | None = None,
         device: torch.device | None = None,
-        requires_grad: bool = False,
+        requires_grad: bool | None = None,
         pin_memory: bool = False,
         batch_first: bool = True,
         padding_value: SupportsFloat = 0.0,
@@ -158,25 +163,24 @@ class NestedTensor:
             raise ValueError(f"tensors must be an Iterable, bug got {type(tensors)}.")
         if isinstance(tensors, Tensor) and hasattr(tensors, "unbind"):
             tensors = tensors.unbind()
-        tensors = tuple(tensors)
-        if len(tensors) == 0:
+        tensors_ = []
+        for t in tensors:
+            if not isinstance(t, Tensor):
+                t = torch.tensor(
+                    t,
+                    dtype=self.dtype,
+                    device=self.device,
+                    pin_memory=self._pin_memory,
+                )
+            else:
+                t = t.to(self.device, dtype=self.dtype)
+            if self.requires_grad is not None:
+                t.requires_grad_(self.requires_grad)
+            tensors_.append(t)
+        if len(tensors_) == 0:
             self.__storage = ()
             return
-        if any(not isinstance(t, Tensor) for t in tensors):
-            tensors = tuple(
-                (
-                    torch.tensor(
-                        t,
-                        dtype=self.dtype,
-                        device=self.device,
-                        requires_grad=self.requires_grad,
-                        pin_memory=self._pin_memory,
-                    )
-                    if not isinstance(t, Tensor)
-                    else t
-                )
-                for t in tensors
-            )
+        tensors = tuple(tensors_)
         self.dtype = tensors[0].dtype
         self.device = tensors[0].device
         self.requires_grad = tensors[0].requires_grad
@@ -191,26 +195,10 @@ class NestedTensor:
     def storage(self):
         return self._storage
 
-    def to(self, *args, **kwargs):
-        storage = tuple(t.to(*args, **kwargs) for t in self._storage)
-        self.dtype = storage[0].dtype
-        self.device = storage[0].device
-        self.__storage = storage
-        return self
-
-    def requires_grad_(self, requires_grad: bool = True):
-        self.requires_grad = requires_grad
-        for t in self._storage:
-            t.requires_grad = requires_grad
-        return self
-
     @property
     def tensor_mask(self) -> Tuple[Tensor, Tensor]:
         r"""
         Return a tuple of padded tensor and mask tensor.
-
-        Returns:
-            (torch.Tensor):
 
         Examples:
             >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
@@ -224,13 +212,26 @@ class NestedTensor:
             self._storage, self.batch_first, self.padding_value, self.mask_value, self.requires_grad
         )
 
+    @method_cache(maxsize=1)
+    def _tensor_mask(
+        self, storage: tuple, batch_first: bool, padding_value: SupportsFloat, mask_value: bool, requires_grad: bool
+    ) -> Tensor:
+        if storage[0].dim() == 0:
+            return torch.stack(storage, dim=0), torch.full(
+                (len(storage),), not mask_value, dtype=torch.bool, device=self.device
+            )
+        return tensor_mask(
+            storage,
+            size=self.size(),
+            batch_first=batch_first,
+            padding_value=float(padding_value),
+            mask_value=mask_value,
+        )
+
     @property
     def tensor(self) -> Tensor:
         r"""
         Return a single tensor by padding all the tensors.
-
-        Returns:
-            (torch.Tensor):
 
         Examples:
             >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
@@ -241,13 +242,16 @@ class NestedTensor:
 
         return self._tensor(self._storage, self.batch_first, self.padding_value, self.requires_grad)
 
+    @method_cache(maxsize=1)
+    def _tensor(self, storage: tuple, batch_first: bool, padding_value: SupportsFloat, requires_grad: bool) -> Tensor:
+        if storage[0].dim() == 0:
+            return torch.stack(storage, dim=0)
+        return pad_tensor(storage, size=self.size(), batch_first=batch_first, padding_value=float(padding_value))
+
     @property
     def mask(self) -> Tensor:
         r"""
         Padding mask of `tensor`.
-
-        Returns:
-            (torch.Tensor):
 
         Examples:
             >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
@@ -258,15 +262,18 @@ class NestedTensor:
 
         return self._mask(self._storage, self.batch_first, self.mask_value, self.requires_grad)
 
+    @method_cache(maxsize=1)
+    def _mask(self, storage: tuple, batch_first: bool, mask_value: bool, requires_grad: bool) -> Tensor:
+        if storage[0].dim() == 0:
+            return torch.full((len(storage),), not mask_value, dtype=torch.bool, device=self.device)
+        return mask_tensor(storage, size=self.size(), batch_first=batch_first, mask_value=mask_value)
+
     @property
     def concat(self) -> Tensor:
         r"""
         Concat `tensor` in padding dim.
 
         This is particularly useful when calculating loss or passing `Linear` to avoid unnecessary computation.
-
-        Returns:
-            (torch.Tensor):
 
         Examples:
             >>> nested_tensor = NestedTensor([torch.randn(9, 8), torch.randn(11, 8)])
@@ -302,9 +309,6 @@ class NestedTensor:
         r"""
         Create a `torch.nested.nested_tensor` object from `self`.
 
-        Returns:
-            (torch.Tensor):
-
         Examples:
             >>> nested_tensor = NestedTensor([[2, 3, 5], [7, 8]])
             >>> nested_tensor.torch
@@ -317,17 +321,27 @@ class NestedTensor:
             raise ImportError("torch.nested is not available, please install torch with nested support.")
         return nested.nested_tensor(list(self._storage))
 
+    @property
+    def occupancy(self) -> float:
+        r"""
+        Occupancy of the NestedTensor.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3, 4]), torch.tensor([5, 6])])
+            >>> nested_tensor.occupancy
+            0.75
+        """
+
+        return self.numel() / self.shape.numel()  # type: ignore[union-attr]
+
     @classmethod
-    def from_tensor_mask(cls, tensor: Tensor, mask: Tensor):
+    def from_tensor_mask(cls, tensor: Tensor, mask: Tensor, **kwargs):
         r"""
         Build a `NestedTensor` object from a padded `Tensor` and corresponding mask `Tensor`.
 
         Args:
             tensor: Padded Tensor.
             mask: Tensor Mask.
-
-        Returns:
-            (torch.Tensor):
 
         Examples:
             >>> padded_tensor = torch.tensor([[1, 2, 3, 0, 0],
@@ -343,14 +357,19 @@ class NestedTensor:
                     [6, 7, 8, 9]])
         """
 
+        if mask.ndim == 1:
+            return cls(tensor, **kwargs)
         if mask.ndim == 2:
-            return cls(t[slice(0, m.sum())] for t, m in zip(tensor, mask))
+            return cls((t[slice(0, m.sum())] for t, m in zip(tensor, mask)), **kwargs)
         return cls(
-            t[[slice(0, (m.sum(dim=dim) > 0).sum().item()) for dim in reversed(range(m.dim()))]]
-            for t, m in zip(tensor, mask)
+            (
+                t[[slice(0, (m.sum(dim=dim) > 0).sum().item()) for dim in reversed(range(m.dim()))]]
+                for t, m in zip(tensor, mask)
+            ),
+            **kwargs,
         )
 
-    def nested_like(self, tensor: Tensor, strict: bool = True) -> NestedTensor:
+    def nested_like(self, tensor: Tensor, strict: bool = True) -> Self:
         r"""
         Create a new `NestedTensor` from a `Tensor`.
         The newly created `NestedTensor` will have the same shape as current `NestedTensor`.
@@ -358,9 +377,6 @@ class NestedTensor:
         Args:
             tensor: The tensor to be converted to `NestedTensor`.
             strict: Check if the shape of `tensor` is the same as the current `NestedTensor`.
-
-        Returns:
-            (NestedTensor):
 
         Examples:
             >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
@@ -389,157 +405,7 @@ class NestedTensor:
             raise ValueError(
                 f"The batch size of NestedTensor and input tensor does not match, {self.size(0)} != {tensor.size(0)}"
             )
-        return NestedTensor([o[tuple(slice(0, dim) for dim in t.shape)] for t, o in zip(self._storage, tensor)])
-
-    @property
-    def shape(self) -> torch.Size | int:  # type: ignore[name-defined]
-        r"""
-        Alias for `size()`.
-        """
-
-        return self.size()
-
-    @property
-    def ndim(self) -> int:
-        r"""
-        Alias for `dim()`.
-        """
-
-        return self.dim()
-
-    def size(self, dim: int | None = None) -> torch.Size | int:  # type: ignore[name-defined]
-        r"""
-        Returns the size of the self `NestedTensor`.
-
-        Args:
-            dim: If not specified, the returned value is a `torch.Size`, a subclass of `tuple`.
-                If specified, returns an `int` holding the size of that dimension.
-                Defaults to `None`.
-
-        Returns:
-            (torch.Size | int):
-
-        Examples:
-            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
-            >>> nested_tensor.size()
-            torch.Size([2, 3])
-            >>> nested_tensor.size(0)
-            2
-            >>> nested_tensor[1] = torch.tensor([4, 5, 6, 7])
-            >>> nested_tensor.shape
-            torch.Size([2, 4])
-            >>> nested_tensor.size(1)
-            4
-        """
-
-        return self._size(self._storage, dim, self.batch_first)
-
-    def dim(self) -> int:
-        r"""
-        Number of dimension of the NestedTensor.
-
-        Returns:
-            (int):
-
-        Examples:
-            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
-            >>> nested_tensor.dim()
-            2
-        """
-
-        return self._dim(self._storage)
-
-    def tolist(self) -> list:
-        r"""
-        Convert a NestedTensor to a list of lists of values.
-
-        Returns:
-            (list):
-
-        Examples:
-            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
-            >>> nested_tensor.tolist()
-            [[1, 2, 3], [4, 5]]
-        """
-
-        return [t.tolist() for t in self._storage]
-
-    def all(self, dim: int | None = None, keepdim: bool = False) -> bool | Tensor | NestedTensor:
-        r"""
-        Tests if all elements in NestedTensor evaluate to True.
-
-        Returns:
-            (bool | Tensor):
-
-        Examples:
-            >>> nested_tensor = NestedTensor([torch.ones(2, 4, dtype=torch.bool), torch.ones(3, 5, dtype=torch.bool)])
-            >>> nested_tensor.all()
-            tensor(True)
-            >>> nested_tensor.all(dim=0)
-            tensor([True, True])
-            >>> nested_tensor.all(dim=0, keepdim=True)
-            tensor([[True, True]])
-            >>> nested_tensor.all(dim=1)
-            NestedTensor([[ True,  True,  True,  True, False],
-                    [ True,  True,  True,  True,  True]])
-            >>> nested_tensor.all(dim=1, keepdim=True)
-            NestedTensor([[[ True,  True,  True,  True, False]],
-            <BLANKLINE>
-                    [[ True,  True,  True,  True,  True]]])
-            >>> nested_tensor.batch_first = False
-            >>> nested_tensor.all(dim=1)
-            tensor([True, True])
-            >>> nested_tensor.batch_first = False
-            >>> nested_tensor.all(dim=0)
-            NestedTensor([[ True,  True,  True,  True, False],
-                    [ True,  True,  True,  True,  True]])
-            >>> nested_tensor.all(dim=1)
-            tensor([True, True])
-        """
-
-        if dim is None:
-            return torch.tensor(all(i.all() for i in self._storage))
-        if (self.batch_first and dim == 0) or (not self.batch_first and dim == 1):
-            if keepdim:
-                return torch.tensor([i.all() for i in self._storage]).unsqueeze(0 if self.batch_first else 1)
-            return torch.tensor([i.all() for i in self._storage])
-        if self.batch_first or dim != 0:
-            dim -= 1
-        return NestedTensor([i.all(dim=dim, keepdim=keepdim) for i in self._storage])
-
-    def where(self, condition: Tensor | NestedTensor, other: Tensor | NestedTensor | SupportsFloat) -> NestedTensor:
-        r"""
-        Return a NestedTensor of elements selected from either self or other, depending on condition.
-
-        Returns:
-            (NestedTensor):
-
-        Examples:
-            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
-            >>> nested_tensor.where(nested_tensor > 2, torch.tensor([[6, 5, 4], [3, 2, 1]]))
-            NestedTensor([[6, 5, 3],
-                    [4, 5, 0]])
-            >>> nested_tensor.where(nested_tensor > 2, NestedTensor([[6, 5, 4], [3, 2]]))
-            NestedTensor([[6, 5, 3],
-                    [4, 5, 0]])
-            >>> nested_tensor.where(torch.tensor(True), NestedTensor([[6, 5, 4], [3, 2]]))
-            NestedTensor([[1, 2, 3],
-                    [4, 5, 0]])
-        """
-
-        if isinstance(condition, Tensor) and self.shape == condition.shape:
-            condition = self.nested_like(condition)
-        if isinstance(other, Tensor) and self.shape == other.shape:
-            other = self.nested_like(other)
-        if isinstance(condition, NestedTensor) and isinstance(other, NestedTensor):
-            return NestedTensor(
-                [x.where(c, y) for x, c, y in zip(self._storage, condition._storage, other._storage)], **self._state
-            )
-        if isinstance(condition, NestedTensor):
-            return NestedTensor([x.where(c, other) for x, c in zip(self._storage, condition._storage)], **self._state)
-        if isinstance(other, NestedTensor):
-            return NestedTensor([x.where(condition, y) for x, y in zip(self._storage, other._storage)], **self._state)
-        return NestedTensor(x.where(condition, other) for x in self._storage)
+        return self.__class__([o[tuple(slice(0, dim) for dim in t.shape)] for t, o in zip(self._storage, tensor)])
 
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
@@ -674,10 +540,15 @@ class NestedTensor:
 
     @property
     def _state(self) -> Mapping:
-        return {k: v for k, v in self.__dict__.items() if not (k.startswith("_") or k.endswith("_"))}
+        return self.__state__(return_dtype=False, return_requires_grad=False)
 
-    def __state__(self) -> Mapping:
-        return self.__dict__
+    def __state__(self, return_dtype: bool = False, return_requires_grad: bool = True) -> Mapping:
+        state = {k: v for k, v in self.__dict__.items() if not (k.startswith("_") or k.endswith("_"))}
+        if not return_dtype:
+            del state["dtype"]
+        if not return_requires_grad:
+            del state["requires_grad"]
+        return state
 
     def __setstate__(self, state: Mapping) -> None:
         self.__dict__.update(state)
@@ -1111,33 +982,144 @@ class NestedTensor:
                 value >>= other
         return self
 
-    @method_cache(maxsize=1)
-    def _tensor_mask(
-        self, storage: tuple, batch_first: bool, padding_value: SupportsFloat, mask_value: bool, requires_grad: bool
-    ) -> Tensor:
-        if storage[0].dim() == 0:
-            return torch.stack(storage, dim=0), torch.full(
-                (len(storage),), not mask_value, dtype=torch.bool, device=self.device
-            )
-        return tensor_mask(
-            storage,
-            size=self.size(),
-            batch_first=batch_first,
-            padding_value=float(padding_value),
-            mask_value=mask_value,
-        )
+    def all(self, dim: int | None = None, keepdim: bool = False) -> bool | Tensor | NestedTensor:
+        r"""
+        Tests if all elements in NestedTensor evaluate to True.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.ones(2, 4, dtype=torch.bool), torch.ones(3, 5, dtype=torch.bool)])
+            >>> nested_tensor.all()
+            tensor(True)
+            >>> nested_tensor.all(dim=0)
+            tensor([True, True])
+            >>> nested_tensor.all(dim=0, keepdim=True)
+            tensor([[True, True]])
+            >>> nested_tensor.all(dim=1)
+            NestedTensor([[ True,  True,  True,  True, False],
+                    [ True,  True,  True,  True,  True]])
+            >>> nested_tensor.all(dim=1, keepdim=True)
+            NestedTensor([[[ True,  True,  True,  True, False]],
+            <BLANKLINE>
+                    [[ True,  True,  True,  True,  True]]])
+            >>> nested_tensor.batch_first = False
+            >>> nested_tensor.all(dim=1)
+            tensor([True, True])
+            >>> nested_tensor.batch_first = False
+            >>> nested_tensor.all(dim=0)
+            NestedTensor([[ True,  True,  True,  True, False],
+                    [ True,  True,  True,  True,  True]])
+            >>> nested_tensor.all(dim=1)
+            tensor([True, True])
+        """
+
+        if dim is None:
+            return torch.tensor(all(i.all() for i in self._storage))
+        if (self.batch_first and dim == 0) or (not self.batch_first and dim == 1):
+            if keepdim:
+                return torch.tensor([i.all() for i in self._storage]).unsqueeze(0 if self.batch_first else 1)
+            return torch.tensor([i.all() for i in self._storage])
+        if self.batch_first or dim != 0:
+            dim -= 1
+        return NestedTensor([i.all(dim=dim, keepdim=keepdim) for i in self._storage])
+
+    def dim(self) -> int:
+        r"""
+        Number of dimension of the NestedTensor.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.dim()
+            2
+        """
+
+        return self._dim(self._storage)
 
     @method_cache(maxsize=1)
-    def _tensor(self, storage: tuple, batch_first: bool, padding_value: SupportsFloat, requires_grad: bool) -> Tensor:
-        if storage[0].dim() == 0:
-            return torch.stack(storage, dim=0)
-        return pad_tensor(storage, size=self.size(), batch_first=batch_first, padding_value=float(padding_value))
+    def _dim(self, storage: Tuple[Tensor, ...]) -> int:  # type: ignore[name-defined]
+        return max(t.dim() for t in storage) + 1
 
-    @method_cache(maxsize=1)
-    def _mask(self, storage: tuple, batch_first: bool, mask_value: bool, requires_grad: bool) -> Tensor:
-        if storage[0].dim() == 0:
-            return torch.full((len(storage),), not mask_value, dtype=torch.bool, device=self.device)
-        return mask_tensor(storage, size=self.size(), batch_first=batch_first, mask_value=mask_value)
+    @property
+    def ndim(self) -> int:
+        r"""
+        Alias for `dim()`.
+        """
+
+        return self.dim()
+
+    def numel(self) -> int:
+        r"""
+        Number of elements in the NestedTensor.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.numel()
+            5
+        """
+
+        return sum(t.numel() for t in self._storage)
+
+    def requires_grad_(self, requires_grad: bool = True):
+        self.requires_grad = requires_grad
+        for t in self._storage:
+            t.requires_grad = requires_grad
+        return self
+
+    def reshape(self, *shape) -> Tensor:
+        r"""
+        Returns a torch tensor with a different shape.
+
+        Note:
+            since NestedTensor is a collection of tensors, the reshape operation is ambiguous.
+
+            Therefore, it is converted to a tensor and then reshaped.
+
+        Args:
+            shape: The desired size of each dimension.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.reshape(3, 2)
+            tensor([[1, 2],
+                    [3, 4],
+                    [5, 0]])
+            >>> nested_tensor.reshape(2, 3)
+            tensor([[1, 2, 3],
+                    [4, 5, 0]])
+        """
+
+        return self.tensor.reshape(*shape)
+
+    @property
+    def shape(self) -> torch.Size | int:  # type: ignore[name-defined]
+        r"""
+        Alias for `size()`.
+        """
+
+        return self.size()
+
+    def size(self, dim: int | None = None) -> torch.Size | int:  # type: ignore[name-defined]
+        r"""
+        Returns the size of the self `NestedTensor`.
+
+        Args:
+            dim: If not specified, the returned value is a `torch.Size`, a subclass of `tuple`.
+                If specified, returns an `int` holding the size of that dimension.
+                Defaults to `None`.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.size()
+            torch.Size([2, 3])
+            >>> nested_tensor.size(0)
+            2
+            >>> nested_tensor[1] = torch.tensor([4, 5, 6, 7])
+            >>> nested_tensor.shape
+            torch.Size([2, 4])
+            >>> nested_tensor.size(1)
+            4
+        """
+
+        return self._size(self._storage, dim, self.batch_first)
 
     @method_cache(maxsize=1)
     def _size(
@@ -1157,9 +1139,20 @@ class NestedTensor:
         size.insert(0 if batch_first else 1, len(storage))
         return torch.Size(size)
 
-    @method_cache(maxsize=1)
-    def _dim(self, storage: Tuple[Tensor, ...]) -> int:  # type: ignore[name-defined]
-        return max(t.dim() for t in storage) + 1
+    def to(self, *args, **kwargs):
+        return NestedTensor(tuple(t.to(*args, **kwargs) for t in self._storage), **self._state)
+
+    def tolist(self) -> list:
+        r"""
+        Convert a NestedTensor to a list of lists of values.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.tolist()
+            [[1, 2, 3], [4, 5]]
+        """
+
+        return [t.tolist() for t in self._storage]
 
     def view(self, *shape) -> Tensor:
         r"""
@@ -1172,9 +1165,6 @@ class NestedTensor:
 
         Args:
             shape: The desired size of each dimension.
-
-        Returns:
-            (Tensor):
 
         Examples:
             >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
@@ -1189,30 +1179,33 @@ class NestedTensor:
 
         return self.tensor.view(*shape)
 
-    def reshape(self, *shape) -> Tensor:
+    def where(self, condition: Tensor | NestedTensor, other: Tensor | NestedTensor | SupportsFloat) -> Self:
         r"""
-        Returns a torch tensor with a different shape.
-
-        Note:
-            since NestedTensor is a collection of tensors, the reshape operation is ambiguous.
-
-            Therefore, it is converted to a tensor and then reshaped.
-
-        Args:
-            shape: The desired size of each dimension.
-
-        Returns:
-            (Tensor):
+        Return a NestedTensor of elements selected from either self or other, depending on condition.
 
         Examples:
             >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
-            >>> nested_tensor.reshape(3, 2)
-            tensor([[1, 2],
-                    [3, 4],
-                    [5, 0]])
-            >>> nested_tensor.reshape(2, 3)
-            tensor([[1, 2, 3],
+            >>> nested_tensor.where(nested_tensor > 2, torch.tensor([[6, 5, 4], [3, 2, 1]]))
+            NestedTensor([[6, 5, 3],
+                    [4, 5, 0]])
+            >>> nested_tensor.where(nested_tensor > 2, NestedTensor([[6, 5, 4], [3, 2]]))
+            NestedTensor([[6, 5, 3],
+                    [4, 5, 0]])
+            >>> nested_tensor.where(torch.tensor(True), NestedTensor([[6, 5, 4], [3, 2]]))
+            NestedTensor([[1, 2, 3],
                     [4, 5, 0]])
         """
 
-        return self.tensor.reshape(*shape)
+        if isinstance(condition, Tensor) and self.shape == condition.shape:
+            condition = self.nested_like(condition)
+        if isinstance(other, Tensor) and self.shape == other.shape:
+            other = self.nested_like(other)
+        if isinstance(condition, NestedTensor) and isinstance(other, NestedTensor):
+            return self.__class__(
+                [x.where(c, y) for x, c, y in zip(self._storage, condition._storage, other._storage)], **self._state
+            )
+        if isinstance(condition, NestedTensor):
+            return self.__class__([x.where(c, other) for x, c in zip(self._storage, condition._storage)], **self._state)
+        if isinstance(other, NestedTensor):
+            return self.__class__([x.where(condition, y) for x, y in zip(self._storage, other._storage)], **self._state)
+        return self.__class__(x.where(condition, other) for x in self._storage)
