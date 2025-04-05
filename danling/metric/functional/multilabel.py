@@ -69,7 +69,7 @@ def multilabel_auroc(
     te.check()
     if average == "macro":
         return tef.binary_auroc(input=input.T, target=target.T, num_tasks=num_labels, **kwargs).mean()
-    if average == "micro":
+    if average == "macro":
         return tef.binary_auroc(input=input.flatten(), target=target.flatten(), **kwargs)
     raise ValueError(f"Invalid average: {average}")
 
@@ -79,7 +79,7 @@ def multilabel_f1_score(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
     threshold: float = 0.5,
-    average: str | None = "micro",
+    average: str | None = "macro",
     num_labels: int | None = None,
     **kwargs,
 ):

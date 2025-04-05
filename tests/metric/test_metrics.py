@@ -96,8 +96,8 @@ def build_metric_map(task: str, num_classes: int = 10, num_labels: int = 10, num
         return {
             "auroc": MulticlassAUROC(num_classes=num_classes),
             "auprc": MulticlassAUPRC(num_classes=num_classes),
-            "acc": MulticlassAccuracy(num_classes=num_classes),
-            "f1": MulticlassF1Score(num_classes=num_classes),
+            "acc": MulticlassAccuracy(num_classes=num_classes, average="macro"),
+            "f1": MulticlassF1Score(num_classes=num_classes, average="macro"),
         }
     if task == "multilabel":
         return {
@@ -124,7 +124,7 @@ def build_function_map(task: str, num_classes: int = 10, num_labels: int = 10, n
         return {
             "auroc": partial(multiclass_auroc, num_classes=num_classes),
             "auprc": partial(multiclass_auprc, num_classes=num_classes),
-            "acc": partial(multiclass_accuracy, num_classes=num_classes),
+            "acc": partial(multiclass_accuracy, num_classes=num_classes, average="macro"),
             "f1": partial(multiclass_f1_score, num_classes=num_classes),
             "mcc": partial(matthews_corrcoef, task="multiclass", num_classes=num_classes),
         }
@@ -133,7 +133,7 @@ def build_function_map(task: str, num_classes: int = 10, num_labels: int = 10, n
             "auroc": partial(multilabel_auroc, num_labels=num_labels),
             "auprc": partial(multilabel_auprc, num_labels=num_labels),
             "acc": multilabel_accuracy,
-            "f1": partial(multilabel_f1_score, num_labels=num_labels, average="micro"),
+            "f1": partial(multilabel_f1_score, num_labels=num_labels),
             "mcc": partial(matthews_corrcoef, task="multilabel", num_labels=num_labels),
         }
     if task == "regression":
