@@ -36,7 +36,7 @@ from .preprocess import preprocess_multiclass, with_preprocess
 def multiclass_accuracy(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
-    average: str | None = "micro",
+    average: str | None = "macro",
     num_classes: int | None = None,
     **kwargs,
 ):
@@ -72,7 +72,7 @@ def multiclass_auroc(
 def multiclass_f1_score(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
-    average: str | None = "micro",
+    average: str | None = "macro",
     num_classes: int | None = None,
     **kwargs,
 ):

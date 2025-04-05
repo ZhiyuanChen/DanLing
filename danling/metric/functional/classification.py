@@ -32,6 +32,8 @@ from danling.tensor import NestedTensor
 with try_import() as tm:
     from torchmetrics import functional as tmf
 
+from warnings import warn
+
 from .binary import binary_accuracy, binary_auprc, binary_auroc, binary_f1_score
 from .multiclass import multiclass_accuracy, multiclass_auprc, multiclass_auroc, multiclass_f1_score
 from .multilabel import multilabel_accuracy, multilabel_auprc, multilabel_auroc, multilabel_f1_score
@@ -43,7 +45,7 @@ def accuracy(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
     threshold: float = 0.5,
-    average: str | None = "micro",
+    average: str | None = "macro",
     num_labels: int | None = None,
     num_classes: int | None = None,
     task: str | None = None,
@@ -153,7 +155,7 @@ def f1_score(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
     threshold: float = 0.5,
-    average: str | None = "micro",
+    average: str | None = "macro",
     num_labels: int | None = None,
     num_classes: int | None = None,
     task: str | None = None,
@@ -207,5 +209,6 @@ def mcc(
         return tmf.matthews_corrcoef(
             input, target, task, threshold=threshold, num_classes=num_classes, num_labels=num_labels, **kwargs
         )
-    except:  # noqa
-        return torch.tensor(0, dtype=float).to(input.device)
+    except Exception as e:  # noqa
+        warn(f"{e} encountered will computing MCC with {input} and {target}")
+        return torch.tensor(0, dtype=torch.float32).to(input.device)
