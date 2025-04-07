@@ -18,8 +18,23 @@
 # See the LICENSE file for more details.
 
 import torch
-from lazy_imports import try_import
 from pytest import raises
+from torcheval.metrics.functional import (
+    binary_accuracy,
+    binary_auprc,
+    binary_auroc,
+    binary_f1_score,
+    mean_squared_error,
+    multiclass_accuracy,
+    multiclass_auprc,
+    multiclass_auroc,
+    multiclass_f1_score,
+)
+from torcheval.metrics.functional import r2_score as tef_r2_score
+from torchmetrics.functional import matthews_corrcoef, pearson_corrcoef, spearman_corrcoef
+from torchmetrics.functional.classification import multilabel_accuracy, multilabel_auroc
+from torchmetrics.functional.classification import multilabel_average_precision as multilabel_auprc
+from torchmetrics.functional.classification import multilabel_f1_score
 
 from danling.metric.functional import accuracy, auprc, auroc, f1_score, mcc, mse, pearson, r2_score, rmse, spearman
 from danling.metric.functional.preprocess import (
@@ -32,34 +47,12 @@ from danling.metric.functional.preprocess import (
 from danling.metric.functional.utils import infer_task
 from danling.tensor import NestedTensor
 
-with try_import() as te:
-    from torcheval.metrics.functional import (
-        binary_accuracy,
-        binary_auprc,
-        binary_auroc,
-        binary_f1_score,
-        mean_squared_error,
-        multiclass_accuracy,
-        multiclass_auprc,
-        multiclass_auroc,
-        multiclass_f1_score,
-        multilabel_accuracy,
-        multilabel_auprc,
-    )
-    from torcheval.metrics.functional import r2_score as tef_r2_score
-
-with try_import() as tm:
-    from torchmetrics.functional import matthews_corrcoef, pearson_corrcoef, spearman_corrcoef
-    from torchmetrics.functional.classification import multilabel_auroc, multilabel_f1_score
-
 torch.manual_seed(0)
 
 ATOL = 1e-6
 
 
 def test_auroc():
-    te.check()
-
     # Binary classification
     pred = torch.rand(20)
     target = torch.randint(0, 2, (20,))
@@ -105,8 +98,6 @@ def test_auroc():
 
 
 def test_auprc():
-    te.check()
-
     # Binary classification
     pred = torch.rand(20)
     target = torch.randint(0, 2, (20,))
@@ -159,9 +150,7 @@ def test_auprc():
 
 
 def test_f1_score():
-
     # Binary classification
-    te.check()
     pred = torch.rand(20)
     target = torch.randint(0, 2, (20,))
     expected = binary_f1_score(pred, target, threshold=0.5)
@@ -178,7 +167,6 @@ def test_f1_score():
     assert abs(expected - actual) < ATOL
 
     # Multilabel classification
-    tm.check()
     num_labels = 3
     pred = torch.rand(10, num_labels)
     target = torch.randint(0, 2, (10, num_labels))
@@ -206,14 +194,12 @@ def test_f1_score():
     assert abs(expected - actual) < ATOL
 
 
-def test_accuracy():
-    te.check()
-
+def test_accuracy(threshold=0.5):
     # Binary classification
     pred = torch.rand(20)
     target = torch.randint(0, 2, (20,))
-    expected = binary_accuracy(pred, target, threshold=0.5)
-    actual = accuracy(pred, target, threshold=0.5, task="binary")
+    expected = binary_accuracy(pred, target, threshold=threshold)
+    actual = accuracy(pred, target, threshold=threshold, task="binary")
     assert abs(expected - actual) < ATOL
 
     # Multiclass classification
@@ -229,8 +215,8 @@ def test_accuracy():
     num_labels = 3
     pred = torch.rand(10, num_labels)
     target = torch.randint(0, 2, (10, num_labels))
-    expected = multilabel_accuracy(pred, target, threshold=0.5)
-    actual = accuracy(pred, target, num_labels=num_labels, threshold=0.5)
+    expected = multilabel_accuracy(pred, target, num_labels=num_labels, threshold=threshold)
+    actual = accuracy(pred, target, num_labels=num_labels, threshold=threshold)
     assert abs(expected - actual) < ATOL
 
     # Test with NestedTensor
@@ -250,8 +236,6 @@ def test_accuracy():
 
 
 def test_mcc():
-    tm.check()
-
     # Binary classification
     pred = torch.rand(20)
     target = torch.randint(0, 2, (20,))
@@ -293,8 +277,6 @@ def test_mcc():
 
 
 def test_pearson():
-    tm.check()
-
     # Single output case
     pred = torch.randn(20)
     target = torch.randn(20)
@@ -323,8 +305,6 @@ def test_pearson():
 
 
 def test_spearman():
-    tm.check()
-
     # Single output case
     pred = torch.randn(20)
     target = torch.randn(20)
@@ -353,8 +333,6 @@ def test_spearman():
 
 
 def test_r2_score():
-    te.check()
-
     # Single output case
     pred = torch.randn(20)
     target = torch.randn(20)
@@ -383,8 +361,6 @@ def test_r2_score():
 
 
 def test_mse():
-    te.check()
-
     # Single output case
     pred = torch.randn(20)
     target = torch.randn(20)
@@ -413,8 +389,6 @@ def test_mse():
 
 
 def test_rmse():
-    te.check()
-
     # Single output case
     pred = torch.randn(20)
     target = torch.randn(20)

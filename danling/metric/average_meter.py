@@ -24,13 +24,12 @@ from math import nan
 from typing import Any, Dict, Type
 
 import torch
-from chanfig import FlatDict, NestedDict
 from torch import Tensor
 from torch import distributed as dist
 
 from danling.utils import get_world_size
 
-from .utils import MetricsDict, MultiTaskDict
+from .utils import MetricsDict, MultiTaskDict, RoundDict
 
 try:
     from typing import Self  # type: ignore[attr-defined]
@@ -194,12 +193,12 @@ class AverageMeters(MetricsDict):
         super().__init__(default_factory=default_factory, **meters)
 
     @property
-    def sum(self) -> FlatDict[str, float]:
-        return FlatDict({key: meter.sum for key, meter in self.all_items()})
+    def sum(self) -> RoundDict[str, float]:
+        return RoundDict({key: meter.sum for key, meter in self.all_items()})
 
     @property
-    def count(self) -> FlatDict[str, int]:
-        return FlatDict({key: meter.count for key, meter in self.all_items()})
+    def count(self) -> RoundDict[str, int]:
+        return RoundDict({key: meter.count for key, meter in self.all_items()})
 
     def update(self, *args: Dict, **values: int | float) -> None:  # pylint: disable=W0237
         r"""
@@ -265,12 +264,12 @@ class MultiTaskAverageMeters(MultiTaskDict):
     """  # noqa: E501
 
     @property
-    def sum(self) -> NestedDict[str, float]:
-        return NestedDict({key: meter.sum for key, meter in self.all_items()})
+    def sum(self) -> RoundDict[str, float]:
+        return RoundDict({key: meter.sum for key, meter in self.all_items()})
 
     @property
-    def count(self) -> NestedDict[str, int]:
-        return NestedDict({key: meter.count for key, meter in self.all_items()})
+    def count(self) -> RoundDict[str, int]:
+        return RoundDict({key: meter.count for key, meter in self.all_items()})
 
     def update(self, *args: Dict, **values: float) -> None:  # pylint: disable=W0237
         r"""

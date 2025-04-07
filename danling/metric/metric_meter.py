@@ -182,12 +182,12 @@ class MetricMeters(AverageMeters):
         >>> meters.count.dict()
         {'acc': 4, 'auroc': 6, 'auprc': 4}
         >>> meters.update([[0.1, 0.7, 0.3, 0.2], [0.8, 0.4]], [[0, 0, 1, 0], [0, 0]])
-        >>> meters.sum.dict()
+        >>> meters.sum.round(2).dict()
         {'acc': 6.0, 'auroc': 8.4, 'auprc': 5.5}
         >>> meters.count.dict()
         {'acc': 10, 'auroc': 12, 'auprc': 10}
         >>> meters['auroc'].update([0.4, 0.8, 0.6, 0.2], [0, 1, 1, 0])
-        >>> meters.avg.dict()
+        >>> meters.avg.round(4).dict()
         {'acc': 0.6, 'auroc': 0.775, 'auprc': 0.55}
         >>> meters.update(dict(loss=""))  # doctest: +ELLIPSIS
         Traceback (most recent call last):
@@ -311,11 +311,11 @@ class MultiTaskMetricMeters(MultiTaskAverageMeters):
           )
           ('dataset2'): MetricMeters('acc',)
         )
-        >>> metrics.update({"dataset1.cls": {"input": [0.2, 0.4, 0.5, 0.7], "target": [0, 1, 0, 1]}, "dataset2": ([0.1, 0.4, 0.6, 0.8], [1, 0, 0, 0])})
+        >>> metrics.update({"dataset1.cls": {"input": [0.2, 0.4, 0.6, 0.7], "target": [0, 1, 0, 1]}, "dataset2": ([0.1, 0.4, 0.6, 0.8], [1, 0, 0, 0])})
         >>> f"{metrics:.4f}"
         'dataset1.cls: acc: 0.5000 (0.5000)\ndataset2: acc: 0.2500 (0.2500)'
         >>> metrics.setattr("return_average", True)
-        >>> metrics.update({"dataset1.cls": [[0.1, 0.4, 0.6, 0.8], [0, 0, 1, 0]], "dataset2": {"input": [0.2, 0.3, 0.5, 0.7], "target": [0, 0, 0, 1]}})
+        >>> metrics.update({"dataset1.cls": [[0.1, 0.4, 0.6, 0.8], [0, 0, 1, 0]], "dataset2": {"input": [0.2, 0.3, 0.6, 0.7], "target": [0, 0, 0, 1]}})
         >>> f"{metrics:.4f}"
         'dataset1.cls: acc: 0.7500 (0.6250)\ndataset2: acc: 0.7500 (0.5000)'
         >>> metrics.update(dict(loss=""))  # doctest: +ELLIPSIS

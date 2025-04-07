@@ -26,8 +26,8 @@ from torch import Tensor
 
 from danling.tensor import NestedTensor
 
-with try_import() as te:
-    from torcheval.metrics import functional as tef
+with try_import() as tm:
+    from torchmetrics.functional import classification as tmcls
 
 from .preprocess import preprocess_binary, with_preprocess
 
@@ -39,8 +39,8 @@ def binary_accuracy(
     threshold: float = 0.5,
     **kwargs,
 ):
-    te.check()
-    return tef.binary_accuracy(input=input, target=target, threshold=threshold, **kwargs)
+    tm.check()
+    return tmcls.binary_accuracy(input, target, threshold=threshold, **kwargs)
 
 
 @with_preprocess(preprocess_binary, ignore_index=-100)
@@ -49,8 +49,8 @@ def binary_auprc(
     target: Tensor | NestedTensor,
     **kwargs,
 ):
-    te.check()
-    return tef.binary_auprc(input=input, target=target, **kwargs)
+    tm.check()
+    return tmcls.binary_average_precision(input, target.long(), **kwargs)
 
 
 @with_preprocess(preprocess_binary, ignore_index=-100)
@@ -59,8 +59,8 @@ def binary_auroc(
     target: Tensor | NestedTensor,
     **kwargs,
 ):
-    te.check()
-    return tef.binary_auroc(input=input, target=target, **kwargs)
+    tm.check()
+    return tmcls.binary_auroc(input, target.long(), **kwargs)
 
 
 @with_preprocess(preprocess_binary, ignore_index=-100)
@@ -70,5 +70,5 @@ def binary_f1_score(
     threshold: float = 0.5,
     **kwargs,
 ):
-    te.check()
-    return tef.binary_f1_score(input=input, target=target, threshold=threshold, **kwargs)
+    tm.check()
+    return tmcls.binary_f1_score(input, target, threshold=threshold, **kwargs)

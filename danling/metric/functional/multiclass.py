@@ -27,7 +27,7 @@ from torch import Tensor
 from danling.tensor import NestedTensor
 
 with try_import() as te:
-    from torcheval.metrics import functional as tef
+    from torchmetrics.functional import classification as tmcls
 
 from .preprocess import preprocess_multiclass, with_preprocess
 
@@ -41,7 +41,7 @@ def multiclass_accuracy(
     **kwargs,
 ):
     te.check()
-    return tef.multiclass_accuracy(input=input, target=target, num_classes=num_classes, average=average, **kwargs)
+    return tmcls.multiclass_accuracy(input, target, num_classes=num_classes, average=average, **kwargs)
 
 
 @with_preprocess(preprocess_multiclass, ignore_index=-100)
@@ -53,7 +53,7 @@ def multiclass_auprc(
     **kwargs,
 ):
     te.check()
-    return tef.multiclass_auprc(input=input, target=target, num_classes=num_classes, average=average, **kwargs)
+    return tmcls.multiclass_average_precision(input, target, num_classes=num_classes, average=average, **kwargs)
 
 
 @with_preprocess(preprocess_multiclass, ignore_index=-100)
@@ -65,7 +65,7 @@ def multiclass_auroc(
     **kwargs,
 ):
     te.check()
-    return tef.multiclass_auroc(input=input, target=target, num_classes=num_classes, average=average, **kwargs)
+    return tmcls.multiclass_auroc(input, target, num_classes=num_classes, average=average, **kwargs)
 
 
 @with_preprocess(preprocess_multiclass, ignore_index=-100)
@@ -77,4 +77,4 @@ def multiclass_f1_score(
     **kwargs,
 ):
     te.check()
-    return tef.multiclass_f1_score(input=input, target=target, num_classes=num_classes, average=average, **kwargs)
+    return tmcls.multiclass_f1_score(input, target, num_classes=num_classes, average=average, **kwargs)

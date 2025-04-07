@@ -23,16 +23,13 @@ from __future__ import annotations
 
 from typing import Callable
 
-import torch
 from lazy_imports import try_import
 from torch import Tensor
 
 from danling.tensor import NestedTensor
 
 with try_import() as tm:
-    from torchmetrics import functional as tmf
-
-from warnings import warn
+    from torchmetrics.functional import classification as tmcls
 
 from .binary import binary_accuracy, binary_auprc, binary_auroc, binary_f1_score
 from .multiclass import multiclass_accuracy, multiclass_auprc, multiclass_auroc, multiclass_f1_score
@@ -205,10 +202,6 @@ def mcc(
     tm.check()
     if task is None:
         task = infer_task(num_classes, num_labels)
-    try:
-        return tmf.matthews_corrcoef(
-            input, target, task, threshold=threshold, num_classes=num_classes, num_labels=num_labels, **kwargs
-        )
-    except Exception as e:  # noqa
-        warn(f"{e} encountered will computing MCC with {input} and {target}")
-        return torch.tensor(0, dtype=torch.float32).to(input.device)
+    return tmcls.matthews_corrcoef(
+        input, target, task, threshold=threshold, num_classes=num_classes, num_labels=num_labels, **kwargs
+    )

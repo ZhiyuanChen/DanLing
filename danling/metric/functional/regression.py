@@ -21,16 +21,13 @@
 # mypy: disable-error-code="arg-type"
 from __future__ import annotations
 
-import torch
 from lazy_imports import try_import
 from torch import Tensor
 
 from danling.tensor import NestedTensor
 
-with try_import() as te:
-    from torcheval.metrics import functional as tef
 with try_import() as tm:
-    from torchmetrics import functional as tmf
+    from torchmetrics.functional import regression as tmreg
 
 from .preprocess import preprocess_regression, with_preprocess
 
@@ -39,48 +36,57 @@ from .preprocess import preprocess_regression, with_preprocess
 def pearson(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
-    num_outputs: int = 1,
+    multioutput: str = "uniform_average",
     **kwargs,
 ):
     tm.check()
-    try:
-        ret = tmf.pearson_corrcoef(input, target, **kwargs)
-        return ret.mean()
-    except ValueError:
-        return torch.tensor(0, dtype=float).to(input.device)
+    pearson = tmreg.pearson_corrcoef(input, target, **kwargs)
+    if multioutput == "raw_values":
+        return pearson
+    if multioutput == "uniform_average":
+        return pearson.mean()
+    if multioutput == "variance_weighted":
+        return pearson.mul(1 / pearson.var(dim=0)).sum(dim=0)
+    raise ValueError(f"Invalid multioutput value: {multioutput}")
 
 
 @with_preprocess(preprocess_regression, num_outputs=1, ignore_nan=False)
 def spearman(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
-    num_outputs: int = 1,
+    multioutput: str = "uniform_average",
     **kwargs,
 ):
     tm.check()
-    try:
-        ret = tmf.spearman_corrcoef(input, target, **kwargs)
-        return ret.mean()
-    except ValueError:
-        return torch.tensor(0, dtype=float).to(input.device)
+    spearman = tmreg.spearman_corrcoef(input, target, **kwargs)
+    if multioutput == "raw_values":
+        return spearman
+    if multioutput == "uniform_average":
+        return spearman.mean()
+    if multioutput == "variance_weighted":
+        return spearman.mul(1 / spearman.var(dim=0)).sum(dim=0)
+    raise ValueError(f"Invalid multioutput value: {multioutput}")
 
 
 @with_preprocess(preprocess_regression, num_outputs=1, ignore_nan=False)
 def r2_score(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
-    num_outputs: int = 1,
-    multioutput: str = "raw_values",
+    multioutput: str = "uniform_average",
     **kwargs,
 ):
-    te.check()
-    try:
-        ret = tef.r2_score(input, target, multioutput=multioutput, **kwargs)
-        if multioutput != "raw_values":
-            return ret
-        return ret.mean()
-    except ValueError:
-        return torch.tensor(0, dtype=float).to(input.device)
+    tm.check()
+    return tmreg.r2_score(input, target, multioutput=multioutput, **kwargs)
+
+
+@with_preprocess(preprocess_regression, num_outputs=1, ignore_nan=False)
+def mae(
+    input: Tensor | NestedTensor,
+    target: Tensor | NestedTensor,
+    **kwargs,
+):
+    tm.check()
+    return tmreg.mean_absolute_error(input, target, **kwargs)
 
 
 @with_preprocess(preprocess_regression, num_outputs=1, ignore_nan=False)
@@ -88,14 +94,10 @@ def mse(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
     num_outputs: int = 1,
-    multioutput: str = "raw_values",
     **kwargs,
 ):
-    te.check()
-    ret = tef.mean_squared_error(input, target, **kwargs)
-    if multioutput != "raw_values":
-        return ret
-    return ret.mean()
+    tm.check()
+    return tmreg.mean_squared_error(input, target, squared=True, num_outputs=num_outputs, **kwargs)
 
 
 @with_preprocess(preprocess_regression, num_outputs=1, ignore_nan=False)
@@ -103,11 +105,7 @@ def rmse(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
     num_outputs: int = 1,
-    multioutput: str = "raw_values",
     **kwargs,
 ):
-    te.check()
-    ret = tef.mean_squared_error(input, target, **kwargs).sqrt()
-    if multioutput != "raw_values":
-        return ret
-    return ret.mean()
+    tm.check()
+    return tmreg.mean_squared_error(input, target, squared=False, num_outputs=num_outputs, **kwargs)

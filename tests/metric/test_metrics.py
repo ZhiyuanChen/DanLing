@@ -31,10 +31,8 @@ from torcheval.metrics import (
     BinaryAUROC,
     BinaryF1Score,
     MulticlassAccuracy,
-    MulticlassAUPRC,
     MulticlassAUROC,
     MulticlassF1Score,
-    MultilabelAccuracy,
     MultilabelAUPRC,
     R2Score,
 )
@@ -44,14 +42,16 @@ from torcheval.metrics.functional import (
     binary_auroc,
     binary_f1_score,
     multiclass_accuracy,
-    multiclass_auprc,
     multiclass_auroc,
     multiclass_f1_score,
-    multilabel_accuracy,
-    multilabel_auprc,
 )
+from torchmetrics.classification import MulticlassAveragePrecision as MulticlassAUPRC
+from torchmetrics.classification import MultilabelAccuracy
 from torchmetrics.functional import matthews_corrcoef
-from torchmetrics.functional.classification import multilabel_auroc, multilabel_f1_score
+from torchmetrics.functional.classification import multiclass_average_precision as multiclass_auprc
+from torchmetrics.functional.classification import multilabel_accuracy, multilabel_auroc
+from torchmetrics.functional.classification import multilabel_average_precision as multilabel_auprc
+from torchmetrics.functional.classification import multilabel_f1_score
 from torchmetrics.functional.regression import pearson_corrcoef, r2_score, spearman_corrcoef
 from torchmetrics.regression import SpearmanCorrCoef
 
@@ -102,7 +102,7 @@ def build_metric_map(task: str, num_classes: int = 10, num_labels: int = 10, num
     if task == "multilabel":
         return {
             "auprc": MultilabelAUPRC(num_labels=num_labels),
-            "acc": MultilabelAccuracy(),
+            "acc": MultilabelAccuracy(num_labels=num_labels),
         }
     if task == "regression":
         return {
@@ -132,7 +132,7 @@ def build_function_map(task: str, num_classes: int = 10, num_labels: int = 10, n
         return {
             "auroc": partial(multilabel_auroc, num_labels=num_labels),
             "auprc": partial(multilabel_auprc, num_labels=num_labels),
-            "acc": multilabel_accuracy,
+            "acc": partial(multilabel_accuracy, num_labels=num_labels),
             "f1": partial(multilabel_f1_score, num_labels=num_labels),
             "mcc": partial(matthews_corrcoef, task="multilabel", num_labels=num_labels),
         }

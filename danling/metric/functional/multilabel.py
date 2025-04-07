@@ -26,10 +26,8 @@ from torch import Tensor
 
 from danling.tensor import NestedTensor
 
-with try_import() as te:
-    from torcheval.metrics import functional as tef
 with try_import() as tm:
-    from torchmetrics import functional as tmf
+    from torchmetrics.functional import classification as tmcls
 
 from .preprocess import preprocess_multilabel, with_preprocess
 
@@ -42,8 +40,8 @@ def multilabel_accuracy(
     num_labels: int | None = None,
     **kwargs,
 ):
-    te.check()
-    return tef.multilabel_accuracy(input=input, target=target, threshold=threshold, **kwargs)
+    tm.check()
+    return tmcls.multilabel_accuracy(input, target, num_labels=num_labels, threshold=threshold, **kwargs)
 
 
 @with_preprocess(preprocess_multilabel, ignore_index=-100)
@@ -54,8 +52,8 @@ def multilabel_auprc(
     num_labels: int | None = None,
     **kwargs,
 ):
-    te.check()
-    return tef.multilabel_auprc(input=input, target=target, num_labels=num_labels, average=average, **kwargs)
+    tm.check()
+    return tmcls.multilabel_average_precision(input, target, num_labels=num_labels, average=average, **kwargs)
 
 
 @with_preprocess(preprocess_multilabel, ignore_index=-100)
@@ -66,12 +64,8 @@ def multilabel_auroc(
     num_labels: int | None = None,
     **kwargs,
 ):
-    te.check()
-    if average == "macro":
-        return tef.binary_auroc(input=input.T, target=target.T, num_tasks=num_labels, **kwargs).mean()
-    if average == "macro":
-        return tef.binary_auroc(input=input.flatten(), target=target.flatten(), **kwargs)
-    raise ValueError(f"Invalid average: {average}")
+    tm.check()
+    return tmcls.multilabel_auroc(input, target, num_labels=num_labels, average=average, **kwargs)
 
 
 @with_preprocess(preprocess_multilabel, ignore_index=-100)
@@ -84,6 +78,6 @@ def multilabel_f1_score(
     **kwargs,
 ):
     tm.check()
-    return tmf.classification.multilabel_f1_score(
+    return tmcls.multilabel_f1_score(
         input, target, threshold=threshold, num_labels=num_labels, average=average, **kwargs
     )
