@@ -25,9 +25,12 @@ from typing import Any, Iterable, SupportsFloat, Tuple
 
 import torch
 from torch import Tensor
+from torch._C import DispatchKey, DispatchKeySet
+from torch.utils.weak import WeakTensorKeyDictionary
 
 from ..utils import method_cache
 from .functions import NestedTensorFuncRegistry, NestedTensorFuncWrapper
+from .tensor import PNTensor
 from .utils import mask_tensor, pad_tensor, tensor_mask
 
 try:
@@ -41,7 +44,27 @@ except ImportError:
     nested = None
 
 
-class NestedTensor:
+try:
+    from typing import Self  # type: ignore[attr-defined]
+except ImportError:
+    from typing_extensions import Self
+
+
+_tensor_id_counter = 0
+_tensor_symint_registry = WeakTensorKeyDictionary()
+
+
+def get_tensor_symint(tensor, *, coeff=1):
+    global _tensor_id_counter
+    tensor_symint = _tensor_symint_registry.get(tensor)
+    if tensor_symint is None:
+        tensor_symint = torch._C._get_nested_int(_tensor_id_counter, coeff)
+        _tensor_id_counter += 1
+        _tensor_symint_registry[tensor] = tensor_symint
+    return tensor_symint
+
+
+class NestedTensor(Tensor):
     r"""
     A container for variable-length tensors that enables efficient batch operations.
 
@@ -130,6 +153,21 @@ class NestedTensor:
     batch_first: bool = True
     padding_value: SupportsFloat = 0.0
     mask_value: bool = False
+
+    @staticmethod
+    def __new__(
+        cls,
+        *tensors: Iterable[Tensor],
+        dtype: torch.dtype | None = None,
+        device: torch.device | None = None,
+        batch_first: bool = True,
+        padding_value: SupportsFloat = 0.0,
+        mask_value: bool = False,
+        **kwargs,
+    ):
+        ks = DispatchKeySet(DispatchKey.NestedTensor)
+        ks = ks.add(DispatchKey.AutogradNestedTensor)
+        return torch.Tensor._make_wrapper_subclass(cls, (), device=device, dtype=dtype, **kwargs)
 
     def __init__(
         self,
@@ -369,6 +407,79 @@ class NestedTensor:
             **kwargs,
         )
 
+    @classmethod
+    def from_concat(
+        cls,
+        concat_tensor: Tensor,
+        lengths: list | Tensor,
+        batch_first: bool = True,
+        padding_value: SupportsFloat = 0.0,
+        mask_value: bool = False,
+    ):
+        r"""
+        Build a `NestedTensor` object from a concatenated tensor and a list of lengths.
+
+        Args:
+            concat_tensor: Concatenated Tensor.
+            lengths: List or Tensor of lengths for each sequence in the batch.
+            batch_first: Whether to use batch-first representation. Currently, only batch_first=True is supported.
+            padding_value: Value to use for padding.
+            mask_value: Value to use for padding positions in mask.
+
+        Examples:
+            >>> # Simple 1D case
+            >>> concat_tensor = torch.tensor([1, 2, 3, 4, 5])
+            >>> lengths = [3, 2]
+            >>> nested_tensor = NestedTensor.from_concat(concat_tensor, lengths)
+            >>> nested_tensor
+            NestedTensor([[1, 2, 3],
+                    [4, 5, 0]])
+            >>> nested_tensor.concat
+            tensor([1, 2, 3, 4, 5])
+
+            >>> # 2D case
+            >>> concat_tensor = torch.tensor([[1, 2], [3, 4], [5, 6], [7, 8], [9, 10]])
+            >>> lengths = [3, 2]
+            >>> nested_tensor = NestedTensor.from_concat(concat_tensor, lengths)
+            >>> nested_tensor
+            NestedTensor([[[ 1,  2],
+                     [ 3,  4],
+                     [ 5,  6]],
+            <BLANKLINE>
+                    [[ 7,  8],
+                     [ 9, 10],
+                     [ 0,  0]]])
+            >>> nested_tensor.concat
+            tensor([[ 1,  2],
+                    [ 3,  4],
+                    [ 5,  6],
+                    [ 7,  8],
+                    [ 9, 10]])
+        """
+        if isinstance(lengths, (list, tuple)) and len(lengths) == 0:
+            raise ValueError("lengths must be a non-empty list or tensor")
+
+        if isinstance(lengths, Tensor):
+            lengths = lengths.tolist()
+
+        if not batch_first:
+            raise ValueError("Currently, only batch_first=True is supported")
+
+        tensors = []
+        offset = 0
+
+        # Split the concatenated tensor according to lengths
+        for length in lengths:
+            if offset + length > concat_tensor.size(0):
+                raise ValueError(
+                    f"Sum of lengths ({sum(lengths)}) exceeds concat_tensor size ({concat_tensor.size(0)})"
+                )
+            tensors.append(concat_tensor[offset : offset + length])
+            offset += length
+
+        # Create a NestedTensor from the split tensors
+        return cls(*tensors, batch_first=batch_first, padding_value=padding_value, mask_value=mask_value)
+
     def nested_like(self, tensor: Tensor, strict: bool = True) -> Self:
         r"""
         Create a new `NestedTensor` from a `Tensor`.
@@ -521,19 +632,6 @@ class NestedTensor:
                 raise ValueError(f"Unsupported first index type {type(first_idx)}")
         else:
             raise ValueError(f"Unsupported index type {type(index)}")
-
-    def __getattr__(self, name: str) -> Any:
-        if not self._storage:
-            raise ValueError(f"Unable to get {name} from an empty {self.__class__.__name__}")
-        ret = [getattr(i, name) for i in self._storage]
-        elem = ret[0]
-        if isinstance(elem, Tensor):
-            return NestedTensor(ret, **self._state)
-        if callable(elem):
-            return NestedTensorFuncWrapper(ret, state=self._state)
-        if elem.__hash__ is not None and len(set(ret)) == 1:
-            return elem
-        return ret
 
     def __iter__(self):
         return iter(self._storage)
@@ -1022,6 +1120,59 @@ class NestedTensor:
             dim -= 1
         return NestedTensor([i.all(dim=dim, keepdim=keepdim) for i in self._storage])
 
+    def bool(self) -> Self:
+        r"""
+        Convert the NestedTensor to a bool NestedTensor.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.bool()
+            NestedTensor([[ True,  True,  True],
+                    [ True,  True, False]])
+        """
+
+        return self.to(torch.bool)
+
+    def byte(self) -> Self:
+        r"""
+        Convert the NestedTensor to a byte NestedTensor.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.byte()
+            NestedTensor([[1, 2, 3],
+                    [4, 5, 0]], dtype=torch.uint8)
+        """
+
+        return self.to(torch.uint8)
+
+    def char(self) -> Self:
+        r"""
+        Convert the NestedTensor to a char NestedTensor.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.char()
+            NestedTensor([[1, 2, 3],
+                    [4, 5, 0]], dtype=torch.int8)
+        """
+
+        return self.to(torch.int8)
+
+    def clone(self) -> Self:
+        r"""
+        Clone the NestedTensor.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.clone()
+            NestedTensor([[1, 2, 3],
+                    [4, 5, 0]])
+            >>> assert nested_tensor.clone() is not nested_tensor
+        """
+
+        return NestedTensor(tuple(t.clone() for t in self._storage), **self._state)
+
     def dim(self) -> int:
         r"""
         Number of dimension of the NestedTensor.
@@ -1038,13 +1189,85 @@ class NestedTensor:
     def _dim(self, storage: Tuple[Tensor, ...]) -> int:  # type: ignore[name-defined]
         return max(t.dim() for t in storage) + 1
 
-    @property
-    def ndim(self) -> int:
+    def double(self) -> Self:
         r"""
-        Alias for `dim()`.
+        Convert the NestedTensor to a double NestedTensor.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.double()
+            NestedTensor([[1., 2., 3.],
+                    [4., 5., 0.]], dtype=torch.float64)
         """
 
-        return self.dim()
+        return self.to(torch.float64)
+
+    def float(self) -> Self:
+        r"""
+        Convert the NestedTensor to a float NestedTensor.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.float()
+            NestedTensor([[1., 2., 3.],
+                    [4., 5., 0.]])
+        """
+
+        return self.to(torch.float)
+
+    def half(self) -> Self:
+        r"""
+        Convert the NestedTensor to a half NestedTensor.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.half()
+            NestedTensor([[1., 2., 3.],
+                    [4., 5., 0.]], dtype=torch.float16)
+        """
+
+        return self.to(torch.float16)
+
+    def int(self) -> Self:
+        r"""
+        Convert the NestedTensor to a int NestedTensor.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.int()
+            NestedTensor([[1, 2, 3],
+                    [4, 5, 0]], dtype=torch.int32)
+        """
+
+        return self.to(torch.int)
+
+    def long(self) -> Self:
+        r"""
+        Convert the NestedTensor to a long NestedTensor.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.long()
+            NestedTensor([[1, 2, 3],
+                    [4, 5, 0]])
+        """
+
+        return self.to(torch.long)
+
+    def new_tensor(self, data: Tensor | NestedTensor | SupportsFloat | Sequence[SupportsFloat]) -> Self | PNTensor:
+        r"""
+        Create a new NestedTensor from a tensor, NestedTensor, or sequence of numbers.
+
+        Args:
+            data: The data to create the new NestedTensor from.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.new_tensor([1, 2, 3])
+            NestedTensor([1, 2, 3])
+        """
+
+        return NestedTensor(data, **self.__state__(return_dtype=True, return_requires_grad=False))
 
     def numel(self) -> int:
         r"""
@@ -1089,13 +1312,18 @@ class NestedTensor:
 
         return self.tensor.reshape(*shape)
 
-    @property
-    def shape(self) -> torch.Size | int:  # type: ignore[name-defined]
+    def short(self) -> Self:
         r"""
-        Alias for `size()`.
+        Convert the NestedTensor to a short NestedTensor.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.short()
+            NestedTensor([[1, 2, 3],
+                    [4, 5, 0]], dtype=torch.int16)
         """
 
-        return self.size()
+        return self.to(torch.int16)
 
     def size(self, dim: int | None = None) -> torch.Size | int:  # type: ignore[name-defined]
         r"""
@@ -1139,8 +1367,8 @@ class NestedTensor:
         size.insert(0 if batch_first else 1, len(storage))
         return torch.Size(size)
 
-    def to(self, *args, **kwargs):
-        return NestedTensor(tuple(t.to(*args, **kwargs) for t in self._storage), **self._state)
+    def to(self, *args, **kwargs) -> Self:
+        return self.__class__(tuple(t.to(*args, **kwargs) for t in self._storage), **self._state)
 
     def tolist(self) -> list:
         r"""

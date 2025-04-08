@@ -187,17 +187,7 @@ def isin(elements, test_elements, *, assume_unique: bool = False, invert: bool =
 def log(tensor):
     from .nested_tensor import NestedTensor
 
-    # Create a mask for zeros to avoid -inf when taking log(0)
-    results = []
-    for t in tensor._storage:
-        # Replace zeros with ones (log(1) = 0)
-        zero_mask = t == 0
-        t_safe = t.clone()
-        t_safe[zero_mask] = 1.0
-        log_t = torch.log(t_safe)
-        results.append(log_t)
-
-    return NestedTensor(results, **tensor._state)
+    return NestedTensor((torch.log(t) for t in tensor._storage), **tensor._state)
 
 
 @NestedTensorFuncRegistry.implement(torch.mean)
@@ -209,25 +199,19 @@ def mean(
     dtype: torch.dtype | None = None,
 ):
     from .nested_tensor import NestedTensor
-    from .tensor import PNTensor
 
     if dim is None:
         return input.concat.mean()
 
     batch_dim = 0 if input.batch_first else 1
     if dim == batch_dim:
-        return PNTensor(t.mean() for t in input._storage)
+        return torch.tensor(t.mean() for t in input._storage)
 
-    # For other dimensions, operate on each tensor separately
     storage_dim = dim if dim <= 0 else dim - 1
 
     results = []
     for tensor in input._storage:
-        if storage_dim < tensor.dim():
-            results.append(torch.mean(tensor, dim=storage_dim, keepdim=keepdim, dtype=dtype))
-        else:
-            # If dimension is out of bounds, return as is with dtype conversion if needed
-            results.append(tensor.to(dtype=dtype) if dtype else tensor)
+        results.append(torch.mean(tensor, dim=storage_dim, keepdim=keepdim, dtype=dtype))
 
     return NestedTensor(results, **input._state)
 
