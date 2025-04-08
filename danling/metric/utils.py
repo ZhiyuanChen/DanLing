@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+from math import isnan
 from typing import Generic, Union
 
 from chanfig import DefaultDict, NestedDict
@@ -97,31 +98,43 @@ class MultiTaskDict(NestedDict):
         self.setattr("return_average", return_average)
 
     def value(self) -> RoundDict[str, float]:
-        output = RoundDict({key: metric.value() for key, metric in self.all_items()})
+        output = RoundDict()
+        for key, metrics in self.all_items():
+            value = metrics.value()
+            if all(isnan(v) for v in value.values()):
+                continue
+            output[key] = value
         if self.getattr("return_average", False):
-            average = DefaultDict(default_factory=list)
-            for key, metric in output.all_items():
-                average[key.rsplit(".", 1)[-1]].append(metric)
-            output["average"] = RoundDict({key: sum(values) / len(values) for key, values in average.items()})
+            output["average"] = self.compute_average(output)
         return output
 
     def batch(self) -> RoundDict[str, float]:
-        output = RoundDict({key: metric.batch() for key, metric in self.all_items()})
+        output = RoundDict()
+        for key, metrics in self.all_items():
+            value = metrics.batch()
+            if all(isnan(v) for v in value.values()):
+                continue
+            output[key] = value
         if self.getattr("return_average", False):
-            average = DefaultDict(default_factory=list)
-            for key, metric in output.all_items():
-                average[key.rsplit(".", 1)[-1]].append(metric)
-            output["average"] = RoundDict({key: sum(values) / len(values) for key, values in average.items()})
+            output["average"] = self.compute_average(output)
         return output
 
     def average(self) -> RoundDict[str, float]:
-        output = RoundDict({key: metric.average() for key, metric in self.all_items()})
+        output = RoundDict()
+        for key, metrics in self.all_items():
+            value = metrics.average()
+            if all(isnan(v) for v in value.values()):
+                continue
+            output[key] = value
         if self.getattr("return_average", False):
-            average = DefaultDict(default_factory=list)
-            for key, metric in output.all_items():
-                average[key.rsplit(".", 1)[-1]].append(metric)
-            output["average"] = RoundDict({key: sum(values) / len(values) for key, values in average.items()})
+            output["average"] = self.compute_average(output)
         return output
+
+    def compute_average(self, output: RoundDict[str, float]) -> RoundDict[str, float]:
+        average = DefaultDict(default_factory=list)
+        for key, metric in output.all_items():
+            average[key.rsplit(".", 1)[-1]].append(metric)
+        return RoundDict({key: sum(values) / len(values) for key, values in average.items()})
 
     @property
     def val(self) -> RoundDict[str, float]:
