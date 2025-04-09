@@ -15,10 +15,11 @@ nav:
       - BaseRunner: runner/base_runner.md
       - AccelerateRunner: runner/accelerate_runner.md
       - Utilities: runner/utils.md
-  - Tensors:
-      - NestedTensor: tensors/nested_tensor.md
-      - PNTensor: tensors/pn_tensor.md
-      - TorchFuncRegistry: tensors/torch_func_registry.md
+  - Tensor:
+      - tensor/index.md
+      - NestedTensor: tensor/nested_tensor.md
+      - PNTensor: tensor/pn_tensor.md
+      - TorchFuncRegistry: tensor/torch_func_registry.md
   - Optim:
       - LRScheduler: optim/lr_scheduler.md
   - Metric:
