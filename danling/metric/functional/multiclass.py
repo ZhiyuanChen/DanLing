@@ -24,7 +24,7 @@ from __future__ import annotations
 from lazy_imports import try_import
 from torch import Tensor
 
-from danling.tensors import NestedTensor
+from danling.tensor import NestedTensor
 
 with try_import() as te:
     from torchmetrics.functional import classification as tmcls
