@@ -407,8 +407,6 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
             self.optimizer.step()
             if zero_grad:
                 self.optimizer.zero_grad()
-        if self.scheduler is not None:
-            self.scheduler.step()
         self.state.steps += 1
         if batch_size is None:
             batch_size = self.batch_size_equivalent

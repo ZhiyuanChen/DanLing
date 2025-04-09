@@ -96,6 +96,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         cooldown_steps: Optional[int] = None,
         last_epoch: int = -1,
         method: Optional[str] = None,
+        step_with_optimizer: bool = True,
     ):
         if total_steps <= 0:
             raise ValueError(f"Total steps must be positive, but got {total_steps}")
@@ -111,6 +112,11 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
             raise ValueError(f"Cooldown steps must be less than total steps, but got {cooldown_steps} > {total_steps}")
         elif cooldown_steps < 0:
             raise ValueError(f"Cooldown steps must be positive, but got {cooldown_steps}")
+        if warmup_steps + cooldown_steps > total_steps:
+            raise ValueError(
+                "Warmup steps + cooldown steps must be less than total steps, "
+                f"but got {warmup_steps} + {cooldown_steps} > {total_steps}"
+            )
         if final_lr_ratio is not None:
             if final_lr is not None:
                 raise ValueError("Only one of `final_lr_ratio` and `final_lr` should be set, but not both")
@@ -147,6 +153,11 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         self.cooldown_steps = cooldown_steps
         self.cooldown_steps_begin = self.total_steps - self.cooldown_steps
         super().__init__(optimizer, last_epoch)
+        if step_with_optimizer:
+            self.optimizer.register_step_post_hook(self.step_post_hook)
+
+    def step_post_hook(self, optimizer: Optimizer, *args, **kwargs):
+        self.step()
 
     def get_lr(self) -> List[float]:
         step_count = self._step_count
