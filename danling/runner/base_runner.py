@@ -152,9 +152,9 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         is_local_main_process (bool, property): If current process is the main process of local processes.
 
     Attributes: logging:
-        meters (AverageMeters | MultiTaskAverageMeters): Average meters.
+        meters: Average meters.
             Initialised to `AverageMeters` by default.
-        metrics (Metrics | MultiTaskMetrics | MetricMeters | None): Metrics for evaluating.
+        metrics (MultiTaskMetrics | Metrics | MetricMeters | None): Metrics for evaluating.
         logger:
         writer:
 

@@ -17,25 +17,15 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
+# pylint: disable=redefined-builtin
 from __future__ import annotations
 
-from .average_meter import AverageMeter, AverageMeters
-from .factory import binary_metrics, multiclass_metrics, multilabel_metrics, regression_metrics
-from .metric_meter import MetricMeter, MetricMeters
-from .metrics import Metrics
-from .multitask import MultiTaskMetrics
-from .registry import METRICS
 
-__all__ = [
-    "Metrics",
-    "MultiTaskMetrics",
-    "MetricMeter",
-    "MetricMeters",
-    "AverageMeter",
-    "AverageMeters",
-    "METRICS",
-    "regression_metrics",
-    "binary_metrics",
-    "multiclass_metrics",
-    "multilabel_metrics",
-]
+def infer_task(num_classes: int | None, num_labels: int | None):
+    if num_classes is not None and num_labels is not None:
+        raise ValueError("Only one of `num_classes` or `num_labels` can be provided.")
+    if num_classes is not None:
+        return "multiclass"
+    if num_labels is not None:
+        return "multilabel"
+    return "binary"

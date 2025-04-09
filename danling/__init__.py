@@ -25,8 +25,6 @@ from .metrics import (
     AverageMeters,
     MetricMeter,
     MetricMeters,
-    MultiTaskAverageMeters,
-    MultiTaskMetricMeters,
 )
 from .optim import OPTIMIZERS, SCHEDULERS, LRScheduler
 from .runner import AccelerateRunner, BaseRunner, TorchRunner
@@ -58,10 +56,8 @@ __all__ = [
     "MultiTaskMetrics",
     "MetricMeter",
     "MetricMeters",
-    "MultiTaskMetricMeters",
     "AverageMeter",
     "AverageMeters",
-    "MultiTaskAverageMeters",
     "NestedTensor",
     "PNTensor",
     "tensor",

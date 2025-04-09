@@ -22,9 +22,12 @@ nav:
   - Optim:
       - LRScheduler: optim/lr_scheduler.md
   - Metrics:
+      - metrics/index.md
       - Metrics: metrics/metrics.md
       - AverageMeter: metrics/average_meter.md
       - MetricMeter: metrics/metric_meter.md
+      - Factory: metrics/factory.md
+      - Functional: metrics/functional.md
       - Utils: metrics/utils.md
   - Utilities:
       - Decorator: utils/decorators.md
