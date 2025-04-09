@@ -111,6 +111,11 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
             raise ValueError(f"Cooldown steps must be less than total steps, but got {cooldown_steps} > {total_steps}")
         elif cooldown_steps < 0:
             raise ValueError(f"Cooldown steps must be positive, but got {cooldown_steps}")
+        if warmup_steps + cooldown_steps > total_steps:
+            raise ValueError(
+                "Warmup steps + cooldown steps must be less than total steps, "
+                f"but got {warmup_steps} + {cooldown_steps} > {total_steps}"
+            )
         if final_lr_ratio is not None:
             if final_lr is not None:
                 raise ValueError("Only one of `final_lr_ratio` and `final_lr` should be set, but not both")
