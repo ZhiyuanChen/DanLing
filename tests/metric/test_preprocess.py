@@ -27,7 +27,7 @@ from danling.metric.preprocess import (
     preprocess_multilabel,
     preprocess_regression,
 )
-from danling.tensors import NestedTensor
+from danling.tensor import NestedTensor
 
 torch.manual_seed(0)
 
