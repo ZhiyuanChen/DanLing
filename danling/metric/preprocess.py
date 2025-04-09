@@ -29,7 +29,7 @@ from typing import Callable
 import torch
 from torch import Tensor
 
-from danling.tensors import NestedTensor
+from danling.tensor import NestedTensor
 
 from .functional.utils import infer_task
 

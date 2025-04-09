@@ -4,6 +4,6 @@ authors:
 date: 2022-05-04
 ---
 
-# PNTensor
+# functions
 
-::: danling.tensors.PNTensor
+::: danling.tensor.functions

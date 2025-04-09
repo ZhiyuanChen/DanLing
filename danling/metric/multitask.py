@@ -24,7 +24,7 @@ from typing import Callable
 
 from torch import Tensor
 
-from danling.tensors import NestedTensor
+from danling.tensor import NestedTensor
 
 from .metric_meter import MetricMeter, MetricMeters
 from .metrics import Metrics
