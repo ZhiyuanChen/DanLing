@@ -4,6 +4,6 @@ authors:
 date: 2022-05-04
 ---
 
-# MetricMeter
+# Utils
 
-::: danling.metrics.metric_meter
+::: danling.metric.utils

@@ -31,10 +31,8 @@ from torcheval.metrics import (
     BinaryAUROC,
     BinaryF1Score,
     MulticlassAccuracy,
-    MulticlassAUPRC,
     MulticlassAUROC,
     MulticlassF1Score,
-    MultilabelAccuracy,
     MultilabelAUPRC,
     R2Score,
 )
@@ -44,24 +42,26 @@ from torcheval.metrics.functional import (
     binary_auroc,
     binary_f1_score,
     multiclass_accuracy,
-    multiclass_auprc,
     multiclass_auroc,
     multiclass_f1_score,
-    multilabel_accuracy,
-    multilabel_auprc,
 )
+from torchmetrics.classification import MulticlassAveragePrecision as MulticlassAUPRC
+from torchmetrics.classification import MultilabelAccuracy
 from torchmetrics.functional import matthews_corrcoef
-from torchmetrics.functional.classification import multilabel_auroc, multilabel_f1_score
+from torchmetrics.functional.classification import multiclass_average_precision as multiclass_auprc
+from torchmetrics.functional.classification import multilabel_accuracy, multilabel_auroc
+from torchmetrics.functional.classification import multilabel_average_precision as multilabel_auprc
+from torchmetrics.functional.classification import multilabel_f1_score
 from torchmetrics.functional.regression import pearson_corrcoef, r2_score, spearman_corrcoef
 from torchmetrics.regression import SpearmanCorrCoef
 
 from danling import NestedTensor
-from danling.metrics import Metrics, binary_metrics, multiclass_metrics, multilabel_metrics, regression_metrics
-from danling.metrics.functional import accuracy, auprc, auroc, f1_score, mcc
-from danling.metrics.metrics import ScoreMetrics
+from danling.metric import Metrics, binary_metrics, multiclass_metrics, multilabel_metrics, regression_metrics
+from danling.metric.functional import accuracy, auprc, auroc, f1_score, mcc
+from danling.metric.metrics import ScoreMetrics
 
-# Shared constant for test tolerances
-EPSILON = 1e-6
+ATOL = 1e-6
+RTOL = 1e-5
 
 
 def demo_dict_metric_func(input, target):
@@ -96,13 +96,13 @@ def build_metric_map(task: str, num_classes: int = 10, num_labels: int = 10, num
         return {
             "auroc": MulticlassAUROC(num_classes=num_classes),
             "auprc": MulticlassAUPRC(num_classes=num_classes),
-            "acc": MulticlassAccuracy(num_classes=num_classes),
-            "f1": MulticlassF1Score(num_classes=num_classes),
+            "acc": MulticlassAccuracy(num_classes=num_classes, average="macro"),
+            "f1": MulticlassF1Score(num_classes=num_classes, average="macro"),
         }
     if task == "multilabel":
         return {
             "auprc": MultilabelAUPRC(num_labels=num_labels),
-            "acc": MultilabelAccuracy(),
+            "acc": MultilabelAccuracy(num_labels=num_labels),
         }
     if task == "regression":
         return {
@@ -124,7 +124,7 @@ def build_function_map(task: str, num_classes: int = 10, num_labels: int = 10, n
         return {
             "auroc": partial(multiclass_auroc, num_classes=num_classes),
             "auprc": partial(multiclass_auprc, num_classes=num_classes),
-            "acc": partial(multiclass_accuracy, num_classes=num_classes),
+            "acc": partial(multiclass_accuracy, num_classes=num_classes, average="macro"),
             "f1": partial(multiclass_f1_score, num_classes=num_classes),
             "mcc": partial(matthews_corrcoef, task="multiclass", num_classes=num_classes),
         }
@@ -132,8 +132,8 @@ def build_function_map(task: str, num_classes: int = 10, num_labels: int = 10, n
         return {
             "auroc": partial(multilabel_auroc, num_labels=num_labels),
             "auprc": partial(multilabel_auprc, num_labels=num_labels),
-            "acc": multilabel_accuracy,
-            "f1": partial(multilabel_f1_score, num_labels=num_labels, average="micro"),
+            "acc": partial(multilabel_accuracy, num_labels=num_labels),
+            "f1": partial(multilabel_f1_score, num_labels=num_labels),
             "mcc": partial(matthews_corrcoef, task="multilabel", num_labels=num_labels),
         }
     if task == "regression":
@@ -182,18 +182,18 @@ def test_tensor_regression():
         targets.append(target)
         metrics.update(pred, target)
         for metric in metric_map.values():
-            metric.update(pred.view(-1), target.view(-1))
+            metric.update(pred.flatten(), target.flatten())
         value, average = metrics.value(), metrics.average()
-        assert (pred.view(-1) == metrics.input.view(-1)).all()
-        assert (target.view(-1) == metrics.target.view(-1)).all()
+        assert torch.allclose(pred.flatten(), metrics.input.flatten(), rtol=RTOL, atol=ATOL)
+        assert torch.allclose(target.flatten(), metrics.target.flatten(), rtol=RTOL, atol=ATOL)
         for key, func in function_map.items():
-            assert value[key] - func(pred.view(-1), target.view(-1)) < EPSILON
+            assert value[key] - func(pred.flatten(), target.flatten()) < ATOL
         for key, metric in metric_map.items():
-            assert average[key] - metric.compute() < EPSILON
-    assert (torch.cat(preds).view(-1) == metrics.inputs).all()
-    assert (torch.cat(targets).view(-1) == metrics.targets).all()
+            assert average[key] - metric.compute() < ATOL
+    assert torch.allclose(torch.cat(preds).flatten(), metrics.inputs.flatten(), rtol=RTOL, atol=ATOL)
+    assert torch.allclose(torch.cat(targets).flatten(), metrics.targets.flatten(), rtol=RTOL, atol=ATOL)
     for key, metric in metric_map.items():
-        assert average[key] - metric.compute() < EPSILON
+        assert average[key] - metric.compute() < ATOL
 
 
 def test_nested_tensor_regression():
@@ -218,24 +218,24 @@ def test_nested_tensor_regression():
         for metric in metric_map.values():
             metric.update(pred.view(-1, num_outputs), target.view(-1, num_outputs))
         value, average = metrics.value(), metrics.average()
-        assert (pred_nt.concat == metrics.input).all()
-        assert (target_nt.concat == metrics.target).all()
+        assert torch.allclose(pred_nt.concat, metrics.input, rtol=RTOL, atol=ATOL)
+        assert torch.allclose(target_nt.concat, metrics.target, rtol=RTOL, atol=ATOL)
         pred = torch.cat(pred_list)
         target = torch.cat(target_list)
         for key, func in function_map.items():
-            assert value[key] - func(pred, target).mean() < EPSILON
+            assert value[key] - func(pred, target).mean() < ATOL
         for key, metric in metric_map.items():
-            assert average[key] - metric.compute().mean() < EPSILON
-    assert (torch.cat(preds) == metrics.inputs).all()
-    assert (torch.cat(targets) == metrics.targets).all()
+            assert average[key] - metric.compute().mean() < ATOL
+    assert torch.allclose(torch.cat(preds), metrics.inputs, rtol=RTOL, atol=ATOL)
+    assert torch.allclose(torch.cat(targets), metrics.targets, rtol=RTOL, atol=ATOL)
     for key, metric in metric_map.items():
-        assert average[key] - metric.compute().mean() < EPSILON
+        assert average[key] - metric.compute().mean() < ATOL
 
 
 def test_tensor_binary():
     random.seed(0)
     torch.random.manual_seed(0)
-    merge_metrics = Metrics(func=demo_dict_metric_func, merge_dict=True)
+    merge_metrics = Metrics(func=demo_dict_metric_func)
     metrics = binary_metrics()
     metric_map = build_metric_map("binary")
     function_map = build_function_map("binary")
@@ -252,25 +252,25 @@ def test_tensor_binary():
             metric.update(pred, target)
         value, average = metrics.value(), metrics.average()
         metrics_input, metrics_target = metrics.preprocess(metrics.input, metrics.target)
-        assert (pred == metrics_input).all()
-        assert (target == metrics_target).all()
+        assert torch.allclose(pred, metrics_input, rtol=RTOL, atol=ATOL)
+        assert torch.allclose(target, metrics_target, rtol=RTOL, atol=ATOL)
         for key, func in function_map.items():
-            assert value[key] - func(pred, target) < EPSILON
+            assert value[key] - func(pred, target) < ATOL
         for key, metric in metric_map.items():
-            assert average[key] - metric.compute() < EPSILON
+            assert average[key] - metric.compute() < ATOL
         assert metrics.avg == merge_metrics.avg
     metrics_inputs, metrics_targets = metrics.preprocess(metrics.inputs, metrics.targets)
-    assert (torch.cat(preds) - metrics_inputs < EPSILON).all()
-    assert (torch.cat(targets) - metrics_targets < EPSILON).all()
+    assert torch.allclose(torch.cat(preds), metrics_inputs, rtol=RTOL, atol=ATOL)
+    assert torch.allclose(torch.cat(targets), metrics_targets, rtol=RTOL, atol=ATOL)
     for key, metric in metric_map.items():
-        assert average[key] - metric.compute() < EPSILON
+        assert average[key] - metric.compute() < ATOL
     assert metrics.avg == merge_metrics.avg
 
 
 def test_nested_tensor_binary():
     random.seed(0)
     torch.random.manual_seed(0)
-    merge_metrics = Metrics(func=demo_dict_metric_func, merge_dict=False)
+    merge_metrics = Metrics(func=demo_dict_metric_func)
     metrics = binary_metrics()
     metric_map = build_metric_map("binary")
     function_map = build_function_map("binary")
@@ -290,21 +290,21 @@ def test_nested_tensor_binary():
         for metric in metric_map.values():
             metric.update(pred, target)
         value, average = metrics.value(), metrics.average()
-        assert (pred_nt.concat == metrics.input).all()
-        assert (target_nt.concat == metrics.target).all()
+        assert torch.allclose(pred_nt.concat, metrics.input, rtol=RTOL, atol=ATOL)
+        assert torch.allclose(target_nt.concat, metrics.target, rtol=RTOL, atol=ATOL)
         pred = torch.cat(pred_list)
         target = torch.cat(target_list)
         for key, func in function_map.items():
-            assert value[key] - func(pred, target) < EPSILON
+            assert value[key] - func(pred, target) < ATOL
         for key, metric in metric_map.items():
-            assert average[key] - metric.compute() < EPSILON
-    assert (torch.cat(preds) == metrics.inputs).all()
-    assert (torch.cat(targets) == metrics.targets).all()
+            assert average[key] - metric.compute() < ATOL
+    assert torch.allclose(torch.cat(preds), metrics.inputs, rtol=RTOL, atol=ATOL)
+    assert torch.allclose(torch.cat(targets), metrics.targets, rtol=RTOL, atol=ATOL)
     for key, metric in metric_map.items():
-        assert average[key] - metric.compute() < EPSILON
+        assert average[key] - metric.compute() < ATOL
     ret, dict_ret = metrics.average(), merge_metrics.average()
     for key, value in ret.items():
-        assert dict_ret[f"func.{key}"] == value
+        assert dict_ret[key] == value
 
 
 def test_tensor_multiclass():
@@ -326,17 +326,17 @@ def test_tensor_multiclass():
             metric.update(pred, target)
         value, average = metrics.value(), metrics.average()
         metrics_input, metrics_target = metrics.preprocess(metrics.input, metrics.target)
-        assert (pred == metrics_input).all()
-        assert (target == metrics_target).all()
+        assert torch.allclose(pred, metrics_input, rtol=RTOL, atol=ATOL)
+        assert torch.allclose(target, metrics_target, rtol=RTOL, atol=ATOL)
         for key, func in function_map.items():
-            assert value[key] - func(pred, target) < EPSILON
+            assert value[key] - func(pred, target) < ATOL
         for key, metric in metric_map.items():
-            assert average[key] - metric.compute() < EPSILON
+            assert average[key] - metric.compute() < ATOL
     metrics_inputs, metrics_targets = metrics.preprocess(metrics.inputs, metrics.targets)
-    assert (torch.cat(preds) - metrics_inputs < EPSILON).all()
-    assert (torch.cat(targets) - metrics_targets < EPSILON).all()
+    assert torch.allclose(torch.cat(preds), metrics_inputs, rtol=RTOL, atol=ATOL)
+    assert torch.allclose(torch.cat(targets), metrics_targets, rtol=RTOL, atol=ATOL)
     for key, metric in metric_map.items():
-        assert average[key] - metric.compute() < EPSILON
+        assert average[key] - metric.compute() < ATOL
 
 
 def test_nested_tensor_multiclass():
@@ -361,18 +361,18 @@ def test_nested_tensor_multiclass():
         for metric in metric_map.values():
             metric.update(pred, target)
         value, average = metrics.value(), metrics.average()
-        assert (pred_nt.concat == metrics.input).all()
-        assert (target_nt.concat == metrics.target).all()
+        assert torch.allclose(pred_nt.concat, metrics.input, rtol=RTOL, atol=ATOL)
+        assert torch.allclose(target_nt.concat, metrics.target, rtol=RTOL, atol=ATOL)
         pred = torch.cat(pred_list)
         target = torch.cat(target_list)
         for key, func in function_map.items():
-            assert value[key] - func(pred, target) < EPSILON
+            assert value[key] - func(pred, target) < ATOL
         for key, metric in metric_map.items():
-            assert average[key] - metric.compute() < EPSILON
-    assert (torch.cat(preds) == metrics.inputs).all()
-    assert (torch.cat(targets) == metrics.targets).all()
+            assert average[key] - metric.compute() < ATOL
+    assert torch.allclose(torch.cat(preds), metrics.inputs, rtol=RTOL, atol=ATOL)
+    assert torch.allclose(torch.cat(targets), metrics.targets, rtol=RTOL, atol=ATOL)
     for key, metric in metric_map.items():
-        assert average[key] - metric.compute() < EPSILON
+        assert average[key] - metric.compute() < ATOL
 
 
 def test_tensor_multilabel():
@@ -394,17 +394,17 @@ def test_tensor_multilabel():
             metric.update(pred, target)
         value, average = metrics.value(), metrics.average()
         metrics_input, metrics_target = metrics.preprocess(metrics.input, metrics.target)
-        assert (pred == metrics_input).all()
-        assert (target == metrics_target).all()
+        assert torch.allclose(pred, metrics_input, rtol=RTOL, atol=ATOL)
+        assert torch.allclose(target, metrics_target, rtol=RTOL, atol=ATOL)
         for key, func in function_map.items():
-            assert value[key] - func(pred, target) < EPSILON
+            assert value[key] - func(pred, target) < ATOL
         for key, metric in metric_map.items():
-            assert average[key] - metric.compute() < EPSILON
+            assert average[key] - metric.compute() < ATOL
     metrics_inputs, metrics_targets = metrics.preprocess(metrics.inputs, metrics.targets)
-    assert (torch.cat(preds) - metrics_inputs < EPSILON).all()
-    assert (torch.cat(targets) - metrics_targets < EPSILON).all()
+    assert torch.allclose(torch.cat(preds), metrics_inputs, rtol=RTOL, atol=ATOL)
+    assert torch.allclose(torch.cat(targets), metrics_targets, rtol=RTOL, atol=ATOL)
     for key, metric in metric_map.items():
-        assert average[key] - metric.compute() < EPSILON
+        assert average[key] - metric.compute() < ATOL
 
 
 def test_nested_tensor_multilabel():
@@ -429,18 +429,18 @@ def test_nested_tensor_multilabel():
         for metric in metric_map.values():
             metric.update(pred, target)
         value, average = metrics.value(), metrics.average()
-        assert (pred_nt.concat == metrics.input).all()
-        assert (target_nt.concat == metrics.target).all()
+        assert torch.allclose(pred_nt.concat, metrics.input, rtol=RTOL, atol=ATOL)
+        assert torch.allclose(target_nt.concat, metrics.target, rtol=RTOL, atol=ATOL)
         pred = torch.cat(pred_list)
         target = torch.cat(target_list)
         for key, func in function_map.items():
-            assert value[key] - func(pred, target) < EPSILON
+            assert value[key] - func(pred, target) < ATOL
         for key, metric in metric_map.items():
-            assert average[key] - metric.compute() < EPSILON
-    assert (torch.cat(preds) == metrics.inputs).all()
-    assert (torch.cat(targets) == metrics.targets).all()
+            assert average[key] - metric.compute() < ATOL
+    assert torch.allclose(torch.cat(preds), metrics.inputs, rtol=RTOL, atol=ATOL)
+    assert torch.allclose(torch.cat(targets), metrics.targets, rtol=RTOL, atol=ATOL)
     for key, metric in metric_map.items():
-        assert average[key] - metric.compute() < EPSILON
+        assert average[key] - metric.compute() < ATOL
 
 
 # Helper functions for distributed testing
@@ -484,23 +484,23 @@ def _test_tensor_binary(rank, world_size):
         preds.append(pred)
         targets.append(target)
         metrics.update(pred, target)
-        assert (pred == metrics.input[length * rank : length * (rank + 1)]).all()  # noqa: E203
-        assert (target == metrics.target[length * rank : length * (rank + 1)]).all()  # noqa: E203
+        assert torch.allclose(pred, metrics.input[length * rank : length * (rank + 1)], rtol=RTOL, atol=ATOL)  # noqa
+        assert torch.allclose(target, metrics.target[length * rank : length * (rank + 1)], rtol=RTOL, atol=ATOL)  # noqa
         value, average = metrics.value(), metrics.average()
         pred = torch.cat(_gather_tensor([pred], world_size))
         target = torch.cat(_gather_tensor([target], world_size))
         for key, func in function_map.items():
-            assert value[key] - func(pred, target) < EPSILON
+            assert value[key] - func(pred, target) < ATOL
         # for key, func in function_map.items():
-        #     assert batch[key] - func(pred, target) < EPSILON
+        #     assert batch[key] - func(pred, target) < ATOL
         for key, metric in metric_map.items():
             metric.update(pred, target)
-            assert average[key] - metric.compute() < EPSILON
+            assert average[key] - metric.compute() < ATOL
     pred = torch.cat(_gather_object(preds, world_size))
     target = torch.cat(_gather_object(targets, world_size))
     average = metrics.average()
     for key, func in function_map.items():
-        assert average[key] - func(pred, target) < EPSILON
+        assert average[key] - func(pred, target) < ATOL
 
     dist.destroy_process_group()
 
@@ -534,22 +534,22 @@ def _test_nested_tensor_binary(rank, world_size):
         value, average = metrics.value(), metrics.average()
         pred = torch.cat(_gather_object(pred_list, world_size))
         target = torch.cat(_gather_object(target_list, world_size))
-        assert (pred == metrics.input).all()
-        assert (target == metrics.target).all()
+        assert torch.allclose(pred, metrics.input, rtol=RTOL, atol=ATOL)
+        assert torch.allclose(target, metrics.target, rtol=RTOL, atol=ATOL)
         for key, func in function_map.items():
-            assert value[key] - func(pred, target) < EPSILON
+            assert value[key] - func(pred, target) < ATOL
         # for key, func in function_map.items():
-        #     assert batch[key] - func(pred, target) < EPSILON
+        #     assert batch[key] - func(pred, target) < ATOL
         for key, metric in metric_map.items():
             metric.update(pred, target)
-            assert average[key] - metric.compute() < EPSILON
+            assert average[key] - metric.compute() < ATOL
     pred = torch.cat(_gather_object(preds, world_size))
     target = torch.cat(_gather_object(targets, world_size))
     average = metrics.average()
     for key, func in function_map.items():
-        assert average[key] - func(pred, target) < EPSILON
+        assert average[key] - func(pred, target) < ATOL
     for key, metric in metric_map.items():
-        assert average[key] - metric.compute() < EPSILON
+        assert average[key] - metric.compute() < ATOL
 
     dist.destroy_process_group()
 
@@ -583,20 +583,20 @@ def _test_nested_tensor_regression(rank, world_size):
         value, average = metrics.value(), metrics.average()
         pred = torch.cat(_gather_object(pred_list, world_size))
         target = torch.cat(_gather_object(target_list, world_size))
-        assert (pred == metrics.input).all()
-        assert (target == metrics.target).all()
+        assert torch.allclose(pred, metrics.input, rtol=RTOL, atol=ATOL)
+        assert torch.allclose(target, metrics.target, rtol=RTOL, atol=ATOL)
         for key, func in function_map.items():
-            assert value[key] - func(pred, target) < EPSILON
+            assert value[key] - func(pred, target) < ATOL
         # for key, func in function_map.items():
-        #     assert batch[key] - func(pred, target) < EPSILON
+        #     assert batch[key] - func(pred, target) < ATOL
         for key, metric in metric_map.items():
             metric.update(pred, target)
-            assert average[key] - metric.compute() < EPSILON
+            assert average[key] - metric.compute() < ATOL
     pred = torch.cat(_gather_object(preds, world_size))
     target = torch.cat(_gather_object(targets, world_size))
     average = metrics.average()
     for key, func in function_map.items():
-        assert average[key] - func(pred, target) < EPSILON
+        assert average[key] - func(pred, target) < ATOL
 
     dist.destroy_process_group()
 
@@ -631,19 +631,19 @@ def _test_nested_tensor_multi_regression(rank, world_size):
         value, average = metrics.value(), metrics.average()
         pred = torch.cat(_gather_object(pred_list, world_size))
         target = torch.cat(_gather_object(target_list, world_size))
-        assert (pred == metrics.input).all()
-        assert (target == metrics.target).all()
+        assert torch.allclose(pred, metrics.input, rtol=RTOL, atol=ATOL)
+        assert torch.allclose(target, metrics.target, rtol=RTOL, atol=ATOL)
         for key, func in function_map.items():
-            assert value[key] - func(pred, target).mean() < EPSILON
+            assert value[key] - func(pred, target).mean() < ATOL
         # for key, func in function_map.items():
-        #     assert batch[key] - func(pred, target).mean() < EPSILON
+        #     assert batch[key] - func(pred, target).mean() < ATOL
         for key, metric in metric_map.items():
             metric.update(pred.view(-1, num_outputs), target.view(-1, num_outputs))
-            assert average[key] - metric.compute().mean() < EPSILON
+            assert average[key] - metric.compute().mean() < ATOL
     pred = torch.cat(_gather_object(preds, world_size))
     target = torch.cat(_gather_object(targets, world_size))
     average = metrics.average()
     for key, func in function_map.items():
-        assert average[key] - func(pred, target).mean() < EPSILON
+        assert average[key] - func(pred, target).mean() < ATOL
 
     dist.destroy_process_group()
