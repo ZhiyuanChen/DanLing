@@ -26,7 +26,7 @@ from typing import Any, Callable, Optional, Tuple
 
 from torch import Tensor
 
-from danling.tensors import NestedTensor
+from danling.tensor import NestedTensor
 
 from .average_meter import AverageMeter, AverageMeters, MultiTaskAverageMeters
 from .utils import MultiTaskDict

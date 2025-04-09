@@ -32,7 +32,7 @@ from torch import Tensor
 from torch import distributed as dist
 from torcheval.metrics import Metric
 
-from danling.tensors import NestedTensor
+from danling.tensor import NestedTensor
 from danling.utils import flist, get_world_size
 
 from .utils import MultiTaskDict, RoundDict

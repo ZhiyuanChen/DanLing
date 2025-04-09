@@ -45,7 +45,7 @@ from danling.metric.functional.preprocess import (
     preprocess_regression,
 )
 from danling.metric.functional.utils import infer_task
-from danling.tensors import NestedTensor
+from danling.tensor import NestedTensor
 
 torch.manual_seed(0)
 

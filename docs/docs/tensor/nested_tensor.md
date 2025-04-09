@@ -6,4 +6,4 @@ date: 2022-05-04
 
 # NestedTensor
 
-::: danling.tensors.NestedTensor
+::: danling.tensor.NestedTensor
