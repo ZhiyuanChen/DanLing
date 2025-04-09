@@ -21,15 +21,16 @@ from __future__ import annotations
 
 from .average_meter import AverageMeter, AverageMeters, MultiTaskAverageMeters
 from .factory import binary_metrics, multiclass_metrics, multilabel_metrics, regression_metrics
-from .metric_meter import MetricMeter, MetricMeters, MultiTaskMetricMeters
-from .metrics import Metrics, MultiTaskMetrics
-from .preprocesses import (
-    preprocess,
+from .functional.preprocess import (
+    base_preprocess,
     preprocess_binary,
+    preprocess_classification,
     preprocess_multiclass,
     preprocess_multilabel,
     preprocess_regression,
 )
+from .metric_meter import MetricMeter, MetricMeters, MultiTaskMetricMeters
+from .metrics import Metrics, MultiTaskMetrics
 from .registry import METRICS
 
 __all__ = [
@@ -46,9 +47,10 @@ __all__ = [
     "binary_metrics",
     "multiclass_metrics",
     "multilabel_metrics",
-    "preprocess",
+    "preprocess_regression",
+    "preprocess_classification",
     "preprocess_binary",
     "preprocess_multiclass",
     "preprocess_multilabel",
-    "preprocess_regression",
+    "base_preprocess",
 ]

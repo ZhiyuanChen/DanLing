@@ -72,7 +72,7 @@ class MNISTRunner(dl.TorchRunner):
         self.scheduler = dl.optim.SCHEDULERS.build(self.optimizer, total_steps=self.total_steps, **self.sched)
         self.criterion = nn.CrossEntropyLoss()
 
-        self.metrics = dl.metrics.multiclass_metrics(num_classes=10)
+        self.metrics = dl.metric.multiclass_metrics(num_classes=10)
         self.meters.loss.reset()
         self.meters.time.reset()
 

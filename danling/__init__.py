@@ -19,7 +19,7 @@
 
 from lazy_imports import try_import
 
-from .metrics import (
+from .metric import (
     METRICS,
     AverageMeter,
     AverageMeters,
@@ -44,7 +44,7 @@ from .utils import (
 )
 
 with try_import():
-    from .metrics import Metrics, MultiTaskMetrics
+    from .metric import Metrics, MultiTaskMetrics
 
 __all__ = [
     "BaseRunner",
