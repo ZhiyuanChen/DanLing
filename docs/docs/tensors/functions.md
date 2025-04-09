@@ -4,6 +4,6 @@ authors:
 date: 2022-05-04
 ---
 
-# NestedTensor
+# Functions
 
-::: danling.tensors.nested_tensor
+::: danling.tensors.functions
