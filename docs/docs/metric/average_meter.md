@@ -6,4 +6,4 @@ date: 2022-05-04
 
 # AverageMeter
 
-::: danling.metrics.average_meter
+::: danling.metric.average_meter

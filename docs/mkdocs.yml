@@ -21,11 +21,14 @@ nav:
       - TorchFuncRegistry: tensors/torch_func_registry.md
   - Optim:
       - LRScheduler: optim/lr_scheduler.md
-  - Metrics:
-      - Metrics: metrics/metrics.md
-      - AverageMeter: metrics/average_meter.md
-      - MetricMeter: metrics/metric_meter.md
-      - Utils: metrics/utils.md
+  - Metric:
+      - metric/index.md
+      - Metrics: metric/metrics.md
+      - AverageMeter: metric/average_meter.md
+      - MetricMeter: metric/metric_meter.md
+      - Factory: metric/factory.md
+      - Functional: metric/functional.md
+      - Utils: metric/utils.md
   - Utilities:
       - Decorator: utils/decorators.md
       - Context Manager: utils/contextmanagers.md

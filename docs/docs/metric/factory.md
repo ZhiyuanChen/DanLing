@@ -4,6 +4,6 @@ authors:
 date: 2022-05-04
 ---
 
-# Metrics
+# Factory
 
-::: danling.metrics.metrics
+::: danling.metric.factory

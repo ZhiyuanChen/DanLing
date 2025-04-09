@@ -4,6 +4,6 @@ authors:
 date: 2022-05-04
 ---
 
-# Utils
+# Functional
 
-::: danling.metrics.utils
+::: danling.metric.functional

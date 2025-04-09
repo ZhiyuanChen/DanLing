@@ -34,7 +34,7 @@ from warnings import warn
 
 from chanfig import Config, FlatDict, NestedDict, Variable
 
-from danling.metrics import AverageMeter, AverageMeters, MetricMeters
+from danling.metric import AverageMeter, AverageMeters, MetricMeters
 from danling.typing import File, PathStr
 from danling.utils import cached_ensure_dir, cached_ensure_parent_dir, cached_property, catch, load, save
 
@@ -47,7 +47,7 @@ from .state import RunnerState
 from .utils import RunnerMeta, RunnerMode, get_time_str, on_main_process
 
 if TYPE_CHECKING:
-    from danling.metrics import Metrics
+    from danling.metric import Metrics
 
 PY38_PLUS = version_info >= (3, 8)
 IGNORED_SET_NAMES = ("index", "epoch", "step", "iter")
@@ -152,9 +152,9 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         is_local_main_process (bool, property): If current process is the main process of local processes.
 
     Attributes: logging:
-        meters (AverageMeters | MultiTaskAverageMeters): Average meters.
+        meters: Average meters.
             Initialised to `AverageMeters` by default.
-        metrics (Metrics | MultiTaskMetrics | MetricMeters | None): Metrics for evaluating.
+        metrics (MultiTaskMetrics | Metrics | MetricMeters | None): Metrics for evaluating.
         logger:
         writer:
 

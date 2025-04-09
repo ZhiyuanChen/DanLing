@@ -19,14 +19,12 @@
 
 from lazy_imports import try_import
 
-from .metrics import (
+from .metric import (
     METRICS,
     AverageMeter,
     AverageMeters,
     MetricMeter,
     MetricMeters,
-    MultiTaskAverageMeters,
-    MultiTaskMetricMeters,
 )
 from .optim import OPTIMIZERS, SCHEDULERS, LRScheduler
 from .runner import AccelerateRunner, BaseRunner, TorchRunner
@@ -44,7 +42,7 @@ from .utils import (
 )
 
 with try_import():
-    from .metrics import Metrics, MultiTaskMetrics
+    from .metric import Metrics, MultiTaskMetrics
 
 __all__ = [
     "BaseRunner",
@@ -58,10 +56,8 @@ __all__ = [
     "MultiTaskMetrics",
     "MetricMeter",
     "MetricMeters",
-    "MultiTaskMetricMeters",
     "AverageMeter",
     "AverageMeters",
-    "MultiTaskAverageMeters",
     "NestedTensor",
     "PNTensor",
     "tensor",

@@ -577,7 +577,7 @@ class NestedTensor:
             return func(*args, **kwargs)
         return NestedTensorFunc[func](*args, **kwargs)
 
-    def __getitem__(self, index: int | slice | list | tuple) -> Tensor | tuple[Tensor, Tensor] | NestedTensor:
+    def __getitem__(self, index: int | slice | list | tuple | Tensor | NestedTensor) -> Tensor | NestedTensor:
         if isinstance(index, int):
             return self._storage[index]
         if isinstance(index, (slice, list)):
@@ -591,6 +591,10 @@ class NestedTensor:
             return pad, mask
         if isinstance(index, tuple):
             return NestedTensor([t[index[0]][index[1:]] for t in self._storage])
+        if isinstance(index, Tensor):
+            index = self.nested_like(index, strict=False)
+        if isinstance(index, NestedTensor):
+            return NestedTensor([t[i] for t, i in zip(self._storage, index._storage)])
         raise ValueError(f"Unsupported index type {type(index)}")
 
     def __getattr__(self, name: str) -> Any:
@@ -657,6 +661,17 @@ class NestedTensor:
         if isinstance(other, (int, float, Tensor)):
             return NestedTensor([x == other for x in self._storage], **self._state)
         return False
+
+    def __ne__(  # type: ignore[override]
+        self, other: Tensor | NestedTensor | SupportsFloat
+    ) -> bool | Tensor | NestedTensor:
+        if isinstance(other, Tensor) and self.shape == other.shape:
+            other = self.nested_like(other)
+        if isinstance(other, NestedTensor):
+            return NestedTensor(i != j for i, j in zip(self._storage, other._storage))
+        if isinstance(other, (int, float, Tensor)):
+            return NestedTensor([x != other for x in self._storage], **self._state)
+        return True
 
     def __le__(  # type: ignore[override]
         self, other: Tensor | NestedTensor | SupportsFloat
@@ -1154,7 +1169,16 @@ NestedTensorFunc = TorchFuncRegistry()
 def cat(tensors, dim: int = 0):
     if dim != 0:
         raise NotImplementedError(f"NestedTensor only supports cat when dim=0, but got {dim}")
-    return NestedTensor([t for tensor in tensors for t in tensor._storage], tensors[0]._state)
+    storage = []
+    state: Mapping = {}
+    for tensor in tensors:
+        if isinstance(tensor, NestedTensor):
+            storage.extend(tensor._storage)
+            if not state:
+                state = tensor._state
+        else:
+            storage.append(tensor)
+    return NestedTensor(storage, **state)
 
 
 @NestedTensorFunc.implement(torch.isin)

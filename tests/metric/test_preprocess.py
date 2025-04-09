@@ -17,13 +17,11 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
-import pytest
 import torch
 from pytest import raises
 
-from danling.metrics.preprocesses import (
-    infer_task,
-    preprocess,
+from danling.metric.preprocess import (
+    base_preprocess,
     preprocess_binary,
     preprocess_multiclass,
     preprocess_multilabel,
@@ -31,35 +29,30 @@ from danling.metrics.preprocesses import (
 )
 from danling.tensors import NestedTensor
 
+torch.manual_seed(0)
 
-def test_infer_task():
-    assert infer_task(None, None) == "binary"
-    assert infer_task(10, None) == "multiclass"
-    assert infer_task(None, 5) == "multilabel"
-
-    with pytest.raises(ValueError):
-        infer_task(10, 5)
+ATOL = 1e-6
 
 
-def test_preprocess():
+def test_base_preprocess():
     # Basic preprocessing
     input_tensor = torch.tensor([0.1, 0.5, 0.9])
     target_tensor = torch.tensor([0, 1, 1])
-    processed_input, processed_target = preprocess(input_tensor, target_tensor)
+    processed_input, processed_target = base_preprocess(input_tensor, target_tensor)
     assert torch.allclose(processed_input, input_tensor)
     assert torch.allclose(processed_target, target_tensor)
 
     # List inputs
     input_list = [0.1, 0.5, 0.9]
     target_list = [0, 1, 1]
-    processed_input, processed_target = preprocess(input_list, target_list)
+    processed_input, processed_target = base_preprocess(input_list, target_list)
     assert torch.allclose(processed_input, torch.tensor(input_list))
     assert torch.allclose(processed_target, torch.tensor(target_list))
 
     # Ignore index
     input_tensor = torch.tensor([0.1, 0.5, 0.9, 0.3])
     target_tensor = torch.tensor([0, 1, -100, 0])
-    processed_input, processed_target = preprocess(input_tensor, target_tensor, ignore_index=-100)
+    processed_input, processed_target = base_preprocess(input_tensor, target_tensor, ignore_index=-100)
     assert processed_input.shape == torch.Size([3])
     assert processed_target.shape == torch.Size([3])
     assert torch.allclose(processed_input, torch.tensor([0.1, 0.5, 0.3]))
@@ -68,7 +61,7 @@ def test_preprocess():
     # Ignore NaN
     input_tensor = torch.tensor([0.1, 0.5, 0.3, 0.1])
     target_tensor = torch.tensor([0.0, 1.0, 1.0, float("nan")])
-    processed_input, processed_target = preprocess(input_tensor, target_tensor, ignore_nan=True)
+    processed_input, processed_target = base_preprocess(input_tensor, target_tensor, ignore_nan=True)
     assert processed_input.shape == torch.Size([3])
     assert processed_target.shape == torch.Size([3])
     assert torch.allclose(processed_input, torch.tensor([0.1, 0.5, 0.3]))
@@ -77,19 +70,19 @@ def test_preprocess():
     # NestedTensor
     input_nested = NestedTensor([torch.tensor([0.1, 0.2]), torch.tensor([0.3, 0.4, 0.5])])
     target_nested = NestedTensor([torch.tensor([0, 1]), torch.tensor([1, 0, 1])])
-    processed_input, processed_target = preprocess(input_nested, target_nested)
+    processed_input, processed_target = base_preprocess(input_nested, target_nested)
     assert torch.allclose(processed_input, input_nested.concat)
     assert torch.allclose(processed_target, target_nested.concat)
 
     # Error case: mismatched tensor and nested tensor
     target_tensor = torch.tensor([0, 1, 1, 0, 1])
     with raises(ValueError):
-        processed_input, processed_target = preprocess(input_nested, target_tensor)
+        processed_input, processed_target = base_preprocess(input_nested, target_tensor)
 
     # Nested list
     input_list = [[0.1, 0.2], [0.3, 0.4]]
     target_list = [[0, 1], [1, 0]]
-    processed_input, processed_target = preprocess(input_list, target_list)
+    processed_input, processed_target = base_preprocess(input_list, target_list)
     assert isinstance(processed_input, torch.Tensor)
     assert isinstance(processed_target, torch.Tensor)
     assert processed_input.shape == torch.Size([2, 2])
@@ -98,7 +91,7 @@ def test_preprocess():
     # Tensor and NestedTensor
     input_batch_tensor = torch.tensor([[0.1, 0.2, 0.0], [0.3, 0.4, 0.5]])
     expected_result = torch.cat([input_batch_tensor[0, :2], input_batch_tensor[1, :3]])
-    processed_input, processed_target = preprocess(input_batch_tensor, target_nested)
+    processed_input, processed_target = base_preprocess(input_batch_tensor, target_nested)
     assert torch.allclose(processed_input, expected_result)
     assert torch.allclose(processed_target, target_nested.concat)
 
