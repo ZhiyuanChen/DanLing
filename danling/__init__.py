@@ -19,6 +19,7 @@
 
 from lazy_imports import try_import
 
+from .data import to_device
 from .metric import (
     METRICS,
     AverageMeter,
@@ -61,6 +62,7 @@ __all__ = [
     "NestedTensor",
     "PNTensor",
     "tensor",
+    "to_device",
     "save",
     "load",
     "load_pandas",
