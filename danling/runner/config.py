@@ -31,73 +31,140 @@ from .utils import get_git_hash
 
 class Config(chanfig.Config):  # pylint: disable=too-many-instance-attributes
     r"""
-    `Config` is a [`Config`][chanfig.Config] that contains all states of a `Runner`.
+    Configuration class for managing and persisting all states of a DanLing Runner.
 
-    `Config` is designed to store all critical information of a Run so that you can resume a run
-    from a state and corresponding weights or even restart a run from a state.
+    The Config class provides a hierarchical configuration system that handles:
 
-    `Config` is also designed to be serialisable and hashable, so that you can save it to a file.
-    `Config` is saved in checkpoint together with weights by default.
+    1. **Parameter management**: Hyperparameters, model settings, training options
+    2. **Experiment tracking**: IDs, names, and other metadata for runs and experiments
+    3. **Serialization**: Save/load configurations from files or command line
+    4. **Reproducibility**: Tracking seeds and settings for reproducible runs
 
-    Since `Config` is a [`Config`][chanfig.Config], you can access its attributes by
-    `state["key"]` or `state.key`.
+    Config inherits from [`Config`][chanfig.Config] and provides attribute-style access to nested values:
+
+    ```python
+    config = Config()
+
+    # Attribute-style access (recommended)
+    config.optim.lr = 1e-3
+    config.network.type = "resnet50"
+
+    # Dictionary-style access (alternative)
+    config["optim"]["lr"] = 1e-3
+    config["network"]["type"] = "resnet50"
+    ```
+
+    Config objects support three types of hierarchical attribute access patterns:
+
+    1. **Direct assignment** for simple values:
+       ```python
+       config.epochs = 10
+       ```
+
+    2. **Auto-created nested objects** for hierarchical settings:
+       ```python
+       # Auto-creates the nested objects
+       config.optim.lr = 0.01
+       config.optim.weight_decay = 1e-4
+       ```
+
+    3. **Class-level annotations** for typed properties with defaults:
+       ```python
+       class MyConfig(Config):
+           epochs: int = 10
+           learning_rate: float = 0.001
+       ```
+
+    Command-line integration is built-in. You can define a configuration and
+    then override values via command line arguments:
+
+    ```python
+    config = MyConfig()
+    config.parse()  # Parse CLI args, e.g., --epochs 20 --optim.lr 0.01
+    ```
 
     Attributes: General:
-        run_name (str): Defaults to `"DanLing"`.
-        run_id (str): hex of `self.run_uuid`.
-        run_uuid (UUID, property): `uuid5(self.experiment_id, str(hash(self)))`.
-        experiment_name (str): Defaults to `"DanLing"`.
-        experiment_id (str): git hash of the current HEAD.
-            Defaults to `"xxxxxxxxxxxxxxxx"` if Runner not under a git repo or git/gitpython not installed.
-        experiment_uuid (UUID, property): UUID of `self.experiment_id`.
-            Defaults to `UUID('78787878-7878-7878-7878-787878787878')`
-            if Runner not under a git repo or git/gitpython not installed.
+        run_name (str): Human-readable name for this run. Defaults to `"DanLing"`.
+        run_id (str): Unique identifier (hex string) for this run, derived from `run_uuid`.
+        run_uuid (UUID, property): Unique UUID generated from experiment_uuid and config hash.
+        experiment_name (str): Human-readable name for the experiment. Defaults to `"DanLing"`.
+        experiment_id (str): Unique identifier for experiment, typically the git commit hash.
+            Defaults to `"xxxxxxxxxxxxxxxx"` if not in a git repo or git/gitpython not installed.
+        experiment_uuid (UUID, property): UUID derived from `experiment_id`.
+            Defaults to `UUID('78787878-7878-7878-7878-787878787878')` if not in a git repo.
 
     Attributes: Reproducibility:
-        seed (int): Defaults to `randint(0, 2**32 - 1)`.
-        deterministic (bool): Ensure [deterministic](https://pytorch.org/docs/stable/notes/randomness.html) operations.
-            Defaults to `False`.
+        seed (int): Random seed for reproducibility. If not set, a random value is generated.
+        deterministic (bool): Whether to enforce deterministic operations in PyTorch.
+            Defaults to `False` for better performance. Set to `True` for exact reproducibility.
 
     Attributes: Progress:
-        steps (int): The number of `steps` calls.
-        epochs (int): The number of complete passes over the datasets.
-        step_end (int): End running step.
-            Note that `step_end` not initialised since this variable may not apply to some Runners.
-        epoch_end (int): End running epoch.
-            Note that `epoch_end` not initialised since this variable may not apply to some Runners.
+        steps (int): Current training step count.
+        epochs (int): Current epoch count.
+        step_begin (int): First step to run (for resuming). Defaults to 0.
+        epoch_begin (int): First epoch to run (for resuming). Defaults to 0.
+        step_end (int): Last step to run (optional). Use either this or `epoch_end`.
+        epoch_end (int): Last epoch to run (optional). Use either this or `step_end`.
 
-    In general you should use either `step_end` or `epoch_end` to indicate the length of running.
+    Attributes: Model Evaluation:
+        score_split (str): Dataset split to use for model selection. Defaults to None.
+        score_name (str): Metric name to use for model selection. Defaults to "loss".
 
-    Attributes: IO:
-        project_root (str): The root directory for all experiments.
-            Defaults to `"experiments"`.
+    Attributes: I/O:
+        project_root (str): Root directory for experiments. Defaults to `"experiments"`.
+        checkpoint_dir_name (str): Subdirectory name for checkpoints. Defaults to `"checkpoints"`.
+        log (bool): Whether to enable file logging. Defaults to `True`.
+        tensorboard (bool): Whether to use TensorBoard for visualization. Defaults to `False`.
+        log_interval (int): Iterations between log outputs. If None, auto-calculated.
+        save_interval (int): Epochs between checkpoint saves. If None, only save best/latest.
 
-    `project_root` is the root directory of all **Experiments**, and should be consistent across the **Project**.
+    Examples:
+        Basic usage:
+        ```python
+        # Create a config
+        config = Config()
+        config.network.type = "resnet18"
+        config.optim.lr = 0.001
+        config.epochs = 10
 
-    `dir` is the directory of a certain **Run**.
+        # Use in a runner
+        runner = Runner(config)
+        ```
 
-    There is no attributes/properties for **Group** and **Experiment**.
+        Custom config class with typed attributes:
+        ```python
+        class TrainingConfig(Config):
+            # Type annotations provide auto-completion and validation
+            epochs: int = 100
+            batch_size: int = 32
+            precision: str = "fp16"
 
-    `checkpoint_dir_name` is relative to `dir`, and is passed to generate `checkpoint_dir`
-    (`checkpoint_dir = os.path.join(dir, checkpoint_dir_name)`).
-    In practice, `checkpoint_dir_name` is rarely called.
+            def __init__(self):
+                super().__init__()
+                # Initialize nested settings
+                self.optim.type = "adamw"
+                self.optim.lr = 1e-3
 
-    Attributes: logging:
-        log (bool): Whether to log the outputs.
-            Defaults to `True`.
-        tensorboard (bool): Whether to use `tensorboard`.
-            Defaults to `False`.
-        log_interval (int): Interval of printing logs.
-            Defaults to `None`, print logs every 1/10 of the longest split.
-        save_interval (int): Interval of saving intermediate checkpoints.
-            Defaults to `None`, never save checkpoints.
-            If <= 0, save only the latest and the best checkpoints.
+            def post(self):
+                # Called after parsing CLI args
+                super().post()
+                # Create derived settings
+                self.experiment_name = f"{self.network.type}_{self.optim.lr}"
+        ```
+
+        Command-line integration:
+        ```bash
+        # Override config settings via CLI
+        python train.py --epochs 50 --optim.lr 0.0005 --network.type resnet50
+        ```
 
     Note:
-        `Config` is a [`Config`][chanfig.Config], so you can access its attributes by `state["name"]` or `state.name`.
+        Always store all parameters needed to reproduce a run in the Config.
+        The Config is automatically saved with checkpoints, enabling exact resumption.
 
     See Also:
-        [`BaseRunner`][danling.runner.BaseRunner]: The base runner class.
+        - [`Runner`][danling.runner.Runner]: Main runner class that uses this config.
+        - [`chanfig.Config`](https://github.com/ultmaster/chanfig): Base config implementation.
     """
 
     # DO NOT set default value in class, as they won't be stored in `__dict__`.
