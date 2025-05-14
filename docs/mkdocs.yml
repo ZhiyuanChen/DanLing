@@ -1,8 +1,8 @@
 site_name: DanLing
 site_url: https://danling.org
-site_author: DanLing Contributors
+site_author: DanLing Team
 site_description: Scaffold for experienced Machine Learning Researchers
-copyright: All rights reserved &copy; 2021-Present, DanLing Contributors
+copyright: All rights reserved &copy; 2021-Present, DanLing Team
 
 repo_name: DanLing
 repo_url: https://github.com/ZhiyuanChen/DanLing
@@ -19,7 +19,7 @@ nav:
       - tensors/index.md
       - NestedTensor: tensors/nested_tensor.md
       - PNTensor: tensors/pn_tensor.md
-      - functions: tensors/functions.md
+      - Functions: tensors/functions.md
       - Utils: tensors/utils.md
   - Optim:
       - LRScheduler: optim/lr_scheduler.md
@@ -31,11 +31,11 @@ nav:
       - Factory: metrics/factory.md
       - Functional: metrics/functional.md
       - Utils: metrics/utils.md
-  - Utilities:
-      - Decorator: utils/decorators.md
-      - Context Manager: utils/context_managers.md
+  - Utils:
+      - Decorators: utils/decorators.md
+      - Context Managers: utils/context_managers.md
       - IO: utils/io.md
-      - basex: utils/basex.md
+      - BaseX: utils/basex.md
   - package: package.md
   - About:
       - About: about/index.md
@@ -98,7 +98,7 @@ extra:
     provider: google
     property: "G-RE7EKZ9T8D"
   consent:
-    title: Cookie consent
+    title: Cookie Consent
     description: >-
       We use cookies to recognize your repeated visits and preferences, as well
       as to measure the effectiveness of our documentation and whether users
@@ -142,8 +142,10 @@ markdown_extensions:
   - abbr
   - admonition
   - attr_list
+  - callouts
   - def_list
   - footnotes
+  - markdown_gfm_admonition
   - md_in_html
   - mdx_math
   - meta
@@ -159,6 +161,8 @@ markdown_extensions:
       emoji_generator: !!python/name:materialy.to_png
   - pymdownx.highlight:
       anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
       auto_title: true
       linenums: true
   - pymdownx.inlinehilite
@@ -203,8 +207,6 @@ plugins:
             - https://huggingface.co/docs/transformers/master/en/objects.inv
             - https://chanfig.danling.org/objects.inv
             - https://lightning.ai/docs/torchmetrics/stable/objects.inv
-          rendering:
-            members_order: source
   - section-index
   - i18n:
       docs_structure: suffix
