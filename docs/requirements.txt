@@ -1,5 +1,7 @@
 jieba
+markdown-callouts
 markdown-exec
+markdown-gfm-admonition
 mkdocs
 mkdocs-awesome-pages-plugin
 mkdocs-gen-files
