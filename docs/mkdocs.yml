@@ -33,7 +33,7 @@ nav:
       - Utils: metrics/utils.md
   - Utilities:
       - Decorator: utils/decorators.md
-      - Context Manager: utils/contextmanagers.md
+      - Context Manager: utils/context_managers.md
       - IO: utils/io.md
       - basex: utils/basex.md
   - package: package.md

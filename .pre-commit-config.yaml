@@ -64,7 +64,7 @@ repos:
       - id: check-yaml
         files: danling
       - id: debug-statements
-        exclude: danling/utils/contextmanagers.py
+        exclude: danling/utils/context_managers.py
       - id: end-of-file-fixer
         exclude: LICENSE.header
       - id: fix-byte-order-marker

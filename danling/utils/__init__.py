@@ -24,7 +24,7 @@ except ImportError:
 
 from . import defaults
 from .basex import Base58, Base62, Base64, BaseX, base58, base62, base64
-from .contextmanagers import debug
+from .context_managers import debug
 from .decorators import catch, flexible_decorator, method_cache
 from .descriptors import cached_ensure_dir, cached_ensure_parent_dir, ensure_dir, ensure_parent_dir
 from .distributed import get_world_size
