@@ -1,7 +1,9 @@
 # DanLing
 # Copyright (C) 2022-Present  DanLing
 
-# This program is free software: you can redistribute it and/or modify
+# This file is part of DanLing.
+
+# DanLing is free software: you can redistribute it and/or modify
 # it under the terms of the following licenses:
 # - The Unlicense
 # - GNU Affero General Public License v3.0 or later
@@ -10,7 +12,7 @@
 # - MIT License
 # - Apache License 2.0
 
-# This program is distributed in the hope that it will be useful,
+# DanLing is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
@@ -36,28 +38,68 @@ with try_import() as ds:
 
 class Runner(BaseRunner):
     r"""
-    Dynamic runner class that selects the appropriate platform based on configuration.
+    Dynamic platform-selecting runner that serves as the primary entry point for DanLing.
 
-    This runner dynamically modifies the `__class__` attribute to adapt to the platform.
+    The Runner class automatically selects the most appropriate distributed training platform
+    based on your configuration and available packages. It dynamically modifies its class
+    at initialization to transform into the chosen platform's runner implementation.
 
-    It's safe (and recommended) to inherit from this class to extend the Runner.
+    Key features:
 
-    Valid platform options are:
+    * **Automatic platform selection**: Chooses the best available backend
+    * **Dynamic class transformation**: Becomes a TorchRunner, DeepSpeedRunner, or AccelerateRunner
+    * **Unified interface**: Provides consistent API across all platforms
 
-    - "auto" (default)
-    - "torch"
-    - "accelerate"
-    - "deepspeed"
+    Platform selection logic:
 
-    Examples:
-        >>> config = Config({"platform": "accelerate"})
-        >>> runner = Runner(config)
+    1. If `config.platform` is "auto" (default):
+       - Uses DeepSpeed if available
+       - Falls back to PyTorch otherwise
+    2. If `config.platform` is explicitly set to "torch", "deepspeed", or "accelerate":
+       - Uses the specified platform
+       - Raises an error if the required packages are not installed
+
+    Usage Examples:
+
+    ```python
+    # Automatic platform selection
+    config = Config({"platform": "auto"})
+    runner = Runner(config)  # Will use DeepSpeed if available, otherwise PyTorch
+
+    # Explicit platform selection
+    config = Config({"platform": "accelerate"})
+    runner = Runner(config)  # Will use Accelerate
+    ```
+
+    Extension Guidelines:
+
+    * **DO inherit from Runner** when you want to add functionality that should work across all platforms:
+      ```python
+      class MyRunner(Runner):
+          def __init__(self, config):
+              super().__init__(config)
+              # Your initialization code
+
+          def my_method(self):
+              # Custom functionality
+              pass
+      ```
+
+    * **DON'T inherit from a specific platform runner** (like TorchRunner) unless you're implementing
+      a new distributed training framework.
+
+    Args:
+        config: Configuration object containing runner settings. The `platform` key
+               determines which backend implementation will be used.
+
+    Raises:
+        ValueError: If an unknown platform is specified or required packages are missing.
 
     See Also:
-        - [`BaseRunner`][danling.runners.BaseRunner]: Base class for all runners.
-        - [`TorchRunner`][danling.runners.TorchRunner]: PyTorch runner.
-        - [`AccelerateRunner`][danling.runners.AccelerateRunner]: PyTorch runner with Accelerate.
-        - [`DeepSpeedRunner`][danling.runners.DeepSpeedRunner]: PyTorch runner with DeepSpeed.
+        - [`BaseRunner`][danling.runners.BaseRunner]: Base class with core functionality.
+        - [`TorchRunner`][danling.runners.TorchRunner]: PyTorch DDP implementation.
+        - [`DeepSpeedRunner`][danling.runners.DeepSpeedRunner]: DeepSpeed implementation.
+        - [`AccelerateRunner`][danling.runners.AccelerateRunner]: HuggingFace Accelerate implementation.
     """
 
     def __new__(cls, config: Config) -> Runner:

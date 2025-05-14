@@ -1,7 +1,9 @@
 # DanLing
 # Copyright (C) 2022-Present  DanLing
 
-# This program is free software: you can redistribute it and/or modify
+# This file is part of DanLing.
+
+# DanLing is free software: you can redistribute it and/or modify
 # it under the terms of the following licenses:
 # - The Unlicense
 # - GNU Affero General Public License v3.0 or later
@@ -10,7 +12,7 @@
 # - MIT License
 # - Apache License 2.0
 
-# This program is distributed in the hope that it will be useful,
+# DanLing is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
@@ -40,12 +42,39 @@ with try_import() as ds:
 
 class DeepSpeedRunner(TorchRunner):
     r"""
-    Set up everything for running a job with DeepSpeed.
+    DeepSpeed-powered runner for large-scale model operations.
 
-    DeepSpeed is a distributed training framework that provides a more efficient way to run large-scale models.
+    DeepSpeedRunner integrates Microsoft's DeepSpeed framework to enable efficient execution
+    of large language models and other compute-intensive neural networks with advanced memory
+    optimization techniques.
 
-    Configure DeepSpeedRunner is tough, but once you get the hang of it, it's a powerful tool.
-    Read more about DeepSpeed at [DeepSpeed's official website](https://www.deepspeed.ai/).
+    Key features:
+
+    * ZeRO (Zero Redundancy Optimizer) for memory-efficient distributed operations
+    * Mixed precision execution with reduced memory footprint
+    * Progressive layer dropping for computational acceleration
+    * 3D parallelism (data, model, pipeline) for billion+ parameter models
+    * Optimized checkpoint management for large models
+
+    DeepSpeedRunner is particularly useful for:
+
+    * Operating large language models efficiently across multiple GPUs
+    * Running larger models within limited GPU memory constraints
+    * Achieving near-linear scaling in multi-node distributed settings
+    * Evaluating very large models that wouldn't fit in memory with standard approaches
+
+    Configuration:
+        DeepSpeed requires a specific configuration format. You can provide a DeepSpeed
+        configuration in the `deepspeed` key of your runner config, or let DanLing auto-generate
+        a configuration based on your other settings.
+
+    Note:
+        For optimal performance, DeepSpeed requires NVMe offloading and specific
+        GPU configurations. See DeepSpeed documentation for details.
+
+    See Also:
+        - [`TorchRunner`][danling.runners.TorchRunner]: PyTorch DDP runner.
+        - [DeepSpeed Documentation](https://www.deepspeed.ai/docs/): Official DeepSpeed docs.
     """
 
     def __init__(self, config: Config) -> None:
