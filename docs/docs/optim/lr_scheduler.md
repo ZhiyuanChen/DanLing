@@ -6,4 +6,4 @@ date: 2022-05-04
 
 # LRScheduler
 
-::: danling.optim.LRScheduler
+::: danling.optim.lr_scheduler

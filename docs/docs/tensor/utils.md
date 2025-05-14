@@ -4,6 +4,6 @@ authors:
 date: 2022-05-04
 ---
 
-# utils
+# Utils
 
 ::: danling.tensor.utils

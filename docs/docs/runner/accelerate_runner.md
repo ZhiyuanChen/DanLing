@@ -6,4 +6,4 @@ date: 2022-05-04
 
 # AccelerateRunner
 
-::: danling.runner.AccelerateRunner
+::: danling.runner.accelerate_runner
