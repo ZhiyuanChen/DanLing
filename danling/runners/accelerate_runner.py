@@ -44,14 +44,37 @@ with try_import() as ac:
 
 class AccelerateRunner(TorchRunner, Accelerator):  # pylint: disable=too-many-public-methods
     r"""
-    Set up everything for running a job with 🤗 [`accelerate`](https://huggingface.co/docs/accelerate/).
+    HuggingFace Accelerate-powered unified model workflow runner.
 
-    `AccelerateRunner` extends the [`Accelerator`][accelerate.Accelerator] class to provide a more user-friendly
-    and consistent interface.
+    AccelerateRunner integrates with 🤗 Accelerate to provide a simplified interface for model operations
+    that works across various platforms and hardware configurations with minimal code changes.
 
-    `AccelerateRunner` provides the most easy-to-use interface for distributed training, but it can be slow, and not
-    very flexible.
-    Read the documentation of [`Accelerator`][accelerate.Accelerator] for more details.
+    Key features:
+
+    * Seamless multi-platform execution (CPU, GPU, TPU, multiple GPUs)
+    * Mixed precision support across hardware types
+    * DeepSpeed integration without complex configuration
+    * Simplified model, optimizer, and dataloader preparation
+    * Hardware abstraction for consistent workflow code
+
+    AccelerateRunner is particularly useful for:
+
+    * Researchers who need to work across different computing environments
+    * Teams with diverse hardware setups who need consistent workflow code
+    * Projects that need flexible deployment without platform-specific optimizations
+    * Quick prototyping that can scale from local testing to distributed environments
+
+    This runner inherits from both TorchRunner and Accelerator, providing the comprehensive
+    experiment management of DanLing with the hardware abstraction of Accelerate.
+
+    Note:
+        AccelerateRunner prioritizes ease of use over maximum performance. For highly
+        optimized large-scale operations, consider DeepSpeedRunner instead.
+
+    See Also:
+        - [`TorchRunner`][danling.runners.TorchRunner]: PyTorch DDP runner.
+        - [`DeepSpeedRunner`][danling.runners.DeepSpeedRunner]: DeepSpeed-optimized runner.
+        - [Accelerate Documentation](https://huggingface.co/docs/accelerate/): Official Accelerate docs.
     """
 
     _accelerate: FlatDict | None = None

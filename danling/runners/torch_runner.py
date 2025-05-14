@@ -61,10 +61,31 @@ from .utils import RunnerMode, on_main_process
 
 class TorchRunner(BaseRunner):
     r"""
-    Set up everything for running a job with PyTorch.
+    PyTorch-based unified runner for model training, evaluation, and inference.
 
-    PyTorch backend is the most basic and flexible distributed backend.
-    If you wish to extend the Runner, this is the best choice.
+    TorchRunner implements the complete machine learning workflow using PyTorch's native
+    capabilities, providing a comprehensive solution for the entire model lifecycle.
+
+    This runner serves as the core implementation for PyTorch-based workflows, offering:
+
+    * Complete workflow with training, evaluation, and inference capabilities
+    * Native DDP support for efficient multi-GPU/multi-node operations
+    * Mixed precision execution via torch.cuda.amp
+    * Gradient accumulation for effective batch size scaling
+    * Flexible checkpoint management and experiment tracking
+    * Standardized evaluation protocols and metric collection
+
+    TorchRunner is the most flexible backend in DanLing, making it an ideal choice for
+    extending with custom functionality or when maximum compatibility is required.
+
+    Note:
+        When running multi-GPU operations with TorchRunner, the environment variables for distributed
+        execution (WORLD_SIZE, RANK, LOCAL_RANK) must be properly set.
+
+    See Also:
+        - [`BaseRunner`][danling.runners.BaseRunner]: Base class for all DanLing runners.
+        - [`AccelerateRunner`][danling.runners.AccelerateRunner]: Runner using HuggingFace Accelerate.
+        - [`DeepSpeedRunner`][danling.runners.DeepSpeedRunner]: Runner using Microsoft DeepSpeed.
     """
 
     model: nn.Module
