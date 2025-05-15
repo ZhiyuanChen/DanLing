@@ -12,15 +12,15 @@ PlatformRunner implements platform-specific features like `step` and `prepare`.
 
 The Runner contains all runtime information that is irrelevant to the checkpoint (e.g. `world_size`, `rank`, etc.). All other information should be saved in `RunnerState`.
 
-Currently, only [`AccelerateRunner`][danling.runner.AccelerateRunner] is supported.
+Currently, only [`AccelerateRunner`][danling.runners.AccelerateRunner] is supported.
 
-### [`BaseRunner`][danling.runner.BaseRunner]
+### [`BaseRunner`][danling.runners.BaseRunner]
 
-[`BaseRunner`](danling.runner.BaseRunner) defines shared attributes and implements platform-agnostic features, including `init_logging`, `results` and `scores`.
+[`BaseRunner`](danling.runners.BaseRunner) defines shared attributes and implements platform-agnostic features, including `init_logging`, `results` and `scores`.
 
-### [`RunnerState`][danling.runner.RunnerState]
+### [`RunnerState`][danling.runners.RunnerState]
 
-[`RunnerState`][danling.runner.RunnerState] stores the state of a run (e.g. `epochs`, `run_id`, `network`, etc.).
+[`RunnerState`][danling.runners.RunnerState] stores the state of a run (e.g. `epochs`, `run_id`, `network`, etc.).
 
 With `RunnerState` and corresponding weights, you can resume a run from any point.
 Therefore, all members in `RunnerState` will be saved in the checkpoint, and thus should be json serialisable.

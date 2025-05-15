@@ -27,7 +27,7 @@ from .metrics import (
     MetricMeters,
 )
 from .optim import OPTIMIZERS, SCHEDULERS, LRScheduler
-from .runner import AccelerateRunner, BaseRunner, TorchRunner
+from .runners import AccelerateRunner, BaseRunner, TorchRunner
 from .tensors import NestedTensor, PNTensor, tensor
 from .utils import (
     catch,

@@ -101,7 +101,7 @@ class RunnerState(NestedDict):  # pylint: disable=too-many-instance-attributes
         `RunnerState` is a `NestedDict`, so you can access its attributes by `state["name"]` or `state.name`.
 
     See Also:
-        [`BaseRunner`][danling.runner.BaseRunner]: The base runner class.
+        [`BaseRunner`][danling.runners.BaseRunner]: The base runner class.
     """
 
     # DO NOT set default value in class, as they won't be stored in `__dict__`.

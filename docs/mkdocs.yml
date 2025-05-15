@@ -9,12 +9,12 @@ repo_url: https://github.com/ZhiyuanChen/DanLing
 
 nav:
   - DanLing: index.md
-  - Runner:
-      - runner/index.md
-      - RunnerState: runner/runner_state.md
-      - BaseRunner: runner/base_runner.md
-      - AccelerateRunner: runner/accelerate_runner.md
-      - Utilities: runner/utils.md
+  - Runners:
+      - runners/index.md
+      - RunnerState: runners/state.md
+      - BaseRunner: runners/base_runner.md
+      - AccelerateRunner: runners/accelerate_runner.md
+      - Utils: runners/utils.md
   - Tensors:
       - tensors/index.md
       - NestedTensor: tensors/nested_tensor.md

@@ -159,8 +159,8 @@ class BaseRunner(metaclass=RunnerMeta):  # pylint: disable=too-many-public-metho
         writer:
 
     See Also:
-        [`RunnerState`][danling.runner.runner_state.RunnerState]: The runeer base that stores runtime information.
-        [`BaseRunner`][danling.runner.BaseRunner]: The base runner class.
+        [`RunnerState`][danling.runners.runner_state.RunnerState]: The runeer base that stores runtime information.
+        [`BaseRunner`][danling.runners.BaseRunner]: The base runner class.
     """
 
     # DO NOT set default value in class, as they won't be stored in `__dict__`.
