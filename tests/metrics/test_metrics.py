@@ -151,8 +151,8 @@ def test_empty():
 
 
 def test_score_metrics():
-    random.seed(0)
-    torch.random.manual_seed(0)
+    random.seed(1016)
+    torch.random.manual_seed(1016)
     metrics = ScoreMetrics(auroc=auroc, auprc=auprc, acc=accuracy)
     score_name = "auroc"
     assert metrics.score_name == score_name
@@ -169,8 +169,8 @@ def test_score_metrics():
 
 
 def test_tensor_regression():
-    random.seed(0)
-    torch.random.manual_seed(0)
+    random.seed(1016)
+    torch.random.manual_seed(1016)
     metrics = regression_metrics()
     metric_map = build_metric_map("regression")
     function_map = build_function_map("regression")
@@ -197,8 +197,8 @@ def test_tensor_regression():
 
 
 def test_nested_tensor_regression():
-    random.seed(0)
-    torch.random.manual_seed(0)
+    random.seed(1016)
+    torch.random.manual_seed(1016)
     num_outputs = 2
     metrics = regression_metrics(num_outputs=num_outputs)
     metric_map = build_metric_map("regression", num_outputs=num_outputs)
@@ -233,8 +233,8 @@ def test_nested_tensor_regression():
 
 
 def test_tensor_binary():
-    random.seed(0)
-    torch.random.manual_seed(0)
+    random.seed(1016)
+    torch.random.manual_seed(1016)
     merge_metrics = Metrics(func=demo_dict_metric_func)
     metrics = binary_metrics()
     metric_map = build_metric_map("binary")
@@ -268,8 +268,8 @@ def test_tensor_binary():
 
 
 def test_nested_tensor_binary():
-    random.seed(0)
-    torch.random.manual_seed(0)
+    random.seed(1016)
+    torch.random.manual_seed(1016)
     merge_metrics = Metrics(func=demo_dict_metric_func)
     metrics = binary_metrics()
     metric_map = build_metric_map("binary")
@@ -308,8 +308,8 @@ def test_nested_tensor_binary():
 
 
 def test_tensor_multiclass():
-    random.seed(0)
-    torch.random.manual_seed(0)
+    random.seed(1016)
+    torch.random.manual_seed(1016)
     num_classes = 10
     metrics = multiclass_metrics(num_classes=num_classes)
     metric_map = build_metric_map("multiclass", num_classes=num_classes)
@@ -340,8 +340,8 @@ def test_tensor_multiclass():
 
 
 def test_nested_tensor_multiclass():
-    random.seed(0)
-    torch.random.manual_seed(0)
+    random.seed(1016)
+    torch.random.manual_seed(1016)
     num_classes = 10
     metrics = multiclass_metrics(num_classes=num_classes)
     metric_map = build_metric_map("multiclass", num_classes=num_classes)
@@ -376,8 +376,8 @@ def test_nested_tensor_multiclass():
 
 
 def test_tensor_multilabel():
-    random.seed(0)
-    torch.random.manual_seed(0)
+    random.seed(1016)
+    torch.random.manual_seed(1016)
     num_labels = 10
     metrics = multilabel_metrics(num_labels=num_labels)
     metric_map = build_metric_map("multilabel", num_labels=num_labels)
@@ -408,8 +408,8 @@ def test_tensor_multilabel():
 
 
 def test_nested_tensor_multilabel():
-    random.seed(0)
-    torch.random.manual_seed(0)
+    random.seed(1016)
+    torch.random.manual_seed(1016)
     num_labels = 10
     metrics = multilabel_metrics(num_labels=num_labels)
     metric_map = build_metric_map("multilabel", num_labels=num_labels)
@@ -445,8 +445,8 @@ def test_nested_tensor_multilabel():
 
 # Helper functions for distributed testing
 def _test_distributed(func: callable, world_size: int = 8):
-    random.seed(0)
-    torch.random.manual_seed(0)
+    random.seed(1016)
+    torch.random.manual_seed(1016)
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = str(29501)
     spawn(func, args=(world_size,), nprocs=world_size)

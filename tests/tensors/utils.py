@@ -1,0 +1,128 @@
+# DanLing
+# Copyright (C) 2022-Present  DanLing
+
+# This file is part of DanLing.
+
+# DanLing is free software: you can redistribute it and/or modify
+# it under the terms of the following licenses:
+# - The Unlicense
+# - GNU Affero General Public License v3.0 or later
+# - GNU General Public License v2.0 or later
+# - BSD 4-Clause "Original" or "Old" License
+# - MIT License
+# - Apache License 2.0
+
+# DanLing is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+# See the LICENSE file for more details.
+
+from __future__ import annotations
+
+import torch
+
+from danling.tensors import NestedTensor
+
+
+def available_float_dtypes():
+    dtypes = [torch.float32, torch.float64]
+    if torch.cuda.is_available():
+        dtypes.append(torch.float16)
+        if torch.cuda.is_bf16_supported():
+            dtypes.append(torch.bfloat16)
+    else:
+        try:
+            torch.zeros(1, dtype=torch.bfloat16)
+        except (TypeError, RuntimeError):
+            pass
+        else:
+            dtypes.append(torch.bfloat16)
+    return tuple(dict.fromkeys(dtypes))
+
+
+FLOAT_DTYPES = available_float_dtypes()
+
+
+def available_devices():
+    devices = [torch.device("cpu")]
+    if torch.cuda.is_available():
+        devices.append(torch.device("cuda"))
+    return devices
+
+
+def nested_rand(shapes, device, dtype):
+    return NestedTensor([torch.randn(*shape, device=device, dtype=dtype) for shape in shapes])
+
+
+def ragged_shapes(seed: int, *, batch_size: int, min_len: int, max_len: int, trailing_shape=()):
+    r"""Build deterministic ragged shapes for parity stress tests."""
+    if min_len > max_len:
+        raise ValueError(f"min_len must be <= max_len, got {min_len} > {max_len}")
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    lengths = torch.randint(min_len, max_len + 1, (batch_size,), generator=generator).tolist()
+    if batch_size > 1 and min_len != max_len and len(set(lengths)) == 1:
+        lengths[-1] = min_len if lengths[-1] != min_len else max_len
+    return [(int(length), *trailing_shape) for length in lengths]
+
+
+def assert_nested_function_matches(fn, nested_tensor, *, atol=1e-6, rtol=1e-6, **kwargs):
+    output = fn(nested_tensor, **kwargs)
+    reference = fn(nested_tensor.tensor, **kwargs)
+    assert_close(output, reference, atol=atol, rtol=rtol)
+
+
+def assert_close(input, other, *, rtol: float | None = None, atol: float | None = None, equal_nan: bool = False):
+    def _assert_tensors_close(a: torch.Tensor, b: torch.Tensor) -> None:
+        if rtol is None and atol is None:
+            torch.testing.assert_close(a, b, equal_nan=equal_nan)
+        else:
+            effective_rtol = 1e-05 if rtol is None else rtol
+            effective_atol = 1e-08 if atol is None else atol
+            torch.testing.assert_close(a, b, rtol=effective_rtol, atol=effective_atol, equal_nan=equal_nan)
+
+    if not isinstance(input, NestedTensor) and not isinstance(other, NestedTensor):
+        _assert_tensors_close(input, other)
+        return
+    if not isinstance(input, NestedTensor):
+        input = other.nested_like(input)
+    elif not isinstance(other, NestedTensor):
+        other = input.nested_like(other)
+    if len(input) != len(other):
+        raise ValueError(
+            "NestedTensor batch length mismatch between input and other: " f"input={len(input)}, other={len(other)}"
+        )
+    for x, y in zip(input._unpack(), other._unpack()):
+        _assert_tensors_close(x, y)
+
+
+def low_precision_cuda_tolerances(
+    device,
+    dtype,
+    *,
+    default: tuple[float, float],
+    fp16: tuple[float, float],
+    bf16: tuple[float, float],
+) -> tuple[float, float]:
+    r"""Return dtype-aware (atol, rtol) tolerances for CUDA low-precision tests."""
+    if device.type == "cuda" and dtype == torch.float16:
+        return fp16
+    if device.type == "cuda" and dtype == torch.bfloat16:
+        return bf16
+    return default
+
+
+def packed_result(ref: NestedTensor, values: torch.Tensor) -> NestedTensor:
+    r"""Reconstruct a NestedTensor from packed values using the metadata of *ref*."""
+    return NestedTensor._from_packed(
+        values,
+        ref._offsets,
+        ref._physical_shape,
+        batch_first=ref.batch_first,
+        padding_value=ref.padding_value,
+        mask_value=ref.mask_value,
+        pin_memory=ref._pin_memory,
+        outer_size=ref._logical_shape,
+        packed_sizes=ref._packed_sizes,
+        element_shapes=ref._element_shapes,
+    )
