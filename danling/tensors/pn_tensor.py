@@ -27,7 +27,7 @@ from torch import Tensor
 
 
 def tensor(data: Any, dtype=None, device=None, requires_grad: bool = False, pin_memory: bool = False) -> PNTensor:
-    """
+    r"""
     Create a PNTensor from data, similar to torch.tensor() but returning a PNTensor.
 
     This function is a convenient way to create PNTensor objects that will be
@@ -92,9 +92,11 @@ class PNTensor(Tensor):
         >>> # The DataLoader automatically produces NestedTensor batches
         >>> batch = next(iter(dataloader))
         >>> batch
-        NestedTensor([[1., 2., 3., 0.],
-                [4., 5., 0., 0.],
-                [6., 7., 8., 9.]])
+        NestedTensor([
+            [1., 2., 3.],
+            [4., 5.],
+            [6., 7., 8., 9.]
+        ])
 
         Using PNTensor directly:
 
@@ -129,7 +131,9 @@ class PNTensor(Tensor):
     @property
     def mask(self) -> Tensor:
         r"""
-        Identical to `torch.ones_like(self)`.
+        All-True boolean mask (PNTensor has no padding).
+
+        Returns a stride-0 expanded view — no memory allocation beyond a scalar.
 
         Returns:
             (torch.Tensor):
@@ -141,10 +145,10 @@ class PNTensor(Tensor):
             True
         """
 
-        return torch.ones_like(self, dtype=torch.bool)
+        return torch.ones((), dtype=torch.bool, device=self.device).expand_as(self)
 
     @property
-    def contact(self) -> Tensor:
+    def concat(self) -> Tensor:
         r"""
         Identical to `self`.
 
@@ -152,15 +156,13 @@ class PNTensor(Tensor):
             (torch.Tensor):
 
         Examples:
-            >>> tensor = torch.tensor([1, 2, 3])
             >>> pn_tensor = PNTensor([1, 2, 3])
-            >>> bool((tensor == pn_tensor).all())
-            True
-            >>> bool((tensor == pn_tensor.contact).all())
+            >>> bool((pn_tensor == pn_tensor.concat).all())
             True
         """
 
         return self
 
     def new_empty(self, *args, **kwargs):
+        r"""Return a new empty PNTensor with the same type."""
         return PNTensor(super().new_empty(*args, **kwargs))
