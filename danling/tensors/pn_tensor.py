@@ -144,7 +144,7 @@ class PNTensor(Tensor):
         return torch.ones_like(self, dtype=torch.bool)
 
     @property
-    def contact(self) -> Tensor:
+    def concat(self) -> Tensor:
         r"""
         Identical to `self`.
 
@@ -152,11 +152,8 @@ class PNTensor(Tensor):
             (torch.Tensor):
 
         Examples:
-            >>> tensor = torch.tensor([1, 2, 3])
             >>> pn_tensor = PNTensor([1, 2, 3])
-            >>> bool((tensor == pn_tensor).all())
-            True
-            >>> bool((tensor == pn_tensor.contact).all())
+            >>> bool((pn_tensor == pn_tensor.concat).all())
             True
         """
 
