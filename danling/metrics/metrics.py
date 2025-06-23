@@ -274,7 +274,7 @@ class Metrics(Metric):
             [f"{key}: {val[key].__format__(format_spec)} ({avg[key].__format__(format_spec)})" for key in self.metrics]
         )
 
-    def reset(self: Self) -> Self:  # pragma: no cover
+    def reset(self: Self) -> Self:
         r"""
         Reset the metric state variables to their default value.
         The tensors in the default values are also moved to the device of

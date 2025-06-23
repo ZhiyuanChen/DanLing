@@ -24,6 +24,11 @@ import torch
 from torch import Tensor
 
 
+def _element_slices(tensor: Tensor, ndim: int) -> tuple:
+    """Compute assignment slices for a variable-length element across ``ndim`` dimensions."""
+    return tuple(slice(0, tensor.shape[dim]) for dim in range(ndim))
+
+
 def tensor_mask(
     tensors: Sequence,
     size: torch.Size,
@@ -82,19 +87,8 @@ def tensor_mask(
                 [ True,  True, False,  True,  True, False, False, False, False]])
     """
 
-    tensor = torch.full(size, fill_value=padding_value, dtype=tensors[0].dtype, device=tensors[0].device)
-    if squeeze_channel and tensors[0].ndim > 1 and len({t.size(-1) for t in tensors}) == 1:
-        size = size[:-1]
-    mask = torch.full(size, fill_value=mask_value, dtype=torch.bool, device=tensors[0].device)
-    if not batch_first:
-        tensor, mask = tensor.transpose(0, 1), mask.transpose(0, 1)
-    for i, t in enumerate(tensors):
-        tensor[i][tuple(slice(0, t.shape[dim]) for dim in range(len(size) - 1))] = t  # type: ignore
-        mask[i][tuple(slice(0, t.shape[dim]) for dim in range(len(size) - 1))] = not mask_value
-    if not batch_first:
-        tensor, mask = tensor.transpose(0, 1), mask.transpose(0, 1)
-    if squeeze_channel and mask.size(-1) == 1:
-        mask = mask.squeeze(-1)
+    tensor = pad_tensor(tensors, size, batch_first=batch_first, padding_value=padding_value)
+    mask = mask_tensor(tensors, size, batch_first=batch_first, mask_value=mask_value, squeeze_channel=squeeze_channel)
     return tensor, mask
 
 
@@ -107,18 +101,19 @@ def pad_tensor(tensors: Sequence, size: torch.Size, *, batch_first: bool = True,
         size: desired size of the padded tensor (and mask tensor).
         batch_first: whether to put the batch dimension in the first dimension.
             Defaults to `True`.
-        mask_value: mask value in the mask tensor.
-            Defaults to `False`.
+        padding_value: value used for padding empty positions.
+            Defaults to `0.0`.
 
     Returns:
         (Tensor): padded tensor
     """
 
     ret = torch.full(size, fill_value=padding_value, dtype=tensors[0].dtype, device=tensors[0].device)
+    ndim = len(size) - 1
     if not batch_first:
         ret = ret.transpose(0, 1)
     for i, t in enumerate(tensors):
-        ret[i][tuple(slice(0, t.shape[dim]) for dim in range(len(size) - 1))] = t  # type: ignore
+        ret[i][_element_slices(t, ndim)] = t  # type: ignore
     if not batch_first:
         ret = ret.transpose(0, 1)
     return ret
@@ -151,10 +146,11 @@ def mask_tensor(
     if squeeze_channel and tensors[0].ndim > 1 and len({t.size(-1) for t in tensors}) == 1:
         size = size[:-1]
     ret = torch.full(size, fill_value=mask_value, dtype=torch.bool, device=tensors[0].device)
+    ndim = len(size) - 1
     if not batch_first:
         ret = ret.transpose(0, 1)
     for i, t in enumerate(tensors):
-        ret[i][tuple(slice(0, t.shape[dim]) for dim in range(len(size) - 1))] = not mask_value
+        ret[i][_element_slices(t, ndim)] = not mask_value
     if not batch_first:
         ret = ret.transpose(0, 1)
     return ret
