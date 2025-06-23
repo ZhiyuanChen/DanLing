@@ -93,8 +93,6 @@ def tensor_mask(
         mask[i][tuple(slice(0, t.shape[dim]) for dim in range(len(size) - 1))] = not mask_value
     if not batch_first:
         tensor, mask = tensor.transpose(0, 1), mask.transpose(0, 1)
-    if squeeze_channel and mask.size(-1) == 1:
-        mask = mask.squeeze(-1)
     return tensor, mask
 
 
