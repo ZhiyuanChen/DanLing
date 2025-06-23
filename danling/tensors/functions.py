@@ -153,6 +153,21 @@ class NestedTensorFuncWrapper:  # pylint: disable=R0903
 NestedTensorFuncRegistry = TorchFuncRegistry()
 
 
+@NestedTensorFuncRegistry.implement(torch.allclose)
+def allclose(
+    input: NestedTensor, other: NestedTensor | Tensor, rtol: float = 1e-05, atol: float = 1e-08, equal_nan: bool = False
+) -> bool:
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(input, NestedTensor):
+        input = other.nested_like(input)
+    elif not isinstance(other, NestedTensor):
+        other = input.nested_like(other)
+    return all(
+        torch.allclose(x, y, rtol=rtol, atol=atol, equal_nan=equal_nan) for x, y in zip(input._storage, other._storage)
+    )
+
+
 @NestedTensorFuncRegistry.implement(torch.cat)
 def cat(tensors: Tuple[Tensor | NestedTensor, ...], dim: int = 0):
     from .nested_tensor import NestedTensor
@@ -169,6 +184,28 @@ def cat(tensors: Tuple[Tensor | NestedTensor, ...], dim: int = 0):
         else:
             storage.append(tensor)
     return NestedTensor(storage, **state)
+
+
+@NestedTensorFuncRegistry.implement(torch.eq)
+def eq(input: NestedTensor, other: NestedTensor | Tensor) -> Tensor:
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(input, NestedTensor):
+        input = other.nested_like(input)
+    elif not isinstance(other, NestedTensor):
+        other = input.nested_like(other)
+    return NestedTensor(torch.eq(x, y) for x, y in zip(input._storage, other._storage))
+
+
+@NestedTensorFuncRegistry.implement(torch.equal)
+def equal(input: NestedTensor, other: NestedTensor | Tensor) -> bool:
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(input, NestedTensor):
+        input = other.nested_like(input)
+    elif not isinstance(other, NestedTensor):
+        other = input.nested_like(other)
+    return all(torch.equal(x, y) for x, y in zip(input._storage, other._storage))
 
 
 @NestedTensorFuncRegistry.implement(torch.isin)
