@@ -208,14 +208,9 @@ class NestedTensor:
                     [ True,  True, False]]))
         """
 
-        return self._tensor_mask(
-            self._storage, self.batch_first, self.padding_value, self.mask_value, self.requires_grad
-        )
+        return self._tensor_mask(self._storage, self.batch_first, self.padding_value, self.mask_value)
 
-    @method_cache(maxsize=1)
-    def _tensor_mask(
-        self, storage: tuple, batch_first: bool, padding_value: SupportsFloat, mask_value: bool, requires_grad: bool
-    ) -> Tensor:
+    def _tensor_mask(self, storage: tuple, batch_first: bool, padding_value: SupportsFloat, mask_value: bool) -> Tensor:
         if storage[0].dim() == 0:
             return torch.stack(storage, dim=0), torch.full(
                 (len(storage),), not mask_value, dtype=torch.bool, device=self.device
@@ -240,10 +235,9 @@ class NestedTensor:
                     [4, 5, 0]])
         """
 
-        return self._tensor(self._storage, self.batch_first, self.padding_value, self.requires_grad)
+        return self._tensor(self._storage, self.batch_first, self.padding_value)
 
-    @method_cache(maxsize=1)
-    def _tensor(self, storage: tuple, batch_first: bool, padding_value: SupportsFloat, requires_grad: bool) -> Tensor:
+    def _tensor(self, storage: tuple, batch_first: bool, padding_value: SupportsFloat) -> Tensor:
         if storage[0].dim() == 0:
             return torch.stack(storage, dim=0)
         return pad_tensor(storage, size=self.size(), batch_first=batch_first, padding_value=float(padding_value))
@@ -260,10 +254,9 @@ class NestedTensor:
                     [ True,  True, False]])
         """
 
-        return self._mask(self._storage, self.batch_first, self.mask_value, self.requires_grad)
+        return self._mask(self._storage, self.batch_first, self.mask_value)
 
-    @method_cache(maxsize=1)
-    def _mask(self, storage: tuple, batch_first: bool, mask_value: bool, requires_grad: bool) -> Tensor:
+    def _mask(self, storage: tuple, batch_first: bool, mask_value: bool) -> Tensor:
         if storage[0].dim() == 0:
             return torch.full((len(storage),), not mask_value, dtype=torch.bool, device=self.device)
         return mask_tensor(storage, size=self.size(), batch_first=batch_first, mask_value=mask_value)
@@ -290,11 +283,40 @@ class NestedTensor:
             torch.Size([1293, 8])
             >>> nested_tensor = NestedTensor([torch.randn(1, 9, 9, 5), torch.randn(1, 11, 11, 5)])
         """
+        return self.concatenate()[0]
+
+    def concatenate(self) -> Tuple[Tensor, Tuple[torch.Size, ...]]:
+        r"""
+        Concatenate tensors in padding dimension and return structural information for reconstruction.
+
+        Returns:
+            A tuple containing:
+            - concat_tensor: The concatenated tensor (same as .concat property)
+            - shapes: Tuple of original tensor shapes for reconstruction
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.randn(9, 8), torch.randn(11, 8)])
+            >>> concat_tensor, shapes = nested_tensor.concatenate()
+            >>> concat_tensor.shape
+            torch.Size([20, 8])
+            >>> shapes
+            (torch.Size([9, 8]), torch.Size([11, 8]))
+            >>> reconstructed = NestedTensor.from_concatenated(concat_tensor, shapes)
+            >>> torch.equal(nested_tensor.tensor, reconstructed.tensor)
+            True
+        """
+        if not self._storage:
+            return torch.empty(0), ()
+
+        original_shapes = tuple(t.shape for t in self._storage)
+
         shape = list(self.size())  # type: ignore[arg-type]
         shape = shape[1:] if self.batch_first else shape[0] + shape[2:]
         elem = self._storage[0]
         if elem.shape == shape:
-            return torch.cat(self._storage, dim=1 if self.batch_first else 0)
+            concat_tensor = torch.cat(self._storage, dim=1 if self.batch_first else 0)
+            return concat_tensor, original_shapes
+
         static_dims = set(range(len(shape)))
         for i, s in enumerate(shape):
             if not all(t.size(i) == s for t in self._storage):
@@ -302,7 +324,73 @@ class NestedTensor:
                 static_dims.remove(i)
         target_shape = [-1] + [s for s in shape if s != -1]
         storage = [i.reshape(target_shape) for i in self._storage]
-        return torch.cat(storage, dim=0 if self.batch_first else 1)
+        concat_tensor = torch.cat(storage, dim=0 if self.batch_first else 1)
+        return concat_tensor, original_shapes
+
+    @classmethod
+    def from_concatenated(cls, concat_tensor: Tensor, shapes: Tuple[torch.Size, ...], **kwargs) -> Self:
+        r"""
+        Reconstruct a NestedTensor from a concatenated tensor and shape information.
+
+        Args:
+            concat_tensor: The concatenated tensor returned by concatenate()
+            shapes: Tuple of original tensor shapes returned by concatenate()
+            **kwargs: Additional arguments to pass to NestedTensor constructor
+
+        Returns:
+            Reconstructed NestedTensor
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.randn(9, 9, 8), torch.randn(11, 11, 8)])
+            >>> concat_tensor, shapes = nested_tensor.concatenate()
+            >>> reconstructed = NestedTensor.from_concatenated(concat_tensor, shapes)
+            >>> concat_tensor.shape
+            torch.Size([202, 8])
+            >>> reconstructed.shape
+            torch.Size([2, 11, 11, 8])
+            >>> torch.equal(nested_tensor.tensor, reconstructed.tensor)
+            True
+        """
+        if not shapes:
+            return cls([], **kwargs)
+
+        num_elements = [shape.numel() for shape in shapes]
+        # split_indices = torch.cumsum(torch.tensor([0] + num_elements[:-1]), dim=0)
+
+        if len(set(shapes)) == 1:
+            shape = shapes[0]
+            total_elements = sum(num_elements)
+
+            if concat_tensor.numel() == total_elements and len(concat_tensor.shape) >= len(shape):
+                if concat_tensor.shape[1:] == shape:
+                    tensors = list(concat_tensor.split(1, dim=0))
+                    tensors = [t.squeeze(0) for t in tensors]
+                else:
+                    concat_tensor = concat_tensor.view(sum(num_elements), *shape[1:])
+                    tensors = list(concat_tensor.split(num_elements, dim=0))
+                    tensors = [t.reshape(shape) for t in tensors]
+                return cls(tensors, **kwargs)
+
+        flattened = concat_tensor.flatten()
+
+        total_expected = sum(num_elements)
+        if flattened.numel() < total_expected:
+            raise ValueError(
+                f"Concatenated tensor has {flattened.numel()} elements but "
+                f"expected at least {total_expected} based on shapes {shapes}"
+            )
+
+        flattened = flattened[:total_expected]
+
+        tensors = []
+        start = 0
+        for shape in shapes:
+            end = start + shape.numel()
+            tensor_data = flattened[start:end].reshape(shape)
+            tensors.append(tensor_data)
+            start = end
+
+        return cls(tensors, **kwargs)
 
     @property
     def torch(self) -> Tensor:
