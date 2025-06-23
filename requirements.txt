@@ -2,6 +2,8 @@ cached-property; python_version < "3.8"
 chanfig >= 0.0.96
 gitpython
 lazy-imports
+pandas
 strenum; python_version < "3.11"
+tabulate
 torcheval
 tqdm

@@ -29,7 +29,7 @@ from danling.metrics.preprocess import (
 )
 from danling.tensors import NestedTensor
 
-torch.manual_seed(0)
+torch.manual_seed(1016)
 
 ATOL = 1e-6
 

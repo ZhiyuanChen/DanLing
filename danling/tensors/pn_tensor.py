@@ -17,6 +17,12 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
+r"""
+[PNTensor][] (Potential Nested Tensor) — a [torch.Tensor][] subclass
+that collates into [NestedTensor][nested_tensor.NestedTensor] via PyTorch
+DataLoader when registered with [register_pn_tensor_collate][].
+"""
+
 # pylint: disable=protected-access
 from __future__ import annotations
 
@@ -27,13 +33,13 @@ from torch import Tensor
 
 
 def tensor(data: Any, dtype=None, device=None, requires_grad: bool = False, pin_memory: bool = False) -> PNTensor:
-    """
+    r"""
     Create a PNTensor from data, similar to torch.tensor() but returning a PNTensor.
 
-    This function is a convenient way to create PNTensor objects that will be
-    automatically collated into NestedTensor when used with PyTorch DataLoader.
-    The interface mirrors torch.tensor() to make it easy to switch between regular
-    tensors and PNTensors.
+    This function is a convenient way to create PNTensor objects that can be
+    collated into NestedTensor when used with PyTorch DataLoader after calling
+    ``register_pn_tensor_collate()``. The interface mirrors torch.tensor() to
+    make it easy to switch between regular tensors and PNTensors.
 
     Args:
         data: Initial data for the tensor. Can be a list, tuple, NumPy ndarray, scalar, etc.
@@ -43,7 +49,7 @@ def tensor(data: Any, dtype=None, device=None, requires_grad: bool = False, pin_
         pin_memory: If True, the tensor will be allocated in pinned memory.
 
     Returns:
-        PNTensor: A tensor wrapper that will be automatically collated into NestedTensor
+        PNTensor: A tensor wrapper for NestedTensor-oriented collation
 
     Examples:
         >>> from danling.tensors import tensor
@@ -56,12 +62,12 @@ def tensor(data: Any, dtype=None, device=None, requires_grad: bool = False, pin_
 
 class PNTensor(Tensor):
     r"""
-    A tensor wrapper that enables automatic collation into NestedTensor with PyTorch DataLoader.
+    A tensor wrapper that can be collated into NestedTensor with PyTorch DataLoader.
 
     `PNTensor` (Potential Nested Tensor) seamlessly bridges the gap between individual tensors
     and batched `NestedTensor` objects in PyTorch workflows. It's designed specifically to work
     with PyTorch's DataLoader collation mechanism, allowing datasets to return variable-length
-    tensors that will automatically be combined into a `NestedTensor` when batched.
+    tensors that can be combined into a `NestedTensor` when batched.
 
     The class provides three properties that mirror those of NestedTensor:
     - `.tensor`: The tensor itself (self)
@@ -78,7 +84,8 @@ class PNTensor(Tensor):
         Basic usage with PyTorch DataLoader:
 
         >>> from torch.utils.data import Dataset, DataLoader
-        >>> from danling.tensors import PNTensor
+        >>> from danling.tensors import PNTensor, register_pn_tensor_collate
+        >>> register_pn_tensor_collate()
         >>> class VariableLengthDataset(Dataset):
         ...     def __init__(self, data):
         ...         self.data = data
@@ -89,12 +96,14 @@ class PNTensor(Tensor):
         >>> # Create a dataset with variable-length sequences
         >>> dataset = VariableLengthDataset([[1, 2, 3], [4, 5], [6, 7, 8, 9]])
         >>> dataloader = DataLoader(dataset, batch_size=3)
-        >>> # The DataLoader automatically produces NestedTensor batches
+        >>> # The DataLoader produces NestedTensor batches after registration
         >>> batch = next(iter(dataloader))
         >>> batch
-        NestedTensor([[1., 2., 3., 0.],
-                [4., 5., 0., 0.],
-                [6., 7., 8., 9.]])
+        NestedTensor([
+            [1., 2., 3.],
+            [4., 5.],
+            [6., 7., 8., 9.]
+        ])
 
         Using PNTensor directly:
 
@@ -129,7 +138,9 @@ class PNTensor(Tensor):
     @property
     def mask(self) -> Tensor:
         r"""
-        Identical to `torch.ones_like(self)`.
+        All-True boolean mask (PNTensor has no padding).
+
+        Returns a stride-0 expanded view — no memory allocation beyond a scalar.
 
         Returns:
             (torch.Tensor):
@@ -141,10 +152,10 @@ class PNTensor(Tensor):
             True
         """
 
-        return torch.ones_like(self, dtype=torch.bool)
+        return torch.ones((), dtype=torch.bool, device=self.device).expand_as(self)
 
     @property
-    def contact(self) -> Tensor:
+    def concat(self) -> Tensor:
         r"""
         Identical to `self`.
 
@@ -152,15 +163,13 @@ class PNTensor(Tensor):
             (torch.Tensor):
 
         Examples:
-            >>> tensor = torch.tensor([1, 2, 3])
             >>> pn_tensor = PNTensor([1, 2, 3])
-            >>> bool((tensor == pn_tensor).all())
-            True
-            >>> bool((tensor == pn_tensor.contact).all())
+            >>> bool((pn_tensor == pn_tensor.concat).all())
             True
         """
 
         return self
 
     def new_empty(self, *args, **kwargs):
+        r"""Return a new empty PNTensor with the same type."""
         return PNTensor(super().new_empty(*args, **kwargs))
