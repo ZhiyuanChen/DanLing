@@ -1376,22 +1376,81 @@ class NestedTensor:
         size.insert(0 if batch_first else 1, len(storage))
         return torch.Size(size)
 
-    def sum(self, dim: int | None = None, keepdim: bool = False) -> Tensor | NestedTensor:
-        if dim is None:
-            return torch.stack([t.sum() for t in self._storage]).sum()
+    def sum(
+        self,
+        dim: int | Sequence[int] | None = None,
+        keepdim: bool = False,
+        *,
+        dtype: torch.dtype | None = None,  # type: ignore[name-defined]
+    ) -> Tensor | NestedTensor:
+        r"""
+        Returns the sum of each tensor over the given dimension(s).
 
-        if dim < 0:
-            dim += self.dim()
+        Args:
+            dim: The dimension or dimensions to reduce. If None, sum over all dimensions.
+                Supports int, Sequence[int], or None. Negative dimensions are supported.
+            keepdim: Whether to retain reduced dimensions with size 1.
+            dtype: The desired data type of returned tensor.
+
+        Returns:
+            Tensor or NestedTensor depending on the dimensions being reduced.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+            >>> nested_tensor.sum()
+            tensor(15)
+            >>> nested_tensor.sum(dim=0)  # when dim=0, sum across batch dimension
+            tensor([6, 9])
+            >>> nested_tensor.sum(dim=1)
+            tensor([6, 9])
+            >>> nested_tensor.sum(dim=[0, 1])
+            tensor(15)
+            >>> nested_tensor.sum(dim=0, keepdim=True)
+            tensor([[6, 9]])
+            >>> nested_tensor.sum(dtype=torch.float32)
+            tensor(15.)
+        """
+        if dim is None:
+            return torch.stack([t.sum(dtype=dtype) for t in self._storage]).sum()
+
+        if isinstance(dim, (list, tuple)):
+            dims = list(dim)
+            dims = [d if d >= 0 else d + self.dim() for d in dims]
+
+            if 0 in dims:
+                tensor_dims = [d - 1 for d in dims if d != 0]
+
+                if len(tensor_dims) == 0:
+                    if keepdim:
+                        return torch.stack([t.sum(dtype=dtype) for t in self._storage]).sum().unsqueeze(0)
+                    return torch.stack([t.sum(dtype=dtype) for t in self._storage]).sum()
+
+                if len(tensor_dims) > 0:
+                    tensor_sums = [t.sum(dim=tensor_dims, keepdim=keepdim, dtype=dtype) for t in self._storage]
+                    result = torch.stack(tensor_sums).sum(dim=0)
+                    if keepdim and 0 in dim:
+                        result = result.unsqueeze(0)
+                    return result
+            else:
+                adjusted_dims = [d - 1 for d in dims]
+                ret = [t.sum(dim=adjusted_dims, keepdim=keepdim, dtype=dtype) for t in self._storage]
+                try:
+                    return torch.stack(ret)
+                except (RuntimeError, ValueError):
+                    return NestedTensor(ret, **self._state)
+
+        if dim < 0:  # type: ignore[operator]
+            dim += self.dim()  # type: ignore[operator]
 
         if (self.batch_first and dim == 0) or (not self.batch_first and dim == 1):
             if keepdim:
-                return torch.stack([t.sum() for t in self._storage]).unsqueeze(0 if self.batch_first else 1)
-            return torch.stack([t.sum() for t in self._storage])
+                return torch.stack([t.sum(dtype=dtype) for t in self._storage]).unsqueeze(0 if self.batch_first else 1)
+            return torch.stack([t.sum(dtype=dtype) for t in self._storage])
 
         if self.batch_first or dim != 0:
-            dim -= 1
+            dim -= 1  # type: ignore[operator]
 
-        ret = [i.sum(dim=dim, keepdim=keepdim) for i in self._storage]
+        ret = [i.sum(dim=dim, keepdim=keepdim, dtype=dtype) for i in self._storage]
         try:
             return torch.stack(ret)
         except (RuntimeError, ValueError):
@@ -1433,21 +1492,17 @@ class NestedTensor:
             >>> transposed.shape  # batch dimension is still first
             torch.Size([2, 4, 3])
         """
-        # Handle negative dimensions
         if dim0 < 0:
             dim0 = dim0 + self.dim()
         if dim1 < 0:
             dim1 = dim1 + self.dim()
 
-        # Check if either dimension is the batch dimension
         if dim0 == 0 or dim1 == 0:
             raise ValueError("Cannot transpose the batch dimension (dim 0)")
 
-        # Adjust dimensions for underlying tensors (subtract 1 to account for missing batch dim)
         tensor_dim0 = dim0 - 1
         tensor_dim1 = dim1 - 1
 
-        # Apply transpose to each tensor
         transposed_tensors = [t.transpose(tensor_dim0, tensor_dim1) for t in self._storage]
 
         return self.__class__(transposed_tensors, **self._state)
@@ -1473,7 +1528,6 @@ class NestedTensor:
         if not self._storage:
             return self.__class__([], **self._state)
 
-        # Apply view to each tensor individually
         viewed_tensors = [t.view(*shape) for t in self._storage]
         return self.__class__(viewed_tensors, **self._state)
 
