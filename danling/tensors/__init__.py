@@ -23,6 +23,7 @@ from typing import Callable
 
 from torch.utils.data._utils.collate import default_collate_fn_map
 
+from . import functional  # noqa: F401
 from .functions import TorchFuncRegistry
 from .nested_tensor import NestedTensor
 from .pn_tensor import PNTensor, tensor
