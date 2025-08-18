@@ -308,3 +308,121 @@ def test_where():
     assert torch.equal(a.where(a > 3, -1.0), NestedTensor([[-1.0, -1.0, 4.0], [5.0, 6.0]]))
     assert torch.equal(a.where(a.tensor > 3, -1.0), NestedTensor([[-1.0, -1.0, 4.0], [5.0, 6.0]]))
     assert torch.equal(a.where(torch.tensor(False), 1), NestedTensor([[1, 1, 1], [1, 1]]))
+
+
+def test_permute():
+    nested_tensor = NestedTensor([torch.randn(3, 4, 5), torch.randn(2, 4, 5)])
+    original_shape = nested_tensor.shape
+    assert original_shape == torch.Size([2, 3, 4, 5])
+
+    permuted = nested_tensor.permute(0, 3, 1, 2)
+    assert permuted.shape == torch.Size([2, 5, 3, 4])
+    assert permuted is not nested_tensor
+
+    assert permuted._storage[0].shape == torch.Size([5, 3, 4])
+    assert permuted._storage[1].shape == torch.Size([5, 2, 4])
+    assert nested_tensor.shape == torch.Size([2, 3, 4, 5])
+
+    nested_tensor2 = NestedTensor([torch.randn(3, 4), torch.randn(2, 4)])
+    permuted2 = nested_tensor2.permute(0, -1, -2)
+    assert permuted2.shape == torch.Size([2, 4, 3])
+
+    with pytest.raises(ValueError, match="Expected 3 dimensions"):
+        nested_tensor2.permute(0, 1)
+
+    nested_tensor3 = NestedTensor([torch.randn(3, 4), torch.randn(2, 4)])
+    with pytest.raises(ValueError, match="Batch dimension.*must be included"):
+        nested_tensor3.permute(1, 2, -1)
+
+
+def test_transpose():
+    nested_tensor = NestedTensor([torch.randn(3, 4), torch.randn(2, 4)])
+    original_shape = nested_tensor.shape
+    assert original_shape == torch.Size([2, 3, 4])
+
+    transposed = nested_tensor.transpose(1, 2)
+    assert transposed.shape == torch.Size([2, 4, 3])
+    assert transposed is not nested_tensor
+
+    assert transposed._storage[0].shape == torch.Size([4, 3])
+    assert transposed._storage[1].shape == torch.Size([4, 2])
+    assert nested_tensor.shape == torch.Size([2, 3, 4])
+
+    nested_tensor2 = NestedTensor([torch.randn(3, 4, 5), torch.randn(2, 4, 5)])
+    transposed2 = nested_tensor2.transpose(-2, -1)
+    assert transposed2.shape == torch.Size([2, 3, 5, 4])
+
+    with pytest.raises(ValueError, match="Cannot transpose the batch dimension"):
+        nested_tensor2.transpose(0, 1)
+
+    with pytest.raises(ValueError, match="Cannot transpose the batch dimension"):
+        nested_tensor2.transpose(1, 0)
+
+
+def test_reshape():
+    nested_tensor = NestedTensor([torch.tensor([[1, 2], [3, 4]]), torch.tensor([[5, 6], [7, 8]])])
+    original_shape = nested_tensor.shape
+    assert original_shape == torch.Size([2, 2, 2])
+
+    reshaped = nested_tensor.reshape(4)
+    assert reshaped.shape == torch.Size([2, 4])
+    assert reshaped is not nested_tensor
+
+    assert reshaped._storage[0].shape == torch.Size([4])
+    assert reshaped._storage[1].shape == torch.Size([4])
+    assert nested_tensor.shape == torch.Size([2, 2, 2])
+
+    nested_tensor2 = NestedTensor([torch.randn(2, 3, 4), torch.randn(2, 3, 4)])
+    reshaped2 = nested_tensor2.reshape(-1, 4)
+    assert reshaped2.shape == torch.Size([2, 6, 4])
+
+    empty_nested = NestedTensor([])
+    result = empty_nested.reshape(5)
+    assert result is not empty_nested
+    assert len(result._storage) == 0
+
+
+def test_view():
+    nested_tensor = NestedTensor([torch.tensor([[1, 2], [3, 4]]), torch.tensor([[5, 6], [7, 8]])])
+    original_shape = nested_tensor.shape
+    assert original_shape == torch.Size([2, 2, 2])
+
+    viewed = nested_tensor.view(4)
+    assert viewed.shape == torch.Size([2, 4])
+    assert viewed is not nested_tensor
+
+    assert viewed._storage[0].shape == torch.Size([4])
+    assert viewed._storage[1].shape == torch.Size([4])
+    assert nested_tensor.shape == torch.Size([2, 2, 2])
+
+    nested_tensor2 = NestedTensor([torch.randn(2, 6), torch.randn(2, 6)])
+    viewed2 = nested_tensor2.view(-1, 3)
+    assert viewed2.shape == torch.Size([2, 4, 3])
+
+    nested_tensor3 = NestedTensor([torch.randn(4), torch.randn(4)])
+    viewed3 = nested_tensor3.view(2, 2)
+    viewed3._storage[0][0, 0] = 999
+    assert nested_tensor3._storage[0][0] == 999
+
+    empty_nested = NestedTensor([])
+    result = empty_nested.view(5)
+    assert result is not empty_nested
+    assert len(result._storage) == 0
+
+
+def test_view_with_different_shapes():
+    nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
+
+    viewed = nested_tensor.view(-1)
+    assert viewed is not nested_tensor
+    assert viewed._storage[0].shape == torch.Size([3])
+    assert viewed._storage[1].shape == torch.Size([2])
+
+
+def test_method_chaining():
+    nested_tensor = NestedTensor([torch.randn(2, 3, 4), torch.randn(2, 3, 4)])
+
+    result = nested_tensor.transpose(1, 2).reshape(-1, 6).view(24, 1)
+    assert result is not nested_tensor
+    assert result.shape == torch.Size([2, 24, 1])
+    assert nested_tensor.shape == torch.Size([2, 2, 3, 4])
