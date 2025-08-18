@@ -1248,6 +1248,14 @@ class NestedTensor:
 
         return self.dim()
 
+    @property
+    def shape(self) -> torch.Size:  # type: ignore[name-defined]
+        r"""
+        Alias for `size()`.
+        """
+
+        return self.size()
+
     def numel(self) -> int:
         r"""
         Number of elements in the NestedTensor.
@@ -1260,44 +1268,71 @@ class NestedTensor:
 
         return sum(t.numel() for t in self._storage)
 
+    def permute(self, *dims) -> Self:
+        r"""
+        Apply permutation to each tensor in the NestedTensor.
+
+        Args:
+            *dims: The desired ordering of dimensions for the NestedTensor (including batch dimension).
+
+        Returns:
+            NestedTensor: A new NestedTensor with each tensor permuted.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.randn(3, 4, 5), torch.randn(2, 4, 5)])
+            >>> permuted = nested_tensor.permute(0, 3, 1, 2)
+            >>> permuted.shape
+            torch.Size([2, 5, 3, 4])
+        """
+        if len(dims) != self.dim():
+            raise ValueError(f"Expected {self.dim()} dimensions, got {len(dims)}")
+
+        batch_pos = dims.index(0) if 0 in dims else None
+        if batch_pos is None:
+            raise ValueError("Batch dimension (0) must be included in permutation")
+
+        tensor_dims = []
+        for d in dims:
+            if d == 0:
+                continue
+            elif d > 0:
+                tensor_dims.append(d - 1)
+            else:
+                adjusted_d = d + self.dim()
+                if adjusted_d == 0:
+                    continue
+                tensor_dims.append(adjusted_d - 1)
+
+        permuted_tensors = [t.permute(*tensor_dims) for t in self._storage]
+        return self.__class__(permuted_tensors, **self._state)
+
     def requires_grad_(self, requires_grad: bool = True):
         self.requires_grad = requires_grad
         for t in self._storage:
             t.requires_grad = requires_grad
         return self
 
-    def reshape(self, *shape) -> Tensor:
+    def reshape(self, *shape) -> Self:
         r"""
-        Returns a torch tensor with a different shape.
-
-        Note:
-            since NestedTensor is a collection of tensors, the reshape operation is ambiguous.
-
-            Therefore, it is converted to a tensor and then reshaped.
+        Reshape each tensor in the NestedTensor.
 
         Args:
-            shape: The desired size of each dimension.
+            *shape: The desired size of each dimension for the underlying tensors.
+
+        Returns:
+            NestedTensor: A new NestedTensor with each tensor reshaped.
 
         Examples:
-            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
-            >>> nested_tensor.reshape(3, 2)
-            tensor([[1, 2],
-                    [3, 4],
-                    [5, 0]])
-            >>> nested_tensor.reshape(2, 3)
-            tensor([[1, 2, 3],
-                    [4, 5, 0]])
+            >>> nested_tensor = NestedTensor([torch.tensor([[1, 2], [3, 4]]), torch.tensor([[5, 6], [7, 8]])])
+            >>> reshaped = nested_tensor.reshape(4)
+            >>> reshaped.shape
+            torch.Size([2, 4])
         """
+        if not self._storage:
+            return self.__class__([], **self._state)
 
-        return self.tensor.reshape(*shape)
-
-    @property
-    def shape(self) -> torch.Size | int:  # type: ignore[name-defined]
-        r"""
-        Alias for `size()`.
-        """
-
-        return self.size()
+        reshaped_tensors = [t.reshape(*shape) for t in self._storage]
+        return self.__class__(reshaped_tensors, **self._state)
 
     def size(self, dim: int | None = None) -> torch.Size | int:  # type: ignore[name-defined]
         r"""
@@ -1380,30 +1415,67 @@ class NestedTensor:
 
         return [t.tolist() for t in self._storage]
 
-    def view(self, *shape) -> Tensor:
+    def transpose(self, dim0: int, dim1: int) -> Self:
         r"""
-        Returns a torch tensor with a different shape.
-
-        Note:
-            since NestedTensor is a collection of tensors, the view operation is ambiguous.
-
-            Therefore, it is converted to a tensor and then reshaped.
+        Transpose dimensions dim0 and dim1 for each tensor in the NestedTensor.
 
         Args:
-            shape: The desired size of each dimension.
+            dim0: First dimension to transpose (in NestedTensor coordinate system).
+            dim1: Second dimension to transpose (in NestedTensor coordinate system).
+
+        Returns:
+            NestedTensor: A new NestedTensor with each tensor transposed.
 
         Examples:
-            >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
-            >>> nested_tensor.view(3, 2)
-            tensor([[1, 2],
-                    [3, 4],
-                    [5, 0]])
-            >>> nested_tensor.view(2, 3)
-            tensor([[1, 2, 3],
-                    [4, 5, 0]])
+            >>> nested_tensor = NestedTensor([torch.randn(3, 4), torch.randn(2, 4)])
+            >>> # NestedTensor shape is [2, 3, 4], underlying tensors are [3, 4] and [2, 4]
+            >>> transposed = nested_tensor.transpose(1, 2)  # transpose dims 1 and 2
+            >>> transposed.shape  # batch dimension is still first
+            torch.Size([2, 4, 3])
         """
+        # Handle negative dimensions
+        if dim0 < 0:
+            dim0 = dim0 + self.dim()
+        if dim1 < 0:
+            dim1 = dim1 + self.dim()
 
-        return self.tensor.view(*shape)
+        # Check if either dimension is the batch dimension
+        if dim0 == 0 or dim1 == 0:
+            raise ValueError("Cannot transpose the batch dimension (dim 0)")
+
+        # Adjust dimensions for underlying tensors (subtract 1 to account for missing batch dim)
+        tensor_dim0 = dim0 - 1
+        tensor_dim1 = dim1 - 1
+
+        # Apply transpose to each tensor
+        transposed_tensors = [t.transpose(tensor_dim0, tensor_dim1) for t in self._storage]
+
+        return self.__class__(transposed_tensors, **self._state)
+
+    def view(self, *shape) -> Self:
+        r"""
+        View each tensor in the NestedTensor with a different shape.
+
+        Args:
+            *shape: The desired size of each dimension for the underlying tensors.
+
+        Returns:
+            NestedTensor: A new NestedTensor with each tensor viewed with the new shape.
+
+        Examples:
+            >>> nested_tensor = NestedTensor([torch.tensor([[1, 2], [3, 4]]), torch.tensor([[5, 6], [7, 8]])])
+            >>> viewed = nested_tensor.view(4)  # View each 2x2 tensor as 4
+            >>> viewed.shape
+            torch.Size([2, 4])
+            >>> type(viewed).__name__
+            'NestedTensor'
+        """
+        if not self._storage:
+            return self.__class__([], **self._state)
+
+        # Apply view to each tensor individually
+        viewed_tensors = [t.view(*shape) for t in self._storage]
+        return self.__class__(viewed_tensors, **self._state)
 
     def where(self, condition: Tensor | NestedTensor, other: Tensor | NestedTensor | SupportsFloat) -> Self:
         r"""
