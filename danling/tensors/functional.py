@@ -297,6 +297,335 @@ def feature_alpha_dropout(input: NestedTensor, p: float, training: bool = True) 
     return NestedTensor(F.feature_alpha_dropout(t, p, training) for t in input._storage)
 
 
+# Pooling
+
+
+@NestedTensorFuncRegistry.implement(F.avg_pool1d)
+def avg_pool1d(
+    input: NestedTensor,
+    kernel_size: int | Tuple[int, ...],
+    stride: int | Tuple[int, ...] | None = None,
+    padding: int | Tuple[int, ...] = 0,
+    ceil_mode: bool = False,
+    count_include_pad: bool = True,
+) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(
+        F.avg_pool1d(t, kernel_size, stride, padding, ceil_mode, count_include_pad) for t in input._storage
+    )
+
+
+@NestedTensorFuncRegistry.implement(F.avg_pool2d)
+def avg_pool2d(
+    input: NestedTensor,
+    kernel_size: int | Tuple[int, ...],
+    stride: int | Tuple[int, ...] | None = None,
+    padding: int | Tuple[int, ...] = 0,
+    ceil_mode: bool = False,
+    count_include_pad: bool = True,
+) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(
+        F.avg_pool2d(t, kernel_size, stride, padding, ceil_mode, count_include_pad) for t in input._storage
+    )
+
+
+@NestedTensorFuncRegistry.implement(F.avg_pool3d)
+def avg_pool3d(
+    input: NestedTensor,
+    kernel_size: int | Tuple[int, ...],
+    stride: int | Tuple[int, ...] | None = None,
+    padding: int | Tuple[int, ...] = 0,
+    ceil_mode: bool = False,
+    count_include_pad: bool = True,
+) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(
+        F.avg_pool3d(t, kernel_size, stride, padding, ceil_mode, count_include_pad) for t in input._storage
+    )
+
+
+@NestedTensorFuncRegistry.implement(F.adaptive_avg_pool1d)
+def adaptive_avg_pool1d(input: NestedTensor, output_size: int | Tuple[int, ...]) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(F.adaptive_avg_pool1d(t, output_size) for t in input._storage)
+
+
+@NestedTensorFuncRegistry.implement(F.adaptive_avg_pool2d)
+def adaptive_avg_pool2d(input: NestedTensor, output_size: int | Tuple[int, ...]) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(F.adaptive_avg_pool2d(t, output_size) for t in input._storage)
+
+
+@NestedTensorFuncRegistry.implement(F.adaptive_avg_pool3d)
+def adaptive_avg_pool3d(input: NestedTensor, output_size: int | Tuple[int, ...]) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(F.adaptive_avg_pool3d(t, output_size) for t in input._storage)
+
+
+@NestedTensorFuncRegistry.implement(F.max_pool1d)
+def max_pool1d(
+    input: NestedTensor,
+    kernel_size: int | Tuple[int, ...],
+    stride: int | Tuple[int, ...] | None = None,
+    padding: int | Tuple[int, ...] = 0,
+    dilation: int | Tuple[int, ...] = 1,
+    ceil_mode: bool = False,
+) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(F.max_pool1d(t, kernel_size, stride, padding, dilation, ceil_mode) for t in input._storage)
+
+
+@NestedTensorFuncRegistry.implement(F.max_pool2d)
+def max_pool2d(
+    input: NestedTensor,
+    kernel_size: int | Tuple[int, ...],
+    stride: int | Tuple[int, ...] | None = None,
+    padding: int | Tuple[int, ...] = 0,
+    dilation: int | Tuple[int, ...] = 1,
+    ceil_mode: bool = False,
+) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(F.max_pool2d(t, kernel_size, stride, padding, dilation, ceil_mode) for t in input._storage)
+
+
+@NestedTensorFuncRegistry.implement(F.max_pool3d)
+def max_pool3d(
+    input: NestedTensor,
+    kernel_size: int | Tuple[int, ...],
+    stride: int | Tuple[int, ...] | None = None,
+    padding: int | Tuple[int, ...] = 0,
+    dilation: int | Tuple[int, ...] = 1,
+    ceil_mode: bool = False,
+) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(F.max_pool3d(t, kernel_size, stride, padding, dilation, ceil_mode) for t in input._storage)
+
+
+@NestedTensorFuncRegistry.implement(F.adaptive_max_pool1d)
+def adaptive_max_pool1d(input: NestedTensor, output_size: int | Tuple[int, ...]) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(F.adaptive_max_pool1d(t, output_size) for t in input._storage)
+
+
+@NestedTensorFuncRegistry.implement(F.adaptive_max_pool2d)
+def adaptive_max_pool2d(input: NestedTensor, output_size: int | Tuple[int, ...]) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(F.adaptive_max_pool2d(t, output_size) for t in input._storage)
+
+
+@NestedTensorFuncRegistry.implement(F.adaptive_max_pool3d)
+def adaptive_max_pool3d(input: NestedTensor, output_size: int | Tuple[int, ...]) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(F.adaptive_max_pool3d(t, output_size) for t in input._storage)
+
+
+@NestedTensorFuncRegistry.implement(F.max_pool1d_with_indices)
+def max_pool1d_with_indices(
+    input: NestedTensor,
+    kernel_size: int | Tuple[int, ...],
+    stride: int | Tuple[int, ...] | None = None,
+    padding: int | Tuple[int, ...] = 0,
+    dilation: int | Tuple[int, ...] = 1,
+    ceil_mode: bool = False,
+) -> Tuple[NestedTensor, NestedTensor]:
+    from .nested_tensor import NestedTensor
+
+    pooled, indices = zip(
+        *[F.max_pool1d_with_indices(t, kernel_size, stride, padding, dilation, ceil_mode) for t in input._storage]
+    )
+    return NestedTensor(pooled), NestedTensor(indices)
+
+
+@NestedTensorFuncRegistry.implement(F.max_pool2d_with_indices)
+def max_pool2d_with_indices(
+    input: NestedTensor,
+    kernel_size: int | Tuple[int, ...],
+    stride: int | Tuple[int, ...] | None = None,
+    padding: int | Tuple[int, ...] = 0,
+    dilation: int | Tuple[int, ...] = 1,
+    ceil_mode: bool = False,
+) -> Tuple[NestedTensor, NestedTensor]:
+    from .nested_tensor import NestedTensor
+
+    pooled, indices = zip(
+        *[F.max_pool2d_with_indices(t, kernel_size, stride, padding, dilation, ceil_mode) for t in input._storage]
+    )
+    return NestedTensor(pooled), NestedTensor(indices)
+
+
+@NestedTensorFuncRegistry.implement(F.max_pool3d_with_indices)
+def max_pool3d_with_indices(
+    input: NestedTensor,
+    kernel_size: int | Tuple[int, ...],
+    stride: int | Tuple[int, ...] | None = None,
+    padding: int | Tuple[int, ...] = 0,
+    dilation: int | Tuple[int, ...] = 1,
+    ceil_mode: bool = False,
+) -> Tuple[NestedTensor, NestedTensor]:
+    from .nested_tensor import NestedTensor
+
+    pooled, indices = zip(
+        *[F.max_pool3d_with_indices(t, kernel_size, stride, padding, dilation, ceil_mode) for t in input._storage]
+    )
+    return NestedTensor(pooled), NestedTensor(indices)
+
+
+@NestedTensorFuncRegistry.implement(F.adaptive_max_pool1d_with_indices)
+def adaptive_max_pool1d_with_indices(
+    input: NestedTensor, output_size: int | Tuple[int, ...]
+) -> Tuple[NestedTensor, NestedTensor]:
+    from .nested_tensor import NestedTensor
+
+    pooled, indices = zip(*[F.adaptive_max_pool1d_with_indices(t, output_size) for t in input._storage])
+    return NestedTensor(pooled), NestedTensor(indices)
+
+
+@NestedTensorFuncRegistry.implement(F.adaptive_max_pool2d_with_indices)
+def adaptive_max_pool2d_with_indices(
+    input: NestedTensor, output_size: int | Tuple[int, ...]
+) -> Tuple[NestedTensor, NestedTensor]:
+    from .nested_tensor import NestedTensor
+
+    pooled, indices = zip(*[F.adaptive_max_pool2d_with_indices(t, output_size) for t in input._storage])
+    return NestedTensor(pooled), NestedTensor(indices)
+
+
+@NestedTensorFuncRegistry.implement(F.adaptive_max_pool3d_with_indices)
+def adaptive_max_pool3d_with_indices(
+    input: NestedTensor, output_size: int | Tuple[int, ...]
+) -> Tuple[NestedTensor, NestedTensor]:
+    from .nested_tensor import NestedTensor
+
+    pooled, indices = zip(*[F.adaptive_max_pool3d_with_indices(t, output_size) for t in input._storage])
+    return NestedTensor(pooled), NestedTensor(indices)
+
+
+@NestedTensorFuncRegistry.implement(F.fractional_max_pool2d)
+def fractional_max_pool2d(
+    input: NestedTensor,
+    kernel_size: int | Tuple[int, ...],
+    output_size: int | Tuple[int, ...] | None = None,
+    output_ratio: float | Tuple[float, float] | None = None,
+    return_indices: bool = False,
+    ceil_mode: bool = False,
+) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(
+        F.fractional_max_pool2d(t, kernel_size, output_size, output_ratio, return_indices, ceil_mode)
+        for t in input._storage
+    )
+
+
+@NestedTensorFuncRegistry.implement(F.fractional_max_pool3d)
+def fractional_max_pool3d(
+    input: NestedTensor,
+    kernel_size: int | Tuple[int, ...],
+    output_size: int | Tuple[int, ...] | None = None,
+    output_ratio: float | Tuple[float, float, float] | None = None,
+    return_indices: bool = False,
+    ceil_mode: bool = False,
+) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(
+        F.fractional_max_pool3d(t, kernel_size, output_size, output_ratio, return_indices, ceil_mode)
+        for t in input._storage
+    )
+
+
+@NestedTensorFuncRegistry.implement(F.fractional_max_pool2d_with_indices)
+def fractional_max_pool2d_with_indices(
+    input: NestedTensor,
+    kernel_size: int | Tuple[int, ...],
+    output_size: int | Tuple[int, ...] | None = None,
+    output_ratio: float | Tuple[float, float] | None = None,
+    return_indices: bool = True,
+    ceil_mode: bool = False,
+) -> Tuple[NestedTensor, NestedTensor]:
+    from .nested_tensor import NestedTensor
+
+    pooled, indices = zip(
+        *[
+            F.fractional_max_pool2d_with_indices(t, kernel_size, output_size, output_ratio, return_indices, ceil_mode)
+            for t in input._storage
+        ]
+    )
+    return NestedTensor(pooled), NestedTensor(indices)
+
+
+@NestedTensorFuncRegistry.implement(F.fractional_max_pool3d_with_indices)
+def fractional_max_pool3d_with_indices(
+    input: NestedTensor,
+    kernel_size: int | Tuple[int, ...],
+    output_size: int | Tuple[int, ...] | None = None,
+    output_ratio: float | Tuple[float, float, float] | None = None,
+    return_indices: bool = True,
+    ceil_mode: bool = False,
+) -> Tuple[NestedTensor, NestedTensor]:
+    from .nested_tensor import NestedTensor
+
+    pooled, indices = zip(
+        *[
+            F.fractional_max_pool3d_with_indices(t, kernel_size, output_size, output_ratio, return_indices, ceil_mode)
+            for t in input._storage
+        ]
+    )
+    return NestedTensor(pooled), NestedTensor(indices)
+
+
+@NestedTensorFuncRegistry.implement(F.lp_pool1d)
+def lp_pool1d(
+    input: NestedTensor,
+    norm_type: float,
+    kernel_size: int | Tuple[int, ...],
+    stride: int | Tuple[int, ...] | None = None,
+    ceil_mode: bool = False,
+) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(F.lp_pool1d(t, norm_type, kernel_size, stride, ceil_mode) for t in input._storage)
+
+
+@NestedTensorFuncRegistry.implement(F.lp_pool2d)
+def lp_pool2d(
+    input: NestedTensor,
+    norm_type: float,
+    kernel_size: int | Tuple[int, ...],
+    stride: int | Tuple[int, ...] | None = None,
+    ceil_mode: bool = False,
+) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(F.lp_pool2d(t, norm_type, kernel_size, stride, ceil_mode) for t in input._storage)
+
+
+@NestedTensorFuncRegistry.implement(F.lp_pool3d)
+def lp_pool3d(
+    input: NestedTensor,
+    norm_type: float,
+    kernel_size: int | Tuple[int, ...],
+    stride: int | Tuple[int, ...] | None = None,
+    ceil_mode: bool = False,
+) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(F.lp_pool3d(t, norm_type, kernel_size, stride, ceil_mode) for t in input._storage)
+
+
 # Normalizations
 
 
