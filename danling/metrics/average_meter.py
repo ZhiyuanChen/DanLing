@@ -20,15 +20,17 @@
 from __future__ import annotations
 
 from math import nan
-from typing import Dict, Type
+from typing import Dict
+from warnings import warn
 
 import torch
 from torch import Tensor
+from torch import device as torch_device
 from torch import distributed as dist
 
 from danling.utils import get_world_size
 
-from .utils import MetricsDict, RoundDict
+from .utils import MetersBase, RoundDict
 
 try:
     from typing import Self  # type: ignore[attr-defined]
@@ -49,6 +51,11 @@ class AverageMeter:
         avg: Running average of all values, weighted by counts
         sum: Sum of all values added to the meter
         count: Total count of values added (considering weights)
+        device: Device used when synchronising statistics across processes
+
+    Args:
+        device: Optional device used for distributed reductions. When not provided,
+            the device is detected automatically when synchronisation happens.
 
     Examples:
         >>> meter = AverageMeter()
@@ -76,30 +83,33 @@ class AverageMeter:
         AverageMeter(val=nan, avg=nan)
 
     See Also:
-        - [`MetricMeter`][danling.metrics.metric_meter.MetricMeter]:
+        - [`MetricMeter`][danling.metrics.stream_metrics.MetricMeter]:
             Memory-efficient metric tracker that averages metrics batch-by-batch.
     """
 
     v: float = 0.0
-    n: int = 1
+    n: int = 0
     sum: float = 0.0
     count: int = 0
 
-    def __init__(self) -> None:
+    def __init__(self, *, device: torch.device | str | None = None) -> None:
+        self.device = torch_device(device) if device is not None else None
         self.reset()
 
-    def reset(self) -> Self:
+    def reset(self, *, device: torch.device | str | None = None) -> Self:
         r"""
         Resets the meter.
         """
 
+        if device is not None:
+            self.device = torch_device(device)
         self.v = 0.0
-        self.n = 1
+        self.n = 0
         self.sum = 0.0
         self.count = 0
         return self
 
-    def update(self, value: float | int, n: int = 1) -> None:
+    def update(self, value: float | int | Tensor, n: int = 1) -> None:
         r"""
         Updates the average and current value in the meter.
 
@@ -108,6 +118,10 @@ class AverageMeter:
             n: Number of values to be added.
         """
 
+        if isinstance(value, Tensor):
+            if self.device is None:
+                self.device = value.device
+            value = value.item()
         self.v = value
         self.n = n
         self.sum += value * n
@@ -122,23 +136,25 @@ class AverageMeter:
         world_size = get_world_size()
         if world_size <= 1:
             return self.value()
-        synced_tensor = torch.tensor([self.v, self.n], dtype=torch.float64).cuda()
+        device = self._infer_device()
+        synced_tensor = torch.tensor([self.v * self.n, self.n], dtype=torch.float64, device=device)
         dist.all_reduce(synced_tensor)
-        val, count = synced_tensor
+        val, count = synced_tensor.tolist()
         if count == 0:
             return nan
-        return (val / count).item()
+        return val / count
 
     def average(self) -> float:
         world_size = get_world_size()
         if world_size <= 1:
             return self.sum / self.count if self.count != 0 else nan
-        synced_tensor = torch.tensor([self.sum, self.count], dtype=torch.float64).cuda()
+        device = self._infer_device()
+        synced_tensor = torch.tensor([self.sum, self.count], dtype=torch.float64, device=device)
         dist.all_reduce(synced_tensor)
-        val, count = synced_tensor
+        val, count = synced_tensor.tolist()
         if count == 0:
             return nan
-        return (val / count).item()
+        return val / count
 
     @property
     def val(self) -> float:
@@ -158,8 +174,43 @@ class AverageMeter:
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(val={self.val}, avg={self.avg})"
 
+    def _infer_device(self) -> torch.device:
+        if self.device is not None:
+            return self.device
 
-class AverageMeters(MetricsDict):
+        device: torch.device | None = None
+
+        if dist.is_available() and dist.is_initialized():
+            backend = dist.get_backend()
+            if backend in {"nccl", "cuda"} and torch.cuda.is_available():
+                try:
+                    index = torch.cuda.current_device()
+                except (AssertionError, RuntimeError):
+                    index = 0
+                device = torch.device("cuda", index)
+            elif backend in {"gloo", "mpi"}:
+                device = torch.device("cpu")
+        else:
+            if torch.cuda.is_available():
+                try:
+                    index = torch.cuda.current_device()
+                except (AssertionError, RuntimeError):
+                    index = 0
+                device = torch.device("cuda", index)
+            elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+                device = torch.device("mps")
+            else:
+                device = torch.device("cpu")
+
+        if device is None:
+            warn("Failed to infer device, defaulting to CPU.")
+            device = torch.device("cpu")
+
+        self.device = device
+        return device
+
+
+class AverageMeters(MetersBase):
     r"""
     Manages multiple average meters in one object.
 
@@ -181,15 +232,11 @@ class AverageMeters(MetricsDict):
         'loss: nan (nan)\tauroc: nan (nan)\tr2: nan (nan)'
 
     See Also:
-        - [`MetricMeters`][danling.metrics.metric_meter.MetricMeters]:
+        - [`StreamMetrics`][danling.metrics.stream_metrics.StreamMetrics]:
             Memory-efficient metric tracker that averages multiple metrics batch-by-batch.
     """
 
-    def __init__(self, default_factory: Type[AverageMeter] = AverageMeter, **meters) -> None:
-        super().__init__(default_factory=default_factory, **meters)
-        for name, meter in self.items():
-            if not isinstance(meter, AverageMeter):
-                raise ValueError(f"Expected {name} to be an instance of AverageMeter, but got {type(meter)}")
+    meter_cls = AverageMeter  # type: ignore[assignment]
 
     @property
     def sum(self) -> RoundDict[str, float]:
@@ -222,8 +269,3 @@ class AverageMeters(MetricsDict):
             if not isinstance(value, (int, float)):
                 raise ValueError(f"Expected values to be int or float, but got {type(value)}")
             self[meter].update(value)
-
-    def set(self, name: str, meter: AverageMeter) -> None:  # pylint: disable=W0237
-        if not isinstance(meter, AverageMeter):
-            raise ValueError(f"Expected meter to be an instance of AverageMeter, but got {type(meter)}")
-        super().set(name, meter)

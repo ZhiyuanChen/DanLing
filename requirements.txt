@@ -3,5 +3,4 @@ chanfig >= 0.0.96
 gitpython
 lazy-imports
 strenum; python_version < "3.11"
-torcheval
 tqdm

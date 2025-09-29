@@ -21,10 +21,13 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from chanfig import Registry as Registry_
 
 from .factory import binary_metrics, multiclass_metrics, multilabel_metrics, regression_metrics
-from .metrics import Metrics
+from .global_metrics import GlobalMetrics
+from .stream_metrics import StreamMetrics
 
 
 class Registry(Registry_):
@@ -33,21 +36,22 @@ class Registry(Registry_):
     def build(
         self,
         type: str,
+        mode: Literal["global", "stream"] = "global",
         num_labels: int | None = None,
         num_classes: int | None = None,
         num_outputs: int | None = None,
         **kwargs,
-    ) -> Metrics:
+    ) -> GlobalMetrics | StreamMetrics:
         type = type.lower()
         if type == "multilabel":
-            return self.init(self.lookup(type), num_labels=num_labels, **kwargs)
+            return self.init(self.lookup(type), mode=mode, num_labels=num_labels, **kwargs)
         if type == "multiclass":
             num_classes = num_classes or num_labels
-            return self.init(self.lookup(type), num_classes=num_classes, **kwargs)
+            return self.init(self.lookup(type), mode=mode, num_classes=num_classes, **kwargs)
         if type == "regression":
             num_outputs = num_outputs or num_labels
-            return self.init(self.lookup(type), num_outputs=num_outputs, **kwargs)
-        return self.init(self.lookup(type), **kwargs)
+            return self.init(self.lookup(type), mode=mode, num_outputs=num_outputs, **kwargs)
+        return self.init(self.lookup(type), mode=mode, **kwargs)
 
 
 METRICS = Registry(key="type")

@@ -1,250 +1,190 @@
-# Metric
+# Metrics
 
-The `danling.metrics` module provides a flexible and powerful system for computing, tracking, and aggregating metrics during model training and evaluation.
-This module is designed to work seamlessly with PyTorch and supports both single-task and multi-task scenarios.
+`danling.metrics` provides metric containers and metric descriptors for large-scale training.
+The design is exact-by-default and optimized to avoid redundant state computation and cross-rank sync.
 
-## Overview
+## Design Summary
 
-Metrics are essential for measuring model performance during training and evaluation. The `danling.metrics` module offers a comprehensive solution for:
+- Exact by default: factory functions return [`GlobalMetrics`][danling.metrics.GlobalMetrics] unless `mode="stream"` is set.
+- Shared state: metric descriptors declare required artifacts (`preds/targets`, `confmat`) so containers build them once.
+- Symmetric API: [`GlobalMetrics`][danling.metrics.GlobalMetrics] and [`StreamMetrics`][danling.metrics.StreamMetrics] share the same constructor signature.
+- Extensible: users can provide custom [`MetricFunc`][danling.metrics.functional.MetricFunc] implementations (or plain callables for `StreamMetrics`).
 
-- Computing various metrics (accuracy, AUROC, Pearson, etc.)
-- Aggregating metrics across batches and devices
-- Supporting complex scenarios like multi-task learning
-- Integrating with distributed training environments
+## Core Components
 
-## Key Components
-
-The module consists of three classes and several helpful functions:
-
-- [`metrics`][danling.metrics.metrics]: Keeps track of all predictions and labels to compute multiple metrics that require the entire dataset.
-- [`average_meter`][danling.metrics.average_meter]: Core component for averaging values over time.
-- [`metric_meter`][danling.metrics.metric_meter]: Computes and averages metrics on a per-batch basis.
-- [`factory`][danling.metrics.factory]: Convenient functions to create common metric for different task types.
-- [`functional`][danling.metrics.functional]: Implementation of common metric functions.
+- [`GlobalMetrics`][danling.metrics.GlobalMetrics]
+  - Stores exact artifacts for global/global computation.
+  - Computes values from shared [`MetricState`][danling.metrics.MetricState].
+  - Performs distributed synchronization lazily in `average()` / `compute()`.
+- [`StreamMetrics`][danling.metrics.StreamMetrics]
+  - Computes per-sample/per-batch scores online and tracks running averages.
+  - Uses the same metric descriptors and preprocess contract as `GlobalMetrics`.
+  - Suitable for high-throughput training loops.
+- [`MetricMeter`][danling.metrics.MetricMeter]
+  - Single-metric streaming meter used internally by `StreamMetrics`.
+- [`METRICS` registry][danling.metrics.METRICS]
+  - Task factory registry with explicit `mode`.
+- [`MultiTaskMetrics`][danling.metrics.MultiTaskMetrics]
+  - Nested container for multi-head / multi-dataset evaluation.
 
 ## Quick Start
 
-### Binary Classification
+### Exact Metrics (Default)
 
 ```python
+import torch
 import danling as dl
-import torch
 
-metrics = dl.metrics.binary_metrics()
-pred = torch.randn(8, 32)
-target = torch.randint(2, (8, 32))
+metrics = dl.metrics.binary_metrics()  # mode="global" by default -> GlobalMetrics
+metrics.update(torch.randn(32), torch.randint(2, (32,)))
 
-metrics.update(pred, target)
-
-print(metrics.val)
-print(metrics.avg)
+print(metrics.val)  # last update
+print(metrics.avg)  # exact average over all accumulated state
 ```
 
-### Multiclass Classification
+### Streaming Metrics
 
 ```python
+import torch
 import danling as dl
-import torch
 
-metrics = dl.metrics.multiclass_metrics(num_classes=10)
-pred = torch.randn(8, 10)
-target = torch.randint(10, (8, ))
+metrics = dl.metrics.multiclass_metrics(num_classes=10, mode="stream")  # -> StreamMetrics
+metrics.update(torch.randn(64, 10), torch.randint(10, (64,)))
 
-metrics.update(pred, target)
-
-# Access specific metrics
-print(f"Accuracy: {metrics.avg['acc']}")
-print(f"F1 Score: {metrics.avg['f1']}")
+print(metrics.val)  # current batch metric
+print(metrics.avg)  # running average
 ```
 
-### Regression
+## Global vs Stream
+
+| Aspect               | [`GlobalMetrics`][danling.metrics.GlobalMetrics] | [`StreamMetrics`][danling.metrics.StreamMetrics] |
+| -------------------- | ------------------------------------------------ | ------------------------------------------------ |
+| Default factory mode | `mode="global"`                                  | `mode="stream"`                                  |
+| State                | Stores full required artifacts                   | Stores running meter stats                       |
+| Sync pattern         | Sync once when computing average                 | Meter-level sync in running stats                |
+| Typical use          | Exact eval, AUROC/AUPRC/correlation              | Fast training logs                               |
+| Memory               | Higher                                           | Lower                                            |
+
+## Shared Constructor Contract
+
+`GlobalMetrics` and `StreamMetrics` intentionally share this signature:
 
 ```python
-import danling as dl
-import torch
-
-metrics = dl.metrics.regression_metrics()
-pred = dl.NestedTensor([torch.randn(2, ), torch.randn(3, ), torch.randn(5, )])
-target = dl.NestedTensor([torch.randn(2, ), torch.randn(3, ), torch.randn(5, )])
-
-metrics.update(pred, target)
-
-print(f"{metrics:.4f}")
+(*metric_funcs, preprocess=..., distributed=True, device=None, **metrics)
 ```
 
-## Choosing the Right Metric Class
+Rules:
 
-DanLing provides [`Metrics`][danling.metrics.Metrics] and [`MetricMeters`][danling.metrics.MetricMeters] for different use cases.
-Understanding the differences will help you choose the right one for your specific needs.
-
-!!! info "Use [`Metrics`][danling.metrics.Metrics] when"
-
-    - You need metrics that require the entire dataset (like AUROC, Spearman correlation)
-    - You want to maintain the full history of predictions and labels
-    - Memory is not a constraint for your dataset size
-    - You need metrics that cannot be meaningfully averaged batch-by-batch
-    - Precision is top priority
-
-```python
-import torch
-from danling.metrics import Metrics
-from danling.metrics.functional import auroc, auprc
-
-metrics = Metrics(auroc=auroc, auprc=auprc)
-
-pred = torch.randn(8, 32)
-target = torch.randint(2, (8, 32))
-metrics.update(pred, target)
-
-print(f"Current batch AUROC: {metrics.val['auroc']}")
-print(f"Overall AUROC: {metrics.avg['auroc']}")
-```
-
-**Best for**:
-
-- Evaluation phases where you need high-quality metrics
-- ROC curves and PR curves that require all predictions
-- Correlation measures (Pearson, Spearman)
-- Final model assessment
-
-!!! info "Use [`MetricMeters`][danling.metrics.MetricMeters] when"
-
-    - You need to track metrics that can be averaged across batches (like accuracy, loss)
-    - Memory efficiency is important (doesn't store all predictions)
-    - Speed matters (syncing predictions across the entire process group takes time)
-    - You want simple averaging of metrics across iterations
-    - Approximation is good enough
-
-```python
-import torch
-from danling.metrics import MetricMeters
-from danling.metrics.functional import accuracy, f1_score
-
-meters = MetricMeters(acc=accuracy, f1=f1_score)
-
-pred = torch.randn(8, 32)
-target = torch.randint(2, (8, 32))
-meters.update(pred, target)
-
-print(f"Current batch accuracy: {meters.val['acc']}")
-print(f"Running average accuracy: {meters.avg['acc']}")
-```
-
-**Best for**:
-
-- Training phases where speed and memory efficiency is critical
-- Simple metrics like accuracy, precision, recall
-- Loss tracking during training
-- Large datasets where storing all predictions would be impractical
-
-!!! note "[`Metrics`][danling.metrics.Metrics] and [`MetricMeters`][danling.metrics.MetricMeters] are mostly identical"
-
-    [`Metrics`][danling.metrics.Metrics] and [`MetricMeters`][danling.metrics.MetricMeters] have a shared API, so that they are interchageable.
-
-    You can easily converts a [`Metrics`][danling.metrics.Metrics] to [`MetricMeters`][danling.metrics.MetricMeters] by calling `meters = MetricMeters(metrics)` and vice versa.
-
-### Key Differences
-
-| Feature             | [`Metrics`][danling.metrics.Metrics]   | [`MetricMeters`][danling.metrics.MetricMeters] |
-| ------------------- | -------------------------------------- | ---------------------------------------------- |
-| Storage             | Stores all predictions and labels      | Only stores running statistics                 |
-| Memory Usage        | Higher (scales with dataset size)      | Lower (constant)                               |
-| Computation         | Computes metrics on full dataset       | Averages per-batch metrics                     |
-| Multiple Metrics    | Stores multiple metrics with same data | Multiple metrics with same preprocessing       |
-| Use Case            | For metrics requiring all data         | For multiple batch-averageable metrics         |
-| Distributed Support | Yes                                    | Yes                                            |
+- Positional `*metric_funcs` can be metric descriptors (or iterables of descriptors). `StreamMetrics` also accepts plain callables.
+- Keyword `**metrics` are named metrics and override positional metrics with the same name.
+- `preprocess` is applied once per `update`.
+- `device` controls where internal artifacts/stat reductions live.
 
 ## Factory Functions
 
-The module provides convenient factory functions for common task types:
+- [`binary_metrics`][danling.metrics.factory.binary_metrics]
+- [`multiclass_metrics`][danling.metrics.factory.multiclass_metrics]
+- [`multilabel_metrics`][danling.metrics.factory.multilabel_metrics]
+- [`regression_metrics`][danling.metrics.factory.regression_metrics]
 
-- [`binary_metrics()`][danling.metrics.factory.binary_metrics]: For binary classification tasks
-- [`multiclass_metrics(num_classes)`][danling.metrics.factory.multiclass_metrics]: For multiclass classification tasks
-- [`multilabel_metrics(num_labels)`][danling.metrics.factory.multilabel_metrics]: For multi-label classification tasks
-- [`regression_metrics(num_outputs)`][danling.metrics.factory.regression_metrics]: For (multi-)regression tasks
+All factories accept:
 
-Each factory creates a [`Metrics`][danling.metrics.Metrics] instance pre-configured with appropriate metric functions and preprocessing.
+- `mode="global" | "stream"` (`"global"` default)
+- `*metrics_funcs`: if provided, defaults are replaced
+- `**metrics`: named extra metrics (or overrides)
+- task-specific arguments (`num_classes`, `num_labels`, `num_outputs`, `ignore_index`, etc.)
 
-!!! example "Using Factory Functions"
-
-    ```python
-    # Binary Classification
-    metrics = dl.metrics.binary_metrics()
-
-    # Multiclass with specific ignore_index
-    metrics = dl.metrics.multiclass_metrics(num_classes=10, ignore_index=-1)
-
-    # Regression
-    metrics = dl.metrics.regression_metrics(num_outputs=3)
-    ```
-
-## Advanced Usage
-
-### Multi-Task Learning
-
-For multi-task scenarios, use the multi-task variants:
+Example:
 
 ```python
 import danling as dl
+from danling.metrics.functional import binary_precision, binary_recall
+
+# Keep defaults and add metrics
+metrics = dl.metrics.binary_metrics(
+    mode="global",
+    precision=binary_precision(),
+    recall=binary_recall(),
+)
+
+# Replace defaults completely
+metrics_only_pr = dl.metrics.binary_metrics(
+    binary_precision(),
+    binary_recall(),
+    mode="global",
+)
+```
+
+## Default Metric Sets
+
+Factories keep defaults minimal:
+
+- Binary / Multiclass / Multilabel:
+  - `auroc`, `auprc`, `acc`, `f1`, `mcc`
+- Regression:
+  - `pearson`, `spearman`, `r2`, `mse`, `rmse`
+
+Additional built-ins (opt-in):
+
+- Classification: `precision`, `recall`, `fbeta`, `specificity`, `balanced_accuracy`, `jaccard`, `iou`, `hamming_loss`
+- Regression: `mae`
+
+`multiclass_accuracy` also supports top-k via `k`.
+
+## Custom Metric Descriptor (`MetricFunc`)
+
+For consistent behavior across both containers, implement `MetricFunc` and read from `MetricState`.
+
+```python
 import torch
+from danling.metrics import GlobalMetrics, StreamMetrics
+from danling.metrics.functional import MetricFunc
+
+class MeanBias(MetricFunc):
+    def __init__(self, name: str = "mean_bias") -> None:
+        super().__init__(name=name, preds_targets=True)
+
+    def __call__(self, state):
+        if state.preds.numel() == 0 or state.targets.numel() == 0:
+            return torch.tensor(float("nan"))
+        return (state.preds - state.targets).mean()
+
+metric = MeanBias()
+
+global_metrics = GlobalMetrics(metric, distributed=False)
+stream_metrics = StreamMetrics(metric)
+
+pred = torch.randn(16)
+target = torch.randn(16)
+
+global_metrics.update(pred, target)
+stream_metrics.update(pred, target)
+```
+
+## Multi-Task Usage
+
+```python
+import torch
+import danling as dl
 
 metrics = dl.metrics.MultiTaskMetrics()
-metrics.classification = dl.metrics.binary_metrics()
-metrics.regression = dl.metrics.regression_metrics(num_outputs=16)
+metrics.cls = dl.metrics.binary_metrics(mode="stream")
+metrics.reg = dl.metrics.regression_metrics(num_outputs=4, mode="global", distributed=False)
 
-metrics.update({
-    'classification': (torch.randn(8, ), torch.randint(2, (8, ))),
-    'regression': (torch.randn(8, 16), torch.randn(8, 16))
-})
-
-print(f"Classification AUROC: {metrics.avg.classification.auroc}")
-print(f"Regression RMSE: {metrics.avg.regression.rmse}")
-```
-
-### Custom Preprocessing
-
-Customize how inputs are preprocessed before metric calculation:
-
-```python
-import torch
-from danling.metrics import Metrics
-from danling.metrics.functional import accuracy
-from functools import partial
-
-def my_custom_preprocess(input, target, **kwargs):
-    return input, target
-
-metrics = Metrics(
-    acc=partial(accuracy, num_classes=10),
-    preprocess=my_custom_preprocess
+metrics.update(
+    {
+        "cls": (torch.randn(32), torch.randint(2, (32,))),
+        "reg": (torch.randn(32, 4), torch.randn(32, 4)),
+    }
 )
-metrics.update(torch.randn(8, 10), torch.randint(10, (8, )))
-print(f"Accuracy: {metrics.avg.acc}")
+
+print(metrics.avg)
 ```
 
-## Custom Metrics
-
-Create custom metric functions to use with the metrics system:
+## Registry Usage
 
 ```python
-import torch
-from danling.metrics import Metrics, MetricMeters
-from danling.metrics.functional import base_preprocess, with_preprocess
+from danling.metrics import METRICS
 
-@with_preprocess(base_preprocess)
-def my_custom_metric(input, target):
-    return (input / target).mean()
-
-# Use with Metrics
-metrics = Metrics(custom=my_custom_metric)
-metrics.update(torch.randn(8, 32), torch.randn(8, 32))
-print(f"Custom: {metrics.avg.custom}")
-
-
-# Or with MetricMeters
-meters = MetricMeters(my_custom_metric)
-metrics.update(torch.randn(8, 32), torch.randn(8, 32))
-print(f"Custom: {metrics.avg.custom}")
+metrics = METRICS.build(type="multiclass", mode="stream", num_classes=10)
 ```
-
-Note that the `Metrics` and `MetricMeters` will apply a unified preprocess at once if is defined.
