@@ -21,10 +21,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from copy import copy
-from functools import wraps
-from inspect import signature
-from typing import Callable
 
 import torch
 from torch import Tensor
@@ -83,31 +79,58 @@ def base_preprocess(
         >>> proc_input.shape, proc_target.shape
         (torch.Size([4]), torch.Size([4]))
     """
-    if not isinstance(input, (Tensor, NestedTensor)):
-        try:
-            input = torch.tensor(input)
-        except ValueError:
-            input = NestedTensor(input)
-    if not isinstance(target, (Tensor, NestedTensor)):
-        try:
-            target = torch.tensor(target)
-        except ValueError:
-            target = NestedTensor(target)
-    if isinstance(input, NestedTensor) or isinstance(target, NestedTensor):
-        if isinstance(input, NestedTensor) and isinstance(target, Tensor):
-            target = input.nested_like(target, strict=False)
-        elif isinstance(target, NestedTensor) and isinstance(input, Tensor):
-            input = target.nested_like(input, strict=False)
-        input, target = input.concat, target.concat
+    input = _coerce_to_tensor_like(input)
+    target = _coerce_to_tensor_like(target)
+
+    input, target = _align_nested_tensors(input, target)
+
     if ignore_index is not None:
-        mask = target != ignore_index
-        input, target = input[mask], target[mask]
+        input, target = _apply_mask(input, target, target != ignore_index)
     if ignore_nan:
-        mask = ~(torch.isnan(target))
-        input, target = input[mask], target[mask]
+        input, target = _apply_mask(input, target, ~torch.isnan(target))
+
     if input.numel() == target.numel():
         return input.squeeze(), target.squeeze()
     return input, target
+
+
+def _coerce_to_tensor_like(value: Tensor | NestedTensor | Sequence) -> Tensor | NestedTensor:
+    if isinstance(value, (Tensor, NestedTensor)):
+        return value
+    if isinstance(value, Sequence):
+        try:
+            return torch.as_tensor(value)
+        except (TypeError, ValueError, RuntimeError):
+            return NestedTensor(value)
+    raise TypeError(f"Unsupported input type: {type(value)}")
+
+
+def _align_nested_tensors(
+    input: Tensor | NestedTensor,
+    target: Tensor | NestedTensor,
+) -> tuple[Tensor, Tensor]:
+    input_is_nested = isinstance(input, NestedTensor)
+    target_is_nested = isinstance(target, NestedTensor)
+
+    if input_is_nested or target_is_nested:
+        if input_is_nested and not target_is_nested:
+            target = input.nested_like(target, strict=False)
+        elif target_is_nested and not input_is_nested:
+            input = target.nested_like(input, strict=False)
+        if isinstance(input, NestedTensor):
+            input = input.concat
+        if isinstance(target, NestedTensor):
+            target = target.concat
+
+    if not isinstance(input, Tensor) or not isinstance(target, Tensor):
+        raise TypeError("base_preprocess expects tensors after alignment")
+    return input, target
+
+
+def _apply_mask(input: Tensor, target: Tensor, mask: Tensor) -> tuple[Tensor, Tensor]:
+    if mask.dtype is not torch.bool:
+        mask = mask.to(dtype=torch.bool)
+    return input[mask], target[mask]
 
 
 def preprocess_regression(
@@ -116,11 +139,31 @@ def preprocess_regression(
     num_outputs: int = 1,
     ignore_nan: bool = True,
 ):
-    input, target = base_preprocess(input, target, ignore_nan=ignore_nan, ignore_index=None)
-    if num_outputs > 1:
-        return input.view(-1, num_outputs), target.view(-1, num_outputs)
+    input, target = base_preprocess(input, target, ignore_nan=False, ignore_index=None)
+    if not target.is_floating_point():
+        raise TypeError(f"Regression targets must be floating point tensors, but got {target.dtype}.")
     input = input.to(target.dtype)
-    return input.flatten(), target.flatten()
+
+    if num_outputs <= 0:
+        raise ValueError(f"num_outputs must be positive, but got {num_outputs!r}")
+
+    if num_outputs == 1:
+        if ignore_nan:
+            input, target = _apply_mask(input, target, ~torch.isnan(target))
+        return input.flatten(), target.flatten()
+
+    if target.numel() % num_outputs != 0 or input.numel() % num_outputs != 0:
+        raise ValueError(
+            "Regression inputs cannot be reshaped to the requested num_outputs. "
+            f"Got input.numel()={input.numel()}, target.numel()={target.numel()}, num_outputs={num_outputs}."
+        )
+
+    input = input.reshape(-1, num_outputs)
+    target = target.reshape(-1, num_outputs)
+    if ignore_nan:
+        row_mask = ~torch.isnan(target).any(dim=-1)
+        input, target = input[row_mask], target[row_mask]
+    return input, target
 
 
 def preprocess_classification(
@@ -147,9 +190,12 @@ def preprocess_binary(
     target: Tensor | NestedTensor | Sequence,
     ignore_index: int | None = -100,
 ):
-    input, target = base_preprocess(input, target, ignore_index=ignore_index, ignore_nan=False)
+    input, target = base_preprocess(input, target, ignore_index=None, ignore_nan=False)
     input, target = input.flatten(), target.flatten()
-    if input.max() > 1 or input.min() < 0:
+    if ignore_index is not None:
+        mask = target != ignore_index
+        input, target = input[mask], target[mask]
+    if input.numel() > 0 and (input.max() > 1 or input.min() < 0):
         input = input.sigmoid()
     return input, target
 
@@ -160,9 +206,12 @@ def preprocess_multiclass(
     num_classes: int,
     ignore_index: int | None = -100,
 ):
-    input, target = base_preprocess(input, target, ignore_index=ignore_index, ignore_nan=False)
-    input, target = input.view(-1, num_classes), target.flatten()
-    if input.max() > 1 or input.min() < 0:
+    input, target = base_preprocess(input, target, ignore_index=None, ignore_nan=False)
+    input, target = input.reshape(-1, num_classes), target.flatten()
+    if ignore_index is not None:
+        mask = target != ignore_index
+        input, target = input[mask], target[mask]
+    if input.numel() > 0 and (input.max() > 1 or input.min() < 0):
         input = input.softmax(dim=-1)
     return input, target
 
@@ -173,73 +222,13 @@ def preprocess_multilabel(
     num_labels: int,
     ignore_index: int | None = -100,
 ):
-    input, target = base_preprocess(input, target, ignore_index=ignore_index, ignore_nan=False)
-    input, target = input.view(-1, num_labels), target.view(-1, num_labels)
-    if input.max() > 1 or input.min() < 0:
+    input, target = base_preprocess(input, target, ignore_index=None, ignore_nan=False)
+    input, target = input.reshape(-1, num_labels), target.reshape(-1, num_labels)
+    if ignore_index is not None:
+        # Preserve per-label ignore markers for partially valid samples, but
+        # drop rows that are entirely ignored to avoid storing pure padding.
+        row_mask = (target != ignore_index).any(dim=-1)
+        input, target = input[row_mask], target[row_mask]
+    if input.numel() > 0 and (input.max() > 1 or input.min() < 0):
         input = input.sigmoid()
     return input, target
-
-
-def with_preprocess(preprocess_fn: Callable, **default_kwargs):
-    """
-    Decorator to apply preprocessing to metric functions.
-
-    This decorator wraps metric functions to handle preprocessing of inputs before the metric is calculated.
-    It handles common preprocessing tasks like ignoring certain values or converting input formats,
-    making the metric functions more robust and easier to use.
-
-    Args:
-        preprocess_fn: The preprocessing function to apply
-        **default_kwargs: Default values for the preprocessing function's parameters
-
-    Returns:
-        Decorated function with preprocessing capability
-
-    Examples:
-        >>> import torch
-        >>> @with_preprocess(preprocess_regression, ignore_nan=True)
-        ... def my_regression_metric(input, target):
-        ...     # Assumes input and target are already preprocessed
-        ...     return input.mean() / target.mean()
-
-        >>> # When called, preprocessing is automatically applied
-        >>> result = my_regression_metric(torch.rand(4), torch.rand(4))
-
-        >>> # Preprocessing can be disabled
-        >>> result = my_regression_metric(torch.rand(4), torch.rand(4), preprocess=False)
-
-        >>> # Additional preprocessing parameters can be passed
-        >>> result = my_regression_metric(torch.rand(4), torch.rand(4), ignore_nan=False)
-
-    Notes:
-        - The wrapper extracts parameters needed for preprocessing from **kwargs
-        - If preprocess=False is passed, no preprocessing is applied
-        - All other parameters are passed through to the metric function
-    """
-    preprocess_params = set(signature(preprocess_fn).parameters.keys()) - {"input", "target"}
-
-    def decorator(metric_fn: Callable) -> Callable:
-
-        @wraps(metric_fn)
-        def wrapper(
-            input: Tensor | NestedTensor | Sequence,
-            target: Tensor | NestedTensor | Sequence,
-            *,
-            preprocess: bool = True,
-            **kwargs,
-        ):
-            metric_kwargs = {k: v for k, v in kwargs.items() if k not in default_kwargs}
-
-            if not preprocess:
-                return metric_fn(input, target, **metric_kwargs)
-
-            preprocess_kwargs = copy(default_kwargs)
-            for key in preprocess_params:
-                if key in kwargs:
-                    preprocess_kwargs[key] = kwargs[key]
-            input, target = preprocess_fn(input, target, **preprocess_kwargs)
-            return metric_fn(input, target, **metric_kwargs)
-
-        return wrapper
-
-    return decorator

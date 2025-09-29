@@ -25,7 +25,7 @@ from .metrics import (
     AverageMeter,
     AverageMeters,
     MetricMeter,
-    MetricMeters,
+    StreamMetrics,
 )
 from .optim import OPTIMIZERS, SCHEDULERS, LRScheduler
 from .runners import AccelerateRunner, BaseRunner, TorchRunner
@@ -43,7 +43,7 @@ from .utils import (
 )
 
 with try_import():
-    from .metrics import Metrics, MultiTaskMetrics
+    from .metrics import GlobalMetrics, MultiTaskMetrics
 
 __all__ = [
     "BaseRunner",
@@ -53,10 +53,10 @@ __all__ = [
     "SCHEDULERS",
     "LRScheduler",
     "METRICS",
-    "Metrics",
+    "GlobalMetrics",
     "MultiTaskMetrics",
     "MetricMeter",
-    "MetricMeters",
+    "StreamMetrics",
     "AverageMeter",
     "AverageMeters",
     "NestedTensor",
