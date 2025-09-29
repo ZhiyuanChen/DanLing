@@ -20,7 +20,7 @@
 from __future__ import annotations
 
 from math import isnan
-from typing import Generic, Union
+from typing import Any, Generic, Mapping, Optional, Union
 
 from chanfig import DefaultDict, NestedDict
 from typing_extensions import TypeVar
@@ -51,10 +51,47 @@ class RoundDict(NestedDict, Generic[K, V]):
         return dict
 
 
-class MetricsDict(DefaultDict):
-    r"""
-    A `MetricsDict` for better support for `AverageMeters`.
+class MetersBase(DefaultDict):
+    r"""Base container for collections of meter objects.
+
+    Subclasses can provide a `meter_cls` attribute to enforce the type of
+    values stored in the dictionary and customise how callable objects are
+    converted into meters.
     """
+
+    meter_cls: Optional[type] = None
+
+    def __init__(self, *args: Mapping[str, Any] | None, default_factory=None, **meters: Any) -> None:
+        self.__dict__["_metricsdict_initialising"] = True
+        meter_cls = getattr(self, "meter_cls", None)
+        factory = default_factory if default_factory is not None else meter_cls
+        super().__init__(default_factory=factory)
+        self.__dict__["_metricsdict_initialising"] = False
+        dict.pop(self, "meter_cls", None)
+
+        initial: dict[str, Any] = {}
+        if args:
+            if len(args) > 1:
+                raise TypeError("MetersBase accepts at most one positional mapping argument.")
+            mapping = args[0]
+            if mapping is not None:
+                initial.update(dict(mapping))
+        if meters:
+            initial.update(meters)
+        for name, meter in initial.items():
+            self.set(name, meter)
+
+    def set(self, name: Any, value: Any) -> None:
+        if self.__dict__.get("_metricsdict_initialising", False):
+            super().set(name, value)
+            return
+        super().set(name, self._coerce_meter(value))
+
+    def _coerce_meter(self, value: Any):
+        meter_cls = getattr(self, "meter_cls", None)
+        if meter_cls is None or isinstance(value, meter_cls):
+            return value
+        raise ValueError(f"Expected value to be an instance of {meter_cls.__name__}, but got {type(value)}")
 
     def value(self) -> RoundDict[str, float]:
         return RoundDict({key: metric.value() for key, metric in self.all_items()})
@@ -86,9 +123,9 @@ class MetricsDict(DefaultDict):
         return "\t".join(f"{key}: {metric.__format__(format_spec)}" for key, metric in self.all_items())
 
 
-class MultiTaskDict(NestedDict):
+class MultiTaskBase(NestedDict):
     r"""
-    A `MultiTaskDict` for better multi-task support.
+    Container that groups meters for multiple tasks and aggregates them.
     """
 
     return_average = False
