@@ -28,10 +28,10 @@ from danling.tensors import NestedTensor
 
 from .metric_meter import MetricMeter, MetricMeters
 from .metrics import Metrics
-from .utils import MultiTaskDict
+from .utils import MultiTaskBase
 
 
-class MultiTaskMetrics(MultiTaskDict):
+class MultiTaskMetrics(MultiTaskBase):
     r"""
     Examples:
         >>> from danling.metrics.functional import accuracy

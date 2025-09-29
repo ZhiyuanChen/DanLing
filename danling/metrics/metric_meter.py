@@ -41,7 +41,7 @@ class MetricMeter(AverageMeter):
 
     Attributes:
         metric: The metric function to compute on each batch
-        preprocess: Optional preprocessing function to apply to inputs and targets
+        preprocess: Optional preprocessing function applied before the metric
         val: Result from the most recent batch
         bat: Result from the most recent batch, synchronized across devices
         avg: Weighted average of all results so far
@@ -50,7 +50,7 @@ class MetricMeter(AverageMeter):
 
     Args:
         metric: Function that computes a metric given input and target tensors
-        preprocess: Function to preprocess inputs before computing the metric
+        preprocess: Optional preprocessing function to apply before computing the metric
 
     Examples:
         >>> import torch
@@ -95,27 +95,61 @@ class MetricMeter(AverageMeter):
     def __init__(
         self,
         metric: Callable,
+        *,
+        preprocess: Callable | None = None,
     ) -> None:
         super().__init__()
         if not callable(metric):
             raise ValueError(f"Expected metric to be callable, but got {type(metric)}")
         self.metric = metric
+        self.preprocess = preprocess
 
     def update(  # type: ignore[override] # pylint: disable=W0237
         self,
         input: Tensor | NestedTensor,  # pylint: disable=W0622
         target: Tensor | NestedTensor,
+        *,
+        n: int | None = None,
     ) -> None:
         r"""
         Updates the average and current value in the meter.
 
         Args:
-            value: Value to be added to the average.
-            n: Number of values to be added.
+            input: Prediction tensor or nested tensor.
+            target: Ground-truth tensor or nested tensor.
+            n: Optional number of samples represented by this update. When omitted,
+                the batch size is inferred from the inputs.
         """
-        n = len(input)
+
+        if self.preprocess is not None:
+            input, target = self.preprocess(input, target)
+
+        self._update(input, target, n=n)
+
+    def _update(
+        self,
+        input: Tensor | NestedTensor | Sequence,
+        target: Tensor | NestedTensor | Sequence,
+        *,
+        n: int | None = None,
+    ) -> None:
+        if n is None:
+            try:
+                n = len(input)
+            except TypeError:
+                n = 1
+        elif not isinstance(n, int):
+            raise ValueError(f"n must be a number, but got {n!r}")
+        elif n <= 0:
+            raise ValueError(f"n must be a positive integer, but got {n!r}")
+
         value = self.metric(input, target)
         if isinstance(value, Tensor):
+            if value.numel() != 1:
+                raise ValueError(
+                    "Metric functions used with MetricMeter must return a scalar tensor, "
+                    f"but got shape {tuple(value.shape)}"
+                )
             value = value.item()
         super().update(value=value, n=n)
 
@@ -187,7 +221,7 @@ class MetricMeters(AverageMeters):
     """
 
     preprocess = base_preprocess
-    default_cls = MetricMeter
+    meter_cls = MetricMeter
 
     def __init__(
         self,
@@ -210,12 +244,23 @@ class MetricMeters(AverageMeters):
                         raise ValueError(f"Expected metric to be callable, but got {type(metric)}")
                     meters.setdefault(metric.__name__, metric)
         self.setattr("preprocess", preprocess)
-        super().__init__(default_factory=None, **meters)  # type: ignore[arg-type]
+        super().__init__(**meters)
+
+    def _coerce_meter(self, value):  # type: ignore[override]
+        meter_cls = self.getattr("meter_cls", MetricMeter)
+        if isinstance(value, meter_cls):
+            value.preprocess = None
+            return value
+        if callable(value):
+            return meter_cls(value, preprocess=None)
+        raise ValueError(f"Expected meter to be an instance of {meter_cls.__name__}, but got {type(value)}")
 
     def update(  # type: ignore[override] # pylint: disable=W0221
         self,
         input: Tensor | NestedTensor | Sequence,  # pylint: disable=W0622
         target: Tensor | NestedTensor | Sequence,
+        *,
+        n: int | None = None,
     ) -> None:
         r"""
         Updates the average and current value in all meters.
@@ -223,6 +268,8 @@ class MetricMeters(AverageMeters):
         Args:
             input: Input values to compute the metrics.
             target: Target values to compute the metrics.
+            n: Optional number of samples represented by this update. Defaults to
+                the inferred batch size.
         """
 
         input, target = self.preprocess(input, target)  # type: ignore[arg-type]
@@ -237,14 +284,10 @@ class MetricMeters(AverageMeters):
         if isinstance(target, (Tensor, NestedTensor)):
             target = target.detach().to("cpu")
         for meter in self.values():
-            meter.update(input, target)
-
-    def set(self, name: str, meter: MetricMeter | Callable) -> None:  # type: ignore[override] # pylint: disable=W0237
-        if callable(meter):
-            meter = self.getattr("default_cls", MetricMeter)(meter)
-        if not isinstance(meter, MetricMeter):
-            raise ValueError(f"Expected meter to be an instance of MetricMeter, but got {type(meter)}")
-        super().set(name, meter)
+            if isinstance(meter, MetricMeter):
+                meter._update(input, target, n=n)
+            else:
+                meter.update(input, target, n=n)
 
     def __repr__(self):
         keys = tuple(i for i in self.keys())

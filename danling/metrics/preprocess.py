@@ -21,7 +21,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from copy import copy
 from functools import wraps
 from inspect import signature
 from typing import Callable
@@ -83,31 +82,58 @@ def base_preprocess(
         >>> proc_input.shape, proc_target.shape
         (torch.Size([4]), torch.Size([4]))
     """
-    if not isinstance(input, (Tensor, NestedTensor)):
-        try:
-            input = torch.tensor(input)
-        except ValueError:
-            input = NestedTensor(input)
-    if not isinstance(target, (Tensor, NestedTensor)):
-        try:
-            target = torch.tensor(target)
-        except ValueError:
-            target = NestedTensor(target)
-    if isinstance(input, NestedTensor) or isinstance(target, NestedTensor):
-        if isinstance(input, NestedTensor) and isinstance(target, Tensor):
-            target = input.nested_like(target, strict=False)
-        elif isinstance(target, NestedTensor) and isinstance(input, Tensor):
-            input = target.nested_like(input, strict=False)
-        input, target = input.concat, target.concat
+    input = _coerce_to_tensor_like(input)
+    target = _coerce_to_tensor_like(target)
+
+    input, target = _align_nested_tensors(input, target)
+
     if ignore_index is not None:
-        mask = target != ignore_index
-        input, target = input[mask], target[mask]
+        input, target = _apply_mask(input, target, target != ignore_index)
     if ignore_nan:
-        mask = ~(torch.isnan(target))
-        input, target = input[mask], target[mask]
+        input, target = _apply_mask(input, target, ~torch.isnan(target))
+
     if input.numel() == target.numel():
         return input.squeeze(), target.squeeze()
     return input, target
+
+
+def _coerce_to_tensor_like(value: Tensor | NestedTensor | Sequence) -> Tensor | NestedTensor:
+    if isinstance(value, (Tensor, NestedTensor)):
+        return value
+    if isinstance(value, Sequence):
+        try:
+            return torch.as_tensor(value)
+        except (TypeError, ValueError, RuntimeError):
+            return NestedTensor(value)
+    raise TypeError(f"Unsupported input type: {type(value)}")
+
+
+def _align_nested_tensors(
+    input: Tensor | NestedTensor,
+    target: Tensor | NestedTensor,
+) -> tuple[Tensor, Tensor]:
+    input_is_nested = isinstance(input, NestedTensor)
+    target_is_nested = isinstance(target, NestedTensor)
+
+    if input_is_nested or target_is_nested:
+        if input_is_nested and not target_is_nested:
+            target = input.nested_like(target, strict=False)
+        elif target_is_nested and not input_is_nested:
+            input = target.nested_like(input, strict=False)
+        if isinstance(input, NestedTensor):
+            input = input.concat
+        if isinstance(target, NestedTensor):
+            target = target.concat
+
+    if not isinstance(input, Tensor) or not isinstance(target, Tensor):
+        raise TypeError("base_preprocess expects tensors after alignment")
+    return input, target
+
+
+def _apply_mask(input: Tensor, target: Tensor, mask: Tensor) -> tuple[Tensor, Tensor]:
+    if mask.dtype is not torch.bool:
+        mask = mask.to(dtype=torch.bool)
+    return input[mask], target[mask]
 
 
 def preprocess_regression(
@@ -228,15 +254,14 @@ def with_preprocess(preprocess_fn: Callable, **default_kwargs):
             preprocess: bool = True,
             **kwargs,
         ):
-            metric_kwargs = {k: v for k, v in kwargs.items() if k not in default_kwargs}
-
             if not preprocess:
-                return metric_fn(input, target, **metric_kwargs)
+                return metric_fn(input, target, **kwargs)
 
-            preprocess_kwargs = copy(default_kwargs)
-            for key in preprocess_params:
-                if key in kwargs:
-                    preprocess_kwargs[key] = kwargs[key]
+            preprocess_kwargs = dict(default_kwargs)
+            metric_kwargs = dict(kwargs)
+            for key in list(metric_kwargs.keys()):
+                if key in preprocess_params:
+                    preprocess_kwargs[key] = metric_kwargs.pop(key)
             input, target = preprocess_fn(input, target, **preprocess_kwargs)
             return metric_fn(input, target, **metric_kwargs)
 
