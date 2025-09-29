@@ -59,7 +59,6 @@ optional-dependencies.tensorflow = [
 optional-dependencies.torch = [
   "accelerate",
   "torch",
-  "torcheval",
   "torchmetrics",
 ]
 urls.documentation = "https://danling.org"
@@ -108,21 +107,21 @@ norecursedirs = "examples/*"
 [tool.pytest.ini_options]
 addopts = "--doctest-modules --cov"
 
-[tool.coverage.run]
-branch = true
-include = [ "danling/**" ]
+[tool.coverage.json]
+output = "coverage.json"
 
 [tool.coverage.paths]
 source = [ "icrawler" ]
 
+[tool.coverage.report]
+show_missing = true
+[tool.coverage.run]
+branch = true
+include = [ "danling/**" ]
+
 [tool.coverage.xml]
 output = "coverage.xml"
 
-[tool.coverage.json]
-output = "coverage.json"
-
-[tool.coverage.report]
-show_missing = true
 # fail_under = 80
 
 [tool.mypy]

@@ -203,7 +203,6 @@ plugins:
           import:
             - https://docs.python.org/3/objects.inv
             - https://pytorch.org/docs/stable/objects.inv
-            - https://pytorch.org/torcheval/stable/objects.inv
             - https://huggingface.co/docs/transformers/master/en/objects.inv
             - https://chanfig.danling.org/objects.inv
             - https://lightning.ai/docs/torchmetrics/stable/objects.inv

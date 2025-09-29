@@ -17,91 +17,104 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
-# pylint: disable=redefined-builtin
-# mypy: disable-error-code="arg-type"
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Optional
+
+import torch
 from lazy_imports import try_import
 from torch import Tensor
 
-from danling.tensors import NestedTensor
+from .utils import MetricFunc
 
 with try_import() as tm:
     from torchmetrics.functional import regression as tmreg
 
-
-def pearson(
-    input: Tensor | NestedTensor,
-    target: Tensor | NestedTensor,
-    multioutput: str = "uniform_average",
-    num_outputs: int = 1,
-    **kwargs,
-):
-    tm.check()
-    pearson = tmreg.pearson_corrcoef(input, target, **kwargs)
-    if multioutput == "raw_values":
-        return pearson
-    if multioutput == "uniform_average":
-        return pearson.mean()
-    if multioutput == "variance_weighted":
-        return pearson.mul(1 / pearson.var(dim=0)).sum(dim=0)
-    raise ValueError(f"Invalid multioutput value: {multioutput}")
+if TYPE_CHECKING:  # pragma: no cover
+    from ..state import MetricState
 
 
-def spearman(
-    input: Tensor | NestedTensor,
-    target: Tensor | NestedTensor,
-    multioutput: str = "uniform_average",
-    num_outputs: int = 1,
-    **kwargs,
-):
-    tm.check()
-    spearman = tmreg.spearman_corrcoef(input, target, **kwargs)
-    if multioutput == "raw_values":
-        return spearman
-    if multioutput == "uniform_average":
-        return spearman.mean()
-    if multioutput == "variance_weighted":
-        return spearman.mul(1 / spearman.var(dim=0)).sum(dim=0)
-    raise ValueError(f"Invalid multioutput value: {multioutput}")
+class pearson(MetricFunc):
+    def __init__(self, multioutput: str = "uniform_average", *, name: Optional[str] = "pearson") -> None:
+        self.multioutput = multioutput
+        super().__init__(name=name, preds_targets=True, task="regression")
+
+    def __call__(self, state: MetricState) -> Tensor | float:
+        if state.preds.numel() == 0 or state.targets.numel() == 0:
+            return torch.tensor(float("nan"))
+        tm.check()
+        pearson = tmreg.pearson_corrcoef(state.preds, state.targets)
+        if self.multioutput == "raw_values":
+            return pearson
+        if self.multioutput == "uniform_average":
+            return pearson.mean()
+        if self.multioutput == "variance_weighted":
+            return pearson.mul(1 / pearson.var(dim=0)).sum(dim=0)
+        raise ValueError(f"Invalid multioutput value: {self.multioutput}")
 
 
-def r2_score(
-    input: Tensor | NestedTensor,
-    target: Tensor | NestedTensor,
-    multioutput: str = "uniform_average",
-    num_outputs: int = 1,
-    **kwargs,
-):
-    tm.check()
-    return tmreg.r2_score(input, target, multioutput=multioutput, **kwargs)
+class spearman(MetricFunc):
+    def __init__(self, multioutput: str = "uniform_average", *, name: Optional[str] = "spearman") -> None:
+        self.multioutput = multioutput
+        super().__init__(name=name, preds_targets=True, task="regression")
+
+    def __call__(self, state: MetricState) -> Tensor | float:
+        if state.preds.numel() == 0 or state.targets.numel() == 0:
+            return torch.tensor(float("nan"))
+        tm.check()
+        spearman = tmreg.spearman_corrcoef(state.preds, state.targets)
+        if self.multioutput == "raw_values":
+            return spearman
+        if self.multioutput == "uniform_average":
+            return spearman.mean()
+        if self.multioutput == "variance_weighted":
+            return spearman.mul(1 / spearman.var(dim=0)).sum(dim=0)
+        raise ValueError(f"Invalid multioutput value: {self.multioutput}")
 
 
-def mae(
-    input: Tensor | NestedTensor,
-    target: Tensor | NestedTensor,
-    num_outputs: int = 1,
-    **kwargs,
-):
-    tm.check()
-    return tmreg.mean_absolute_error(input, target, **kwargs)
+class r2_score(MetricFunc):
+    def __init__(self, multioutput: str = "uniform_average", *, name: Optional[str] = "r2") -> None:
+        self.multioutput = multioutput
+        super().__init__(name=name, preds_targets=True, task="regression")
+
+    def __call__(self, state: MetricState) -> Tensor | float:
+        if state.preds.numel() == 0 or state.targets.numel() == 0:
+            return torch.tensor(float("nan"))
+        tm.check()
+        return tmreg.r2_score(state.preds, state.targets, multioutput=self.multioutput)
 
 
-def mse(
-    input: Tensor | NestedTensor,
-    target: Tensor | NestedTensor,
-    num_outputs: int = 1,
-    **kwargs,
-):
-    tm.check()
-    return tmreg.mean_squared_error(input, target, squared=True, num_outputs=num_outputs, **kwargs)
+class rmse(MetricFunc):
+    def __init__(self, num_outputs: int = 1, *, name: Optional[str] = "rmse") -> None:
+        self.num_outputs = num_outputs
+        super().__init__(name=name, preds_targets=True, task="regression")
+
+    def __call__(self, state: MetricState) -> Tensor | float:
+        if state.preds.numel() == 0 or state.targets.numel() == 0:
+            return torch.tensor(float("nan"))
+        tm.check()
+        return tmreg.mean_squared_error(state.preds, state.targets, squared=False, num_outputs=self.num_outputs)
 
 
-def rmse(
-    input: Tensor | NestedTensor,
-    target: Tensor | NestedTensor,
-    num_outputs: int = 1,
-    **kwargs,
-):
-    tm.check()
-    return tmreg.mean_squared_error(input, target, squared=False, num_outputs=num_outputs, **kwargs)
+class mse(MetricFunc):
+    def __init__(self, num_outputs: int = 1, *, name: Optional[str] = "mse") -> None:
+        self.num_outputs = num_outputs
+        super().__init__(name=name, preds_targets=True, task="regression")
+
+    def __call__(self, state: MetricState) -> Tensor | float:
+        if state.preds.numel() == 0 or state.targets.numel() == 0:
+            return torch.tensor(float("nan"))
+        tm.check()
+        return tmreg.mean_squared_error(state.preds, state.targets, squared=True, num_outputs=self.num_outputs)
+
+
+class mae(MetricFunc):
+    def __init__(self, num_outputs: int = 1, *, name: Optional[str] = "mae") -> None:
+        self.num_outputs = num_outputs
+        super().__init__(name=name, preds_targets=True, task="regression")
+
+    def __call__(self, state: MetricState) -> Tensor | float:
+        if state.preds.numel() == 0 or state.targets.numel() == 0:
+            return torch.tensor(float("nan"))
+        tm.check()
+        return tmreg.mean_absolute_error(state.preds, state.targets, num_outputs=self.num_outputs)

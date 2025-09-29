@@ -174,3 +174,38 @@ def test_task_specific_preprocess():
     assert processed_target.shape == torch.Size([3, 3])
     assert (processed_input >= 0.0).all() and (processed_input <= 1.0).all()
     assert torch.allclose(processed_target, target_tensor)
+
+
+def test_preprocess_all_ignored_batches_do_not_crash():
+    binary_input, binary_target = preprocess_binary(
+        torch.randn(4),
+        torch.full((4,), -100),
+        ignore_index=-100,
+    )
+    assert binary_input.shape == binary_target.shape == torch.Size([4])
+
+    multiclass_input, multiclass_target = preprocess_multiclass(
+        torch.randn(4, 3),
+        torch.full((4,), -100),
+        num_classes=3,
+        ignore_index=-100,
+    )
+    assert multiclass_input.shape == torch.Size([4, 3])
+    assert multiclass_target.shape == torch.Size([4])
+
+    multilabel_input, multilabel_target = preprocess_multilabel(
+        torch.randn(4, 2),
+        torch.full((4, 2), -100),
+        num_labels=2,
+        ignore_index=-100,
+    )
+    assert multilabel_input.shape == torch.Size([4, 2])
+    assert multilabel_target.shape == torch.Size([4, 2])
+
+    regression_input, regression_target = preprocess_regression(
+        torch.randn(2, 3),
+        torch.tensor([[1.0, float("nan"), 2.0], [3.0, 4.0, 5.0]]),
+        num_outputs=3,
+        ignore_nan=True,
+    )
+    assert regression_input.shape == regression_target.shape

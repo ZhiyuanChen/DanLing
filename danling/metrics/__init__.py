@@ -21,16 +21,18 @@ from __future__ import annotations
 
 from .average_meter import AverageMeter, AverageMeters
 from .factory import binary_metrics, multiclass_metrics, multilabel_metrics, regression_metrics
-from .metric_meter import MetricMeter, MetricMeters
-from .metrics import Metrics
+from .global_metrics import GlobalMetrics
 from .multitask import MultiTaskMetrics
 from .registry import METRICS
+from .state import MetricState
+from .stream_metrics import MetricMeter, StreamMetrics
 
 __all__ = [
-    "Metrics",
+    "GlobalMetrics",
     "MultiTaskMetrics",
+    "MetricState",
     "MetricMeter",
-    "MetricMeters",
+    "StreamMetrics",
     "AverageMeter",
     "AverageMeters",
     "METRICS",

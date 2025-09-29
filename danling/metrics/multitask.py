@@ -26,44 +26,37 @@ from torch import Tensor
 
 from danling.tensors import NestedTensor
 
-from .metric_meter import MetricMeter, MetricMeters
-from .metrics import Metrics
-from .utils import MultiTaskDict
+from .global_metrics import GlobalMetrics
+from .stream_metrics import MetricMeter, StreamMetrics
+from .utils import MultiTaskBase
 
 
-class MultiTaskMetrics(MultiTaskDict):
+class MultiTaskMetrics(MultiTaskBase):
     r"""
     Examples:
         >>> from danling.metrics.functional import accuracy
         >>> metrics = MultiTaskMetrics()
-        >>> metrics.dataset1.cls = Metrics(acc=accuracy)
-        >>> metrics.dataset2 = MetricMeters(acc=accuracy)
-        >>> metrics
-        MultiTaskMetrics(<class 'danling.metrics.multitask.MultiTaskMetrics'>,
-          ('dataset1'): MultiTaskMetrics(<class 'danling.metrics.multitask.MultiTaskMetrics'>,
-            ('cls'): Metrics('acc',)
-          )
-          ('dataset2'): MetricMeters('acc',)
-        )
-        >>> metrics.update({"dataset1.cls": {"input": [0.2, 0.4, 0.6, 0.7], "target": [0, 1, 0, 1]}, "dataset2": ([0.1, 0.4, 0.6, 0.8], [1, 0, 0, 0])})
+        >>> metrics.dataset1 = StreamMetrics(acc=accuracy)
+        >>> metrics.dataset2 = StreamMetrics(acc=accuracy)
+        >>> metrics.update({"dataset1": {"input": [0.2, 0.4, 0.6, 0.7], "target": [0, 1, 0, 1]}, "dataset2": ([0.1, 0.4, 0.6, 0.8], [1, 0, 0, 0])})
         >>> f"{metrics:.4f}"
-        'dataset1.cls: acc: 0.5000 (0.5000)\ndataset2: acc: 0.2500 (0.2500)'
+        'dataset1: acc: 0.5000 (0.5000)\ndataset2: acc: 0.2500 (0.2500)'
         >>> metrics.setattr("return_average", True)
-        >>> metrics.update({"dataset1.cls": [[0.1, 0.4, 0.6, 0.8], [0, 0, 1, 0]], "dataset2": {"input": [0.2, 0.3, 0.6, 0.7], "target": [0, 0, 0, 1]}})
-        >>> f"{metrics:.4f}"
-        'dataset1.cls: acc: 0.7500 (0.6250)\ndataset2: acc: 0.7500 (0.5000)'
+        >>> metrics.update({"dataset1": ([0.1, 0.4, 0.6, 0.8], [0, 0, 1, 0]), "dataset2": {"input": [0.2, 0.3, 0.6, 0.7], "target": [0, 0, 0, 1]}})
+        >>> round(metrics.avg["average"]["acc"], 4)
+        0.5625
         >>> metrics.update(dict(loss=""))  # doctest: +ELLIPSIS
         Traceback (most recent call last):
         ValueError: Metric loss not found in ...
 
     Notes:
-        - `MultiTaskMetrics` manages nested hierarchies of MetricMeters for multiple tasks/datasets
+        - `MultiTaskMetrics` manages nested hierarchies of StreamMetrics for multiple tasks/datasets
         - Supports hierarchical access using dot notation or dictionary-style access
         - All metrics are updated simultaneously with a single `update()` call
         - Provides a structured way to track metrics across different tasks or model components
 
     See Also:
-        - [`MultiTaskMetrics`][danling.metrics.metrics.MultiTaskMetrics]:
+        - [`MultiTaskMetrics`][danling.metrics.multitask.MultiTaskMetrics]:
             Metric tracker that stores the complete prediction and target history for multi-task learning.
     """  # noqa: E501
 
@@ -88,13 +81,13 @@ class MultiTaskMetrics(MultiTaskDict):
                 for name, met in self[metric].items():
                     if name in value:
                         val = value[name]
-                        if isinstance(value, Mapping):
+                        if isinstance(val, Mapping):
                             met.update(**val)
-                        elif isinstance(value, Sequence):
+                        elif isinstance(val, Sequence):
                             met.update(*val)
                         else:
-                            raise ValueError(f"Expected value to be a Mapping or Sequence, but got {type(value)}")
-            elif isinstance(self[metric], (Metrics, MetricMeters, MetricMeter)):
+                            raise ValueError(f"Expected value to be a Mapping or Sequence, but got {type(val)}")
+            elif isinstance(self[metric], (GlobalMetrics, StreamMetrics, MetricMeter)):
                 if isinstance(value, Mapping):
                     self[metric].update(**value)
                 elif isinstance(value, Sequence):
@@ -103,18 +96,18 @@ class MultiTaskMetrics(MultiTaskDict):
                     raise ValueError(f"Expected value to be a Mapping or Sequence, but got {type(value)}")
             else:
                 raise ValueError(
-                    f"Expected {metric} to be an instance of MultiTaskMetrics, Metrics, MetricMeters, or MetricMeter, "
-                    f"but got {type(self[metric])}"
+                    f"Expected {metric} to be an instance of MultiTaskMetrics, GlobalMetrics, "
+                    f"StreamMetrics, or MetricMeter, but got {type(self[metric])}"
                 )
 
     def set(  # pylint: disable=W0237
         self,
         name: str,
-        metric: MultiTaskMetrics | MetricMeter | MetricMeters | Callable,  # type: ignore[override]
+        metric: MultiTaskMetrics | MetricMeter | StreamMetrics | Callable,  # type: ignore[override]
     ) -> None:
-        if not isinstance(metric, (MultiTaskMetrics, Metrics, MetricMeters, MetricMeter)):
+        if not isinstance(metric, (MultiTaskMetrics, GlobalMetrics, StreamMetrics, MetricMeter)):
             raise ValueError(
-                f"Expected {metric} to be an instance of MultiTaskMetrics, Metrics, MetricMeters, or MetricMeter, "
-                f"but got {type(self[metric])}"
+                f"Expected {metric} to be an instance of MultiTaskMetrics, GlobalMetrics, "
+                f"StreamMetrics, or MetricMeter, but got {type(metric)}"
             )
         super().set(name, metric)
