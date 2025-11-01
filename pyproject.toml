@@ -102,10 +102,8 @@ disable = """
 output-format = "colorized"
 
 [tool.pytest]
-norecursedirs = "examples/*"
-
-[tool.pytest.ini_options]
 addopts = "--doctest-modules --cov"
+norecursedirs = "examples/*"
 
 [tool.coverage.run]
 branch = true

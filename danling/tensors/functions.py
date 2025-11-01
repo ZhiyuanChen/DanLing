@@ -153,6 +153,24 @@ class NestedTensorFuncWrapper:  # pylint: disable=R0903
 NestedTensorFuncRegistry = TorchFuncRegistry()
 
 
+@NestedTensorFuncRegistry.implement(torch.abs)
+def abs(tensor: NestedTensor) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(torch.abs(t) for t in tensor._storage)
+
+
+@NestedTensorFuncRegistry.implement(torch.add)
+def add(input: NestedTensor, other: NestedTensor | Tensor, *, alpha: float = 1) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(input, NestedTensor):
+        input = other.nested_like(input)
+    elif not isinstance(other, NestedTensor):
+        other = input.nested_like(other)
+    return NestedTensor(torch.add(x, y, alpha=alpha) for x, y in zip(input._storage, other._storage))
+
+
 @NestedTensorFuncRegistry.implement(torch.allclose)
 def allclose(
     input: NestedTensor, other: NestedTensor | Tensor, rtol: float = 1e-05, atol: float = 1e-08, equal_nan: bool = False
@@ -186,6 +204,24 @@ def cat(tensors: Tuple[Tensor | NestedTensor, ...], dim: int = 0):
     return NestedTensor(storage, **state)
 
 
+@NestedTensorFuncRegistry.implement(torch.cos)
+def cos(tensor: NestedTensor) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(torch.cos(t) for t in tensor._storage)
+
+
+@NestedTensorFuncRegistry.implement(torch.div)
+def div(input: NestedTensor, other: NestedTensor | Tensor, *, rounding_mode: str | None = None) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(input, NestedTensor):
+        input = other.nested_like(input)
+    elif not isinstance(other, NestedTensor):
+        other = input.nested_like(other)
+    return NestedTensor(torch.div(x, y, rounding_mode=rounding_mode) for x, y in zip(input._storage, other._storage))
+
+
 @NestedTensorFuncRegistry.implement(torch.eq)
 def eq(input: NestedTensor, other: NestedTensor | Tensor) -> Tensor:
     from .nested_tensor import NestedTensor
@@ -208,6 +244,13 @@ def equal(input: NestedTensor, other: NestedTensor | Tensor) -> bool:
     return all(torch.equal(x, y) for x, y in zip(input._storage, other._storage))
 
 
+@NestedTensorFuncRegistry.implement(torch.exp)
+def exp(tensor: NestedTensor) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(torch.exp(t) for t in tensor._storage)
+
+
 @NestedTensorFuncRegistry.implement(torch.isin)
 def isin(elements, test_elements, *, assume_unique: bool = False, invert: bool = False):
     from .nested_tensor import NestedTensor
@@ -226,6 +269,42 @@ def log(tensor):
     return NestedTensor(torch.log(t) for t in tensor._storage)
 
 
+@NestedTensorFuncRegistry.implement(torch.matmul)
+def matmul(input: NestedTensor, other: NestedTensor | Tensor) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(input, NestedTensor):
+        input = other.nested_like(input)
+    elif not isinstance(other, NestedTensor):
+        other = input.nested_like(other)
+    return NestedTensor(torch.matmul(x, y) for x, y in zip(input._storage, other._storage))
+
+
+@NestedTensorFuncRegistry.implement(torch.max)
+def max(input: NestedTensor, dim: int | None = None, keepdim: bool = False):
+    if dim is None:
+        return input.max().max()
+    return input.max(dim=dim, keepdim=keepdim)
+
+
+@NestedTensorFuncRegistry.implement(torch.min)
+def min(input: NestedTensor, dim: int | None = None, keepdim: bool = False):
+    if dim is None:
+        return input.min().min()
+    return input.min(dim=dim, keepdim=keepdim)
+
+
+@NestedTensorFuncRegistry.implement(torch.mul)
+def mul(input: NestedTensor, other: NestedTensor | Tensor) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(input, NestedTensor):
+        input = other.nested_like(input)
+    elif not isinstance(other, NestedTensor):
+        other = input.nested_like(other)
+    return NestedTensor(torch.mul(x, y) for x, y in zip(input._storage, other._storage))
+
+
 @NestedTensorFuncRegistry.implement(torch.mean)
 def mean(
     input,
@@ -239,6 +318,58 @@ def mean(
     return input.mean(dim=dim, keepdim=keepdim, dtype=dtype)
 
 
+@NestedTensorFuncRegistry.implement(torch.permute)
+def permute(input: NestedTensor, dims: Sequence[int]) -> NestedTensor:
+    return input.permute(dims)
+
+
+@NestedTensorFuncRegistry.implement(torch.pow)
+def pow(input: NestedTensor, exponent: NestedTensor | Tensor | float) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    if isinstance(exponent, (int, float)):
+        return NestedTensor(torch.pow(t, exponent) for t in input._storage)
+
+    if not isinstance(input, NestedTensor):
+        input = exponent.nested_like(input)
+    elif not isinstance(exponent, NestedTensor):
+        exponent = input.nested_like(exponent)
+    return NestedTensor(torch.pow(x, y) for x, y in zip(input._storage, exponent._storage))
+
+
+@NestedTensorFuncRegistry.implement(torch.relu)
+def relu(tensor: NestedTensor) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(torch.relu(t) for t in tensor._storage)
+
+
+@NestedTensorFuncRegistry.implement(torch.reshape)
+def reshape(input: NestedTensor, shape: Sequence[int]) -> NestedTensor:
+    return input.reshape(shape)
+
+
+@NestedTensorFuncRegistry.implement(torch.sigmoid)
+def sigmoid(tensor: NestedTensor) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(torch.sigmoid(t) for t in tensor._storage)
+
+
+@NestedTensorFuncRegistry.implement(torch.sin)
+def sin(tensor: NestedTensor) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(torch.sin(t) for t in tensor._storage)
+
+
+@NestedTensorFuncRegistry.implement(torch.softmax)
+def softmax(input: NestedTensor, dim: int, dtype: torch.dtype | None = None) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(torch.softmax(t, dim=dim, dtype=dtype) for t in input._storage)
+
+
 @NestedTensorFuncRegistry.implement(torch.sqrt)
 def sqrt(tensor):
     from .nested_tensor import NestedTensor
@@ -249,3 +380,39 @@ def sqrt(tensor):
 @NestedTensorFuncRegistry.implement(torch.stack)
 def stack(*args, **kwargs):
     raise NotImplementedError("NestedTensor does not support stack as of now")
+
+
+@NestedTensorFuncRegistry.implement(torch.sub)
+def sub(input: NestedTensor, other: NestedTensor | Tensor, *, alpha: float = 1) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(input, NestedTensor):
+        input = other.nested_like(input)
+    elif not isinstance(other, NestedTensor):
+        other = input.nested_like(other)
+    return NestedTensor(torch.sub(x, y, alpha=alpha) for x, y in zip(input._storage, other._storage))
+
+
+@NestedTensorFuncRegistry.implement(torch.sum)
+def sum(
+    input: NestedTensor,
+    dim: int | Sequence[int] | None = None,
+    keepdim: bool = False,
+    *,
+    dtype: torch.dtype | None = None,
+):
+    if dim is None:
+        return input.sum(dtype=dtype).sum()
+    return input.sum(dim=dim, keepdim=keepdim, dtype=dtype)
+
+
+@NestedTensorFuncRegistry.implement(torch.tanh)
+def tanh(tensor: NestedTensor) -> NestedTensor:
+    from .nested_tensor import NestedTensor
+
+    return NestedTensor(torch.tanh(t) for t in tensor._storage)
+
+
+@NestedTensorFuncRegistry.implement(torch.transpose)
+def transpose(input: NestedTensor, dim0: int, dim1: int) -> NestedTensor:
+    return input.transpose(dim0, dim1)
