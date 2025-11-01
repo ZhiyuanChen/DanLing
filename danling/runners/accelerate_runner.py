@@ -473,7 +473,7 @@ class AccelerateRunner(BaseRunner):  # pylint: disable=too-many-public-methods
         if self.accelerator is not None:
             return self.accelerator.unwrap_model(model)
         if self.distributed:
-            return model.module
+            return model.module  # type: ignore[union-attr]
         return model
 
     @property
