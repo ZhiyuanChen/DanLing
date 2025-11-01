@@ -221,7 +221,7 @@ class MetricMeters(AverageMeters):
     """
 
     preprocess = base_preprocess
-    meter_cls = MetricMeter
+    meter_cls = MetricMeter  # type: ignore[assignment]
 
     def __init__(
         self,
