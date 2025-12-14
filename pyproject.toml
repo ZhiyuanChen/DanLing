@@ -1,26 +1,16 @@
 [build-system]
 build-backend = "setuptools.build_meta"
-requires = [
-  "setuptools",
-  "setuptools-scm",
-]
+requires = [ "setuptools", "setuptools-scm" ]
 
 [project]
 name = "danling"
 description = "Scaffold for experienced Machine Learning Researchers"
 readme = "README.md"
-keywords = [
-  "Artificial Intelligence",
-  "Deep Learning",
-  "Machine Learning",
-]
-license = { file = "LICENSE" }
-maintainers = [
-  { name = "Zhiyuan Chen", email = "this@zyc.ai" },
-]
-authors = [
-  { name = "Zhiyuan Chen", email = "this@zyc.ai" },
-]
+keywords = [ "Artificial Intelligence", "Deep Learning", "Machine Learning" ]
+license = "Unlicense OR AGPL-3.0-or-later OR GPL-3.0-or-later OR GPL-2.0-or-later OR Apache-2.0 OR MIT OR BSD-4-Clause"
+license-files = [ "LICENSE", "LICENSES/*" ]
+maintainers = [ { name = "Zhiyuan Chen", email = "this@zyc.ai" } ]
+authors = [ { name = "Zhiyuan Chen", email = "this@zyc.ai" } ]
 requires-python = ">=3.9"
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
@@ -34,11 +24,10 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dynamic = [
-  "version",
-]
+dynamic = [ "version" ]
 dependencies = [
   "chanfig>=0.0.109",
   "gitpython",
@@ -46,13 +35,8 @@ dependencies = [
   "strenum; python_version<'3.11'",
   "tqdm",
 ]
-optional-dependencies.jax = [
-  "flax",
-  "jax",
-]
-optional-dependencies.tensorflow = [
-  "tensorflow",
-]
+optional-dependencies.jax = [ "flax", "jax" ]
+optional-dependencies.tensorflow = [ "tensorflow" ]
 optional-dependencies.torch = [
   "accelerate",
   "torch",
@@ -64,7 +48,7 @@ urls.homepage = "https://danling.org"
 urls.repository = "https://github.com/ZhiyuanChen/DanLing"
 
 [tool.setuptools]
-packages = [ "danling" ]
+packages.find.include = [ "danling*" ]
 
 [tool.setuptools_scm]
 write_to = "danling/_version.py"
@@ -79,45 +63,32 @@ profile = "black"
 [tool.flake8]
 max-line-length = 120
 
-[tool.pylint.format]
-max-line-length = 120
-max-args = 15
-max-attributes = 15
-max-branches = 15
-
-[tool.pylint.main]
-fail-under = 9.8
-
-[tool.pylint.messages_control]
-disable = """
+[tool.pylint]
+format.max-line-length = 120
+design.max-args = 15
+design.max-attributes = 15
+design.max-branches = 15
+main.fail-under = 9.8
+messages_control.disable = """
   invalid-name,
   no-member,
   R0801,
   pointless-string-statement,
 """
-
-[tool.pylint.reports]
-output-format = "colorized"
+reports.output-format = "colorized"
 
 [tool.pytest]
 norecursedirs = [ "examples/*" ]
 addopts = [ "--doctest-modules", "--cov" ]
 
-[tool.coverage.run]
-branch = true
-include = [ "danling/**" ]
+[tool.coverage]
+run.branch = true
+run.include = [ "danling/**" ]
+paths.source = [ "danling" ]
+report.show_missing = true
+json.output = "coverage.json"
+xml.output = "coverage.xml"
 
-[tool.coverage.paths]
-source = [ "icrawler" ]
-
-[tool.coverage.xml]
-output = "coverage.xml"
-
-[tool.coverage.json]
-output = "coverage.json"
-
-[tool.coverage.report]
-show_missing = true
 # fail_under = 80
 
 [tool.mypy]
