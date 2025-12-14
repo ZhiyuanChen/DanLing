@@ -515,7 +515,7 @@ class NestedTensor:
                 kwargs[k] = v.tensor
         output = func(*args, **kwargs)
         if isinstance(output, (Tensor, NestedTensor)):
-            return output
+            return output  # type: ignore[return-value]
         return cls(output)
 
     @classmethod
@@ -526,7 +526,7 @@ class NestedTensor:
                 kwargs[k] = v.tensor
         output = func(*args, **kwargs)
         if isinstance(output, (Tensor, NestedTensor)):
-            return output
+            return output  # type: ignore[return-value]
         return cls(output)
 
     def __getitem__(self, index: int | slice | list | tuple | Tensor | NestedTensor) -> Tensor | NestedTensor:
