@@ -21,8 +21,9 @@
 # mypy: disable-error-code="arg-type"
 from __future__ import annotations
 
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
+import torch
 from lazy_imports import try_import
 from torch import Tensor
 
@@ -31,7 +32,47 @@ from danling.tensors import NestedTensor
 with try_import() as tm:
     from torchmetrics.functional import classification as tmcls
 
-from .binary import binary_accuracy, binary_auprc, binary_auroc, binary_f1_score
+from .utils import Artifact, MetricFunc
+
+if TYPE_CHECKING:  # pragma: no cover
+    from ..metrics import Metrics
+
+
+class mcc(MetricFunc):
+    def __init__(
+        self,
+        *,
+        task: str = "binary",
+        num_classes: int | None = None,
+        num_labels: int | None = None,
+        threshold: float = 0.5,
+        name: str | None = "mcc",
+    ) -> None:
+        self.task = task
+        self.num_classes = num_classes
+        self.num_labels = num_labels
+        self.threshold = threshold
+        super().__init__(
+            name=name,
+            artifact=Artifact(
+                preds_targets=True, task=task, num_classes=num_classes, num_labels=num_labels, threshold=threshold
+            ),
+        )
+
+    def __call__(self, metrics: "Metrics") -> Tensor | float:
+        if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
+            return torch.tensor(float("nan"))
+        tm.check()
+        return tmcls.matthews_corrcoef(
+            metrics.preds,
+            metrics.targets,
+            task=self.task,
+            threshold=self.threshold,
+            num_classes=self.num_classes,
+            num_labels=self.num_labels,
+        )
+
+
 from .multiclass import multiclass_accuracy, multiclass_auprc, multiclass_auroc, multiclass_f1_score
 from .multilabel import multilabel_accuracy, multilabel_auprc, multilabel_auroc, multilabel_f1_score
 from .utils import infer_task
@@ -50,7 +91,7 @@ def accuracy(
     if task is None:
         task = infer_task(num_classes, num_labels)
     if task == "binary":
-        return binary_accuracy(input, target, threshold=threshold, **kwargs)
+        return tmcls.binary_accuracy(input, target, threshold=threshold, **kwargs)
     if task == "multiclass":
         return multiclass_accuracy(
             input,
@@ -81,7 +122,7 @@ def auprc(
     if task is None:
         task = infer_task(num_classes, num_labels)
     if task == "binary":
-        return binary_auprc(input, target, **kwargs)
+        return tmcls.binary_average_precision(input, target, **kwargs)
     if task == "multiclass":
         return multiclass_auprc(
             input,
@@ -113,7 +154,7 @@ def auroc(
     if task is None:
         task = infer_task(num_classes, num_labels)
     if task == "binary":
-        return binary_auroc(input, target, **kwargs)
+        return tmcls.binary_auroc(input, target, **kwargs)
     if task == "multiclass":
         return multiclass_auroc(
             input,
@@ -142,7 +183,7 @@ def f1_score(
     if task is None:
         task = infer_task(num_classes, num_labels)
     if task == "binary":
-        return binary_f1_score(input, target, threshold=threshold, **kwargs)
+        return tmcls.binary_f1_score(input, target, threshold=threshold, **kwargs)
     if task == "multiclass":
         return multiclass_f1_score(
             input,
@@ -160,20 +201,3 @@ def f1_score(
             **kwargs,
         )
     raise ValueError(f"Task should be one of binary, multiclass, or multilabel, but got {task}")
-
-
-def mcc(
-    input: Tensor | NestedTensor,
-    target: Tensor | NestedTensor,
-    threshold: float = 0.5,
-    num_labels: int | None = None,
-    num_classes: int | None = None,
-    task: str | None = None,
-    **kwargs,
-):
-    tm.check()
-    if task is None:
-        task = infer_task(num_classes, num_labels)
-    return tmcls.matthews_corrcoef(
-        input, target, task, threshold=threshold, num_classes=num_classes, num_labels=num_labels, **kwargs
-    )

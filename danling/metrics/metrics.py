@@ -21,19 +21,20 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from math import nan
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Optional
 
 import torch
 from chanfig import DefaultDict, FlatDict
 from torch import Tensor
 from torch import distributed as dist
-from torcheval.metrics import Metric
 
 from danling.tensors import NestedTensor
 from danling.utils import flist, get_world_size
 
-from .preprocess import base_preprocess
+from .functional.utils import Artifact, MetricFunc
+from .preprocess import base_preprocess, preprocess_binary
 from .utils import RoundDict
 
 try:
@@ -42,199 +43,251 @@ except ImportError:
     from typing_extensions import Self
 
 
-class Metrics(Metric):
-    r"""
-    A comprehensive metric tracking system that maintains the complete history of predictions and labels.
+class MetricRequirementError(RuntimeError):
+    """Raised when a descriptor cannot be computed due to missing artifacts."""
 
-    Metrics is designed for computing evaluations that require access to the entire dataset history,
-    such as AUROC, Pearson correlation, or other metrics that cannot be meaningfully averaged batch-by-batch.
 
-    Attributes:
-        metrics: A dictionary of metric functions to be computed
-        preprocess: Optional preprocessing function to apply to inputs and targets
-        val: Metrics computed on the current batch only
-        avg: Metrics computed on all accumulated data
-        input: The input tensor from the latest batch
-        target: The target tensor from the latest batch
-        inputs: Concatenation of all input tensors seen so far
-        targets: Concatenation of all target tensors seen so far
+@dataclass
+class ArtifactPlan:
+    need_preds_targets: bool = False
+    need_confmat: bool = False
+    task: Optional[str] = None
+    num_classes: Optional[int] = None
+    num_labels: Optional[int] = None
+    threshold: Optional[float] = None
 
-    Args:
-        *args: A single mapping of metrics or callable metric functions
-        device: Device to store tensors on
-        preprocess: Function to preprocess inputs before computing metrics
-        **metrics: Named metric functions to compute
-
-    Examples:
-        >>> from danling.metrics.functional import auroc, auprc
-        >>> from danling.metrics.preprocess import preprocess_binary
-        >>> metrics = Metrics(auroc=auroc, auprc=auprc)
-        >>> metrics
-        Metrics('auroc', 'auprc')
-        >>> metrics.update([0.2, 0.3, 0.5, 0.7], [0, 1, 0, 1])
-        >>> metrics.input  # predicted values of current batch
-        tensor([0.2000, 0.3000, 0.5000, 0.7000])
-        >>> metrics.target  # ground truth of current batch
-        tensor([0, 1, 0, 1])
-        >>> metrics.inputs  # predicted values of all data
-        tensor([0.2000, 0.3000, 0.5000, 0.7000])
-        >>> metrics.targets  # ground truth of all data
-        tensor([0, 1, 0, 1])
-        >>> metrics.val  # Metrics of current batch on current device
-        RoundDict(
-          ('auroc'): 0.75
-          ('auprc'): 0.8333333730697632
+    @classmethod
+    def from_functions(cls, funcs: Sequence[MetricFunc]) -> ArtifactPlan:
+        if not funcs:
+            raise ValueError("Metrics requires at least one metric function.")
+        merged = Artifact()
+        for func in funcs:
+            merged = merged.merge(func.artifact)
+        plan = cls(
+            need_preds_targets=merged.preds_targets,
+            need_confmat=merged.confmat,
+            task=merged.task,
+            num_classes=merged.num_classes,
+            num_labels=merged.num_labels,
+            threshold=merged.threshold,
         )
-        >>> metrics.avg  # Metrics of all data on all devices
-        RoundDict(
-          ('auroc'): 0.75
-          ('auprc'): 0.8333333730697632
-        )
-        >>> metrics.update([0.1, 0.4, 0.6, 0.8], [0, 0, 1, 0])
-        >>> metrics.input  # predicted values of current batch
-        tensor([0.1000, 0.4000, 0.6000, 0.8000])
-        >>> metrics.target  # ground truth of current batch
-        tensor([0, 0, 1, 0])
-        >>> metrics.inputs  # predicted values of all data
-        tensor([0.2000, 0.3000, 0.5000, 0.7000, 0.1000, 0.4000, 0.6000, 0.8000])
-        >>> metrics.targets  # ground truth of all data
-        tensor([0, 1, 0, 1, 0, 0, 1, 0])
-        >>> metrics.val.round(4)  # Metrics of current batch on current device
-        RoundDict(
-          ('auroc'): 0.6667
-          ('auprc'): 0.5
-        )
-        >>> metrics.avg.round(4)  # Metrics of all data on all devices
-        RoundDict(
-          ('auroc'): 0.6667
-          ('auprc'): 0.5556
-        )
-        >>> f"{metrics:.4f}"
-        'auroc: 0.6667 (0.6667)\tauprc: 0.5000 (0.5556)'
-        >>> metrics = Metrics(auroc=auroc, auprc=auprc, preprocess=preprocess_binary)
-        >>> metrics.update([[0.1, 0.4, 0.6, 0.8], [0.1, 0.4, 0.6]], [[0, -100, 1, 0], [0, -100, 1]])
-        >>> metrics.input, metrics.target
-        (tensor([0.1000, 0.6000, 0.8000, 0.1000, 0.6000]), tensor([0, 1, 0, 0, 1]))
+        plan.validate()
+        return plan
 
-    Notes:
-        - `Metrics` stores the complete prediction and target history, which is memory-intensive
-          but necessary for metrics like AUROC that operate on the entire dataset.
-        - For metrics that can be meaningfully averaged batch-by-batch (like accuracy),
-          consider using [`MetricMeter`][danling.metrics.metric_meter.MetricMeter] for better memory efficiency.
-        - All metrics are synchronized across devices in distributed training environments.
+    def validate(self) -> None:
+        if self.need_confmat and self.task is None:
+            raise ValueError("Confusion matrix computation requires a task to be specified.")
 
-    See Also:
-        - [`MetricMeters`][danling.metrics.metric_meter.MetricMeters]:
-            Memory-efficient metric tracker that averages multiple metrics batch-by-batch.
+
+class _MetricsView:
+    """
+    Lightweight view that exposes the expected interface to descriptors.
+
+    This allows us to switch between last-batch artifacts (value) and
+    aggregated artifacts (average) without mutating container state.
     """
 
-    metrics: FlatDict[str, Callable]
-    preprocess: Callable = base_preprocess
-    _input: Tensor
-    _target: Tensor
-    _inputs: Tensor
-    _targets: Tensor
+    def __init__(self, container: Metrics, *, use_last: bool) -> None:
+        self.container = container
+        self.use_last = use_last
+
+    @property
+    def preds(self) -> Tensor:
+        if self.use_last or not self.container.plan.need_preds_targets:
+            return self.container._last_preds  # noqa: SLF001
+        return self.container.preds
+
+    @property
+    def targets(self) -> Tensor:
+        if self.use_last or not self.container.plan.need_preds_targets:
+            return self.container._last_targets  # noqa: SLF001
+        return self.container.targets
+
+    @property
+    def confmat(self) -> Tensor | None:
+        if self.use_last and self.container._last_confmat is not None:  # noqa: SLF001
+            return self.container._last_confmat  # noqa: SLF001
+        return self.container.confmat
+
+    @property
+    def plan(self) -> ArtifactPlan:
+        return self.container.plan
+
+
+class Metrics:
+    """
+    Data container for metrics descriptors.
+
+    The container aggregates required artifacts (preds/targets, confusion
+    matrix, running stats) only once, synchronises them across processes,
+    and lets descriptors compute metric values without duplicating work.
+    """
 
     def __init__(
         self,
-        *args,
-        device: torch.device | None = None,
-        preprocess: Callable = base_preprocess,
-        **metrics: Callable,
-    ):
-        super().__init__(device=device)
-        self._add_state("_input", torch.empty(0))
-        self._add_state("_target", torch.empty(0))
-        self._add_state("_inputs", torch.empty(0))
-        self._add_state("_targets", torch.empty(0))
-        if args:
-            from .metric_meter import MetricMeters
-
-            if len(args) == 1 and isinstance(args[0], MetricMeters):
-                meters = args[0]
-                for name, meter in meters.items():
-                    metrics.setdefault(name, meter.metric)
-                if preprocess is base_preprocess:
-                    preprocess = meters.getattr("preprocess")
-            else:
-                for metric in args:
-                    if not callable(metric):
-                        raise ValueError(f"Expected metric to be callable, but got {type(metric)}")
-                    metrics.setdefault(metric.__name__, metric)
-        self.metrics = FlatDict(**metrics)
+        metric_funcs: Sequence[MetricFunc],
+        *,
+        preprocess: Callable = preprocess_binary,
+        distributed: bool = True,
+        device: torch.device | str | None = None,
+    ) -> None:
+        for func in metric_funcs:
+            if not isinstance(func, MetricFunc):
+                raise ValueError(f"Expected metric functions to be MetricFunc instances, got {type(func)}")
+        self.metrics = list(metric_funcs)
+        self.plan = ArtifactPlan.from_functions(self.metrics)
         self.preprocess = preprocess
+        self.distributed = distributed
+        self.device = torch.device(device) if device is not None else None
+
+        self._preds: list[Tensor] = []
+        self._targets: list[Tensor] = []
+        self._confmat: Tensor | None = None
+        self._last_confmat: Tensor | None = None
+        self._last_preds: Tensor = torch.empty(0)
+        self._last_targets: Tensor = torch.empty(0)
+
+        self._artifact_version = 0
+        self._cache: dict[str, tuple[int, Tensor | float]] = {}
+        self._synced = False
 
     def update(self, input: Tensor | NestedTensor | Sequence, target: Tensor | NestedTensor | Sequence) -> None:
         input, target = self.preprocess(input, target)
+        if isinstance(input, NestedTensor):
+            input = input.concat
+        if isinstance(target, NestedTensor):
+            target = target.concat
+
+        self._last_preds = input
+        self._last_targets = target
+
+        if self.plan.need_preds_targets:
+            self._preds.append(self._detach_to_device(input))
+            self._targets.append(self._detach_to_device(target))
+        if self.plan.need_confmat:
+            batch_confmat = self._compute_confmat(input, target)
+            self._last_confmat = batch_confmat
+            self._confmat = batch_confmat if self._confmat is None else self._confmat + batch_confmat
+
+        self._artifact_version += 1
+        self._cache.clear()
+        self._synced = False
+
+    def sync(self) -> None:
+        if self._synced or not self.distributed:
+            return
+
         world_size = get_world_size()
-        if world_size > 1:
-            input, target = self._sync(input, world_size), self._sync(target, world_size)
-        if (
-            isinstance(input, (Tensor, NestedTensor))
-            and isinstance(target, (Tensor, NestedTensor))
-            and input.ndim == target.ndim + 1
-        ):
-            input = input.squeeze(-1)
-        if isinstance(input, (Tensor, NestedTensor)):
-            input = input.detach().to(self.device)
-        if isinstance(target, (Tensor, NestedTensor)):
-            target = target.detach().to(self.device)
-        self._input = input
-        self._target = target
-        if self._inputs.numel() == 0 or self._targets.numel() == 0:
-            self._inputs = input
-            self._targets = target
-        else:
-            self._inputs = torch.cat([self._inputs, input])
-            self._targets = torch.cat([self._targets, target])
+        if world_size <= 1:
+            self._synced = True
+            return
 
-    def value(self) -> RoundDict[str, float | flist]:
-        return self.calculate(self.input, self.target)
+        if self.plan.need_preds_targets and self._preds:
+            preds = self._gather_tensor(torch.cat(self._preds, dim=0), world_size)
+            targets = self._gather_tensor(torch.cat(self._targets, dim=0), world_size)
+            self._preds = [preds]
+            self._targets = [targets]
 
-    def average(self) -> RoundDict[str, float | flist]:
-        return self.calculate(self.inputs, self.targets)
+        if self.plan.need_confmat and self._confmat is not None:
+            self._confmat = self._all_reduce(self._confmat)
 
-    def compute(self) -> RoundDict[str, float | flist]:
+        self._artifact_version += 1
+        self._cache.clear()
+        self._synced = True
+
+    def value(self) -> RoundDict[str, Tensor | float]:
+        view = _MetricsView(self, use_last=True)
+        return RoundDict({func.name: self._run_metric(func, view, cache=False) for func in self.metrics})
+
+    def average(self) -> RoundDict[str, Tensor | float]:
+        self.sync()
+        view = _MetricsView(self, use_last=False)
+        return RoundDict({func.name: self._run_metric(func, view, cache=True) for func in self.metrics})
+
+    def compute(self) -> RoundDict[str, Tensor | float]:
         return self.average()
 
     @property
-    def val(self) -> RoundDict[str, float | flist]:
+    def val(self) -> RoundDict[str, Tensor | float]:
         return self.value()
 
     @property
-    def avg(self) -> RoundDict[str, float | flist]:
+    def avg(self) -> RoundDict[str, Tensor | float]:
         return self.average()
 
-    @torch.inference_mode()
-    def calculate(self, input: Tensor, target: Tensor) -> RoundDict[str, flist | float]:
-        if (
-            isinstance(input, (Tensor, NestedTensor))
-            and input.numel() == 0 == target.numel()
-            or isinstance(input, (list, dict))
-            and len(input) == 0 == len(target)
-        ):
-            return RoundDict({name: nan for name in self.metrics.keys()})
-        ret = RoundDict()
-        for name, metric in self.metrics.items():
-            score = self._calculate(metric, input, target)
-            if isinstance(score, Mapping):
-                ret.merge(score)
-            else:
-                ret[name] = score
-        return ret
+    @property
+    def preds(self) -> Tensor:
+        if self._preds:
+            return torch.cat(self._preds, dim=0)
+        return torch.empty(0, device=self.device or "cpu")
 
-    @torch.inference_mode()
-    def _calculate(self, metric, input: Tensor, target: Tensor) -> flist | float:
-        score = metric(input, target)
-        if isinstance(score, Tensor):
-            return score.item() if score.numel() == 1 else flist(score.tolist())
-        return score
+    @property
+    def targets(self) -> Tensor:
+        if self._targets:
+            return torch.cat(self._targets, dim=0)
+        return torch.empty(0, device=self.device or "cpu")
 
-    @torch.inference_mode()
-    def merge_state(self, metrics: Iterable):
-        raise NotImplementedError()
+    @property
+    def confmat(self) -> Tensor | None:
+        return self._confmat
 
-    def _sync(self, tensor: Tensor, world_size: int):
+    def reset(self) -> Self:
+        self._preds.clear()
+        self._targets.clear()
+        self._confmat = None
+        self._last_confmat = None
+        self._last_preds = torch.empty(0)
+        self._last_targets = torch.empty(0)
+        self._artifact_version = 0
+        self._cache.clear()
+        self._synced = False
+        return self
+
+    def __repr__(self) -> str:  # pragma: no cover - repr convenience
+        keys = tuple(func.name for func in self.metrics)
+        return f"{self.__class__.__name__}{keys}"
+
+    def __format__(self, format_spec: str) -> str:
+        val, avg = self.value(), self.average()
+        return "\t".join(
+            f"{key}: {val[key].__format__(format_spec)} ({avg[key].__format__(format_spec)})" for key in val
+        )
+
+    def _run_metric(self, func: MetricFunc, view: _MetricsView, cache: bool) -> Tensor | float:
+        if cache:
+            cached = self._cache.get(func.name)
+            if cached and cached[0] == self._artifact_version:
+                return cached[1]
+
+        value = func(view)
+
+        if cache:
+            self._cache[func.name] = (self._artifact_version, value)
+        return value
+
+    def _compute_confmat(self, input: Tensor, target: Tensor) -> Tensor:
+        if self.plan.task is None:
+            raise MetricRequirementError("Confusion matrix requested but no task specified.")
+
+        from torchmetrics.functional.classification import confusion_matrix as tm_confusion_matrix
+
+        kwargs = {"task": self.plan.task}
+        if self.plan.num_classes is not None:
+            kwargs["num_classes"] = self.plan.num_classes
+        if self.plan.num_labels is not None:
+            kwargs["num_labels"] = self.plan.num_labels
+        if self.plan.threshold is not None:
+            kwargs["threshold"] = self.plan.threshold
+
+        return tm_confusion_matrix(input, target, **kwargs)
+
+    def _detach_to_device(self, tensor: Tensor) -> Tensor:
+        output = tensor.detach()
+        if self.device is not None:
+            output = output.to(self.device)
+        return output
+
+    def _gather_tensor(self, tensor: Tensor, world_size: int) -> Tensor:
         local_size = torch.tensor([tensor.shape[0]], dtype=torch.int64, device=tensor.device)
         size_list = [torch.zeros_like(local_size) for _ in range(world_size)]
         dist.all_gather(size_list, local_size)
@@ -248,139 +301,6 @@ class Metrics(Metric):
         slices = [gathered_tensors[i][: sizes[i]] for i in range(world_size) if sizes[i] > 0]
         return torch.cat(slices, dim=0)
 
-    @property
-    def input(self) -> Tensor:
-        return self._input
-
-    @property
-    def target(self) -> Tensor:
-        return self._target
-
-    @property
-    def inputs(self) -> Tensor:
-        return self._inputs
-
-    @property
-    def targets(self) -> Tensor:
-        return self._targets
-
-    def __repr__(self):
-        keys = tuple(i for i in self.metrics.keys())
-        return f"{self.__class__.__name__}{keys}"
-
-    def __format__(self, format_spec):
-        val, avg = self.value(), self.average()
-        return "\t".join(
-            [f"{key}: {val[key].__format__(format_spec)} ({avg[key].__format__(format_spec)})" for key in self.metrics]
-        )
-
-    def reset(self: Self) -> Self:
-        r"""
-        Reset the metric state variables to their default value.
-        The tensors in the default values are also moved to the device of
-        the last ``self.to(device)`` call.
-        """
-        for state_name, default in self._state_name_to_default.items():
-            if isinstance(default, Tensor):
-                setattr(self, state_name, default.clone().to(self.device))
-            elif isinstance(default, list):
-                setattr(
-                    self,
-                    state_name,
-                    flist(tensor.clone().to(self.device) for tensor in default),
-                )
-            elif isinstance(default, dict):
-                setattr(
-                    self,
-                    state_name,
-                    DefaultDict(
-                        lambda: torch.tensor(0.0, device=self.device),
-                        {key: tensor.clone().to(self.device) for key, tensor in default.items()},
-                    ),
-                )
-            elif isinstance(default, (int, float)):
-                setattr(self, state_name, default)
-            else:
-                raise TypeError(
-                    f"Invalid type for default value for {state_name}. Received {type(default)},"
-                    "but expected ``Tensor``, a list of ``Tensor``,"
-                    "a dictionary with ``Tensor``, int, or float."
-                )
-        return self
-
-
-class ScoreMetrics(Metrics):  # pylint: disable=abstract-method
-    r"""
-    `ScoreMetrics` is a subclass of Metrics that supports scoring.
-
-    Score is a single value that best represents the performance of the model.
-    It is the core metrics that we use to compare different models.
-    For example, in classification, we usually use auroc as the score.
-
-    `ScoreMetrics` requires two additional arguments: `score_name` and `best_fn`.
-    `score_name` is the name of the metric that we use to compute the score.
-    `best_fn` is a function that takes a list of values and returns the best value.
-    `best_fn` is only not used by `ScoreMetrics`, it is meant to be accessed by other classes.
-
-    Attributes:
-        score_name: The name of the metric that we use to compute the score.
-        best_fn: A function that takes a list of values and returns the best value.
-
-    Args:
-        *args: A single mapping of metrics.
-        score_name: The name of the metric that we use to compute the score. Defaults to the first metric.
-        best_fn: A function that takes a list of values and returns the best value. Defaults to `max`.
-        **metrics: Metrics.
-
-    Notes:
-        - `ScoreMetrics` adds the ability to designate one metric as the "score" metric
-        - The score metric is typically used for model selection or early stopping
-        - `best_fn` determines how to select the "best" score (e.g., max for accuracy, min for loss)
-        - Access the score using `metrics.batch_score` or `metrics.average_score`
-    """
-
-    _score_name: str
-    _best_fn: Callable
-
-    def __init__(
-        self, *args, score_name: str | None = None, best_fn: Callable | None = max, **metrics: FlatDict[str, Callable]
-    ):
-        super().__init__(*args, **metrics)
-        self.score_name = score_name or next(iter(self.metrics.keys()))
-        self.metric = self.metrics[self.score_name]
-        self.best_fn = best_fn or max
-
-    def get_score(self, scope: str) -> float | flist:
-        if scope == "batch":
-            return self.batch_score
-        if scope == "average":
-            return self.average_score
-        raise ValueError(f"Unknown scope: {scope}")
-
-    @property
-    def batch_score(self) -> float | flist:
-        return self._calculate(self.metric, self.input, self.target)
-
-    @property
-    def average_score(self) -> float | flist:
-        return self._calculate(self.metric, self.inputs, self.targets)
-
-    @property
-    def score_name(self) -> str:
-        return self._score_name
-
-    @score_name.setter
-    def score_name(self, name) -> None:
-        if name not in self.metrics:
-            raise ValueError(f"score_name must be in {self.metrics.keys()}, but got {name}")
-        self._score_name = name
-
-    @property
-    def best_fn(self) -> Callable:
-        return self._best_fn
-
-    @best_fn.setter
-    def best_fn(self, fn: Callable) -> None:
-        if not callable(fn):
-            raise ValueError(f"best_fn must be callable, but got {type(fn)}")
-        self._best_fn = fn
+    def _all_reduce(self, tensor: Tensor) -> Tensor:
+        dist.all_reduce(tensor)
+        return tensor

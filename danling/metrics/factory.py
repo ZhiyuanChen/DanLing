@@ -36,8 +36,9 @@ with try_import() as lazy_import:
         binary_accuracy,
         binary_auprc,
         binary_auroc,
-        binary_f1_score,
+        binary_f1,
         mcc,
+        mse,
         multiclass_accuracy,
         multiclass_auprc,
         multiclass_auroc,
@@ -77,15 +78,15 @@ def binary_metrics(ignore_index: int | None = -100, **kwargs):
         Metrics: A configured Metrics instance for binary classification
     """
     lazy_import.check()
-    return Metrics(
-        auroc=binary_auroc,
-        auprc=binary_auprc,
-        acc=binary_accuracy,
-        f1=binary_f1_score,
-        mcc=mcc,
-        preprocess=partial(preprocess_binary, ignore_index=ignore_index),
-        **kwargs,
-    )
+    metric_funcs = [
+        binary_auroc(),
+        binary_auprc(),
+        binary_accuracy(),
+        binary_f1(),
+        mcc(task="binary"),
+    ]
+    metric_funcs.extend(kwargs.values())
+    return Metrics(metric_funcs, preprocess=partial(preprocess_binary, ignore_index=ignore_index))
 
 
 def multiclass_metrics(num_classes: int, average: str = "macro", ignore_index: int | None = -100, **kwargs):
@@ -112,14 +113,17 @@ def multiclass_metrics(num_classes: int, average: str = "macro", ignore_index: i
         Metrics: A configured Metrics instance for multiclass classification
     """
     lazy_import.check()
+    metric_funcs = [
+        multiclass_auroc(num_classes=num_classes, average=average),
+        multiclass_auprc(num_classes=num_classes, average=average),
+        multiclass_accuracy(num_classes=num_classes, average=average),
+        multiclass_f1_score(num_classes=num_classes, average=average),
+        mcc(task="multiclass", num_classes=num_classes),
+    ]
+    metric_funcs.extend(kwargs.values())
     return Metrics(
-        auroc=partial(multiclass_auroc, num_classes=num_classes, average=average),
-        auprc=partial(multiclass_auprc, num_classes=num_classes, average=average),
-        acc=partial(multiclass_accuracy, num_classes=num_classes, average=average),
-        f1=partial(multiclass_f1_score, num_classes=num_classes, average=average),
-        mcc=partial(mcc, task="multiclass", num_classes=num_classes),
+        metric_funcs,
         preprocess=partial(preprocess_multiclass, num_classes=num_classes, ignore_index=ignore_index),
-        **kwargs,
     )
 
 
@@ -179,14 +183,17 @@ def multilabel_metrics(num_labels: int, average: str = "macro", ignore_index: in
         Metrics: A configured Metrics instance for multi-label classification
     """
     lazy_import.check()
+    metric_funcs = [
+        multilabel_auroc(num_labels=num_labels, average=average),
+        multilabel_auprc(num_labels=num_labels, average=average),
+        multilabel_accuracy(num_labels=num_labels),
+        multilabel_f1_score(num_labels=num_labels, average=average),
+        mcc(task="multilabel", num_labels=num_labels),
+    ]
+    metric_funcs.extend(kwargs.values())
     return Metrics(
-        auroc=partial(multilabel_auroc, num_labels=num_labels, average=average),
-        auprc=partial(multilabel_auprc, num_labels=num_labels, average=average),
-        acc=partial(multilabel_accuracy, num_labels=num_labels),
-        f1=partial(multilabel_f1_score, num_labels=num_labels, average=average),
-        mcc=partial(mcc, task="multilabel", num_labels=num_labels),
+        metric_funcs,
         preprocess=partial(preprocess_multilabel, num_labels=num_labels, ignore_index=ignore_index),
-        **kwargs,
     )
 
 
@@ -243,11 +250,14 @@ def regression_metrics(num_outputs: int = 1, ignore_nan: bool = True, **kwargs):
         Metrics: A configured Metrics instance for regression tasks
     """
     lazy_import.check()
+    metric_funcs = [
+        pearson(),
+        spearman(),
+        r2_score(),
+        mse(num_outputs=num_outputs),
+        rmse(num_outputs=num_outputs),
+    ]
+    metric_funcs.extend(kwargs.values())
     return Metrics(
-        pearson=partial(pearson, num_outputs=num_outputs),
-        spearman=partial(spearman, num_outputs=num_outputs),
-        r2=partial(r2_score, num_outputs=num_outputs),
-        rmse=partial(rmse, num_outputs=num_outputs),
-        preprocess=partial(preprocess_regression, num_outputs=num_outputs, ignore_nan=ignore_nan),
-        **kwargs,
+        metric_funcs, preprocess=partial(preprocess_regression, num_outputs=num_outputs, ignore_nan=ignore_nan)
     )

@@ -230,19 +230,10 @@ class MetricMeters(AverageMeters):
         **meters,
     ) -> None:
         if args:
-            from .metrics import Metrics
-
-            if len(args) == 1 and isinstance(args[0], Metrics):
-                metrics = args[0]
-                for name, metric in metrics.metrics.items():
-                    meters.setdefault(name, metric)
-                if preprocess is base_preprocess:
-                    preprocess = metrics.preprocess
-            else:
-                for metric in args:
-                    if not callable(metric):
-                        raise ValueError(f"Expected metric to be callable, but got {type(metric)}")
-                    meters.setdefault(metric.__name__, metric)
+            for metric in args:
+                if not callable(metric):
+                    raise ValueError(f"Expected metric to be callable, but got {type(metric)}")
+                meters.setdefault(metric.__name__, metric)
         self.setattr("preprocess", preprocess)
         super().__init__(**meters)
 

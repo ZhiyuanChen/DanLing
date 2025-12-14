@@ -19,13 +19,20 @@
 
 from __future__ import annotations
 
-from .binary import binary_accuracy, binary_auprc, binary_auroc, binary_f1_score
+from .binary import binary_accuracy, binary_auprc, binary_auroc, binary_f1
 from .classification import accuracy, auprc, auroc, f1_score, mcc
 from .multiclass import multiclass_accuracy, multiclass_auprc, multiclass_auroc, multiclass_f1_score
 from .multilabel import multilabel_accuracy, multilabel_auprc, multilabel_auroc, multilabel_f1_score
 from .regression import mse, pearson, r2_score, rmse, spearman
+from .utils import Artifact, MetricFunc
 
 __all__ = [
+    "Artifact",
+    "MetricFunc",
+    "binary_accuracy",
+    "binary_auprc",
+    "binary_auroc",
+    "binary_f1",
     "accuracy",
     "auprc",
     "auroc",
@@ -36,10 +43,6 @@ __all__ = [
     "r2_score",
     "rmse",
     "spearman",
-    "binary_accuracy",
-    "binary_auprc",
-    "binary_auroc",
-    "binary_f1_score",
     "multiclass_accuracy",
     "multiclass_auprc",
     "multiclass_auroc",

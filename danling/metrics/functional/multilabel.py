@@ -17,61 +17,83 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
-# pylint: disable=redefined-builtin
-# mypy: disable-error-code="arg-type"
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Optional
+
+import torch
 from lazy_imports import try_import
 from torch import Tensor
 
-from danling.tensors import NestedTensor
+from .utils import Artifact, MetricFunc
 
 with try_import() as tm:
     from torchmetrics.functional import classification as tmcls
 
-
-def multilabel_accuracy(
-    input: Tensor | NestedTensor,
-    target: Tensor | NestedTensor,
-    threshold: float = 0.5,
-    num_labels: int | None = None,
-    **kwargs,
-):
-    tm.check()
-    return tmcls.multilabel_accuracy(input, target, num_labels=num_labels, threshold=threshold, **kwargs)
+if TYPE_CHECKING:  # pragma: no cover
+    from ..metrics import Metrics
 
 
-def multilabel_auprc(
-    input: Tensor | NestedTensor,
-    target: Tensor | NestedTensor,
-    average: str | None = "macro",
-    num_labels: int | None = None,
-    **kwargs,
-):
-    tm.check()
-    return tmcls.multilabel_average_precision(input, target, num_labels=num_labels, average=average, **kwargs)
+class multilabel_accuracy(MetricFunc):
+    def __init__(self, num_labels: int, threshold: float = 0.5, *, name: Optional[str] = "acc") -> None:
+        self.num_labels = num_labels
+        self.threshold = threshold
+        super().__init__(name=name, artifact=Artifact(preds_targets=True, task="multilabel", num_labels=num_labels))
+
+    def __call__(self, metrics: "Metrics") -> Tensor | float:
+        if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
+            return torch.tensor(float("nan"))
+        tm.check()
+        return tmcls.multilabel_accuracy(
+            metrics.preds, metrics.targets, num_labels=self.num_labels, threshold=self.threshold
+        )
 
 
-def multilabel_auroc(
-    input: Tensor | NestedTensor,
-    target: Tensor | NestedTensor,
-    average: str | None = "macro",
-    num_labels: int | None = None,
-    **kwargs,
-):
-    tm.check()
-    return tmcls.multilabel_auroc(input, target, num_labels=num_labels, average=average, **kwargs)
+class multilabel_auprc(MetricFunc):
+    def __init__(self, num_labels: int, average: str | None = "macro", *, name: Optional[str] = "auprc") -> None:
+        self.num_labels = num_labels
+        self.average = average
+        super().__init__(name=name, artifact=Artifact(preds_targets=True, task="multilabel", num_labels=num_labels))
+
+    def __call__(self, metrics: "Metrics") -> Tensor | float:
+        if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
+            return torch.tensor(float("nan"))
+        tm.check()
+        return tmcls.multilabel_average_precision(
+            metrics.preds, metrics.targets, num_labels=self.num_labels, average=self.average
+        )
 
 
-def multilabel_f1_score(
-    input: Tensor | NestedTensor,
-    target: Tensor | NestedTensor,
-    threshold: float = 0.5,
-    average: str | None = "macro",
-    num_labels: int | None = None,
-    **kwargs,
-):
-    tm.check()
-    return tmcls.multilabel_f1_score(
-        input, target, threshold=threshold, num_labels=num_labels, average=average, **kwargs
-    )
+class multilabel_auroc(MetricFunc):
+    def __init__(self, num_labels: int, average: str | None = "macro", *, name: Optional[str] = "auroc") -> None:
+        self.num_labels = num_labels
+        self.average = average
+        super().__init__(name=name, artifact=Artifact(preds_targets=True, task="multilabel", num_labels=num_labels))
+
+    def __call__(self, metrics: "Metrics") -> Tensor | float:
+        if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
+            return torch.tensor(float("nan"))
+        tm.check()
+        return tmcls.multilabel_auroc(metrics.preds, metrics.targets, num_labels=self.num_labels, average=self.average)
+
+
+class multilabel_f1_score(MetricFunc):
+    def __init__(
+        self, num_labels: int, threshold: float = 0.5, average: str | None = "macro", *, name: Optional[str] = "f1"
+    ) -> None:
+        self.num_labels = num_labels
+        self.threshold = threshold
+        self.average = average
+        super().__init__(name=name, artifact=Artifact(preds_targets=True, task="multilabel", num_labels=num_labels))
+
+    def __call__(self, metrics: "Metrics") -> Tensor | float:
+        if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
+            return torch.tensor(float("nan"))
+        tm.check()
+        return tmcls.multilabel_f1_score(
+            metrics.preds,
+            metrics.targets,
+            threshold=self.threshold,
+            num_labels=self.num_labels,
+            average=self.average,
+        )

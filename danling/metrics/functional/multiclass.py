@@ -17,58 +17,78 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
-# pylint: disable=redefined-builtin
-# mypy: disable-error-code="arg-type"
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Optional
+
+import torch
 from lazy_imports import try_import
 from torch import Tensor
 
-from danling.tensors import NestedTensor
+from .utils import Artifact, MetricFunc
 
 with try_import() as te:
     from torchmetrics.functional import classification as tmcls
 
-
-def multiclass_accuracy(
-    input: Tensor | NestedTensor,
-    target: Tensor | NestedTensor,
-    average: str | None = "macro",
-    num_classes: int | None = None,
-    **kwargs,
-):
-    te.check()
-    return tmcls.multiclass_accuracy(input, target, num_classes=num_classes, average=average, **kwargs)
+if TYPE_CHECKING:  # pragma: no cover
+    from ..metrics import Metrics
 
 
-def multiclass_auprc(
-    input: Tensor | NestedTensor,
-    target: Tensor | NestedTensor,
-    average: str | None = "macro",
-    num_classes: int | None = None,
-    **kwargs,
-):
-    te.check()
-    return tmcls.multiclass_average_precision(input, target, num_classes=num_classes, average=average, **kwargs)
+class multiclass_accuracy(MetricFunc):
+    def __init__(self, num_classes: int, average: str | None = "macro", *, name: Optional[str] = "acc") -> None:
+        self.num_classes = num_classes
+        self.average = average
+        super().__init__(name=name, artifact=Artifact(preds_targets=True, task="multiclass", num_classes=num_classes))
+
+    def __call__(self, metrics: "Metrics") -> Tensor | float:
+        if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
+            return torch.tensor(float("nan"))
+        te.check()
+        return tmcls.multiclass_accuracy(
+            metrics.preds, metrics.targets, num_classes=self.num_classes, average=self.average
+        )
 
 
-def multiclass_auroc(
-    input: Tensor | NestedTensor,
-    target: Tensor | NestedTensor,
-    average: str | None = "macro",
-    num_classes: int | None = None,
-    **kwargs,
-):
-    te.check()
-    return tmcls.multiclass_auroc(input, target, num_classes=num_classes, average=average, **kwargs)
+class multiclass_auprc(MetricFunc):
+    def __init__(self, num_classes: int, average: str | None = "macro", *, name: Optional[str] = "auprc") -> None:
+        self.num_classes = num_classes
+        self.average = average
+        super().__init__(name=name, artifact=Artifact(preds_targets=True, task="multiclass", num_classes=num_classes))
+
+    def __call__(self, metrics: "Metrics") -> Tensor | float:
+        if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
+            return torch.tensor(float("nan"))
+        te.check()
+        return tmcls.multiclass_average_precision(
+            metrics.preds, metrics.targets, num_classes=self.num_classes, average=self.average
+        )
 
 
-def multiclass_f1_score(
-    input: Tensor | NestedTensor,
-    target: Tensor | NestedTensor,
-    average: str | None = "macro",
-    num_classes: int | None = None,
-    **kwargs,
-):
-    te.check()
-    return tmcls.multiclass_f1_score(input, target, num_classes=num_classes, average=average, **kwargs)
+class multiclass_auroc(MetricFunc):
+    def __init__(self, num_classes: int, average: str | None = "macro", *, name: Optional[str] = "auroc") -> None:
+        self.num_classes = num_classes
+        self.average = average
+        super().__init__(name=name, artifact=Artifact(preds_targets=True, task="multiclass", num_classes=num_classes))
+
+    def __call__(self, metrics: "Metrics") -> Tensor | float:
+        if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
+            return torch.tensor(float("nan"))
+        te.check()
+        return tmcls.multiclass_auroc(
+            metrics.preds, metrics.targets, num_classes=self.num_classes, average=self.average
+        )
+
+
+class multiclass_f1_score(MetricFunc):
+    def __init__(self, num_classes: int, average: str | None = "macro", *, name: Optional[str] = "f1") -> None:
+        self.num_classes = num_classes
+        self.average = average
+        super().__init__(name=name, artifact=Artifact(preds_targets=True, task="multiclass", num_classes=num_classes))
+
+    def __call__(self, metrics: "Metrics") -> Tensor | float:
+        if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
+            return torch.tensor(float("nan"))
+        te.check()
+        return tmcls.multiclass_f1_score(
+            metrics.preds, metrics.targets, num_classes=self.num_classes, average=self.average
+        )
