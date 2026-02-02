@@ -39,7 +39,7 @@ class pearson(MetricFunc):
         self.multioutput = multioutput
         super().__init__(name=name, artifact=Artifact(preds_targets=True, task="regression"))
 
-    def __call__(self, metrics: "Metrics") -> Tensor | float:
+    def __call__(self, metrics: Metrics) -> Tensor | float:
         if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
             return torch.tensor(float("nan"))
         tm.check()
@@ -58,7 +58,7 @@ class spearman(MetricFunc):
         self.multioutput = multioutput
         super().__init__(name=name, artifact=Artifact(preds_targets=True, task="regression"))
 
-    def __call__(self, metrics: "Metrics") -> Tensor | float:
+    def __call__(self, metrics: Metrics) -> Tensor | float:
         if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
             return torch.tensor(float("nan"))
         tm.check()
@@ -77,7 +77,7 @@ class r2_score(MetricFunc):
         self.multioutput = multioutput
         super().__init__(name=name, artifact=Artifact(preds_targets=True, task="regression"))
 
-    def __call__(self, metrics: "Metrics") -> Tensor | float:
+    def __call__(self, metrics: Metrics) -> Tensor | float:
         if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
             return torch.tensor(float("nan"))
         tm.check()
@@ -89,7 +89,7 @@ class rmse(MetricFunc):
         self.num_outputs = num_outputs
         super().__init__(name=name, artifact=Artifact(preds_targets=True, task="regression"))
 
-    def __call__(self, metrics: "Metrics") -> Tensor | float:
+    def __call__(self, metrics: Metrics) -> Tensor | float:
         if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
             return torch.tensor(float("nan"))
         tm.check()
@@ -101,7 +101,7 @@ class mse(MetricFunc):
         self.num_outputs = num_outputs
         super().__init__(name=name, artifact=Artifact(preds_targets=True, task="regression"))
 
-    def __call__(self, metrics: "Metrics") -> Tensor | float:
+    def __call__(self, metrics: Metrics) -> Tensor | float:
         if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
             return torch.tensor(float("nan"))
         tm.check()

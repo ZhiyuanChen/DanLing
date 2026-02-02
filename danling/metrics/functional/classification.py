@@ -59,7 +59,7 @@ class mcc(MetricFunc):
             ),
         )
 
-    def __call__(self, metrics: "Metrics") -> Tensor | float:
+    def __call__(self, metrics: Metrics) -> Tensor | float:
         if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
             return torch.tensor(float("nan"))
         tm.check()

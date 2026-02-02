@@ -40,7 +40,7 @@ class multilabel_accuracy(MetricFunc):
         self.threshold = threshold
         super().__init__(name=name, artifact=Artifact(preds_targets=True, task="multilabel", num_labels=num_labels))
 
-    def __call__(self, metrics: "Metrics") -> Tensor | float:
+    def __call__(self, metrics: Metrics) -> Tensor | float:
         if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
             return torch.tensor(float("nan"))
         tm.check()
@@ -55,7 +55,7 @@ class multilabel_auprc(MetricFunc):
         self.average = average
         super().__init__(name=name, artifact=Artifact(preds_targets=True, task="multilabel", num_labels=num_labels))
 
-    def __call__(self, metrics: "Metrics") -> Tensor | float:
+    def __call__(self, metrics: Metrics) -> Tensor | float:
         if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
             return torch.tensor(float("nan"))
         tm.check()
@@ -70,7 +70,7 @@ class multilabel_auroc(MetricFunc):
         self.average = average
         super().__init__(name=name, artifact=Artifact(preds_targets=True, task="multilabel", num_labels=num_labels))
 
-    def __call__(self, metrics: "Metrics") -> Tensor | float:
+    def __call__(self, metrics: Metrics) -> Tensor | float:
         if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
             return torch.tensor(float("nan"))
         tm.check()
@@ -86,7 +86,7 @@ class multilabel_f1_score(MetricFunc):
         self.average = average
         super().__init__(name=name, artifact=Artifact(preds_targets=True, task="multilabel", num_labels=num_labels))
 
-    def __call__(self, metrics: "Metrics") -> Tensor | float:
+    def __call__(self, metrics: Metrics) -> Tensor | float:
         if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
             return torch.tensor(float("nan"))
         tm.check()
