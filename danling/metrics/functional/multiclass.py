@@ -40,7 +40,7 @@ class multiclass_accuracy(MetricFunc):
         self.average = average
         super().__init__(name=name, artifact=Artifact(preds_targets=True, task="multiclass", num_classes=num_classes))
 
-    def __call__(self, metrics: "Metrics") -> Tensor | float:
+    def __call__(self, metrics: Metrics) -> Tensor | float:
         if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
             return torch.tensor(float("nan"))
         te.check()
@@ -55,7 +55,7 @@ class multiclass_auprc(MetricFunc):
         self.average = average
         super().__init__(name=name, artifact=Artifact(preds_targets=True, task="multiclass", num_classes=num_classes))
 
-    def __call__(self, metrics: "Metrics") -> Tensor | float:
+    def __call__(self, metrics: Metrics) -> Tensor | float:
         if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
             return torch.tensor(float("nan"))
         te.check()
@@ -70,7 +70,7 @@ class multiclass_auroc(MetricFunc):
         self.average = average
         super().__init__(name=name, artifact=Artifact(preds_targets=True, task="multiclass", num_classes=num_classes))
 
-    def __call__(self, metrics: "Metrics") -> Tensor | float:
+    def __call__(self, metrics: Metrics) -> Tensor | float:
         if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
             return torch.tensor(float("nan"))
         te.check()
@@ -85,7 +85,7 @@ class multiclass_f1_score(MetricFunc):
         self.average = average
         super().__init__(name=name, artifact=Artifact(preds_targets=True, task="multiclass", num_classes=num_classes))
 
-    def __call__(self, metrics: "Metrics") -> Tensor | float:
+    def __call__(self, metrics: Metrics) -> Tensor | float:
         if metrics.preds.numel() == 0 or metrics.targets.numel() == 0:
             return torch.tensor(float("nan"))
         te.check()
