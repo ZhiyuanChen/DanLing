@@ -31,31 +31,36 @@ LR_CONSTANT_100 = [0.2, 0.4, 0.6, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1
 # fmt: on
 
 
-class Test:
-    optimizer = optim.SGD([{"params": torch.tensor([0])}], lr=1, momentum=0.9)
+def _build_optimizer() -> optim.SGD:
+    return optim.SGD([{"params": torch.tensor([0])}], lr=1, momentum=0.9)
 
-    def _get_lrs(self, strategy, method, steps: int = 100, final_lr_ratio: float = 0.001):
-        lrs = []
-        scheduler = LRScheduler(
-            self.optimizer,
-            total_steps=steps,
-            final_lr_ratio=final_lr_ratio,
-            strategy=strategy,
-            method=method,
-        )
-        for _ in range(100):
-            lrs.append(scheduler.get_lr()[0])
-            scheduler.step()
-        return [round(lr, 4) for lr in lrs]
 
-    def test_cosine(self):
-        assert self._get_lrs("cosine", "percentile") == LR_COSINE_PERCENTILE_100
-        assert self._get_lrs("cosine", "numerical") == LR_COSINE_NUMERICAL_100
+def _get_lrs(strategy, method, steps: int = 100, final_lr_ratio: float = 0.001):
+    optimizer = _build_optimizer()
+    lrs = []
+    scheduler = LRScheduler(
+        optimizer,
+        total_steps=steps,
+        final_lr_ratio=final_lr_ratio,
+        strategy=strategy,
+        method=method,
+    )
+    for _ in range(100):
+        lrs.append(scheduler.get_lr()[0])
+        scheduler.step()
+    return [round(lr, 4) for lr in lrs]
 
-    def test_linear(self):
-        assert self._get_lrs("linear", "percentile") == LR_LINEAR_PERCENTILE_100
-        assert self._get_lrs("linear", "numerical") == LR_LINEAR_NUMERICAL_100
 
-    def test_constant(self):
-        assert self._get_lrs("constant", "percentile") == LR_CONSTANT_100
-        assert self._get_lrs("constant", "numerical") == LR_CONSTANT_100
+def test_cosine():
+    assert _get_lrs("cosine", "percentile") == LR_COSINE_PERCENTILE_100
+    assert _get_lrs("cosine", "numerical") == LR_COSINE_NUMERICAL_100
+
+
+def test_linear():
+    assert _get_lrs("linear", "percentile") == LR_LINEAR_PERCENTILE_100
+    assert _get_lrs("linear", "numerical") == LR_LINEAR_NUMERICAL_100
+
+
+def test_constant():
+    assert _get_lrs("constant", "percentile") == LR_CONSTANT_100
+    assert _get_lrs("constant", "numerical") == LR_CONSTANT_100

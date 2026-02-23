@@ -100,7 +100,7 @@ class SimpleAttention(nn.Module):
                 if attn_mask.shape != correct_shape:
                     raise ValueError(f"attn_mask should have shape {correct_shape}, but got {attn_mask.shape}.")
             else:
-                raise RuntimeError(f"attn_mask should have dimension 2 or 3, bug got {attn_mask.dim()}.")
+                raise RuntimeError(f"attn_mask should have dimension 2 or 3, but got {attn_mask.dim()}.")
 
         # prep key padding mask
         if key_padding_mask is not None and key_padding_mask.dtype == torch.uint8:

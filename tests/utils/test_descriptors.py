@@ -17,7 +17,7 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
-import os
+from pathlib import Path
 
 from danling.utils import descriptors
 
@@ -25,43 +25,46 @@ from danling.utils import descriptors
 class Class:
     __test__ = False
 
+    def __init__(self, root: Path):
+        self.root = root
+
     @descriptors.cached_ensure_dir
     def cached_ensure_dir(self):
-        return "temp"
+        return str(self.root / "temp")
 
     @descriptors.ensure_dir
     def ensure_dir(self):
-        return "temp"
+        return str(self.root / "temp")
 
     @descriptors.cached_ensure_parent_dir
     def cached_ensure_parent_dir(self):
-        return os.path.join("temp", "test")
+        return str(self.root / "temp" / "test")
 
     @descriptors.ensure_parent_dir
     def ensure_parent_dir(self):
-        return os.path.join("temp", "test")
+        return str(self.root / "temp" / "test")
 
 
-def test_ensure_dir():
-    obj = Class()
-    assert os.path.exists(obj.ensure_dir)
-    os.rmdir(obj.cached_ensure_dir)
+def test_ensure_dir(tmp_path):
+    obj = Class(tmp_path)
+    assert Path(obj.ensure_dir).exists()
+    Path(obj.cached_ensure_dir).rmdir()
     # Run twice for cached version to ensure caching won't break `makedirs`
-    assert os.path.exists(obj.cached_ensure_dir)
-    os.rmdir(obj.ensure_dir)
-    assert os.path.exists(obj.cached_ensure_dir)
-    os.rmdir(obj.ensure_dir)
+    assert Path(obj.cached_ensure_dir).exists()
+    Path(obj.ensure_dir).rmdir()
+    assert Path(obj.cached_ensure_dir).exists()
+    Path(obj.ensure_dir).rmdir()
 
 
-def test_ensure_parent_dir():
-    obj = Class()
-    parent_dir = os.path.dirname(obj.ensure_parent_dir)
-    assert os.path.exists(parent_dir)
-    os.rmdir(parent_dir)
+def test_ensure_parent_dir(tmp_path):
+    obj = Class(tmp_path)
+    parent_dir = Path(obj.ensure_parent_dir).parent
+    assert parent_dir.exists()
+    parent_dir.rmdir()
     # Run twice for cached version to ensure caching won't break `makedirs`
-    parent_dir = os.path.dirname(obj.cached_ensure_parent_dir)
-    assert os.path.exists(parent_dir)
-    os.rmdir(parent_dir)
-    parent_dir = os.path.dirname(obj.cached_ensure_parent_dir)
-    assert os.path.exists(parent_dir)
-    os.rmdir(parent_dir)
+    parent_dir = Path(obj.cached_ensure_parent_dir).parent
+    assert parent_dir.exists()
+    parent_dir.rmdir()
+    parent_dir = Path(obj.cached_ensure_parent_dir).parent
+    assert parent_dir.exists()
+    parent_dir.rmdir()

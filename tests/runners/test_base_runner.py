@@ -17,6 +17,7 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
+import pytest
 from chanfig import Config as Config_
 from chanfig import NestedDict
 
@@ -54,60 +55,63 @@ class Config(Config_):
         self.conflict = 1
 
 
-class Test:
+@pytest.fixture
+def runner(tmp_path):
     config = Config()
-    runner = Runner(config)
+    config.dataset.root = str(tmp_path)
+    config.dataset.download = False
+    return Runner(config)
 
-    def test_results(self):
-        runner = self.runner
-        runner.results = NestedDict(
-            {
-                0: {
-                    "val": {
-                        "loss": 1.0,
-                        "acc": 0.0,
-                    },
+
+def test_results(runner):
+    runner.results = NestedDict(
+        {
+            0: {
+                "val": {
+                    "loss": 1.0,
+                    "acc": 0.0,
                 },
-                1: {
-                    "val": {
-                        "loss": 0.5,
-                        "acc": 0.5,
-                    },
+            },
+            1: {
+                "val": {
+                    "loss": 0.5,
+                    "acc": 0.5,
                 },
-                2: {
-                    "val": {
-                        "loss": 0.2,
-                        "acc": 0.8,
-                    },
+            },
+            2: {
+                "val": {
+                    "loss": 0.2,
+                    "acc": 0.8,
                 },
-                3: {
-                    "val": {
-                        "loss": 0.6,
-                        "acc": 0.4,
-                    },
+            },
+            3: {
+                "val": {
+                    "loss": 0.6,
+                    "acc": 0.4,
                 },
-            }
-        )
-        assert runner.best_result.dict() == {
-            "index": 2,
-            "val": {
-                "loss": 0.2,
-                "acc": 0.8,
             },
         }
-        assert runner.latest_result.dict() == {
-            "index": 3,
-            "val": {
-                "loss": 0.6,
-                "acc": 0.4,
-            },
-        }
-        assert runner.best_score == 0.2
-        assert runner.latest_score == 0.6
+    )
+    assert runner.best_result.dict() == {
+        "index": 2,
+        "val": {
+            "loss": 0.2,
+            "acc": 0.8,
+        },
+    }
+    assert runner.latest_result.dict() == {
+        "index": 3,
+        "val": {
+            "loss": 0.6,
+            "acc": 0.4,
+        },
+    }
+    assert runner.best_score == 0.2
+    assert runner.latest_score == 0.6
 
-    def test_conflict(self):
-        runner = self.runner
-        state = runner.state
-        runner.conflict = False
-        assert not runner.conflict
-        assert state.conflict == 1
+
+def test_conflict(runner):
+    state = runner.state
+    runner.conflict = False
+    assert not runner.conflict
+    assert state.conflict == 1

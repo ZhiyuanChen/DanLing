@@ -17,19 +17,44 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
-import sys
+import importlib.util
+from pathlib import Path
 
-sys.path.insert(0, "examples/vision")
+import pytest
 
-from torch_mnist import MNISTConfig, MNISTRunner  # noqa: E402
+TORCH_MNIST_PATH = Path(__file__).resolve().parents[2] / "examples" / "vision" / "torch_mnist.py"
 
 
-class Test:
-    config = MNISTConfig().boot()
-    runner = MNISTRunner(config)
+def _load_torch_mnist_module():
+    spec = importlib.util.spec_from_file_location("danling_examples_vision_torch_mnist", TORCH_MNIST_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load {TORCH_MNIST_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    def test_train(self):
-        self.runner.train()
 
-    def test_evaluate(self):
-        self.runner.evaluate(["val"])
+@pytest.fixture(scope="module")
+def torch_mnist_module():
+    pytest.importorskip("torchvision")
+    return _load_torch_mnist_module()
+
+
+@pytest.fixture(scope="module")
+def mnist_data_root(tmp_path_factory):
+    return tmp_path_factory.mktemp("mnist_data")
+
+
+@pytest.fixture
+def runner(torch_mnist_module, mnist_data_root):
+    config = torch_mnist_module.MNISTConfig().boot()
+    config.dataset.root = str(mnist_data_root)
+    return torch_mnist_module.MNISTRunner(config)
+
+
+def test_train(runner):
+    runner.train()
+
+
+def test_evaluate(runner):
+    runner.evaluate(["val"])
