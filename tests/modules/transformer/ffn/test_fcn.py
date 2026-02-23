@@ -16,3 +16,16 @@
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
+
+import torch
+
+from danling.modules.transformer.ffn import FullyConnectedNetwork
+
+
+def test_fully_connected_network_preserves_embed_dim():
+    network = FullyConnectedNetwork(embed_dim=8, ffn_dim=16, ffn_dropout=0.0)
+    inputs = torch.randn(2, 4, 8)
+
+    outputs = network(inputs)
+
+    assert outputs.shape == inputs.shape
