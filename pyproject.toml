@@ -92,46 +92,31 @@ profile = "black"
 [tool.flake8]
 max-line-length = 120
 
-[tool.pylint.format]
-max-line-length = 120
-max-args = 15
-max-attributes = 15
-max-branches = 15
-
-[tool.pylint.main]
-fail-under = 9.8
-
-[tool.pylint.messages_control]
-disable = """
+[tool.pylint]
+format.max-line-length = 120
+format.max-args = 15
+format.max-attributes = 15
+format.max-branches = 15
+main.fail-under = 9.8
+messages_control.disable = """
   invalid-name,
   no-member,
   R0801,
   pointless-string-statement,
 """
-
-[tool.pylint.reports]
-output-format = "colorized"
+reports.output-format = "colorized"
 
 [tool.pytest]
 norecursedirs = "examples/*"
+ini_options.addopts = "--doctest-modules --cov"
 
-[tool.pytest.ini_options]
-addopts = "--doctest-modules --cov"
-
-[tool.coverage.json]
-output = "coverage.json"
-
-[tool.coverage.paths]
-source = [ "icrawler" ]
-
-[tool.coverage.report]
-show_missing = true
-[tool.coverage.run]
-branch = true
-include = [ "danling/**" ]
-
-[tool.coverage.xml]
-output = "coverage.xml"
+[tool.coverage]
+run.branch = true
+run.include = [ "danling/**" ]
+paths.source = [ "icrawler" ]
+report.show_missing = true
+json.output = "coverage.json"
+xml.output = "coverage.xml"
 
 # fail_under = 80
 
