@@ -218,23 +218,23 @@ class NestedTensor(torch.Tensor):
         logical_shape = cls._compute_logical_shape(validated, batch_first)
         out_requires_grad = requires_grad if requires_grad is not None else False
 
-        r = torch.Tensor._make_wrapper_subclass(
+        result = torch.Tensor._make_wrapper_subclass(
             cls,
             logical_shape,
             dtype=out_dtype,
             device=out_device,
             requires_grad=out_requires_grad,
         )
-        r._values = values
-        r._offsets = offsets
-        r._shape_tensor = shape_tensor
-        r._logical_shape = logical_shape
-        r.batch_first = batch_first
-        r.padding_value = float(padding_value)
-        r.mask_value = mask_value
-        r._pin_memory = pin_memory
-        r._cached_storage = None
-        return r
+        result._values = values
+        result._offsets = offsets
+        result._shape_tensor = shape_tensor
+        result._logical_shape = logical_shape
+        result.batch_first = batch_first
+        result.padding_value = float(padding_value)
+        result.mask_value = mask_value
+        result._pin_memory = pin_memory
+        result._cached_storage = None
+        return result
 
     def __init__(self, *args, **kwargs):
         pass  # All init in __new__
@@ -257,7 +257,11 @@ class NestedTensor(torch.Tensor):
         if isinstance(tensors, Tensor) and hasattr(tensors, "unbind"):
             tensors = tensors.unbind()
 
-        result = []
+        result: list[Tensor] = []
+        common_device: torch.device | None = None
+        common_dtype: torch.dtype | None = None
+        common_ndim: int | None = None
+
         for t in tensors:
             if not isinstance(t, Tensor):
                 t = torch.tensor(t, dtype=dtype, device=device, pin_memory=pin_memory)
@@ -265,36 +269,33 @@ class NestedTensor(torch.Tensor):
                 t = t.to(device, dtype=dtype)
             if requires_grad is not None:
                 t.requires_grad_(requires_grad)
+
+            if common_device is None:
+                common_device = t.device
+            elif t.device != common_device:
+                raise ValueError(
+                    f"All tensors in NestedTensor must be on the same device, but got {common_device} and {t.device}"
+                )
+
+            if common_dtype is None:
+                common_dtype = t.dtype
+            else:
+                common_dtype = torch.promote_types(common_dtype, t.dtype)
+
+            if common_ndim is None:
+                common_ndim = t.ndim
+            elif t.ndim != common_ndim:
+                raise ValueError(
+                    f"All tensors must have the same number of dimensions, got ndim {common_ndim} and {t.ndim}. "
+                    "If using a DataLoader with drop_last=False, squeeze the last batch before constructing NestedTensor."
+                )
+
             result.append(t)
 
         if not result:
             return ()
 
-        devices = {t.device for t in result}
-        if len(devices) != 1:
-            raise ValueError(
-                "All tensors in NestedTensor must be on the same device, " f"but got {sorted(str(d) for d in devices)}"
-            )
-        common_dtype = result[0].dtype
-        needs_cast = False
-        for t in result[1:]:
-            promoted = torch.promote_types(common_dtype, t.dtype)
-            if promoted != common_dtype:
-                common_dtype = promoted
-                needs_cast = True
-            elif t.dtype != common_dtype:
-                needs_cast = True
-        if needs_cast:
-            result = [t.to(dtype=common_dtype) for t in result]
-
-        ndims = {t.ndim for t in result}
-        if len(ndims) > 1:
-            raise ValueError(
-                f"All tensors must have the same number of dimensions, got ndim in {sorted(ndims)}. "
-                "If using a DataLoader with drop_last=False, squeeze the last batch before constructing NestedTensor."
-            )
-
-        return tuple(result)
+        return tuple(t if t.dtype == common_dtype else t.to(dtype=common_dtype) for t in result)
 
     @staticmethod
     def _pack(tensors: tuple[Tensor, ...], *, dtype: torch.dtype | None = None) -> tuple[Tensor, Tensor, Tensor]:
@@ -378,23 +379,23 @@ class NestedTensor(torch.Tensor):
         else:
             logical_shape = cls._logical_shape_from_shape_tensor(shape_tensor, offsets, batch_first)
 
-        r = torch.Tensor._make_wrapper_subclass(
+        result = torch.Tensor._make_wrapper_subclass(
             cls,
             logical_shape,
             dtype=values.dtype,
             device=values.device,
             requires_grad=values.requires_grad,
         )
-        r._values = values
-        r._offsets = offsets
-        r._shape_tensor = shape_tensor
-        r._logical_shape = logical_shape
-        r.batch_first = batch_first
-        r.padding_value = padding_value
-        r.mask_value = mask_value
-        r._pin_memory = pin_memory
-        r._cached_storage = None
-        return r
+        result._values = values
+        result._offsets = offsets
+        result._shape_tensor = shape_tensor
+        result._logical_shape = logical_shape
+        result.batch_first = batch_first
+        result.padding_value = padding_value
+        result.mask_value = mask_value
+        result._pin_memory = pin_memory
+        result._cached_storage = None
+        return result
 
     # ------------------------------------------------------------------
     # torch.compile support
