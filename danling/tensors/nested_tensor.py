@@ -333,7 +333,7 @@ class NestedTensor(torch.Tensor):
                 "using flattened 1-D packing. This is a slower path that disables "
                 "several compile-friendly fast paths. If this is unintentional, "
                 "ensure all elements share the same shape[1:].",
-                stacklevel=4,
+                stacklevel=2,
             )
             flat = [t.flatten() for t in tensors]
             values = torch.cat(flat, dim=0)
@@ -702,6 +702,10 @@ class NestedTensor(torch.Tensor):
             True
         """
         if not shapes:
+            if "dtype" not in kwargs:
+                kwargs["dtype"] = concat_tensor.dtype
+            if "device" not in kwargs:
+                kwargs["device"] = concat_tensor.device
             return cls([], **kwargs)
 
         num_elements = [shape.numel() for shape in shapes]
@@ -812,8 +816,8 @@ class NestedTensor(torch.Tensor):
         if mask.ndim == 1:
             if batched:
                 indices = effective_mask.nonzero(as_tuple=False).flatten()
-                return cls([tensor[int(i)] for i in indices], **kwargs)
-            return cls(tensor[effective_mask], **kwargs)
+                return cls([tensor[int(i)] for i in indices], dtype=tensor.dtype, **kwargs)
+            return cls(tensor[effective_mask], dtype=tensor.dtype, **kwargs)
         # ndim >= 2: batch setup is shared, per-element trim differs by rank
         batch_first = kwargs.get("batch_first", True)
         tensor_iter = tensor if batch_first else tensor.transpose(0, 1)
@@ -844,7 +848,7 @@ class NestedTensor(torch.Tensor):
                         valid_mask = m_slice.view(m_slice.shape + (1,) * (t_slice.dim() - m_slice.dim()))
                     t_slice = t_slice.masked_fill(~valid_mask, padding_value)
                 trimmed.append(t_slice)
-        return cls(trimmed, **kwargs)
+        return cls(trimmed, dtype=tensor.dtype, **kwargs)
 
     def nested_like(self, tensor: Tensor, strict: bool = True) -> Self:
         r"""
@@ -894,7 +898,7 @@ class NestedTensor(torch.Tensor):
             # .contiguous() ensures storage elements don't inherit non-trivial
             # strides from the padded tensor (e.g. after transpose).
             new_storage.append(tensor[slices].contiguous())
-        return self.__class__(new_storage, **self._meta)
+        return self.__class__(new_storage, dtype=tensor.dtype, **self._meta())
 
     # ------------------------------------------------------------------
     # Indexing
@@ -910,7 +914,7 @@ class NestedTensor(torch.Tensor):
                     raise IndexError(f"Boolean index has length {len(index)} but batch size is {len(self)}")
                 index = [i for i, flag in enumerate(index) if flag]
             storage = tuple(self._storage[index] if isinstance(index, slice) else [self._storage[i] for i in index])
-            return self.__class__(storage, **self._meta)
+            return self.__class__(storage, **self._meta(include_dtype=True))
         if isinstance(index, tuple):
             if len(index) == 0:
                 return self
@@ -940,7 +944,7 @@ class NestedTensor(torch.Tensor):
                 if rest:
                     rest_tuple = tuple(rest)
                     selected = tuple(t[rest_tuple] for t in selected)
-                return self.__class__(selected, **self._meta)
+                return self.__class__(selected, **self._meta(include_dtype=True))
             raise ValueError(f"Unsupported batch index type {type(batch_index)}")
         if isinstance(index, Tensor):
             index = self.nested_like(index, strict=False)
@@ -950,7 +954,9 @@ class NestedTensor(torch.Tensor):
                     "NestedTensor batch length mismatch between self and index: "
                     f"self={len(self)}, index={len(index)}"
                 )
-            return self.__class__([t[i] for t, i in zip(self._storage, index._storage)], **self._meta)
+            return self.__class__(
+                [t[i] for t, i in zip(self._storage, index._storage)], **self._meta(include_dtype=True)
+            )
         raise ValueError(f"Unsupported index type {type(index)}")
 
     def __setitem__(self, index: int | slice | list | tuple, value: Tensor | NestedTensor) -> None:
@@ -1044,9 +1050,9 @@ class NestedTensor(torch.Tensor):
 
             if isinstance(value, Tensor) and not isinstance(value, NestedTensor):
                 if value.dim() > 1 and value.size(0) > 1:
-                    value = self.__class__(value.unbind(0), **self._meta)
+                    value = self.__class__(value.unbind(0), **self._meta())
                 else:
-                    value = self.__class__([value], **self._meta)
+                    value = self.__class__([value], **self._meta())
 
             if isinstance(index, slice):
                 start, stop, step = index.indices(len(self))
@@ -1123,8 +1129,17 @@ class NestedTensor(torch.Tensor):
     # State management
     # ------------------------------------------------------------------
 
-    @property
-    def _meta(self) -> Mapping:
+    def _meta(self, *, include_dtype: bool = False) -> Mapping:
+        r"""Metadata used for structure-preserving reconstruction."""
+        if include_dtype:
+            return {
+                "batch_first": self.batch_first,
+                "padding_value": self.padding_value,
+                "mask_value": self.mask_value,
+                "pin_memory": self._pin_memory,
+                "device": self._values.device,
+                "dtype": self.dtype,
+            }
         return {
             "batch_first": self.batch_first,
             "padding_value": self.padding_value,
@@ -1257,6 +1272,10 @@ class NestedTensor(torch.Tensor):
         except TypeError:
             return NotImplemented
 
+    # Python sets __hash__ = None when __eq__ is overridden in a subclass.
+    # Preserve Tensor's identity hash so AOT/torch.compile memoization works.
+    __hash__ = Tensor.__hash__
+
     # Arithmetic, comparison, and in-place operators are handled by the base
     # Tensor class, which routes through C++ → aten → __torch_dispatch__ →
     # aten_functions.py. No Python-level overrides needed.
@@ -1356,12 +1375,12 @@ class NestedTensor(torch.Tensor):
     @property
     def T(self) -> Self:  # type: ignore[override]
         r"""Transpose: applies .T to each element in storage."""
-        return self.__class__([t.T for t in self._storage], **self._meta)
+        return self.__class__([t.T for t in self._storage], **self._meta(include_dtype=True))
 
     @property
     def mT(self) -> Self:  # type: ignore[override]
         r"""Batch matrix transpose: applies .mT to each element in storage."""
-        return self.__class__([t.mT for t in self._storage], **self._meta)
+        return self.__class__([t.mT for t in self._storage], **self._meta(include_dtype=True))
 
     @property
     def shape(self) -> torch.Size:  # type: ignore[override, name-defined]
@@ -1593,8 +1612,12 @@ class NestedTensor(torch.Tensor):
             'NestedTensor'
         """
         if len(self) == 0:
-            return self.__class__([], **self._meta)
-        return self.__class__([t.view(s) for t, s in zip(self._storage, self._view_shapes(shape))], **self._meta)
+            return self.__class__([], **self._meta(include_dtype=True))
+        return self.__class__(
+            [t.view(s) for t, s in zip(self._storage, self._view_shapes(shape))],
+            dtype=self.dtype,
+            **self._meta(),
+        )
 
     def _view_shapes(self, shape) -> list[tuple[int, ...]]:  # type: ignore[valid-type]
         r"""

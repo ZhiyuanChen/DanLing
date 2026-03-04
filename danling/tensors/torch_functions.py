@@ -296,7 +296,7 @@ def cat(tensors: tuple[Tensor | NestedTensor, ...], dim: int = 0):
                 # Incompatible packed layouts (e.g., one flattened, one N-D packed):
                 # fall back to unpack→repack.
                 storage: list[Tensor] = []
-                state: Mapping = ref._meta
+                state: Mapping = ref._meta()
                 for tensor in nt_tensors:
                     storage.extend(tensor._storage)
                 return NestedTensor(storage, **state)
@@ -335,10 +335,11 @@ def cat(tensors: tuple[Tensor | NestedTensor, ...], dim: int = 0):
                 batch_first=ref.batch_first,
                 padding_value=ref.padding_value,
                 mask_value=ref.mask_value,
+                pin_memory=ref._pin_memory,
             )
         # Fallback: mix of NT and plain tensors
         storage: list = []
-        state: Mapping = ref._meta
+        state: Mapping = ref._meta()
         for tensor in tensors:
             if isinstance(tensor, NestedTensor):
                 storage.extend(tensor._storage)
@@ -359,7 +360,7 @@ def cat(tensors: tuple[Tensor | NestedTensor, ...], dim: int = 0):
     storage = [
         torch.cat([t._storage[i] for t in tensors], dim=dim_adj) for i in range(len(first))  # type: ignore[index]
     ]
-    return NestedTensor(storage, **first._meta)
+    return NestedTensor(storage, **first._meta())
 
 
 # Aliases for torch.cat
@@ -420,7 +421,7 @@ def chunk(input: NestedTensor, chunks: int, dim: int = 0):
             return ()
         chunk_size = (len(storage) + chunks - 1) // chunks
         return tuple(
-            NestedTensor(storage[i : i + chunk_size], **input._meta)  # noqa: E203
+            NestedTensor(storage[i : i + chunk_size], **input._meta())  # noqa: E203
             for i in range(0, len(storage), chunk_size)
         )
 
@@ -434,7 +435,7 @@ def chunk(input: NestedTensor, chunks: int, dim: int = 0):
 
     num_chunks = len(chunk_results[0])
     return tuple(
-        NestedTensor([chunk_results[i][k] for i in range(len(storage))], **input._meta) for k in range(num_chunks)
+        NestedTensor([chunk_results[i][k] for i in range(len(storage))], **input._meta()) for k in range(num_chunks)
     )
 
 
@@ -495,7 +496,7 @@ def split(input: NestedTensor, split_size_or_sections, dim: int = 0):
                 raise ValueError("split_size must be a positive integer.")
             storage = input._storage
             return tuple(
-                NestedTensor(storage[i : i + split_size], **input._meta)  # noqa: E203
+                NestedTensor(storage[i : i + split_size], **input._meta())  # noqa: E203
                 for i in range(0, len(storage), split_size)
             )
 
@@ -511,7 +512,7 @@ def split(input: NestedTensor, split_size_or_sections, dim: int = 0):
             if section < 0:
                 raise ValueError("split sections must be non-negative.")
             end = start + int(section)
-            chunks.append(NestedTensor(storage[start:end], **input._meta))
+            chunks.append(NestedTensor(storage[start:end], **input._meta()))
             start = end
         if start != len(storage):
             raise ValueError("split sections do not sum to the NestedTensor batch size.")
@@ -520,14 +521,14 @@ def split(input: NestedTensor, split_size_or_sections, dim: int = 0):
     # ── Non-batch dim split ──
     storage = input._storage
     if not storage:
-        return (NestedTensor([], **input._meta),)
+        return (NestedTensor([], **input._meta(include_dtype=True)),)
 
     elem_dim = _translate_dim(input, dim)
     split_results = [torch.split(t, split_size_or_sections, dim=elem_dim) for t in storage]
 
     num_chunks = len(split_results[0])
     return tuple(
-        NestedTensor([split_results[i][k] for i in range(len(storage))], **input._meta) for k in range(num_chunks)
+        NestedTensor([split_results[i][k] for i in range(len(storage))], **input._meta()) for k in range(num_chunks)
     )
 
 
@@ -764,7 +765,7 @@ def _register_index_op(func, name):
             if isinstance(src, Tensor) and src.device != t.device:
                 src = src.to(device=t.device)
             storage.append(func(t, dim_adj, idx, src, **kwargs))
-        return NestedTensor(storage, **input._meta)
+        return NestedTensor(storage, **input._meta())
 
 
 _register_index_op(torch.index_add, "index_add")
@@ -829,7 +830,7 @@ def index_put(input: NestedTensor, indices, values, accumulate: bool = False):
         if isinstance(value_i, Tensor) and value_i.device != t.device:
             value_i = value_i.to(device=t.device)
         storage.append(torch.index_put(t, tuple(per_tensor_indices), value_i, accumulate=accumulate))
-    return NestedTensor(storage, **input._meta)
+    return NestedTensor(storage, **input._meta())
 
 
 @NestedTensorFuncRegistry.implement(torch.index_select)
@@ -863,7 +864,7 @@ def index_select(input: NestedTensor, dim: int, index: Tensor):
     batch_dim = _get_batch_dim(input)
     if dim == batch_dim:
         indices = index.to(dtype=torch.long, device="cpu").tolist()
-        return NestedTensor([input._storage[i] for i in indices], **input._meta)
+        return NestedTensor([input._storage[i] for i in indices], **input._meta())
     dim_adj = _translate_dim(input, dim)
     index_device = index if index.device == input.device else index.to(device=input.device)
     return NestedTensor(torch.index_select(t, dim_adj, index_device) for t in input._storage)
@@ -911,7 +912,7 @@ def masked_fill(input: NestedTensor, mask, value):
         else:
             m = m.to(device=t.device)
         storage.append(torch.masked_fill(t, m, value))
-    return NestedTensor(storage, **input._meta)
+    return NestedTensor(storage, **input._meta())
 
 
 @NestedTensorFuncRegistry.implement(torch.masked_scatter)
@@ -968,7 +969,7 @@ def masked_scatter(input: NestedTensor, mask, source):
         if isinstance(s, Tensor) and s.device != t.device:
             s = s.to(device=t.device)
         storage.append(torch.masked_scatter(t, m, s))
-    return NestedTensor(storage, **input._meta)
+    return NestedTensor(storage, **input._meta())
 
 
 @NestedTensorFuncRegistry.implement(torch.masked_select)
@@ -1015,7 +1016,7 @@ def masked_select(input: NestedTensor, mask):
         else:
             m = m.to(device=t.device)
         storage.append(torch.masked_select(t, m))
-    return NestedTensor(storage, **input._meta)
+    return NestedTensor(storage, **input._meta())
 
 
 @NestedTensorFuncRegistry.implement(torch.nonzero)
@@ -1051,7 +1052,7 @@ def nonzero(input: NestedTensor, *, out=None, as_tuple: bool = False):
     if not input._storage:
         if as_tuple:
             return ()
-        return NestedTensor([], **input._meta)
+        return NestedTensor([], **input._meta(include_dtype=True))
 
     if not as_tuple:
         return NestedTensor(torch.nonzero(t, as_tuple=False) for t in input._storage)
@@ -1067,7 +1068,7 @@ def nonzero(input: NestedTensor, *, out=None, as_tuple: bool = False):
         indices = torch.nonzero(t, as_tuple=True)
         for dim, idx in enumerate(indices):
             per_dim[dim].append(idx)
-    return tuple(NestedTensor(per_dim[dim], **input._meta) for dim in range(ndim))
+    return tuple(NestedTensor(per_dim[dim], **input._meta()) for dim in range(ndim))
 
 
 def _scatter_impl(input, dim, index, src, apply_fn, name="scatter"):
@@ -1335,13 +1336,13 @@ def bmm(input, mat2, *, out=None):
             raise ValueError(
                 "NestedTensor batch length mismatch between input and mat2: " f"input={len(input)}, mat2={len(mat2)}"
             )
-        return NestedTensor((torch.bmm(x, y) for x, y in zip(input, mat2)), **input._meta)
+        return NestedTensor((torch.bmm(x, y) for x, y in zip(input, mat2)), **input._meta())
 
     if isinstance(input, NestedTensor):
-        return NestedTensor((torch.bmm(t, mat2) for t in input), **input._meta)
+        return NestedTensor((torch.bmm(t, mat2) for t in input), **input._meta())
 
     if isinstance(mat2, NestedTensor):
-        return NestedTensor((torch.bmm(input, t) for t in mat2), **mat2._meta)
+        return NestedTensor((torch.bmm(input, t) for t in mat2), **mat2._meta())
 
     return torch.bmm(input, mat2)
 
@@ -1378,7 +1379,7 @@ def matmul(input, other, *, out=None):
             raise ValueError(
                 "NestedTensor batch length mismatch between input and other: " f"input={len(input)}, other={len(other)}"
             )
-        return NestedTensor((torch.matmul(x, y) for x, y in zip(input, other)), **input._meta)
+        return NestedTensor((torch.matmul(x, y) for x, y in zip(input, other)), **input._meta())
 
     if isinstance(input, NestedTensor):
         if isinstance(other, Tensor) and input.shape == other.shape:
@@ -1388,8 +1389,8 @@ def matmul(input, other, *, out=None):
                     "NestedTensor batch length mismatch between input and other: "
                     f"input={len(input)}, other={len(other)}"
                 )
-            return NestedTensor((torch.matmul(x, y) for x, y in zip(input, other)), **input._meta)
-        return NestedTensor((torch.matmul(t, other) for t in input), **input._meta)
+            return NestedTensor((torch.matmul(x, y) for x, y in zip(input, other)), **input._meta())
+        return NestedTensor((torch.matmul(t, other) for t in input), **input._meta())
 
     if isinstance(other, NestedTensor):
         if isinstance(input, Tensor) and other.shape == input.shape:
@@ -1399,8 +1400,8 @@ def matmul(input, other, *, out=None):
                     "NestedTensor batch length mismatch between input and other: "
                     f"input={len(input)}, other={len(other)}"
                 )
-            return NestedTensor((torch.matmul(x, y) for x, y in zip(input, other)), **other._meta)
-        return NestedTensor((torch.matmul(input, t) for t in other), **other._meta)
+            return NestedTensor((torch.matmul(x, y) for x, y in zip(input, other)), **other._meta())
+        return NestedTensor((torch.matmul(input, t) for t in other), **other._meta())
 
     return torch.matmul(input, other)
 
@@ -1441,13 +1442,13 @@ def mm(input, mat2, *, out=None):
             raise ValueError(
                 "NestedTensor batch length mismatch between input and mat2: " f"input={len(input)}, mat2={len(mat2)}"
             )
-        return NestedTensor((torch.mm(x, y) for x, y in zip(input, mat2)), **input._meta)
+        return NestedTensor((torch.mm(x, y) for x, y in zip(input, mat2)), **input._meta())
 
     if isinstance(input, NestedTensor):
-        return NestedTensor((torch.mm(t, mat2) for t in input), **input._meta)
+        return NestedTensor((torch.mm(t, mat2) for t in input), **input._meta())
 
     if isinstance(mat2, NestedTensor):
-        return NestedTensor((torch.mm(input, t) for t in mat2), **mat2._meta)
+        return NestedTensor((torch.mm(input, t) for t in mat2), **mat2._meta())
 
     return torch.mm(input, mat2)
 
@@ -2141,10 +2142,10 @@ def reshape(input: NestedTensor, shape: Sequence[int]) -> NestedTensor:
     from .nested_tensor import NestedTensor
 
     if not input._storage:
-        return NestedTensor([], **input._meta)
+        return NestedTensor([], **input._meta(include_dtype=True))
     view_shapes = input._view_shapes(shape)
     reshaped_tensors = [t.reshape(s) for t, s in zip(input._storage, view_shapes)]
-    return NestedTensor(reshaped_tensors, **input._meta)
+    return NestedTensor(reshaped_tensors, **input._meta())
 
 
 @NestedTensorFuncRegistry.implement(torch.roll)
@@ -2445,7 +2446,7 @@ def where(condition, input, other):
             except RuntimeError:
                 vt = vt.expand(t.shape)
             storage.append(vt)
-        return NestedTensor(storage, **ref._meta)
+        return NestedTensor(storage, **ref._meta())
 
     ref = next((v for v in (input, other, condition) if isinstance(v, NestedTensor)), None)
     if ref is None:
@@ -2461,7 +2462,7 @@ def where(condition, input, other):
             )
     return NestedTensor(
         (torch.where(c, x, y) for c, x, y in zip(cond_nt._storage, input_nt._storage, other_nt._storage)),
-        **ref._meta,
+        **ref._meta(),
     )
 
 
@@ -2627,7 +2628,7 @@ def argsort(input: NestedTensor, dim: int = -1, descending: bool = False, stable
     dim = _translate_non_batch_dim(input, dim, name="argsort")
     stable = False if stable is None else stable
     ret = [torch.argsort(t, dim=dim, descending=descending, stable=stable) for t in input._storage]
-    return NestedTensor(ret, **input._meta)
+    return NestedTensor(ret, **input._meta())
 
 
 @NestedTensorFuncRegistry.implement(torch.kthvalue)
@@ -2911,7 +2912,7 @@ def einsum(equation, *operands):
             else:
                 elem_operands.append(op)
         results.append(torch.einsum(equation, *elem_operands))
-    return NestedTensor(results, **ref._meta)
+    return NestedTensor(results, **ref._meta())
 
 
 @NestedTensorFuncRegistry.implement(torch.searchsorted)
@@ -2924,7 +2925,7 @@ def searchsorted(sorted_sequence, values, *, out_int32=False, right=False, side=
             torch.searchsorted(s, v, out_int32=out_int32, right=right, side=side, sorter=sorter)
             for s, v in zip(sorted_sequence._storage, values._storage)
         ]
-        return NestedTensor(results, **values._meta)
+        return NestedTensor(results, **values._meta())
     if isinstance(values, NestedTensor):
         return _map_storage(
             values,
@@ -3074,7 +3075,7 @@ def linalg_svd(input, full_matrices=True):
         Us.append(U)
         Ss.append(S)
         Vhs.append(Vh)
-    meta = input._meta
+    meta = input._meta()
     return NestedTensor(Us, **meta), NestedTensor(Ss, **meta), NestedTensor(Vhs, **meta)
 
 
@@ -3117,7 +3118,7 @@ def linalg_solve(input, B):
         results = [torch.linalg.solve(a, b) for a, b in zip(input._storage, B._storage)]
     else:
         results = [torch.linalg.solve(t, B) for t in input._storage]
-    return NestedTensor(results, **input._meta)
+    return NestedTensor(results, **input._meta())
 
 
 # Bulk elementwise registrations

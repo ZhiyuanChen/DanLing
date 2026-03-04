@@ -79,7 +79,7 @@ class TestArithmeticFunctions:
         assert output.batch_first is False
         assert output.padding_value == -5
         assert output.mask_value is True
-        reference = NT([t + 1 for t in nt], **nt._meta)
+        reference = NT([t + 1 for t in nt], **nt._meta())
         assert_close(output, reference)
 
 
@@ -91,7 +91,7 @@ class TestCatFunction:
         output = cat((nt, mixed), dim=0)
         assert isinstance(output, NestedTensor)
         assert output.device == nt.device
-        reference = NT([nt[0], mixed], **nt._meta)
+        reference = NT([nt[0], mixed], **nt._meta())
         assert_close(output, reference)
 
     def test_cat_non_zero_dim_requires_nested_tensors(self):
@@ -109,7 +109,7 @@ class TestCatFunction:
         nt = NestedTensor([torch.arange(3).unsqueeze(1), torch.arange(3, 5).unsqueeze(1)], batch_first=False)
         extra = torch.arange(5, 8).unsqueeze(1)
         output = torch.cat((nt, extra), dim=1)
-        reference = NT([*nt, extra], **nt._meta)
+        reference = NT([*nt, extra], **nt._meta())
         assert_close(output, reference)
         assert output.batch_first is False
 
@@ -119,18 +119,18 @@ class TestCatFunction:
         nt2_feat = NestedTensor([torch.zeros(2, 1), torch.zeros(3, 1)], batch_first=False)
 
         output_seq = torch.cat((nt1, nt2_seq), dim=0)
-        reference_seq = NT([torch.cat([a, b], dim=0) for a, b in zip(nt1, nt2_seq)], **nt1._meta)
+        reference_seq = NT([torch.cat([a, b], dim=0) for a, b in zip(nt1, nt2_seq)], **nt1._meta())
         assert_close(output_seq, reference_seq)
 
         output_feat = torch.cat((nt1, nt2_feat), dim=2)
-        reference_feat = NT([torch.cat([a, b], dim=1) for a, b in zip(nt1, nt2_feat)], **nt1._meta)
+        reference_feat = NT([torch.cat([a, b], dim=1) for a, b in zip(nt1, nt2_feat)], **nt1._meta())
         assert_close(output_feat, reference_feat)
 
     def test_cat_dim0_incompatible_packed_layout_falls_back(self):
         nt1 = NT([torch.arange(6.0).reshape(2, 3), torch.arange(3.0).reshape(1, 3)])
         nt2 = NT([torch.arange(8.0).reshape(2, 4), torch.arange(4.0).reshape(1, 4)])
         output = torch.cat((nt1, nt2), dim=0)
-        reference = NT([*nt1, *nt2], **nt1._meta)
+        reference = NT([*nt1, *nt2], **nt1._meta())
         assert_close(output, reference)
 
     def test_cat_dim0_validates_nested_metadata(self):
@@ -186,7 +186,7 @@ class TestStackFunction:
         a = NT([torch.tensor([1, 2]), torch.tensor([3, 4])])
         b = NT([torch.tensor([5, 6]), torch.tensor([7, 8])])
         output = torch.stack([a, b], dim=0)
-        reference = NT([torch.stack([a[i], b[i]], dim=0) for i in range(len(a))], **a._meta)
+        reference = NT([torch.stack([a[i], b[i]], dim=0) for i in range(len(a))], **a._meta())
         assert isinstance(output, NestedTensor)
         assert_close(output, reference)
 
@@ -306,7 +306,7 @@ class TestGatherScatter:
         )
         index = torch.zeros_like(nt.tensor, dtype=torch.long)
         output = gather(nt, 1, index)
-        reference = NT([torch.gather(t, 0, torch.zeros_like(t, dtype=torch.long)) for t in nt], **nt._meta)
+        reference = NT([torch.gather(t, 0, torch.zeros_like(t, dtype=torch.long)) for t in nt], **nt._meta())
         assert_close(output, reference)
 
     def test_scatter_with_tensor_index_and_src(self, device, float_dtype):
@@ -323,7 +323,7 @@ class TestGatherScatter:
         )
         src = torch.ones_like(index, dtype=float_dtype, device=device)
         output = scatter(nt, 1, index, src)
-        reference = NT([torch.scatter(t, 0, idx, src_slice) for t, idx, src_slice in zip(nt, index, src)], **nt._meta)
+        reference = NT([torch.scatter(t, 0, idx, src_slice) for t, idx, src_slice in zip(nt, index, src)], **nt._meta())
         assert_close(output, reference)
 
     def test_gather_batch_first_false_respects_batch_dim(self, device, float_dtype):
@@ -336,7 +336,7 @@ class TestGatherScatter:
         )
         index = torch.zeros_like(nt.tensor, dtype=torch.long)
         output = gather(nt, 0, index)
-        reference = NT([torch.gather(t, 0, torch.zeros_like(t, dtype=torch.long)) for t in nt], **nt._meta)
+        reference = NT([torch.gather(t, 0, torch.zeros_like(t, dtype=torch.long)) for t in nt], **nt._meta())
         assert_close(output, reference)
 
     def test_scatter_batch_first_false_respects_batch_dim(self, device, float_dtype):
@@ -360,7 +360,7 @@ class TestGatherScatter:
                 )
                 for t in nt
             ],
-            **nt._meta,
+            **nt._meta(),
         )
         assert_close(output, reference)
 
@@ -375,7 +375,7 @@ class TestUnaryBinaryMath:
             ]
         )
         output = torch.neg(nt)
-        reference = NT([torch.neg(t) for t in nt], **nt._meta)
+        reference = NT([torch.neg(t) for t in nt], **nt._meta())
         assert_close(output, reference)
 
     def test_maximum_and_minimum(self, device, float_dtype):
@@ -387,11 +387,11 @@ class TestUnaryBinaryMath:
         )
         scalar = torch.tensor(0.0, device=device, dtype=float_dtype)
         output = torch.maximum(nt, scalar)
-        reference = NT([torch.maximum(t, scalar) for t in nt], **nt._meta)
+        reference = NT([torch.maximum(t, scalar) for t in nt], **nt._meta())
         assert_close(output, reference)
 
         output = torch.minimum(nt, scalar)
-        reference = NT([torch.minimum(t, scalar) for t in nt], **nt._meta)
+        reference = NT([torch.minimum(t, scalar) for t in nt], **nt._meta())
         assert_close(output, reference)
 
         output = torch.maximum(nt, nt.tensor)
@@ -405,7 +405,7 @@ class TestUnaryBinaryMath:
             ]
         )
         output = torch.addcmul(nt, nt, nt, value=2)
-        reference = NT([torch.addcmul(t, t, t, value=2) for t in nt], **nt._meta)
+        reference = NT([torch.addcmul(t, t, t, value=2) for t in nt], **nt._meta())
         assert_close(output, reference)
 
     def test_addcmul_tensor_input(self, device, float_dtype):
@@ -415,7 +415,7 @@ class TestUnaryBinaryMath:
                 torch.tensor([4.0, 5.0], device=device, dtype=float_dtype),
             ]
         )
-        reference = NT([torch.addcmul(t, t, t, value=2) for t in nt], **nt._meta)
+        reference = NT([torch.addcmul(t, t, t, value=2) for t in nt], **nt._meta())
         output = torch.addcmul(nt.tensor, nt, nt, value=2)
         assert_close(output, reference)
 
@@ -427,7 +427,7 @@ class TestUnaryBinaryMath:
             ]
         )
         output = torch.addcdiv(nt, nt, nt + 1, value=2)
-        reference = NT([torch.addcdiv(t, t, t + 1, value=2) for t in nt], **nt._meta)
+        reference = NT([torch.addcdiv(t, t, t + 1, value=2) for t in nt], **nt._meta())
         assert_close(output, reference)
 
     def test_clamp_min_and_clamp_max(self, device, float_dtype):
@@ -438,11 +438,11 @@ class TestUnaryBinaryMath:
             ]
         )
         output = torch.clamp_min(nt, 0.0)
-        reference = NT([torch.clamp_min(t, 0.0) for t in nt], **nt._meta)
+        reference = NT([torch.clamp_min(t, 0.0) for t in nt], **nt._meta())
         assert_close(output, reference)
 
         output = torch.clamp_max(nt, 0.0)
-        reference = NT([torch.clamp_max(t, 0.0) for t in nt], **nt._meta)
+        reference = NT([torch.clamp_max(t, 0.0) for t in nt], **nt._meta())
         assert_close(output, reference)
 
     def test_clamp_matches_tensor(self, device, float_dtype):
@@ -464,15 +464,15 @@ class TestUnaryBinaryMath:
             ]
         )
         output = torch.isnan(nt)
-        reference = NT([torch.isnan(t) for t in nt], **nt._meta)
+        reference = NT([torch.isnan(t) for t in nt], **nt._meta())
         assert_close(output, reference)
 
         output = torch.isfinite(nt)
-        reference = NT([torch.isfinite(t) for t in nt], **nt._meta)
+        reference = NT([torch.isfinite(t) for t in nt], **nt._meta())
         assert_close(output, reference)
 
         output = torch.nan_to_num(nt, nan=0.0, posinf=1.0, neginf=-1.0)
-        reference = NT([torch.nan_to_num(t, nan=0.0, posinf=1.0, neginf=-1.0) for t in nt], **nt._meta)
+        reference = NT([torch.nan_to_num(t, nan=0.0, posinf=1.0, neginf=-1.0) for t in nt], **nt._meta())
         assert_close(output, reference)
 
 
@@ -492,7 +492,7 @@ class TestWhere:
                 torch.tensor([0.0, 0.0, 3.0], device=device, dtype=float_dtype),
                 torch.tensor([4.0, 5.0], device=device, dtype=float_dtype),
             ],
-            **nt._meta,
+            **nt._meta(),
         )
         assert_close(output, reference)
 
@@ -534,9 +534,9 @@ class TestSelectionOps:
                     torch.tensor([3, 2], device=device, dtype=float_dtype),
                     torch.tensor([4, 0], device=device, dtype=float_dtype),
                 ],
-                **nt._meta,
+                **nt._meta(),
             ),
-            NestedTensor([torch.tensor([1, 2], device=device), torch.tensor([0, 1], device=device)], **nt._meta),
+            NestedTensor([torch.tensor([1, 2], device=device), torch.tensor([0, 1], device=device)], **nt._meta()),
         )
         assert_close(output[0], reference[0])
         assert_close(output[1], reference[1])
@@ -604,7 +604,7 @@ class TestCumulativeOps:
             ]
         )
         output = torch.logcumsumexp(nt, dim=1)
-        reference = NT([torch.logcumsumexp(t, dim=0) for t in nt], **nt._meta)
+        reference = NT([torch.logcumsumexp(t, dim=0) for t in nt], **nt._meta())
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
         with pytest.raises(ValueError):
@@ -618,7 +618,7 @@ class TestCumulativeOps:
             ]
         )
         output = torch.cummax(nt, dim=1)
-        reference = tuple(NT([torch.cummax(t, dim=0)[idx] for t in nt], **nt._meta) for idx in range(2))
+        reference = tuple(NT([torch.cummax(t, dim=0)[idx] for t in nt], **nt._meta()) for idx in range(2))
         assert isinstance(output, tuple)
         assert_close(output[0], reference[0])
         assert_close(output[1], reference[1])
@@ -631,7 +631,7 @@ class TestCumulativeOps:
             ]
         )
         output = torch.cummin(nt, dim=1)
-        reference = tuple(NT([torch.cummin(t, dim=0)[idx] for t in nt], **nt._meta) for idx in range(2))
+        reference = tuple(NT([torch.cummin(t, dim=0)[idx] for t in nt], **nt._meta()) for idx in range(2))
         assert_close(output[0], reference[0])
         assert_close(output[1], reference[1])
 
@@ -659,7 +659,7 @@ class TestLogicOps:
         assert_close(output, nt)
 
         output = torch.logical_xor(nt, true_tensor)
-        reference = NT([torch.logical_xor(t, true_tensor) for t in nt], **nt._meta)
+        reference = NT([torch.logical_xor(t, true_tensor) for t in nt], **nt._meta())
         assert_close(output, reference)
 
         output = torch.logical_or(nt.tensor, nt)
@@ -673,15 +673,15 @@ class TestLogicOps:
             ]
         )
         output = torch.bitwise_and(nt, 1)
-        reference = NT([torch.bitwise_and(t, 1) for t in nt], **nt._meta)
+        reference = NT([torch.bitwise_and(t, 1) for t in nt], **nt._meta())
         assert_close(output, reference)
 
         output = torch.bitwise_or(nt, 1)
-        reference = NT([torch.bitwise_or(t, 1) for t in nt], **nt._meta)
+        reference = NT([torch.bitwise_or(t, 1) for t in nt], **nt._meta())
         assert_close(output, reference)
 
         output = torch.bitwise_xor(nt, 1)
-        reference = NT([torch.bitwise_xor(t, 1) for t in nt], **nt._meta)
+        reference = NT([torch.bitwise_xor(t, 1) for t in nt], **nt._meta())
         assert_close(output, reference)
 
 
@@ -702,7 +702,7 @@ class TestScatterOps:
                 torch.scatter_add(t, 0, torch.zeros_like(t, dtype=torch.long), torch.ones_like(t, dtype=float_dtype))
                 for t in nt
             ],
-            **nt._meta,
+            **nt._meta(),
         )
         assert_close(output, reference)
 
@@ -729,7 +729,7 @@ class TestScatterOps:
                 )
                 for t in nt
             ],
-            **nt._meta,
+            **nt._meta(),
         )
         assert_close(output, reference)
 
@@ -744,11 +744,11 @@ class TestIndexingReadOps:
             ]
         )
         output = torch.index_select(nt, 0, torch.tensor([1, 0], device=device))
-        reference = NT([nt[1], nt[0]], **nt._meta)
+        reference = NT([nt[1], nt[0]], **nt._meta())
         assert_close(output, reference)
 
         output = torch.index_select(nt, 2, torch.tensor([2, 0], device=device))
-        reference = NT([torch.index_select(t, 1, torch.tensor([2, 0], device=device)) for t in nt], **nt._meta)
+        reference = NT([torch.index_select(t, 1, torch.tensor([2, 0], device=device)) for t in nt], **nt._meta())
         assert_close(output, reference)
 
     def test_masked_select(self, device, float_dtype):
@@ -760,14 +760,14 @@ class TestIndexingReadOps:
         )
         mask = nt > 2
         output = torch.masked_select(nt, mask)
-        reference = NT([torch.masked_select(t, m) for t, m in zip(nt, mask)], **nt._meta)
+        reference = NT([torch.masked_select(t, m) for t, m in zip(nt, mask)], **nt._meta())
         assert_close(output, reference)
 
         output = torch.masked_select(nt, mask.tensor)
         assert_close(output, reference)
 
         output = torch.masked_select(nt, torch.tensor(True, device=device))
-        reference = NT([t.reshape(-1) for t in nt], **nt._meta)
+        reference = NT([t.reshape(-1) for t in nt], **nt._meta())
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "take_along_dim"), reason="requires torch.take_along_dim")
@@ -788,7 +788,7 @@ class TestIndexingReadOps:
         )
         output = torch.take_along_dim(nt, indices, dim=2)
         indices_nt = nt.nested_like(indices, strict=False)
-        reference = NT([torch.take_along_dim(t, i, dim=1) for t, i in zip(nt, indices_nt)], **nt._meta)
+        reference = NT([torch.take_along_dim(t, i, dim=1) for t, i in zip(nt, indices_nt)], **nt._meta())
         assert_close(output, reference)
 
 
@@ -804,7 +804,7 @@ class TestConcatAliases:
         )
         extra = torch.tensor([5.0, 6.0], device=device, dtype=float_dtype)
         output = alias((nt, extra), dim=0)
-        reference = NT([*nt, extra], **nt._meta)
+        reference = NT([*nt, extra], **nt._meta())
         assert_close(output, reference)
 
     def test_concat_non_zero_dim(self, device, float_dtype):
@@ -819,10 +819,10 @@ class TestConcatAliases:
                 torch.ones(2, 1, device=device, dtype=float_dtype),
                 torch.ones(1, 1, device=device, dtype=float_dtype),
             ],
-            **nt1._meta,
+            **nt1._meta(),
         )
         output = torch.concat((nt1, nt2), dim=2)
-        reference = NT([torch.cat([a, b], dim=1) for a, b in zip(nt1, nt2)], **nt1._meta)
+        reference = NT([torch.cat([a, b], dim=1) for a, b in zip(nt1, nt2)], **nt1._meta())
         assert_close(output, reference)
 
 
@@ -835,9 +835,9 @@ class TestSplitChunkUnbind:
         assert [len(x) for x in output] == [2, 2, 1]
         storage = tuple(nt)
         reference = (
-            NT(storage[:2], **nt._meta),
-            NT(storage[2:4], **nt._meta),
-            NT(storage[4:], **nt._meta),
+            NT(storage[:2], **nt._meta()),
+            NT(storage[2:4], **nt._meta()),
+            NT(storage[4:], **nt._meta()),
         )
         assert_close(output[0], reference[0])
         assert_close(output[1], reference[1])
@@ -1060,7 +1060,7 @@ class TestIndexingWriteOps:
         )
         mask = nt > 0
         output = torch.masked_fill(nt, mask, 0.0)
-        reference = NT([torch.masked_fill(t, m, 0.0) for t, m in zip(nt, mask)], **nt._meta)
+        reference = NT([torch.masked_fill(t, m, 0.0) for t, m in zip(nt, mask)], **nt._meta())
         assert_close(output, reference)
 
         output = torch.masked_fill(nt, mask.tensor, 0.0)
@@ -1080,7 +1080,7 @@ class TestIndexingWriteOps:
             ]
         )
         output = torch.masked_scatter(base, mask, src)
-        reference = NT([torch.masked_scatter(t, m, s) for t, m, s in zip(base, mask, src)], **base._meta)
+        reference = NT([torch.masked_scatter(t, m, s) for t, m, s in zip(base, mask, src)], **base._meta())
         assert_close(output, reference)
 
     def test_index_add(self, device, float_dtype):
@@ -1093,10 +1093,10 @@ class TestIndexingWriteOps:
                 torch.tensor([1.0, 2.0], device=device, dtype=float_dtype),
                 torch.tensor([3.0, 4.0], device=device, dtype=float_dtype),
             ],
-            **base._meta,
+            **base._meta(),
         )
         output = torch.index_add(base, 1, index, src)
-        reference = NT([torch.index_add(t, 0, index, s) for t, s in zip(base, src)], **base._meta)
+        reference = NT([torch.index_add(t, 0, index, s) for t, s in zip(base, src)], **base._meta())
         assert_close(output, reference)
 
     def test_index_copy(self, device, float_dtype):
@@ -1109,10 +1109,10 @@ class TestIndexingWriteOps:
                 torch.tensor([1.0, 2.0], device=device, dtype=float_dtype),
                 torch.tensor([3.0, 4.0], device=device, dtype=float_dtype),
             ],
-            **base._meta,
+            **base._meta(),
         )
         output = torch.index_copy(base, 1, index, src)
-        reference = NT([torch.index_copy(t, 0, index, s) for t, s in zip(base, src)], **base._meta)
+        reference = NT([torch.index_copy(t, 0, index, s) for t, s in zip(base, src)], **base._meta())
         assert_close(output, reference)
 
     def test_index_put(self, device, float_dtype):
@@ -1125,10 +1125,10 @@ class TestIndexingWriteOps:
                 torch.tensor([10.0, 20.0], device=device, dtype=float_dtype),
                 torch.tensor([30.0, 40.0], device=device, dtype=float_dtype),
             ],
-            **base._meta,
+            **base._meta(),
         )
         output = torch.index_put(base, (index,), values, accumulate=False)
-        reference = NT([torch.index_put(t, (index,), v) for t, v in zip(base, values)], **base._meta)
+        reference = NT([torch.index_put(t, (index,), v) for t, v in zip(base, values)], **base._meta())
         assert_close(output, reference)
 
 
@@ -1146,13 +1146,13 @@ class TestRandomOps:
         assert output.dtype == torch.float64
 
         torch.manual_seed(123)
-        reference = NT([torch.rand_like(t, dtype=torch.float64) for t in nt], **nt._meta)
+        reference = NT([torch.rand_like(t, dtype=torch.float64) for t in nt], **nt._meta())
         assert_close(output, reference)
 
         torch.manual_seed(456)
         output = torch.randn_like(nt)
         torch.manual_seed(456)
-        reference = NT([torch.randn_like(t) for t in nt], **nt._meta)
+        reference = NT([torch.randn_like(t) for t in nt], **nt._meta())
         assert_close(output, reference)
 
     def test_dropout_and_bernoulli_match_per_tensor(self, device, float_dtype):
@@ -1165,13 +1165,13 @@ class TestRandomOps:
         torch.manual_seed(0)
         output = torch.dropout(nt, p=0.5, train=True)
         torch.manual_seed(0)
-        reference = NT([torch.dropout(t, p=0.5, train=True) for t in nt], **nt._meta)
+        reference = NT([torch.dropout(t, p=0.5, train=True) for t in nt], **nt._meta())
         assert_close(output, reference)
 
         torch.manual_seed(0)
         output = torch.bernoulli(nt)
         torch.manual_seed(0)
-        reference = NT([torch.bernoulli(t) for t in nt], **nt._meta)
+        reference = NT([torch.bernoulli(t) for t in nt], **nt._meta())
         assert_close(output, reference)
 
 
@@ -1186,7 +1186,7 @@ class TestLikeCreators:
         )
 
         output = torch.zeros_like(nt)
-        reference = NT([torch.zeros_like(t) for t in nt], **nt._meta)
+        reference = NT([torch.zeros_like(t) for t in nt], **nt._meta())
         assert_close(output, reference)
 
     def test_ones_like_dtype(self, device, float_dtype):
@@ -1197,7 +1197,7 @@ class TestLikeCreators:
             ]
         )
         output = torch.ones_like(nt, dtype=torch.float64)
-        reference = NT([torch.ones_like(t, dtype=torch.float64) for t in nt], **nt._meta)
+        reference = NT([torch.ones_like(t, dtype=torch.float64) for t in nt], **nt._meta())
         assert_close(output, reference)
         assert output.dtype == torch.float64
 
@@ -1209,7 +1209,7 @@ class TestLikeCreators:
             ]
         )
         output = torch.full_like(nt, 3.0, dtype=torch.float32)
-        reference = NT([torch.full_like(t, 3.0, dtype=torch.float32) for t in nt], **nt._meta)
+        reference = NT([torch.full_like(t, 3.0, dtype=torch.float32) for t in nt], **nt._meta())
         assert_close(output, reference)
 
     def test_empty_like_preserves_shape(self, device, float_dtype):
@@ -1229,7 +1229,7 @@ class TestLikeCreators:
         torch.manual_seed(123)
         output = torch.randint_like(nt, 10)
         torch.manual_seed(123)
-        reference = NT([torch.randint_like(t, 10) for t in nt], **nt._meta)
+        reference = NT([torch.randint_like(t, 10) for t in nt], **nt._meta())
         assert_close(output, reference)
 
 
@@ -1238,7 +1238,7 @@ class TestFlipAndRoll:
     def test_flip_translates_dims_and_rejects_batch(self, device):
         nt = NT([torch.tensor([[1, 2], [3, 4]], device=device), torch.tensor([[5, 6]], device=device)])
         output = torch.flip(nt, dims=(-1,))
-        reference = NT([torch.flip(t, dims=(-1,)) for t in nt], **nt._meta)
+        reference = NT([torch.flip(t, dims=(-1,)) for t in nt], **nt._meta())
         assert_close(output, reference)
 
         with pytest.raises(ValueError):
@@ -1249,13 +1249,13 @@ class TestFlipAndRoll:
     def test_roll_supports_dims_none(self, device):
         nt = NT([torch.tensor([1, 2, 3], device=device), torch.tensor([4, 5], device=device)])
         output = torch.roll(nt, shifts=1)
-        reference = NT([torch.roll(t, shifts=1) for t in nt], **nt._meta)
+        reference = NT([torch.roll(t, shifts=1) for t in nt], **nt._meta())
         assert_close(output, reference)
 
     def test_roll_translates_dims_and_rejects_batch(self, device):
         nt = NT([torch.tensor([[1, 2], [3, 4]], device=device), torch.tensor([[5, 6]], device=device)])
         output = torch.roll(nt, shifts=1, dims=-1)
-        reference = NT([torch.roll(t, shifts=1, dims=-1) for t in nt], **nt._meta)
+        reference = NT([torch.roll(t, shifts=1, dims=-1) for t in nt], **nt._meta())
         assert_close(output, reference)
 
         with pytest.raises(ValueError):
@@ -1272,11 +1272,11 @@ class TestSoftmaxVariants:
             ]
         )
         output = torch.softmax(nt, dim=2)
-        reference = NT([torch.softmax(t, dim=1) for t in nt], **nt._meta)
+        reference = NT([torch.softmax(t, dim=1) for t in nt], **nt._meta())
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
         output = torch.log_softmax(nt, dim=2)
-        reference = NT([torch.log_softmax(t, dim=1) for t in nt], **nt._meta)
+        reference = NT([torch.log_softmax(t, dim=1) for t in nt], **nt._meta())
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
         with pytest.raises(ValueError):
@@ -1295,7 +1295,7 @@ class TestMatmulMmBmm:
         )
         weight = torch.randn(3, 4, device=device, dtype=float_dtype)
         output = torch.matmul(nt, weight)
-        reference = NT([torch.matmul(t, weight) for t in nt], **nt._meta)
+        reference = NT([torch.matmul(t, weight) for t in nt], **nt._meta())
         assert_close(output, reference)
 
     def test_matmul_supports_tensor_lhs(self, device, float_dtype):
@@ -1307,7 +1307,7 @@ class TestMatmulMmBmm:
         )
         weight = torch.randn(5, 2, device=device, dtype=float_dtype)
         output = torch.matmul(weight, nt)
-        reference = NT([torch.matmul(weight, t) for t in nt], **nt._meta)
+        reference = NT([torch.matmul(weight, t) for t in nt], **nt._meta())
         assert_close(output, reference)
 
     def test_mm_match_per_sample(self, device, float_dtype):
@@ -1322,10 +1322,10 @@ class TestMatmulMmBmm:
                 torch.randn(3, 4, device=device, dtype=float_dtype),
                 torch.randn(2, 5, device=device, dtype=float_dtype),
             ],
-            **left._meta,
+            **left._meta(),
         )
         output = torch.mm(left, right)
-        reference = NT([torch.mm(a, b) for a, b in zip(left, right)], **left._meta)
+        reference = NT([torch.mm(a, b) for a, b in zip(left, right)], **left._meta())
         assert_close(output, reference)
 
     def test_bmm_match_per_sample(self, device, float_dtype):
@@ -1340,10 +1340,10 @@ class TestMatmulMmBmm:
                 torch.randn(2, 3, 4, device=device, dtype=float_dtype),
                 torch.randn(1, 3, 5, device=device, dtype=float_dtype),
             ],
-            **left._meta,
+            **left._meta(),
         )
         output = torch.bmm(left, right)
-        reference = NT([torch.bmm(a, b) for a, b in zip(left, right)], **left._meta)
+        reference = NT([torch.bmm(a, b) for a, b in zip(left, right)], **left._meta())
         assert_close(output, reference)
 
 
@@ -1375,7 +1375,7 @@ class TestDist:
                 torch.tensor([2.0, 2.0], device=device, dtype=float_dtype),
                 torch.tensor([1.0], device=device, dtype=float_dtype),
             ],
-            **a._meta,
+            **a._meta(),
         )
         output = torch.dist(a, b, p=2)
         reference = torch.stack([torch.dist(x, y, p=2) for x, y in zip(a, b)])
@@ -1394,7 +1394,7 @@ class TestRot90:
         )
 
         output = torch.rot90(nt, k=1, dims=(1, 2))
-        reference = NT([torch.rot90(t, k=1, dims=(0, 1)) for t in nt], **nt._meta)
+        reference = NT([torch.rot90(t, k=1, dims=(0, 1)) for t in nt], **nt._meta())
         assert_close(output, reference)
 
         with pytest.raises(ValueError):
@@ -1406,11 +1406,11 @@ class TestNonzeroAndTake:
     def test_nonzero_ignores_padding_value(self, device):
         nt = NT([torch.tensor([0, 1, 0], device=device), torch.tensor([2], device=device)], padding_value=9)
         output = torch.nonzero(nt, as_tuple=False)
-        reference = NT([torch.nonzero(t, as_tuple=False) for t in nt], **nt._meta)
+        reference = NT([torch.nonzero(t, as_tuple=False) for t in nt], **nt._meta())
         assert_close(output, reference)
 
         output = torch.nonzero(nt, as_tuple=True)
-        reference = (NT([torch.nonzero(t, as_tuple=True)[0] for t in nt], **nt._meta),)
+        reference = (NT([torch.nonzero(t, as_tuple=True)[0] for t in nt], **nt._meta()),)
         assert isinstance(output, tuple)
         assert len(output) == 1
         assert_close(output[0], reference[0])
@@ -1439,9 +1439,9 @@ class TestNonzeroAndTake:
                 torch.tensor([3.0, 4.0, 5.0], device=device, dtype=float_dtype),
             ]
         )
-        index = NT([torch.tensor([1], device=device), torch.tensor([0, 2], device=device)], **nt._meta)
+        index = NT([torch.tensor([1], device=device), torch.tensor([0, 2], device=device)], **nt._meta())
         output = torch.take(nt, index)
-        reference = NT([torch.take(t.reshape(-1), i) for t, i in zip(nt, index)], **nt._meta)
+        reference = NT([torch.take(t.reshape(-1), i) for t, i in zip(nt, index)], **nt._meta())
         assert_close(output, reference)
 
 

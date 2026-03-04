@@ -102,14 +102,39 @@ def per_element_fallback(func, args, kwargs):
 
     batch_size = len(source)
     if batch_size == 0:
-        return NestedTensor._from_packed(
-            source._values,
-            source._offsets,
-            source._shape_tensor,
-            batch_first=source.batch_first,
-            padding_value=source.padding_value,
-            mask_value=source.mask_value,
-        )
+
+        def replace_nested_with_values(obj):
+            if isinstance(obj, NestedTensor):
+                return obj._values
+            if isinstance(obj, (list, tuple)):
+                return type(obj)(replace_nested_with_values(x) for x in obj)
+            return obj
+
+        packed_args = replace_nested_with_values(args)
+        packed_kwargs = {k: replace_nested_with_values(v) for k, v in kwargs.items()} if kwargs else {}
+
+        def rebuild_empty(t: Tensor):
+            return NestedTensor._from_packed(
+                t,
+                source._offsets,
+                source._shape_tensor,
+                batch_first=source.batch_first,
+                padding_value=source.padding_value,
+                mask_value=source.mask_value,
+                pin_memory=source._pin_memory,
+                outer_size=source._logical_shape,
+            )
+
+        try:
+            empty_result = func(*packed_args, **packed_kwargs)
+        except (TypeError, RuntimeError, ValueError):
+            return rebuild_empty(source._values)
+
+        if isinstance(empty_result, Tensor):
+            return rebuild_empty(empty_result)
+        if isinstance(empty_result, tuple):
+            return tuple(rebuild_empty(x) if isinstance(x, Tensor) else x for x in empty_result)
+        return empty_result
 
     def replace_nested_with_element(obj, idx):
         r"""Replace each NestedTensor in obj with its idx-th element."""
@@ -337,6 +362,42 @@ def _packed_new_last_dim(source: NestedTensor, new_values: Tensor, new_last_dim:
     )
 
 
+def _packed_new_dim_size(source: NestedTensor, new_values: Tensor, dim_adj: int, new_dim_size: int) -> NestedTensor:
+    r"""Rebuild a NestedTensor with a changed per-element dimension size."""
+    new_shape_tensor = source._shape_tensor.clone()
+    if new_shape_tensor.numel() > 0 and dim_adj < new_shape_tensor.size(1):
+        new_shape_tensor[:, dim_adj] = new_dim_size
+    new_logical = list(source._logical_shape)
+    if new_logical:
+        logical_dim = dim_adj + 1 if source.batch_first else (dim_adj if dim_adj == 0 else dim_adj + 1)
+        if logical_dim < len(new_logical):
+            new_logical[logical_dim] = new_dim_size
+    return type(source)._from_packed(
+        new_values,
+        source._offsets,
+        new_shape_tensor,
+        batch_first=source.batch_first,
+        padding_value=source.padding_value,
+        mask_value=source.mask_value,
+        pin_memory=source._pin_memory,
+        outer_size=torch.Size(new_logical),
+    )
+
+
+def _packed_like(source: NestedTensor, new_values: Tensor) -> NestedTensor:
+    r"""Rebuild a NestedTensor from source metadata and a new packed value tensor."""
+    return type(source)._from_packed(
+        new_values,
+        source._offsets,
+        source._shape_tensor,
+        batch_first=source.batch_first,
+        padding_value=source.padding_value,
+        mask_value=source.mask_value,
+        pin_memory=source._pin_memory,
+        outer_size=source._logical_shape,
+    )
+
+
 # See also torch_functions.py::mm for the torch-level handler (mixed-type cases).
 @NestedTensorAtenRegistry.implement(aten.mm.default)
 def _mm(func, args, kwargs):
@@ -380,10 +441,9 @@ def _bmm(func, args, kwargs):
 
 
 # ---------------------------------------------------------------------------
-# Sorting ops — fast path for N-D packing (non-ragged dim → operate on _values)
-# Falls back to per_element_fallback for 1-D packing or the ragged dim (dim=0
-# in _values). The torch-level handlers in torch_functions.py remain active
-# for eager mode (~14x speedup) and handle edge cases.
+# Sorting / cumulative / reordering ops.
+# Fast path: N-D packing with non-ragged target dims (operate on _values).
+# Fallback: 1-D packing or ragged dim -> per-element path.
 # ---------------------------------------------------------------------------
 
 
@@ -391,48 +451,78 @@ def _bmm(func, args, kwargs):
 def _sort(func, args, kwargs):
     r"""Sort along a non-ragged dim by operating directly on packed _values."""
     source = args[0]
-    dim = args[1] if len(args) > 1 else -1
-    descending = args[2] if len(args) > 2 else kwargs.get("descending", False)
-    stable = kwargs.get("stable", False)
+    call_kwargs = dict(kwargs)
+    dim = args[1] if len(args) > 1 else call_kwargs.pop("dim", -1)
+    descending = args[2] if len(args) > 2 else call_kwargs.pop("descending", False)
+    if "stable" in call_kwargs:
+        return per_element_fallback(func, args, kwargs)
     dim_adj = _translate_dim(source, dim)
-    # Fast path: N-D packing and target dim is not the ragged (first) dim of _values.
     if source._values.dim() > 1 and dim_adj > 0:
-        vals, idxs = func(source._values, dim_adj, descending, stable=stable)
-        rebuild = lambda v: type(source)._from_packed(  # noqa: E731
-            v,
-            source._offsets,
-            source._shape_tensor,
-            batch_first=source.batch_first,
-            padding_value=source.padding_value,
-            mask_value=source.mask_value,
-            pin_memory=source._pin_memory,
-            outer_size=source._logical_shape,
-        )
-        return rebuild(vals), rebuild(idxs)
-    raise NotImplementedError
+        vals, idxs = func(source._values, dim_adj, descending, **call_kwargs)
+        return _packed_like(source, vals), _packed_like(source, idxs)
+    return per_element_fallback(func, (source, dim_adj, descending), call_kwargs)
 
 
 @NestedTensorAtenRegistry.implement(aten.argsort.default)
 def _argsort(func, args, kwargs):
     r"""Return sort indices along a non-ragged dim by operating on packed _values."""
     source = args[0]
-    dim = args[1] if len(args) > 1 else -1
-    descending = args[2] if len(args) > 2 else kwargs.get("descending", False)
-    stable = kwargs.get("stable", False)
+    call_kwargs = dict(kwargs)
+    dim = args[1] if len(args) > 1 else call_kwargs.pop("dim", -1)
+    descending = args[2] if len(args) > 2 else call_kwargs.pop("descending", False)
+    if "stable" in call_kwargs:
+        return per_element_fallback(func, args, kwargs)
     dim_adj = _translate_dim(source, dim)
     if source._values.dim() > 1 and dim_adj > 0:
-        idxs = func(source._values, dim_adj, descending, stable=stable)
-        return type(source)._from_packed(
-            idxs,
-            source._offsets,
-            source._shape_tensor,
-            batch_first=source.batch_first,
-            padding_value=source.padding_value,
-            mask_value=source.mask_value,
-            pin_memory=source._pin_memory,
-            outer_size=source._logical_shape,
+        return _packed_like(source, func(source._values, dim_adj, descending, **call_kwargs))
+    return per_element_fallback(func, (source, dim_adj, descending), call_kwargs)
+
+
+@NestedTensorAtenRegistry.implement(aten.topk.default)
+def _topk(func, args, kwargs):
+    r"""Compute top-k along a non-ragged dim by operating on packed _values."""
+    source = args[0]
+    call_kwargs = dict(kwargs)
+    k = args[1] if len(args) > 1 else call_kwargs.pop("k")
+    dim = args[2] if len(args) > 2 else call_kwargs.pop("dim", -1)
+    largest = args[3] if len(args) > 3 else call_kwargs.pop("largest", True)
+    sorted_output = args[4] if len(args) > 4 else call_kwargs.pop("sorted", True)
+    dim_adj = _translate_dim(source, dim)
+    if source._values.dim() > 1 and dim_adj > 0:
+        vals, idxs = func(source._values, k, dim_adj, largest, sorted_output, **call_kwargs)
+        return (
+            _packed_new_dim_size(source, vals, dim_adj, int(k)),
+            _packed_new_dim_size(source, idxs, dim_adj, int(k)),
         )
-    raise NotImplementedError
+    return per_element_fallback(func, (source, k, dim_adj, largest, sorted_output), call_kwargs)
+
+
+@NestedTensorAtenRegistry.implement(aten.cumsum.default)
+@NestedTensorAtenRegistry.implement(aten.cumprod.default)
+def _cumulative(func, args, kwargs):
+    r"""Apply cumulative ops on packed _values when the target dim is static."""
+    source = args[0]
+    call_kwargs = dict(kwargs)
+    dim = args[1] if len(args) > 1 else call_kwargs.pop("dim")
+    dim_adj = _translate_dim(source, dim)
+    extra_args = args[2:] if len(args) > 2 else ()
+    if source._values.dim() > 1 and dim_adj > 0:
+        return _packed_like(source, func(source._values, dim_adj, *extra_args, **call_kwargs))
+    return per_element_fallback(func, (source, dim_adj, *extra_args), call_kwargs)
+
+
+@NestedTensorAtenRegistry.implement(aten.flip.default)
+def _flip(func, args, kwargs):
+    r"""Flip along non-ragged dims by operating directly on packed _values."""
+    source = args[0]
+    call_kwargs = dict(kwargs)
+    dims = args[1] if len(args) > 1 else call_kwargs.pop("dims", ())
+    if isinstance(dims, int):
+        dims = (dims,)
+    dims_adj = tuple(_translate_dim(source, dim) for dim in dims)
+    if source._values.dim() > 1 and all(dim > 0 for dim in dims_adj):
+        return _packed_like(source, func(source._values, dims_adj, **call_kwargs))
+    return per_element_fallback(func, (source, dims_adj), call_kwargs)
 
 
 # In-place variants of elementwise ops

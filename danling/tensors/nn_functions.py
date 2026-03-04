@@ -46,6 +46,7 @@ from .ops import (
     NestedTensorFuncRegistry,
     _concat_apply,
     _concat_apply_same_shape,
+    _concat_dim_for_tensor_dim,
     _ensure_nested_input,
     _map_storage,
     _map_storage_pair,
@@ -149,20 +150,24 @@ def _apply_per_element(input: NestedTensor, op: Callable, *args, **kwargs) -> Ne
     """
     cls = type(input)
     elements = input._storage
-    if not elements or not elements[0].is_cuda:
-        return cls((op(t, *args, **kwargs) for t in elements), **input._meta)
-    return cls(_run_on_streams(elements, lambda t: op(t, *args, **kwargs)), **input._meta)
+    if not elements:
+        return cls([], **input._meta(include_dtype=True))
+    if not elements[0].is_cuda:
+        return cls((op(t, *args, **kwargs) for t in elements), **input._meta())
+    return cls(_run_on_streams(elements, lambda t: op(t, *args, **kwargs)), **input._meta())
 
 
 def _apply_with_indices(input: NestedTensor, pool_fn: Callable, *args, **kwargs):
     r"""Applies a pooling op that returns (output, indices) to each element of a NestedTensor."""
     cls = type(input)
+    if len(input) == 0:
+        return cls([], **input._meta(include_dtype=True)), cls([], dtype=torch.long, **input._meta())
     outputs, indices = [], []
     for t in input._storage:
         out, idx = pool_fn(t, *args, return_indices=True, **kwargs)
         outputs.append(out)
         indices.append(idx)
-    return cls(outputs, **input._meta), cls(indices, **input._meta)
+    return cls(outputs, **input._meta()), cls(indices, **input._meta())
 
 
 @torch._dynamo.disable
@@ -185,6 +190,8 @@ def _apply_pair(input: NestedTensor, other: NestedTensor | Tensor, op: Callable,
 
     cls = type(input) if isinstance(input, NestedTensor) else type(other)
     input = _ensure_nested_input(input, other, cls)
+    if len(input) == 0:
+        return cls([], **input._meta(include_dtype=True))
     if isinstance(other, NestedTensor):
         if len(input) != len(other):
             raise ValueError(
@@ -197,10 +204,10 @@ def _apply_pair(input: NestedTensor, other: NestedTensor | Tensor, op: Callable,
                     list(zip(elements, other._storage)),
                     lambda pair: op(pair[0], pair[1], *args, **kwargs),
                 ),
-                **input._meta,
+                **input._meta(),
             )
-        return cls((op(x, y, *args, **kwargs) for x, y in zip(elements, other._storage)), **input._meta)
-    return cls((op(x, other, *args, **kwargs) for x in input._storage), **input._meta)
+        return cls((op(x, y, *args, **kwargs) for x, y in zip(elements, other._storage)), **input._meta())
+    return cls((op(x, other, *args, **kwargs) for x in input._storage), **input._meta())
 
 
 def _apply_packed(input: NestedTensor, op: Callable, *args, **kwargs) -> NestedTensor:
@@ -395,12 +402,15 @@ def linear(input: NestedTensor, weight: Tensor, bias: Tensor | None = None) -> N
     """
     cls = type(input)
     if len(input) == 0:
-        return cls([], **input._meta)
+        return cls([], **input._meta(include_dtype=True))
     # Fast path: single-ragged packing (2D+ _values) → F.linear directly on packed data
     if input._values.dim() >= 2:
         new_values = F.linear(input._values, weight, bias)
         new_shape = input._shape_tensor.clone()
         new_shape[:, -1] = weight.shape[0]
+        new_outer_size = list(input._logical_shape)
+        if new_outer_size:
+            new_outer_size[-1] = int(weight.shape[0])
         return cls._from_packed(
             new_values,
             input._offsets,
@@ -408,6 +418,8 @@ def linear(input: NestedTensor, weight: Tensor, bias: Tensor | None = None) -> N
             batch_first=input.batch_first,
             padding_value=input.padding_value,
             mask_value=input.mask_value,
+            pin_memory=input._pin_memory,
+            outer_size=tuple(new_outer_size),
         )
     # Multi-ragged (flattened 1D _values) or scalar elements: per-element
     return _apply_per_element(input, F.linear, weight, bias)
@@ -457,13 +469,17 @@ if hasattr(F, "grouped_mm"):
                     "NestedTensor batch length mismatch between mat_a and mat_b: "
                     f"mat_a={len(mat_a)}, mat_b={len(mat_b)}"
                 )
+            if len(mat_a) == 0:
+                return cls([], **mat_a._meta(include_dtype=True))
             outputs = [
                 F.grouped_mm(a, b, offs=offs, bias=bias, out_dtype=out_dtype)
                 for a, b in zip(mat_a._storage, mat_b._storage)
             ]
         else:
+            if len(mat_a) == 0:
+                return cls([], **mat_a._meta(include_dtype=True))
             outputs = [F.grouped_mm(a, mat_b, offs=offs, bias=bias, out_dtype=out_dtype) for a in mat_a._storage]
-        return cls(outputs, **mat_a._meta)
+        return cls(outputs, **mat_a._meta())
 
 
 def _scaled_mm(mat_a: NestedTensor, mat_b, fn, **kwargs) -> NestedTensor:
@@ -471,6 +487,8 @@ def _scaled_mm(mat_a: NestedTensor, mat_b, fn, **kwargs) -> NestedTensor:
     from .nested_tensor import NestedTensor
 
     cls = type(mat_a)
+    if len(mat_a) == 0:
+        return cls([], **mat_a._meta(include_dtype=True))
     if isinstance(mat_b, NestedTensor):
         if len(mat_a) != len(mat_b):
             raise ValueError(
@@ -479,7 +497,7 @@ def _scaled_mm(mat_a: NestedTensor, mat_b, fn, **kwargs) -> NestedTensor:
         outputs = [fn(a, b, **kwargs) for a, b in zip(mat_a._storage, mat_b._storage)]
     else:
         outputs = [fn(a, mat_b, **kwargs) for a in mat_a._storage]
-    return cls(outputs, **mat_a._meta)
+    return cls(outputs, **mat_a._meta())
 
 
 if hasattr(F, "scaled_mm"):
@@ -724,9 +742,9 @@ def _from_jagged(jagged_out: Tensor, query: NestedTensor) -> NestedTensor:
         jagged_out = jagged_out.transpose(1, 2)
         return cls(
             [t.transpose(0, 1).contiguous() for t in jagged_out.unbind()],
-            **query._meta,
+            **query._meta(),
         )
-    return cls(list(jagged_out.unbind()), **query._meta)
+    return cls(list(jagged_out.unbind()), **query._meta())
 
 
 def _sdpa_via_jagged(
@@ -864,10 +882,8 @@ def multi_head_attention_forward(
                 "Use the same batch_first setting for query, key, and value."
             )
     if not query._storage:
-        empty = cls([], **query._meta)
-        if need_weights:
-            return empty, torch.empty(0, dtype=query.dtype, device=query.device)
-        return empty
+        empty = cls([], **query._meta(include_dtype=True))
+        return empty, (torch.empty(0, dtype=query.dtype, device=query.device) if need_weights else None)
 
     # Materialize padded tensors
     q_padded = query.tensor
@@ -932,9 +948,7 @@ def multi_head_attention_forward(
     # Reconstruct NestedTensor (strips padding via query's structure)
     nt_output = query.nested_like(output, strict=False)
 
-    if need_weights:
-        return nt_output, weights
-    return nt_output
+    return nt_output, weights
 
 
 @NestedTensorFuncRegistry.implement(F.scaled_dot_product_attention)
@@ -1001,7 +1015,7 @@ def scaled_dot_product_attention(
             f"query={len(query)}, attn_mask={len(attn_mask)}"
         )
     if not query._storage:
-        return NestedTensor([], **query._meta)
+        return NestedTensor([], **query._meta(include_dtype=True))
 
     # Fast path: convert to torch.nested jagged for variable-length Flash Attention.
     # Only on CUDA where Flash Attention kernels handle jagged efficiently.
@@ -1101,7 +1115,7 @@ def batch_norm(
 
     concat, shapes = input.concatenate()
     normalized = F.batch_norm(concat, running_mean, running_var, weight, bias, training, momentum, eps)
-    return NestedTensor.from_concatenated(normalized, shapes, **input._meta)
+    return NestedTensor.from_concatenated(normalized, shapes, **input._meta())
 
 
 @NestedTensorFuncRegistry.implement(F.group_norm)
@@ -1502,8 +1516,11 @@ for _op in _SOFTMAX_OPS:
 
     @NestedTensorFuncRegistry.implement(_op)
     def _softmax_impl(input, dim=-1, *args, _fn=_op, **kwargs):
-        dim = _translate_non_batch_dim(input, dim)
-        return _apply_packed(input, _fn, *args, dim=dim, **kwargs)
+        dim_adj = _translate_non_batch_dim(input, dim)
+        concat_dim = _concat_dim_for_tensor_dim(input, dim_adj)
+        if concat_dim is None:
+            return _apply_per_element(input, _fn, *args, dim=dim_adj, **kwargs)
+        return _apply_packed(input, _fn, *args, dim=concat_dim, **kwargs)
 
 
 @NestedTensorFuncRegistry.implement(F.gumbel_softmax)
@@ -1517,8 +1534,13 @@ def _gumbel_softmax_impl(logits, *args, dim=-1, **kwargs):
 
 @NestedTensorFuncRegistry.implement(F.normalize)
 def _normalize_impl(input, p=2.0, dim=1, eps=1e-12, out=None):
-    dim = _translate_non_batch_dim(input, dim)
-    return _apply_packed(input, F.normalize, p=p, dim=dim, eps=eps, out=out)
+    dim_adj = _translate_non_batch_dim(input, dim)
+    concat_dim = _concat_dim_for_tensor_dim(input, dim_adj)
+    if concat_dim is None:
+        if out is not None:
+            raise NotImplementedError("F.normalize(..., out=...) is not supported on ragged dimensions.")
+        return _apply_per_element(input, F.normalize, p=p, dim=dim_adj, eps=eps, out=None)
+    return _apply_packed(input, F.normalize, p=p, dim=concat_dim, eps=eps, out=out)
 
 
 # Fractional max pool — boolean_dispatch wrappers that support return_indices

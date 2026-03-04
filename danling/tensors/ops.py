@@ -124,7 +124,7 @@ def _try_stack(values: Sequence, input: NestedTensor):
     try:
         return torch.stack(list(values))
     except (RuntimeError, ValueError, TypeError):
-        return type(input)(values, **input._meta)
+        return type(input)(values, **input._meta())
 
 
 @torch._dynamo.disable
@@ -132,20 +132,31 @@ def _map_storage(input: NestedTensor, fn):
     r"""Apply fn to each element in storage, using CUDA streams if available."""
     cls = type(input)
     elements = input._storage
-    if not elements or not elements[0].is_cuda:
-        return cls((fn(t) for t in elements), **input._meta)
-    return cls(_run_on_streams(elements, fn), **input._meta)
+    if not elements:
+        return cls([], **input._meta(include_dtype=True))
+    if not elements[0].is_cuda:
+        return cls((fn(t) for t in elements), **input._meta())
+    return cls(_run_on_streams(elements, fn), **input._meta())
 
 
 def _map_storage_pair(input: NestedTensor, op, *args, **kwargs):
     r"""Apply *op* to every element, unpacking each 2-tuple result into two NestedTensors."""
     cls = type(input)
+    if len(input) == 0:
+        try:
+            first_probe, second_probe = op(input._values, *args, **kwargs)
+            first_dtype = first_probe.dtype if isinstance(first_probe, Tensor) else input.dtype
+            second_dtype = second_probe.dtype if isinstance(second_probe, Tensor) else input.dtype
+        except (TypeError, RuntimeError, ValueError):
+            first_dtype = input.dtype
+            second_dtype = input.dtype
+        return cls([], dtype=first_dtype, **input._meta()), cls([], dtype=second_dtype, **input._meta())
     firsts, seconds = [], []
     for t in input._storage:
         a, b = op(t, *args, **kwargs)
         firsts.append(a)
         seconds.append(b)
-    return cls(firsts, **input._meta), cls(seconds, **input._meta)
+    return cls(firsts, **input._meta()), cls(seconds, **input._meta())
 
 
 # Binary & Ternary Operations
@@ -193,7 +204,29 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
         input, other = other, input
 
     if len(input) == 0:
-        return cls([], **input._meta)
+        if isinstance(other, cls) and len(input) != len(other):
+            raise ValueError(
+                "NestedTensor batch length mismatch between input and other: " f"input={len(input)}, other={len(other)}"
+            )
+        if isinstance(other, cls):
+            resolved = other._values
+        else:
+            resolved = _as_tensor_like(other, input._values)
+        new_values = (
+            op(resolved, input._values, *extra_args, **extra_kwargs)
+            if reverse
+            else op(input._values, resolved, *extra_args, **extra_kwargs)
+        )
+        return cls._from_packed(
+            new_values,
+            input._offsets,
+            input._shape_tensor,
+            batch_first=input.batch_first,
+            padding_value=input.padding_value,
+            mask_value=input.mask_value,
+            pin_memory=input._pin_memory,
+            outer_size=input._logical_shape,
+        )
 
     # NT + scalar or 0-d tensor (most common in training)
     if not isinstance(other, Tensor) or other.dim() == 0:
@@ -239,7 +272,7 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
         lhs_s, rhs_s = (other._storage, input._storage) if reverse else (input._storage, other._storage)
         return cls(
             (op(x, y, *extra_args, **extra_kwargs) for x, y in zip(lhs_s, rhs_s)),
-            **input._meta,
+            **input._meta(),
         )
 
     # General tensor: per-element fallback
@@ -249,7 +282,7 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
             elements.append(op(_as_tensor_like(other, t), t, *extra_args, **extra_kwargs))
         else:
             elements.append(op(t, _as_tensor_like(other, t), *extra_args, **extra_kwargs))
-    return cls(elements, **input._meta)
+    return cls(elements, **input._meta())
 
 
 def _broadcast_storage(ref: NestedTensor, value):
@@ -282,7 +315,7 @@ def _ternary_op(layout_ref, input, tensor1, tensor2, op, **kwargs):
                 **kwargs,
             )
         )
-    return type(layout_ref)(elements, **layout_ref._meta)
+    return type(layout_ref)(elements, **layout_ref._meta())
 
 
 # Reductions
@@ -440,21 +473,21 @@ def _concat_apply(
     r"""Apply op to concatenated storage and split back using shape_fn."""
     cls = type(input)
     if not input._storage:
-        return cls([], **input._meta)
+        return cls([], **input._meta(include_dtype=True))
 
     concat, shapes = input.concatenate()
     if not shapes:
-        return cls([], **input._meta)
+        return cls([], **input._meta(include_dtype=True))
 
     output = op(concat)
     output_shapes = tuple(shape_fn(shape) for shape in shapes)
-    return cls.from_concatenated(output, output_shapes, **input._meta)
+    return cls.from_concatenated(output, output_shapes, **input._meta())
 
 
 def _concat_apply_same_shape(input: NestedTensor, op: Callable[[Tensor], Tensor]):
     r"""Apply a shape-preserving op directly to packed _values."""
     if len(input) == 0:
-        return type(input)([], **input._meta)
+        return type(input)([], **input._meta(include_dtype=True))
     return type(input)._from_packed(
         op(input._values),
         input._offsets,

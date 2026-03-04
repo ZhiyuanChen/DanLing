@@ -90,7 +90,7 @@ class TestLinear:
         weight = torch.randn(3, 5)
         bias = torch.randn(3)
         output = F.linear(input, weight, bias)
-        reference = NT([F.linear(t, weight, bias) for t in input], **input._meta)
+        reference = NT([F.linear(t, weight, bias) for t in input], **input._meta())
         assert_close(output, reference)
 
 
@@ -344,7 +344,7 @@ class TestSoftmaxFamily:
     def test_gumbel_softmax(self, device, float_dtype):
         nt = nested_rand([(2, 4), (3, 4)], device, float_dtype)
         torch.manual_seed(1016)
-        reference = NT([F.gumbel_softmax(t, dim=-1) for t in nt], **nt._meta)
+        reference = NT([F.gumbel_softmax(t, dim=-1) for t in nt], **nt._meta())
         torch.manual_seed(1016)
         output = F.gumbel_softmax(nt, dim=-1)
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
@@ -399,7 +399,7 @@ class TestGridOps:
         output = F.grid_sample(nt_imgs, grids, align_corners=False)
         reference = NT(
             [F.grid_sample(img, grid, align_corners=False) for img, grid in zip(nt_imgs, grids)],
-            **nt_imgs._meta,
+            **nt_imgs._meta(),
         )
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
@@ -426,7 +426,7 @@ class TestEmbeddingOps:
             ]
         )
         output = F.embedding(nt_idx, weight)
-        reference = NT([F.embedding(t, weight) for t in nt_idx], **nt_idx._meta)
+        reference = NT([F.embedding(t, weight) for t in nt_idx], **nt_idx._meta())
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
     def test_embedding_bag(self, device, float_dtype):
@@ -439,7 +439,7 @@ class TestEmbeddingOps:
         )
         offsets = torch.tensor([0], dtype=torch.long, device=device)
         output = F.embedding_bag(nt_idx, weight, offsets=offsets, mode="mean")
-        reference = NT([F.embedding_bag(t, weight, offsets=offsets, mode="mean") for t in nt_idx], **nt_idx._meta)
+        reference = NT([F.embedding_bag(t, weight, offsets=offsets, mode="mean") for t in nt_idx], **nt_idx._meta())
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
 
@@ -574,8 +574,8 @@ class TestFractionalMaxPoolWithIndices:
                 for t in nt
             ]
         )
-        reference_output = NT(reference_output, **nt._meta)
-        reference_idx = NT(reference_idx, **nt._meta)
+        reference_output = NT(reference_output, **nt._meta())
+        reference_idx = NT(reference_idx, **nt._meta())
         assert_close(output, reference_output)
         assert_close(idx, reference_idx)
 
@@ -597,7 +597,7 @@ class TestDropout:
         torch.manual_seed(0)
         output = F.dropout(nt, p=0.5, training=True)
         torch.manual_seed(0)
-        reference = NT([F.dropout(t, p=0.5, training=True) for t in nt], **nt._meta)
+        reference = NT([F.dropout(t, p=0.5, training=True) for t in nt], **nt._meta())
         assert_close(output, reference)
 
     def test_dropout_variants_eval_is_identity(self, device, float_dtype):
@@ -641,7 +641,7 @@ class TestPad:
             ]
         )
         output = F.pad(nt, (1, 1, 1, 1), value=0.5)
-        reference = NT([F.pad(t, (1, 1, 1, 1), value=0.5) for t in nt], **nt._meta)
+        reference = NT([F.pad(t, (1, 1, 1, 1), value=0.5) for t in nt], **nt._meta())
         assert_close(output, reference)
 
 
@@ -670,7 +670,7 @@ class TestClassificationLosses:
                 torch.tensor([[1.0, 0.0]], device=device, dtype=float_dtype),
             ]
         )
-        log_probs = NT([torch.log_softmax(t, dim=-1) for t in logits], **logits._meta)
+        log_probs = NT([torch.log_softmax(t, dim=-1) for t in logits], **logits._meta())
         targets = NT(
             [torch.tensor([0, 1], device=device, dtype=torch.long), torch.tensor([1], device=device, dtype=torch.long)]
         )
@@ -983,13 +983,13 @@ class TestNormalizationOps:
     def test_group_norm(self, device, float_dtype):
         nt = nested_rand([(3, 4), (2, 4)], device, float_dtype)
         output = F.group_norm(nt, num_groups=1)
-        reference = NT([F.group_norm(t.unsqueeze(0), num_groups=1).squeeze(0) for t in nt], **nt._meta)
+        reference = NT([F.group_norm(t.unsqueeze(0), num_groups=1).squeeze(0) for t in nt], **nt._meta())
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
     def test_layer_norm(self, device, float_dtype):
         nt = nested_rand([(3, 4), (2, 4)], device, float_dtype)
         output = F.layer_norm(nt, normalized_shape=(4,))
-        reference = NT([F.layer_norm(t, (4,)) for t in nt], **nt._meta)
+        reference = NT([F.layer_norm(t, (4,)) for t in nt], **nt._meta())
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
     def test_batch_norm(self, device, float_dtype):
@@ -999,7 +999,9 @@ class TestNormalizationOps:
         output = F.batch_norm(nt, running_mean=running_mean, running_var=running_var, training=True)
         concat, shapes = nt.concatenate()
         reference = NestedTensor.from_concatenated(
-            F.batch_norm(concat, running_mean=running_mean, running_var=running_var, training=True), shapes, **nt._meta
+            F.batch_norm(concat, running_mean=running_mean, running_var=running_var, training=True),
+            shapes,
+            **nt._meta(),
         )
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
@@ -1011,13 +1013,13 @@ class TestNormalizationOps:
             ]
         )
         output = F.instance_norm(nt, use_input_stats=True)
-        reference = NT([F.instance_norm(t.unsqueeze(0), use_input_stats=True).squeeze(0) for t in nt], **nt._meta)
+        reference = NT([F.instance_norm(t.unsqueeze(0), use_input_stats=True).squeeze(0) for t in nt], **nt._meta())
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
     def test_rms_norm(self, device, float_dtype):
         nt = nested_rand([(1, 4), (1, 4)], device, float_dtype)
         output = F.rms_norm(nt, normalized_shape=(4,))
-        reference = NT([F.rms_norm(t, (4,)) for t in nt], **nt._meta)
+        reference = NT([F.rms_norm(t, (4,)) for t in nt], **nt._meta())
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
     def test_local_response_norm(self, device, float_dtype):
@@ -1028,7 +1030,7 @@ class TestNormalizationOps:
             ]
         )
         output = F.local_response_norm(nt, size=2)
-        reference = NT([F.local_response_norm(t.unsqueeze(0), size=2).squeeze(0) for t in nt], **nt._meta)
+        reference = NT([F.local_response_norm(t.unsqueeze(0), size=2).squeeze(0) for t in nt], **nt._meta())
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
 
@@ -1042,7 +1044,7 @@ class TestInterpolate:
             ]
         )
         output = F.interpolate(nt, scale_factor=2, mode="nearest")
-        reference = NT([F.interpolate(t, scale_factor=2, mode="nearest") for t in nt], **nt._meta)
+        reference = NT([F.interpolate(t, scale_factor=2, mode="nearest") for t in nt], **nt._meta())
         assert_close(output, reference)
 
     def test_interpolate_bilinear(self, device, float_dtype):
@@ -1055,7 +1057,7 @@ class TestInterpolate:
         output = F.interpolate(nt, scale_factor=2, mode="bilinear", align_corners=False)
         reference = NT(
             [F.interpolate(t, scale_factor=2, mode="bilinear", align_corners=False) for t in nt],
-            **nt._meta,
+            **nt._meta(),
         )
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
@@ -1070,7 +1072,7 @@ class TestPixelShuffle:
             ]
         )
         output = F.pixel_shuffle(nt, upscale_factor=2)
-        reference = NT([F.pixel_shuffle(t, upscale_factor=2) for t in nt], **nt._meta)
+        reference = NT([F.pixel_shuffle(t, upscale_factor=2) for t in nt], **nt._meta())
         assert_close(output, reference)
 
     def test_pixel_unshuffle(self, device, float_dtype):
@@ -1112,7 +1114,7 @@ class TestMaxUnpool:
         pooled_nt = NT([pooled])
         unpooled = F.max_unpool1d(pooled_nt, idx, kernel_size=2, stride=2, output_size=orig.shape)
         reference = F.max_unpool1d(pooled, idx, kernel_size=2, stride=2, output_size=orig.shape)
-        reference = NT([reference], **unpooled._meta)
+        reference = NT([reference], **unpooled._meta())
         assert_close(unpooled, reference)
 
     def test_max_unpool2d_nested_indices(self):
@@ -1140,7 +1142,7 @@ class TestMaxUnpool:
         pooled_nt = NT([pooled])
         unpooled = F.max_unpool2d(pooled_nt, idx, kernel_size=2, stride=1, output_size=orig.shape)
         reference = F.max_unpool2d(pooled, idx, kernel_size=2, stride=1, output_size=orig.shape)
-        reference = NT([reference], **unpooled._meta)
+        reference = NT([reference], **unpooled._meta())
         assert_close(unpooled, reference)
 
     def test_max_unpool3d_nested_indices(self):
@@ -1165,7 +1167,7 @@ class TestMaxUnpool:
         pooled_nt = NT([pooled])
         unpooled = F.max_unpool3d(pooled_nt, idx, kernel_size=2, output_size=orig.shape)
         reference = F.max_unpool3d(pooled, idx, kernel_size=2, output_size=orig.shape)
-        reference = NT([reference], **unpooled._meta)
+        reference = NT([reference], **unpooled._meta())
         assert_close(unpooled, reference)
 
 
@@ -1179,12 +1181,12 @@ class TestUnfoldFold:
             ]
         )
         output = F.unfold(nt, kernel_size=2, stride=1)
-        reference = NT([F.unfold(t, kernel_size=2, stride=1) for t in nt], **nt._meta)
+        reference = NT([F.unfold(t, kernel_size=2, stride=1) for t in nt], **nt._meta())
         assert_close(output, reference)
 
         unfolded = output
         output = F.fold(unfolded, output_size=(3, 3), kernel_size=2, stride=1)
-        reference = NT([F.fold(t, output_size=(3, 3), kernel_size=2, stride=1) for t in unfolded], **unfolded._meta)
+        reference = NT([F.fold(t, output_size=(3, 3), kernel_size=2, stride=1) for t in unfolded], **unfolded._meta())
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
 
@@ -1204,7 +1206,7 @@ class TestMultiHeadAttentionForward:
         key_padding_mask = (~query.mask).transpose(0, 1)
         reference, _ = module(query.tensor, query.tensor, query.tensor, key_padding_mask=key_padding_mask)
 
-        output = F.multi_head_attention_forward(
+        output, weights = F.multi_head_attention_forward(
             query,
             query,
             query,
@@ -1223,6 +1225,7 @@ class TestMultiHeadAttentionForward:
         )
 
         assert isinstance(output, NestedTensor)
+        assert weights is None
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
     def test_multi_head_attention_forward(self):
@@ -1231,7 +1234,7 @@ class TestMultiHeadAttentionForward:
         num_heads = 2
         mha = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True, dropout=0.0)
         input = NestedTensor([torch.randn(3, embed_dim), torch.randn(2, embed_dim)])
-        attn_output = F.multi_head_attention_forward(
+        attn_output, attn_weights = F.multi_head_attention_forward(
             input,
             input,
             input,
@@ -1260,6 +1263,7 @@ class TestMultiHeadAttentionForward:
         )
         reference, _ = mha(input.tensor, input.tensor, input.tensor, key_padding_mask=~input.mask, need_weights=False)
         reference = reference.masked_fill(~input.mask.unsqueeze(-1), 0)
+        assert attn_weights is None
         assert_close(attn_output, reference, atol=1e-5)
 
     def test_multi_head_attention_with_weights(self):
@@ -1309,7 +1313,7 @@ class TestMultiHeadAttentionForward:
         mha = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True, dropout=0.0)
         query = NestedTensor([torch.randn(2, embed_dim), torch.randn(1, embed_dim)])
         key = NestedTensor([torch.randn(3, embed_dim), torch.randn(2, embed_dim)])
-        output = F.multi_head_attention_forward(
+        output, weights = F.multi_head_attention_forward(
             query,
             key,
             key,
@@ -1338,6 +1342,7 @@ class TestMultiHeadAttentionForward:
         )
         reference, _ = mha(query.tensor, key.tensor, key.tensor, key_padding_mask=~key.mask, need_weights=False)
         reference = reference.masked_fill(~query.mask.unsqueeze(-1), 0)
+        assert weights is None
         assert_close(output, reference, atol=1e-5)
 
     def test_multi_head_attention_custom_mask_value(self):
@@ -1353,7 +1358,7 @@ class TestMultiHeadAttentionForward:
             [torch.randn(3, embed_dim), torch.randn(1, embed_dim)],
             mask_value=True,
         )
-        output = F.multi_head_attention_forward(
+        output, weights = F.multi_head_attention_forward(
             query,
             key,
             key,
@@ -1382,6 +1387,7 @@ class TestMultiHeadAttentionForward:
         )
         reference, _ = mha(query.tensor, key.tensor, key.tensor, key_padding_mask=key.mask, need_weights=False)
         reference = reference.masked_fill(query.mask.unsqueeze(-1), 0)
+        assert weights is None
         assert_close(output, reference, atol=1e-5)
 
     def test_multi_head_attention_masks_padding_tokens(self, device, float_dtype):
@@ -1428,7 +1434,7 @@ class TestMultiHeadAttentionForward:
         reference = reference.transpose(0, 1)
         reference = reference.masked_fill(~nested.mask.unsqueeze(-1), nested.padding_value)
 
-        output = F.multi_head_attention_forward(
+        output, weights = F.multi_head_attention_forward(
             nested,
             nested,
             nested,
@@ -1456,6 +1462,7 @@ class TestMultiHeadAttentionForward:
             is_causal=False,
         )
 
+        assert weights is None
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
     def test_mha_requires_nested_query(self):
@@ -1532,7 +1539,7 @@ class TestScaledDotProductAttention:
         output = F.scaled_dot_product_attention(query, key, value, dropout_p=0.0)
         reference = NT(
             [F.scaled_dot_product_attention(q, k, v, dropout_p=0.0) for q, k, v in zip(query, key, value)],
-            **query._meta,
+            **query._meta(),
         )
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
@@ -1544,7 +1551,7 @@ class TestScaledDotProductAttention:
             ]
         )
         output = F.scaled_dot_product_attention(query, query, query, dropout_p=0.0)
-        reference = NT([F.scaled_dot_product_attention(q, q, q, dropout_p=0.0) for q in query], **query._meta)
+        reference = NT([F.scaled_dot_product_attention(q, q, q, dropout_p=0.0) for q in query], **query._meta())
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
     def test_sdpa_tensor_key_value(self, device, float_dtype):
@@ -1555,7 +1562,7 @@ class TestScaledDotProductAttention:
             ]
         )
         output = F.scaled_dot_product_attention(query, query.tensor, query.tensor, dropout_p=0.0)
-        reference = NT([F.scaled_dot_product_attention(q, q, q, dropout_p=0.0) for q in query], **query._meta)
+        reference = NT([F.scaled_dot_product_attention(q, q, q, dropout_p=0.0) for q in query], **query._meta())
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
     def test_sdpa_batched_mask(self, device, float_dtype):
@@ -1571,7 +1578,7 @@ class TestScaledDotProductAttention:
         output = F.scaled_dot_product_attention(query, query, query, attn_mask=mask, dropout_p=0.0)
         reference = NT(
             [F.scaled_dot_product_attention(q, q, q, attn_mask=mask[i], dropout_p=0.0) for i, q in enumerate(query)],
-            **query._meta,
+            **query._meta(),
         )
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
@@ -1658,14 +1665,14 @@ class TestPairwiseDistance:
         x1 = nested_rand([(2, 3), (1, 3)], device, float_dtype)
         x2 = nested_rand([(2, 3), (1, 3)], device, float_dtype)
         output = F.pairwise_distance(x1, x2)
-        reference = NT([F.pairwise_distance(a, b) for a, b in zip(x1, x2)], **x1._meta)
+        reference = NT([F.pairwise_distance(a, b) for a, b in zip(x1, x2)], **x1._meta())
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
     def test_pairwise_distance_p1(self, device, float_dtype):
         x1 = nested_rand([(2, 4), (3, 4)], device, float_dtype)
         x2 = nested_rand([(2, 4), (3, 4)], device, float_dtype)
         output = F.pairwise_distance(x1, x2, p=1)
-        reference = NT([F.pairwise_distance(a, b, p=1) for a, b in zip(x1, x2)], **x1._meta)
+        reference = NT([F.pairwise_distance(a, b, p=1) for a, b in zip(x1, x2)], **x1._meta())
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
 
@@ -1679,7 +1686,7 @@ class TestPdist:
             ]
         )
         output = F.pdist(x)
-        reference = NT([F.pdist(t) for t in x], **x._meta)
+        reference = NT([F.pdist(t) for t in x], **x._meta())
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
 
@@ -1691,7 +1698,7 @@ class TestBilinear:
         weight = torch.randn(5, 3, 4, device=device, dtype=float_dtype)
         bias = torch.randn(5, device=device, dtype=float_dtype)
         output = F.bilinear(x1, x2, weight, bias)
-        reference = NT([F.bilinear(a, b, weight, bias) for a, b in zip(x1, x2)], **x1._meta)
+        reference = NT([F.bilinear(a, b, weight, bias) for a, b in zip(x1, x2)], **x1._meta())
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
 
@@ -1700,7 +1707,7 @@ class TestOneHot:
     def test_one_hot(self):
         x = NT([torch.tensor([0, 1, 2], dtype=torch.long), torch.tensor([1, 0], dtype=torch.long)])
         output = F.one_hot(x, num_classes=3)
-        reference = NT([F.one_hot(t, num_classes=3) for t in x], **x._meta)
+        reference = NT([F.one_hot(t, num_classes=3) for t in x], **x._meta())
         assert_close(output, reference)
 
 
@@ -1714,7 +1721,7 @@ class TestChannelShuffle:
             ]
         )
         output = F.channel_shuffle(x, groups=2)
-        reference = NT([F.channel_shuffle(t, groups=2) for t in x], **x._meta)
+        reference = NT([F.channel_shuffle(t, groups=2) for t in x], **x._meta())
         assert_close(output, reference)
 
 
@@ -1731,7 +1738,7 @@ class TestFractionalMaxPool:
         output = F.fractional_max_pool2d(x, kernel_size=2, output_size=2, _random_samples=random_samples)
         reference = NT(
             [F.fractional_max_pool2d(t, kernel_size=2, output_size=2, _random_samples=random_samples) for t in x],
-            **x._meta,
+            **x._meta(),
         )
         assert_close(output, reference)
 
@@ -1760,7 +1767,7 @@ class TestFractionalMaxPool:
         output = F.fractional_max_pool3d(x, kernel_size=2, output_size=2, _random_samples=random_samples)
         reference = NT(
             [F.fractional_max_pool3d(t, kernel_size=2, output_size=2, _random_samples=random_samples) for t in x],
-            **x._meta,
+            **x._meta(),
         )
         assert_close(output, reference)
 

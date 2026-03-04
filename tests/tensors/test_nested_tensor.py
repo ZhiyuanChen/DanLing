@@ -248,7 +248,7 @@ class TestFromFactoryMethods:
     def test_from_concatenated_same_shapes(self):
         nested_tensor = NestedTensor([torch.randn(3, 5), torch.randn(3, 5)])
         concat, shapes = nested_tensor.concatenate()
-        reconstructed = NestedTensor.from_concatenated(concat, shapes, **nested_tensor._meta)
+        reconstructed = NestedTensor.from_concatenated(concat, shapes, **nested_tensor._meta())
         assert_close(reconstructed, nested_tensor)
 
     def test_from_concatenated_round_trip_multidim(self):
@@ -307,14 +307,14 @@ class TestTensorMaskProperties:
         assert_close(nested_tensor.concat, torch.tensor([1.0, 2.0, 3.0]))
 
         concat, shapes = nested_tensor.concatenate()
-        output = NestedTensor.from_concatenated(concat, shapes, **nested_tensor._meta)
+        output = NestedTensor.from_concatenated(concat, shapes, **nested_tensor._meta())
         assert_close(output, nested_tensor)
 
         nested_tensor = NestedTensor([torch.tensor(1.0), torch.tensor(2.0), torch.tensor(3.0)], batch_first=False)
         assert_close(nested_tensor.concat, torch.tensor([1.0, 2.0, 3.0]))
 
         concat, shapes = nested_tensor.concatenate()
-        output = NestedTensor.from_concatenated(concat, shapes, **nested_tensor._meta)
+        output = NestedTensor.from_concatenated(concat, shapes, **nested_tensor._meta())
         assert_close(output, nested_tensor)
 
     def test_flat_batch_first_false(self):
@@ -353,6 +353,12 @@ class TestStatePreservation:
         assert output.mask_value is mask_value
         if pin_memory is not None:
             assert output._pin_memory is pin_memory
+
+    def test_meta_with_dtype_preserves_empty_dtype(self):
+        empty = NestedTensor([], dtype=torch.float64, batch_first=False, padding_value=-1, mask_value=True)
+        rebuilt = NestedTensor([], **empty._meta(include_dtype=True))
+        assert rebuilt.dtype == torch.float64
+        self._assert_state(rebuilt, batch_first=False, padding_value=-1, mask_value=True)
 
     def test_comparison_preserves_state(self):
         state = {"batch_first": False, "padding_value": -1, "mask_value": True, "pin_memory": True}

@@ -21,17 +21,30 @@ r"""CUDA stream pooling for parallel per-element kernel launches."""
 from __future__ import annotations
 
 import atexit
+import os
 
 import torch
 
 _stream_pools: dict = {}
+_stream_pools_owner_pid = os.getpid()
+
+
+def _reset_stream_pools_after_fork():
+    r"""Drop inherited CUDA stream handles in forked child processes."""
+    global _stream_pools_owner_pid
+    _stream_pools.clear()
+    _stream_pools_owner_pid = os.getpid()
 
 
 def _get_streams(device: torch.device, n: int, max_streams: int = 8) -> list:
     r"""Return a cached pool of CUDA streams for the given device."""
+    global _stream_pools_owner_pid
+    current_pid = os.getpid()
+    if current_pid != _stream_pools_owner_pid:
+        _reset_stream_pools_after_fork()
     key = device.index if device.index is not None else 0
     pool = _stream_pools.get(key)
-    if pool is None or len(pool) < max_streams:
+    if pool is None:
         pool = [torch.cuda.Stream(device=device) for _ in range(max_streams)]
         _stream_pools[key] = pool
     return pool[: min(n, max_streams)]
@@ -64,5 +77,8 @@ def cleanup_stream_pools():
     r"""Clear the cached CUDA stream pools. Call this in torchelastic worker cleanup."""
     _stream_pools.clear()
 
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_stream_pools_after_fork)
 
 atexit.register(cleanup_stream_pools)
