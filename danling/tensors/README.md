@@ -68,7 +68,7 @@ from danling.tensors import NestedTensor
 nested = NestedTensor([1.0, 2.0, 3.0], [4.0, 5.0])
 
 # Convert to PyTorch's native nested tensor
-native = nested.nested_tensor()
+native = nested.torch
 print(type(native))  # <class 'torch.Tensor'> (nested layout)
 ```
 
@@ -105,7 +105,7 @@ You can easily convert back to original tensors:
 data = nested.tolist()
 
 # Get as a tuple of (padded_tensor, mask)
-tensor, mask = nested[:]
+tensor, mask = nested.tensor_mask
 
 # Access individual items
 first_item = nested[0]  # Returns the first tensor

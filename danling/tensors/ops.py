@@ -208,7 +208,9 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
     # NT + NT
     if isinstance(other, cls):
         if len(input) != len(other):
-            raise ValueError(f"NestedTensor batch length mismatch: {len(input)} vs {len(other)}")
+            raise ValueError(
+                "NestedTensor batch length mismatch between input and other: " f"input={len(input)}, other={len(other)}"
+            )
         lhs_v, rhs_v = (other._values, input._values) if reverse else (input._values, other._values)
         if _offsets_match(input._offsets, other._offsets):
             return cls._from_packed(
@@ -242,7 +244,9 @@ def _broadcast_storage(ref: NestedTensor, value):
     cls = type(ref)
     if isinstance(value, cls):
         if len(ref) != len(value):
-            raise ValueError(f"NestedTensor batch length mismatch: {len(ref)} vs {len(value)}")
+            raise ValueError(
+                "NestedTensor batch length mismatch between ref and value: " f"ref={len(ref)}, value={len(value)}"
+            )
         return value._storage
     if isinstance(value, Tensor) and not isinstance(value, cls) and value.shape == ref.shape:
         return ref.nested_like(value, strict=False)._storage
@@ -286,16 +290,11 @@ def _reduce_dim(
     if dtype is not None:
         op_kwargs["dtype"] = dtype
     if dim == batch_dim:
-        if len(input) == 0:
-            return op(input._values, **op_kwargs)
-        sizes = (input._offsets[1:] - input._offsets[:-1]).tolist()
-        chunks = input._values.split(sizes, dim=0)
-        results = [op(c.reshape(s.tolist()), **op_kwargs) for c, s in zip(chunks, input._shape_tensor)]
+        results = [op(t, **op_kwargs) for t in input._storage]
         output = torch.stack(results)
         if keepdim:
-            return output.unsqueeze(0 if input.batch_first else 1)
+            return output.unsqueeze(batch_dim)
         return output
-
     dim_adj = _translate_dim(input, dim)
     results = [op(t, dim=dim_adj, keepdim=keepdim, **op_kwargs) for t in input._storage]
     return _try_stack(results, input)
@@ -398,23 +397,16 @@ def _reduce_dim_pair(input: NestedTensor, op, dim: int, keepdim: bool, **op_kwar
     dim = _normalize_dim(dim, input.dim())
     batch_dim = _get_batch_dim(input)
     if dim == batch_dim:
-        if len(input) == 0:
-            a, b = op(input._values, dim=0, keepdim=False, **op_kwargs)
-            return a, b
         firsts, seconds = [], []
-        sizes = (input._offsets[1:] - input._offsets[:-1]).tolist()
-        chunks = input._values.split(sizes, dim=0)
-        for chunk, shape in zip(chunks, input._shape_tensor):
-            a, b = op(chunk.reshape(shape.tolist()).reshape(-1), dim=0, keepdim=False, **op_kwargs)
+        for t in input._storage:
+            a, b = op(t, **op_kwargs)
             firsts.append(a)
             seconds.append(b)
-        f_tensor = torch.stack(firsts)
-        s_tensor = torch.stack(seconds)
+        first, second = torch.stack(firsts), torch.stack(seconds)
         if keepdim:
-            f_tensor = f_tensor.unsqueeze(0 if input.batch_first else 1)
-            s_tensor = s_tensor.unsqueeze(0 if input.batch_first else 1)
-        return f_tensor, s_tensor
-
+            first = first.unsqueeze(batch_dim)
+            second = second.unsqueeze(batch_dim)
+        return first, second
     dim_adj = _translate_dim(input, dim)
     firsts, seconds = [], []
     for t in input._storage:

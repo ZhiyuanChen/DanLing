@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING
 import torch
 from torch import Tensor
 
-from .ops import ATEN_BINARY_ELEMENTWISE_OPS, ATEN_UNARY_ELEMENTWISE_OPS, NestedTensorAtenRegistry
+from .ops import ATEN_BINARY_ELEMENTWISE_OPS, ATEN_UNARY_ELEMENTWISE_OPS, NestedTensorAtenRegistry, _translate_dim
 
 if TYPE_CHECKING:
     from .nested_tensor import NestedTensor
@@ -479,13 +479,13 @@ def _native_dropout(func, args, kwargs):
     source = args[0]
     cls = type(source)
     output, mask = func(source._values, *args[1:], **kwargs)
-    kw = dict(
-        batch_first=source.batch_first,
-        padding_value=source.padding_value,
-        mask_value=source.mask_value,
-        pin_memory=source._pin_memory,
-        outer_size=source._logical_shape,
-    )
+    kw = {
+        "batch_first": source.batch_first,
+        "padding_value": source.padding_value,
+        "mask_value": source.mask_value,
+        "pin_memory": source._pin_memory,
+        "outer_size": source._logical_shape,
+    }
     return (
         cls._from_packed(output, source._offsets, source._shape_tensor, **kw),
         cls._from_packed(mask, source._offsets, source._shape_tensor, **kw),
@@ -632,8 +632,30 @@ def _binary_unwrap_handler(func, args, kwargs):
     )
 
 
+def _softmax_handler(func, args, kwargs):
+    r"""Dispatch handler for softmax/log_softmax that translates the dim argument."""
+    source = args[0]
+    dim_adj = _translate_dim(source, args[1])
+    if dim_adj == 0:
+        # Ragged packed dim: normalisation must be per-element, not across all elements.
+        results = [func(t, dim_adj, *args[2:], **kwargs) for t in source._storage]
+        return type(source)(
+            results, batch_first=source.batch_first, padding_value=source.padding_value, mask_value=source.mask_value
+        )
+    return type(source)._from_packed(
+        func(source._values, dim_adj, *args[2:], **kwargs),
+        source._offsets,
+        source._shape_tensor,
+        batch_first=source.batch_first,
+        padding_value=source.padding_value,
+        mask_value=source.mask_value,
+        pin_memory=source._pin_memory,
+        outer_size=source._logical_shape,
+    )
+
+
 for _op in [aten._softmax.default, aten._log_softmax.default]:
-    NestedTensorAtenRegistry[_op] = _unary_handler
+    NestedTensorAtenRegistry[_op] = _softmax_handler
 
 for _op in [aten._softmax_backward_data.default, aten._log_softmax_backward_data.default]:
     NestedTensorAtenRegistry[_op] = _binary_unwrap_handler

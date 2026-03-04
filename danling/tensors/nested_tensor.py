@@ -103,7 +103,7 @@ class NestedTensor(torch.Tensor):
 
     When indexing a `NestedTensor`, the behavior depends on the index type:
     1. Integer index (`nt[0]`): Returns a single tensor without padding
-    2. Slice index (`nt[:]`): Returns a tuple of (padded_tensor, mask)
+    2. Slice index (`nt[:]`): Returns a new `NestedTensor` containing the selected batch elements
     3. Tuple index (`nt[:, 1:]`): Returns a new `NestedTensor` with the specified sliced shape
 
     Attributes:
@@ -122,7 +122,7 @@ class NestedTensor(torch.Tensor):
         mask_value: Value to use for padding positions in mask.
 
     Raises:
-        ValueError: If `tensors` is not an iterable or is empty
+        ValueError: If `tensors` is not an iterable
 
     Examples:
         Basic usage:
@@ -141,7 +141,7 @@ class NestedTensor(torch.Tensor):
         Indexing:
         >>> nested_tensor[0]  # First tensor (no padding)
         tensor([1, 2, 3])
-        >>> nested_tensor[:2]  # Padded tensor and mask
+        >>> nested_tensor[:2]  # Returns a NestedTensor slice
         NestedTensor([
             [1, 2, 3],
             [4, 5]
@@ -797,8 +797,7 @@ class NestedTensor(torch.Tensor):
             if batched:
                 indices = effective_mask.nonzero(as_tuple=False).flatten()
                 return cls([tensor[int(i)] for i in indices], **kwargs)
-            valid = int(effective_mask.sum().item())
-            return cls(tensor[:valid], **kwargs)
+            return cls(tensor[effective_mask], **kwargs)
         # ndim >= 2: batch setup is shared, per-element trim differs by rank
         batch_first = kwargs.get("batch_first", True)
         tensor_iter = tensor if batch_first else tensor.transpose(0, 1)
@@ -807,15 +806,13 @@ class NestedTensor(torch.Tensor):
             raise ValueError("Tensor/mask batch dimension mismatch: " f"{tensor_iter.size(0)} vs {mask_iter.size(0)}")
         trimmed = []
         if mask.ndim == 2:
-            # 1-D per-element mask: contiguous-prefix fast path avoids nonzero()
+            # 1-D per-element mask: contiguous-prefix slice
             for t, m in zip(tensor_iter, mask_iter):
                 count = int(m.sum().item())
-                if count == 0 or bool(m[:count].all().item()):
-                    trimmed.append(t[:count])
-                else:
-                    trimmed.append(t[m])
+                trimmed.append(t[:count])
         else:
-            # N-D per-element mask: bounding-box slice via nonzero()
+            # N-D per-element mask: bounding-box slice + mask fill for interior False positions.
+            padding_value = kwargs.get("padding_value", 0.0)
             for t, em in zip(tensor_iter, mask_iter):
                 nonzero = em.nonzero(as_tuple=False)
                 if nonzero.numel() == 0:
@@ -823,7 +820,14 @@ class NestedTensor(torch.Tensor):
                 else:
                     max_indices = nonzero.max(dim=0).values + 1
                     slices = tuple(slice(0, int(i.item())) for i in max_indices)
-                trimmed.append(t[slices])
+                t_slice = t[slices]
+                m_slice = em[slices]
+                if not bool(m_slice.all().item()):
+                    valid_mask = m_slice
+                    if t_slice.dim() > m_slice.dim():
+                        valid_mask = m_slice.view(m_slice.shape + (1,) * (t_slice.dim() - m_slice.dim()))
+                    t_slice = t_slice.masked_fill(~valid_mask, padding_value)
+                trimmed.append(t_slice)
         return cls(trimmed, **kwargs)
 
     def nested_like(self, tensor: Tensor, strict: bool = True) -> Self:
@@ -850,7 +854,7 @@ class NestedTensor(torch.Tensor):
             Traceback (most recent call last):
             ValueError: The batch size of NestedTensor and input tensor does not match, 2 != 3
         """
-          # noqa: E501
+        # noqa: E501
 
         if isinstance(tensor, NestedTensor):
             return tensor.clone()
@@ -885,6 +889,10 @@ class NestedTensor(torch.Tensor):
         if isinstance(index, int):
             return self._storage[index]
         if isinstance(index, (slice, list)):
+            if isinstance(index, list) and index and all(isinstance(i, bool) for i in index):
+                if len(index) != len(self):
+                    raise IndexError(f"Boolean index has length {len(index)} but batch size is {len(self)}")
+                index = [i for i, flag in enumerate(index) if flag]
             storage = tuple(self._storage[index] if isinstance(index, slice) else [self._storage[i] for i in index])
             return self.__class__(storage, **self._meta)
         if isinstance(index, tuple):
@@ -922,7 +930,10 @@ class NestedTensor(torch.Tensor):
             index = self.nested_like(index, strict=False)
         if isinstance(index, NestedTensor):
             if len(self) != len(index):
-                raise ValueError(f"NestedTensor batch length mismatch: {len(self)} vs {len(index)}")
+                raise ValueError(
+                    "NestedTensor batch length mismatch between self and index: "
+                    f"self={len(self)}, index={len(index)}"
+                )
             return self.__class__([t[i] for t, i in zip(self._storage, index._storage)], **self._meta)
         raise ValueError(f"Unsupported index type {type(index)}")
 
@@ -962,33 +973,59 @@ class NestedTensor(torch.Tensor):
             idx = index + len(self) if index < 0 else index
             if idx < 0 or idx >= len(self):
                 raise IndexError(f"index {index} is out of range for NestedTensor with {len(self)} elements")
+            expected_ndim = self._shape_tensor.size(1)
+            if value.dim() != expected_ndim:
+                raise ValueError(
+                    f"Assigned tensor ndim must match existing ndim {expected_ndim}, but got {value.dim()}"
+                )
 
-            flat_value = value.reshape(-1)
+            use_flat_layout = self._values.ndim == 1 and expected_ndim > 1
             old_start = int(self._offsets[idx].item())
             old_end = int(self._offsets[idx + 1].item())
-            old_numel = old_end - old_start
+            old_size = old_end - old_start
+            new_shape_row = torch.tensor(list(value.shape), dtype=self._shape_tensor.dtype)
 
-            if flat_value.numel() == old_numel:
-                # Same flattened size: copy directly into _values (no reallocation)
-                self._values[old_start:old_end] = flat_value
-                # Update shape_tensor row in case shape changed (e.g. [6] -> [2,3])
-                new_shape = list(value.shape) + [0] * (self._shape_tensor.size(1) - value.dim())
-                self._shape_tensor[idx] = torch.tensor(new_shape, dtype=self._shape_tensor.dtype)
+            # If packed values are N-D (single-ragged mode), changing trailing shape
+            # requires a full repack into flattened layout.
+            if (
+                not use_flat_layout
+                and value.dim() > 1
+                and self._values.dim() > 1
+                and value.shape[1:] != self._values.shape[1:]
+            ):
+                storage_list = list(self._storage)
+                storage_list[idx] = value
+                self._repack(storage_list)
+                return
+
+            if use_flat_layout:
+                new_payload = value.reshape(-1)
+                new_size = new_payload.numel()
             else:
-                # Different size: splice _values and rebuild offsets/shape_tensor.
-                # Clone metadata tensors first to avoid corrupting shallow copies
-                # that share the same _offsets/_shape_tensor objects.
-                self._values = torch.cat([self._values[:old_start], flat_value, self._values[old_end:]])
-                delta = flat_value.numel() - old_numel
+                new_payload = value.reshape(1) if value.dim() == 0 else value
+                new_size = new_payload.size(0)
+
+            if new_size == old_size:
+                # Same packed span size: direct overwrite keeps _values allocation.
+                self._values[old_start:old_end] = new_payload
+                self._shape_tensor[idx] = new_shape_row
+            else:
+                # Different packed span size: splice _values and shift subsequent offsets.
+                self._values = torch.cat([self._values[:old_start], new_payload, self._values[old_end:]], dim=0)
+                delta = new_size - old_size
                 self._offsets = self._offsets.clone()
                 self._offsets[idx + 1 :] += delta  # noqa: E203
                 self._shape_tensor = self._shape_tensor.clone()
-                new_shape = list(value.shape) + [0] * (self._shape_tensor.size(1) - value.dim())
-                self._shape_tensor[idx] = torch.tensor(new_shape, dtype=self._shape_tensor.dtype)
+                self._shape_tensor[idx] = new_shape_row
             self._logical_shape = self._logical_shape_from_shape_tensor(
                 self._shape_tensor, self._offsets, self.batch_first
             )
         elif isinstance(index, (slice, list)):
+            if isinstance(index, list) and index and all(isinstance(i, bool) for i in index):
+                if len(index) != len(self):
+                    raise IndexError(f"Boolean index has length {len(index)} but batch size is {len(self)}")
+                index = [i for i, flag in enumerate(index) if flag]
+
             if isinstance(value, Tensor) and not isinstance(value, NestedTensor):
                 if value.dim() > 1 and value.size(0) > 1:
                     value = self.__class__(value.unbind(0), **self._meta)
@@ -1011,8 +1048,11 @@ class NestedTensor(torch.Tensor):
                 storage_list[idx] = value._storage[i]
             self._storage = tuple(storage_list)
         elif isinstance(index, tuple):
-            if len(index) < 2:
-                raise ValueError("Tuple index must have at least two elements")
+            if len(index) == 0:
+                return
+            if len(index) == 1:
+                self[index[0]] = value
+                return
 
             first_idx, rest_idx = index[0], index[1:]
 
@@ -1069,6 +1109,7 @@ class NestedTensor(torch.Tensor):
 
     def __setstate__(self, state: Mapping) -> None:
         self.__dict__.update(state)
+        self._cached_storage = None
 
     def __reduce__(self):
         return (self.__class__._from_state, (self.__getstate__(),))

@@ -126,6 +126,46 @@ class TestCatFunction:
         reference_feat = NT([torch.cat([a, b], dim=1) for a, b in zip(nt1, nt2_feat)], **nt1._meta)
         assert_close(output_feat, reference_feat)
 
+    def test_cat_dim0_incompatible_packed_layout_falls_back(self):
+        nt1 = NT([torch.arange(6.0).reshape(2, 3), torch.arange(3.0).reshape(1, 3)])
+        nt2 = NT([torch.arange(8.0).reshape(2, 4), torch.arange(4.0).reshape(1, 4)])
+        output = torch.cat((nt1, nt2), dim=0)
+        reference = NT([*nt1, *nt2], **nt1._meta)
+        assert_close(output, reference)
+
+    def test_cat_dim0_validates_nested_metadata(self):
+        nt_a = NT([torch.tensor([1.0, 2.0])], batch_first=True, padding_value=0.0, mask_value=False)
+        nt_b = NT([torch.tensor([3.0])], batch_first=False, padding_value=0.0, mask_value=False)
+        with pytest.raises(ValueError, match="share batch_first, padding_value, and mask_value"):
+            torch.cat((nt_a, nt_b), dim=0)
+
+    def test_cat_dim0_validates_nested_metadata_in_mixed_inputs(self):
+        nt_a = NT([torch.tensor([1.0, 2.0])], batch_first=True, padding_value=0.0, mask_value=False)
+        nt_b = NT([torch.tensor([3.0])], batch_first=True, padding_value=-1.0, mask_value=False)
+        with pytest.raises(ValueError, match="share batch_first, padding_value, and mask_value"):
+            torch.cat((nt_a, torch.tensor([9.0]), nt_b), dim=0)
+
+    def test_cat_dim0_with_empty_nested_inputs(self):
+        nt_empty = NT([], dtype=torch.float32)
+        nt = NT([torch.tensor([1.0, 2.0])])
+
+        out_left_empty = torch.cat((nt_empty, nt), dim=0)
+        assert len(out_left_empty) == 1
+        assert_close(out_left_empty[0], nt[0])
+
+        out_right_empty = torch.cat((nt, nt_empty), dim=0)
+        assert len(out_right_empty) == 1
+        assert_close(out_right_empty[0], nt[0])
+
+        nt2d = NT([torch.arange(6.0).reshape(2, 3), torch.arange(3.0).reshape(1, 3)])
+        out_left_empty_2d = torch.cat((nt_empty, nt2d), dim=0)
+        assert len(out_left_empty_2d) == len(nt2d)
+        assert_close(out_left_empty_2d, nt2d)
+
+        out_right_empty_2d = torch.cat((nt2d, nt_empty), dim=0)
+        assert len(out_right_empty_2d) == len(nt2d)
+        assert_close(out_right_empty_2d, nt2d)
+
 
 class TestStackFunction:
 

@@ -187,7 +187,9 @@ def _apply_pair(input: NestedTensor, other: NestedTensor | Tensor, op: Callable,
     input = _ensure_nested_input(input, other, cls)
     if isinstance(other, NestedTensor):
         if len(input) != len(other):
-            raise ValueError(f"NestedTensor batch length mismatch: {len(input)} vs {len(other)}")
+            raise ValueError(
+                "NestedTensor batch length mismatch between input and other: " f"input={len(input)}, other={len(other)}"
+            )
         elements = input._storage
         if elements and elements[0].is_cuda:
             return cls(
@@ -451,7 +453,10 @@ if hasattr(F, "grouped_mm"):
         cls = type(mat_a)
         if isinstance(mat_b, NestedTensor):
             if len(mat_a) != len(mat_b):
-                raise ValueError(f"NestedTensor batch length mismatch: {len(mat_a)} vs {len(mat_b)}")
+                raise ValueError(
+                    "NestedTensor batch length mismatch between mat_a and mat_b: "
+                    f"mat_a={len(mat_a)}, mat_b={len(mat_b)}"
+                )
             outputs = [
                 F.grouped_mm(a, b, offs=offs, bias=bias, out_dtype=out_dtype)
                 for a, b in zip(mat_a._storage, mat_b._storage)
@@ -468,7 +473,9 @@ def _scaled_mm(mat_a: NestedTensor, mat_b, fn, **kwargs) -> NestedTensor:
     cls = type(mat_a)
     if isinstance(mat_b, NestedTensor):
         if len(mat_a) != len(mat_b):
-            raise ValueError(f"NestedTensor batch length mismatch: {len(mat_a)} vs {len(mat_b)}")
+            raise ValueError(
+                "NestedTensor batch length mismatch between mat_a and mat_b: " f"mat_a={len(mat_a)}, mat_b={len(mat_b)}"
+            )
         outputs = [fn(a, b, **kwargs) for a, b in zip(mat_a._storage, mat_b._storage)]
     else:
         outputs = [fn(a, mat_b, **kwargs) for a in mat_a._storage]
@@ -834,10 +841,28 @@ def multi_head_attention_forward(
         key = query.nested_like(key, strict=False)
     if isinstance(value, Tensor) and value.shape == query.shape:
         value = query.nested_like(value, strict=False)
-    if isinstance(key, NestedTensor) and len(query) != len(key):
-        raise ValueError(f"NestedTensor batch length mismatch: {len(query)} vs {len(key)}")
-    if isinstance(value, NestedTensor) and len(query) != len(value):
-        raise ValueError(f"NestedTensor batch length mismatch: {len(query)} vs {len(value)}")
+    if isinstance(key, NestedTensor):
+        if len(query) != len(key):
+            raise ValueError(
+                "NestedTensor batch length mismatch between query and key: " f"query={len(query)}, key={len(key)}"
+            )
+        if query.batch_first != key.batch_first:
+            raise ValueError(
+                "NestedTensor batch_first mismatch between query and key: "
+                f"query.batch_first={query.batch_first}, key.batch_first={key.batch_first}. "
+                "Use the same batch_first setting for query, key, and value."
+            )
+    if isinstance(value, NestedTensor):
+        if len(query) != len(value):
+            raise ValueError(
+                "NestedTensor batch length mismatch between query and value: " f"query={len(query)}, value={len(value)}"
+            )
+        if query.batch_first != value.batch_first:
+            raise ValueError(
+                "NestedTensor batch_first mismatch between query and value: "
+                f"query.batch_first={query.batch_first}, value.batch_first={value.batch_first}. "
+                "Use the same batch_first setting for query, key, and value."
+            )
     if not query._storage:
         empty = cls([], **query._meta)
         if need_weights:
@@ -963,11 +988,18 @@ def scaled_dot_product_attention(
         value = query.nested_like(value, strict=False)
 
     if isinstance(key, NestedTensor) and len(query) != len(key):
-        raise ValueError(f"NestedTensor batch length mismatch: {len(query)} vs {len(key)}")
+        raise ValueError(
+            "NestedTensor batch length mismatch between query and key: " f"query={len(query)}, key={len(key)}"
+        )
     if isinstance(value, NestedTensor) and len(query) != len(value):
-        raise ValueError(f"NestedTensor batch length mismatch: {len(query)} vs {len(value)}")
+        raise ValueError(
+            "NestedTensor batch length mismatch between query and value: " f"query={len(query)}, value={len(value)}"
+        )
     if isinstance(attn_mask, NestedTensor) and len(query) != len(attn_mask):
-        raise ValueError(f"NestedTensor batch length mismatch: {len(query)} vs {len(attn_mask)}")
+        raise ValueError(
+            "NestedTensor batch length mismatch between query and attn_mask: "
+            f"query={len(query)}, attn_mask={len(attn_mask)}"
+        )
     if not query._storage:
         return NestedTensor([], **query._meta)
 

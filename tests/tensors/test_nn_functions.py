@@ -1478,6 +1478,35 @@ class TestMultiHeadAttentionForward:
                 torch.randn(4),
             )
 
+    def test_mha_batch_first_mismatch_raises_clear_error(self):
+        embed_dim = 4
+        num_heads = 2
+        query = NestedTensor([torch.randn(3, embed_dim), torch.randn(2, embed_dim)], batch_first=True)
+        key = NestedTensor([torch.randn(3, embed_dim), torch.randn(2, embed_dim)], batch_first=False)
+        weight = torch.randn(3 * embed_dim, embed_dim)
+        bias = torch.randn(3 * embed_dim)
+        out_weight = torch.randn(embed_dim, embed_dim)
+        out_bias = torch.randn(embed_dim)
+
+        with pytest.raises(ValueError, match="batch_first mismatch between query and key"):
+            F.multi_head_attention_forward(
+                query,
+                key,
+                key,
+                embed_dim,
+                num_heads,
+                weight,
+                bias,
+                None,
+                None,
+                False,
+                0.0,
+                out_weight,
+                out_bias,
+                training=False,
+                need_weights=False,
+            )
+
 
 @pytest.mark.skipif(not hasattr(F, "scaled_dot_product_attention"), reason="scaled_dot_product_attention not available")
 class TestScaledDotProductAttention:

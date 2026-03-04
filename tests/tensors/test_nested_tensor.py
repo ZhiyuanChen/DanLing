@@ -176,6 +176,12 @@ class TestFromFactoryMethods:
         nested_inverted = NestedTensor.from_tensor_mask(padded, padded_mask, mask_value=True)
         assert_close(nested_inverted, NT([torch.tensor([1, 2])]))
 
+    def test_from_tensor_mask_1d_sparse_selects_masked_positions(self):
+        padded = torch.tensor([10, 20, 30, 40])
+        mask = torch.tensor([1, 0, 1, 0], dtype=torch.bool)
+        nested = NestedTensor.from_tensor_mask(padded, mask)
+        assert_close(nested, NT([torch.tensor([10, 30])]))
+
     def test_from_tensor_mask_batch_mismatch_raises(self):
         padded = torch.tensor([[1, 2, 0], [3, 4, 5]], dtype=torch.float32)
         mask = torch.tensor([[1, 1, 0]], dtype=torch.bool)
@@ -199,6 +205,30 @@ class TestFromFactoryMethods:
         output = NestedTensor.from_tensor_mask(padded, mask)
         assert output.tensor.shape == torch.Size([1, 2, 2])
         reference = NT([torch.tensor([[1, 2], [3, 0]])])
+        assert_close(output, reference)
+
+    def test_from_tensor_mask_ndim3_sparse_selects_only_true_values(self):
+        padded = torch.tensor(
+            [
+                [[1, 2], [3, 4]],
+                [[5, 6], [7, 8]],
+            ],
+            dtype=torch.float32,
+        )
+        mask = torch.tensor(
+            [
+                [[1, 0], [0, 1]],
+                [[1, 1], [0, 0]],
+            ],
+            dtype=torch.bool,
+        )
+        output = NestedTensor.from_tensor_mask(padded, mask)
+        reference = NT(
+            [
+                torch.tensor([[1.0, 0.0], [0.0, 4.0]]),
+                torch.tensor([[5.0, 6.0]]),
+            ]
+        )
         assert_close(output, reference)
 
     def test_from_tensor_mask_channel_preserved(self):
@@ -449,6 +479,29 @@ class TestIndexing:
         assert_close(nt[0], torch.tensor([1.0, 2.0, 3.0]))
         assert_close(nt[1], torch.tensor([9.0, 10.0, 11.0, 12.0]))
         assert nt.shape == torch.Size([2, 4])
+
+    def test_setitem_2d_same_trailing_shape(self):
+        nt = NestedTensor(
+            [
+                torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+                torch.tensor([[5.0, 6.0]]),
+            ]
+        )
+        nt[0] = torch.tensor([[10.0, 20.0], [30.0, 40.0]])
+        assert_close(nt[0], torch.tensor([[10.0, 20.0], [30.0, 40.0]]))
+        assert_close(nt[1], torch.tensor([[5.0, 6.0]]))
+
+    def test_setitem_2d_trailing_shape_change_repacks(self):
+        nt = NestedTensor(
+            [
+                torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+                torch.tensor([[5.0, 6.0]]),
+            ]
+        )
+        nt[1] = torch.tensor([[7.0, 8.0, 9.0]])
+        assert_close(nt[0], torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
+        assert_close(nt[1], torch.tensor([[7.0, 8.0, 9.0]]))
+        assert nt.shape == torch.Size([2, 2, 3])
 
     def test_setitem_negative_index(self):
         nt = NestedTensor([torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0])])
