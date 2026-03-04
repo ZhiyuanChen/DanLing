@@ -259,8 +259,12 @@ class NestedTensor(torch.Tensor):
 
         result: list[Tensor] = []
         common_device: torch.device | None = None
-        common_dtype: torch.dtype | None = None
         common_ndim: int | None = None
+        # Only track dtype promotion when the caller did not specify an explicit dtype.
+        # When dtype is given, t.to(device, dtype=dtype) already handles casting in
+        # the first pass, so the promotion loop and second pass are both unnecessary.
+        needs_promotion = dtype is None
+        common_dtype: torch.dtype | None = None
 
         for t in tensors:
             if not isinstance(t, Tensor):
@@ -277,10 +281,11 @@ class NestedTensor(torch.Tensor):
                     f"All tensors in NestedTensor must be on the same device, but got {common_device} and {t.device}"
                 )
 
-            if common_dtype is None:
-                common_dtype = t.dtype
-            else:
-                common_dtype = torch.promote_types(common_dtype, t.dtype)
+            if needs_promotion:
+                if common_dtype is None:
+                    common_dtype = t.dtype
+                else:
+                    common_dtype = torch.promote_types(common_dtype, t.dtype)
 
             if common_ndim is None:
                 common_ndim = t.ndim
@@ -295,7 +300,10 @@ class NestedTensor(torch.Tensor):
         if not result:
             return ()
 
-        return tuple(t if t.dtype == common_dtype else t.to(dtype=common_dtype) for t in result)
+        # Second pass only when dtype=None AND promotion actually changed the dtype.
+        if needs_promotion and common_dtype is not None and any(t.dtype != common_dtype for t in result):
+            return tuple(t.to(dtype=common_dtype) for t in result)
+        return tuple(result)
 
     @staticmethod
     def _pack(tensors: tuple[Tensor, ...], *, dtype: torch.dtype | None = None) -> tuple[Tensor, Tensor, Tensor]:
@@ -314,11 +322,19 @@ class NestedTensor(torch.Tensor):
 
         # Determine packing layout from data:
         # - If all trailing dims match: cat along dim 0 → N-D values
-        # - Otherwise: flatten each element → 1-D values
+        # - Otherwise: flatten each element → 1-D values (slower path)
         if len(tensors) <= 1 or tensors[0].ndim == 0 or all(t.shape[1:] == tensors[0].shape[1:] for t in tensors[1:]):
             values = torch.cat(tensors, dim=0) if tensors[0].ndim > 0 else torch.stack(tensors)
             sizes = torch.tensor([t.size(0) if t.ndim > 0 else 1 for t in tensors], dtype=torch.long)
         else:
+            warnings.warn(
+                "NestedTensor: elements have different trailing dimensions "
+                f"(e.g. {tensors[0].shape[1:]} vs {tensors[1].shape[1:]}) — "
+                "using flattened 1-D packing. This is a slower path that disables "
+                "several compile-friendly fast paths. If this is unintentional, "
+                "ensure all elements share the same shape[1:].",
+                stacklevel=4,
+            )
             flat = [t.flatten() for t in tensors]
             values = torch.cat(flat, dim=0)
             sizes = torch.tensor([t.numel() for t in flat], dtype=torch.long)
@@ -1056,13 +1072,24 @@ class NestedTensor(torch.Tensor):
 
             first_idx, rest_idx = index[0], index[1:]
 
-            # _storage returns views into _values, so in-place writes through
-            # the view already modify _values — no repack needed.
-            # Recompute _logical_shape defensively for consistency with other
-            # branches, even though in-place indexed assignment cannot change
-            # element shapes in PyTorch.
+            # _storage returns views into _values for N-D packing, so in-place
+            # writes through the view already modify _values — no repack needed.
+            # For 1-D packing (flattened elements), the reshape in _unpack may
+            # break the view relationship; detect this and fall back to repack.
+            values_storage_ptr = self._values.storage().data_ptr()
+
             if isinstance(first_idx, int):
-                self._storage[first_idx][rest_idx] = value
+                elem = self._storage[first_idx]
+                if elem.storage().data_ptr() == values_storage_ptr:
+                    elem[rest_idx] = value
+                else:
+                    # 1-D packing: write to a clone and repack
+                    elem = elem.clone()
+                    elem[rest_idx] = value
+                    elems = list(self._storage)
+                    elems[first_idx] = elem
+                    self._repack(elems)
+                    return
             elif isinstance(first_idx, (slice, list)):
                 if isinstance(first_idx, slice):
                     start, stop, step = first_idx.indices(len(self))
@@ -1071,6 +1098,17 @@ class NestedTensor(torch.Tensor):
                     indices = first_idx  # type: ignore[assignment]
 
                 elements = self._storage
+                # Check the first element to determine packing layout; all elements
+                # in a NestedTensor use the same packing, so one check is sufficient.
+                if elements and elements[0].storage().data_ptr() != values_storage_ptr:
+                    # 1-D packing: must clone and repack
+                    elems = list(elements)
+                    for idx in indices:
+                        e = elems[idx].clone()
+                        e[rest_idx] = value
+                        elems[idx] = e
+                    self._repack(elems)
+                    return
                 for idx in indices:
                     elements[idx][rest_idx] = value
             else:

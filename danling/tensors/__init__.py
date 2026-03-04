@@ -42,7 +42,7 @@ from torch.utils.data._utils.collate import default_collate_fn_map
 from . import nn_functions, torch_functions  # noqa: F401
 from ._streams import cleanup_stream_pools
 from .nested_tensor import NestedTensor
-from .ops import TorchFuncRegistry
+from .ops import NestedTensorAtenRegistry, NestedTensorFuncRegistry, TorchFuncRegistry
 from .pn_tensor import PNTensor, tensor
 from .utils import mask_tensor, pad_tensor, tensor_mask
 
@@ -51,6 +51,8 @@ __all__ = [
     "PNTensor",
     "tensor",
     "TorchFuncRegistry",
+    "NestedTensorFuncRegistry",
+    "NestedTensorAtenRegistry",
     "tensor_mask",
     "pad_tensor",
     "mask_tensor",

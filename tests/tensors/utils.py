@@ -78,8 +78,7 @@ def assert_close(input, other, *, rtol: float | None = None, atol: float | None 
         other = input.nested_like(other)
     if len(input) != len(other):
         raise ValueError(
-            "NestedTensor batch length mismatch between input and other: "
-            f"input={len(input)}, other={len(other)}"
+            "NestedTensor batch length mismatch between input and other: " f"input={len(input)}, other={len(other)}"
         )
     for x, y in zip(input._unpack(), other._unpack()):
         _assert_tensors_close(x, y)

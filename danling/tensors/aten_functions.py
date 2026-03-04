@@ -78,6 +78,19 @@ def per_element_fallback(func, args, kwargs):
 
     Only used by ``__torch_dispatch__`` as a catch-all for ops without a registered handler.
     Registered handlers should raise ``NotImplementedError`` instead of calling this.
+
+    Returns:
+        If all per-element results are ``Tensor`` objects with the **same shape**,
+        returns a plain ``torch.Tensor`` (via ``torch.stack``) rather than a
+        ``NestedTensor``. This is intentional: uniform-shape outputs are regular
+        tensors by definition and stacking them avoids unnecessary overhead.
+        Callers that always require a ``NestedTensor`` result should check
+        ``isinstance(result, NestedTensor)`` and wrap if needed.
+
+    Note:
+        This function is decorated with ``@torch._dynamo.disable``, so any op
+        that reaches this fallback will exit a compiled graph. Register aten-level
+        handlers in ``NestedTensorAtenRegistry`` for ops that must be compile-friendly.
     """
     from .nested_tensor import NestedTensor
 
@@ -166,9 +179,6 @@ def _unary_handler(func, args, kwargs):
     )
 
 
-for _op in ATEN_UNARY_ELEMENTWISE_OPS:
-    NestedTensorAtenRegistry[_op] = _unary_handler
-
 # ---------------------------------------------------------------------------
 # Elementwise binary ops — apply directly to _values
 # ---------------------------------------------------------------------------
@@ -224,10 +234,6 @@ def _binary_handler(func, args, kwargs):
         pin_memory=rhs._pin_memory,
         outer_size=rhs._logical_shape,
     )
-
-
-for _op in ATEN_BINARY_ELEMENTWISE_OPS:
-    NestedTensorAtenRegistry[_op] = _binary_handler
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +379,62 @@ def _bmm(func, args, kwargs):
     raise NotImplementedError(f"NestedTensor: {func} requires two NTs with matching offsets")
 
 
+# ---------------------------------------------------------------------------
+# Sorting ops — fast path for N-D packing (non-ragged dim → operate on _values)
+# Falls back to per_element_fallback for 1-D packing or the ragged dim (dim=0
+# in _values). The torch-level handlers in torch_functions.py remain active
+# for eager mode (~14x speedup) and handle edge cases.
+# ---------------------------------------------------------------------------
+
+
+@NestedTensorAtenRegistry.implement(aten.sort.default)
+def _sort(func, args, kwargs):
+    r"""Sort along a non-ragged dim by operating directly on packed _values."""
+    source = args[0]
+    dim = args[1] if len(args) > 1 else -1
+    descending = args[2] if len(args) > 2 else kwargs.get("descending", False)
+    stable = kwargs.get("stable", False)
+    dim_adj = _translate_dim(source, dim)
+    # Fast path: N-D packing and target dim is not the ragged (first) dim of _values.
+    if source._values.dim() > 1 and dim_adj > 0:
+        vals, idxs = func(source._values, dim_adj, descending, stable=stable)
+        rebuild = lambda v: type(source)._from_packed(  # noqa: E731
+            v,
+            source._offsets,
+            source._shape_tensor,
+            batch_first=source.batch_first,
+            padding_value=source.padding_value,
+            mask_value=source.mask_value,
+            pin_memory=source._pin_memory,
+            outer_size=source._logical_shape,
+        )
+        return rebuild(vals), rebuild(idxs)
+    raise NotImplementedError
+
+
+@NestedTensorAtenRegistry.implement(aten.argsort.default)
+def _argsort(func, args, kwargs):
+    r"""Return sort indices along a non-ragged dim by operating on packed _values."""
+    source = args[0]
+    dim = args[1] if len(args) > 1 else -1
+    descending = args[2] if len(args) > 2 else kwargs.get("descending", False)
+    stable = kwargs.get("stable", False)
+    dim_adj = _translate_dim(source, dim)
+    if source._values.dim() > 1 and dim_adj > 0:
+        idxs = func(source._values, dim_adj, descending, stable=stable)
+        return type(source)._from_packed(
+            idxs,
+            source._offsets,
+            source._shape_tensor,
+            batch_first=source.batch_first,
+            padding_value=source.padding_value,
+            mask_value=source.mask_value,
+            pin_memory=source._pin_memory,
+            outer_size=source._logical_shape,
+        )
+    raise NotImplementedError
+
+
 # In-place variants of elementwise ops
 _INPLACE_UNARY_OPS = [
     aten.relu_.default,
@@ -395,10 +457,6 @@ def _inplace_unary_handler(func, args, kwargs):
     source = args[0]
     func(source._values, *args[1:], **kwargs)
     return source
-
-
-for _op in _INPLACE_UNARY_OPS:
-    NestedTensorAtenRegistry[_op] = _inplace_unary_handler
 
 
 _INPLACE_BINARY_OPS = [
@@ -432,10 +490,6 @@ def _inplace_binary_handler(func, args, kwargs):
     return source
 
 
-for _op in _INPLACE_BINARY_OPS:
-    NestedTensorAtenRegistry[_op] = _inplace_binary_handler
-
-
 # ---------------------------------------------------------------------------
 # Shape-preserving unary-like ops (extra scalar/keyword args, operate on _values)
 # ---------------------------------------------------------------------------
@@ -446,10 +500,6 @@ _UNARY_LIKE_OPS = [
     aten.clamp_max.default,
     aten.nan_to_num.default,
 ]
-
-for _op in _UNARY_LIKE_OPS:
-    NestedTensorAtenRegistry[_op] = _unary_handler
-
 
 # ---------------------------------------------------------------------------
 # Tensor creation ops — preserve packing layout with new _values
@@ -463,10 +513,6 @@ _CREATION_OPS = [
     aten.ones_like.default,
     aten.full_like.default,
 ]
-
-for _op in _CREATION_OPS:
-    NestedTensorAtenRegistry[_op] = _unary_handler
-
 
 # ---------------------------------------------------------------------------
 # native_dropout — returns (output, mask) tuple, both as NestedTensor
@@ -546,10 +592,6 @@ _TERNARY_OPS = [
     aten.addcdiv.default,
     aten.lerp.Tensor,
 ]
-
-for _op in _TERNARY_OPS:
-    NestedTensorAtenRegistry[_op] = _ternary_handler
-
 
 # ---------------------------------------------------------------------------
 # Normalization ops — operate on packed _values
@@ -654,13 +696,6 @@ def _softmax_handler(func, args, kwargs):
     )
 
 
-for _op in [aten._softmax.default, aten._log_softmax.default]:
-    NestedTensorAtenRegistry[_op] = _softmax_handler
-
-for _op in [aten._softmax_backward_data.default, aten._log_softmax_backward_data.default]:
-    NestedTensorAtenRegistry[_op] = _binary_unwrap_handler
-
-
 # ---------------------------------------------------------------------------
 # Global reductions — reduce all of _values to a scalar (no dim argument)
 # ---------------------------------------------------------------------------
@@ -679,10 +714,6 @@ def _global_reduction_handler(func, args, kwargs):
     return func(source._values, **kwargs)
 
 
-for _op in _GLOBAL_REDUCTION_OPS:
-    NestedTensorAtenRegistry[_op] = _global_reduction_handler
-
-
 def _dimless_reduction_handler(func, args, kwargs):
     r"""Dispatch handler for amax/amin: global reduction only (no dim argument)."""
     source = args[0]
@@ -690,17 +721,6 @@ def _dimless_reduction_handler(func, args, kwargs):
     if not dim:
         return func(source._values, **kwargs)
     raise NotImplementedError(f"NestedTensor: {func} with dim argument is not supported")
-
-
-for _op in [aten.amax.default, aten.amin.default]:
-    NestedTensorAtenRegistry[_op] = _dimless_reduction_handler
-
-
-# ---------------------------------------------------------------------------
-# rms_norm — operate on packed _values (mirrors native_layer_norm)
-# ---------------------------------------------------------------------------
-
-NestedTensorAtenRegistry[aten.rms_norm.default] = _unary_handler
 
 
 # ---------------------------------------------------------------------------
@@ -727,10 +747,6 @@ def _masked_fill_handler(func, args, kwargs):
     raise NotImplementedError(f"NestedTensor: {func} requires mask with matching offsets")
 
 
-for _op in [aten.masked_fill.Scalar, aten.masked_fill.Tensor]:
-    NestedTensorAtenRegistry[_op] = _masked_fill_handler
-
-
 # ---------------------------------------------------------------------------
 # RNG in-place ops — shape-preserving mutations on _values
 # ---------------------------------------------------------------------------
@@ -739,9 +755,6 @@ _INPLACE_RNG_OPS = [
     aten.uniform_.default,
     aten.normal_.default,
 ]
-
-for _op in _INPLACE_RNG_OPS:
-    NestedTensorAtenRegistry[_op] = _inplace_unary_handler
 
 
 # ---------------------------------------------------------------------------
@@ -755,13 +768,36 @@ _RANDOM_CREATION_OPS = [
     aten.randint_like.low_dtype,
 ]
 
-for _op in _RANDOM_CREATION_OPS:
+
+# ===========================================================================
+# Bulk registration — all table-driven op → handler mappings in one place.
+# @NestedTensorAtenRegistry.implement(...) decorators above handle 1:1 ops.
+# ===========================================================================
+
+for _op in ATEN_UNARY_ELEMENTWISE_OPS:
     NestedTensorAtenRegistry[_op] = _unary_handler
-
-
-# ---------------------------------------------------------------------------
-# isin / bucketize — elementwise on packed _values
-# ---------------------------------------------------------------------------
-
+for _op in ATEN_BINARY_ELEMENTWISE_OPS:
+    NestedTensorAtenRegistry[_op] = _binary_handler
+for _op in _INPLACE_UNARY_OPS:
+    NestedTensorAtenRegistry[_op] = _inplace_unary_handler
+for _op in _INPLACE_BINARY_OPS:
+    NestedTensorAtenRegistry[_op] = _inplace_binary_handler
+for _op in _UNARY_LIKE_OPS + _CREATION_OPS + _RANDOM_CREATION_OPS:
+    NestedTensorAtenRegistry[_op] = _unary_handler
+for _op in _INPLACE_RNG_OPS:
+    NestedTensorAtenRegistry[_op] = _inplace_unary_handler
+for _op in _TERNARY_OPS:
+    NestedTensorAtenRegistry[_op] = _ternary_handler
+for _op in _GLOBAL_REDUCTION_OPS:
+    NestedTensorAtenRegistry[_op] = _global_reduction_handler
+for _op in [aten.amax.default, aten.amin.default]:
+    NestedTensorAtenRegistry[_op] = _dimless_reduction_handler
+NestedTensorAtenRegistry[aten.rms_norm.default] = _unary_handler
+for _op in [aten._softmax.default, aten._log_softmax.default]:
+    NestedTensorAtenRegistry[_op] = _softmax_handler
+for _op in [aten._softmax_backward_data.default, aten._log_softmax_backward_data.default]:
+    NestedTensorAtenRegistry[_op] = _binary_unwrap_handler
+for _op in [aten.masked_fill.Scalar, aten.masked_fill.Tensor]:
+    NestedTensorAtenRegistry[_op] = _masked_fill_handler
 for _op in [aten.isin.Tensor_Tensor, aten.isin.Tensor_Scalar, aten.bucketize.Tensor]:
     NestedTensorAtenRegistry[_op] = _unary_handler

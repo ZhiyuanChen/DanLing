@@ -168,7 +168,20 @@ def _ensure_nested_input(input, other, cls):
 
 
 def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
-    r"""Apply a binary op between a NestedTensor and a tensor/scalar/NestedTensor."""
+    r"""
+    Apply a binary op between a NestedTensor and a tensor/scalar/NestedTensor.
+
+    Performance notes:
+    - **Scalar or 0-dim tensor ``other``**: O(1) — op runs directly on packed
+      ``_values`` with no unpack/repack overhead. This is the common training path.
+    - **Matched-offset NestedTensor ``other``**: O(1) — ``_offsets_match`` fast-path,
+      op runs on ``_values`` directly.
+    - **Mismatched-offset NestedTensor ``other``**: O(B) — iterates over ``_storage``
+      and constructs a new NestedTensor from individual results.
+    - **Dense tensor ``other`` with shape matching ``input.shape``**: converted via
+      ``nested_like`` → ``tensor_mask`` internally, which has O(B * max_len) cost
+      from padding the dense tensor to match the packed layout. Avoid in hot paths.
+    """
     from .aten_functions import _offsets_match
     from .nested_tensor import NestedTensor
 

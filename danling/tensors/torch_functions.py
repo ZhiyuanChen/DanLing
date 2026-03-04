@@ -727,8 +727,7 @@ def gather(input: NestedTensor, dim: int, index):
     if isinstance(index, NestedTensor):
         if len(input) != len(index):
             raise ValueError(
-                "NestedTensor batch length mismatch between input and index: "
-                f"input={len(input)}, index={len(index)}"
+                "NestedTensor batch length mismatch between input and index: " f"input={len(input)}, index={len(index)}"
             )
         return NestedTensor(torch.gather(t, dim_adj, idx) for t, idx in zip(input._storage, index._storage))
     return NestedTensor(torch.gather(t, dim_adj, index) for t in input._storage)
@@ -748,8 +747,7 @@ def _register_index_op(func, name):
 
         if isinstance(index, NestedTensor) and len(index) != len(input):
             raise ValueError(
-                "NestedTensor batch length mismatch between input and index: "
-                f"input={len(input)}, index={len(index)}"
+                "NestedTensor batch length mismatch between input and index: " f"input={len(input)}, index={len(index)}"
             )
         if isinstance(source, NestedTensor) and len(source) != len(input):
             raise ValueError(
@@ -812,13 +810,11 @@ def index_put(input: NestedTensor, indices, values, accumulate: bool = False):
     for idx in indices:
         if isinstance(idx, NestedTensor) and len(idx) != len(input):
             raise ValueError(
-                "NestedTensor batch length mismatch between input and index: "
-                f"input={len(input)}, index={len(idx)}"
+                "NestedTensor batch length mismatch between input and index: " f"input={len(input)}, index={len(idx)}"
             )
     if isinstance(values, NestedTensor) and len(values) != len(input):
         raise ValueError(
-            "NestedTensor batch length mismatch between input and values: "
-            f"input={len(input)}, values={len(values)}"
+            "NestedTensor batch length mismatch between input and values: " f"input={len(input)}, values={len(values)}"
         )
 
     storage = []
@@ -904,8 +900,7 @@ def masked_fill(input: NestedTensor, mask, value):
     if isinstance(mask, NestedTensor):
         if len(input) != len(mask):
             raise ValueError(
-                "NestedTensor batch length mismatch between input and mask: "
-                f"input={len(input)}, mask={len(mask)}"
+                "NestedTensor batch length mismatch between input and mask: " f"input={len(input)}, mask={len(mask)}"
             )
         return NestedTensor(torch.masked_fill(t, m, value) for t, m in zip(input._storage, mask._storage))
     storage = []
@@ -957,14 +952,12 @@ def masked_scatter(input: NestedTensor, mask, source):
         source = input.nested_like(source, strict=False)
     if isinstance(mask, NestedTensor) and len(input) != len(mask):
         raise ValueError(
-                "NestedTensor batch length mismatch between input and mask: "
-                f"input={len(input)}, mask={len(mask)}"
-            )
+            "NestedTensor batch length mismatch between input and mask: " f"input={len(input)}, mask={len(mask)}"
+        )
     if isinstance(source, NestedTensor) and len(input) != len(source):
         raise ValueError(
-                "NestedTensor batch length mismatch between input and source: "
-                f"input={len(input)}, source={len(source)}"
-            )
+            "NestedTensor batch length mismatch between input and source: " f"input={len(input)}, source={len(source)}"
+        )
 
     storage = []
     for i, t in enumerate(input._storage):
@@ -1011,8 +1004,7 @@ def masked_select(input: NestedTensor, mask):
     if isinstance(mask, NestedTensor):
         if len(input) != len(mask):
             raise ValueError(
-                "NestedTensor batch length mismatch between input and mask: "
-                f"input={len(input)}, mask={len(mask)}"
+                "NestedTensor batch length mismatch between input and mask: " f"input={len(input)}, mask={len(mask)}"
             )
         return NestedTensor(torch.masked_select(t, m) for t, m in zip(input._storage, mask._storage))
     storage = []
@@ -1090,8 +1082,7 @@ def _scatter_impl(input, dim, index, src, apply_fn, name="scatter"):
         indices = index._storage
         if len(input) != len(index):
             raise ValueError(
-                "NestedTensor batch length mismatch between input and index: "
-                f"input={len(input)}, index={len(index)}"
+                "NestedTensor batch length mismatch between input and index: " f"input={len(input)}, index={len(index)}"
             )
     else:
         indices = tuple(index for _ in input._storage)
@@ -1099,8 +1090,7 @@ def _scatter_impl(input, dim, index, src, apply_fn, name="scatter"):
         srcs = src._storage
         if len(input) != len(src):
             raise ValueError(
-                "NestedTensor batch length mismatch between input and src: "
-                f"input={len(input)}, src={len(src)}"
+                "NestedTensor batch length mismatch between input and src: " f"input={len(input)}, src={len(src)}"
             )
     else:
         srcs = tuple(src for _ in input._storage)
@@ -1236,8 +1226,7 @@ def take(input: NestedTensor, index, *, out=None):
     if isinstance(index, NestedTensor):
         if len(input) != len(index):
             raise ValueError(
-                "NestedTensor batch length mismatch between input and index: "
-                f"input={len(input)}, index={len(index)}"
+                "NestedTensor batch length mismatch between input and index: " f"input={len(input)}, index={len(index)}"
             )
         return NestedTensor(torch.take(t.reshape(-1), i) for t, i in zip(input._storage, index._storage))
 
@@ -1294,9 +1283,9 @@ if hasattr(torch, "take_along_dim"):
         if isinstance(indices, NestedTensor):
             if len(input) != len(indices):
                 raise ValueError(
-                        "NestedTensor batch length mismatch between input and indices: "
-                        f"input={len(input)}, indices={len(indices)}"
-                    )
+                    "NestedTensor batch length mismatch between input and indices: "
+                    f"input={len(input)}, indices={len(indices)}"
+                )
             return NestedTensor(
                 torch.take_along_dim(t, i, dim=dim_adj) for t, i in zip(input._storage, indices._storage)
             )
@@ -1344,8 +1333,7 @@ def bmm(input, mat2, *, out=None):
     if isinstance(input, NestedTensor) and isinstance(mat2, NestedTensor):
         if len(input) != len(mat2):
             raise ValueError(
-                "NestedTensor batch length mismatch between input and mat2: "
-                f"input={len(input)}, mat2={len(mat2)}"
+                "NestedTensor batch length mismatch between input and mat2: " f"input={len(input)}, mat2={len(mat2)}"
             )
         return NestedTensor((torch.bmm(x, y) for x, y in zip(input, mat2)), **input._meta)
 
@@ -1388,9 +1376,8 @@ def matmul(input, other, *, out=None):
     if isinstance(input, NestedTensor) and isinstance(other, NestedTensor):
         if len(input) != len(other):
             raise ValueError(
-            "NestedTensor batch length mismatch between input and other: "
-            f"input={len(input)}, other={len(other)}"
-        )
+                "NestedTensor batch length mismatch between input and other: " f"input={len(input)}, other={len(other)}"
+            )
         return NestedTensor((torch.matmul(x, y) for x, y in zip(input, other)), **input._meta)
 
     if isinstance(input, NestedTensor):
@@ -1398,9 +1385,9 @@ def matmul(input, other, *, out=None):
             other = input.nested_like(other)
             if len(input) != len(other):
                 raise ValueError(
-            "NestedTensor batch length mismatch between input and other: "
-            f"input={len(input)}, other={len(other)}"
-        )
+                    "NestedTensor batch length mismatch between input and other: "
+                    f"input={len(input)}, other={len(other)}"
+                )
             return NestedTensor((torch.matmul(x, y) for x, y in zip(input, other)), **input._meta)
         return NestedTensor((torch.matmul(t, other) for t in input), **input._meta)
 
@@ -1409,9 +1396,9 @@ def matmul(input, other, *, out=None):
             input = other.nested_like(input)
             if len(input) != len(other):
                 raise ValueError(
-            "NestedTensor batch length mismatch between input and other: "
-            f"input={len(input)}, other={len(other)}"
-        )
+                    "NestedTensor batch length mismatch between input and other: "
+                    f"input={len(input)}, other={len(other)}"
+                )
             return NestedTensor((torch.matmul(x, y) for x, y in zip(input, other)), **other._meta)
         return NestedTensor((torch.matmul(input, t) for t in other), **other._meta)
 
@@ -1452,8 +1439,7 @@ def mm(input, mat2, *, out=None):
     if isinstance(input, NestedTensor) and isinstance(mat2, NestedTensor):
         if len(input) != len(mat2):
             raise ValueError(
-                "NestedTensor batch length mismatch between input and mat2: "
-                f"input={len(input)}, mat2={len(mat2)}"
+                "NestedTensor batch length mismatch between input and mat2: " f"input={len(input)}, mat2={len(mat2)}"
             )
         return NestedTensor((torch.mm(x, y) for x, y in zip(input, mat2)), **input._meta)
 
@@ -1628,8 +1614,7 @@ def dist(input: NestedTensor, other: NestedTensor | Tensor, p=2):
         other = input.nested_like(other)
     if len(input) != len(other):
         raise ValueError(
-            "NestedTensor batch length mismatch between input and other: "
-            f"input={len(input)}, other={len(other)}"
+            "NestedTensor batch length mismatch between input and other: " f"input={len(input)}, other={len(other)}"
         )
     if not input._storage:
         return torch.empty((0,), device=input.device)
@@ -2472,8 +2457,7 @@ def where(condition, input, other):
     for nested in (cond_nt, input_nt, other_nt):
         if len(nested) != len(ref):
             raise ValueError(
-                "NestedTensor batch length mismatch between ref and nested: "
-                f"ref={len(ref)}, nested={len(nested)}"
+                "NestedTensor batch length mismatch between ref and nested: " f"ref={len(ref)}, nested={len(nested)}"
             )
     return NestedTensor(
         (torch.where(c, x, y) for c, x, y in zip(cond_nt._storage, input_nt._storage, other_nt._storage)),
