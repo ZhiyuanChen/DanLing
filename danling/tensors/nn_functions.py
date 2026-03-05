@@ -1603,29 +1603,52 @@ def _one_hot_impl(input, num_classes: int = -1):
     return _apply_per_element(input, F.one_hot, num_classes=num_classes)
 
 
-# Channel-wise dropout: no-op fast path in eval (compile-friendly), per-element in train.
-_DROPOUT_CHANNELWISE_OPS = [F.dropout1d, F.dropout2d, F.dropout3d, F.feature_alpha_dropout]
+# Channel-wise dropout: eval no-op fast path, packed training path when layout matches.
+_DROPOUT_CHANNELWISE_PACKED_OPS = [
+    (F.dropout1d, (2, 3)),
+    (F.dropout2d, (3, 4)),
+    (F.dropout3d, (4, 5)),
+    (F.feature_alpha_dropout, (2, 3, 4, 5)),
+]
 
-for _op in _DROPOUT_CHANNELWISE_OPS:
+for _op, _packed_dims in _DROPOUT_CHANNELWISE_PACKED_OPS:
 
     @NestedTensorFuncRegistry.implement(_op)
-    def _dropout_channelwise_impl(input, *args, _fn=_op, **kwargs):
+    def _dropout_channelwise_impl(input, *args, _fn=_op, _dims=_packed_dims, **kwargs):
         training = args[1] if len(args) > 1 else kwargs.get("training", True)
         p = args[0] if len(args) > 0 else kwargs.get("p", 0.5)
         if (not training) or p == 0:
             return input
+        if input._values.dim() in _dims:
+            return _apply_batch_preserving_packed(input, _fn, *args, **kwargs)
         return _apply_per_element(input, _fn, *args, **kwargs)
 
 
-# Table-driven registrations — binary per-element apply ops
+@NestedTensorFuncRegistry.implement(F.bilinear)
+def _bilinear_impl(input1, input2, weight, bias=None):
+    from .aten_functions import _offsets_match, _packed_new_last_dim
+    from .nested_tensor import NestedTensor
 
-_APPLY_PAIR_OPS = [F.bilinear]
+    cls = type(input1) if isinstance(input1, NestedTensor) else type(input2)
+    input1 = _ensure_nested_input(input1, input2, cls)
+    if isinstance(input2, NestedTensor):
+        if len(input1) != len(input2):
+            raise ValueError(
+                "NestedTensor batch length mismatch between input1 and input2: "
+                f"input1={len(input1)}, input2={len(input2)}"
+            )
+        offsets_match = True
+        is_fake = False
+        with suppress(ImportError):
+            from torch._subclasses.fake_tensor import is_fake as _is_fake
 
-for _op in _APPLY_PAIR_OPS:
-
-    @NestedTensorFuncRegistry.implement(_op)
-    def _apply_pair_impl(input, other, *args, _fn=_op, **kwargs):
-        return _apply_pair(input, other, _fn, *args, **kwargs)
+            is_fake = _is_fake(input1._values) or _is_fake(input2._values)
+        if not is_fake:
+            offsets_match = _offsets_match(input1._offsets, input2._offsets)
+        if input1._values.dim() >= 2 and input2._values.dim() >= 2 and offsets_match:
+            out_values = F.bilinear(input1._values, input2._values, weight, bias)
+            return _packed_new_last_dim(input1, out_values, int(weight.size(0)))
+    return _apply_pair(input1, input2, F.bilinear, weight, bias)
 
 
 @NestedTensorFuncRegistry.implement(F.grid_sample)
@@ -1756,22 +1779,13 @@ def _f_softmin_impl(input, dim=-1, _stacklevel=3, dtype=None):
 
 @NestedTensorFuncRegistry.implement(F.gumbel_softmax)
 def _gumbel_softmax_impl(logits, *args, dim=-1, **kwargs):
-    from .aten_functions import _packed_to_padded
+    from .aten_functions import _packed_like, _packed_to_padded
 
     dim_adj = _translate_non_batch_dim(logits, dim)
     if logits._values.dim() > 1 and dim_adj == 0:
         padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(logits, fill_value=float("-inf"))
         out_padded = F.gumbel_softmax(padded, *args, dim=1, **kwargs)
-        return type(logits)._from_packed(
-            out_padded[batch_idx, local_idx],
-            logits._offsets,
-            logits._shape_tensor,
-            batch_first=logits.batch_first,
-            padding_value=logits.padding_value,
-            mask_value=logits.mask_value,
-            pin_memory=logits._pin_memory,
-            outer_size=logits._logical_shape,
-        )
+        return _packed_like(logits, out_padded[batch_idx, local_idx])
     concat_dim = _concat_dim_for_tensor_dim(logits, dim_adj)
     if concat_dim is not None:
         return _apply_packed(logits, F.gumbel_softmax, *args, dim=concat_dim, **kwargs)

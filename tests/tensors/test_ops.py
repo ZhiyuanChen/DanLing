@@ -344,13 +344,22 @@ def test_nn_functional_fastpaths_no_apply_per_element():
             torch.tensor([[7.0, 8.0], [1.0, 0.0], [9.0, 6.0], [2.0, 3.0], [5.0, 4.0]]),
         ]
     )
+    bilinear_x1 = NT([torch.randn(2, 3), torch.randn(3, 3)])
+    bilinear_x2 = NT([torch.randn(2, 4), torch.randn(3, 4)])
+    bilinear_weight = torch.randn(5, 3, 4)
+    bilinear_bias = torch.randn(5)
 
     original_apply = nn_functions._apply_per_element
+    original_apply_pair = nn_functions._apply_pair
 
     def _fail_apply(*_args, **_kwargs):
         raise AssertionError("_apply_per_element must not be used for covered nn.functional fastpaths")
 
+    def _fail_apply_pair(*_args, **_kwargs):
+        raise AssertionError("_apply_pair must not be used for covered nn.functional fastpaths")
+
     nn_functions._apply_per_element = _fail_apply
+    nn_functions._apply_pair = _fail_apply_pair
     try:
         conv2d_out = F.conv2d(conv_nt, conv_weight, conv_bias, stride=1, padding=1)
         max_pool2d_out = F.max_pool2d(conv_nt, kernel_size=2, stride=2)
@@ -360,10 +369,16 @@ def test_nn_functional_fastpaths_no_apply_per_element():
         one_hot_out = F.one_hot(one_hot_nt, num_classes=4)
         grid_out = F.grid_sample(grid_input, grid, align_corners=False)
         gumbel_out = F.gumbel_softmax(nt_logits, dim=1, tau=1.0, hard=False)
+        dropout1d_train_out = F.dropout1d(nt_logits, p=0.2, training=True)
+        dropout2d_train_out = F.dropout2d(conv_nt, p=0.2, training=True)
+        dropout3d_train_out = F.dropout3d(frac3_nt, p=0.2, training=True)
+        feature_alpha_dropout_train_out = F.feature_alpha_dropout(conv_nt, p=0.2, training=True)
         frac2_out = F.fractional_max_pool2d(frac2_nt, kernel_size=2, output_size=2, _random_samples=frac2_random)
         frac3_out = F.fractional_max_pool3d(frac3_nt, kernel_size=2, output_size=2, _random_samples=frac3_random)
+        bilinear_out = F.bilinear(bilinear_x1, bilinear_x2, bilinear_weight, bilinear_bias)
     finally:
         nn_functions._apply_per_element = original_apply
+        nn_functions._apply_pair = original_apply_pair
 
     assert isinstance(conv2d_out, NT)
     assert isinstance(max_pool2d_out, NT)
@@ -373,8 +388,13 @@ def test_nn_functional_fastpaths_no_apply_per_element():
     assert isinstance(one_hot_out, NT)
     assert isinstance(grid_out, NT)
     assert isinstance(gumbel_out, NT)
+    assert isinstance(dropout1d_train_out, NT)
+    assert isinstance(dropout2d_train_out, NT)
+    assert isinstance(dropout3d_train_out, NT)
+    assert isinstance(feature_alpha_dropout_train_out, NT)
     assert isinstance(frac2_out, NT)
     assert isinstance(frac3_out, NT)
+    assert isinstance(bilinear_out, NT)
 
 
 @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -391,6 +411,10 @@ def test_nn_functional_compile_smoke():
             torch.tensor([[0.5, 0.1], [0.7, 0.3], [0.9, 0.2], [1.1, 0.4], [1.3, 0.5]]),
         ]
     )
+    bilinear_x1 = NT([torch.randn(2, 3), torch.randn(3, 3)])
+    bilinear_x2 = NT([torch.randn(2, 4), torch.randn(3, 4)])
+    bilinear_weight = torch.randn(5, 3, 4)
+    bilinear_bias = torch.randn(5)
     weight = torch.tensor([[0.2, -0.5], [1.1, 0.3]])
     bias = torch.tensor([0.4, -0.2])
     conv_nt = NT(
@@ -434,6 +458,11 @@ def test_nn_functional_compile_smoke():
     dropout1d_eval_fn = _compile(lambda x: F.dropout1d(x, p=0.2, training=False))
     dropout2d_eval_fn = _compile(lambda x: F.dropout2d(x, p=0.2, training=False))
     feature_alpha_dropout_eval_fn = _compile(lambda x: F.feature_alpha_dropout(x, p=0.2, training=False))
+    dropout1d_train_fn = _compile(lambda x: F.dropout1d(x, p=0.2, training=True))
+    dropout2d_train_fn = _compile(lambda x: F.dropout2d(x, p=0.2, training=True))
+    dropout3d_train_fn = _compile(lambda x: F.dropout3d(x, p=0.2, training=True))
+    feature_alpha_dropout_train_fn = _compile(lambda x: F.feature_alpha_dropout(x, p=0.2, training=True))
+    bilinear_fn = _compile(lambda x, y: F.bilinear(x, y, bilinear_weight, bilinear_bias))
     conv2d_fn = _compile(lambda x: F.conv2d(x, conv_weight, conv_bias, stride=1, padding=1))
     max_pool2d_fn = _compile(lambda x: F.max_pool2d(x, kernel_size=2, stride=2))
     avg_pool2d_fn = _compile(lambda x: F.avg_pool2d(x, kernel_size=2, stride=2))
@@ -452,6 +481,11 @@ def test_nn_functional_compile_smoke():
     dropout1d_eval_comp = dropout1d_eval_fn(nt)
     dropout2d_eval_comp = dropout2d_eval_fn(nt)
     feature_alpha_dropout_eval_comp = feature_alpha_dropout_eval_fn(nt)
+    dropout1d_train_comp = dropout1d_train_fn(nt)
+    dropout2d_train_comp = dropout2d_train_fn(conv_nt)
+    dropout3d_train_comp = dropout3d_train_fn(frac3_nt)
+    feature_alpha_dropout_train_comp = feature_alpha_dropout_train_fn(conv_nt)
+    bilinear_comp = bilinear_fn(bilinear_x1, bilinear_x2)
     conv2d_comp = conv2d_fn(conv_nt)
     max_pool2d_comp = max_pool2d_fn(conv_nt)
     avg_pool2d_comp = avg_pool2d_fn(conv_nt)
@@ -468,6 +502,10 @@ def test_nn_functional_compile_smoke():
     ref_log_softmax = NT([F.log_softmax(t, dim=0) for t in nt], **nt._meta())
     ref_normalize = NT([F.normalize(t, dim=0) for t in nt], **nt._meta())
     ref_pairwise = NT([F.pairwise_distance(a, b) for a, b in zip(nt, nt_pair)], **nt._meta())
+    ref_bilinear = NT(
+        [F.bilinear(a, b, bilinear_weight, bilinear_bias) for a, b in zip(bilinear_x1, bilinear_x2)],
+        **bilinear_x1._meta(),
+    )
     ref_conv2d = NT([F.conv2d(t, conv_weight, conv_bias, stride=1, padding=1) for t in conv_nt], **conv_nt._meta())
     ref_max_pool2d = NT([F.max_pool2d(t, kernel_size=2, stride=2) for t in conv_nt], **conv_nt._meta())
     ref_avg_pool2d = NT([F.avg_pool2d(t, kernel_size=2, stride=2) for t in conv_nt], **conv_nt._meta())
@@ -511,6 +549,15 @@ def test_nn_functional_compile_smoke():
     torch.testing.assert_close(dropout1d_eval_comp.tensor, nt.tensor)
     torch.testing.assert_close(dropout2d_eval_comp.tensor, nt.tensor)
     torch.testing.assert_close(feature_alpha_dropout_eval_comp.tensor, nt.tensor)
+    assert isinstance(dropout1d_train_comp, NT)
+    assert isinstance(dropout2d_train_comp, NT)
+    assert isinstance(dropout3d_train_comp, NT)
+    assert isinstance(feature_alpha_dropout_train_comp, NT)
+    assert dropout1d_train_comp.shape == nt.shape
+    assert dropout2d_train_comp.shape == conv_nt.shape
+    assert dropout3d_train_comp.shape == frac3_nt.shape
+    assert feature_alpha_dropout_train_comp.shape == conv_nt.shape
+    torch.testing.assert_close(bilinear_comp.tensor, ref_bilinear.tensor)
     torch.testing.assert_close(conv2d_comp.tensor, ref_conv2d.tensor)
     torch.testing.assert_close(max_pool2d_comp.tensor, ref_max_pool2d.tensor)
     torch.testing.assert_close(avg_pool2d_comp.tensor, ref_avg_pool2d.tensor)
