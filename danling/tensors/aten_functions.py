@@ -51,8 +51,13 @@ def _offsets_match(a: Tensor, b: Tensor) -> bool:
 
     Uses pointer identity as a fast-path before falling back to elementwise comparison.
     """
-    if a.data_ptr() == b.data_ptr():
-        return True
+    try:
+        if a.data_ptr() == b.data_ptr():
+            return True
+    except RuntimeError:
+        # Fake/functional tensors used by torch.compile/export do not expose data_ptr.
+        # Fall back to shape/value checks in those modes.
+        pass
     if a.shape != b.shape:
         return False
     return bool(torch.equal(a, b))
@@ -696,6 +701,7 @@ def _topk(func, args, kwargs):
 
 @NestedTensorAtenRegistry.implement(aten.cumsum.default)
 @NestedTensorAtenRegistry.implement(aten.cumprod.default)
+@NestedTensorAtenRegistry.implement(aten.logcumsumexp.default)
 def _cumulative(func, args, kwargs):
     r"""Apply cumulative ops on packed _values when the target dim is static."""
     source = args[0]
@@ -706,11 +712,37 @@ def _cumulative(func, args, kwargs):
     if source._values.dim() > 1 and dim_adj > 0:
         return _packed_like(source, func(source._values, dim_adj, *extra_args, **call_kwargs))
     if dim_adj == 0:
-        neutral = 0 if func is aten.cumsum.default else 1
+        if func is aten.cumsum.default:
+            neutral = 0
+        elif func is aten.cumprod.default:
+            neutral = 1
+        else:
+            # logcumsumexp identity: log(0) == -inf
+            neutral = float("-inf")
         padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(source, fill_value=neutral)
         out_padded = func(padded, 1, *extra_args, **call_kwargs)
         return _packed_like(source, out_padded[batch_idx, local_idx])
     return per_element_fallback(func, (source, dim_adj, *extra_args), call_kwargs)
+
+
+@NestedTensorAtenRegistry.implement(aten.cummax.default)
+@NestedTensorAtenRegistry.implement(aten.cummin.default)
+def _cumulative_pair(func, args, kwargs):
+    r"""Apply cumulative pair ops (cummax/cummin) on packed _values."""
+    source = args[0]
+    call_kwargs = dict(kwargs)
+    dim = args[1] if len(args) > 1 else call_kwargs.pop("dim")
+    dim_adj = _translate_dim(source, dim)
+    if source._values.dim() > 1 and dim_adj > 0:
+        vals, idxs = func(source._values, dim_adj, **call_kwargs)
+        return _packed_like(source, vals), _packed_like(source, idxs)
+    if dim_adj == 0:
+        largest = func is aten.cummax.default
+        fill_value = _topk_fill_value(source._values.dtype, largest=largest)
+        padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(source, fill_value=fill_value)
+        vals, idxs = func(padded, 1, **call_kwargs)
+        return _packed_like(source, vals[batch_idx, local_idx]), _packed_like(source, idxs[batch_idx, local_idx])
+    return per_element_fallback(func, (source, dim_adj), call_kwargs)
 
 
 @NestedTensorAtenRegistry.implement(aten.flip.default)
@@ -753,6 +785,9 @@ _INPLACE_UNARY_OPS = [
     aten.sigmoid_.default,
     aten.tanh_.default,
     aten.bernoulli_.float,
+    aten.dropout_.default,
+    aten.alpha_dropout_.default,
+    aten.feature_alpha_dropout_.default,
 ]
 
 
@@ -805,6 +840,11 @@ _UNARY_LIKE_OPS = [
     aten.clamp_min.default,
     aten.clamp_max.default,
     aten.nan_to_num.default,
+    aten.dropout.default,
+    aten.alpha_dropout.default,
+    aten.feature_alpha_dropout.default,
+    aten.feature_dropout.default,
+    aten.bernoulli.default,
 ]
 
 # ---------------------------------------------------------------------------

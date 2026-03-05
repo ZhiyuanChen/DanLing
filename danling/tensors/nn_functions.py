@@ -1340,9 +1340,11 @@ def layer_norm(
         True
     """
     normalized = tuple(normalized_shape)
-    if _can_concat_normalize(input, normalized):
-        return _apply_packed(input, F.layer_norm, normalized, weight, bias, eps)
-    return _apply_per_element(input, F.layer_norm, normalized, weight, bias, eps)
+    try:
+        output, _, _ = torch.ops.aten.native_layer_norm.default(input, normalized, weight, bias, eps)
+        return output
+    except (RuntimeError, TypeError, ValueError):
+        return _apply_per_element(input, F.layer_norm, normalized, weight, bias, eps)
 
 
 @NestedTensorFuncRegistry.implement(F.local_response_norm)
@@ -1404,7 +1406,13 @@ def rms_norm(
     """
     normalized = tuple(normalized_shape)
     if _can_concat_normalize(input, normalized):
-        return _apply_packed(input, F.rms_norm, normalized, weight, eps)
+        from .aten_functions import _packed_like
+
+        try:
+            out_values = torch.ops.aten.rms_norm.default(input._values, normalized, weight, eps)
+            return _packed_like(input, out_values)
+        except (RuntimeError, TypeError, ValueError):
+            pass
     return _apply_per_element(input, F.rms_norm, normalized, weight, eps)
 
 
@@ -1603,6 +1611,41 @@ def _one_hot_impl(input, num_classes: int = -1):
     return _apply_per_element(input, F.one_hot, num_classes=num_classes)
 
 
+def _validate_dropout_probability(p: float) -> None:
+    # Keep F.* API parity: torch.nn.functional dropout variants raise ValueError
+    # for out-of-range probabilities.
+    if p < 0.0 or p > 1.0:
+        raise ValueError(f"dropout probability has to be between 0 and 1, but got {p}")
+
+
+@NestedTensorFuncRegistry.implement(F.dropout)
+def _dropout_impl(input, p=0.5, training=True, inplace=False):
+    from .aten_functions import _packed_like
+
+    _validate_dropout_probability(float(p))
+    if (not training) or p == 0:
+        return input
+    if inplace:
+        torch.ops.aten.dropout_.default(input._values, p, training)
+        input._cached_storage = None
+        return input
+    return _packed_like(input, torch.ops.aten.dropout.default(input._values, p, training))
+
+
+@NestedTensorFuncRegistry.implement(F.alpha_dropout)
+def _alpha_dropout_impl(input, p=0.5, training=False, inplace=False):
+    from .aten_functions import _packed_like
+
+    _validate_dropout_probability(float(p))
+    if (not training) or p == 0:
+        return input
+    if inplace:
+        torch.ops.aten.alpha_dropout_.default(input._values, p, training)
+        input._cached_storage = None
+        return input
+    return _packed_like(input, torch.ops.aten.alpha_dropout.default(input._values, p, training))
+
+
 # Channel-wise dropout: eval no-op fast path, packed training path when layout matches.
 _DROPOUT_CHANNELWISE_PACKED_OPS = [
     (F.dropout1d, (2, 3)),
@@ -1617,6 +1660,7 @@ for _op, _packed_dims in _DROPOUT_CHANNELWISE_PACKED_OPS:
     def _dropout_channelwise_impl(input, *args, _fn=_op, _dims=_packed_dims, **kwargs):
         training = args[1] if len(args) > 1 else kwargs.get("training", True)
         p = args[0] if len(args) > 0 else kwargs.get("p", 0.5)
+        _validate_dropout_probability(float(p))
         if (not training) or p == 0:
             return input
         if input._values.dim() in _dims:
@@ -1782,7 +1826,7 @@ def _gumbel_softmax_impl(logits, *args, dim=-1, **kwargs):
     from .aten_functions import _packed_like, _packed_to_padded
 
     dim_adj = _translate_non_batch_dim(logits, dim)
-    if logits._values.dim() > 1 and dim_adj == 0:
+    if dim_adj == 0:
         padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(logits, fill_value=float("-inf"))
         out_padded = F.gumbel_softmax(padded, *args, dim=1, **kwargs)
         return _packed_like(logits, out_padded[batch_idx, local_idx])
@@ -1801,7 +1845,7 @@ def _normalize_impl(input, p=2.0, dim=1, eps=1e-12, out=None):
     if dim_adj == 0:
         if out is not None:
             raise NotImplementedError("F.normalize(..., out=...) is not supported on ragged dimensions.")
-        if input._values.dim() > 1 and dim_adj == 0 and isinstance(p, (int, float)) and p > 0:
+        if isinstance(p, (int, float)) and p > 0:
             from .aten_functions import _packed_to_padded
 
             padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(input, fill_value=0.0)

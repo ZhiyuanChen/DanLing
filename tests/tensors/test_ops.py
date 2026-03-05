@@ -21,7 +21,7 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from danling.tensors import NestedTensor, aten_functions, nn_functions
+from danling.tensors import NestedTensor, aten_functions, nn_functions, torch_functions
 from danling.tensors.aten_functions import NestedTensorAtenRegistry
 from danling.tensors.ops import (
     ATEN_BINARY_ELEMENTWISE_OPS,
@@ -85,7 +85,15 @@ def test_function_registry_populated():
 def test_aten_extended_handlers_registered():
     """Ensure compile-oriented aten handlers are registered."""
     aten = torch.ops.aten
-    for op in [aten.topk.default, aten.cumsum.default, aten.cumprod.default, aten.flip.default]:
+    for op in [
+        aten.topk.default,
+        aten.cumsum.default,
+        aten.cumprod.default,
+        aten.logcumsumexp.default,
+        aten.cummax.default,
+        aten.cummin.default,
+        aten.flip.default,
+    ]:
         assert op in NestedTensorAtenRegistry, f"Aten op {op} missing from NestedTensorAtenRegistry"
 
 
@@ -125,9 +133,27 @@ def test_aten_sort_argsort_topk_cumulative_flip_match_per_tensor():
     topk_vals, topk_idxs = torch.ops.aten.topk.default(nt, 2, 2, True, True)
     cumsum_fast = torch.ops.aten.cumsum.default(nt, 2)
     cumprod_fast = torch.ops.aten.cumprod.default(nt, 2)
+    logcumsumexp_fast = torch.ops.aten.logcumsumexp.default(nt, 2)
+    cummax_vals, cummax_idxs = torch.ops.aten.cummax.default(nt, 2)
+    cummin_vals, cummin_idxs = torch.ops.aten.cummin.default(nt, 2)
     flipped_fast = torch.ops.aten.flip.default(nt, [2])
 
-    for got_vals, got_idxs, got_argsort, got_topv, got_topi, got_csum, got_cprod, got_flip, t in zip(
+    for (
+        got_vals,
+        got_idxs,
+        got_argsort,
+        got_topv,
+        got_topi,
+        got_csum,
+        got_cprod,
+        got_lcse,
+        got_cmaxv,
+        got_cmaxi,
+        got_cminv,
+        got_cmini,
+        got_flip,
+        t,
+    ) in zip(
         sorted_vals,
         sorted_idxs,
         argsorted,
@@ -135,11 +161,18 @@ def test_aten_sort_argsort_topk_cumulative_flip_match_per_tensor():
         topk_idxs,
         cumsum_fast,
         cumprod_fast,
+        logcumsumexp_fast,
+        cummax_vals,
+        cummax_idxs,
+        cummin_vals,
+        cummin_idxs,
         flipped_fast,
         nt,
     ):
         ref_sort = torch.sort(t, dim=1, descending=False)
         ref_topk = torch.topk(t, 2, dim=1, largest=True, sorted=True)
+        ref_cummax = torch.cummax(t, dim=1)
+        ref_cummin = torch.cummin(t, dim=1)
         torch.testing.assert_close(got_vals, ref_sort.values)
         torch.testing.assert_close(got_idxs, ref_sort.indices)
         torch.testing.assert_close(got_argsort, torch.argsort(t, dim=1, descending=False))
@@ -147,6 +180,11 @@ def test_aten_sort_argsort_topk_cumulative_flip_match_per_tensor():
         torch.testing.assert_close(got_topi, ref_topk.indices)
         torch.testing.assert_close(got_csum, torch.cumsum(t, dim=1))
         torch.testing.assert_close(got_cprod, torch.cumprod(t, dim=1))
+        torch.testing.assert_close(got_lcse, torch.logcumsumexp(t, dim=1))
+        torch.testing.assert_close(got_cmaxv, ref_cummax.values)
+        torch.testing.assert_close(got_cmaxi, ref_cummax.indices)
+        torch.testing.assert_close(got_cminv, ref_cummin.values)
+        torch.testing.assert_close(got_cmini, ref_cummin.indices)
         torch.testing.assert_close(got_flip, torch.flip(t, dims=[1]))
 
     # Fallback path: ragged per-element dim (NestedTensor dim=1 -> tensor dim=0).
@@ -155,7 +193,7 @@ def test_aten_sort_argsort_topk_cumulative_flip_match_per_tensor():
         torch.testing.assert_close(got, torch.cumsum(t, dim=0))
 
 
-def test_aten_ragged_topk_cumsum_cumprod_flip_no_fallback():
+def test_aten_ragged_topk_cumulative_pair_and_flip_no_fallback():
     nt = NT(
         [
             torch.tensor([[3.0, 1.0], [4.0, 2.0], [0.0, 5.0]]),
@@ -173,6 +211,9 @@ def test_aten_ragged_topk_cumsum_cumprod_flip_no_fallback():
         topk_vals, topk_idxs = torch.ops.aten.topk.default(nt, 2, 1, True, True)
         cumsum_ragged = torch.ops.aten.cumsum.default(nt, 1)
         cumprod_ragged = torch.ops.aten.cumprod.default(nt, 1)
+        logcumsumexp_ragged = torch.ops.aten.logcumsumexp.default(nt, 1)
+        cummax_vals, cummax_idxs = torch.ops.aten.cummax.default(nt, 1)
+        cummin_vals, cummin_idxs = torch.ops.aten.cummin.default(nt, 1)
         flipped_ragged = torch.ops.aten.flip.default(nt, [1])
     finally:
         aten_functions.per_element_fallback = original_fallback
@@ -181,11 +222,21 @@ def test_aten_ragged_topk_cumsum_cumprod_flip_no_fallback():
     ref_topk_idxs = NT([torch.topk(t, 2, dim=0).indices for t in nt], **nt._meta())
     ref_cumsum = NT([torch.cumsum(t, dim=0) for t in nt], **nt._meta())
     ref_cumprod = NT([torch.cumprod(t, dim=0) for t in nt], **nt._meta())
+    ref_logcumsumexp = NT([torch.logcumsumexp(t, dim=0) for t in nt], **nt._meta())
+    ref_cummax_vals = NT([torch.cummax(t, dim=0).values for t in nt], **nt._meta())
+    ref_cummax_idxs = NT([torch.cummax(t, dim=0).indices for t in nt], **nt._meta())
+    ref_cummin_vals = NT([torch.cummin(t, dim=0).values for t in nt], **nt._meta())
+    ref_cummin_idxs = NT([torch.cummin(t, dim=0).indices for t in nt], **nt._meta())
     ref_flip = NT([torch.flip(t, dims=[0]) for t in nt], **nt._meta())
     torch.testing.assert_close(topk_vals.tensor, ref_topk_vals.tensor)
     torch.testing.assert_close(topk_idxs.tensor, ref_topk_idxs.tensor)
     torch.testing.assert_close(cumsum_ragged.tensor, ref_cumsum.tensor)
     torch.testing.assert_close(cumprod_ragged.tensor, ref_cumprod.tensor)
+    torch.testing.assert_close(logcumsumexp_ragged.tensor, ref_logcumsumexp.tensor)
+    torch.testing.assert_close(cummax_vals.tensor, ref_cummax_vals.tensor)
+    torch.testing.assert_close(cummax_idxs.tensor, ref_cummax_idxs.tensor)
+    torch.testing.assert_close(cummin_vals.tensor, ref_cummin_vals.tensor)
+    torch.testing.assert_close(cummin_idxs.tensor, ref_cummin_idxs.tensor)
     torch.testing.assert_close(flipped_ragged.tensor, ref_flip.tensor)
 
 
@@ -220,6 +271,9 @@ def test_aten_1d_ragged_fastpaths_no_fallback():
         topk_vals, topk_idxs = torch.ops.aten.topk.default(nt, 2, 1, True, True)
         cumsum_out = torch.ops.aten.cumsum.default(nt, 1)
         cumprod_out = torch.ops.aten.cumprod.default(nt, 1)
+        logcumsumexp_out = torch.ops.aten.logcumsumexp.default(nt, 1)
+        cummax_vals, cummax_idxs = torch.ops.aten.cummax.default(nt, 1)
+        cummin_vals, cummin_idxs = torch.ops.aten.cummin.default(nt, 1)
         flip_out = torch.ops.aten.flip.default(nt, [1])
         softmax_out = torch.ops.aten._softmax.default(nt, 1, False)
         log_softmax_out = torch.ops.aten._log_softmax.default(nt, 1, False)
@@ -233,6 +287,11 @@ def test_aten_1d_ragged_fastpaths_no_fallback():
     ref_topk_idxs = NT([torch.topk(t, 2, dim=0, largest=True, sorted=True).indices for t in nt], **nt._meta())
     ref_cumsum = NT([torch.cumsum(t, dim=0) for t in nt], **nt._meta())
     ref_cumprod = NT([torch.cumprod(t, dim=0) for t in nt], **nt._meta())
+    ref_logcumsumexp = NT([torch.logcumsumexp(t, dim=0) for t in nt], **nt._meta())
+    ref_cummax_vals = NT([torch.cummax(t, dim=0).values for t in nt], **nt._meta())
+    ref_cummax_idxs = NT([torch.cummax(t, dim=0).indices for t in nt], **nt._meta())
+    ref_cummin_vals = NT([torch.cummin(t, dim=0).values for t in nt], **nt._meta())
+    ref_cummin_idxs = NT([torch.cummin(t, dim=0).indices for t in nt], **nt._meta())
     ref_flip = NT([torch.flip(t, dims=[0]) for t in nt], **nt._meta())
     ref_softmax = NT([torch.softmax(t, dim=0) for t in nt], **nt._meta())
     ref_log_softmax = NT([torch.log_softmax(t, dim=0) for t in nt], **nt._meta())
@@ -243,6 +302,11 @@ def test_aten_1d_ragged_fastpaths_no_fallback():
     torch.testing.assert_close(topk_idxs.tensor, ref_topk_idxs.tensor)
     torch.testing.assert_close(cumsum_out.tensor, ref_cumsum.tensor)
     torch.testing.assert_close(cumprod_out.tensor, ref_cumprod.tensor)
+    torch.testing.assert_close(logcumsumexp_out.tensor, ref_logcumsumexp.tensor)
+    torch.testing.assert_close(cummax_vals.tensor, ref_cummax_vals.tensor)
+    torch.testing.assert_close(cummax_idxs.tensor, ref_cummax_idxs.tensor)
+    torch.testing.assert_close(cummin_vals.tensor, ref_cummin_vals.tensor)
+    torch.testing.assert_close(cummin_idxs.tensor, ref_cummin_idxs.tensor)
     torch.testing.assert_close(flip_out.tensor, ref_flip.tensor)
     torch.testing.assert_close(softmax_out.tensor, ref_softmax.tensor)
     torch.testing.assert_close(log_softmax_out.tensor, ref_log_softmax.tensor)
@@ -301,6 +365,9 @@ def test_aten_1d_ragged_fastpaths_compile_smoke():
         topk_fn = _compile(lambda x: torch.ops.aten.topk.default(x, 2, 1, True, True))
         cumsum_fn = _compile(lambda x: torch.ops.aten.cumsum.default(x, 1))
         cumprod_fn = _compile(lambda x: torch.ops.aten.cumprod.default(x, 1))
+        logcumsumexp_fn = _compile(lambda x: torch.ops.aten.logcumsumexp.default(x, 1))
+        cummax_fn = _compile(lambda x: torch.ops.aten.cummax.default(x, 1))
+        cummin_fn = _compile(lambda x: torch.ops.aten.cummin.default(x, 1))
         flip_fn = _compile(lambda x: torch.ops.aten.flip.default(x, [1]))
         softmax_fn = _compile(lambda x: torch.ops.aten._softmax.default(x, 1, False))
         log_softmax_fn = _compile(lambda x: torch.ops.aten._log_softmax.default(x, 1, False))
@@ -309,6 +376,9 @@ def test_aten_1d_ragged_fastpaths_compile_smoke():
         topk_vals, topk_idxs = topk_fn(nt)
         cumsum_out = cumsum_fn(nt)
         cumprod_out = cumprod_fn(nt)
+        logcumsumexp_out = logcumsumexp_fn(nt)
+        cummax_vals, cummax_idxs = cummax_fn(nt)
+        cummin_vals, cummin_idxs = cummin_fn(nt)
         flip_out = flip_fn(nt)
         softmax_out = softmax_fn(nt)
         log_softmax_out = log_softmax_fn(nt)
@@ -322,6 +392,11 @@ def test_aten_1d_ragged_fastpaths_compile_smoke():
     ref_topk_idxs = NT([torch.topk(t, 2, dim=0, largest=True, sorted=True).indices for t in nt], **nt._meta())
     ref_cumsum = NT([torch.cumsum(t, dim=0) for t in nt], **nt._meta())
     ref_cumprod = NT([torch.cumprod(t, dim=0) for t in nt], **nt._meta())
+    ref_logcumsumexp = NT([torch.logcumsumexp(t, dim=0) for t in nt], **nt._meta())
+    ref_cummax_vals = NT([torch.cummax(t, dim=0).values for t in nt], **nt._meta())
+    ref_cummax_idxs = NT([torch.cummax(t, dim=0).indices for t in nt], **nt._meta())
+    ref_cummin_vals = NT([torch.cummin(t, dim=0).values for t in nt], **nt._meta())
+    ref_cummin_idxs = NT([torch.cummin(t, dim=0).indices for t in nt], **nt._meta())
     ref_flip = NT([torch.flip(t, dims=[0]) for t in nt], **nt._meta())
     ref_softmax = NT([torch.softmax(t, dim=0) for t in nt], **nt._meta())
     ref_log_softmax = NT([torch.log_softmax(t, dim=0) for t in nt], **nt._meta())
@@ -332,6 +407,11 @@ def test_aten_1d_ragged_fastpaths_compile_smoke():
     torch.testing.assert_close(topk_idxs.tensor, ref_topk_idxs.tensor)
     torch.testing.assert_close(cumsum_out.tensor, ref_cumsum.tensor)
     torch.testing.assert_close(cumprod_out.tensor, ref_cumprod.tensor)
+    torch.testing.assert_close(logcumsumexp_out.tensor, ref_logcumsumexp.tensor)
+    torch.testing.assert_close(cummax_vals.tensor, ref_cummax_vals.tensor)
+    torch.testing.assert_close(cummax_idxs.tensor, ref_cummax_idxs.tensor)
+    torch.testing.assert_close(cummin_vals.tensor, ref_cummin_vals.tensor)
+    torch.testing.assert_close(cummin_idxs.tensor, ref_cummin_idxs.tensor)
     torch.testing.assert_close(flip_out.tensor, ref_flip.tensor)
     torch.testing.assert_close(softmax_out.tensor, ref_softmax.tensor)
     torch.testing.assert_close(log_softmax_out.tensor, ref_log_softmax.tensor)
@@ -359,6 +439,9 @@ def test_aten_ragged_fastpaths_compile_smoke():
         topk_fn = _compile(lambda x: torch.ops.aten.topk.default(x, 2, 1, True, True))
         cumsum_fn = _compile(lambda x: torch.ops.aten.cumsum.default(x, 1))
         cumprod_fn = _compile(lambda x: torch.ops.aten.cumprod.default(x, 1))
+        logcumsumexp_fn = _compile(lambda x: torch.ops.aten.logcumsumexp.default(x, 1))
+        cummax_fn = _compile(lambda x: torch.ops.aten.cummax.default(x, 1))
+        cummin_fn = _compile(lambda x: torch.ops.aten.cummin.default(x, 1))
         flip_fn = _compile(lambda x: torch.ops.aten.flip.default(x, [1]))
         sort_fn = _compile(lambda x: torch.ops.aten.sort.default(x, 1, False))
         argsort_fn = _compile(lambda x: torch.ops.aten.argsort.default(x, 1, False))
@@ -367,6 +450,9 @@ def test_aten_ragged_fastpaths_compile_smoke():
         topk_comp_vals, topk_comp_idxs = topk_fn(nt)
         cumsum_comp = cumsum_fn(nt)
         cumprod_comp = cumprod_fn(nt)
+        logcumsumexp_comp = logcumsumexp_fn(nt)
+        cummax_comp_vals, cummax_comp_idxs = cummax_fn(nt)
+        cummin_comp_vals, cummin_comp_idxs = cummin_fn(nt)
         flip_comp = flip_fn(nt)
         sort_comp_vals, sort_comp_idxs = sort_fn(nt)
         argsort_comp = argsort_fn(nt)
@@ -379,6 +465,11 @@ def test_aten_ragged_fastpaths_compile_smoke():
     ref_topk_idxs = NT([torch.topk(t, 2, dim=0).indices for t in nt], **nt._meta())
     ref_cumsum = NT([torch.cumsum(t, dim=0) for t in nt], **nt._meta())
     ref_cumprod = NT([torch.cumprod(t, dim=0) for t in nt], **nt._meta())
+    ref_logcumsumexp = NT([torch.logcumsumexp(t, dim=0) for t in nt], **nt._meta())
+    ref_cummax_vals = NT([torch.cummax(t, dim=0).values for t in nt], **nt._meta())
+    ref_cummax_idxs = NT([torch.cummax(t, dim=0).indices for t in nt], **nt._meta())
+    ref_cummin_vals = NT([torch.cummin(t, dim=0).values for t in nt], **nt._meta())
+    ref_cummin_idxs = NT([torch.cummin(t, dim=0).indices for t in nt], **nt._meta())
     ref_flip = NT([torch.flip(t, dims=[0]) for t in nt], **nt._meta())
     ref_sort_vals = NT([torch.sort(t, dim=0, descending=False).values for t in nt], **nt._meta())
     ref_sort_idxs = NT([torch.sort(t, dim=0, descending=False).indices for t in nt], **nt._meta())
@@ -389,6 +480,11 @@ def test_aten_ragged_fastpaths_compile_smoke():
     torch.testing.assert_close(topk_comp_idxs.tensor, ref_topk_idxs.tensor)
     torch.testing.assert_close(cumsum_comp.tensor, ref_cumsum.tensor)
     torch.testing.assert_close(cumprod_comp.tensor, ref_cumprod.tensor)
+    torch.testing.assert_close(logcumsumexp_comp.tensor, ref_logcumsumexp.tensor)
+    torch.testing.assert_close(cummax_comp_vals.tensor, ref_cummax_vals.tensor)
+    torch.testing.assert_close(cummax_comp_idxs.tensor, ref_cummax_idxs.tensor)
+    torch.testing.assert_close(cummin_comp_vals.tensor, ref_cummin_vals.tensor)
+    torch.testing.assert_close(cummin_comp_idxs.tensor, ref_cummin_idxs.tensor)
     torch.testing.assert_close(flip_comp.tensor, ref_flip.tensor)
     torch.testing.assert_close(sort_comp_vals.tensor, ref_sort_vals.tensor)
     torch.testing.assert_close(sort_comp_idxs.tensor, ref_sort_idxs.tensor)
@@ -441,6 +537,12 @@ def test_torch_ragged_fastpaths_compile_smoke():
             torch.tensor([[7.0, 8.0], [1.0, 0.0], [9.0, 6.0], [2.0, 3.0], [5.0, 4.0]]),
         ]
     )
+    nt_prob = NT(
+        [
+            torch.tensor([[0.2, 0.8], [0.3, 0.7], [0.4, 0.6]]),
+            torch.tensor([[0.1, 0.9], [0.25, 0.75], [0.5, 0.5], [0.35, 0.65], [0.6, 0.4]]),
+        ]
+    )
 
     def _compile(fn):
         return torch.compile(fn, backend="eager", fullgraph=True)
@@ -453,36 +555,230 @@ def test_torch_ragged_fastpaths_compile_smoke():
     aten_functions.per_element_fallback = _fail_fallback
     try:
         topk_fn = _compile(lambda x: torch.topk(x, 2, dim=1, largest=True, sorted=True))
+        cumsum_fn = _compile(lambda x: torch.cumsum(x, dim=1))
+        cumprod_fn = _compile(lambda x: torch.cumprod(x, dim=1))
+        logcumsumexp_fn = _compile(lambda x: torch.logcumsumexp(x, dim=1))
+        cummax_fn = _compile(lambda x: torch.cummax(x, dim=1))
+        cummin_fn = _compile(lambda x: torch.cummin(x, dim=1))
         flip_fn = _compile(lambda x: torch.flip(x, dims=[1]))
         sort_fn = _compile(lambda x: torch.sort(x, dim=1, descending=False))
         argsort_fn = _compile(lambda x: torch.argsort(x, dim=1, descending=False))
         softmax_fn = _compile(lambda x: torch.softmax(x, dim=1))
         log_softmax_fn = _compile(lambda x: torch.log_softmax(x, dim=1))
+        dropout_eval_fn = _compile(lambda x: torch.dropout(x, p=0.2, train=False))
+        dropout_train_fn = _compile(lambda x: torch.dropout(x, p=0.2, train=True))
+        bernoulli_fn = _compile(lambda x: torch.bernoulli(x))
+        layer_norm_fn = _compile(lambda x: torch.layer_norm(x, (2,)))
+        if hasattr(torch, "rms_norm"):
+            rms_norm_fn = _compile(lambda x: torch.rms_norm(x, (2,)))
         topk_vals, topk_idxs = topk_fn(nt)
+        cumsum_comp = cumsum_fn(nt)
+        cumprod_comp = cumprod_fn(nt)
+        logcumsumexp_comp = logcumsumexp_fn(nt)
+        cummax_comp_vals, cummax_comp_idxs = cummax_fn(nt)
+        cummin_comp_vals, cummin_comp_idxs = cummin_fn(nt)
         flip_comp = flip_fn(nt)
         sort_vals, sort_idxs = sort_fn(nt)
         argsort_comp = argsort_fn(nt)
         softmax_comp = softmax_fn(nt)
         log_softmax_comp = log_softmax_fn(nt)
+        dropout_eval_comp = dropout_eval_fn(nt)
+        torch.manual_seed(1234)
+        dropout_train_comp = dropout_train_fn(nt)
+        torch.manual_seed(5678)
+        bernoulli_comp = bernoulli_fn(nt_prob)
+        layer_norm_comp = layer_norm_fn(nt)
+        if hasattr(torch, "rms_norm"):
+            rms_norm_comp = rms_norm_fn(nt)
     finally:
         aten_functions.per_element_fallback = original_fallback
 
     ref_topk_vals = NT([torch.topk(t, 2, dim=0).values for t in nt], **nt._meta())
     ref_topk_idxs = NT([torch.topk(t, 2, dim=0).indices for t in nt], **nt._meta())
+    ref_cumsum = NT([torch.cumsum(t, dim=0) for t in nt], **nt._meta())
+    ref_cumprod = NT([torch.cumprod(t, dim=0) for t in nt], **nt._meta())
+    ref_logcumsumexp = NT([torch.logcumsumexp(t, dim=0) for t in nt], **nt._meta())
+    ref_cummax_vals = NT([torch.cummax(t, dim=0).values for t in nt], **nt._meta())
+    ref_cummax_idxs = NT([torch.cummax(t, dim=0).indices for t in nt], **nt._meta())
+    ref_cummin_vals = NT([torch.cummin(t, dim=0).values for t in nt], **nt._meta())
+    ref_cummin_idxs = NT([torch.cummin(t, dim=0).indices for t in nt], **nt._meta())
     ref_flip = NT([torch.flip(t, dims=[0]) for t in nt], **nt._meta())
     ref_sort_vals = NT([torch.sort(t, dim=0, descending=False).values for t in nt], **nt._meta())
     ref_sort_idxs = NT([torch.sort(t, dim=0, descending=False).indices for t in nt], **nt._meta())
     ref_argsort = NT([torch.argsort(t, dim=0, descending=False) for t in nt], **nt._meta())
     ref_softmax = NT([torch.softmax(t, dim=0) for t in nt], **nt._meta())
     ref_log_softmax = NT([torch.log_softmax(t, dim=0) for t in nt], **nt._meta())
+    torch.manual_seed(1234)
+    ref_dropout_train = NT([torch.dropout(t, p=0.2, train=True) for t in nt], **nt._meta())
+    torch.manual_seed(5678)
+    ref_bernoulli = NT([torch.bernoulli(t) for t in nt_prob], **nt_prob._meta())
+    ref_layer_norm = NT([torch.layer_norm(t, (2,)) for t in nt], **nt._meta())
+    if hasattr(torch, "rms_norm"):
+        ref_rms_norm = NT([torch.rms_norm(t, (2,)) for t in nt], **nt._meta())
     torch.testing.assert_close(topk_vals.tensor, ref_topk_vals.tensor)
     torch.testing.assert_close(topk_idxs.tensor, ref_topk_idxs.tensor)
+    torch.testing.assert_close(cumsum_comp.tensor, ref_cumsum.tensor)
+    torch.testing.assert_close(cumprod_comp.tensor, ref_cumprod.tensor)
+    torch.testing.assert_close(logcumsumexp_comp.tensor, ref_logcumsumexp.tensor)
+    torch.testing.assert_close(cummax_comp_vals.tensor, ref_cummax_vals.tensor)
+    torch.testing.assert_close(cummax_comp_idxs.tensor, ref_cummax_idxs.tensor)
+    torch.testing.assert_close(cummin_comp_vals.tensor, ref_cummin_vals.tensor)
+    torch.testing.assert_close(cummin_comp_idxs.tensor, ref_cummin_idxs.tensor)
     torch.testing.assert_close(flip_comp.tensor, ref_flip.tensor)
     torch.testing.assert_close(sort_vals.tensor, ref_sort_vals.tensor)
     torch.testing.assert_close(sort_idxs.tensor, ref_sort_idxs.tensor)
     torch.testing.assert_close(argsort_comp.tensor, ref_argsort.tensor)
     torch.testing.assert_close(softmax_comp.tensor, ref_softmax.tensor)
     torch.testing.assert_close(log_softmax_comp.tensor, ref_log_softmax.tensor)
+    torch.testing.assert_close(dropout_eval_comp.tensor, nt.tensor)
+    torch.testing.assert_close(dropout_train_comp.tensor, ref_dropout_train.tensor)
+    torch.testing.assert_close(bernoulli_comp.tensor, ref_bernoulli.tensor)
+    torch.testing.assert_close(layer_norm_comp.tensor, ref_layer_norm.tensor)
+    if hasattr(torch, "rms_norm"):
+        torch.testing.assert_close(rms_norm_comp.tensor, ref_rms_norm.tensor)
+
+
+def test_torch_cumulative_and_topk_wrappers_no_storage_mapping():
+    nt = NT(
+        [
+            torch.tensor([3.0, 1.0, 2.0]),
+            torch.tensor([4.0, 0.0]),
+        ]
+    )
+
+    original_map = torch_functions._map_storage
+    original_map_pair = torch_functions._map_storage_pair
+
+    def _fail_map(*_args, **_kwargs):
+        raise AssertionError("_map_storage must not be used for migrated torch cumulative wrappers")
+
+    def _fail_map_pair(*_args, **_kwargs):
+        raise AssertionError("_map_storage_pair must not be used for migrated torch cumulative wrappers")
+
+    torch_functions._map_storage = _fail_map
+    torch_functions._map_storage_pair = _fail_map_pair
+    try:
+        topk_vals, topk_idxs = torch.topk(nt, 2, dim=1, largest=True, sorted=True)
+        cumsum_out = torch.cumsum(nt, dim=1)
+        cumprod_out = torch.cumprod(nt, dim=1)
+        logcumsumexp_out = torch.logcumsumexp(nt, dim=1)
+        cummax_vals, cummax_idxs = torch.cummax(nt, dim=1)
+        cummin_vals, cummin_idxs = torch.cummin(nt, dim=1)
+    finally:
+        torch_functions._map_storage = original_map
+        torch_functions._map_storage_pair = original_map_pair
+
+    ref_topk_vals = NT([torch.topk(t, 2, dim=0).values for t in nt], **nt._meta())
+    ref_topk_idxs = NT([torch.topk(t, 2, dim=0).indices for t in nt], **nt._meta())
+    ref_cumsum = NT([torch.cumsum(t, dim=0) for t in nt], **nt._meta())
+    ref_cumprod = NT([torch.cumprod(t, dim=0) for t in nt], **nt._meta())
+    ref_logcumsumexp = NT([torch.logcumsumexp(t, dim=0) for t in nt], **nt._meta())
+    ref_cummax_vals = NT([torch.cummax(t, dim=0).values for t in nt], **nt._meta())
+    ref_cummax_idxs = NT([torch.cummax(t, dim=0).indices for t in nt], **nt._meta())
+    ref_cummin_vals = NT([torch.cummin(t, dim=0).values for t in nt], **nt._meta())
+    ref_cummin_idxs = NT([torch.cummin(t, dim=0).indices for t in nt], **nt._meta())
+    torch.testing.assert_close(topk_vals.tensor, ref_topk_vals.tensor)
+    torch.testing.assert_close(topk_idxs.tensor, ref_topk_idxs.tensor)
+    torch.testing.assert_close(cumsum_out.tensor, ref_cumsum.tensor)
+    torch.testing.assert_close(cumprod_out.tensor, ref_cumprod.tensor)
+    torch.testing.assert_close(logcumsumexp_out.tensor, ref_logcumsumexp.tensor)
+    torch.testing.assert_close(cummax_vals.tensor, ref_cummax_vals.tensor)
+    torch.testing.assert_close(cummax_idxs.tensor, ref_cummax_idxs.tensor)
+    torch.testing.assert_close(cummin_vals.tensor, ref_cummin_vals.tensor)
+    torch.testing.assert_close(cummin_idxs.tensor, ref_cummin_idxs.tensor)
+
+
+def test_torch_dropout_and_bernoulli_wrappers_no_concat_apply():
+    nt = NT(
+        [
+            torch.tensor([1.0, 1.0, 1.0, 1.0]),
+            torch.tensor([1.0, 1.0]),
+        ]
+    )
+    nt_prob = NT(
+        [
+            torch.tensor([0.2, 0.8, 0.4, 0.6]),
+            torch.tensor([0.1, 0.9]),
+        ]
+    )
+
+    original_concat = torch_functions._concat_apply_same_shape
+
+    def _fail_concat(*_args, **_kwargs):
+        raise AssertionError("_concat_apply_same_shape must not be used for migrated torch dropout/bernoulli wrappers")
+
+    torch_functions._concat_apply_same_shape = _fail_concat
+    try:
+        torch.manual_seed(1234)
+        dropout_out = torch.dropout(nt, p=0.5, train=True)
+        torch.manual_seed(5678)
+        bernoulli_out = torch.bernoulli(nt_prob)
+    finally:
+        torch_functions._concat_apply_same_shape = original_concat
+
+    torch.manual_seed(1234)
+    ref_dropout = NT([torch.dropout(t, p=0.5, train=True) for t in nt], **nt._meta())
+    torch.manual_seed(5678)
+    ref_bernoulli = NT([torch.bernoulli(t) for t in nt_prob], **nt_prob._meta())
+    torch.testing.assert_close(dropout_out.tensor, ref_dropout.tensor)
+    torch.testing.assert_close(bernoulli_out.tensor, ref_bernoulli.tensor)
+
+
+def test_dropout_probability_error_types_match_upstream():
+    nt = NT(
+        [
+            torch.tensor([1.0, 2.0, 3.0]),
+            torch.tensor([4.0, 5.0]),
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="between 0 and 1"):
+        torch.dropout(nt, p=-0.1, train=False)
+    with pytest.raises(RuntimeError, match="between 0 and 1"):
+        torch.alpha_dropout(nt, p=-0.1, train=False)
+    with pytest.raises(RuntimeError, match="between 0 and 1"):
+        torch.feature_alpha_dropout(nt, p=-0.1, train=False)
+
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        F.dropout(nt, p=-0.1, training=False)
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        F.alpha_dropout(nt, p=-0.1, training=False)
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        F.feature_alpha_dropout(nt, p=-0.1, training=False)
+
+
+def test_torch_norm_wrappers_no_storage_mapping():
+    nt = NT(
+        [
+            torch.tensor([[3.0, 1.0], [4.0, 2.0], [0.0, 5.0]]),
+            torch.tensor([[7.0, 8.0], [1.0, 0.0], [9.0, 6.0], [2.0, 3.0], [5.0, 4.0]]),
+        ]
+    )
+
+    original_map = torch_functions._map_storage
+    original_map_pair = torch_functions._map_storage_pair
+
+    def _fail_map(*_args, **_kwargs):
+        raise AssertionError("_map_storage must not be used for migrated torch normalization wrappers")
+
+    def _fail_map_pair(*_args, **_kwargs):
+        raise AssertionError("_map_storage_pair must not be used for migrated torch normalization wrappers")
+
+    torch_functions._map_storage = _fail_map
+    torch_functions._map_storage_pair = _fail_map_pair
+    try:
+        layer_norm_out = torch.layer_norm(nt, (2,))
+        if hasattr(torch, "rms_norm"):
+            rms_norm_out = torch.rms_norm(nt, (2,))
+    finally:
+        torch_functions._map_storage = original_map
+        torch_functions._map_storage_pair = original_map_pair
+
+    ref_layer_norm = NT([torch.layer_norm(t, (2,)) for t in nt], **nt._meta())
+    torch.testing.assert_close(layer_norm_out.tensor, ref_layer_norm.tensor)
+    if hasattr(torch, "rms_norm"):
+        ref_rms_norm = NT([torch.rms_norm(t, (2,)) for t in nt], **nt._meta())
+        torch.testing.assert_close(rms_norm_out.tensor, ref_rms_norm.tensor)
 
 
 def test_nn_functional_fastpaths_no_apply_per_element():
@@ -517,6 +813,12 @@ def test_nn_functional_fastpaths_no_apply_per_element():
             torch.tensor([[7.0, 8.0], [1.0, 0.0], [9.0, 6.0], [2.0, 3.0], [5.0, 4.0]]),
         ]
     )
+    nt_1d = NT(
+        [
+            torch.tensor([3.0, 1.0, 2.0]),
+            torch.tensor([4.0, 0.0]),
+        ]
+    )
     bilinear_x1 = NT([torch.randn(2, 3), torch.randn(3, 3)])
     bilinear_x2 = NT([torch.randn(2, 4), torch.randn(3, 4)])
     bilinear_weight = torch.randn(5, 3, 4)
@@ -542,6 +844,12 @@ def test_nn_functional_fastpaths_no_apply_per_element():
         one_hot_out = F.one_hot(one_hot_nt, num_classes=4)
         grid_out = F.grid_sample(grid_input, grid, align_corners=False)
         gumbel_out = F.gumbel_softmax(nt_logits, dim=1, tau=1.0, hard=False)
+        gumbel_1d_out = F.gumbel_softmax(nt_1d, dim=1, tau=1.0, hard=False)
+        dropout_train_out = F.dropout(nt_logits, p=0.2, training=True)
+        alpha_dropout_train_out = F.alpha_dropout(nt_logits, p=0.2, training=True)
+        layer_norm_out = F.layer_norm(nt_logits, (2,))
+        rms_norm_out = F.rms_norm(nt_logits, (2,))
+        normalize_1d_out = F.normalize(nt_1d, dim=1)
         dropout1d_train_out = F.dropout1d(nt_logits, p=0.2, training=True)
         dropout2d_train_out = F.dropout2d(conv_nt, p=0.2, training=True)
         dropout3d_train_out = F.dropout3d(frac3_nt, p=0.2, training=True)
@@ -561,6 +869,12 @@ def test_nn_functional_fastpaths_no_apply_per_element():
     assert isinstance(one_hot_out, NT)
     assert isinstance(grid_out, NT)
     assert isinstance(gumbel_out, NT)
+    assert isinstance(gumbel_1d_out, NT)
+    assert isinstance(dropout_train_out, NT)
+    assert isinstance(alpha_dropout_train_out, NT)
+    assert isinstance(layer_norm_out, NT)
+    assert isinstance(rms_norm_out, NT)
+    assert isinstance(normalize_1d_out, NT)
     assert isinstance(dropout1d_train_out, NT)
     assert isinstance(dropout2d_train_out, NT)
     assert isinstance(dropout3d_train_out, NT)
@@ -576,6 +890,12 @@ def test_nn_functional_compile_smoke():
         [
             torch.tensor([[3.0, 1.0], [4.0, 2.0], [0.0, 5.0]]),
             torch.tensor([[7.0, 8.0], [1.0, 0.0], [9.0, 6.0], [2.0, 3.0], [5.0, 4.0]]),
+        ]
+    )
+    nt_1d = NT(
+        [
+            torch.tensor([3.0, 1.0, 2.0]),
+            torch.tensor([4.0, 0.0]),
         ]
     )
     nt_pair = NT(
@@ -627,6 +947,13 @@ def test_nn_functional_compile_smoke():
     softmax_fn = _compile(lambda x: F.softmax(x, dim=1))
     log_softmax_fn = _compile(lambda x: F.log_softmax(x, dim=1))
     normalize_fn = _compile(lambda x: F.normalize(x, dim=1))
+    dropout_eval_fn = _compile(lambda x: F.dropout(x, p=0.2, training=False))
+    dropout_train_fn = _compile(lambda x: F.dropout(x, p=0.2, training=True))
+    alpha_dropout_eval_fn = _compile(lambda x: F.alpha_dropout(x, p=0.2, training=False))
+    alpha_dropout_train_fn = _compile(lambda x: F.alpha_dropout(x, p=0.2, training=True))
+    layer_norm_fn = _compile(lambda x: F.layer_norm(x, (2,)))
+    rms_norm_fn = _compile(lambda x: F.rms_norm(x, (2,)))
+    normalize_1d_fn = _compile(lambda x: F.normalize(x, dim=1))
     pairwise_fn = _compile(lambda x, y: F.pairwise_distance(x, y, p=2.0, eps=1e-6, keepdim=False))
     dropout1d_eval_fn = _compile(lambda x: F.dropout1d(x, p=0.2, training=False))
     dropout2d_eval_fn = _compile(lambda x: F.dropout2d(x, p=0.2, training=False))
@@ -644,12 +971,20 @@ def test_nn_functional_compile_smoke():
     one_hot_fn = _compile(lambda x: F.one_hot(x, num_classes=4))
     grid_sample_fn = _compile(lambda x, g: F.grid_sample(x, g, align_corners=False))
     gumbel_fn = _compile(lambda x: F.gumbel_softmax(x, dim=1, tau=1.0, hard=False))
+    gumbel_1d_fn = _compile(lambda x: F.gumbel_softmax(x, dim=1, tau=1.0, hard=False))
     frac2_fn = _compile(lambda x, rs: F.fractional_max_pool2d(x, kernel_size=2, output_size=2, _random_samples=rs))
     frac3_fn = _compile(lambda x, rs: F.fractional_max_pool3d(x, kernel_size=2, output_size=2, _random_samples=rs))
     linear_comp = linear_fn(nt)
     softmax_comp = softmax_fn(nt)
     log_softmax_comp = log_softmax_fn(nt)
     normalize_comp = normalize_fn(nt)
+    dropout_eval_comp = dropout_eval_fn(nt)
+    dropout_train_comp = dropout_train_fn(nt)
+    alpha_dropout_eval_comp = alpha_dropout_eval_fn(nt)
+    alpha_dropout_train_comp = alpha_dropout_train_fn(nt)
+    layer_norm_comp = layer_norm_fn(nt)
+    rms_norm_comp = rms_norm_fn(nt)
+    normalize_1d_comp = normalize_1d_fn(nt_1d)
     pairwise_comp = pairwise_fn(nt, nt_pair)
     dropout1d_eval_comp = dropout1d_eval_fn(nt)
     dropout2d_eval_comp = dropout2d_eval_fn(nt)
@@ -667,6 +1002,7 @@ def test_nn_functional_compile_smoke():
     one_hot_comp = one_hot_fn(one_hot_nt)
     grid_sample_comp = grid_sample_fn(grid_input, grid)
     gumbel_comp = gumbel_fn(nt)
+    gumbel_1d_comp = gumbel_1d_fn(nt_1d)
     frac2_comp = frac2_fn(frac2_nt, frac2_random)
     frac3_comp = frac3_fn(frac3_nt, frac3_random)
 
@@ -674,6 +1010,9 @@ def test_nn_functional_compile_smoke():
     ref_softmax = NT([F.softmax(t, dim=0) for t in nt], **nt._meta())
     ref_log_softmax = NT([F.log_softmax(t, dim=0) for t in nt], **nt._meta())
     ref_normalize = NT([F.normalize(t, dim=0) for t in nt], **nt._meta())
+    ref_layer_norm = NT([F.layer_norm(t, (2,)) for t in nt], **nt._meta())
+    ref_rms_norm = NT([F.rms_norm(t, (2,)) for t in nt], **nt._meta())
+    ref_normalize_1d = NT([F.normalize(t, dim=0) for t in nt_1d], **nt_1d._meta())
     ref_pairwise = NT([F.pairwise_distance(a, b) for a, b in zip(nt, nt_pair)], **nt._meta())
     ref_bilinear = NT(
         [F.bilinear(a, b, bilinear_weight, bilinear_bias) for a, b in zip(bilinear_x1, bilinear_x2)],
@@ -718,6 +1057,15 @@ def test_nn_functional_compile_smoke():
     torch.testing.assert_close(softmax_comp.tensor, ref_softmax.tensor)
     torch.testing.assert_close(log_softmax_comp.tensor, ref_log_softmax.tensor)
     torch.testing.assert_close(normalize_comp.tensor, ref_normalize.tensor)
+    torch.testing.assert_close(dropout_eval_comp.tensor, nt.tensor)
+    torch.testing.assert_close(alpha_dropout_eval_comp.tensor, nt.tensor)
+    assert isinstance(dropout_train_comp, NT)
+    assert isinstance(alpha_dropout_train_comp, NT)
+    assert dropout_train_comp.shape == nt.shape
+    assert alpha_dropout_train_comp.shape == nt.shape
+    torch.testing.assert_close(layer_norm_comp.tensor, ref_layer_norm.tensor)
+    torch.testing.assert_close(rms_norm_comp.tensor, ref_rms_norm.tensor)
+    torch.testing.assert_close(normalize_1d_comp.tensor, ref_normalize_1d.tensor)
     torch.testing.assert_close(pairwise_comp.tensor, ref_pairwise.tensor)
     torch.testing.assert_close(dropout1d_eval_comp.tensor, nt.tensor)
     torch.testing.assert_close(dropout2d_eval_comp.tensor, nt.tensor)
@@ -744,3 +1092,7 @@ def test_nn_functional_compile_smoke():
     for t in gumbel_comp:
         colsum = t.sum(dim=0)
         torch.testing.assert_close(colsum, torch.ones_like(colsum), atol=1e-5, rtol=1e-5)
+    assert isinstance(gumbel_1d_comp, NT)
+    for t in gumbel_1d_comp:
+        rowsum = t.sum(dim=0)
+        torch.testing.assert_close(rowsum, torch.ones_like(rowsum), atol=1e-5, rtol=1e-5)

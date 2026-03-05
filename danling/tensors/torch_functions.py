@@ -643,26 +643,75 @@ def unbind(input: NestedTensor, dim: int = 0):
 # Cumulative
 
 
-def _register_cumulative_pair(func, name):
-    @NestedTensorFuncRegistry.implement(func)
-    def impl(input: NestedTensor, dim: int):
-        dim_adj = _translate_non_batch_dim(input, dim, name=name)
-        return _map_storage_pair(input, func, dim=dim_adj)
+@NestedTensorFuncRegistry.implement(torch.cummax)
+def cummax(input: NestedTensor, dim: int):
+    return torch.ops.aten.cummax.default(input, dim)
 
 
-_register_cumulative_pair(torch.cummax, "cummax")
-_register_cumulative_pair(torch.cummin, "cummin")
+@NestedTensorFuncRegistry.implement(torch.cummin)
+def cummin(input: NestedTensor, dim: int):
+    return torch.ops.aten.cummin.default(input, dim)
 
 
-# Table-driven: cumulative ops — translate dim, then _map_storage
-_CUMULATIVE_OPS = [torch.cumprod, torch.cumsum, torch.logcumsumexp]
+@NestedTensorFuncRegistry.implement(torch.cumsum)
+def cumsum(input: NestedTensor, dim: int, *, dtype: torch.dtype | None = None):
+    if dtype is None:
+        return torch.ops.aten.cumsum.default(input, dim)
+    return torch.ops.aten.cumsum.default(input, dim, dtype=dtype)
 
-for _op in _CUMULATIVE_OPS:
 
-    @NestedTensorFuncRegistry.implement(_op)
-    def _cumulative_impl(input, dim, *args, _fn=_op, **kwargs):
-        dim_adj = _translate_non_batch_dim(input, dim, name=_fn.__name__)
-        return _map_storage(input, lambda t: _fn(t, dim=dim_adj, **kwargs))
+@NestedTensorFuncRegistry.implement(torch.cumprod)
+def cumprod(input: NestedTensor, dim: int, *, dtype: torch.dtype | None = None):
+    if dtype is None:
+        return torch.ops.aten.cumprod.default(input, dim)
+    return torch.ops.aten.cumprod.default(input, dim, dtype=dtype)
+
+
+@NestedTensorFuncRegistry.implement(torch.logcumsumexp)
+def logcumsumexp(input: NestedTensor, dim: int):
+    return torch.ops.aten.logcumsumexp.default(input, dim)
+
+
+# Normalization
+
+
+def _can_concat_normalize(input: NestedTensor, normalized_shape: tuple[int, ...]) -> bool:
+    if input._values.dim() <= 1:
+        return False
+    if len(normalized_shape) == 0 or len(normalized_shape) > input._values.dim() - 1:
+        return False
+    return tuple(input._values.shape[-len(normalized_shape) :]) == normalized_shape
+
+
+@NestedTensorFuncRegistry.implement(torch.layer_norm)
+def layer_norm(
+    input: NestedTensor,
+    normalized_shape,
+    weight: Tensor | None = None,
+    bias: Tensor | None = None,
+    eps: float = 1e-5,
+    cudnn_enable: bool = True,
+):
+    normalized = (normalized_shape,) if isinstance(normalized_shape, int) else tuple(normalized_shape)
+    if _can_concat_normalize(input, normalized):
+        from .aten_functions import _packed_like
+
+        output, _, _ = torch.ops.aten.native_layer_norm.default(input._values, normalized, weight, bias, eps)
+        return _packed_like(input, output)
+    return _map_storage(input, lambda t: torch.layer_norm(t, normalized, weight, bias, eps, cudnn_enable))
+
+
+if hasattr(torch, "rms_norm"):
+
+    @NestedTensorFuncRegistry.implement(torch.rms_norm)
+    def rms_norm(input: NestedTensor, normalized_shape, weight: Tensor | None = None, eps: float | None = None):
+        normalized = (normalized_shape,) if isinstance(normalized_shape, int) else tuple(normalized_shape)
+        if _can_concat_normalize(input, normalized):
+            from .aten_functions import _packed_like
+
+            out_values = torch.ops.aten.rms_norm.default(input._values, normalized, weight, eps)
+            return _packed_like(input, out_values)
+        return _map_storage(input, lambda t: torch.rms_norm(t, normalized, weight, eps))
 
 
 # Dropout & Sampling
@@ -689,7 +738,14 @@ def bernoulli(input: NestedTensor, *, generator=None):
         >>> out[0].shape == nt[0].shape and out[1].shape == nt[1].shape
         True
     """
-    return _concat_apply_same_shape(input, lambda t: torch.bernoulli(t, generator=generator))
+    return torch.ops.aten.bernoulli.default(input, generator=generator)
+
+
+def _validate_dropout_probability(p: float) -> None:
+    # Keep torch.* API parity: torch.dropout/alpha_dropout/feature_alpha_dropout
+    # raise RuntimeError for out-of-range probabilities.
+    if p < 0.0 or p > 1.0:
+        raise RuntimeError(f"dropout probability has to be between 0 and 1, but got {p}")
 
 
 @NestedTensorFuncRegistry.implement(torch.dropout)
@@ -713,7 +769,34 @@ def dropout(input: NestedTensor, p: float = 0.5, train: bool = True):
         >>> torch.allclose(torch.dropout(nt, p=0.0, train=False), torch.dropout(nt.tensor, p=0.0, train=False))
         True
     """
-    return _concat_apply_same_shape(input, lambda t: torch.dropout(t, p=p, train=train))
+    _validate_dropout_probability(float(p))
+    if (not train) or p == 0:
+        return input
+    from .aten_functions import _packed_like
+
+    return _packed_like(input, torch.ops.aten.dropout.default(input._values, p, train))
+
+
+@NestedTensorFuncRegistry.implement(torch.alpha_dropout)
+def alpha_dropout(input: NestedTensor, p: float = 0.5, train: bool = False):
+    r"""Applies alpha dropout to the input NestedTensor."""
+    _validate_dropout_probability(float(p))
+    if (not train) or p == 0:
+        return input
+    from .aten_functions import _packed_like
+
+    return _packed_like(input, torch.ops.aten.alpha_dropout.default(input._values, p, train))
+
+
+@NestedTensorFuncRegistry.implement(torch.feature_alpha_dropout)
+def feature_alpha_dropout(input: NestedTensor, p: float = 0.5, train: bool = False):
+    r"""Applies feature alpha dropout to the input NestedTensor."""
+    _validate_dropout_probability(float(p))
+    if (not train) or p == 0:
+        return input
+    from .aten_functions import _packed_like
+
+    return _packed_like(input, torch.ops.aten.feature_alpha_dropout.default(input._values, p, train))
 
 
 # Indexing & Masking
@@ -2896,9 +2979,6 @@ def topk(input: NestedTensor, k, dim: int | None = None, largest: bool = True, s
         True
     """
     dim = -1 if dim is None else dim
-    if input._values.dim() <= 1:
-        dim_adj = _translate_non_batch_dim(input, dim, name="topk")
-        return _map_storage_pair(input, torch.topk, k, dim=dim_adj, largest=largest, sorted=sorted)
     return torch.ops.aten.topk.default(input, k, dim, largest, sorted)
 
 
