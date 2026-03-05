@@ -93,6 +93,8 @@ def test_aten_extended_handlers_registered():
         aten.cummax.default,
         aten.cummin.default,
         aten.flip.default,
+        aten.roll.default,
+        aten.rot90.default,
         aten.flatten.using_ints,
         aten.view.default,
         aten.reshape.default,
@@ -105,6 +107,7 @@ def test_aten_extended_handlers_registered():
         aten.mean.dim,
         aten.amax.default,
         aten.amin.default,
+        aten.searchsorted.Tensor,
     ]:
         assert op in NestedTensorAtenRegistry, f"Aten op {op} missing from NestedTensorAtenRegistry"
 
@@ -377,8 +380,14 @@ def test_aten_shape_and_reduction_fastpaths_no_fallback():
         sum_static = torch.ops.aten.sum.dim_IntList(nt, [2], False)
         sum_ragged = torch.ops.aten.sum.dim_IntList(nt, [1], False)
         mean_static = torch.ops.aten.mean.dim(nt, [2], False)
+        sum_multi_static = torch.ops.aten.sum.dim_IntList(nt, [2, 3], False)
+        mean_multi_static = torch.ops.aten.mean.dim(nt, [2, 3], False)
         amax_static = torch.ops.aten.amax.default(nt, [2], False)
+        amax_multi_static = torch.ops.aten.amax.default(nt, [2, 3], False)
+        amin_multi_static = torch.ops.aten.amin.default(nt, [2, 3], False)
         amin_ragged = torch.ops.aten.amin.default(nt, [1], False)
+        rolled = torch.ops.aten.roll.default(nt, [1], [3])
+        rotated = torch.ops.aten.rot90.default(nt, 1, [2, 3])
     finally:
         aten_functions.per_element_fallback = original_fallback
 
@@ -390,8 +399,14 @@ def test_aten_shape_and_reduction_fastpaths_no_fallback():
     ref_sum_static = NT([torch.sum(t, dim=1) for t in nt], **nt._meta())
     ref_sum_ragged = torch.stack([torch.sum(t, dim=0) for t in nt])
     ref_mean_static = NT([torch.mean(t, dim=1) for t in nt], **nt._meta())
+    ref_sum_multi_static = NT([torch.sum(t, dim=(1, 2)) for t in nt], **nt._meta())
+    ref_mean_multi_static = NT([torch.mean(t, dim=(1, 2)) for t in nt], **nt._meta())
     ref_amax_static = NT([torch.amax(t, dim=1) for t in nt], **nt._meta())
+    ref_amax_multi_static = NT([torch.amax(t, dim=(1, 2)) for t in nt], **nt._meta())
+    ref_amin_multi_static = NT([torch.amin(t, dim=(1, 2)) for t in nt], **nt._meta())
     ref_amin_ragged = torch.stack([torch.amin(t, dim=0) for t in nt])
+    ref_rolled = NT([torch.roll(t, [1], [2]) for t in nt], **nt._meta())
+    ref_rotated = NT([torch.rot90(t, 1, (1, 2)) for t in nt], **nt._meta())
 
     torch.testing.assert_close(flattened.tensor, ref_flattened.tensor)
     torch.testing.assert_close(permuted.tensor, ref_permuted.tensor)
@@ -402,8 +417,48 @@ def test_aten_shape_and_reduction_fastpaths_no_fallback():
     torch.testing.assert_close(sum_static.tensor, ref_sum_static.tensor)
     torch.testing.assert_close(sum_ragged, ref_sum_ragged)
     torch.testing.assert_close(mean_static.tensor, ref_mean_static.tensor)
+    torch.testing.assert_close(sum_multi_static.tensor, ref_sum_multi_static.tensor)
+    torch.testing.assert_close(mean_multi_static.tensor, ref_mean_multi_static.tensor)
     torch.testing.assert_close(amax_static.tensor, ref_amax_static.tensor)
+    torch.testing.assert_close(amax_multi_static.tensor, ref_amax_multi_static.tensor)
+    torch.testing.assert_close(amin_multi_static.tensor, ref_amin_multi_static.tensor)
     torch.testing.assert_close(amin_ragged, ref_amin_ragged)
+    torch.testing.assert_close(rolled.tensor, ref_rolled.tensor)
+    torch.testing.assert_close(rotated.tensor, ref_rotated.tensor)
+
+
+def test_aten_searchsorted_fastpaths_no_fallback():
+    sorted_nt = NT(
+        [
+            torch.tensor([[1.0, 3.0, 5.0], [2.0, 4.0, 6.0]]),
+            torch.tensor([[0.0, 2.0, 4.0], [1.0, 3.0, 5.0], [2.0, 6.0, 8.0]]),
+        ]
+    )
+    values_nt = NT(
+        [
+            torch.tensor([[0.5, 3.0, 6.5], [1.0, 5.0, 6.0]]),
+            torch.tensor([[1.0, 2.0, 4.0], [0.0, 3.0, 6.0], [1.5, 6.5, 9.0]]),
+        ]
+    )
+    boundaries = torch.tensor([1.0, 3.0, 5.0, 7.0])
+
+    original_fallback = aten_functions.per_element_fallback
+
+    def _fail_fallback(*_args, **_kwargs):
+        raise AssertionError("per_element_fallback must not be used for covered searchsorted fastpaths")
+
+    aten_functions.per_element_fallback = _fail_fallback
+    try:
+        nt_nt = torch.ops.aten.searchsorted.Tensor(sorted_nt, values_nt)
+        tensor_nt = torch.ops.aten.searchsorted.Tensor(boundaries, values_nt)
+    finally:
+        aten_functions.per_element_fallback = original_fallback
+
+    ref_nt_nt = NT([torch.searchsorted(s, v) for s, v in zip(sorted_nt, values_nt)], **values_nt._meta())
+    ref_tensor_nt = NT([torch.searchsorted(boundaries, v) for v in values_nt], **values_nt._meta())
+
+    torch.testing.assert_close(nt_nt.tensor, ref_nt_nt.tensor)
+    torch.testing.assert_close(tensor_nt.tensor, ref_tensor_nt.tensor)
 
 
 @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")

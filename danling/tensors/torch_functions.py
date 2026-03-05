@@ -1586,7 +1586,11 @@ def sum(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: bo
         if len(dim) == 1:
             dim = dim[0]
         else:
-            return _reduce(input, torch.sum, dim, keepdim, dtype=dtype, fill_value=0)
+            dims = tuple(_normalize_dim(d, input.dim()) for d in dim)
+            # Preserve the previous masked path when reducing batch with other dims.
+            if _get_batch_dim(input) in dims:
+                return _reduce(input, torch.sum, dim, keepdim, dtype=dtype, fill_value=0)
+            return torch.ops.aten.sum.dim_IntList(input, list(dim), keepdim, dtype=dtype)
     return torch.ops.aten.sum.dim_IntList(input, [dim], keepdim, dtype=dtype)
 
 
@@ -2310,15 +2314,18 @@ def roll(input: NestedTensor, shifts, dims=None):
         >>> torch.equal(out, ref)
         True
     """
-    if dims is None:
-        return _map_storage(input, lambda t: torch.roll(t, shifts, dims=None))
-
-    dims_adj: int | tuple[int, ...]
-    if isinstance(dims, int):
-        dims_adj = _translate_dim(input, dims)
+    if isinstance(shifts, int):
+        shifts = [shifts]
     else:
-        dims_adj = _translate_dims(input, dims)
-    return _map_storage(input, lambda t: torch.roll(t, shifts, dims=dims_adj))
+        shifts = list(shifts)
+
+    if dims is None:
+        return torch.ops.aten.roll.default(input, shifts, [])
+    if isinstance(dims, int):
+        dims = [dims]
+    else:
+        dims = list(dims)
+    return torch.ops.aten.roll.default(input, shifts, dims)
 
 
 @NestedTensorFuncRegistry.implement(torch.rot90)
@@ -2349,9 +2356,7 @@ def rot90(input: NestedTensor, k: int = 1, dims: Sequence[int] = (0, 1)) -> Nest
     """
     if len(dims) != 2:
         raise ValueError("rot90 dims must be a sequence of two dimensions.")
-
-    dims_adj = _translate_dims(input, dims)
-    return _map_storage(input, lambda t: torch.rot90(t, k=k, dims=dims_adj))
+    return torch.ops.aten.rot90.default(input, k, list(dims))
 
 
 @NestedTensorFuncRegistry.implement(torch.squeeze)
@@ -3038,30 +3043,31 @@ def einsum(equation, *operands):
 
 @NestedTensorFuncRegistry.implement(torch.searchsorted)
 def searchsorted(sorted_sequence, values, *, out_int32=False, right=False, side=None, sorter=None):
-    r"""Apply [torch.searchsorted][] per element of a NestedTensor."""
+    r"""Apply [torch.searchsorted][] using aten fastpaths when available."""
     from .nested_tensor import NestedTensor
+
+    if not isinstance(values, (NestedTensor, Tensor)):
+        if isinstance(sorted_sequence, NestedTensor):
+            return _map_storage(
+                sorted_sequence,
+                lambda t: torch.searchsorted(t, values, out_int32=out_int32, right=right, side=side, sorter=sorter),
+            )
+        return torch.searchsorted(sorted_sequence, values, out_int32=out_int32, right=right, side=side, sorter=sorter)
 
     if isinstance(sorted_sequence, NestedTensor) and isinstance(values, NestedTensor):
         _validate_pairwise_batch_length(
             sorted_sequence, values, op_name="searchsorted", lhs_name="sorted_sequence", rhs_name="values"
         )
-        results = [
-            torch.searchsorted(s, v, out_int32=out_int32, right=right, side=side, sorter=sorter)
-            for s, v in zip(sorted_sequence._storage, values._storage)
-        ]
-        return NestedTensor(results, **values._meta())
-    if isinstance(values, NestedTensor):
-        return _map_storage(
-            values,
-            lambda t: torch.searchsorted(
-                sorted_sequence, t, out_int32=out_int32, right=right, side=side, sorter=sorter
-            ),
+        return torch.ops.aten.searchsorted.Tensor(
+            sorted_sequence, values, out_int32=out_int32, right=right, side=side, sorter=sorter
         )
-    # sorted_sequence is NT, values is plain tensor
-    return _map_storage(
-        sorted_sequence,
-        lambda t: torch.searchsorted(t, values, out_int32=out_int32, right=right, side=side, sorter=sorter),
-    )
+
+    if isinstance(values, NestedTensor) or isinstance(sorted_sequence, NestedTensor):
+        return torch.ops.aten.searchsorted.Tensor(
+            sorted_sequence, values, out_int32=out_int32, right=right, side=side, sorter=sorter
+        )
+
+    return torch.searchsorted(sorted_sequence, values, out_int32=out_int32, right=right, side=side, sorter=sorter)
 
 
 # Matrix / linalg ops (per-element)
