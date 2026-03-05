@@ -1577,6 +1577,19 @@ for _op, _extra_kwargs in _SIMPLE_REDUCE_OPS:
         return _reduce(input, _fn, dim, keepdim, **kwargs, **_extra)
 
 
+@NestedTensorFuncRegistry.implement(torch.sum)
+def sum(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: bool = False, *, dtype=None):
+    r"""Compute sums via aten fastpaths for global and single-dim reductions."""
+    if dim is None:
+        return _reduce_none(input, torch.sum, dtype=dtype, keepdim=keepdim)
+    if isinstance(dim, (list, tuple)):
+        if len(dim) == 1:
+            dim = dim[0]
+        else:
+            return _reduce(input, torch.sum, dim, keepdim, dtype=dtype, fill_value=0)
+    return torch.ops.aten.sum.dim_IntList(input, [dim], keepdim, dtype=dtype)
+
+
 @NestedTensorFuncRegistry.implement(torch.amax)
 def amax(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: bool = False):
     r"""
@@ -1598,7 +1611,14 @@ def amax(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: b
         >>> torch.allclose(torch.amax(nt, dim=1), torch.amax(nt.tensor, dim=1))
         True
     """
-    return _reduce(input, torch.amax, dim, keepdim)
+    if dim is None:
+        return _reduce_none(input, torch.amax, keepdim=keepdim)
+    if isinstance(dim, (list, tuple)):
+        if len(dim) == 1:
+            dim = dim[0]
+        else:
+            return _reduce(input, torch.amax, dim, keepdim)
+    return torch.ops.aten.amax.default(input, [dim], keepdim)
 
 
 @NestedTensorFuncRegistry.implement(torch.amin)
@@ -1622,7 +1642,14 @@ def amin(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: b
         >>> torch.allclose(torch.amin(nt, dim=1), torch.amin(nt.tensor, dim=1))
         True
     """
-    return _reduce(input, torch.amin, dim, keepdim)
+    if dim is None:
+        return _reduce_none(input, torch.amin, keepdim=keepdim)
+    if isinstance(dim, (list, tuple)):
+        if len(dim) == 1:
+            dim = dim[0]
+        else:
+            return _reduce(input, torch.amin, dim, keepdim)
+    return torch.ops.aten.amin.default(input, [dim], keepdim)
 
 
 @NestedTensorFuncRegistry.implement(torch.aminmax)
@@ -1819,9 +1846,11 @@ def mean(
     """
     if dim is None:
         return _reduce_none(input, torch.mean, dtype=dtype, keepdim=keepdim)
+    if isinstance(dim, int):
+        return torch.ops.aten.mean.dim(input, [dim], keepdim, dtype=dtype)
     if isinstance(dim, (list, tuple)):
         if len(dim) == 1:
-            dim = dim[0]
+            return torch.ops.aten.mean.dim(input, [dim[0]], keepdim, dtype=dtype)
         else:
             dims = tuple(_normalize_dim(d, input.dim()) for d in dim)
             tensor, mask = input.tensor_mask
@@ -2101,10 +2130,7 @@ def flatten(input: NestedTensor, start_dim: int = 0, end_dim: int = -1):
     batch_dim = _get_batch_dim(input)
     if start <= batch_dim <= end:
         return torch.flatten(input.tensor, start_dim=start_dim, end_dim=end_dim)
-
-    start_adj = _translate_dim(input, start)
-    end_adj = _translate_dim(input, end)
-    return _map_storage(input, lambda t: torch.flatten(t, start_dim=start_adj, end_dim=end_adj))
+    return torch.ops.aten.flatten.using_ints(input, start, end)
 
 
 @NestedTensorFuncRegistry.implement(torch.flip)
@@ -2216,8 +2242,7 @@ def permute(input: NestedTensor, dims: Sequence[int]) -> NestedTensor:
     if normalized_dims[batch_dim] != batch_dim:
         raise ValueError("Permuting the batch dimension is not supported for NestedTensor.")
 
-    tensor_dims = [(_translate_dim(input, d)) for d in normalized_dims if d != batch_dim]
-    return _map_storage(input, lambda t: t.permute(*tensor_dims))
+    return torch.ops.aten.permute.default(input, list(normalized_dims))
 
 
 @NestedTensorFuncRegistry.implement(torch.reshape)
@@ -2357,8 +2382,7 @@ def squeeze(input: NestedTensor, dim: int | None = None):
     batch_dim = _get_batch_dim(input)
     if dim_norm <= batch_dim:
         raise ValueError("Cannot squeeze the batch dimension or dimensions before it for NestedTensor.")
-    dim_adj = _translate_dim(input, dim_norm)
-    return _map_storage(input, lambda t: t.squeeze(dim_adj))
+    return torch.ops.aten.squeeze.dim(input, dim_norm)
 
 
 @NestedTensorFuncRegistry.implement(torch.swapaxes)
@@ -2392,9 +2416,7 @@ def swapaxes(input: NestedTensor, axis0: int, axis1: int):
     batch_dim = _get_batch_dim(input)
     if axis0 == batch_dim or axis1 == batch_dim:
         raise ValueError("Cannot swap the batch dimension for NestedTensor.")
-    axis0_adj = _translate_dim(input, axis0)
-    axis1_adj = _translate_dim(input, axis1)
-    return _map_storage(input, lambda t: torch.swapaxes(t, axis0_adj, axis1_adj))
+    return torch.ops.aten.transpose.int(input, axis0, axis1)
 
 
 # swapdims is an alias for swapaxes
@@ -2439,9 +2461,7 @@ def transpose(input: NestedTensor, dim0: int, dim1: int) -> NestedTensor:
     batch_dim = _get_batch_dim(input)
     if dim0 == batch_dim or dim1 == batch_dim:
         raise ValueError("Cannot transpose the batch dimension for NestedTensor.")
-    tensor_dim0 = _translate_dim(input, dim0)
-    tensor_dim1 = _translate_dim(input, dim1)
-    return _map_storage(input, lambda t: t.transpose(tensor_dim0, tensor_dim1))
+    return torch.ops.aten.transpose.int(input, dim0, dim1)
 
 
 @NestedTensorFuncRegistry.implement(torch.unflatten)
@@ -2471,8 +2491,7 @@ def unflatten(input: NestedTensor, dim: int, sizes):
     batch_dim = _get_batch_dim(input)
     if dim <= batch_dim:
         raise ValueError("unflatten at or before the batch dimension is not supported for NestedTensor.")
-    dim_adj = _translate_dim(input, dim)
-    return _map_storage(input, lambda t: torch.unflatten(t, dim_adj, sizes))
+    return torch.ops.aten.unflatten.int(input, dim, sizes)
 
 
 @NestedTensorFuncRegistry.implement(torch.unsqueeze)
@@ -2506,9 +2525,7 @@ def unsqueeze(input: NestedTensor, dim: int):
     batch_dim = _get_batch_dim(input)
     if dim <= batch_dim:
         raise ValueError("Cannot unsqueeze at or before the batch dimension for NestedTensor.")
-
-    dim_adj = dim - 1
-    return _map_storage(input, lambda t: t.unsqueeze(dim_adj))
+    return torch.ops.aten.unsqueeze.default(input, dim)
 
 
 @NestedTensorFuncRegistry.implement(torch.where)

@@ -93,6 +93,18 @@ def test_aten_extended_handlers_registered():
         aten.cummax.default,
         aten.cummin.default,
         aten.flip.default,
+        aten.flatten.using_ints,
+        aten.view.default,
+        aten.reshape.default,
+        aten.permute.default,
+        aten.transpose.int,
+        aten.unsqueeze.default,
+        aten.squeeze.dim,
+        aten.unflatten.int,
+        aten.sum.dim_IntList,
+        aten.mean.dim,
+        aten.amax.default,
+        aten.amin.default,
     ]:
         assert op in NestedTensorAtenRegistry, f"Aten op {op} missing from NestedTensorAtenRegistry"
 
@@ -339,6 +351,59 @@ def test_aten_unregistered_same_shape_fastpath_no_fallback():
     torch.testing.assert_close(square_out.tensor, ref_square.tensor)
     torch.testing.assert_close(digamma_out.tensor, ref_digamma.tensor)
     torch.testing.assert_close(lgamma_out.tensor, ref_lgamma.tensor)
+
+
+def test_aten_shape_and_reduction_fastpaths_no_fallback():
+    nt = NT(
+        [
+            torch.arange(2 * 3 * 4, dtype=torch.float32).reshape(2, 3, 4),
+            torch.arange(3 * 3 * 4, dtype=torch.float32).reshape(3, 3, 4),
+        ]
+    )
+
+    original_fallback = aten_functions.per_element_fallback
+
+    def _fail_fallback(*_args, **_kwargs):
+        raise AssertionError("per_element_fallback must not be used for covered shape/reduction aten fastpaths")
+
+    aten_functions.per_element_fallback = _fail_fallback
+    try:
+        flattened = torch.ops.aten.flatten.using_ints(nt, 2, 3)
+        permuted = torch.ops.aten.permute.default(nt, [0, 1, 3, 2])
+        transposed = torch.ops.aten.transpose.int(nt, 2, 3)
+        unsqueezed = torch.ops.aten.unsqueeze.default(nt, 3)
+        squeezed = torch.ops.aten.squeeze.dim(unsqueezed, 3)
+        unflattened = torch.ops.aten.unflatten.int(flattened, 2, [3, 4])
+        sum_static = torch.ops.aten.sum.dim_IntList(nt, [2], False)
+        sum_ragged = torch.ops.aten.sum.dim_IntList(nt, [1], False)
+        mean_static = torch.ops.aten.mean.dim(nt, [2], False)
+        amax_static = torch.ops.aten.amax.default(nt, [2], False)
+        amin_ragged = torch.ops.aten.amin.default(nt, [1], False)
+    finally:
+        aten_functions.per_element_fallback = original_fallback
+
+    ref_flattened = NT([torch.flatten(t, start_dim=1, end_dim=2) for t in nt], **nt._meta())
+    ref_permuted = NT([torch.permute(t, (0, 2, 1)) for t in nt], **nt._meta())
+    ref_transposed = NT([torch.transpose(t, 1, 2) for t in nt], **nt._meta())
+    ref_unsqueezed = NT([torch.unsqueeze(t, dim=2) for t in nt], **nt._meta())
+    ref_unflattened = NT([torch.unflatten(t, 1, [3, 4]) for t in ref_flattened], **nt._meta())
+    ref_sum_static = NT([torch.sum(t, dim=1) for t in nt], **nt._meta())
+    ref_sum_ragged = torch.stack([torch.sum(t, dim=0) for t in nt])
+    ref_mean_static = NT([torch.mean(t, dim=1) for t in nt], **nt._meta())
+    ref_amax_static = NT([torch.amax(t, dim=1) for t in nt], **nt._meta())
+    ref_amin_ragged = torch.stack([torch.amin(t, dim=0) for t in nt])
+
+    torch.testing.assert_close(flattened.tensor, ref_flattened.tensor)
+    torch.testing.assert_close(permuted.tensor, ref_permuted.tensor)
+    torch.testing.assert_close(transposed.tensor, ref_transposed.tensor)
+    torch.testing.assert_close(unsqueezed.tensor, ref_unsqueezed.tensor)
+    torch.testing.assert_close(squeezed.tensor, nt.tensor)
+    torch.testing.assert_close(unflattened.tensor, ref_unflattened.tensor)
+    torch.testing.assert_close(sum_static.tensor, ref_sum_static.tensor)
+    torch.testing.assert_close(sum_ragged, ref_sum_ragged)
+    torch.testing.assert_close(mean_static.tensor, ref_mean_static.tensor)
+    torch.testing.assert_close(amax_static.tensor, ref_amax_static.tensor)
+    torch.testing.assert_close(amin_ragged, ref_amin_ragged)
 
 
 @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -686,6 +751,50 @@ def test_torch_cumulative_and_topk_wrappers_no_storage_mapping():
     torch.testing.assert_close(cummax_idxs.tensor, ref_cummax_idxs.tensor)
     torch.testing.assert_close(cummin_vals.tensor, ref_cummin_vals.tensor)
     torch.testing.assert_close(cummin_idxs.tensor, ref_cummin_idxs.tensor)
+
+
+def test_torch_shape_wrappers_no_storage_mapping():
+    nt = NT(
+        [
+            torch.arange(2 * 3 * 4, dtype=torch.float32).reshape(2, 3, 4),
+            torch.arange(3 * 3 * 4, dtype=torch.float32).reshape(3, 3, 4),
+        ]
+    )
+
+    original_map = torch_functions._map_storage
+    original_map_pair = torch_functions._map_storage_pair
+
+    def _fail_map(*_args, **_kwargs):
+        raise AssertionError("_map_storage must not be used for migrated torch shape wrappers")
+
+    def _fail_map_pair(*_args, **_kwargs):
+        raise AssertionError("_map_storage_pair must not be used for migrated torch shape wrappers")
+
+    torch_functions._map_storage = _fail_map
+    torch_functions._map_storage_pair = _fail_map_pair
+    try:
+        flattened = torch.flatten(nt, start_dim=2, end_dim=3)
+        permuted = torch.permute(nt, (0, 1, 3, 2))
+        transposed = torch.transpose(nt, 2, 3)
+        unsqueezed = torch.unsqueeze(nt, 3)
+        squeezed = torch.squeeze(unsqueezed, 3)
+        unflattened = torch.unflatten(flattened, dim=2, sizes=(3, 4))
+    finally:
+        torch_functions._map_storage = original_map
+        torch_functions._map_storage_pair = original_map_pair
+
+    ref_flattened = NT([torch.flatten(t, start_dim=1, end_dim=2) for t in nt], **nt._meta())
+    ref_permuted = NT([torch.permute(t, (0, 2, 1)) for t in nt], **nt._meta())
+    ref_transposed = NT([torch.transpose(t, 1, 2) for t in nt], **nt._meta())
+    ref_unsqueezed = NT([torch.unsqueeze(t, dim=2) for t in nt], **nt._meta())
+    ref_unflattened = NT([torch.unflatten(t, 1, (3, 4)) for t in ref_flattened], **nt._meta())
+
+    torch.testing.assert_close(flattened.tensor, ref_flattened.tensor)
+    torch.testing.assert_close(permuted.tensor, ref_permuted.tensor)
+    torch.testing.assert_close(transposed.tensor, ref_transposed.tensor)
+    torch.testing.assert_close(unsqueezed.tensor, ref_unsqueezed.tensor)
+    torch.testing.assert_close(squeezed.tensor, nt.tensor)
+    torch.testing.assert_close(unflattened.tensor, ref_unflattened.tensor)
 
 
 def test_torch_dropout_and_bernoulli_wrappers_no_concat_apply():
