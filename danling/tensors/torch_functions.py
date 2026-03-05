@@ -2052,8 +2052,7 @@ def flip(input: NestedTensor, dims: Sequence[int]) -> NestedTensor:
         >>> torch.equal(out, ref)
         True
     """
-    dims_adj = _translate_dims(input, dims)
-    return _map_storage(input, lambda t: torch.flip(t, dims=dims_adj))
+    return torch.ops.aten.flip.default(input, list(dims))
 
 
 @NestedTensorFuncRegistry.implement(torch.moveaxis)
@@ -2515,11 +2514,8 @@ def log_softmax(input: NestedTensor, dim: int, dtype: torch.dtype | None = None)
         >>> torch.allclose(out, ref)
         True
     """
-    dim_adj = _translate_non_batch_dim(input, dim, name="log_softmax")
-    concat_dim = _concat_dim_for_tensor_dim(input, dim_adj)
-    if concat_dim is None:
-        return _map_storage(input, lambda t: torch.log_softmax(t, dim=dim_adj, dtype=dtype))
-    return _concat_apply_same_shape(input, lambda t: torch.log_softmax(t, dim=concat_dim, dtype=dtype))
+    source = input if dtype is None else torch.ops.aten._to_copy.default(input, dtype=dtype)
+    return torch.ops.aten._log_softmax.default(source, dim, False)
 
 
 @NestedTensorFuncRegistry.implement(torch.softmax)
@@ -2544,11 +2540,8 @@ def softmax(input: NestedTensor, dim: int, dtype: torch.dtype | None = None) -> 
         >>> torch.allclose(out, ref)
         True
     """
-    dim_adj = _translate_non_batch_dim(input, dim, name="softmax")
-    concat_dim = _concat_dim_for_tensor_dim(input, dim_adj)
-    if concat_dim is None:
-        return _map_storage(input, lambda t: torch.softmax(t, dim=dim_adj, dtype=dtype))
-    return _concat_apply_same_shape(input, lambda t: torch.softmax(t, dim=concat_dim, dtype=dtype))
+    source = input if dtype is None else torch.ops.aten._to_copy.default(input, dtype=dtype)
+    return torch.ops.aten._softmax.default(source, dim, False)
 
 
 # Sorting & Selection
@@ -2647,12 +2640,9 @@ def argsort(input: NestedTensor, dim: int = -1, descending: bool = False, stable
         >>> torch.equal(torch.argsort(nt, dim=1), torch.argsort(nt.tensor, dim=1))
         True
     """
-    from .nested_tensor import NestedTensor
-
-    dim = _translate_non_batch_dim(input, dim, name="argsort")
-    stable = False if stable is None else stable
-    ret = [torch.argsort(t, dim=dim, descending=descending, stable=stable) for t in input._storage]
-    return NestedTensor(ret, **input._meta())
+    if stable is None:
+        return torch.ops.aten.argsort.default(input, dim, descending)
+    return torch.ops.aten.argsort.stable(input, stable=stable, dim=dim, descending=descending)
 
 
 @NestedTensorFuncRegistry.implement(torch.kthvalue)
@@ -2875,8 +2865,9 @@ def sort(input: NestedTensor, dim: int = -1, descending: bool = False, stable: b
         >>> torch.equal(out_vals, ref.values) and torch.equal(out_idx, ref.indices)
         True
     """
-    dim = _translate_non_batch_dim(input, dim, name="sort")
-    return _map_storage_pair(input, torch.sort, dim=dim, descending=descending, stable=stable)
+    if stable is None:
+        return torch.ops.aten.sort.default(input, dim, descending)
+    return torch.ops.aten.sort.stable(input, stable=stable, dim=dim, descending=descending)
 
 
 @NestedTensorFuncRegistry.implement(torch.topk)
@@ -2905,8 +2896,10 @@ def topk(input: NestedTensor, k, dim: int | None = None, largest: bool = True, s
         True
     """
     dim = -1 if dim is None else dim
-    dim = _translate_non_batch_dim(input, dim, name="topk")
-    return _map_storage_pair(input, torch.topk, k, dim=dim, largest=largest, sorted=sorted)
+    if input._values.dim() <= 1:
+        dim_adj = _translate_non_batch_dim(input, dim, name="topk")
+        return _map_storage_pair(input, torch.topk, k, dim=dim_adj, largest=largest, sorted=sorted)
+    return torch.ops.aten.topk.default(input, k, dim, largest, sorted)
 
 
 @NestedTensorFuncRegistry.implement(torch.einsum)

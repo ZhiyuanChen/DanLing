@@ -19,6 +19,7 @@
 
 import pytest
 import torch
+from torch.nn import functional as F
 
 from danling.tensors import NestedTensor, aten_functions
 from danling.tensors.aten_functions import NestedTensorAtenRegistry
@@ -209,7 +210,7 @@ def test_aten_ragged_fastpaths_compile_smoke():
     )
 
     def _compile(fn):
-        return torch.compile(fn, backend="eager")
+        return torch.compile(fn, backend="eager", fullgraph=True)
 
     original_fallback = aten_functions.per_element_fallback
 
@@ -222,10 +223,18 @@ def test_aten_ragged_fastpaths_compile_smoke():
         cumsum_fn = _compile(lambda x: torch.ops.aten.cumsum.default(x, 1))
         cumprod_fn = _compile(lambda x: torch.ops.aten.cumprod.default(x, 1))
         flip_fn = _compile(lambda x: torch.ops.aten.flip.default(x, [1]))
+        sort_fn = _compile(lambda x: torch.ops.aten.sort.default(x, 1, False))
+        argsort_fn = _compile(lambda x: torch.ops.aten.argsort.default(x, 1, False))
+        softmax_fn = _compile(lambda x: torch.ops.aten._softmax.default(x, 1, False))
+        log_softmax_fn = _compile(lambda x: torch.ops.aten._log_softmax.default(x, 1, False))
         topk_comp_vals, topk_comp_idxs = topk_fn(nt)
         cumsum_comp = cumsum_fn(nt)
         cumprod_comp = cumprod_fn(nt)
         flip_comp = flip_fn(nt)
+        sort_comp_vals, sort_comp_idxs = sort_fn(nt)
+        argsort_comp = argsort_fn(nt)
+        softmax_comp = softmax_fn(nt)
+        log_softmax_comp = log_softmax_fn(nt)
     finally:
         aten_functions.per_element_fallback = original_fallback
 
@@ -234,8 +243,99 @@ def test_aten_ragged_fastpaths_compile_smoke():
     ref_cumsum = NT([torch.cumsum(t, dim=0) for t in nt], **nt._meta())
     ref_cumprod = NT([torch.cumprod(t, dim=0) for t in nt], **nt._meta())
     ref_flip = NT([torch.flip(t, dims=[0]) for t in nt], **nt._meta())
+    ref_sort_vals = NT([torch.sort(t, dim=0, descending=False).values for t in nt], **nt._meta())
+    ref_sort_idxs = NT([torch.sort(t, dim=0, descending=False).indices for t in nt], **nt._meta())
+    ref_argsort = NT([torch.argsort(t, dim=0, descending=False) for t in nt], **nt._meta())
+    ref_softmax = NT([torch.softmax(t, dim=0) for t in nt], **nt._meta())
+    ref_log_softmax = NT([torch.log_softmax(t, dim=0) for t in nt], **nt._meta())
     torch.testing.assert_close(topk_comp_vals.tensor, ref_topk_vals.tensor)
     torch.testing.assert_close(topk_comp_idxs.tensor, ref_topk_idxs.tensor)
     torch.testing.assert_close(cumsum_comp.tensor, ref_cumsum.tensor)
     torch.testing.assert_close(cumprod_comp.tensor, ref_cumprod.tensor)
     torch.testing.assert_close(flip_comp.tensor, ref_flip.tensor)
+    torch.testing.assert_close(sort_comp_vals.tensor, ref_sort_vals.tensor)
+    torch.testing.assert_close(sort_comp_idxs.tensor, ref_sort_idxs.tensor)
+    torch.testing.assert_close(argsort_comp.tensor, ref_argsort.tensor)
+    torch.testing.assert_close(softmax_comp.tensor, ref_softmax.tensor)
+    torch.testing.assert_close(log_softmax_comp.tensor, ref_log_softmax.tensor)
+
+
+@pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+def test_torch_ragged_fastpaths_compile_smoke():
+    nt = NT(
+        [
+            torch.tensor([[3.0, 1.0], [4.0, 2.0], [0.0, 5.0]]),
+            torch.tensor([[7.0, 8.0], [1.0, 0.0], [9.0, 6.0], [2.0, 3.0], [5.0, 4.0]]),
+        ]
+    )
+
+    def _compile(fn):
+        return torch.compile(fn, backend="eager", fullgraph=True)
+
+    original_fallback = aten_functions.per_element_fallback
+
+    def _fail_fallback(*_args, **_kwargs):
+        raise AssertionError("per_element_fallback must not be used for covered ragged torch fastpaths")
+
+    aten_functions.per_element_fallback = _fail_fallback
+    try:
+        topk_fn = _compile(lambda x: torch.topk(x, 2, dim=1, largest=True, sorted=True))
+        flip_fn = _compile(lambda x: torch.flip(x, dims=[1]))
+        sort_fn = _compile(lambda x: torch.sort(x, dim=1, descending=False))
+        argsort_fn = _compile(lambda x: torch.argsort(x, dim=1, descending=False))
+        softmax_fn = _compile(lambda x: torch.softmax(x, dim=1))
+        log_softmax_fn = _compile(lambda x: torch.log_softmax(x, dim=1))
+        topk_vals, topk_idxs = topk_fn(nt)
+        flip_comp = flip_fn(nt)
+        sort_vals, sort_idxs = sort_fn(nt)
+        argsort_comp = argsort_fn(nt)
+        softmax_comp = softmax_fn(nt)
+        log_softmax_comp = log_softmax_fn(nt)
+    finally:
+        aten_functions.per_element_fallback = original_fallback
+
+    ref_topk_vals = NT([torch.topk(t, 2, dim=0).values for t in nt], **nt._meta())
+    ref_topk_idxs = NT([torch.topk(t, 2, dim=0).indices for t in nt], **nt._meta())
+    ref_flip = NT([torch.flip(t, dims=[0]) for t in nt], **nt._meta())
+    ref_sort_vals = NT([torch.sort(t, dim=0, descending=False).values for t in nt], **nt._meta())
+    ref_sort_idxs = NT([torch.sort(t, dim=0, descending=False).indices for t in nt], **nt._meta())
+    ref_argsort = NT([torch.argsort(t, dim=0, descending=False) for t in nt], **nt._meta())
+    ref_softmax = NT([torch.softmax(t, dim=0) for t in nt], **nt._meta())
+    ref_log_softmax = NT([torch.log_softmax(t, dim=0) for t in nt], **nt._meta())
+    torch.testing.assert_close(topk_vals.tensor, ref_topk_vals.tensor)
+    torch.testing.assert_close(topk_idxs.tensor, ref_topk_idxs.tensor)
+    torch.testing.assert_close(flip_comp.tensor, ref_flip.tensor)
+    torch.testing.assert_close(sort_vals.tensor, ref_sort_vals.tensor)
+    torch.testing.assert_close(sort_idxs.tensor, ref_sort_idxs.tensor)
+    torch.testing.assert_close(argsort_comp.tensor, ref_argsort.tensor)
+    torch.testing.assert_close(softmax_comp.tensor, ref_softmax.tensor)
+    torch.testing.assert_close(log_softmax_comp.tensor, ref_log_softmax.tensor)
+
+
+@pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+def test_nn_functional_compile_smoke():
+    nt = NT(
+        [
+            torch.tensor([[3.0, 1.0], [4.0, 2.0], [0.0, 5.0]]),
+            torch.tensor([[7.0, 8.0], [1.0, 0.0], [9.0, 6.0], [2.0, 3.0], [5.0, 4.0]]),
+        ]
+    )
+    weight = torch.tensor([[0.2, -0.5], [1.1, 0.3]])
+    bias = torch.tensor([0.4, -0.2])
+
+    def _compile(fn):
+        return torch.compile(fn, backend="eager", fullgraph=True)
+
+    linear_fn = _compile(lambda x: F.linear(x, weight, bias))
+    softmax_fn = _compile(lambda x: F.softmax(x, dim=1))
+    log_softmax_fn = _compile(lambda x: F.log_softmax(x, dim=1))
+    linear_comp = linear_fn(nt)
+    softmax_comp = softmax_fn(nt)
+    log_softmax_comp = log_softmax_fn(nt)
+
+    ref_linear = NT([F.linear(t, weight, bias) for t in nt], **nt._meta())
+    ref_softmax = NT([F.softmax(t, dim=0) for t in nt], **nt._meta())
+    ref_log_softmax = NT([F.log_softmax(t, dim=0) for t in nt], **nt._meta())
+    torch.testing.assert_close(linear_comp.tensor, ref_linear.tensor)
+    torch.testing.assert_close(softmax_comp.tensor, ref_softmax.tensor)
+    torch.testing.assert_close(log_softmax_comp.tensor, ref_log_softmax.tensor)

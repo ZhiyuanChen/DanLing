@@ -1555,19 +1555,26 @@ for _op in _MAX_UNPOOL_OPS:
         return _apply_pair(input, indices, _fn, *args, **kwargs)
 
 
-# Softmax family — need dim translation
+# Softmax family
 
-_SOFTMAX_OPS = [F.softmax, F.log_softmax, F.softmin]
 
-for _op in _SOFTMAX_OPS:
+@NestedTensorFuncRegistry.implement(F.softmax)
+def _f_softmax_impl(input, dim=-1, _stacklevel=3, dtype=None):
+    del _stacklevel  # keep F.softmax-compatible signature
+    return torch.softmax(input, dim=dim, dtype=dtype)
 
-    @NestedTensorFuncRegistry.implement(_op)
-    def _softmax_impl(input, dim=-1, *args, _fn=_op, **kwargs):
-        dim_adj = _translate_non_batch_dim(input, dim)
-        concat_dim = _concat_dim_for_tensor_dim(input, dim_adj)
-        if concat_dim is None:
-            return _apply_per_element(input, _fn, *args, dim=dim_adj, **kwargs)
-        return _apply_packed(input, _fn, *args, dim=concat_dim, **kwargs)
+
+@NestedTensorFuncRegistry.implement(F.log_softmax)
+def _f_log_softmax_impl(input, dim=-1, _stacklevel=3, dtype=None):
+    del _stacklevel  # keep F.log_softmax-compatible signature
+    return torch.log_softmax(input, dim=dim, dtype=dtype)
+
+
+@NestedTensorFuncRegistry.implement(F.softmin)
+def _f_softmin_impl(input, dim=-1, _stacklevel=3, dtype=None):
+    del _stacklevel  # keep F.softmin-compatible signature
+    source = input if dtype is None else input.to(dtype=dtype)
+    return torch.softmax(torch.neg(source), dim=dim, dtype=None)
 
 
 @NestedTensorFuncRegistry.implement(F.gumbel_softmax)

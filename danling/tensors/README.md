@@ -21,7 +21,7 @@ The `NestedTensor` solves these problems by providing:
 ## Key Components
 
 - [`NestedTensor`][danling.tensors.NestedTensor]: Main class for handling variable-length tensors in a batch.
-- [`PNTensor`][danling.tensors.PNTensor]: A tensor wrapper that can be automatically converted to NestedTensor by PyTorch DataLoader.
+- [`PNTensor`][danling.tensors.PNTensor]: A tensor wrapper that can be converted to NestedTensor by PyTorch DataLoader.
 - `tensor()`: Function to create a [`PNTensor`][danling.tensors.PNTensor] object (similar to `torch.tensor()`).
 - [`TorchFuncRegistry`][danling.tensors.TorchFuncRegistry]: Registry for extending PyTorch functions to work with [`NestedTensor`][danling.tensors.NestedTensor].
 
@@ -171,11 +171,13 @@ class VariableLengthDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        # Return a PNTensor, which will be automatically
-        # collated into a NestedTensor
+        # Return a PNTensor; DataLoader can collate it into NestedTensor
+        # after explicit registration.
         return PNTensor(self.data[idx])
 
 # Example usage
+from danling.tensors import register_pn_tensor_collate
+register_pn_tensor_collate()
 dataset = VariableLengthDataset([
     [1, 2, 3],
     [4, 5],
@@ -183,7 +185,7 @@ dataset = VariableLengthDataset([
 ])
 dataloader = DataLoader(dataset, batch_size=3)
 
-# The batches will be NestedTensor objects
+# The batches are NestedTensor objects
 for batch in dataloader:
     print(type(batch))  # <class 'danling.tensors.nested_tensor.NestedTensor'>
     print(batch.tensor)  # Padded tensor

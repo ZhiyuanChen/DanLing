@@ -31,6 +31,7 @@ Architecture:
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 import torch
@@ -343,20 +344,20 @@ def _packed_like(source: NestedTensor, new_values: Tensor) -> NestedTensor:
     )
 
 
-def _packed_new_ragged_size(source: NestedTensor, new_values: Tensor, new_ragged_size: int) -> NestedTensor:
+def _packed_new_ragged_size(source: NestedTensor, new_values: Tensor, new_ragged_size) -> NestedTensor:
     r"""Rebuild a NestedTensor when per-element dim-0 size changes uniformly."""
-    batch_size = len(source)
+    batch_size = source._offsets.size(0) - 1
     # Keep offsets on the same device as the source metadata (CPU by design).
-    new_offsets = torch.arange(batch_size + 1, dtype=torch.long, device=source._offsets.device) * int(new_ragged_size)
+    new_offsets = torch.arange(batch_size + 1, dtype=torch.long, device=source._offsets.device) * new_ragged_size
     new_shape_tensor = source._shape_tensor.clone()
     if new_shape_tensor.numel() > 0:
-        new_shape_tensor[:, 0] = int(new_ragged_size)
+        new_shape_tensor[:, 0] = new_ragged_size
     new_logical = list(source._logical_shape)
     if source.batch_first:
         if len(new_logical) > 1:
-            new_logical[1] = int(new_ragged_size)
+            new_logical[1] = new_ragged_size
     elif len(new_logical) > 0:
-        new_logical[0] = int(new_ragged_size)
+        new_logical[0] = new_ragged_size
     return type(source)._from_packed(
         new_values,
         new_offsets,
@@ -374,15 +375,21 @@ def _packed_to_padded(source: NestedTensor, *, fill_value) -> tuple[Tensor, Tens
     lengths = source._offsets[1:] - source._offsets[:-1]
     device = source._values.device
     lengths_dev = lengths.to(device=device, dtype=torch.long)
+    with torch._C.DisableTorchFunctionSubclass():
+        outer_size = torch.Tensor.size(source)
     ragged_dim = 1 if source.batch_first else 0
-    max_len = int(source._logical_shape[ragged_dim]) if len(source._logical_shape) > ragged_dim else 0
-    batch_size = len(source)
+    batch_dim = 0 if source.batch_first else 1
+    max_len = outer_size[ragged_dim] if len(outer_size) > ragged_dim else 0
+    batch_size = outer_size[batch_dim] if len(outer_size) > batch_dim else 0
     padded_shape = (batch_size, max_len, *source._values.shape[1:])
     padded = torch.full(padded_shape, fill_value=fill_value, dtype=source._values.dtype, device=device)
 
-    batch_idx = torch.repeat_interleave(torch.arange(batch_size, device=device, dtype=torch.long), lengths_dev)
-    starts = torch.repeat_interleave(source._offsets[:-1].to(device=device, dtype=torch.long), lengths_dev)
-    local_idx = torch.arange(source._values.size(0), device=device, dtype=torch.long) - starts
+    # Build packed->padded row indices without repeat_interleave so fullgraph
+    # tracing is not blocked by data-dependent output-size ops.
+    flat_idx = torch.arange(source._values.size(0), device=device, dtype=torch.long)
+    offsets_dev = source._offsets.to(device=device, dtype=torch.long)
+    batch_idx = torch.searchsorted(offsets_dev[1:], flat_idx, right=True)
+    local_idx = flat_idx - offsets_dev[batch_idx]
     padded[batch_idx, local_idx] = source._values
     return padded, lengths, lengths_dev, batch_idx, local_idx, max_len
 
@@ -450,33 +457,73 @@ def _bmm(func, args, kwargs):
 
 
 @NestedTensorAtenRegistry.implement(aten.sort.default)
+@NestedTensorAtenRegistry.implement(aten.sort.stable)
 def _sort(func, args, kwargs):
     r"""Sort along a non-ragged dim by operating directly on packed _values."""
     source = args[0]
     call_kwargs = dict(kwargs)
     dim = args[1] if len(args) > 1 else call_kwargs.pop("dim", -1)
     descending = args[2] if len(args) > 2 else call_kwargs.pop("descending", False)
-    if "stable" in call_kwargs:
-        return per_element_fallback(func, args, kwargs)
+    stable = call_kwargs.pop("stable", None)
+    stable_overload = func is aten.sort.stable
+
+    def _call_sort(tensor: Tensor, dim_value: int):
+        if stable_overload or stable is not None:
+            return torch.ops.aten.sort.stable(
+                tensor, stable=stable, dim=dim_value, descending=descending, **call_kwargs
+            )
+        return func(tensor, dim_value, descending, **call_kwargs)
+
     dim_adj = _translate_dim(source, dim)
     if source._values.dim() > 1 and dim_adj > 0:
-        vals, idxs = func(source._values, dim_adj, descending, **call_kwargs)
+        vals, idxs = _call_sort(source._values, dim_adj)
         return _packed_like(source, vals), _packed_like(source, idxs)
+    if source._values.dim() > 1 and dim_adj == 0:
+        fill_value = _topk_fill_value(source._values.dtype, largest=descending)
+        padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(source, fill_value=fill_value)
+        vals, idxs = _call_sort(padded, 1)
+        return _packed_like(source, vals[batch_idx, local_idx]), _packed_like(source, idxs[batch_idx, local_idx])
+    if stable_overload or stable is not None:
+        return per_element_fallback(
+            torch.ops.aten.sort.stable,
+            (source,),
+            {"stable": stable, "dim": dim_adj, "descending": descending, **call_kwargs},
+        )
     return per_element_fallback(func, (source, dim_adj, descending), call_kwargs)
 
 
 @NestedTensorAtenRegistry.implement(aten.argsort.default)
+@NestedTensorAtenRegistry.implement(aten.argsort.stable)
 def _argsort(func, args, kwargs):
     r"""Return sort indices along a non-ragged dim by operating on packed _values."""
     source = args[0]
     call_kwargs = dict(kwargs)
     dim = args[1] if len(args) > 1 else call_kwargs.pop("dim", -1)
     descending = args[2] if len(args) > 2 else call_kwargs.pop("descending", False)
-    if "stable" in call_kwargs:
-        return per_element_fallback(func, args, kwargs)
+    stable = call_kwargs.pop("stable", None)
+    stable_overload = func is aten.argsort.stable
+
+    def _call_argsort(tensor: Tensor, dim_value: int):
+        if stable_overload or stable is not None:
+            return torch.ops.aten.argsort.stable(
+                tensor, stable=bool(stable), dim=dim_value, descending=descending, **call_kwargs
+            )
+        return func(tensor, dim_value, descending, **call_kwargs)
+
     dim_adj = _translate_dim(source, dim)
     if source._values.dim() > 1 and dim_adj > 0:
-        return _packed_like(source, func(source._values, dim_adj, descending, **call_kwargs))
+        return _packed_like(source, _call_argsort(source._values, dim_adj))
+    if source._values.dim() > 1 and dim_adj == 0:
+        fill_value = _topk_fill_value(source._values.dtype, largest=descending)
+        padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(source, fill_value=fill_value)
+        idxs = _call_argsort(padded, 1)
+        return _packed_like(source, idxs[batch_idx, local_idx])
+    if stable_overload or stable is not None:
+        return per_element_fallback(
+            torch.ops.aten.argsort.stable,
+            (source,),
+            {"stable": bool(stable), "dim": dim_adj, "descending": descending, **call_kwargs},
+        )
     return per_element_fallback(func, (source, dim_adj, descending), call_kwargs)
 
 
@@ -493,8 +540,8 @@ def _topk(func, args, kwargs):
     if source._values.dim() > 1 and dim_adj > 0:
         vals, idxs = func(source._values, k, dim_adj, largest, sorted_output, **call_kwargs)
         return (
-            _packed_new_dim_size(source, vals, dim_adj, int(k)),
-            _packed_new_dim_size(source, idxs, dim_adj, int(k)),
+            _packed_new_dim_size(source, vals, dim_adj, k),
+            _packed_new_dim_size(source, idxs, dim_adj, k),
         )
     if source._values.dim() > 1 and dim_adj == 0:
         padded, lengths, lengths_dev, batch_idx, local_idx, max_len = _packed_to_padded(
@@ -503,13 +550,18 @@ def _topk(func, args, kwargs):
         if lengths.numel() == 0:
             return _packed_like(source, source._values), _packed_like(source, source._values.to(dtype=torch.long))
 
-        k_int = int(k)
-        if not torch._dynamo.is_compiling():
+        k_value = int(k)
+        is_fake = False
+        with suppress(ImportError):
+            from torch._subclasses.fake_tensor import is_fake as _is_fake
+
+            is_fake = _is_fake(source._values)
+        if not is_fake:
             min_len = int(lengths.min().item())
-            if k_int > min_len:
+            if k_value > min_len:
                 raise ValueError(
                     f"NestedTensor topk along ragged dim requires k <= min segment length, "
-                    f"but got k={k_int}, min={min_len}"
+                    f"but got k={k_value}, min={min_len}"
                 )
 
         if _needs_masked_topk_scores(source._values.dtype):
@@ -526,16 +578,16 @@ def _topk(func, args, kwargs):
                 device=scores.device,
             )
             scores = torch.where(valid_mask, scores, fill_score)
-            _, idxs = func(scores, k_int, 1, largest, sorted_output, **call_kwargs)
+            _, idxs = func(scores, k_value, 1, largest, sorted_output, **call_kwargs)
             vals = torch.gather(padded, 1, idxs)
         else:
-            vals, idxs = func(padded, k_int, 1, largest, sorted_output, **call_kwargs)
+            vals, idxs = func(padded, k_value, 1, largest, sorted_output, **call_kwargs)
 
         vals_packed = vals.reshape(-1, *vals.shape[2:])
         idxs_packed = idxs.reshape(-1, *idxs.shape[2:])
         return (
-            _packed_new_ragged_size(source, vals_packed, k_int),
-            _packed_new_ragged_size(source, idxs_packed, k_int),
+            _packed_new_ragged_size(source, vals_packed, k_value),
+            _packed_new_ragged_size(source, idxs_packed, k_value),
         )
     return per_element_fallback(func, (source, k, dim_adj, largest, sorted_output), call_kwargs)
 
@@ -578,8 +630,7 @@ def _flip(func, args, kwargs):
         out_padded = func(padded, padded_dims, **call_kwargs)
         ragged_flips = sum(dim == 0 for dim in dims_adj)
         if ragged_flips % 2 == 1:
-            lengths_per_row = torch.repeat_interleave(lengths_dev, lengths_dev)
-            row_idx = max_len - lengths_per_row + local_idx
+            row_idx = max_len - lengths_dev[batch_idx] + local_idx
         else:
             row_idx = local_idx
         return _packed_like(source, out_padded[batch_idx, row_idx])
@@ -780,12 +831,13 @@ def _softmax_handler(func, args, kwargs):
     r"""Dispatch handler for softmax/log_softmax that translates the dim argument."""
     source = args[0]
     dim_adj = _translate_dim(source, args[1])
+    if dim_adj == 0 and source._values.dim() > 1:
+        # Normalize each ragged row independently by masking padding with -inf.
+        padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(source, fill_value=float("-inf"))
+        out_padded = func(padded, 1, *args[2:], **kwargs)
+        return _packed_like(source, out_padded[batch_idx, local_idx])
     if dim_adj == 0:
-        # Ragged packed dim: normalisation must be per-element, not across all elements.
-        results = [func(t, dim_adj, *args[2:], **kwargs) for t in source._storage]
-        return type(source)(
-            results, batch_first=source.batch_first, padding_value=source.padding_value, mask_value=source.mask_value
-        )
+        return per_element_fallback(func, args, kwargs)
     return _packed_like(source, func(source._values, dim_adj, *args[2:], **kwargs))
 
 

@@ -30,10 +30,10 @@ def tensor(data: Any, dtype=None, device=None, requires_grad: bool = False, pin_
     r"""
     Create a PNTensor from data, similar to torch.tensor() but returning a PNTensor.
 
-    This function is a convenient way to create PNTensor objects that will be
-    automatically collated into NestedTensor when used with PyTorch DataLoader.
-    The interface mirrors torch.tensor() to make it easy to switch between regular
-    tensors and PNTensors.
+    This function is a convenient way to create PNTensor objects that can be
+    collated into NestedTensor when used with PyTorch DataLoader after calling
+    ``register_pn_tensor_collate()``. The interface mirrors torch.tensor() to
+    make it easy to switch between regular tensors and PNTensors.
 
     Args:
         data: Initial data for the tensor. Can be a list, tuple, NumPy ndarray, scalar, etc.
@@ -43,7 +43,7 @@ def tensor(data: Any, dtype=None, device=None, requires_grad: bool = False, pin_
         pin_memory: If True, the tensor will be allocated in pinned memory.
 
     Returns:
-        PNTensor: A tensor wrapper that will be automatically collated into NestedTensor
+        PNTensor: A tensor wrapper for NestedTensor-oriented collation
 
     Examples:
         >>> from danling.tensors import tensor
@@ -56,12 +56,12 @@ def tensor(data: Any, dtype=None, device=None, requires_grad: bool = False, pin_
 
 class PNTensor(Tensor):
     r"""
-    A tensor wrapper that enables automatic collation into NestedTensor with PyTorch DataLoader.
+    A tensor wrapper that can be collated into NestedTensor with PyTorch DataLoader.
 
     `PNTensor` (Potential Nested Tensor) seamlessly bridges the gap between individual tensors
     and batched `NestedTensor` objects in PyTorch workflows. It's designed specifically to work
     with PyTorch's DataLoader collation mechanism, allowing datasets to return variable-length
-    tensors that will automatically be combined into a `NestedTensor` when batched.
+    tensors that can be combined into a `NestedTensor` when batched.
 
     The class provides three properties that mirror those of NestedTensor:
     - `.tensor`: The tensor itself (self)
@@ -78,7 +78,8 @@ class PNTensor(Tensor):
         Basic usage with PyTorch DataLoader:
 
         >>> from torch.utils.data import Dataset, DataLoader
-        >>> from danling.tensors import PNTensor
+        >>> from danling.tensors import PNTensor, register_pn_tensor_collate
+        >>> register_pn_tensor_collate()
         >>> class VariableLengthDataset(Dataset):
         ...     def __init__(self, data):
         ...         self.data = data
@@ -89,7 +90,7 @@ class PNTensor(Tensor):
         >>> # Create a dataset with variable-length sequences
         >>> dataset = VariableLengthDataset([[1, 2, 3], [4, 5], [6, 7, 8, 9]])
         >>> dataloader = DataLoader(dataset, batch_size=3)
-        >>> # The DataLoader automatically produces NestedTensor batches
+        >>> # The DataLoader produces NestedTensor batches after registration
         >>> batch = next(iter(dataloader))
         >>> batch
         NestedTensor([

@@ -18,9 +18,18 @@
 # See the LICENSE file for more details.
 
 import torch
+from torch.utils.data._utils.collate import default_collate_fn_map
 
-from danling.tensors import PNTensor
+from danling.tensors import (
+    NestedTensor,
+    PNTensor,
+    collate_pn_tensor_fn,
+    register_pn_tensor_collate,
+)
 from danling.tensors import tensor as pn_tensor
+from danling.tensors import (
+    unregister_pn_tensor_collate,
+)
 from tests.tensors.utils import assert_close
 
 
@@ -45,3 +54,33 @@ def test_new_empty_returns_pn_tensor():
     output = pn.new_empty((2, 2))
     assert isinstance(output, PNTensor)
     assert output.shape == (2, 2)
+
+
+def test_collate_registration_helpers_on_custom_map():
+    custom_map = {}
+    register_pn_tensor_collate(custom_map)
+    assert custom_map[PNTensor] is collate_pn_tensor_fn
+
+    batch = [pn_tensor([1, 2, 3]), pn_tensor([4, 5])]
+    collated = custom_map[PNTensor](batch, collate_fn_map=custom_map)
+    assert isinstance(collated, NestedTensor)
+    assert_close(collated[0], torch.tensor([1, 2, 3]))
+    assert_close(collated[1], torch.tensor([4, 5]))
+
+    unregister_pn_tensor_collate(custom_map)
+    assert PNTensor not in custom_map
+
+
+def test_collate_registration_global_roundtrip():
+    had_entry = PNTensor in default_collate_fn_map
+    original = default_collate_fn_map.get(PNTensor)
+    try:
+        unregister_pn_tensor_collate()
+        assert PNTensor not in default_collate_fn_map
+        register_pn_tensor_collate()
+        assert default_collate_fn_map[PNTensor] is collate_pn_tensor_fn
+    finally:
+        if had_entry:
+            default_collate_fn_map[PNTensor] = original
+        else:
+            default_collate_fn_map.pop(PNTensor, None)
