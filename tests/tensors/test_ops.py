@@ -20,7 +20,7 @@
 import pytest
 import torch
 
-from danling.tensors import NestedTensor
+from danling.tensors import NestedTensor, aten_functions
 from danling.tensors.aten_functions import NestedTensorAtenRegistry
 from danling.tensors.ops import (
     ATEN_BINARY_ELEMENTWISE_OPS,
@@ -152,3 +152,97 @@ def test_aten_sort_argsort_topk_cumulative_flip_match_per_tensor():
     cumsum_ragged = torch.ops.aten.cumsum.default(nt, 1)
     for got, t in zip(cumsum_ragged, nt):
         torch.testing.assert_close(got, torch.cumsum(t, dim=0))
+
+
+def test_aten_ragged_topk_cumsum_cumprod_flip_no_fallback():
+    nt = NT(
+        [
+            torch.tensor([[3.0, 1.0], [4.0, 2.0], [0.0, 5.0]]),
+            torch.tensor([[7.0, 8.0], [1.0, 0.0], [9.0, 6.0], [2.0, 3.0], [5.0, 4.0]]),
+        ]
+    )
+
+    original_fallback = aten_functions.per_element_fallback
+
+    def _fail_fallback(*_args, **_kwargs):
+        raise AssertionError("per_element_fallback must not be used for covered ragged aten fastpaths")
+
+    aten_functions.per_element_fallback = _fail_fallback
+    try:
+        topk_vals, topk_idxs = torch.ops.aten.topk.default(nt, 2, 1, True, True)
+        cumsum_ragged = torch.ops.aten.cumsum.default(nt, 1)
+        cumprod_ragged = torch.ops.aten.cumprod.default(nt, 1)
+        flipped_ragged = torch.ops.aten.flip.default(nt, [1])
+    finally:
+        aten_functions.per_element_fallback = original_fallback
+
+    ref_topk_vals = NT([torch.topk(t, 2, dim=0).values for t in nt], **nt._meta())
+    ref_topk_idxs = NT([torch.topk(t, 2, dim=0).indices for t in nt], **nt._meta())
+    ref_cumsum = NT([torch.cumsum(t, dim=0) for t in nt], **nt._meta())
+    ref_cumprod = NT([torch.cumprod(t, dim=0) for t in nt], **nt._meta())
+    ref_flip = NT([torch.flip(t, dims=[0]) for t in nt], **nt._meta())
+    torch.testing.assert_close(topk_vals.tensor, ref_topk_vals.tensor)
+    torch.testing.assert_close(topk_idxs.tensor, ref_topk_idxs.tensor)
+    torch.testing.assert_close(cumsum_ragged.tensor, ref_cumsum.tensor)
+    torch.testing.assert_close(cumprod_ragged.tensor, ref_cumprod.tensor)
+    torch.testing.assert_close(flipped_ragged.tensor, ref_flip.tensor)
+
+
+def test_aten_ragged_topk_k_exceeds_min_length_raises():
+    nt = NT(
+        [
+            torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+            torch.tensor([[5.0, 6.0], [7.0, 8.0], [9.0, 10.0]]),
+        ]
+    )
+    with pytest.raises(ValueError, match="k <= min segment length"):
+        torch.ops.aten.topk.default(nt, 3, 1, True, True)
+
+
+@pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+def test_aten_ragged_fastpaths_compile_smoke():
+    nt = NT(
+        [
+            torch.tensor([[3.0, 1.0], [4.0, 2.0], [0.0, 5.0]]),
+            torch.tensor([[7.0, 8.0], [1.0, 0.0], [9.0, 6.0], [2.0, 3.0], [5.0, 4.0]]),
+        ]
+    )
+
+    def _compile(fn):
+        try:
+            return torch.compile(fn, backend="eager")
+        except Exception as exc:  # pragma: no cover - environment-dependent
+            pytest.skip(f"torch.compile backend not usable in this environment: {exc}")
+
+    original_fallback = aten_functions.per_element_fallback
+
+    def _fail_fallback(*_args, **_kwargs):
+        raise AssertionError("per_element_fallback must not be used for covered ragged aten fastpaths")
+
+    aten_functions.per_element_fallback = _fail_fallback
+    try:
+        topk_fn = _compile(lambda x: torch.ops.aten.topk.default(x, 2, 1, True, True))
+        cumsum_fn = _compile(lambda x: torch.ops.aten.cumsum.default(x, 1))
+        cumprod_fn = _compile(lambda x: torch.ops.aten.cumprod.default(x, 1))
+        flip_fn = _compile(lambda x: torch.ops.aten.flip.default(x, [1]))
+
+        try:
+            topk_comp_vals, topk_comp_idxs = topk_fn(nt)
+            cumsum_comp = cumsum_fn(nt)
+            cumprod_comp = cumprod_fn(nt)
+            flip_comp = flip_fn(nt)
+        except Exception as exc:  # pragma: no cover - environment-dependent
+            pytest.skip(f"compiled execution is not supported in this environment: {exc}")
+    finally:
+        aten_functions.per_element_fallback = original_fallback
+
+    ref_topk_vals = NT([torch.topk(t, 2, dim=0).values for t in nt], **nt._meta())
+    ref_topk_idxs = NT([torch.topk(t, 2, dim=0).indices for t in nt], **nt._meta())
+    ref_cumsum = NT([torch.cumsum(t, dim=0) for t in nt], **nt._meta())
+    ref_cumprod = NT([torch.cumprod(t, dim=0) for t in nt], **nt._meta())
+    ref_flip = NT([torch.flip(t, dims=[0]) for t in nt], **nt._meta())
+    torch.testing.assert_close(topk_comp_vals.tensor, ref_topk_vals.tensor)
+    torch.testing.assert_close(topk_comp_idxs.tensor, ref_topk_idxs.tensor)
+    torch.testing.assert_close(cumsum_comp.tensor, ref_cumsum.tensor)
+    torch.testing.assert_close(cumprod_comp.tensor, ref_cumprod.tensor)
+    torch.testing.assert_close(flip_comp.tensor, ref_flip.tensor)

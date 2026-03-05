@@ -150,7 +150,10 @@ def _map_storage_pair(input: NestedTensor, op, *args, **kwargs):
         except (TypeError, RuntimeError, ValueError):
             first_dtype = input.dtype
             second_dtype = input.dtype
-        return cls([], dtype=first_dtype, **input._meta()), cls([], dtype=second_dtype, **input._meta())
+        return (
+            cls([], dtype=first_dtype, **input._meta(include_dtype=False)),
+            cls([], dtype=second_dtype, **input._meta(include_dtype=False)),
+        )
     firsts, seconds = [], []
     for t in input._storage:
         a, b = op(t, *args, **kwargs)

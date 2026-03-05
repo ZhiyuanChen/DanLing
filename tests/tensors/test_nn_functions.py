@@ -1594,6 +1594,69 @@ class TestScaledDotProductAttention:
         with pytest.raises(ValueError, match="NestedTensor batch length mismatch"):
             F.scaled_dot_product_attention(query, key, key, dropout_p=0.0)
 
+    def test_sdpa_batch_first_false_matches_reference(self):
+        device = torch.device("cpu")
+        dtype = torch.float32
+        query_elems = [
+            torch.randn(2, 5, 8, device=device, dtype=dtype),
+            torch.randn(2, 3, 8, device=device, dtype=dtype),
+        ]
+        key_elems = [
+            torch.randn(2, 6, 8, device=device, dtype=dtype),
+            torch.randn(2, 4, 8, device=device, dtype=dtype),
+        ]
+        value_elems = [
+            torch.randn(2, 6, 8, device=device, dtype=dtype),
+            torch.randn(2, 4, 8, device=device, dtype=dtype),
+        ]
+        query = NT(query_elems, batch_first=False)
+        key = NT(key_elems, batch_first=False)
+        value = NT(value_elems, batch_first=False)
+
+        output = F.scaled_dot_product_attention(query, key, value, dropout_p=0.0)
+        reference = NT(
+            [F.scaled_dot_product_attention(q, k, v, dropout_p=0.0) for q, k, v in zip(query, key, value)],
+            **query._meta(),
+        )
+        assert_close(output, reference, atol=1e-5, rtol=1e-5)
+
+    def test_sdpa_batch_first_false_with_nested_mask_matches_reference(self):
+        device = torch.device("cpu")
+        dtype = torch.float32
+        query_elems = [
+            torch.randn(2, 4, 8, device=device, dtype=dtype),
+            torch.randn(2, 3, 8, device=device, dtype=dtype),
+        ]
+        key_elems = [
+            torch.randn(2, 5, 8, device=device, dtype=dtype),
+            torch.randn(2, 4, 8, device=device, dtype=dtype),
+        ]
+        value_elems = [
+            torch.randn(2, 5, 8, device=device, dtype=dtype),
+            torch.randn(2, 4, 8, device=device, dtype=dtype),
+        ]
+        masks = [
+            torch.ones(2, 4, 5, device=device, dtype=torch.bool),
+            torch.ones(2, 3, 4, device=device, dtype=torch.bool),
+        ]
+        masks[0][:, :, -1] = False
+        masks[1][:, -1, :] = False
+
+        query = NT(query_elems, batch_first=False)
+        key = NT(key_elems, batch_first=False)
+        value = NT(value_elems, batch_first=False)
+        attn_mask = NT(masks, batch_first=False)
+
+        output = F.scaled_dot_product_attention(query, key, value, attn_mask=attn_mask, dropout_p=0.0)
+        reference = NT(
+            [
+                F.scaled_dot_product_attention(q, k, v, attn_mask=m, dropout_p=0.0)
+                for q, k, v, m in zip(query, key, value, masks)
+            ],
+            **query._meta(),
+        )
+        assert_close(output, reference, atol=1e-5, rtol=1e-5)
+
 
 class TestConvTranspose:
     @pytest.mark.parametrize("shape", [[(5, 8), (7, 8)]])

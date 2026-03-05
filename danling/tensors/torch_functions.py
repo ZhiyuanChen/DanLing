@@ -157,6 +157,19 @@ def _compare(input, other, op, **kwargs) -> bool:
     return all(op(x, y, **kwargs) for x, y in zip(input._storage, other._storage))
 
 
+def _validate_pairwise_batch_length(
+    lhs: NestedTensor, rhs: NestedTensor, *, op_name: str, lhs_name: str, rhs_name: str
+) -> None:
+    r"""Validate two NestedTensor operands have matching batch lengths."""
+    lhs_len = len(lhs)
+    rhs_len = len(rhs)
+    if lhs_len != rhs_len:
+        raise ValueError(
+            f"{op_name}: NestedTensor batch length mismatch between {lhs_name} and {rhs_name}: "
+            f"{lhs_name}={lhs_len}, {rhs_name}={rhs_len}"
+        )
+
+
 @NestedTensorFuncRegistry.implement(torch.allclose)
 def allclose(
     input: NestedTensor, other: NestedTensor | Tensor, rtol: float = 1e-05, atol: float = 1e-08, equal_nan: bool = False
@@ -432,8 +445,13 @@ def chunk(input: NestedTensor, chunks: int, dim: int = 0):
 
     elem_dim = _translate_dim(input, dim)
     chunk_results = [torch.chunk(t, chunks, dim=elem_dim) for t in storage]
-
-    num_chunks = len(chunk_results[0])
+    chunk_counts = [len(parts) for parts in chunk_results]
+    num_chunks = chunk_counts[0]
+    if any(count != num_chunks for count in chunk_counts[1:]):
+        raise ValueError(
+            "torch.chunk along non-batch dim requires uniform per-element chunk counts, "
+            f"but got counts {chunk_counts}."
+        )
     return tuple(
         NestedTensor([chunk_results[i][k] for i in range(len(storage))], **input._meta()) for k in range(num_chunks)
     )
@@ -525,8 +543,13 @@ def split(input: NestedTensor, split_size_or_sections, dim: int = 0):
 
     elem_dim = _translate_dim(input, dim)
     split_results = [torch.split(t, split_size_or_sections, dim=elem_dim) for t in storage]
-
-    num_chunks = len(split_results[0])
+    split_counts = [len(parts) for parts in split_results]
+    num_chunks = split_counts[0]
+    if any(count != num_chunks for count in split_counts[1:]):
+        raise ValueError(
+            "torch.split along non-batch dim requires uniform per-element split counts, "
+            f"but got counts {split_counts}."
+        )
     return tuple(
         NestedTensor([split_results[i][k] for i in range(len(storage))], **input._meta()) for k in range(num_chunks)
     )
@@ -1719,6 +1742,7 @@ def mean(
         else:
             dims = tuple(_normalize_dim(d, input.dim()) for d in dim)
             tensor, mask = input.tensor_mask
+            # `mask_value` is the padding-position fill value in `mask`.
             valid = mask if not input.mask_value else ~mask
             while valid.dim() < tensor.dim():
                 valid = valid.unsqueeze(-1)
@@ -2901,7 +2925,14 @@ def einsum(equation, *operands):
     if not nt_indices:
         raise TypeError("einsum: at least one operand must be a NestedTensor")
 
-    ref = operands[nt_indices[0]]
+    ref_idx = nt_indices[0]
+    ref = operands[ref_idx]
+    for idx in nt_indices[1:]:
+        other = operands[idx]
+        _validate_pairwise_batch_length(
+            ref, other, op_name="einsum", lhs_name=f"operand[{ref_idx}]", rhs_name=f"operand[{idx}]"
+        )
+
     n = len(ref._storage)
     results = []
     for elem_idx in range(n):
@@ -2921,6 +2952,9 @@ def searchsorted(sorted_sequence, values, *, out_int32=False, right=False, side=
     from .nested_tensor import NestedTensor
 
     if isinstance(sorted_sequence, NestedTensor) and isinstance(values, NestedTensor):
+        _validate_pairwise_batch_length(
+            sorted_sequence, values, op_name="searchsorted", lhs_name="sorted_sequence", rhs_name="values"
+        )
         results = [
             torch.searchsorted(s, v, out_int32=out_int32, right=right, side=side, sorter=sorter)
             for s, v in zip(sorted_sequence._storage, values._storage)
@@ -3115,6 +3149,7 @@ def linalg_solve(input, B):
     from .nested_tensor import NestedTensor
 
     if isinstance(B, NestedTensor):
+        _validate_pairwise_batch_length(input, B, op_name="linalg.solve", lhs_name="input", rhs_name="B")
         results = [torch.linalg.solve(a, b) for a, b in zip(input._storage, B._storage)]
     else:
         results = [torch.linalg.solve(t, B) for t in input._storage]

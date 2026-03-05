@@ -52,7 +52,8 @@ def mask_tensor(
         size: desired size of the padded tensor (and mask tensor).
         batch_first: whether to put the batch dimension in the first dimension.
             Defaults to `True`.
-        mask_value: mask value in the mask tensor.
+        mask_value: boolean fill value for padding positions in the mask tensor.
+            Valid positions are filled with `not mask_value`.
             Defaults to `False`.
         squeeze_channel: whether to squeeze the channel dimension if it is 1.
 

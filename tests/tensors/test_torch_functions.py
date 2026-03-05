@@ -864,6 +864,13 @@ class TestSplitChunkUnbind:
         assert torch.equal(parts[1][0], a[:, 2:4])
         assert torch.equal(parts[2][0], a[:, 4:6])
 
+    def test_split_non_batch_dim_mismatched_counts_raises(self, device, float_dtype):
+        a = torch.randn(2, 2, device=device, dtype=float_dtype)
+        b = torch.randn(2, 5, device=device, dtype=float_dtype)
+        nt = NestedTensor(a, b)
+        with pytest.raises(ValueError, match="uniform per-element split counts"):
+            torch.split(nt, 2, dim=-1)
+
     def test_chunk_batch_dim(self, device, float_dtype):
         nt = NestedTensor([torch.tensor([i], device=device, dtype=float_dtype) for i in range(5)])
         output = torch.chunk(nt, 2, dim=0)
@@ -883,6 +890,13 @@ class TestSplitChunkUnbind:
         assert parts[0][0].shape == torch.Size([3, 2])
         assert torch.equal(parts[0][0], a[:, :2])
         assert torch.equal(parts[2][1], b[:, 4:6])
+
+    def test_chunk_non_batch_dim_mismatched_counts_raises(self, device, float_dtype):
+        a = torch.randn(2, 2, device=device, dtype=float_dtype)
+        b = torch.randn(2, 5, device=device, dtype=float_dtype)
+        nt = NestedTensor(a, b)
+        with pytest.raises(ValueError, match="uniform per-element chunk counts"):
+            torch.chunk(nt, 3, dim=-1)
 
     def test_unbind_batch_dim_respects_batch_first(self, device, float_dtype):
         nt = NestedTensor(
@@ -1762,6 +1776,14 @@ class TestLinalgOps:
         assert_close(result[0], torch.linalg.solve(a, b_vec))
         assert_close(result[1], torch.linalg.solve(a2, b2_vec))
 
+    def test_linalg_solve_mismatched_batch_lengths_raises(self, device, float_dtype):
+        a = torch.eye(3, device=device, dtype=float_dtype)
+        b = torch.randn(3, 1, device=device, dtype=float_dtype)
+        nt_a = NT([a, a])
+        nt_b = NT([b])
+        with pytest.raises(ValueError, match="linalg.solve: NestedTensor batch length mismatch"):
+            torch.linalg.solve(nt_a, nt_b)
+
 
 class TestMissingOpsAudit:
     """Tests for ops found missing during the torch.* audit."""
@@ -1825,6 +1847,14 @@ class TestMissingOpsAudit:
         assert_close(result[0], torch.searchsorted(sorted_a, vals_a))
         assert_close(result[1], torch.searchsorted(sorted_b, vals_b))
 
+    def test_searchsorted_mismatched_batch_lengths_raises(self, device, float_dtype):
+        sorted_a = torch.tensor([1.0, 3.0, 5.0], device=device, dtype=float_dtype)
+        vals_a = torch.tensor([2.0, 4.0], device=device, dtype=float_dtype)
+        nt_sorted = NT([sorted_a, sorted_a])
+        nt_vals = NT([vals_a])
+        with pytest.raises(ValueError, match="searchsorted: NestedTensor batch length mismatch"):
+            torch.searchsorted(nt_sorted, nt_vals)
+
     def test_searchsorted_shared_boundaries(self, device, float_dtype):
         boundaries = torch.tensor([1.0, 3.0, 5.0, 7.0], device=device, dtype=float_dtype)
         vals_a = torch.tensor([2.0, 4.0, 6.0], device=device, dtype=float_dtype)
@@ -1867,3 +1897,11 @@ class TestMissingOpsAudit:
         assert isinstance(result, NestedTensor)
         assert_close(result[0], torch.einsum("ij,ij->i", a1, a2))
         assert_close(result[1], torch.einsum("ij,ij->i", b1, b2))
+
+    def test_einsum_mismatched_batch_lengths_raises(self, device, float_dtype):
+        a = torch.randn(3, 4, device=device, dtype=float_dtype)
+        b = torch.randn(3, 4, device=device, dtype=float_dtype)
+        nt1 = NT([a, a])
+        nt2 = NT([b])
+        with pytest.raises(ValueError, match="einsum: NestedTensor batch length mismatch"):
+            torch.einsum("ij,ij->i", nt1, nt2)

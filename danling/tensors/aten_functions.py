@@ -398,6 +398,62 @@ def _packed_like(source: NestedTensor, new_values: Tensor) -> NestedTensor:
     )
 
 
+def _packed_new_ragged_size(source: NestedTensor, new_values: Tensor, new_ragged_size: int) -> NestedTensor:
+    r"""Rebuild a NestedTensor when per-element dim-0 size changes uniformly."""
+    batch_size = len(source)
+    # Keep offsets on the same device as the source metadata (CPU by design).
+    new_offsets = torch.arange(batch_size + 1, dtype=torch.long, device=source._offsets.device) * int(new_ragged_size)
+    new_shape_tensor = source._shape_tensor.clone()
+    if new_shape_tensor.numel() > 0:
+        new_shape_tensor[:, 0] = int(new_ragged_size)
+    new_logical = list(source._logical_shape)
+    if source.batch_first:
+        if len(new_logical) > 1:
+            new_logical[1] = int(new_ragged_size)
+    elif len(new_logical) > 0:
+        new_logical[0] = int(new_ragged_size)
+    return type(source)._from_packed(
+        new_values,
+        new_offsets,
+        new_shape_tensor,
+        batch_first=source.batch_first,
+        padding_value=source.padding_value,
+        mask_value=source.mask_value,
+        pin_memory=source._pin_memory,
+        outer_size=torch.Size(new_logical),
+    )
+
+
+def _packed_to_padded(source: NestedTensor, *, fill_value) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, int]:
+    r"""Convert packed values [sum(L_i), ...] into padded [B, max(L_i), ...] plus gather indices."""
+    lengths = source._offsets[1:] - source._offsets[:-1]
+    device = source._values.device
+    lengths_dev = lengths.to(device=device, dtype=torch.long)
+    max_len = int(lengths.max().item()) if lengths.numel() > 0 else 0
+    batch_size = int(lengths.numel())
+    padded_shape = (batch_size, max_len, *source._values.shape[1:])
+    padded = torch.full(padded_shape, fill_value=fill_value, dtype=source._values.dtype, device=device)
+
+    batch_idx = torch.repeat_interleave(torch.arange(batch_size, device=device, dtype=torch.long), lengths_dev)
+    starts = torch.repeat_interleave(source._offsets[:-1].to(device=device, dtype=torch.long), lengths_dev)
+    local_idx = torch.arange(source._values.size(0), device=device, dtype=torch.long) - starts
+    padded[batch_idx, local_idx] = source._values
+    return padded, lengths, lengths_dev, batch_idx, local_idx, max_len
+
+
+def _topk_fill_value(dtype: torch.dtype, largest: bool):
+    if dtype.is_floating_point or dtype.is_complex:
+        return float("-inf") if largest else float("inf")
+    if dtype == torch.bool:
+        return False if largest else True
+    info = torch.iinfo(dtype)
+    return info.min if largest else info.max
+
+
+def _needs_masked_topk_scores(dtype: torch.dtype) -> bool:
+    return (not dtype.is_floating_point) and (not dtype.is_complex)
+
+
 # See also torch_functions.py::mm for the torch-level handler (mixed-type cases).
 @NestedTensorAtenRegistry.implement(aten.mm.default)
 def _mm(func, args, kwargs):
@@ -494,6 +550,45 @@ def _topk(func, args, kwargs):
             _packed_new_dim_size(source, vals, dim_adj, int(k)),
             _packed_new_dim_size(source, idxs, dim_adj, int(k)),
         )
+    if source._values.dim() > 1 and dim_adj == 0:
+        padded, lengths, lengths_dev, batch_idx, local_idx, max_len = _packed_to_padded(
+            source, fill_value=_topk_fill_value(source._values.dtype, largest)
+        )
+        if lengths.numel() == 0:
+            return _packed_like(source, source._values), _packed_like(source, source._values.to(dtype=torch.long))
+
+        k_int = int(k)
+        min_len = int(lengths.min().item())
+        if k_int > min_len:
+            raise ValueError(
+                f"NestedTensor topk along ragged dim requires k <= min segment length, but got k={k_int}, min={min_len}"
+            )
+
+        if _needs_masked_topk_scores(source._values.dtype):
+            valid_mask = torch.arange(max_len, device=source._values.device, dtype=torch.long).unsqueeze(0)
+            valid_mask = valid_mask < lengths_dev.unsqueeze(1)
+            while valid_mask.dim() < padded.dim():
+                valid_mask = valid_mask.unsqueeze(-1)
+            score_dtype = torch.float64
+            scores = padded.to(dtype=score_dtype)
+            fill_score = torch.full(
+                (),
+                float("-inf") if largest else float("inf"),
+                dtype=score_dtype,
+                device=scores.device,
+            )
+            scores = torch.where(valid_mask, scores, fill_score)
+            _, idxs = func(scores, k_int, 1, largest, sorted_output, **call_kwargs)
+            vals = torch.gather(padded, 1, idxs)
+        else:
+            vals, idxs = func(padded, k_int, 1, largest, sorted_output, **call_kwargs)
+
+        vals_packed = vals.reshape(-1, *vals.shape[2:])
+        idxs_packed = idxs.reshape(-1, *idxs.shape[2:])
+        return (
+            _packed_new_ragged_size(source, vals_packed, k_int),
+            _packed_new_ragged_size(source, idxs_packed, k_int),
+        )
     return per_element_fallback(func, (source, k, dim_adj, largest, sorted_output), call_kwargs)
 
 
@@ -508,6 +603,11 @@ def _cumulative(func, args, kwargs):
     extra_args = args[2:] if len(args) > 2 else ()
     if source._values.dim() > 1 and dim_adj > 0:
         return _packed_like(source, func(source._values, dim_adj, *extra_args, **call_kwargs))
+    if source._values.dim() > 1 and dim_adj == 0:
+        neutral = 0 if func is aten.cumsum.default else 1
+        padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(source, fill_value=neutral)
+        out_padded = func(padded, 1, *extra_args, **call_kwargs)
+        return _packed_like(source, out_padded[batch_idx, local_idx])
     return per_element_fallback(func, (source, dim_adj, *extra_args), call_kwargs)
 
 
@@ -522,6 +622,19 @@ def _flip(func, args, kwargs):
     dims_adj = tuple(_translate_dim(source, dim) for dim in dims)
     if source._values.dim() > 1 and all(dim > 0 for dim in dims_adj):
         return _packed_like(source, func(source._values, dims_adj, **call_kwargs))
+    if source._values.dim() > 1 and any(dim == 0 for dim in dims_adj):
+        padded, _, lengths_dev, batch_idx, local_idx, max_len = _packed_to_padded(
+            source, fill_value=source.padding_value
+        )
+        padded_dims = tuple(1 if dim == 0 else dim + 1 for dim in dims_adj)
+        out_padded = func(padded, padded_dims, **call_kwargs)
+        ragged_flips = sum(dim == 0 for dim in dims_adj)
+        if ragged_flips % 2 == 1:
+            lengths_per_row = torch.repeat_interleave(lengths_dev, lengths_dev)
+            row_idx = max_len - lengths_per_row + local_idx
+        else:
+            row_idx = local_idx
+        return _packed_like(source, out_padded[batch_idx, row_idx])
     return per_element_fallback(func, (source, dims_adj), call_kwargs)
 
 
@@ -546,6 +659,7 @@ def _inplace_unary_handler(func, args, kwargs):
     r"""Dispatch handler for in-place unary ops applied to _values."""
     source = args[0]
     func(source._values, *args[1:], **kwargs)
+    source._cached_storage = None
     return source
 
 
@@ -577,6 +691,7 @@ def _inplace_binary_handler(func, args, kwargs):
     source = args[0]
     resolved = _resolve_other(source, args[1], func)
     func(source._values, resolved, *args[2:], **kwargs)
+    source._cached_storage = None
     return source
 
 
@@ -641,6 +756,7 @@ def _copy(func, args, kwargs):
     dest, src = args[0], args[1]
     if isinstance(src, NestedTensor) and _offsets_match(dest._offsets, src._offsets):
         func(dest._values, src._values, *args[2:], **kwargs)
+        dest._cached_storage = None
         return dest
     raise NotImplementedError(f"NestedTensor: {func} requires matching offsets")
 

@@ -113,13 +113,15 @@ class NestedTensor(torch.Tensor):
         batch_first: Whether the first dimension is the batch dimension (B, N, *)
             If `False`, the first dimension is the sequence dimension (N, B, *)
         padding_value: Value used for padding in the padded tensor
-        mask_value: Value used in the mask to indicate padding positions (usually False)
+        mask_value: Boolean fill value for padding positions in generated masks.
+            - ``mask_value=False`` (default): valid positions are ``True`` and padding is ``False``.
+            - ``mask_value=True``: padding positions are ``True`` and valid positions are ``False``.
 
     Args:
         *tensors: Variable-length tensors or sequences to store
         batch_first: Whether to use batch-first representation.
         padding_value: Value to use for padding.
-        mask_value: Value to use for padding positions in mask.
+        mask_value: Boolean fill value used for padding positions in masks.
 
     Raises:
         ValueError: If `tensors` is not an iterable
@@ -511,10 +513,8 @@ class NestedTensor(torch.Tensor):
 
     @dtype.setter
     def dtype(self, value: torch.dtype | None):
-        r"""Set the data type and cast all elements accordingly."""
-        if value is not None and self._values.numel() > 0:
-            self._cached_storage = None
-            self._values = self._values.to(dtype=value)
+        r"""`dtype` is read-only; use `.to(dtype=...)` to convert."""
+        raise AttributeError("NestedTensor.dtype is read-only; use .to(dtype=...) to create a converted tensor.")
 
     @property
     def device(self) -> torch.device:  # type: ignore[override]
@@ -523,10 +523,8 @@ class NestedTensor(torch.Tensor):
 
     @device.setter
     def device(self, value: torch.device | None):
-        r"""Set the device and move all elements accordingly."""
-        if value is not None and self._values.numel() > 0:
-            self._cached_storage = None
-            self._values = self._values.to(device=value)
+        r"""`device` is read-only; use `.to(device=...)` to move tensors."""
+        raise AttributeError("NestedTensor.device is read-only; use .to(device=...) to create a moved tensor.")
 
     @property
     def requires_grad(self) -> bool:  # type: ignore[override]
@@ -604,6 +602,9 @@ class NestedTensor(torch.Tensor):
         r"""
         Padding mask of `tensor`.
 
+        `mask_value` controls which boolean value denotes padding in this mask.
+        With the default `mask_value=False`, `True` means valid data.
+
         Examples:
             >>> nested_tensor = NestedTensor([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
             >>> nested_tensor.mask
@@ -667,6 +668,15 @@ class NestedTensor(torch.Tensor):
         batch_size = len(self._offsets) - 1
         if batch_size == 0:
             return torch.empty(0, dtype=self._values.dtype, device=self.device), ()
+
+        # Fast path for single-ragged packed layout: concatenation is exactly _values.
+        if self._values.ndim > 1:
+            original_shapes = []
+            for row in self._shape_tensor.tolist():
+                while row and row[-1] == 0:
+                    row.pop()
+                original_shapes.append(torch.Size(row))
+            return self._values, tuple(original_shapes)
 
         storage = self._storage
         original_shapes = tuple(t.shape for t in storage)
@@ -790,6 +800,8 @@ class NestedTensor(torch.Tensor):
         Args:
             tensor: Padded Tensor.
             mask: Tensor Mask.
+                The mask uses the same convention as ``mask_value``:
+                padding positions equal ``mask_value`` and valid positions equal ``not mask_value``.
             batched: When ``True`` and ``mask.ndim == 1``, treat ``mask`` as a per-batch-element
                 selector (each ``True`` entry selects a row from ``tensor``) rather than a
                 contiguous-prefix length indicator.
@@ -827,8 +839,8 @@ class NestedTensor(torch.Tensor):
         trimmed = []
         if mask.ndim == 2:
             # 1-D per-element mask: contiguous-prefix slice
-            for t, m in zip(tensor_iter, mask_iter):
-                count = int(m.sum().item())
+            counts = mask_iter.sum(dim=1, dtype=torch.long).tolist()
+            for t, count in zip(tensor_iter, counts):
                 trimmed.append(t[:count])
         else:
             # N-D per-element mask: bounding-box slice + mask fill for interior False positions.
@@ -898,7 +910,7 @@ class NestedTensor(torch.Tensor):
             # .contiguous() ensures storage elements don't inherit non-trivial
             # strides from the padded tensor (e.g. after transpose).
             new_storage.append(tensor[slices].contiguous())
-        return self.__class__(new_storage, dtype=tensor.dtype, **self._meta())
+        return self.__class__(new_storage, dtype=tensor.dtype, **self._meta(include_dtype=False))
 
     # ------------------------------------------------------------------
     # Indexing
@@ -1129,8 +1141,11 @@ class NestedTensor(torch.Tensor):
     # State management
     # ------------------------------------------------------------------
 
-    def _meta(self, *, include_dtype: bool = False) -> Mapping:
+    def _meta(self, *, include_dtype: bool | None = None) -> Mapping:
         r"""Metadata used for structure-preserving reconstruction."""
+        if include_dtype is None:
+            # Empty reconstructions cannot infer dtype from storage; include it by default.
+            include_dtype = self._values.numel() == 0
         if include_dtype:
             return {
                 "batch_first": self.batch_first,
@@ -1374,13 +1389,27 @@ class NestedTensor(torch.Tensor):
 
     @property
     def T(self) -> Self:  # type: ignore[override]
-        r"""Transpose: applies .T to each element in storage."""
-        return self.__class__([t.T for t in self._storage], **self._meta(include_dtype=True))
+        r"""Transpose: reverse per-element dims while keeping batch dim fixed."""
+        ndims = self.dim()
+        if ndims <= 1:
+            return self
+        batch_dim = 0 if self.batch_first else 1
+        elem_dims = [d for d in range(ndims) if d != batch_dim]
+        order = list(reversed(elem_dims))
+        order.insert(batch_dim, batch_dim)
+        return torch.permute(self, tuple(order))
 
     @property
     def mT(self) -> Self:  # type: ignore[override]
-        r"""Batch matrix transpose: applies .mT to each element in storage."""
-        return self.__class__([t.mT for t in self._storage], **self._meta(include_dtype=True))
+        r"""Matrix transpose over the last two per-element dimensions."""
+        ndims = self.dim()
+        batch_dim = 0 if self.batch_first else 1
+        elem_dims = [d for d in range(ndims) if d != batch_dim]
+        if len(elem_dims) < 2:
+            raise RuntimeError(
+                f"tensor.mT is only supported on matrices or batches of matrices. Got {len(elem_dims)}-D tensor."
+            )
+        return torch.transpose(self, elem_dims[-2], elem_dims[-1])
 
     @property
     def shape(self) -> torch.Size:  # type: ignore[override, name-defined]

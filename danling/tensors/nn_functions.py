@@ -161,7 +161,10 @@ def _apply_with_indices(input: NestedTensor, pool_fn: Callable, *args, **kwargs)
     r"""Applies a pooling op that returns (output, indices) to each element of a NestedTensor."""
     cls = type(input)
     if len(input) == 0:
-        return cls([], **input._meta(include_dtype=True)), cls([], dtype=torch.long, **input._meta())
+        return (
+            cls([], **input._meta(include_dtype=True)),
+            cls([], dtype=torch.long, **input._meta(include_dtype=False)),
+        )
     outputs, indices = [], []
     for t in input._storage:
         out, idx = pool_fn(t, *args, return_indices=True, **kwargs)
@@ -666,12 +669,22 @@ def _build_sdpa_mask(
     key_attn_mask = None
     if isinstance(key, NestedTensor):
         key_mask = key.mask  # True=real when mask_value=False
+        if not key.batch_first and key_mask.dim() >= 2:
+            key_mask = key_mask.transpose(0, 1)
         if key.mask_value:
             key_mask = ~key_mask  # normalize to True=real (SDPA bool: True=attend)
-        # Expand to match SDPA's score dimensions (same ndim as query_tensor).
-        # Insert a singleton for T_q at -2, then pad leading dims as needed.
+
+        # Reduce any channel-like trailing dimensions; SDPA key padding mask should
+        # describe valid key positions, not feature channels.
+        while key_mask.dim() > query_tensor.dim() - 1:
+            key_mask = key_mask[..., 0]
+
+        # Expand to match SDPA score dimensions (batch/head..., T_q, T_k).
+        # Key mask is (..., T_k) -> (..., 1, T_k).
         target_ndim = query_tensor.dim()
-        key_attn_mask = key_mask.unsqueeze(-2)  # (..., 1, max_T)
+        while key_mask.dim() < target_ndim - 1:
+            key_mask = key_mask.unsqueeze(1)
+        key_attn_mask = key_mask.unsqueeze(-2)
         while key_attn_mask.dim() < target_ndim:
             key_attn_mask = key_attn_mask.unsqueeze(1)
 
@@ -1005,14 +1018,32 @@ def scaled_dot_product_attention(
         raise ValueError(
             "NestedTensor batch length mismatch between query and key: " f"query={len(query)}, key={len(key)}"
         )
+    if isinstance(key, NestedTensor) and query.batch_first != key.batch_first:
+        raise ValueError(
+            "NestedTensor batch_first mismatch between query and key: "
+            f"query.batch_first={query.batch_first}, key.batch_first={key.batch_first}. "
+            "Use the same batch_first setting for query, key, and value."
+        )
     if isinstance(value, NestedTensor) and len(query) != len(value):
         raise ValueError(
             "NestedTensor batch length mismatch between query and value: " f"query={len(query)}, value={len(value)}"
+        )
+    if isinstance(value, NestedTensor) and query.batch_first != value.batch_first:
+        raise ValueError(
+            "NestedTensor batch_first mismatch between query and value: "
+            f"query.batch_first={query.batch_first}, value.batch_first={value.batch_first}. "
+            "Use the same batch_first setting for query, key, and value."
         )
     if isinstance(attn_mask, NestedTensor) and len(query) != len(attn_mask):
         raise ValueError(
             "NestedTensor batch length mismatch between query and attn_mask: "
             f"query={len(query)}, attn_mask={len(attn_mask)}"
+        )
+    if isinstance(attn_mask, NestedTensor) and query.batch_first != attn_mask.batch_first:
+        raise ValueError(
+            "NestedTensor batch_first mismatch between query and attn_mask: "
+            f"query.batch_first={query.batch_first}, attn_mask.batch_first={attn_mask.batch_first}. "
+            "Use the same batch_first setting for query, key, value, and attn_mask."
         )
     if not query._storage:
         return NestedTensor([], **query._meta(include_dtype=True))
@@ -1042,8 +1073,22 @@ def scaled_dot_product_attention(
     q_padded = query.tensor
     k_padded = key.tensor if isinstance(key, NestedTensor) else key
     v_padded = value.tensor if isinstance(value, NestedTensor) else value
+    user_attn_mask: NestedTensor | Tensor | None = (
+        attn_mask.tensor if isinstance(attn_mask, NestedTensor) else attn_mask
+    )
 
-    combined_mask, is_causal = _build_sdpa_mask(key, attn_mask, is_causal, q_padded, k_padded)
+    # Normalize to batch-leading layout for SDPA fallback and mask broadcast.
+    if not query.batch_first:
+        if q_padded.dim() >= 2:
+            q_padded = q_padded.transpose(0, 1)
+        if isinstance(k_padded, Tensor) and k_padded.dim() >= 2:
+            k_padded = k_padded.transpose(0, 1)
+        if isinstance(v_padded, Tensor) and v_padded.dim() >= 2:
+            v_padded = v_padded.transpose(0, 1)
+        if isinstance(user_attn_mask, Tensor) and user_attn_mask.dim() >= 3:
+            user_attn_mask = user_attn_mask.transpose(0, 1)
+
+    combined_mask, is_causal = _build_sdpa_mask(key, user_attn_mask, is_causal, q_padded, k_padded)
 
     out_padded = F.scaled_dot_product_attention(
         q_padded,
@@ -1055,6 +1100,8 @@ def scaled_dot_product_attention(
         scale=scale,
         enable_gqa=enable_gqa,
     )
+    if not query.batch_first and out_padded.dim() >= 2:
+        out_padded = out_padded.transpose(0, 1)
 
     return query.nested_like(out_padded, strict=False)
 

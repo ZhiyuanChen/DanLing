@@ -360,6 +360,12 @@ class TestStatePreservation:
         assert rebuilt.dtype == torch.float64
         self._assert_state(rebuilt, batch_first=False, padding_value=-1, mask_value=True)
 
+    def test_meta_default_preserves_empty_dtype(self):
+        empty = NestedTensor([], dtype=torch.float64, batch_first=False, padding_value=-1, mask_value=True)
+        rebuilt = NestedTensor([], **empty._meta())
+        assert rebuilt.dtype == torch.float64
+        self._assert_state(rebuilt, batch_first=False, padding_value=-1, mask_value=True)
+
     def test_comparison_preserves_state(self):
         state = {"batch_first": False, "padding_value": -1, "mask_value": True, "pin_memory": True}
         left = NestedTensor([torch.tensor([[2, 0], [1, 0]])], **state)
@@ -418,6 +424,43 @@ class TestStatePreservation:
         assert moved.device.type == "cuda"
         assert all(t.device.type == "cuda" for t in moved)
         self._assert_state(moved)
+
+    def test_dtype_and_device_properties_are_read_only(self):
+        nested_tensor = NestedTensor([torch.tensor([1.0, 2.0]), torch.tensor([3.0])])
+        with pytest.raises(AttributeError, match="read-only"):
+            nested_tensor.dtype = torch.float64
+        with pytest.raises(AttributeError, match="read-only"):
+            nested_tensor.device = torch.device("cpu")
+
+
+class TestPackedCacheInvalidation:
+
+    def test_inplace_unary_invalidates_storage_cache(self):
+        nested_tensor = NestedTensor([torch.tensor([-1.0, 2.0]), torch.tensor([-3.0])])
+        _ = nested_tensor._storage
+        assert nested_tensor._cached_storage is not None
+        nested_tensor.relu_()
+        assert nested_tensor._cached_storage is None
+        assert_close(nested_tensor[0], torch.tensor([0.0, 2.0]))
+        assert_close(nested_tensor[1], torch.tensor([0.0]))
+
+    def test_inplace_binary_invalidates_storage_cache(self):
+        nested_tensor = NestedTensor([torch.tensor([1.0, 2.0]), torch.tensor([3.0])])
+        _ = nested_tensor._storage
+        assert nested_tensor._cached_storage is not None
+        nested_tensor.add_(1.5)
+        assert nested_tensor._cached_storage is None
+        assert_close(nested_tensor[0], torch.tensor([2.5, 3.5]))
+        assert_close(nested_tensor[1], torch.tensor([4.5]))
+
+    def test_copy_invalidates_storage_cache(self):
+        dest = NestedTensor([torch.tensor([1.0, 2.0]), torch.tensor([3.0])])
+        src = NestedTensor([torch.tensor([9.0, 8.0]), torch.tensor([7.0])], **dest._meta(include_dtype=False))
+        _ = dest._storage
+        assert dest._cached_storage is not None
+        dest.copy_(src)
+        assert dest._cached_storage is None
+        assert_close(dest, src)
 
 
 # ---------------------------------------------------------------------------
