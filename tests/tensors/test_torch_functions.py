@@ -253,6 +253,28 @@ class TestDimensionTransforms:
         reference = torch.unsqueeze(torch.squeeze(nt.tensor, dim=1), dim=2)
         assert_close(output, reference)
 
+    def test_squeeze_default_matches_per_sample(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(2, 1, 3, device=device, dtype=float_dtype),
+                torch.randn(3, 1, 3, device=device, dtype=float_dtype),
+            ]
+        )
+        output = torch.squeeze(nt)
+        reference = NT([torch.squeeze(t) for t in nt], **nt._meta())
+        assert_close(output, reference)
+
+    def test_squeeze_default_with_all_ragged_ones(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(1, 2, device=device, dtype=float_dtype),
+                torch.randn(1, 2, device=device, dtype=float_dtype),
+            ]
+        )
+        output = torch.squeeze(nt)
+        reference = NT([torch.squeeze(t) for t in nt], **nt._meta())
+        assert_close(output, reference)
+
     def test_swapaxes_batch_dim_raises(self):
         nt = NestedTensor([torch.ones(2, 2)])
         with pytest.raises(ValueError):
@@ -1864,6 +1886,31 @@ class TestMissingOpsAudit:
         assert isinstance(result, NestedTensor)
         assert_close(result[0], torch.searchsorted(boundaries, vals_a))
         assert_close(result[1], torch.searchsorted(boundaries, vals_b))
+
+    def test_searchsorted_nested_sorter_requires_nested_sorted_sequence(self, device, float_dtype):
+        boundaries = torch.tensor([1.0, 3.0, 5.0], device=device, dtype=float_dtype)
+        vals_a = torch.tensor([2.0, 4.0], device=device, dtype=float_dtype)
+        nt_vals = NT([vals_a])
+        nt_sorter = NT([torch.tensor([0, 1, 2], device=device, dtype=torch.long)])
+        with pytest.raises(TypeError, match="NestedTensor sorter requires sorted_sequence"):
+            torch.searchsorted(boundaries, nt_vals, sorter=nt_sorter)
+
+    def test_searchsorted_nested_sorter_with_nested_sorted_sequence(self, device, float_dtype):
+        sorted_a = torch.tensor([1.0, 3.0, 5.0], device=device, dtype=float_dtype)
+        sorted_b = torch.tensor([2.0, 4.0, 6.0], device=device, dtype=float_dtype)
+        sorter_a = torch.tensor([0, 1, 2], device=device, dtype=torch.long)
+        sorter_b = torch.tensor([0, 1, 2], device=device, dtype=torch.long)
+        nt_sorted = NT([sorted_a, sorted_b])
+        nt_sorter = NT([sorter_a, sorter_b])
+        result = torch.searchsorted(nt_sorted, float(3.5), sorter=nt_sorter)
+        reference = NT(
+            [
+                torch.searchsorted(sorted_a, float(3.5), sorter=sorter_a),
+                torch.searchsorted(sorted_b, float(3.5), sorter=sorter_b),
+            ],
+            **nt_sorted._meta(),
+        )
+        assert_close(result, reference)
 
     def test_bucketize(self, device, float_dtype):
         boundaries = torch.tensor([1.0, 3.0, 5.0], device=device, dtype=float_dtype)

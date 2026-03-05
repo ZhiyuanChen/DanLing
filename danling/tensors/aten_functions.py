@@ -54,6 +54,17 @@ aten = torch.ops.aten
 
 _MISSING = object()
 
+try:
+    from torch._subclasses.fake_tensor import is_fake as _torch_is_fake
+except ImportError:
+    _torch_is_fake = None
+
+
+def _is_fake_tensor(tensor: Tensor) -> bool:
+    if _torch_is_fake is None:
+        return False
+    return bool(_torch_is_fake(tensor))
+
 
 def _offsets_match(a: Tensor, b: Tensor) -> bool:
     r"""
@@ -61,12 +72,19 @@ def _offsets_match(a: Tensor, b: Tensor) -> bool:
 
     Uses pointer identity as a fast-path before falling back to elementwise comparison.
     """
+    if _is_fake_tensor(a) or _is_fake_tensor(b):
+        # Under fake tensor mode, data_ptr/equal are not reliable for this metadata check.
+        # Be conservative: only trust object identity.
+        if a is b:
+            return True
+        if a.shape != b.shape:
+            return False
+        return False
     try:
         if a.data_ptr() == b.data_ptr():
             return True
     except RuntimeError:
-        # Fake/functional tensors used by torch.compile/export do not expose data_ptr.
-        # Fall back to shape/value checks in those modes.
+        # Functional tensors may not expose data_ptr.
         pass
     if a.shape != b.shape:
         return False
@@ -666,6 +684,41 @@ def _squeeze_dim(func, args, kwargs):
     return _packed_with_shape(source, out_values, out_shape, out_logical)
 
 
+@NestedTensorAtenRegistry.implement(aten.squeeze.default)
+def _squeeze_default(func, args, kwargs):
+    r"""Squeeze all singleton per-element dims with a packed fastpath when ragged dim-0 is untouched."""
+    source = args[0]
+    rank = source._shape_tensor.size(1)
+    if rank == 0:
+        return _packed_like(source, source._values)
+
+    # If any sample has ragged size 1, squeezing dim-0 is per-element.
+    if source._shape_tensor.size(0) > 0 and bool(torch.any(source._shape_tensor[:, 0] == 1)):
+        return _apply_per_element_nested(source, lambda t: t.squeeze())
+
+    out_values = func(source._values, **kwargs)
+    if source._shape_tensor.size(0) == 0:
+        squeeze_mask = torch.zeros(
+            (rank,),
+            dtype=torch.bool,
+            device=source._shape_tensor.device,
+        )
+        for i in range(1, rank):
+            if source._logical_shape[i] == 1:
+                squeeze_mask[i] = True
+    else:
+        squeeze_mask = source._shape_tensor.eq(1).all(dim=0)
+        squeeze_mask[0] = False
+
+    out_shape = source._shape_tensor[:, ~squeeze_mask]
+    out_logical = list(source._logical_shape)
+    remove_logical = [_logical_dim_from_tensor_dim(source, i) for i in range(rank) if bool(squeeze_mask[i].item())]
+    for logical_dim in sorted(remove_logical, reverse=True):
+        if logical_dim < len(out_logical):
+            out_logical.pop(logical_dim)
+    return _packed_with_shape(source, out_values, out_shape, out_logical)
+
+
 @NestedTensorAtenRegistry.implement(aten.unflatten.int)
 def _unflatten(func, args, kwargs):
     r"""Unflatten static per-element dims on packed values and expand metadata."""
@@ -815,7 +868,7 @@ def _reduce_non_ragged_packed_dims(source: NestedTensor, out_values: Tensor, dim
                 out_logical[ld] = 1
         return _packed_with_shape(source, out_values, out_shape, out_logical)
 
-    if source._shape_tensor.numel() == 0:
+    if source._shape_tensor.size(1) == 0:
         out_shape = source._shape_tensor
     else:
         keep_cols = [i for i in range(source._shape_tensor.size(1)) if i not in set(dims_adj)]
@@ -888,6 +941,34 @@ def _needs_masked_topk_scores(dtype: torch.dtype) -> bool:
     return (not dtype.is_floating_point) and (not dtype.is_complex)
 
 
+@NestedTensorAtenRegistry.implement(aten.triu.default)
+@NestedTensorAtenRegistry.implement(aten.tril.default)
+@NestedTensorAtenRegistry.implement(aten.matrix_exp.default)
+@NestedTensorAtenRegistry.implement(aten.inverse.default)
+@NestedTensorAtenRegistry.implement(aten.matrix_power.default)
+@NestedTensorAtenRegistry.implement(aten.linalg_inv.default)
+@NestedTensorAtenRegistry.implement(aten.linalg_cholesky.default)
+def _matrix_last2_unary(func, args, kwargs):
+    r"""Apply matrix-style unary ops on packed values when ragged dim-0 is a batch axis."""
+    source = args[0]
+    if source._values.dim() <= 2:
+        return _apply_per_element_nested(source, lambda t: func(t, *args[1:], **kwargs))
+    return _packed_like(source, func(source._values, *args[1:], **kwargs))
+
+
+@NestedTensorAtenRegistry.implement(aten.det.default)
+@NestedTensorAtenRegistry.implement(aten.linalg_det.default)
+def _matrix_last2_to_scalar(func, args, kwargs):
+    r"""Apply determinant-like ops and drop trailing matrix dims in metadata."""
+    source = args[0]
+    if source._values.dim() <= 2:
+        return _apply_per_element_nested(source, lambda t: func(t, *args[1:], **kwargs))
+    out_values = func(source._values, *args[1:], **kwargs)
+    out_shape = source._shape_tensor[:, :-2]
+    out_logical = list(source._logical_shape[:-2])
+    return _packed_with_shape(source, out_values, out_shape, out_logical)
+
+
 # See also torch_functions.py::mm for the torch-level handler (mixed-type cases).
 @NestedTensorAtenRegistry.implement(aten.mm.default)
 def _mm(func, args, kwargs):
@@ -942,10 +1023,31 @@ def _bmm(func, args, kwargs):
 def _sort(func, args, kwargs):
     r"""Sort along a non-ragged dim by operating directly on packed _values."""
     source = args[0]
-    dim = args[1] if len(args) > 1 else kwargs.pop("dim", -1)
-    descending = args[2] if len(args) > 2 else kwargs.pop("descending", False)
-    stable = kwargs.pop("stable", None)
     stable_overload = func is aten.sort.stable
+    kw_dim = kwargs.pop("dim", _MISSING)
+    kw_descending = kwargs.pop("descending", _MISSING)
+    kw_stable = kwargs.pop("stable", _MISSING)
+    if len(args) > 1:
+        if kw_dim is not _MISSING:
+            raise TypeError("sort() got multiple values for argument 'dim'")
+        dim = args[1]
+    else:
+        dim = -1 if kw_dim is _MISSING else kw_dim
+    if len(args) > 2:
+        if kw_descending is not _MISSING:
+            raise TypeError("sort() got multiple values for argument 'descending'")
+        descending = args[2]
+    else:
+        descending = False if kw_descending is _MISSING else kw_descending
+    if len(args) > 3:
+        if kw_stable is not _MISSING:
+            raise TypeError("sort() got multiple values for argument 'stable'")
+        stable = args[3]
+    else:
+        if kw_stable is _MISSING:
+            stable = True if stable_overload else None
+        else:
+            stable = kw_stable
 
     def _call_sort(tensor: Tensor, dim_value: int):
         if stable_overload or stable is not None:
@@ -975,10 +1077,31 @@ def _sort(func, args, kwargs):
 def _argsort(func, args, kwargs):
     r"""Return sort indices along a non-ragged dim by operating on packed _values."""
     source = args[0]
-    dim = args[1] if len(args) > 1 else kwargs.pop("dim", -1)
-    descending = args[2] if len(args) > 2 else kwargs.pop("descending", False)
-    stable = kwargs.pop("stable", None)
     stable_overload = func is aten.argsort.stable
+    kw_dim = kwargs.pop("dim", _MISSING)
+    kw_descending = kwargs.pop("descending", _MISSING)
+    kw_stable = kwargs.pop("stable", _MISSING)
+    if len(args) > 1:
+        if kw_dim is not _MISSING:
+            raise TypeError("argsort() got multiple values for argument 'dim'")
+        dim = args[1]
+    else:
+        dim = -1 if kw_dim is _MISSING else kw_dim
+    if len(args) > 2:
+        if kw_descending is not _MISSING:
+            raise TypeError("argsort() got multiple values for argument 'descending'")
+        descending = args[2]
+    else:
+        descending = False if kw_descending is _MISSING else kw_descending
+    if len(args) > 3:
+        if kw_stable is not _MISSING:
+            raise TypeError("argsort() got multiple values for argument 'stable'")
+        stable = args[3]
+    else:
+        if kw_stable is _MISSING:
+            stable = True if stable_overload else None
+        else:
+            stable = kw_stable
 
     def _call_argsort(tensor: Tensor, dim_value: int):
         if stable_overload or stable is not None:
@@ -1008,10 +1131,36 @@ def _argsort(func, args, kwargs):
 def _topk(func, args, kwargs):
     r"""Compute top-k along a non-ragged dim by operating on packed _values."""
     source = args[0]
-    k = args[1] if len(args) > 1 else kwargs.pop("k")
-    dim = args[2] if len(args) > 2 else kwargs.pop("dim", -1)
-    largest = args[3] if len(args) > 3 else kwargs.pop("largest", True)
-    sorted_output = args[4] if len(args) > 4 else kwargs.pop("sorted", True)
+    kw_k = kwargs.pop("k", _MISSING)
+    kw_dim = kwargs.pop("dim", _MISSING)
+    kw_largest = kwargs.pop("largest", _MISSING)
+    kw_sorted = kwargs.pop("sorted", _MISSING)
+    if len(args) > 1:
+        if kw_k is not _MISSING:
+            raise TypeError("topk() got multiple values for argument 'k'")
+        k = args[1]
+    else:
+        if kw_k is _MISSING:
+            raise TypeError("topk() missing required argument 'k'")
+        k = kw_k
+    if len(args) > 2:
+        if kw_dim is not _MISSING:
+            raise TypeError("topk() got multiple values for argument 'dim'")
+        dim = args[2]
+    else:
+        dim = -1 if kw_dim is _MISSING else kw_dim
+    if len(args) > 3:
+        if kw_largest is not _MISSING:
+            raise TypeError("topk() got multiple values for argument 'largest'")
+        largest = args[3]
+    else:
+        largest = True if kw_largest is _MISSING else kw_largest
+    if len(args) > 4:
+        if kw_sorted is not _MISSING:
+            raise TypeError("topk() got multiple values for argument 'sorted'")
+        sorted_output = args[4]
+    else:
+        sorted_output = True if kw_sorted is _MISSING else kw_sorted
     dim_adj = _translate_dim(source, dim)
     if source._values.dim() > 1 and dim_adj > 0:
         vals, idxs = func(source._values, k, dim_adj, largest, sorted_output, **kwargs)
@@ -1074,7 +1223,15 @@ def _topk(func, args, kwargs):
 def _cumulative(func, args, kwargs):
     r"""Apply cumulative ops on packed _values when the target dim is static."""
     source = args[0]
-    dim = args[1] if len(args) > 1 else kwargs.pop("dim")
+    kw_dim = kwargs.pop("dim", _MISSING)
+    if len(args) > 1:
+        if kw_dim is not _MISSING:
+            raise TypeError(f"{func._schema.name.split('::')[-1]}() got multiple values for argument 'dim'")
+        dim = args[1]
+    else:
+        if kw_dim is _MISSING:
+            raise TypeError(f"{func._schema.name.split('::')[-1]}() missing required argument 'dim'")
+        dim = kw_dim
     dim_adj = _translate_dim(source, dim)
     extra_args = args[2:] if len(args) > 2 else ()
     if source._values.dim() > 1 and dim_adj > 0:
@@ -1098,7 +1255,15 @@ def _cumulative(func, args, kwargs):
 def _cumulative_pair(func, args, kwargs):
     r"""Apply cumulative pair ops (cummax/cummin) on packed _values."""
     source = args[0]
-    dim = args[1] if len(args) > 1 else kwargs.pop("dim")
+    kw_dim = kwargs.pop("dim", _MISSING)
+    if len(args) > 1:
+        if kw_dim is not _MISSING:
+            raise TypeError(f"{func._schema.name.split('::')[-1]}() got multiple values for argument 'dim'")
+        dim = args[1]
+    else:
+        if kw_dim is _MISSING:
+            raise TypeError(f"{func._schema.name.split('::')[-1]}() missing required argument 'dim'")
+        dim = kw_dim
     dim_adj = _translate_dim(source, dim)
     if source._values.dim() > 1 and dim_adj > 0:
         vals, idxs = func(source._values, dim_adj, **kwargs)
@@ -1116,7 +1281,13 @@ def _cumulative_pair(func, args, kwargs):
 def _flip(func, args, kwargs):
     r"""Flip along non-ragged dims by operating directly on packed _values."""
     source = args[0]
-    dims = args[1] if len(args) > 1 else kwargs.pop("dims", ())
+    kw_dims = kwargs.pop("dims", _MISSING)
+    if len(args) > 1:
+        if kw_dims is not _MISSING:
+            raise TypeError("flip() got multiple values for argument 'dims'")
+        dims = args[1]
+    else:
+        dims = () if kw_dims is _MISSING else kw_dims
     if isinstance(dims, int):
         dims = (dims,)
     dims_adj = tuple(_translate_dim(source, dim) for dim in dims)
@@ -1141,23 +1312,37 @@ def _flip(func, args, kwargs):
 def _roll(func, args, kwargs):
     r"""Roll along non-ragged dims on packed values; fallback for ragged/flatten cases."""
     source = args[0]
-    shifts = args[1] if len(args) > 1 else kwargs.pop("shifts")
-    dims = args[2] if len(args) > 2 else kwargs.pop("dims", ())
+    kw_shifts = kwargs.pop("shifts", _MISSING)
+    kw_dims = kwargs.pop("dims", _MISSING)
+    if len(args) > 1:
+        if kw_shifts is not _MISSING:
+            raise TypeError("roll() got multiple values for argument 'shifts'")
+        shifts = args[1]
+    else:
+        if kw_shifts is _MISSING:
+            raise TypeError("roll() missing required argument 'shifts'")
+        shifts = kw_shifts
+    if len(args) > 2:
+        if kw_dims is not _MISSING:
+            raise TypeError("roll() got multiple values for argument 'dims'")
+        dims = args[2]
+    else:
+        dims = () if kw_dims is _MISSING else kw_dims
     if isinstance(shifts, int):
         shifts = [shifts]
     else:
         shifts = list(shifts)
 
     if isinstance(dims, int):
-        dims_tuple = (dims,)
+        dims = (dims,)
     else:
-        dims_tuple = tuple(dims)
+        dims = tuple(dims)
 
     # dims=[] (or omitted) follows torch.roll flatten semantics per element.
-    if len(dims_tuple) == 0:
+    if len(dims) == 0:
         return per_element_fallback(func, (source, shifts, []), kwargs)
 
-    dims_adj = tuple(_translate_dim(source, dim) for dim in dims_tuple)
+    dims_adj = tuple(_translate_dim(source, dim) for dim in dims)
     if source._values.dim() > 1 and all(dim > 0 for dim in dims_adj):
         return _packed_like(source, func(source._values, shifts, list(dims_adj), **kwargs))
     return per_element_fallback(func, (source, shifts, list(dims_adj)), kwargs)
@@ -1167,14 +1352,27 @@ def _roll(func, args, kwargs):
 def _rot90(func, args, kwargs):
     r"""Rotate over two non-ragged dims on packed values; fallback for ragged dims."""
     source = args[0]
-    k = args[1] if len(args) > 1 else kwargs.pop("k", 1)
-    dims = args[2] if len(args) > 2 else kwargs.pop("dims", (0, 1))
-    dims_tuple = tuple(dims)
-    if len(dims_tuple) != 2:
+    kw_k = kwargs.pop("k", _MISSING)
+    kw_dims = kwargs.pop("dims", _MISSING)
+    if len(args) > 1:
+        if kw_k is not _MISSING:
+            raise TypeError("rot90() got multiple values for argument 'k'")
+        k = args[1]
+    else:
+        k = 1 if kw_k is _MISSING else kw_k
+    if len(args) > 2:
+        if kw_dims is not _MISSING:
+            raise TypeError("rot90() got multiple values for argument 'dims'")
+        dims = args[2]
+    else:
+        dims = (0, 1) if kw_dims is _MISSING else kw_dims
+
+    dims = tuple(dims)
+    if len(dims) != 2:
         raise ValueError("rot90 dims must be a sequence of two dimensions.")
 
     dim_count = source.dim()
-    dims_norm = tuple(_normalize_dim(d, dim_count) for d in dims_tuple)
+    dims_norm = tuple(_normalize_dim(d, dim_count) for d in dims)
     dims_adj = tuple(_translate_dim(source, d) for d in dims_norm)
 
     if source._values.dim() > 1 and all(dim > 0 for dim in dims_adj):
@@ -1199,28 +1397,47 @@ def _searchsorted_tensor(func, args, kwargs):
     right = kwargs.pop("right", False)
     side = kwargs.pop("side", None)
     sorter = kwargs.pop("sorter", None)
+    sorted_is_nt = isinstance(sorted_sequence, NestedTensor)
+    values_is_nt = isinstance(values, NestedTensor)
+    sorter_is_nt = isinstance(sorter, NestedTensor)
 
-    if isinstance(sorted_sequence, NestedTensor) and isinstance(values, NestedTensor):
+    if sorter_is_nt and not sorted_is_nt:
+        raise TypeError("searchsorted: NestedTensor sorter requires sorted_sequence to be a NestedTensor.")
+
+    if sorted_is_nt and values_is_nt:
         if len(sorted_sequence) != len(values):
             raise ValueError(
                 "searchsorted: NestedTensor batch length mismatch between sorted_sequence and values: "
                 f"sorted_sequence={len(sorted_sequence)}, values={len(values)}"
             )
-        if (
-            sorted_sequence._values.dim() >= 2
-            and values._values.dim() >= 2
-            and _offsets_match(sorted_sequence._offsets, values._offsets)
-        ):
-            if sorter is None:
-                sorter_values = None
-            elif isinstance(sorter, NestedTensor):
-                if not _offsets_match(sorted_sequence._offsets, sorter._offsets):
-                    sorter_values = None
-                else:
-                    sorter_values = sorter._values
+        offsets_match = False
+        if sorted_sequence._values.dim() >= 2 and values._values.dim() >= 2:
+            if _is_fake_tensor(sorted_sequence._values) or _is_fake_tensor(values._values):
+                offsets_match = sorted_sequence._offsets is values._offsets
             else:
-                sorter_values = None
-            if sorter is None or sorter_values is not None:
+                offsets_match = _offsets_match(sorted_sequence._offsets, values._offsets)
+
+        if sorted_sequence._values.dim() >= 2 and values._values.dim() >= 2 and offsets_match:
+            sorter_ok = sorter is None
+            sorter_values = None
+            if sorter_is_nt:
+                if len(sorter) != len(sorted_sequence):
+                    raise ValueError(
+                        "searchsorted: NestedTensor batch length mismatch between sorted_sequence and sorter: "
+                        f"sorted_sequence={len(sorted_sequence)}, sorter={len(sorter)}"
+                    )
+                if _is_fake_tensor(sorted_sequence._values) or _is_fake_tensor(sorter._values):
+                    sorter_ok = sorter._offsets is sorted_sequence._offsets
+                else:
+                    sorter_ok = _offsets_match(sorted_sequence._offsets, sorter._offsets)
+                if sorter_ok:
+                    sorter_values = sorter._values
+            elif isinstance(sorter, Tensor):
+                sorter_ok = True
+                sorter_values = sorter
+            else:
+                sorter_ok = False
+            if sorter_ok:
                 out_values = func(
                     sorted_sequence._values,
                     values._values,
@@ -1232,15 +1449,17 @@ def _searchsorted_tensor(func, args, kwargs):
                 )
                 return _packed_like(values, out_values)
 
-        if isinstance(sorter, NestedTensor):
+        if sorter_is_nt:
             if len(sorter) != len(sorted_sequence):
                 raise ValueError(
                     "searchsorted: NestedTensor batch length mismatch between sorted_sequence and sorter: "
                     f"sorted_sequence={len(sorted_sequence)}, sorter={len(sorter)}"
                 )
             sorter_storage = sorter._storage
-        else:
+        elif sorter is None or isinstance(sorter, Tensor):
             sorter_storage = [sorter] * len(sorted_sequence)
+        else:
+            raise TypeError("searchsorted: sorter must be Tensor, NestedTensor, or None.")
         results = [
             torch.searchsorted(
                 s,
@@ -1255,7 +1474,11 @@ def _searchsorted_tensor(func, args, kwargs):
         ]
         return type(values)(results, **values._meta())
 
-    if isinstance(values, NestedTensor):
+    if values_is_nt:
+        if sorter_is_nt:
+            raise TypeError(
+                "searchsorted: NestedTensor sorter is only supported when sorted_sequence is a NestedTensor."
+            )
         if (
             isinstance(sorted_sequence, Tensor)
             and sorted_sequence.dim() <= 1
@@ -1286,16 +1509,18 @@ def _searchsorted_tensor(func, args, kwargs):
         ]
         return type(values)(results, **values._meta())
 
-    if isinstance(sorted_sequence, NestedTensor):
-        if isinstance(sorter, NestedTensor):
+    if sorted_is_nt:
+        if sorter_is_nt:
             if len(sorter) != len(sorted_sequence):
                 raise ValueError(
                     "searchsorted: NestedTensor batch length mismatch between sorted_sequence and sorter: "
                     f"sorted_sequence={len(sorted_sequence)}, sorter={len(sorter)}"
                 )
             sorter_storage = sorter._storage
-        else:
+        elif sorter is None or isinstance(sorter, Tensor):
             sorter_storage = [sorter] * len(sorted_sequence)
+        else:
+            raise TypeError("searchsorted: sorter must be Tensor, NestedTensor, or None.")
         results = [
             torch.searchsorted(
                 s,
@@ -1310,14 +1535,8 @@ def _searchsorted_tensor(func, args, kwargs):
         ]
         return type(sorted_sequence)(results, **sorted_sequence._meta())
 
-    return func(
-        sorted_sequence,
-        values,
-        out_int32=out_int32,
-        right=right,
-        side=side,
-        sorter=sorter,
-        **kwargs,
+    raise RuntimeError(
+        "searchsorted: reached NestedTensor aten handler with neither sorted_sequence nor values as NestedTensor."
     )
 
 
@@ -1562,8 +1781,20 @@ def _parse_dims_arg(dim_arg) -> tuple[int, ...]:
 def _sum_mean_dim_reduction(func, args, kwargs):
     r"""Handle ``sum/mean`` dim reductions on packed values for single logical dims."""
     source = args[0]
-    dim_arg = args[1] if len(args) > 1 else kwargs.pop("dim", None)
-    keepdim = args[2] if len(args) > 2 else kwargs.pop("keepdim", False)
+    kw_dim = kwargs.pop("dim", _MISSING)
+    kw_keepdim = kwargs.pop("keepdim", _MISSING)
+    if len(args) > 1:
+        if kw_dim is not _MISSING:
+            raise TypeError("got multiple values for argument 'dim'")
+        dim_arg = args[1]
+    else:
+        dim_arg = None if kw_dim is _MISSING else kw_dim
+    if len(args) > 2:
+        if kw_keepdim is not _MISSING:
+            raise TypeError("got multiple values for argument 'keepdim'")
+        keepdim = args[2]
+    else:
+        keepdim = False if kw_keepdim is _MISSING else kw_keepdim
     dims = _parse_dims_arg(dim_arg)
     if len(dims) == 0:
         return func(source._values, dim_arg, keepdim, **kwargs)
@@ -1606,8 +1837,20 @@ def _sum_mean_dim_reduction(func, args, kwargs):
 def _extrema_dim_reduction(func, args, kwargs):
     r"""Handle ``amax/amin`` dim reductions on packed values for common dim patterns."""
     source = args[0]
-    dim_arg = args[1] if len(args) > 1 else kwargs.pop("dim", ())
-    keepdim = args[2] if len(args) > 2 else kwargs.pop("keepdim", False)
+    kw_dim = kwargs.pop("dim", _MISSING)
+    kw_keepdim = kwargs.pop("keepdim", _MISSING)
+    if len(args) > 1:
+        if kw_dim is not _MISSING:
+            raise TypeError("got multiple values for argument 'dim'")
+        dim_arg = args[1]
+    else:
+        dim_arg = () if kw_dim is _MISSING else kw_dim
+    if len(args) > 2:
+        if kw_keepdim is not _MISSING:
+            raise TypeError("got multiple values for argument 'keepdim'")
+        keepdim = args[2]
+    else:
+        keepdim = False if kw_keepdim is _MISSING else kw_keepdim
     dims = _parse_dims_arg(dim_arg)
     if len(dims) == 0:
         return func(source._values, [], keepdim, **kwargs)
@@ -1638,6 +1881,258 @@ def _extrema_dim_reduction(func, args, kwargs):
 
     out_values = func(source._values, [dim_adj], keepdim, **kwargs)
     return _reduce_non_ragged_packed(source, out_values, dim_adj, keepdim)
+
+
+@NestedTensorAtenRegistry.implement(aten.logsumexp.default)
+def _logsumexp_dim_reduction(func, args, kwargs):
+    r"""Handle ``logsumexp`` dim reductions with packed fastpaths for non-ragged dims."""
+    source = args[0]
+    kw_dim = kwargs.pop("dim", _MISSING)
+    kw_keepdim = kwargs.pop("keepdim", _MISSING)
+    if len(args) > 1:
+        if kw_dim is not _MISSING:
+            raise TypeError("got multiple values for argument 'dim'")
+        dim_arg = args[1]
+    else:
+        dim_arg = () if kw_dim is _MISSING else kw_dim
+    if len(args) > 2:
+        if kw_keepdim is not _MISSING:
+            raise TypeError("got multiple values for argument 'keepdim'")
+        keepdim = args[2]
+    else:
+        keepdim = False if kw_keepdim is _MISSING else kw_keepdim
+    dims = _parse_dims_arg(dim_arg)
+    if len(dims) == 0:
+        return func(source._values, [], keepdim, **kwargs)
+
+    if len(dims) > 1:
+        dims_adj = _translate_dims(source, dims)
+        if source._values.dim() > 1 and all(dim_i > 0 for dim_i in dims_adj):
+            out_values = func(source._values, list(dims_adj), keepdim, **kwargs)
+            return _reduce_non_ragged_packed_dims(source, out_values, dims_adj, keepdim)
+        if 0 in dims_adj:
+            padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=float("-inf"))
+            padded_dims = [1 if dim_i == 0 else dim_i for dim_i in dims_adj]
+            return func(padded, padded_dims, keepdim, **kwargs)
+        return per_element_fallback(func, (source, list(dims_adj), keepdim), kwargs)
+
+    dim = _normalize_dim(dims[0], source.dim())
+    batch_dim = _get_batch_dim(source)
+    if dim == batch_dim:
+        reduced = torch.stack([torch.logsumexp(t.reshape(-1), dim=0) for t in source._storage])
+        if keepdim:
+            return reduced.unsqueeze(batch_dim)
+        return reduced
+
+    dim_adj = _translate_dim(source, dim)
+    if dim_adj == 0:
+        padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=float("-inf"))
+        return func(padded, [1], keepdim, **kwargs)
+
+    out_values = func(source._values, [dim_adj], keepdim, **kwargs)
+    return _reduce_non_ragged_packed(source, out_values, dim_adj, keepdim)
+
+
+@NestedTensorAtenRegistry.implement(aten.nansum.default)
+@NestedTensorAtenRegistry.implement(aten.nanmean.default)
+def _nan_dim_reduction(func, args, kwargs):
+    r"""Handle ``nansum/nanmean`` dim reductions with packed fastpaths for non-ragged dims."""
+    source = args[0]
+    kw_dim = kwargs.pop("dim", _MISSING)
+    kw_keepdim = kwargs.pop("keepdim", _MISSING)
+    if len(args) > 1:
+        if kw_dim is not _MISSING:
+            raise TypeError("got multiple values for argument 'dim'")
+        dim_arg = args[1]
+    else:
+        dim_arg = None if kw_dim is _MISSING else kw_dim
+    if len(args) > 2:
+        if kw_keepdim is not _MISSING:
+            raise TypeError("got multiple values for argument 'keepdim'")
+        keepdim = args[2]
+    else:
+        keepdim = False if kw_keepdim is _MISSING else kw_keepdim
+    dims = _parse_dims_arg(dim_arg)
+    if len(dims) == 0:
+        return func(source._values, None, keepdim, **kwargs)
+
+    if len(dims) > 1:
+        dims_adj = _translate_dims(source, dims)
+        if source._values.dim() > 1 and all(dim_i > 0 for dim_i in dims_adj):
+            out_values = func(source._values, list(dims_adj), keepdim, **kwargs)
+            return _reduce_non_ragged_packed_dims(source, out_values, dims_adj, keepdim)
+        if 0 in dims_adj and func is aten.nansum.default:
+            padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=0)
+            padded_dims = [1 if dim_i == 0 else dim_i for dim_i in dims_adj]
+            return func(padded, padded_dims, keepdim, **kwargs)
+        return per_element_fallback(func, (source, list(dims_adj), keepdim), kwargs)
+
+    dim = _normalize_dim(dims[0], source.dim())
+    batch_dim = _get_batch_dim(source)
+    if dim == batch_dim:
+        reduced = torch.stack([func(t, None, False, **kwargs) for t in source._storage])
+        if keepdim:
+            return reduced.unsqueeze(batch_dim)
+        return reduced
+
+    dim_adj = _translate_dim(source, dim)
+    if dim_adj == 0:
+        if func is aten.nansum.default:
+            padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=0)
+            return func(padded, [1], keepdim, **kwargs)
+        return per_element_fallback(func, (source, [dim_adj], keepdim), kwargs)
+
+    out_values = func(source._values, [dim_adj], keepdim, **kwargs)
+    return _reduce_non_ragged_packed(source, out_values, dim_adj, keepdim)
+
+
+@NestedTensorAtenRegistry.implement(aten.std.correction)
+@NestedTensorAtenRegistry.implement(aten.var.correction)
+def _variance_dim_reduction(func, args, kwargs):
+    r"""Handle ``std/var`` correction reductions via packed fastpaths where valid."""
+    source = args[0]
+    kw_dim = kwargs.pop("dim", _MISSING)
+    kw_keepdim = kwargs.pop("keepdim", _MISSING)
+    if len(args) > 1:
+        if kw_dim is not _MISSING:
+            raise TypeError("got multiple values for argument 'dim'")
+        dim_arg = args[1]
+    else:
+        dim_arg = None if kw_dim is _MISSING else kw_dim
+    if len(args) > 2:
+        if kw_keepdim is not _MISSING:
+            raise TypeError("got multiple values for argument 'keepdim'")
+        keepdim = args[2]
+    else:
+        keepdim = False if kw_keepdim is _MISSING else kw_keepdim
+    dims = _parse_dims_arg(dim_arg)
+    if len(dims) == 0:
+        return func(source._values, None, keepdim=keepdim, **kwargs)
+
+    if len(dims) > 1:
+        dims_adj = _translate_dims(source, dims)
+        if source._values.dim() > 1 and all(dim_i > 0 for dim_i in dims_adj):
+            out_values = func(source._values, list(dims_adj), keepdim=keepdim, **kwargs)
+            return _reduce_non_ragged_packed_dims(source, out_values, dims_adj, keepdim)
+        kwargs["keepdim"] = keepdim
+        return per_element_fallback(func, (source, list(dims_adj)), kwargs)
+
+    dim = _normalize_dim(dims[0], source.dim())
+    batch_dim = _get_batch_dim(source)
+    if dim == batch_dim:
+        reduced = torch.stack([func(t, None, keepdim=False, **kwargs) for t in source._storage])
+        if keepdim:
+            return reduced.unsqueeze(batch_dim)
+        return reduced
+
+    dim_adj = _translate_dim(source, dim)
+    if dim_adj == 0:
+        kwargs["keepdim"] = keepdim
+        return per_element_fallback(func, (source, [dim_adj]), kwargs)
+
+    out_values = func(source._values, [dim_adj], keepdim=keepdim, **kwargs)
+    return _reduce_non_ragged_packed(source, out_values, dim_adj, keepdim)
+
+
+@NestedTensorAtenRegistry.implement(aten.var_mean.correction)
+def _var_mean_dim_reduction(func, args, kwargs):
+    r"""Handle ``var_mean`` correction reductions via packed fastpaths where valid."""
+    source = args[0]
+    kw_dim = kwargs.pop("dim", _MISSING)
+    kw_keepdim = kwargs.pop("keepdim", _MISSING)
+    if len(args) > 1:
+        if kw_dim is not _MISSING:
+            raise TypeError("got multiple values for argument 'dim'")
+        dim_arg = args[1]
+    else:
+        dim_arg = None if kw_dim is _MISSING else kw_dim
+    if len(args) > 2:
+        if kw_keepdim is not _MISSING:
+            raise TypeError("got multiple values for argument 'keepdim'")
+        keepdim = args[2]
+    else:
+        keepdim = False if kw_keepdim is _MISSING else kw_keepdim
+    dims = _parse_dims_arg(dim_arg)
+    if len(dims) == 0:
+        out_var, out_mean = func(source._values, None, keepdim=keepdim, **kwargs)
+        return out_var, out_mean
+
+    if len(dims) > 1:
+        dims_adj = _translate_dims(source, dims)
+        if source._values.dim() > 1 and all(dim_i > 0 for dim_i in dims_adj):
+            out_var, out_mean = func(source._values, list(dims_adj), keepdim=keepdim, **kwargs)
+            return (
+                _reduce_non_ragged_packed_dims(source, out_var, dims_adj, keepdim),
+                _reduce_non_ragged_packed_dims(source, out_mean, dims_adj, keepdim),
+            )
+        kwargs["keepdim"] = keepdim
+        return per_element_fallback(func, (source, list(dims_adj)), kwargs)
+
+    dim = _normalize_dim(dims[0], source.dim())
+    batch_dim = _get_batch_dim(source)
+    if dim == batch_dim:
+        vars_, means = [], []
+        for tensor in source._storage:
+            var_value, mean_value = func(tensor, None, keepdim=False, **kwargs)
+            vars_.append(var_value)
+            means.append(mean_value)
+        out_var = torch.stack(vars_)
+        out_mean = torch.stack(means)
+        if keepdim:
+            out_var = out_var.unsqueeze(batch_dim)
+            out_mean = out_mean.unsqueeze(batch_dim)
+        return out_var, out_mean
+
+    dim_adj = _translate_dim(source, dim)
+    if dim_adj == 0:
+        kwargs["keepdim"] = keepdim
+        return per_element_fallback(func, (source, [dim_adj]), kwargs)
+
+    out_var, out_mean = func(source._values, [dim_adj], keepdim=keepdim, **kwargs)
+    return (
+        _reduce_non_ragged_packed(source, out_var, dim_adj, keepdim),
+        _reduce_non_ragged_packed(source, out_mean, dim_adj, keepdim),
+    )
+
+
+@NestedTensorAtenRegistry.implement(aten.count_nonzero.dim_IntList)
+def _count_nonzero_dim_reduction(func, args, kwargs):
+    r"""Handle ``count_nonzero`` dim reductions on packed values for common dim patterns."""
+    source = args[0]
+    kw_dim = kwargs.pop("dim", _MISSING)
+    if len(args) > 1:
+        if kw_dim is not _MISSING:
+            raise TypeError("got multiple values for argument 'dim'")
+        dim_arg = args[1]
+    else:
+        dim_arg = () if kw_dim is _MISSING else kw_dim
+    dims = _parse_dims_arg(dim_arg)
+    if len(dims) == 0:
+        return aten.count_nonzero.default(source._values, **kwargs)
+
+    if len(dims) > 1:
+        dims_adj = _translate_dims(source, dims)
+        if source._values.dim() > 1 and all(dim_i > 0 for dim_i in dims_adj):
+            out_values = func(source._values, list(dims_adj), **kwargs)
+            return _reduce_non_ragged_packed_dims(source, out_values, dims_adj, keepdim=False)
+        if 0 in dims_adj:
+            padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=0)
+            padded_dims = [1 if dim_i == 0 else dim_i for dim_i in dims_adj]
+            return func(padded, padded_dims, **kwargs)
+        return per_element_fallback(func, (source, list(dims_adj)), kwargs)
+
+    dim = _normalize_dim(dims[0], source.dim())
+    batch_dim = _get_batch_dim(source)
+    if dim == batch_dim:
+        return torch.stack([torch.count_nonzero(t) for t in source._storage])
+
+    dim_adj = _translate_dim(source, dim)
+    if dim_adj == 0:
+        padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=0)
+        return func(padded, [1], **kwargs)
+
+    out_values = func(source._values, [dim_adj], **kwargs)
+    return _reduce_non_ragged_packed(source, out_values, dim_adj, keepdim=False)
 
 
 # ---------------------------------------------------------------------------

@@ -1707,15 +1707,14 @@ def count_nonzero(input: NestedTensor, dim: int | Sequence[int] | None = None):
     if dim is None:
         return torch.count_nonzero(input._values)
     if isinstance(dim, int):
-        dim_adj = _translate_non_batch_dim(input, dim, name="count_nonzero")
-        ret = [torch.count_nonzero(t, dim=dim_adj) for t in input._storage]
+        dims = [dim]
     else:
-        dims = tuple(dim)
-        if len(dims) == 1:
-            return torch.count_nonzero(input, dim=dims[0])
-        dims_adj = _translate_dims(input, dims)
-        ret = [torch.count_nonzero(t, dim=dims_adj) for t in input._storage]
-    return _try_stack(ret, input)
+        dims = list(dim)
+    batch_dim = _get_batch_dim(input)
+    for d in dims:
+        if _normalize_dim(d, input.dim()) == batch_dim:
+            raise ValueError("count_nonzero along the batch dimension is not supported for NestedTensor.")
+    return torch.ops.aten.count_nonzero.dim_IntList(input, dims)
 
 
 @NestedTensorFuncRegistry.implement(torch.dist)
@@ -1781,14 +1780,8 @@ def logsumexp(input: NestedTensor, dim: int | Sequence[int], keepdim: bool = Fal
         >>> torch.allclose(torch.logsumexp(nt, dim=1), torch.logsumexp(nt.tensor, dim=1))
         True
     """
-    if isinstance(dim, int):
-        dim_int = _normalize_dim(dim, input.dim())
-        if dim_int == _get_batch_dim(input):
-            output = torch.stack([torch.logsumexp(t.reshape(-1), dim=0) for t in input._storage])
-            if keepdim:
-                return output.unsqueeze(0 if input.batch_first else 1)
-            return output
-    return _reduce(input, torch.logsumexp, dim, keepdim)
+    dims = [dim] if isinstance(dim, int) else list(dim)
+    return torch.ops.aten.logsumexp.default(input, dims, keepdim)
 
 
 @NestedTensorFuncRegistry.implement(torch.max)
@@ -1927,7 +1920,10 @@ def nanmean(
         >>> torch.allclose(torch.nanmean(nt, dim=1), torch.nanmean(nt.tensor, dim=1))
         True
     """
-    return _reduce(input, torch.nanmean, dim, keepdim, dtype=dtype)
+    if dim is None:
+        return _reduce_none(input, torch.nanmean, dtype=dtype, keepdim=keepdim)
+    dims = [dim] if isinstance(dim, int) else list(dim)
+    return torch.ops.aten.nanmean.default(input, dims, keepdim, dtype=dtype)
 
 
 @NestedTensorFuncRegistry.implement(torch.nansum)
@@ -1958,7 +1954,10 @@ def nansum(
         >>> torch.allclose(torch.nansum(nt, dim=1), torch.nansum(nt.tensor, dim=1))
         True
     """
-    return _reduce(input, torch.nansum, dim, keepdim, dtype=dtype, fill_value=0)
+    if dim is None:
+        return _reduce_none(input, torch.nansum, dtype=dtype, keepdim=keepdim)
+    dims = [dim] if isinstance(dim, int) else list(dim)
+    return torch.ops.aten.nansum.default(input, dims, keepdim, dtype=dtype)
 
 
 @NestedTensorFuncRegistry.implement(torch.numel)
@@ -2013,7 +2012,8 @@ def std(
     """
     if dim is None:
         return _reduce_none(input, torch.std, keepdim=keepdim, correction=correction)
-    return _reduce(input, torch.std, dim, keepdim, correction=correction)
+    dims = [dim] if isinstance(dim, int) else list(dim)
+    return torch.ops.aten.std.correction(input, dims, correction=correction, keepdim=keepdim)
 
 
 @NestedTensorFuncRegistry.implement(torch.var)
@@ -2047,7 +2047,8 @@ def var(
     """
     if dim is None:
         return _reduce_none(input, torch.var, keepdim=keepdim, correction=correction)
-    return _reduce(input, torch.var, dim, keepdim, correction=correction)
+    dims = [dim] if isinstance(dim, int) else list(dim)
+    return torch.ops.aten.var.correction(input, dims, correction=correction, keepdim=keepdim)
 
 
 @NestedTensorFuncRegistry.implement(torch.var_mean)
@@ -2082,18 +2083,8 @@ def var_mean(
     """
     if dim is None:
         return _reduce_none_pair(input, torch.var_mean, keepdim=keepdim, correction=correction)
-    if isinstance(dim, int):
-        return _reduce_dim_pair(input, torch.var_mean, dim, keepdim, correction=correction)
-    dims = tuple(dim)
-    if len(dims) == 1:
-        return _reduce_dim_pair(input, torch.var_mean, dims[0], keepdim, correction=correction)
-    dims_adj = _translate_dims(input, dims)
-    vars_, means = [], []
-    for t in input._storage:
-        v, m = torch.var_mean(t, dim=dims_adj, correction=correction, keepdim=keepdim)
-        vars_.append(v)
-        means.append(m)
-    return _try_stack(vars_, input), _try_stack(means, input)
+    dims = [dim] if isinstance(dim, int) else list(dim)
+    return torch.ops.aten.var_mean.correction(input, dims, correction=correction, keepdim=keepdim)
 
 
 # Shape Manipulation
@@ -2382,7 +2373,7 @@ def squeeze(input: NestedTensor, dim: int | None = None):
         True
     """
     if dim is None:
-        return _map_storage(input, lambda t: t.squeeze())
+        return torch.ops.aten.squeeze.default(input)
     dim_norm = _normalize_dim(dim, input.dim())
     batch_dim = _get_batch_dim(input)
     if dim_norm <= batch_dim:
@@ -3046,15 +3037,35 @@ def searchsorted(sorted_sequence, values, *, out_int32=False, right=False, side=
     r"""Apply [torch.searchsorted][] using aten fastpaths when available."""
     from .nested_tensor import NestedTensor
 
+    sorted_is_nt = isinstance(sorted_sequence, NestedTensor)
+    values_is_nt = isinstance(values, NestedTensor)
+    sorter_is_nt = isinstance(sorter, NestedTensor)
+
+    if sorter_is_nt and not sorted_is_nt:
+        raise TypeError("searchsorted: NestedTensor sorter requires sorted_sequence to be a NestedTensor.")
+
     if not isinstance(values, (NestedTensor, Tensor)):
-        if isinstance(sorted_sequence, NestedTensor):
+        if sorted_is_nt:
+            if sorter_is_nt:
+                if len(sorter) != len(sorted_sequence):
+                    raise ValueError(
+                        "searchsorted: NestedTensor batch length mismatch between sorted_sequence and sorter: "
+                        f"sorted_sequence={len(sorted_sequence)}, sorter={len(sorter)}"
+                    )
+                return NestedTensor(
+                    (
+                        torch.searchsorted(t, values, out_int32=out_int32, right=right, side=side, sorter=s)
+                        for t, s in zip(sorted_sequence._storage, sorter._storage)
+                    ),
+                    **sorted_sequence._meta(),
+                )
             return _map_storage(
                 sorted_sequence,
                 lambda t: torch.searchsorted(t, values, out_int32=out_int32, right=right, side=side, sorter=sorter),
             )
         return torch.searchsorted(sorted_sequence, values, out_int32=out_int32, right=right, side=side, sorter=sorter)
 
-    if isinstance(sorted_sequence, NestedTensor) and isinstance(values, NestedTensor):
+    if sorted_is_nt and values_is_nt:
         _validate_pairwise_batch_length(
             sorted_sequence, values, op_name="searchsorted", lhs_name="sorted_sequence", rhs_name="values"
         )
@@ -3062,7 +3073,7 @@ def searchsorted(sorted_sequence, values, *, out_int32=False, right=False, side=
             sorted_sequence, values, out_int32=out_int32, right=right, side=side, sorter=sorter
         )
 
-    if isinstance(values, NestedTensor) or isinstance(sorted_sequence, NestedTensor):
+    if values_is_nt or sorted_is_nt:
         return torch.ops.aten.searchsorted.Tensor(
             sorted_sequence, values, out_int32=out_int32, right=right, side=side, sorter=sorter
         )
@@ -3075,18 +3086,23 @@ def searchsorted(sorted_sequence, values, *, out_int32=False, right=False, side=
 # These operate on each element independently. Most are shape-preserving;
 # some return scalars per element, and some return tuples.
 
-# Shape-preserving: apply fn to each element, result is a NestedTensor
-_MATRIX_PER_ELEMENT_OPS = [
-    torch.triu,
-    torch.tril,
-    torch.matrix_exp,
-]
 
-for _op in _MATRIX_PER_ELEMENT_OPS:
+@NestedTensorFuncRegistry.implement(torch.triu)
+def triu(input, diagonal=0):
+    r"""Apply [torch.triu][] via aten fastpaths when possible."""
+    return torch.ops.aten.triu.default(input, diagonal)
 
-    @NestedTensorFuncRegistry.implement(_op)
-    def _matrix_elem_impl(input, *args, _fn=_op, **kwargs):
-        return _map_storage(input, lambda t: _fn(t, *args, **kwargs))
+
+@NestedTensorFuncRegistry.implement(torch.tril)
+def tril(input, diagonal=0):
+    r"""Apply [torch.tril][] via aten fastpaths when possible."""
+    return torch.ops.aten.tril.default(input, diagonal)
+
+
+@NestedTensorFuncRegistry.implement(torch.matrix_exp)
+def matrix_exp(input):
+    r"""Apply [torch.matrix_exp][] via aten fastpaths when possible."""
+    return torch.ops.aten.matrix_exp.default(input)
 
 
 @NestedTensorFuncRegistry.implement(torch.diag)
@@ -3137,7 +3153,7 @@ def det(input):
 @NestedTensorFuncRegistry.implement(torch.inverse)
 def inverse(input):
     r"""Apply [torch.inverse][] to each element of a NestedTensor."""
-    return _map_storage(input, lambda t: torch.inverse(t))
+    return torch.ops.aten.inverse.default(input)
 
 
 @NestedTensorFuncRegistry.implement(torch.matrix_power)
@@ -3166,7 +3182,7 @@ def repeat_interleave(input, repeats, dim=None, *, output_size=None):
 @NestedTensorFuncRegistry.implement(torch.linalg.inv)
 def linalg_inv(input):
     r"""Apply [torch.linalg.inv][] to each element of a NestedTensor."""
-    return _map_storage(input, lambda t: torch.linalg.inv(t))
+    return torch.ops.aten.linalg_inv.default(input)
 
 
 @NestedTensorFuncRegistry.implement(torch.linalg.det)
@@ -3222,7 +3238,7 @@ def linalg_qr(input, mode="reduced"):
 @NestedTensorFuncRegistry.implement(torch.linalg.cholesky)
 def linalg_cholesky(input, *, upper=False):
     r"""Apply [torch.linalg.cholesky][] to each element of a NestedTensor."""
-    return _map_storage(input, lambda t: torch.linalg.cholesky(t, upper=upper))
+    return torch.ops.aten.linalg_cholesky.default(input, upper=upper)
 
 
 @NestedTensorFuncRegistry.implement(torch.linalg.eigh)

@@ -101,12 +101,29 @@ def test_aten_extended_handlers_registered():
         aten.permute.default,
         aten.transpose.int,
         aten.unsqueeze.default,
+        aten.squeeze.default,
         aten.squeeze.dim,
         aten.unflatten.int,
         aten.sum.dim_IntList,
         aten.mean.dim,
         aten.amax.default,
         aten.amin.default,
+        aten.logsumexp.default,
+        aten.nansum.default,
+        aten.nanmean.default,
+        aten.std.correction,
+        aten.var.correction,
+        aten.var_mean.correction,
+        aten.count_nonzero.dim_IntList,
+        aten.triu.default,
+        aten.tril.default,
+        aten.matrix_exp.default,
+        aten.det.default,
+        aten.inverse.default,
+        aten.matrix_power.default,
+        aten.linalg_inv.default,
+        aten.linalg_det.default,
+        aten.linalg_cholesky.default,
         aten.searchsorted.Tensor,
     ]:
         assert op in NestedTensorAtenRegistry, f"Aten op {op} missing from NestedTensorAtenRegistry"
@@ -459,6 +476,45 @@ def test_aten_searchsorted_fastpaths_no_fallback():
 
     torch.testing.assert_close(nt_nt.tensor, ref_nt_nt.tensor)
     torch.testing.assert_close(tensor_nt.tensor, ref_tensor_nt.tensor)
+
+
+def test_aten_searchsorted_rejects_nested_sorter_without_nested_sorted_sequence():
+    boundaries = torch.tensor([1.0, 3.0, 5.0])
+    values = torch.tensor([2.0, 4.0])
+    sorter = NT([torch.tensor([0, 1, 2], dtype=torch.long)])
+    with pytest.raises(TypeError, match="NestedTensor sorter requires sorted_sequence"):
+        torch.ops.aten.searchsorted.Tensor(boundaries, values, sorter=sorter)
+
+
+def test_aten_reduce_multi_dim_empty_batch_drops_static_cols():
+    values = torch.empty((0, 3, 4), dtype=torch.float32)
+    offsets = torch.tensor([0], dtype=torch.long)
+    shape_tensor = torch.empty((0, 3), dtype=torch.long)
+    nt = NT._from_packed(
+        values,
+        offsets,
+        shape_tensor,
+        batch_first=True,
+        padding_value=0.0,
+        mask_value=False,
+        pin_memory=False,
+        outer_size=torch.Size([0, 0, 3, 4]),
+    )
+    out = torch.ops.aten.sum.dim_IntList(nt, [2, 3], False, dtype=None)
+    assert isinstance(out, NT)
+    assert out.shape == torch.Size([0, 0])
+    assert out._shape_tensor.shape == torch.Size([0, 1])
+
+
+def test_offsets_match_fake_tensors_not_false_positive():
+    fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+    FakeTensorMode = fake_tensor_mod.FakeTensorMode
+
+    with FakeTensorMode():
+        offsets_a = torch.tensor([0, 2, 5], dtype=torch.long)
+        offsets_b = torch.tensor([0, 2, 5], dtype=torch.long)
+        assert aten_functions._offsets_match(offsets_a, offsets_a)
+        assert not aten_functions._offsets_match(offsets_a, offsets_b)
 
 
 @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
