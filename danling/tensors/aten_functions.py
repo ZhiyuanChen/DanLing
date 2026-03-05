@@ -72,6 +72,74 @@ def _find_nested(*args) -> NestedTensor | None:
     return None
 
 
+def try_packed_same_shape_fallback(func, args, kwargs):
+    r"""
+    Try a generic packed fallback for unregistered aten ops.
+
+    This path is intentionally conservative:
+    - all NestedTensor operands must share offsets
+    - output tensor shapes must match packed ``_values`` exactly
+    """
+    from .nested_tensor import NestedTensor
+
+    nested_args: list[NestedTensor] = []
+
+    def collect_nested(obj):
+        if isinstance(obj, NestedTensor):
+            nested_args.append(obj)
+        elif isinstance(obj, (list, tuple)):
+            for item in obj:
+                collect_nested(item)
+        elif isinstance(obj, dict):
+            for item in obj.values():
+                collect_nested(item)
+
+    collect_nested(args)
+    if kwargs:
+        collect_nested(kwargs)
+    if not nested_args:
+        return False, None
+
+    ref = nested_args[0]
+    if any(not _offsets_match(ref._offsets, other._offsets) for other in nested_args[1:]):
+        return False, None
+
+    def replace_nested_with_values(obj):
+        if isinstance(obj, NestedTensor):
+            return obj._values
+        if isinstance(obj, tuple):
+            return tuple(replace_nested_with_values(item) for item in obj)
+        if isinstance(obj, list):
+            return [replace_nested_with_values(item) for item in obj]
+        if isinstance(obj, dict):
+            return {k: replace_nested_with_values(v) for k, v in obj.items()}
+        return obj
+
+    packed_args = replace_nested_with_values(args)
+    packed_kwargs = replace_nested_with_values(kwargs) if kwargs else {}
+
+    try:
+        packed_result = func(*packed_args, **packed_kwargs)
+    except (TypeError, RuntimeError, ValueError, NotImplementedError):
+        return False, None
+
+    if isinstance(packed_result, Tensor):
+        if packed_result.shape == ref._values.shape:
+            return True, _packed_like(ref, packed_result)
+        return False, None
+
+    if isinstance(packed_result, tuple):
+        wrapped = []
+        for item in packed_result:
+            if isinstance(item, Tensor) and item.shape == ref._values.shape:
+                wrapped.append(_packed_like(ref, item))
+            else:
+                return False, None
+        return True, tuple(wrapped)
+
+    return False, None
+
+
 @torch._dynamo.disable
 def per_element_fallback(func, args, kwargs):
     r"""
@@ -512,7 +580,7 @@ def _sort(func, args, kwargs):
     if source._values.dim() > 1 and dim_adj > 0:
         vals, idxs = _call_sort(source._values, dim_adj)
         return _packed_like(source, vals), _packed_like(source, idxs)
-    if source._values.dim() > 1 and dim_adj == 0:
+    if dim_adj == 0:
         fill_value = _topk_fill_value(source._values.dtype, largest=descending)
         padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(source, fill_value=fill_value)
         vals, idxs = _call_sort(padded, 1)
@@ -547,7 +615,7 @@ def _argsort(func, args, kwargs):
     dim_adj = _translate_dim(source, dim)
     if source._values.dim() > 1 and dim_adj > 0:
         return _packed_like(source, _call_argsort(source._values, dim_adj))
-    if source._values.dim() > 1 and dim_adj == 0:
+    if dim_adj == 0:
         fill_value = _topk_fill_value(source._values.dtype, largest=descending)
         padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(source, fill_value=fill_value)
         idxs = _call_argsort(padded, 1)
@@ -577,7 +645,7 @@ def _topk(func, args, kwargs):
             _packed_new_dim_size(source, vals, dim_adj, k),
             _packed_new_dim_size(source, idxs, dim_adj, k),
         )
-    if source._values.dim() > 1 and dim_adj == 0:
+    if dim_adj == 0:
         padded, lengths, lengths_dev, batch_idx, local_idx, max_len = _packed_to_padded(
             source, fill_value=_topk_fill_value(source._values.dtype, largest)
         )
@@ -637,7 +705,7 @@ def _cumulative(func, args, kwargs):
     extra_args = args[2:] if len(args) > 2 else ()
     if source._values.dim() > 1 and dim_adj > 0:
         return _packed_like(source, func(source._values, dim_adj, *extra_args, **call_kwargs))
-    if source._values.dim() > 1 and dim_adj == 0:
+    if dim_adj == 0:
         neutral = 0 if func is aten.cumsum.default else 1
         padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(source, fill_value=neutral)
         out_padded = func(padded, 1, *extra_args, **call_kwargs)
@@ -656,7 +724,7 @@ def _flip(func, args, kwargs):
     dims_adj = tuple(_translate_dim(source, dim) for dim in dims)
     if source._values.dim() > 1 and all(dim > 0 for dim in dims_adj):
         return _packed_like(source, func(source._values, dims_adj, **call_kwargs))
-    if source._values.dim() > 1 and any(dim == 0 for dim in dims_adj):
+    if any(dim == 0 for dim in dims_adj):
         padded, _, lengths_dev, batch_idx, local_idx, max_len = _packed_to_padded(
             source, fill_value=source.padding_value
         )
@@ -865,13 +933,11 @@ def _softmax_handler(func, args, kwargs):
     r"""Dispatch handler for softmax/log_softmax that translates the dim argument."""
     source = args[0]
     dim_adj = _translate_dim(source, args[1])
-    if dim_adj == 0 and source._values.dim() > 1:
+    if dim_adj == 0:
         # Normalize each ragged row independently by masking padding with -inf.
         padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(source, fill_value=float("-inf"))
         out_padded = func(padded, 1, *args[2:], **kwargs)
         return _packed_like(source, out_padded[batch_idx, local_idx])
-    if dim_adj == 0:
-        return per_element_fallback(func, args, kwargs)
     return _packed_like(source, func(source._values, dim_adj, *args[2:], **kwargs))
 
 

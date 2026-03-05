@@ -27,7 +27,7 @@ from typing import Any, Iterable, SupportsFloat
 import torch
 from torch import Tensor
 
-from .aten_functions import per_element_fallback
+from .aten_functions import per_element_fallback, try_packed_same_shape_fallback
 from .ops import NestedTensorAtenRegistry
 from .utils import mask_tensor, pad_tensor, tensor_mask
 
@@ -455,6 +455,10 @@ class NestedTensor(torch.Tensor):
 
         if func in NestedTensorAtenRegistry:
             return NestedTensorAtenRegistry[func](func, args, kwargs)
+
+        handled, result = try_packed_same_shape_fallback(func, args, kwargs)
+        if handled:
+            return result
 
         # Per-element fallback
         return per_element_fallback(func, args, kwargs)

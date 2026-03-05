@@ -200,6 +200,143 @@ def test_aten_ragged_topk_k_exceeds_min_length_raises():
         torch.ops.aten.topk.default(nt, 3, 1, True, True)
 
 
+def test_aten_1d_ragged_fastpaths_no_fallback():
+    nt = NT(
+        [
+            torch.tensor([3.0, 1.0]),
+            torch.tensor([4.0, 2.0, 5.0]),
+        ]
+    )
+
+    original_fallback = aten_functions.per_element_fallback
+
+    def _fail_fallback(*_args, **_kwargs):
+        raise AssertionError("per_element_fallback must not be used for 1D ragged aten fastpaths")
+
+    aten_functions.per_element_fallback = _fail_fallback
+    try:
+        sort_vals, sort_idxs = torch.ops.aten.sort.default(nt, 1, False)
+        argsort_out = torch.ops.aten.argsort.default(nt, 1, False)
+        topk_vals, topk_idxs = torch.ops.aten.topk.default(nt, 2, 1, True, True)
+        cumsum_out = torch.ops.aten.cumsum.default(nt, 1)
+        cumprod_out = torch.ops.aten.cumprod.default(nt, 1)
+        flip_out = torch.ops.aten.flip.default(nt, [1])
+        softmax_out = torch.ops.aten._softmax.default(nt, 1, False)
+        log_softmax_out = torch.ops.aten._log_softmax.default(nt, 1, False)
+    finally:
+        aten_functions.per_element_fallback = original_fallback
+
+    ref_sort_vals = NT([torch.sort(t, dim=0, descending=False).values for t in nt], **nt._meta())
+    ref_sort_idxs = NT([torch.sort(t, dim=0, descending=False).indices for t in nt], **nt._meta())
+    ref_argsort = NT([torch.argsort(t, dim=0, descending=False) for t in nt], **nt._meta())
+    ref_topk_vals = NT([torch.topk(t, 2, dim=0, largest=True, sorted=True).values for t in nt], **nt._meta())
+    ref_topk_idxs = NT([torch.topk(t, 2, dim=0, largest=True, sorted=True).indices for t in nt], **nt._meta())
+    ref_cumsum = NT([torch.cumsum(t, dim=0) for t in nt], **nt._meta())
+    ref_cumprod = NT([torch.cumprod(t, dim=0) for t in nt], **nt._meta())
+    ref_flip = NT([torch.flip(t, dims=[0]) for t in nt], **nt._meta())
+    ref_softmax = NT([torch.softmax(t, dim=0) for t in nt], **nt._meta())
+    ref_log_softmax = NT([torch.log_softmax(t, dim=0) for t in nt], **nt._meta())
+    torch.testing.assert_close(sort_vals.tensor, ref_sort_vals.tensor)
+    torch.testing.assert_close(sort_idxs.tensor, ref_sort_idxs.tensor)
+    torch.testing.assert_close(argsort_out.tensor, ref_argsort.tensor)
+    torch.testing.assert_close(topk_vals.tensor, ref_topk_vals.tensor)
+    torch.testing.assert_close(topk_idxs.tensor, ref_topk_idxs.tensor)
+    torch.testing.assert_close(cumsum_out.tensor, ref_cumsum.tensor)
+    torch.testing.assert_close(cumprod_out.tensor, ref_cumprod.tensor)
+    torch.testing.assert_close(flip_out.tensor, ref_flip.tensor)
+    torch.testing.assert_close(softmax_out.tensor, ref_softmax.tensor)
+    torch.testing.assert_close(log_softmax_out.tensor, ref_log_softmax.tensor)
+
+
+def test_aten_unregistered_same_shape_fastpath_no_fallback():
+    nt = NT(
+        [
+            torch.tensor([[1.1, 2.2], [3.3, 4.4]]),
+            torch.tensor([[5.5, 6.6], [7.7, 8.8], [9.9, 10.1]]),
+        ]
+    )
+
+    original_fallback = aten_functions.per_element_fallback
+
+    def _fail_fallback(*_args, **_kwargs):
+        raise AssertionError("per_element_fallback must not be used for covered generic aten fastpath")
+
+    aten_functions.per_element_fallback = _fail_fallback
+    try:
+        square_out = torch.ops.aten.square.default(nt)
+        digamma_out = torch.ops.aten.digamma.default(nt)
+        lgamma_out = torch.ops.aten.lgamma.default(nt)
+    finally:
+        aten_functions.per_element_fallback = original_fallback
+
+    ref_square = NT([torch.square(t) for t in nt], **nt._meta())
+    ref_digamma = NT([torch.digamma(t) for t in nt], **nt._meta())
+    ref_lgamma = NT([torch.lgamma(t) for t in nt], **nt._meta())
+    torch.testing.assert_close(square_out.tensor, ref_square.tensor)
+    torch.testing.assert_close(digamma_out.tensor, ref_digamma.tensor)
+    torch.testing.assert_close(lgamma_out.tensor, ref_lgamma.tensor)
+
+
+@pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+def test_aten_1d_ragged_fastpaths_compile_smoke():
+    nt = NT(
+        [
+            torch.tensor([3.0, 1.0]),
+            torch.tensor([4.0, 2.0, 5.0]),
+        ]
+    )
+
+    def _compile(fn):
+        return torch.compile(fn, backend="eager", fullgraph=True)
+
+    original_fallback = aten_functions.per_element_fallback
+
+    def _fail_fallback(*_args, **_kwargs):
+        raise AssertionError("per_element_fallback must not be used for 1D ragged aten fastpaths")
+
+    aten_functions.per_element_fallback = _fail_fallback
+    try:
+        sort_fn = _compile(lambda x: torch.ops.aten.sort.default(x, 1, False))
+        argsort_fn = _compile(lambda x: torch.ops.aten.argsort.default(x, 1, False))
+        topk_fn = _compile(lambda x: torch.ops.aten.topk.default(x, 2, 1, True, True))
+        cumsum_fn = _compile(lambda x: torch.ops.aten.cumsum.default(x, 1))
+        cumprod_fn = _compile(lambda x: torch.ops.aten.cumprod.default(x, 1))
+        flip_fn = _compile(lambda x: torch.ops.aten.flip.default(x, [1]))
+        softmax_fn = _compile(lambda x: torch.ops.aten._softmax.default(x, 1, False))
+        log_softmax_fn = _compile(lambda x: torch.ops.aten._log_softmax.default(x, 1, False))
+        sort_vals, sort_idxs = sort_fn(nt)
+        argsort_out = argsort_fn(nt)
+        topk_vals, topk_idxs = topk_fn(nt)
+        cumsum_out = cumsum_fn(nt)
+        cumprod_out = cumprod_fn(nt)
+        flip_out = flip_fn(nt)
+        softmax_out = softmax_fn(nt)
+        log_softmax_out = log_softmax_fn(nt)
+    finally:
+        aten_functions.per_element_fallback = original_fallback
+
+    ref_sort_vals = NT([torch.sort(t, dim=0, descending=False).values for t in nt], **nt._meta())
+    ref_sort_idxs = NT([torch.sort(t, dim=0, descending=False).indices for t in nt], **nt._meta())
+    ref_argsort = NT([torch.argsort(t, dim=0, descending=False) for t in nt], **nt._meta())
+    ref_topk_vals = NT([torch.topk(t, 2, dim=0, largest=True, sorted=True).values for t in nt], **nt._meta())
+    ref_topk_idxs = NT([torch.topk(t, 2, dim=0, largest=True, sorted=True).indices for t in nt], **nt._meta())
+    ref_cumsum = NT([torch.cumsum(t, dim=0) for t in nt], **nt._meta())
+    ref_cumprod = NT([torch.cumprod(t, dim=0) for t in nt], **nt._meta())
+    ref_flip = NT([torch.flip(t, dims=[0]) for t in nt], **nt._meta())
+    ref_softmax = NT([torch.softmax(t, dim=0) for t in nt], **nt._meta())
+    ref_log_softmax = NT([torch.log_softmax(t, dim=0) for t in nt], **nt._meta())
+    torch.testing.assert_close(sort_vals.tensor, ref_sort_vals.tensor)
+    torch.testing.assert_close(sort_idxs.tensor, ref_sort_idxs.tensor)
+    torch.testing.assert_close(argsort_out.tensor, ref_argsort.tensor)
+    torch.testing.assert_close(topk_vals.tensor, ref_topk_vals.tensor)
+    torch.testing.assert_close(topk_idxs.tensor, ref_topk_idxs.tensor)
+    torch.testing.assert_close(cumsum_out.tensor, ref_cumsum.tensor)
+    torch.testing.assert_close(cumprod_out.tensor, ref_cumprod.tensor)
+    torch.testing.assert_close(flip_out.tensor, ref_flip.tensor)
+    torch.testing.assert_close(softmax_out.tensor, ref_softmax.tensor)
+    torch.testing.assert_close(log_softmax_out.tensor, ref_log_softmax.tensor)
+
+
 @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
 def test_aten_ragged_fastpaths_compile_smoke():
     nt = NT(
@@ -258,6 +395,42 @@ def test_aten_ragged_fastpaths_compile_smoke():
     torch.testing.assert_close(argsort_comp.tensor, ref_argsort.tensor)
     torch.testing.assert_close(softmax_comp.tensor, ref_softmax.tensor)
     torch.testing.assert_close(log_softmax_comp.tensor, ref_log_softmax.tensor)
+
+
+@pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+def test_aten_unregistered_same_shape_compile_smoke():
+    nt = NT(
+        [
+            torch.tensor([[1.1, 2.2], [3.3, 4.4]]),
+            torch.tensor([[5.5, 6.6], [7.7, 8.8], [9.9, 10.1]]),
+        ]
+    )
+
+    def _compile(fn):
+        return torch.compile(fn, backend="eager", fullgraph=True)
+
+    original_fallback = aten_functions.per_element_fallback
+
+    def _fail_fallback(*_args, **_kwargs):
+        raise AssertionError("per_element_fallback must not be used for covered generic aten fastpath")
+
+    aten_functions.per_element_fallback = _fail_fallback
+    try:
+        square_fn = _compile(lambda x: torch.ops.aten.square.default(x))
+        digamma_fn = _compile(lambda x: torch.ops.aten.digamma.default(x))
+        lgamma_fn = _compile(lambda x: torch.ops.aten.lgamma.default(x))
+        square_comp = square_fn(nt)
+        digamma_comp = digamma_fn(nt)
+        lgamma_comp = lgamma_fn(nt)
+    finally:
+        aten_functions.per_element_fallback = original_fallback
+
+    ref_square = NT([torch.square(t) for t in nt], **nt._meta())
+    ref_digamma = NT([torch.digamma(t) for t in nt], **nt._meta())
+    ref_lgamma = NT([torch.lgamma(t) for t in nt], **nt._meta())
+    torch.testing.assert_close(square_comp.tensor, ref_square.tensor)
+    torch.testing.assert_close(digamma_comp.tensor, ref_digamma.tensor)
+    torch.testing.assert_close(lgamma_comp.tensor, ref_lgamma.tensor)
 
 
 @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
