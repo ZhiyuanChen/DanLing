@@ -1610,13 +1610,41 @@ for _op in _DROPOUT_CHANNELWISE_OPS:
 
 # Table-driven registrations — binary per-element apply ops
 
-_APPLY_PAIR_OPS = [F.grid_sample, F.bilinear]
+_APPLY_PAIR_OPS = [F.bilinear]
 
 for _op in _APPLY_PAIR_OPS:
 
     @NestedTensorFuncRegistry.implement(_op)
     def _apply_pair_impl(input, other, *args, _fn=_op, **kwargs):
         return _apply_pair(input, other, _fn, *args, **kwargs)
+
+
+@NestedTensorFuncRegistry.implement(F.grid_sample)
+def _grid_sample_impl(input, grid, *args, **kwargs):
+    from .aten_functions import _offsets_match
+    from .nested_tensor import NestedTensor
+
+    cls = type(input) if isinstance(input, NestedTensor) else type(grid)
+    input = _ensure_nested_input(input, grid, cls)
+    if isinstance(grid, NestedTensor):
+        if len(input) != len(grid):
+            raise ValueError(
+                "NestedTensor batch length mismatch between input and grid: " f"input={len(input)}, grid={len(grid)}"
+            )
+        offsets_match = True
+        is_fake = False
+        with suppress(ImportError):
+            from torch._subclasses.fake_tensor import is_fake as _is_fake
+
+            is_fake = _is_fake(input._values) or _is_fake(grid._values)
+        if not is_fake:
+            offsets_match = _offsets_match(input._offsets, grid._offsets)
+        if input._values.dim() in (4, 5) and grid._values.dim() in (4, 5) and offsets_match:
+            return _from_batch_preserving_values(input, F.grid_sample(input._values, grid._values, *args, **kwargs))
+    elif isinstance(grid, Tensor):
+        if input._values.dim() in (4, 5) and grid.dim() in (4, 5) and grid.size(0) == input._values.size(0):
+            return _from_batch_preserving_values(input, F.grid_sample(input._values, grid, *args, **kwargs))
+    return _apply_pair(input, grid, F.grid_sample, *args, **kwargs)
 
 
 @NestedTensorFuncRegistry.implement(F.pairwise_distance)
@@ -1719,8 +1747,26 @@ def _f_softmin_impl(input, dim=-1, _stacklevel=3, dtype=None):
 
 @NestedTensorFuncRegistry.implement(F.gumbel_softmax)
 def _gumbel_softmax_impl(logits, *args, dim=-1, **kwargs):
-    dim = _translate_non_batch_dim(logits, dim)
-    return _apply_per_element(logits, F.gumbel_softmax, *args, dim=dim, **kwargs)
+    from .aten_functions import _packed_to_padded
+
+    dim_adj = _translate_non_batch_dim(logits, dim)
+    if logits._values.dim() > 1 and dim_adj == 0:
+        padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(logits, fill_value=float("-inf"))
+        out_padded = F.gumbel_softmax(padded, *args, dim=1, **kwargs)
+        return type(logits)._from_packed(
+            out_padded[batch_idx, local_idx],
+            logits._offsets,
+            logits._shape_tensor,
+            batch_first=logits.batch_first,
+            padding_value=logits.padding_value,
+            mask_value=logits.mask_value,
+            pin_memory=logits._pin_memory,
+            outer_size=logits._logical_shape,
+        )
+    concat_dim = _concat_dim_for_tensor_dim(logits, dim_adj)
+    if concat_dim is not None:
+        return _apply_packed(logits, F.gumbel_softmax, *args, dim=concat_dim, **kwargs)
+    return _apply_per_element(logits, F.gumbel_softmax, *args, dim=dim_adj, **kwargs)
 
 
 # F.normalize — needs dim translation
@@ -1764,6 +1810,12 @@ def _normalize_impl(input, p=2.0, dim=1, eps=1e-12, out=None):
 def _fractional_max_pool2d_impl(input, *args, return_indices=False, **kwargs):
     if return_indices:
         return _apply_with_indices(input, F.fractional_max_pool2d, *args, **kwargs)
+    random_samples = kwargs.get("_random_samples")
+    random_samples_ok = random_samples is None or (
+        isinstance(random_samples, Tensor) and random_samples.size(0) == input._values.size(0)
+    )
+    if input._values.dim() == 4 and random_samples_ok:
+        return _apply_batch_preserving_packed(input, F.fractional_max_pool2d, *args, **kwargs)
     return _apply_per_element(input, F.fractional_max_pool2d, *args, **kwargs)
 
 
@@ -1771,4 +1823,10 @@ def _fractional_max_pool2d_impl(input, *args, return_indices=False, **kwargs):
 def _fractional_max_pool3d_impl(input, *args, return_indices=False, **kwargs):
     if return_indices:
         return _apply_with_indices(input, F.fractional_max_pool3d, *args, **kwargs)
+    random_samples = kwargs.get("_random_samples")
+    random_samples_ok = random_samples is None or (
+        isinstance(random_samples, Tensor) and random_samples.size(0) == input._values.size(0)
+    )
+    if input._values.dim() == 5 and random_samples_ok:
+        return _apply_batch_preserving_packed(input, F.fractional_max_pool3d, *args, **kwargs)
     return _apply_per_element(input, F.fractional_max_pool3d, *args, **kwargs)
