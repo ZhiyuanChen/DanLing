@@ -320,8 +320,23 @@ def test_nn_functional_compile_smoke():
             torch.tensor([[7.0, 8.0], [1.0, 0.0], [9.0, 6.0], [2.0, 3.0], [5.0, 4.0]]),
         ]
     )
+    nt_pair = NT(
+        [
+            torch.tensor([[1.0, -1.0], [2.0, -2.0], [3.0, -3.0]]),
+            torch.tensor([[0.5, 0.1], [0.7, 0.3], [0.9, 0.2], [1.1, 0.4], [1.3, 0.5]]),
+        ]
+    )
     weight = torch.tensor([[0.2, -0.5], [1.1, 0.3]])
     bias = torch.tensor([0.4, -0.2])
+    conv_nt = NT(
+        [
+            torch.arange(2 * 3 * 4 * 4, dtype=torch.float32).reshape(2, 3, 4, 4) / 10.0,
+            torch.arange(3 * 3 * 4 * 4, dtype=torch.float32).reshape(3, 3, 4, 4) / 10.0,
+        ]
+    )
+    conv_weight = torch.arange(5 * 3 * 3 * 3, dtype=torch.float32).reshape(5, 3, 3, 3) / 100.0
+    conv_bias = torch.arange(5, dtype=torch.float32) / 50.0
+    one_hot_nt = NT([torch.tensor([0, 2, 1], dtype=torch.long), torch.tensor([1, 0, 3, 2], dtype=torch.long)])
 
     def _compile(fn):
         return torch.compile(fn, backend="eager", fullgraph=True)
@@ -329,13 +344,50 @@ def test_nn_functional_compile_smoke():
     linear_fn = _compile(lambda x: F.linear(x, weight, bias))
     softmax_fn = _compile(lambda x: F.softmax(x, dim=1))
     log_softmax_fn = _compile(lambda x: F.log_softmax(x, dim=1))
+    normalize_fn = _compile(lambda x: F.normalize(x, dim=1))
+    pairwise_fn = _compile(lambda x, y: F.pairwise_distance(x, y, p=2.0, eps=1e-6, keepdim=False))
+    dropout1d_eval_fn = _compile(lambda x: F.dropout1d(x, p=0.2, training=False))
+    dropout2d_eval_fn = _compile(lambda x: F.dropout2d(x, p=0.2, training=False))
+    feature_alpha_dropout_eval_fn = _compile(lambda x: F.feature_alpha_dropout(x, p=0.2, training=False))
+    conv2d_fn = _compile(lambda x: F.conv2d(x, conv_weight, conv_bias, stride=1, padding=1))
+    max_pool2d_fn = _compile(lambda x: F.max_pool2d(x, kernel_size=2, stride=2))
+    avg_pool2d_fn = _compile(lambda x: F.avg_pool2d(x, kernel_size=2, stride=2))
+    interpolate_fn = _compile(lambda x: F.interpolate(x, scale_factor=2, mode="nearest"))
+    one_hot_fn = _compile(lambda x: F.one_hot(x, num_classes=4))
     linear_comp = linear_fn(nt)
     softmax_comp = softmax_fn(nt)
     log_softmax_comp = log_softmax_fn(nt)
+    normalize_comp = normalize_fn(nt)
+    pairwise_comp = pairwise_fn(nt, nt_pair)
+    dropout1d_eval_comp = dropout1d_eval_fn(nt)
+    dropout2d_eval_comp = dropout2d_eval_fn(nt)
+    feature_alpha_dropout_eval_comp = feature_alpha_dropout_eval_fn(nt)
+    conv2d_comp = conv2d_fn(conv_nt)
+    max_pool2d_comp = max_pool2d_fn(conv_nt)
+    avg_pool2d_comp = avg_pool2d_fn(conv_nt)
+    interpolate_comp = interpolate_fn(conv_nt)
+    one_hot_comp = one_hot_fn(one_hot_nt)
 
     ref_linear = NT([F.linear(t, weight, bias) for t in nt], **nt._meta())
     ref_softmax = NT([F.softmax(t, dim=0) for t in nt], **nt._meta())
     ref_log_softmax = NT([F.log_softmax(t, dim=0) for t in nt], **nt._meta())
+    ref_normalize = NT([F.normalize(t, dim=0) for t in nt], **nt._meta())
+    ref_pairwise = NT([F.pairwise_distance(a, b) for a, b in zip(nt, nt_pair)], **nt._meta())
+    ref_conv2d = NT([F.conv2d(t, conv_weight, conv_bias, stride=1, padding=1) for t in conv_nt], **conv_nt._meta())
+    ref_max_pool2d = NT([F.max_pool2d(t, kernel_size=2, stride=2) for t in conv_nt], **conv_nt._meta())
+    ref_avg_pool2d = NT([F.avg_pool2d(t, kernel_size=2, stride=2) for t in conv_nt], **conv_nt._meta())
+    ref_interpolate = NT([F.interpolate(t, scale_factor=2, mode="nearest") for t in conv_nt], **conv_nt._meta())
+    ref_one_hot = NT([F.one_hot(t, num_classes=4) for t in one_hot_nt], **one_hot_nt._meta())
     torch.testing.assert_close(linear_comp.tensor, ref_linear.tensor)
     torch.testing.assert_close(softmax_comp.tensor, ref_softmax.tensor)
     torch.testing.assert_close(log_softmax_comp.tensor, ref_log_softmax.tensor)
+    torch.testing.assert_close(normalize_comp.tensor, ref_normalize.tensor)
+    torch.testing.assert_close(pairwise_comp.tensor, ref_pairwise.tensor)
+    torch.testing.assert_close(dropout1d_eval_comp.tensor, nt.tensor)
+    torch.testing.assert_close(dropout2d_eval_comp.tensor, nt.tensor)
+    torch.testing.assert_close(feature_alpha_dropout_eval_comp.tensor, nt.tensor)
+    torch.testing.assert_close(conv2d_comp.tensor, ref_conv2d.tensor)
+    torch.testing.assert_close(max_pool2d_comp.tensor, ref_max_pool2d.tensor)
+    torch.testing.assert_close(avg_pool2d_comp.tensor, ref_avg_pool2d.tensor)
+    torch.testing.assert_close(interpolate_comp.tensor, ref_interpolate.tensor)
+    torch.testing.assert_close(one_hot_comp.tensor, ref_one_hot.tensor)

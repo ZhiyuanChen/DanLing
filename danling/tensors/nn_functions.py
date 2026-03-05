@@ -230,6 +230,54 @@ def _apply_packed(input: NestedTensor, op: Callable, *args, **kwargs) -> NestedT
     return _concat_apply_same_shape(input, lambda t: op(t, *args, **kwargs))
 
 
+def _from_batch_preserving_values(input: NestedTensor, values: Tensor) -> NestedTensor:
+    r"""
+    Rebuild NestedTensor metadata for ops that preserve the per-element leading (ragged) dimension.
+
+    The packed ``_values`` layout concatenates per-element dim-0 along global dim-0.
+    For ops where dim-0 is batch-like (conv/pool/interpolate), each element keeps its
+    original dim-0 length and only trailing dims change uniformly.
+    """
+    cls = type(input)
+    out_shape_tensor = torch.empty((input._shape_tensor.size(0), values.dim()), dtype=input._shape_tensor.dtype)
+    out_shape_tensor[:, 0] = input._shape_tensor[:, 0]
+    if values.dim() > 1:
+        out_shape_tensor[:, 1:] = torch.tensor(list(values.shape[1:]), dtype=out_shape_tensor.dtype)
+    max_leading = input._logical_shape[1 if input.batch_first else 0] if len(input._logical_shape) > 1 else 0
+    if input.batch_first:
+        outer_size = torch.Size((len(input), max_leading, *values.shape[1:]))
+    else:
+        outer_size = torch.Size((max_leading, len(input), *values.shape[1:]))
+    return cls._from_packed(
+        values,
+        input._offsets,
+        out_shape_tensor,
+        batch_first=input.batch_first,
+        padding_value=input.padding_value,
+        mask_value=input.mask_value,
+        pin_memory=input._pin_memory,
+        outer_size=outer_size,
+    )
+
+
+def _apply_batch_preserving_packed(input: NestedTensor, op: Callable, *args, **kwargs):
+    r"""Apply *op* to packed ``_values`` for batch-preserving ops, supporting Tensor or (Tensor, Tensor) returns."""
+    cls = type(input)
+    if len(input) == 0:
+        return cls([], **input._meta(include_dtype=True))
+    result = op(input._values, *args, **kwargs)
+    if isinstance(result, Tensor):
+        return _from_batch_preserving_values(input, result)
+    if (
+        isinstance(result, tuple)
+        and len(result) == 2
+        and isinstance(result[0], Tensor)
+        and isinstance(result[1], Tensor)
+    ):
+        return _from_batch_preserving_values(input, result[0]), _from_batch_preserving_values(input, result[1])
+    raise TypeError(f"Unsupported return type from packed op {op}: {type(result)}")
+
+
 def _can_concat_normalize(input: NestedTensor, normalized_shape: tuple[int, ...]) -> bool:
     r"""
     Return whether a normalized_shape is compatible with all tensors in a NestedTensor.
@@ -1462,47 +1510,10 @@ for _op, _n in [*((op, 2) for op in _LOSS_OPS_2), *((op, 3) for op in _LOSS_OPS_
 # These need per-element application because they inspect input.dim() or similar.
 
 _APPLY_OPS = [
-    # Conv
-    F.conv1d,
-    F.conv2d,
-    F.conv3d,
-    F.conv_transpose1d,
-    F.conv_transpose2d,
-    F.conv_transpose3d,
-    # Pooling
-    F.avg_pool1d,
-    F.avg_pool2d,
-    F.avg_pool3d,
-    F.max_pool1d,
-    F.max_pool2d,
-    F.max_pool3d,
-    F.adaptive_avg_pool1d,
-    F.adaptive_avg_pool2d,
-    F.adaptive_avg_pool3d,
-    F.adaptive_max_pool1d,
-    F.adaptive_max_pool2d,
-    F.adaptive_max_pool3d,
-    F.lp_pool1d,
-    F.lp_pool2d,
-    F.lp_pool3d,
-    # Dropout
-    F.dropout1d,
-    F.dropout2d,
-    F.dropout3d,
-    F.feature_alpha_dropout,
-    # Grid / spatial
     F.affine_grid,
-    F.fold,
-    F.interpolate,
-    F.unfold,
-    # Pixel shuffle
-    F.pixel_shuffle,
-    F.pixel_unshuffle,
     # Padding
     F.pad,
     # Shape-changing / dimensionality-inspecting
-    F.channel_shuffle,
-    F.one_hot,
     F.pdist,
 ]
 
@@ -1513,15 +1524,144 @@ for _op in _APPLY_OPS:
         return _apply_per_element(input, _fn, *args, **kwargs)
 
 
+# Batch-preserving packed fast path:
+# for ops where per-element dim-0 is interpreted as a batch-like axis, so applying once
+# to packed _values is equivalent to per-element application.
+_BATCH_PRESERVING_PACKED_OPS = [
+    # Conv
+    (F.conv1d, (3,)),
+    (F.conv2d, (4,)),
+    (F.conv3d, (5,)),
+    (F.conv_transpose1d, (3,)),
+    (F.conv_transpose2d, (4,)),
+    (F.conv_transpose3d, (5,)),
+    # Pooling
+    (F.avg_pool1d, (3,)),
+    (F.avg_pool2d, (4,)),
+    (F.avg_pool3d, (5,)),
+    (F.max_pool1d, (3,)),
+    (F.max_pool2d, (4,)),
+    (F.max_pool3d, (5,)),
+    (F.adaptive_avg_pool1d, (3,)),
+    (F.adaptive_avg_pool2d, (4,)),
+    (F.adaptive_avg_pool3d, (5,)),
+    (F.adaptive_max_pool1d, (3,)),
+    (F.adaptive_max_pool2d, (4,)),
+    (F.adaptive_max_pool3d, (5,)),
+    (F.lp_pool1d, (3,)),
+    (F.lp_pool2d, (4,)),
+    (F.lp_pool3d, (5,)),
+    # Grid / spatial
+    (F.fold, (3,)),
+    (F.interpolate, (3, 4, 5)),
+    (F.unfold, (4,)),
+    # Pixel shuffle / channel
+    (F.channel_shuffle, (3, 4, 5)),
+    (F.pixel_shuffle, (4, 5)),
+    (F.pixel_unshuffle, (4, 5)),
+]
+
+for _op, _packed_dims in _BATCH_PRESERVING_PACKED_OPS:
+
+    @NestedTensorFuncRegistry.implement(_op)
+    def _apply_batch_preserving_impl(input, *args, _fn=_op, _dims=_packed_dims, **kwargs):
+        if input._values.dim() in _dims:
+            return _apply_batch_preserving_packed(input, _fn, *args, **kwargs)
+        return _apply_per_element(input, _fn, *args, **kwargs)
+
+
+@NestedTensorFuncRegistry.implement(F.one_hot)
+def _one_hot_impl(input, num_classes: int = -1):
+    if input._values.dim() > 1 or input._shape_tensor.size(1) == 1:
+        out_values = F.one_hot(input._values, num_classes=num_classes)
+        out_shape_tensor = torch.empty(
+            (input._shape_tensor.size(0), input._shape_tensor.size(1) + 1),
+            dtype=input._shape_tensor.dtype,
+        )
+        if out_shape_tensor.numel() > 0:
+            out_shape_tensor[:, :-1] = input._shape_tensor
+            out_shape_tensor[:, -1] = out_values.shape[-1]
+        return type(input)._from_packed(
+            out_values,
+            input._offsets,
+            out_shape_tensor,
+            batch_first=input.batch_first,
+            padding_value=input.padding_value,
+            mask_value=input.mask_value,
+            pin_memory=input._pin_memory,
+            outer_size=torch.Size((*input._logical_shape, out_values.shape[-1])),
+        )
+    return _apply_per_element(input, F.one_hot, num_classes=num_classes)
+
+
+# Channel-wise dropout: no-op fast path in eval (compile-friendly), per-element in train.
+_DROPOUT_CHANNELWISE_OPS = [F.dropout1d, F.dropout2d, F.dropout3d, F.feature_alpha_dropout]
+
+for _op in _DROPOUT_CHANNELWISE_OPS:
+
+    @NestedTensorFuncRegistry.implement(_op)
+    def _dropout_channelwise_impl(input, *args, _fn=_op, **kwargs):
+        training = args[1] if len(args) > 1 else kwargs.get("training", True)
+        p = args[0] if len(args) > 0 else kwargs.get("p", 0.5)
+        if (not training) or p == 0:
+            return input
+        return _apply_per_element(input, _fn, *args, **kwargs)
+
+
 # Table-driven registrations — binary per-element apply ops
 
-_APPLY_PAIR_OPS = [F.grid_sample, F.bilinear, F.pairwise_distance]
+_APPLY_PAIR_OPS = [F.grid_sample, F.bilinear]
 
 for _op in _APPLY_PAIR_OPS:
 
     @NestedTensorFuncRegistry.implement(_op)
     def _apply_pair_impl(input, other, *args, _fn=_op, **kwargs):
         return _apply_pair(input, other, _fn, *args, **kwargs)
+
+
+@NestedTensorFuncRegistry.implement(F.pairwise_distance)
+def _pairwise_distance_impl(x1, x2, p=2.0, eps=1e-6, keepdim=False):
+    from .aten_functions import _offsets_match
+    from .nested_tensor import NestedTensor
+
+    cls = type(x1) if isinstance(x1, NestedTensor) else type(x2)
+    x1 = _ensure_nested_input(x1, x2, cls)
+    if isinstance(x2, NestedTensor):
+        if len(x1) != len(x2):
+            raise ValueError("NestedTensor batch length mismatch between x1 and x2: " f"x1={len(x1)}, x2={len(x2)}")
+        offsets_match = True
+        is_fake = False
+        with suppress(ImportError):
+            from torch._subclasses.fake_tensor import is_fake as _is_fake
+
+            is_fake = _is_fake(x1._values) or _is_fake(x2._values)
+        if not is_fake:
+            offsets_match = _offsets_match(x1._offsets, x2._offsets)
+        if x1._values.dim() == 2 and x2._values.dim() == 2 and offsets_match:
+            out_values = F.pairwise_distance(x1._values, x2._values, p=p, eps=eps, keepdim=keepdim)
+            if keepdim:
+                out_shape_tensor = x1._shape_tensor.clone()
+                if out_shape_tensor.numel() > 0 and out_shape_tensor.size(1) > 0:
+                    out_shape_tensor[:, -1] = 1
+                out_logical = list(x1._logical_shape)
+                if out_logical:
+                    out_logical[-1] = 1
+            else:
+                out_shape_tensor = (
+                    x1._shape_tensor[:, :-1].clone() if x1._shape_tensor.size(1) > 0 else x1._shape_tensor
+                )
+                out_logical = list(x1._logical_shape[:-1]) if len(x1._logical_shape) > 0 else list(x1._logical_shape)
+            return cls._from_packed(
+                out_values,
+                x1._offsets,
+                out_shape_tensor,
+                batch_first=x1.batch_first,
+                padding_value=x1.padding_value,
+                mask_value=x1.mask_value,
+                pin_memory=x1._pin_memory,
+                outer_size=torch.Size(out_logical),
+            )
+    return _apply_pair(x1, x2, F.pairwise_distance, p=p, eps=eps, keepdim=keepdim)
 
 
 # Table-driven registrations — pool ops that return (output, indices)
@@ -1589,6 +1729,26 @@ def _gumbel_softmax_impl(logits, *args, dim=-1, **kwargs):
 @NestedTensorFuncRegistry.implement(F.normalize)
 def _normalize_impl(input, p=2.0, dim=1, eps=1e-12, out=None):
     dim_adj = _translate_non_batch_dim(input, dim)
+    if dim_adj == 0:
+        if out is not None:
+            raise NotImplementedError("F.normalize(..., out=...) is not supported on ragged dimensions.")
+        if input._values.dim() > 1 and dim_adj == 0 and isinstance(p, (int, float)) and p > 0:
+            from .aten_functions import _packed_to_padded
+
+            padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(input, fill_value=0.0)
+            denom = torch.linalg.vector_norm(padded, ord=float(p), dim=1, keepdim=True)
+            denom = torch.clamp(denom, min=eps)
+            return type(input)._from_packed(
+                (padded / denom)[batch_idx, local_idx],
+                input._offsets,
+                input._shape_tensor,
+                batch_first=input.batch_first,
+                padding_value=input.padding_value,
+                mask_value=input.mask_value,
+                pin_memory=input._pin_memory,
+                outer_size=input._logical_shape,
+            )
+        return _apply_per_element(input, F.normalize, p=p, dim=dim_adj, eps=eps, out=None)
     concat_dim = _concat_dim_for_tensor_dim(input, dim_adj)
     if concat_dim is None:
         if out is not None:
