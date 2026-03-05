@@ -372,6 +372,7 @@ class NestedTensor(torch.Tensor):
         return torch.Size(size)
 
     @classmethod
+    @torch._dynamo.disable
     def _from_packed(
         cls,
         values: Tensor,
@@ -420,11 +421,13 @@ class NestedTensor(torch.Tensor):
     # ------------------------------------------------------------------
 
     def __tensor_flatten__(self):
+        # During tracing, wrapper instances can be inspected while being built.
+        # Use conservative defaults when metadata is not set yet.
         return ["_values", "_offsets", "_shape_tensor"], {
-            "batch_first": self.batch_first,
-            "padding_value": self.padding_value,
-            "mask_value": self.mask_value,
-            "pin_memory": self._pin_memory,
+            "batch_first": getattr(self, "batch_first", True),
+            "padding_value": getattr(self, "padding_value", 0.0),
+            "mask_value": getattr(self, "mask_value", False),
+            "pin_memory": getattr(self, "_pin_memory", False),
         }
 
     @classmethod
@@ -1229,10 +1232,51 @@ class NestedTensor(torch.Tensor):
 
     def __len__(self) -> int:
         r"""Return the number of tensors in the batch."""
+        if not hasattr(self, "_offsets"):
+            with torch._C.DisableTorchFunctionSubclass():
+                full_size = torch.Tensor.size(self)
+            if len(full_size) == 0:
+                return 0
+            batch_dim = 0 if getattr(self, "batch_first", True) else (1 if len(full_size) > 1 else 0)
+            return int(full_size[batch_dim])
         return len(self._offsets) - 1
 
     def __repr__(self):
         r"""Return a human-readable string representation of the NestedTensor."""
+        if torch._dynamo.is_compiling():
+            try:
+                shape = tuple(self.size())
+            except Exception:
+                shape = "?"
+            return (
+                f"{self.__class__.__name__}(shape={shape}, dtype={self.dtype}, "
+                f"device={self.device}, batch_first={getattr(self, 'batch_first', True)})"
+            )
+
+        try:
+            from torch._subclasses.fake_tensor import is_fake
+
+            for name in ("_values", "_offsets", "_shape_tensor"):
+                value = self.__dict__.get(name)
+                if isinstance(value, Tensor) and is_fake(value):
+                    shape = tuple(self.size())
+                    return (
+                        f"{self.__class__.__name__}(shape={shape}, dtype={self.dtype}, "
+                        f"device={self.device}, batch_first={getattr(self, 'batch_first', True)})"
+                    )
+        except Exception:
+            pass
+
+        if not all(name in self.__dict__ for name in ("_values", "_offsets", "_shape_tensor")):
+            try:
+                shape = tuple(self.size())
+            except Exception:
+                shape = "?"
+            return (
+                f"{self.__class__.__name__}(shape={shape}, dtype={self.dtype}, "
+                f"device={self.device}, batch_first={getattr(self, 'batch_first', True)})"
+            )
+
         if len(self) == 0:
             return self.__class__.__name__ + "()"
 
@@ -1356,6 +1400,9 @@ class NestedTensor(torch.Tensor):
             >>> nested_tensor.dim()
             2
         """
+        if not hasattr(self, "_logical_shape"):
+            with torch._C.DisableTorchFunctionSubclass():
+                return len(torch.Tensor.size(self))
         return len(self._logical_shape)
 
     def max(self, dim: int | None = None, keepdim: bool = False) -> Tensor | NestedTensor:
@@ -1494,7 +1541,11 @@ class NestedTensor(torch.Tensor):
             >>> nested_tensor.size(1)
             4
         """
-        full_size = self._logical_shape
+        if hasattr(self, "_logical_shape"):
+            full_size = self._logical_shape
+        else:
+            with torch._C.DisableTorchFunctionSubclass():
+                full_size = torch.Tensor.size(self)
         if dim is not None:
             dim = dim + len(full_size) if dim < 0 else dim
             return full_size[dim]

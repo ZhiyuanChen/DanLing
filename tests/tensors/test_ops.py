@@ -209,10 +209,7 @@ def test_aten_ragged_fastpaths_compile_smoke():
     )
 
     def _compile(fn):
-        try:
-            return torch.compile(fn, backend="eager")
-        except Exception as exc:  # pragma: no cover - environment-dependent
-            pytest.skip(f"torch.compile backend not usable in this environment: {exc}")
+        return torch.compile(fn, backend="eager")
 
     original_fallback = aten_functions.per_element_fallback
 
@@ -225,14 +222,10 @@ def test_aten_ragged_fastpaths_compile_smoke():
         cumsum_fn = _compile(lambda x: torch.ops.aten.cumsum.default(x, 1))
         cumprod_fn = _compile(lambda x: torch.ops.aten.cumprod.default(x, 1))
         flip_fn = _compile(lambda x: torch.ops.aten.flip.default(x, [1]))
-
-        try:
-            topk_comp_vals, topk_comp_idxs = topk_fn(nt)
-            cumsum_comp = cumsum_fn(nt)
-            cumprod_comp = cumprod_fn(nt)
-            flip_comp = flip_fn(nt)
-        except Exception as exc:  # pragma: no cover - environment-dependent
-            pytest.skip(f"compiled execution is not supported in this environment: {exc}")
+        topk_comp_vals, topk_comp_idxs = topk_fn(nt)
+        cumsum_comp = cumsum_fn(nt)
+        cumprod_comp = cumprod_fn(nt)
+        flip_comp = flip_fn(nt)
     finally:
         aten_functions.per_element_fallback = original_fallback
 

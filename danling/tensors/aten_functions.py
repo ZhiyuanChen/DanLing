@@ -114,16 +114,7 @@ def per_element_fallback(func, args, kwargs):
         packed_kwargs = {k: replace_nested_with_values(v) for k, v in kwargs.items()} if kwargs else {}
 
         def rebuild_empty(t: Tensor):
-            return NestedTensor._from_packed(
-                t,
-                source._offsets,
-                source._shape_tensor,
-                batch_first=source.batch_first,
-                padding_value=source.padding_value,
-                mask_value=source.mask_value,
-                pin_memory=source._pin_memory,
-                outer_size=source._logical_shape,
-            )
+            return _packed_like(source, t)
 
         try:
             empty_result = func(*packed_args, **packed_kwargs)
@@ -192,16 +183,7 @@ def per_element_fallback(func, args, kwargs):
 def _unary_handler(func, args, kwargs):
     r"""Dispatch handler for elementwise unary ops applied to _values."""
     source = args[0]
-    return type(source)._from_packed(
-        func(source._values, *args[1:], **kwargs),
-        source._offsets,
-        source._shape_tensor,
-        batch_first=source.batch_first,
-        padding_value=source.padding_value,
-        mask_value=source.mask_value,
-        pin_memory=source._pin_memory,
-        outer_size=source._logical_shape,
-    )
+    return _packed_like(source, func(source._values, *args[1:], **kwargs))
 
 
 # ---------------------------------------------------------------------------
@@ -237,28 +219,10 @@ def _binary_handler(func, args, kwargs):
     extra = args[2:]
     if isinstance(lhs, NestedTensor):
         resolved = _resolve_other(lhs, rhs, func)
-        return type(lhs)._from_packed(
-            func(lhs._values, resolved, *extra, **kwargs),
-            lhs._offsets,
-            lhs._shape_tensor,
-            batch_first=lhs.batch_first,
-            padding_value=lhs.padding_value,
-            mask_value=lhs.mask_value,
-            pin_memory=lhs._pin_memory,
-            outer_size=lhs._logical_shape,
-        )
+        return _packed_like(lhs, func(lhs._values, resolved, *extra, **kwargs))
     # lhs is scalar/tensor, rhs is NestedTensor
     resolved = _resolve_other(rhs, lhs, func)
-    return type(rhs)._from_packed(
-        func(resolved, rhs._values, *extra, **kwargs),
-        rhs._offsets,
-        rhs._shape_tensor,
-        batch_first=rhs.batch_first,
-        padding_value=rhs.padding_value,
-        mask_value=rhs.mask_value,
-        pin_memory=rhs._pin_memory,
-        outer_size=rhs._logical_shape,
-    )
+    return _packed_like(rhs, func(resolved, rhs._values, *extra, **kwargs))
 
 
 # ---------------------------------------------------------------------------
@@ -309,34 +273,15 @@ def _to_copy(func, args, kwargs):
     variable-length elements.
     """
     source = args[0]
-    new_values = func(source._values, **kwargs)
     # Offsets and shape_tensor stay on CPU — they are metadata, not compute tensors.
-    return type(source)._from_packed(
-        new_values,
-        source._offsets,
-        source._shape_tensor,
-        batch_first=source.batch_first,
-        padding_value=source.padding_value,
-        mask_value=source.mask_value,
-        pin_memory=source._pin_memory,
-        outer_size=source._logical_shape,
-    )
+    return _packed_like(source, func(source._values, **kwargs))
 
 
 @NestedTensorAtenRegistry.implement(aten.alias.default)
 def _alias(func, args, kwargs):
     r"""Create an alias of the NestedTensor sharing the same _values storage."""
     source = args[0]
-    return type(source)._from_packed(
-        source._values.alias(),
-        source._offsets,
-        source._shape_tensor,
-        batch_first=source.batch_first,
-        padding_value=source.padding_value,
-        mask_value=source.mask_value,
-        pin_memory=source._pin_memory,
-        outer_size=source._logical_shape,
-    )
+    return _packed_like(source, source._values.alias())
 
 
 # ---------------------------------------------------------------------------
@@ -429,8 +374,9 @@ def _packed_to_padded(source: NestedTensor, *, fill_value) -> tuple[Tensor, Tens
     lengths = source._offsets[1:] - source._offsets[:-1]
     device = source._values.device
     lengths_dev = lengths.to(device=device, dtype=torch.long)
-    max_len = int(lengths.max().item()) if lengths.numel() > 0 else 0
-    batch_size = int(lengths.numel())
+    ragged_dim = 1 if source.batch_first else 0
+    max_len = int(source._logical_shape[ragged_dim]) if len(source._logical_shape) > ragged_dim else 0
+    batch_size = len(source)
     padded_shape = (batch_size, max_len, *source._values.shape[1:])
     padded = torch.full(padded_shape, fill_value=fill_value, dtype=source._values.dtype, device=device)
 
@@ -558,11 +504,13 @@ def _topk(func, args, kwargs):
             return _packed_like(source, source._values), _packed_like(source, source._values.to(dtype=torch.long))
 
         k_int = int(k)
-        min_len = int(lengths.min().item())
-        if k_int > min_len:
-            raise ValueError(
-                f"NestedTensor topk along ragged dim requires k <= min segment length, but got k={k_int}, min={min_len}"
-            )
+        if not torch._dynamo.is_compiling():
+            min_len = int(lengths.min().item())
+            if k_int > min_len:
+                raise ValueError(
+                    f"NestedTensor topk along ragged dim requires k <= min segment length, "
+                    f"but got k={k_int}, min={min_len}"
+                )
 
         if _needs_masked_topk_scores(source._values.dtype):
             valid_mask = torch.arange(max_len, device=source._values.device, dtype=torch.long).unsqueeze(0)
@@ -728,19 +676,8 @@ _CREATION_OPS = [
 def _native_dropout(func, args, kwargs):
     r"""Apply native dropout to _values, returning (output, mask) as NestedTensors."""
     source = args[0]
-    cls = type(source)
     output, mask = func(source._values, *args[1:], **kwargs)
-    kw = {
-        "batch_first": source.batch_first,
-        "padding_value": source.padding_value,
-        "mask_value": source.mask_value,
-        "pin_memory": source._pin_memory,
-        "outer_size": source._logical_shape,
-    }
-    return (
-        cls._from_packed(output, source._offsets, source._shape_tensor, **kw),
-        cls._from_packed(mask, source._offsets, source._shape_tensor, **kw),
-    )
+    return _packed_like(source, output), _packed_like(source, mask)
 
 
 # ---------------------------------------------------------------------------
@@ -779,16 +716,7 @@ def _ternary_handler(func, args, kwargs):
         va = a._values if isinstance(a, NestedTensor) else a
         vb = b._values if isinstance(b, NestedTensor) else b
         vc = c._values if isinstance(c, NestedTensor) else c
-        return type(ref)._from_packed(
-            func(va, vb, vc, **kwargs),
-            ref._offsets,
-            ref._shape_tensor,
-            batch_first=ref.batch_first,
-            padding_value=ref.padding_value,
-            mask_value=ref.mask_value,
-            pin_memory=ref._pin_memory,
-            outer_size=ref._logical_shape,
-        )
+        return _packed_like(ref, func(va, vb, vc, **kwargs))
     raise NotImplementedError(f"NestedTensor: {func} requires matching offsets across all NT operands")
 
 
@@ -809,20 +737,7 @@ def _native_layer_norm(func, args, kwargs):
     r"""Dispatch handler for layer norm on packed _values."""
     source = args[0]
     output, mean, rstd = func(source._values, *args[1:], **kwargs)
-    return (
-        type(source)._from_packed(
-            output,
-            source._offsets,
-            source._shape_tensor,
-            batch_first=source.batch_first,
-            padding_value=source.padding_value,
-            mask_value=source.mask_value,
-            pin_memory=source._pin_memory,
-            outer_size=source._logical_shape,
-        ),
-        mean,
-        rstd,
-    )
+    return _packed_like(source, output), mean, rstd
 
 
 @NestedTensorAtenRegistry.implement(aten.native_layer_norm_backward.default)
@@ -839,17 +754,7 @@ def _native_layer_norm_backward(func, args, kwargs):
     i = input_._values if isinstance(input_, NestedTensor) else input_
     # args: grad_out, input, normalized_shape, mean, rstd, weight, bias, output_mask
     grad_input, grad_weight, grad_bias = func(g, i, *args[2:], **kwargs)
-    grad_input = type(ref)._from_packed(
-        grad_input,
-        ref._offsets,
-        ref._shape_tensor,
-        batch_first=ref.batch_first,
-        padding_value=ref.padding_value,
-        mask_value=ref.mask_value,
-        pin_memory=ref._pin_memory,
-        outer_size=ref._logical_shape,
-    )
-    return grad_input, grad_weight, grad_bias
+    return _packed_like(ref, grad_input), grad_weight, grad_bias
 
 
 # ---------------------------------------------------------------------------
@@ -868,16 +773,7 @@ def _binary_unwrap_handler(func, args, kwargs):
     ref = sources[0]
     va = a._values if isinstance(a, NestedTensor) else a
     vb = b._values if isinstance(b, NestedTensor) else b
-    return type(ref)._from_packed(
-        func(va, vb, *args[2:], **kwargs),
-        ref._offsets,
-        ref._shape_tensor,
-        batch_first=ref.batch_first,
-        padding_value=ref.padding_value,
-        mask_value=ref.mask_value,
-        pin_memory=ref._pin_memory,
-        outer_size=ref._logical_shape,
-    )
+    return _packed_like(ref, func(va, vb, *args[2:], **kwargs))
 
 
 def _softmax_handler(func, args, kwargs):
@@ -890,16 +786,7 @@ def _softmax_handler(func, args, kwargs):
         return type(source)(
             results, batch_first=source.batch_first, padding_value=source.padding_value, mask_value=source.mask_value
         )
-    return type(source)._from_packed(
-        func(source._values, dim_adj, *args[2:], **kwargs),
-        source._offsets,
-        source._shape_tensor,
-        batch_first=source.batch_first,
-        padding_value=source.padding_value,
-        mask_value=source.mask_value,
-        pin_memory=source._pin_memory,
-        outer_size=source._logical_shape,
-    )
+    return _packed_like(source, func(source._values, dim_adj, *args[2:], **kwargs))
 
 
 # ---------------------------------------------------------------------------
@@ -940,16 +827,7 @@ def _masked_fill_handler(func, args, kwargs):
 
     source, mask, value = args[0], args[1], args[2]
     if isinstance(mask, NestedTensor) and _offsets_match(source._offsets, mask._offsets):
-        return type(source)._from_packed(
-            func(source._values, mask._values, value, **kwargs),
-            source._offsets,
-            source._shape_tensor,
-            batch_first=source.batch_first,
-            padding_value=source.padding_value,
-            mask_value=source.mask_value,
-            pin_memory=source._pin_memory,
-            outer_size=source._logical_shape,
-        )
+        return _packed_like(source, func(source._values, mask._values, value, **kwargs))
     raise NotImplementedError(f"NestedTensor: {func} requires mask with matching offsets")
 
 
