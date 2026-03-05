@@ -1511,8 +1511,6 @@ for _op, _n in [*((op, 2) for op in _LOSS_OPS_2), *((op, 3) for op in _LOSS_OPS_
 
 _APPLY_OPS = [
     F.affine_grid,
-    # Padding
-    F.pad,
     # Shape-changing / dimensionality-inspecting
     F.pdist,
 ]
@@ -1522,6 +1520,17 @@ for _op in _APPLY_OPS:
     @NestedTensorFuncRegistry.implement(_op)
     def _apply_impl(input, *args, _fn=_op, **kwargs):
         return _apply_per_element(input, _fn, *args, **kwargs)
+
+
+@NestedTensorFuncRegistry.implement(F.pad)
+def _pad_impl(input, pad, mode="constant", value=None):
+    pad_tuple = tuple(pad)
+    if input._values.dim() > 1 and len(pad_tuple) % 2 == 0:
+        padded_dims = len(pad_tuple) // 2
+        # Fast path when pad only touches trailing (static) dims, not ragged dim-0.
+        if padded_dims < input._values.dim():
+            return _apply_batch_preserving_packed(input, F.pad, pad_tuple, mode=mode, value=value)
+    return _apply_per_element(input, F.pad, pad_tuple, mode=mode, value=value)
 
 
 # Batch-preserving packed fast path:

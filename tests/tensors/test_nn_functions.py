@@ -644,6 +644,17 @@ class TestPad:
         reference = NT([F.pad(t, (1, 1, 1, 1), value=0.5) for t in nt], **nt._meta())
         assert_close(output, reference)
 
+    def test_pad_ragged_leading_dim(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.arange(4.0, device=device, dtype=float_dtype).view(1, 1, 2, 2),
+                torch.arange(8.0, device=device, dtype=float_dtype).view(2, 1, 2, 2),
+            ]
+        )
+        output = F.pad(nt, (1, 1, 1, 1), value=0.25)
+        reference = NT([F.pad(t, (1, 1, 1, 1), value=0.25) for t in nt], **nt._meta())
+        assert_close(output, reference)
+
 
 class TestClassificationLosses:
 

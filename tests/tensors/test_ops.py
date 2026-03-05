@@ -336,6 +336,8 @@ def test_nn_functional_fastpaths_no_apply_per_element():
     )
     frac2_nt = NT([torch.randn(2, 1, 4, 4), torch.randn(3, 1, 4, 4)])
     frac3_nt = NT([torch.randn(2, 1, 4, 4, 4), torch.randn(3, 1, 4, 4, 4)])
+    frac2_random = torch.rand(frac2_nt._values.size(0), frac2_nt._values.size(1), 2, dtype=frac2_nt.dtype)
+    frac3_random = torch.rand(frac3_nt._values.size(0), frac3_nt._values.size(1), 3, dtype=frac3_nt.dtype)
     nt_logits = NT(
         [
             torch.tensor([[3.0, 1.0], [4.0, 2.0], [0.0, 5.0]]),
@@ -354,13 +356,12 @@ def test_nn_functional_fastpaths_no_apply_per_element():
         max_pool2d_out = F.max_pool2d(conv_nt, kernel_size=2, stride=2)
         avg_pool2d_out = F.avg_pool2d(conv_nt, kernel_size=2, stride=2)
         interpolate_out = F.interpolate(conv_nt, scale_factor=2, mode="nearest")
+        pad_out = F.pad(conv_nt, (1, 1, 1, 1), value=0.5)
         one_hot_out = F.one_hot(one_hot_nt, num_classes=4)
         grid_out = F.grid_sample(grid_input, grid, align_corners=False)
         gumbel_out = F.gumbel_softmax(nt_logits, dim=1, tau=1.0, hard=False)
-        torch.manual_seed(1234)
-        frac2_out = F.fractional_max_pool2d(frac2_nt, kernel_size=2, output_size=2)
-        torch.manual_seed(1234)
-        frac3_out = F.fractional_max_pool3d(frac3_nt, kernel_size=2, output_size=2)
+        frac2_out = F.fractional_max_pool2d(frac2_nt, kernel_size=2, output_size=2, _random_samples=frac2_random)
+        frac3_out = F.fractional_max_pool3d(frac3_nt, kernel_size=2, output_size=2, _random_samples=frac3_random)
     finally:
         nn_functions._apply_per_element = original_apply
 
@@ -368,6 +369,7 @@ def test_nn_functional_fastpaths_no_apply_per_element():
     assert isinstance(max_pool2d_out, NT)
     assert isinstance(avg_pool2d_out, NT)
     assert isinstance(interpolate_out, NT)
+    assert isinstance(pad_out, NT)
     assert isinstance(one_hot_out, NT)
     assert isinstance(grid_out, NT)
     assert isinstance(gumbel_out, NT)
@@ -414,6 +416,12 @@ def test_nn_functional_compile_smoke():
     )
     frac2_nt = NT([torch.randn(2, 1, 4, 4), torch.randn(3, 1, 4, 4)])
     frac3_nt = NT([torch.randn(2, 1, 4, 4, 4), torch.randn(3, 1, 4, 4, 4)])
+    frac2_random = torch.rand(
+        frac2_nt._values.size(0), frac2_nt._values.size(1), 2, dtype=frac2_nt.dtype, device=frac2_nt.device
+    )
+    frac3_random = torch.rand(
+        frac3_nt._values.size(0), frac3_nt._values.size(1), 3, dtype=frac3_nt.dtype, device=frac3_nt.device
+    )
 
     def _compile(fn):
         return torch.compile(fn, backend="eager", fullgraph=True)
@@ -430,11 +438,12 @@ def test_nn_functional_compile_smoke():
     max_pool2d_fn = _compile(lambda x: F.max_pool2d(x, kernel_size=2, stride=2))
     avg_pool2d_fn = _compile(lambda x: F.avg_pool2d(x, kernel_size=2, stride=2))
     interpolate_fn = _compile(lambda x: F.interpolate(x, scale_factor=2, mode="nearest"))
+    pad_fn = _compile(lambda x: F.pad(x, (1, 1, 1, 1), value=0.5))
     one_hot_fn = _compile(lambda x: F.one_hot(x, num_classes=4))
     grid_sample_fn = _compile(lambda x, g: F.grid_sample(x, g, align_corners=False))
     gumbel_fn = _compile(lambda x: F.gumbel_softmax(x, dim=1, tau=1.0, hard=False))
-    frac2_fn = _compile(lambda x: F.fractional_max_pool2d(x, kernel_size=2, output_size=2))
-    frac3_fn = _compile(lambda x: F.fractional_max_pool3d(x, kernel_size=2, output_size=2))
+    frac2_fn = _compile(lambda x, rs: F.fractional_max_pool2d(x, kernel_size=2, output_size=2, _random_samples=rs))
+    frac3_fn = _compile(lambda x, rs: F.fractional_max_pool3d(x, kernel_size=2, output_size=2, _random_samples=rs))
     linear_comp = linear_fn(nt)
     softmax_comp = softmax_fn(nt)
     log_softmax_comp = log_softmax_fn(nt)
@@ -447,13 +456,12 @@ def test_nn_functional_compile_smoke():
     max_pool2d_comp = max_pool2d_fn(conv_nt)
     avg_pool2d_comp = avg_pool2d_fn(conv_nt)
     interpolate_comp = interpolate_fn(conv_nt)
+    pad_comp = pad_fn(conv_nt)
     one_hot_comp = one_hot_fn(one_hot_nt)
     grid_sample_comp = grid_sample_fn(grid_input, grid)
     gumbel_comp = gumbel_fn(nt)
-    torch.manual_seed(1234)
-    frac2_comp = frac2_fn(frac2_nt)
-    torch.manual_seed(1234)
-    frac3_comp = frac3_fn(frac3_nt)
+    frac2_comp = frac2_fn(frac2_nt, frac2_random)
+    frac3_comp = frac3_fn(frac3_nt, frac3_random)
 
     ref_linear = NT([F.linear(t, weight, bias) for t in nt], **nt._meta())
     ref_softmax = NT([F.softmax(t, dim=0) for t in nt], **nt._meta())
@@ -464,14 +472,37 @@ def test_nn_functional_compile_smoke():
     ref_max_pool2d = NT([F.max_pool2d(t, kernel_size=2, stride=2) for t in conv_nt], **conv_nt._meta())
     ref_avg_pool2d = NT([F.avg_pool2d(t, kernel_size=2, stride=2) for t in conv_nt], **conv_nt._meta())
     ref_interpolate = NT([F.interpolate(t, scale_factor=2, mode="nearest") for t in conv_nt], **conv_nt._meta())
+    ref_pad = NT([F.pad(t, (1, 1, 1, 1), value=0.5) for t in conv_nt], **conv_nt._meta())
     ref_one_hot = NT([F.one_hot(t, num_classes=4) for t in one_hot_nt], **one_hot_nt._meta())
     ref_grid_sample = NT(
         [F.grid_sample(a, b, align_corners=False) for a, b in zip(grid_input, grid)], **grid_input._meta()
     )
-    torch.manual_seed(1234)
-    ref_frac2 = NT([F.fractional_max_pool2d(t, kernel_size=2, output_size=2) for t in frac2_nt], **frac2_nt._meta())
-    torch.manual_seed(1234)
-    ref_frac3 = NT([F.fractional_max_pool3d(t, kernel_size=2, output_size=2) for t in frac3_nt], **frac3_nt._meta())
+    offsets2 = frac2_nt._offsets.tolist()
+    ref_frac2 = NT(
+        [
+            F.fractional_max_pool2d(
+                t,
+                kernel_size=2,
+                output_size=2,
+                _random_samples=frac2_random[offsets2[i] : offsets2[i + 1]],
+            )
+            for i, t in enumerate(frac2_nt)
+        ],
+        **frac2_nt._meta(),
+    )
+    offsets3 = frac3_nt._offsets.tolist()
+    ref_frac3 = NT(
+        [
+            F.fractional_max_pool3d(
+                t,
+                kernel_size=2,
+                output_size=2,
+                _random_samples=frac3_random[offsets3[i] : offsets3[i + 1]],
+            )
+            for i, t in enumerate(frac3_nt)
+        ],
+        **frac3_nt._meta(),
+    )
     torch.testing.assert_close(linear_comp.tensor, ref_linear.tensor)
     torch.testing.assert_close(softmax_comp.tensor, ref_softmax.tensor)
     torch.testing.assert_close(log_softmax_comp.tensor, ref_log_softmax.tensor)
@@ -484,6 +515,7 @@ def test_nn_functional_compile_smoke():
     torch.testing.assert_close(max_pool2d_comp.tensor, ref_max_pool2d.tensor)
     torch.testing.assert_close(avg_pool2d_comp.tensor, ref_avg_pool2d.tensor)
     torch.testing.assert_close(interpolate_comp.tensor, ref_interpolate.tensor)
+    torch.testing.assert_close(pad_comp.tensor, ref_pad.tensor)
     torch.testing.assert_close(one_hot_comp.tensor, ref_one_hot.tensor)
     torch.testing.assert_close(grid_sample_comp.tensor, ref_grid_sample.tensor)
     torch.testing.assert_close(frac2_comp.tensor, ref_frac2.tensor)

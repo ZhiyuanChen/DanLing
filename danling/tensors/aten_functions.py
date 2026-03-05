@@ -227,8 +227,42 @@ def _binary_handler(func, args, kwargs):
 
 
 # ---------------------------------------------------------------------------
-# Structural ops
+# Structured / shape-changing ops
 # ---------------------------------------------------------------------------
+
+
+@NestedTensorAtenRegistry.implement(aten.constant_pad_nd.default)
+def _constant_pad_nd(func, args, kwargs):
+    r"""Compile-safe handler for constant padding on packed values when ragged dim is untouched."""
+    source = args[0]
+    pad = tuple(args[1])
+    if len(pad) % 2 != 0:
+        return per_element_fallback(func, args, kwargs)
+
+    padded_dims = len(pad) // 2
+    # Packed fast path is valid only when padding targets trailing static dims.
+    if source._values.dim() <= 1 or padded_dims >= source._values.dim():
+        return per_element_fallback(func, args, kwargs)
+
+    out_values = func(source._values, *args[1:], **kwargs)
+    out_shape_tensor = source._shape_tensor.clone()
+    for i in range(padded_dims):
+        out_shape_tensor[:, -(i + 1)] += pad[2 * i] + pad[2 * i + 1]
+
+    out_outer_size = list(source._logical_shape)
+    for i in range(padded_dims):
+        out_outer_size[-(i + 1)] = out_outer_size[-(i + 1)] + pad[2 * i] + pad[2 * i + 1]
+
+    return type(source)._from_packed(
+        out_values,
+        source._offsets,
+        out_shape_tensor,
+        batch_first=source.batch_first,
+        padding_value=source.padding_value,
+        mask_value=source.mask_value,
+        pin_memory=source._pin_memory,
+        outer_size=tuple(out_outer_size),
+    )
 
 
 @NestedTensorAtenRegistry.implement(aten.clone.default)
