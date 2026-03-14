@@ -2434,7 +2434,7 @@ class TestPdist:
         )
         try:
             reference = NT([F.pdist(t) for t in x], **x._meta())
-        except (RuntimeError, NotImplementedError) as error:
+        except RuntimeError as error:
             with pytest.raises(type(error)):
                 F.pdist(x)
             return

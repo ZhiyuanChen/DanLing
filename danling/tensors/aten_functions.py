@@ -32,7 +32,8 @@ Architecture:
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
+from contextlib import suppress
+from typing import TYPE_CHECKING, cast
 
 import torch
 from torch import Tensor
@@ -87,12 +88,9 @@ def _offsets_match(a: Tensor, b: Tensor) -> bool:
         # we prefer semantics over object identity so compile/tracing can exercise the
         # same packed paths as eager execution.
         return True
-    try:
+    with suppress(RuntimeError):
         if a.data_ptr() == b.data_ptr():
             return True
-    except RuntimeError:
-        # Functional tensors may not expose data_ptr.
-        pass
     if a.shape != b.shape:
         return False
     return bool(torch.equal(a, b))
@@ -274,9 +272,8 @@ def _resolve_other(source, other, func):
         raise NotImplementedError(f"NestedTensor: {func} with mismatched packing layouts")
     if isinstance(other, Tensor) and other.dim() > 0:
         aligned = _maybe_align_dense_to_nested(source, other)
-        if aligned is not None:
-            if _structure_match(source, aligned):
-                return aligned._values
+        if aligned is not None and _structure_match(source, aligned):
+            return aligned._values
         raise NotImplementedError(f"NestedTensor: {func} with non-scalar Tensor operand; convert to NestedTensor first")
     return other
 
@@ -338,12 +335,11 @@ def _resolve_ternary_other(source, other, func):
         if other.dim() == 0:
             return other if other.device == device else other.to(device=device)
         aligned = _maybe_align_dense_to_nested(source, other)
-        if aligned is not None:
-            if _structure_match(source, aligned):
-                values = aligned._values
-                if values.device != device:
-                    values = values.to(device=device)
-                return values
+        if aligned is not None and _structure_match(source, aligned):
+            values = aligned._values
+            if values.device != device:
+                values = values.to(device=device)
+            return values
         candidate = other if other.device == device else other.to(device=device)
         if _broadcasts_per_element(source, candidate):
             return candidate
@@ -925,13 +921,13 @@ def _packed_with_tail_from_values(source: NestedTensor, new_values: Tensor) -> N
 def _from_uniform_batched_output(source: NestedTensor, batched_values: Tensor) -> NestedTensor:
     r"""Wrap a batch-major tensor ``[B, *shape]`` as a NestedTensor with uniform per-element shape."""
     batch_size = len(source)
-    elem_shape = tuple(int(x) for x in batched_values.shape[1:])
+    elem_shape: tuple[int, ...] = tuple(int(x) for x in batched_values.shape[1:])
     if not elem_shape:
         out_values = batched_values.reshape(batch_size)
         out_offsets = torch.arange(batch_size + 1, dtype=source._offsets.dtype, device=source._offsets.device)
         out_shape = source._physical_shape.new_empty((batch_size, 0))
         packed_sizes = tuple(1 for _ in range(batch_size))
-        element_shapes = tuple(() for _ in range(batch_size))
+        element_shapes = cast(tuple[tuple[int, ...], ...], tuple(() for _ in range(batch_size)))
     else:
         lengths = source._offsets.new_full((batch_size,), elem_shape[0])
         out_offsets = torch.empty((batch_size + 1,), dtype=source._offsets.dtype, device=source._offsets.device)
@@ -941,7 +937,7 @@ def _from_uniform_batched_output(source: NestedTensor, batched_values: Tensor) -
         out_shape = source._physical_shape.new_tensor(elem_shape).reshape(1, -1).expand(batch_size, -1).clone()
         out_values = batched_values.reshape(batch_size * elem_shape[0], *elem_shape[1:])
         packed_sizes = tuple(int(elem_shape[0]) for _ in range(batch_size))
-        element_shapes = tuple(tuple(elem_shape) for _ in range(batch_size))
+        element_shapes = tuple(elem_shape for _ in range(batch_size))
     return _packed_with_shape(
         source,
         out_values,
@@ -963,7 +959,6 @@ def _logical_dim_from_tensor_dim(source: NestedTensor, dim_adj: int) -> int:
 
 def _reduce_non_ragged_packed(source: NestedTensor, out_values: Tensor, dim_adj: int, keepdim: bool):
     r"""Wrap non-ragged dim reductions on packed values as a NestedTensor."""
-    logical_dim = _logical_dim_from_tensor_dim(source, dim_adj)
     if keepdim:
         out_shape, packed_sizes, element_shapes = source._shape_meta_from_components(replace_dims={dim_adj: 1})
     else:
@@ -1044,7 +1039,7 @@ def _topk_fill_value(dtype: torch.dtype, largest: bool):
     if dtype.is_floating_point or dtype.is_complex:
         return float("-inf") if largest else float("inf")
     if dtype == torch.bool:
-        return False if largest else True
+        return not largest
     info = torch.iinfo(dtype)
     return info.min if largest else info.max
 
@@ -2159,8 +2154,8 @@ def _scatter_like(source, dim, index, src, apply_fn, op_name: str):
         )
     if isinstance(src, NestedTensor) and len(source) != len(src):
         raise ValueError(
-            f"{op_name}: NestedTensor batch length mismatch between input and source: "
-            f"input={len(source)}, source={len(src)}"
+            f"{op_name}: NestedTensor batch length mismatch between input and source: input={len(source)}, "
+            f"source={len(src)}"
         )
 
     if isinstance(index, NestedTensor) and dim_adj > 0 and source._values.dim() > dim_adj:
@@ -2222,15 +2217,19 @@ def _index_write_like(source, dim, index, src, apply_fn, op_name: str):
         )
 
     index_values = index.to(device=source._values.device, dtype=torch.long)
-    if isinstance(src, NestedTensor) and dim_adj > 0 and source._values.dim() > dim_adj:
+    if (
+        isinstance(src, NestedTensor)
+        and dim_adj > 0
+        and source._values.dim() > dim_adj
+        and _structure_match(source, src)
+    ):
         # As with scatter, packed writes are only safe on static per-element dims.
         # The source layout must share offsets with the destination so row boundaries
         # remain aligned after concatenation.
-        if _structure_match(source, src):
-            src_values = src._values
-            if src_values.device != source._values.device:
-                src_values = src_values.to(device=source._values.device)
-            return _packed_like(source, apply_fn(source._values, dim_adj, index_values, src_values))
+        src_values = src._values
+        if src_values.device != source._values.device:
+            src_values = src_values.to(device=source._values.device)
+        return _packed_like(source, apply_fn(source._values, dim_adj, index_values, src_values))
 
     storage = []
     if isinstance(src, NestedTensor):

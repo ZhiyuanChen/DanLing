@@ -42,6 +42,7 @@ decomposition and then to ``__torch_dispatch__`` (see ``aten_functions``).
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 import torch
@@ -52,11 +53,7 @@ from .ops import (
     TORCH_UNARY_ELEMENTWISE_OPS,
     NestedTensorFuncRegistry,
     _binary_op_maybe_tensor,
-    _can_concat_normalize,
-    _concat_apply_same_shape,
-    _concat_dim_for_tensor_dim,
     _get_batch_dim,
-    _map_storage_pair,
     _map_storage_serial,
     _normalize_dim,
     _normalize_shape_tuple,
@@ -68,7 +65,6 @@ from .ops import (
     _reduce_none,
     _reduce_none_pair,
     _translate_dim,
-    _translate_dims,
     _translate_non_batch_dim,
     _try_stack,
     _validate_probability,
@@ -118,10 +114,8 @@ def addcdiv(input, tensor1, tensor2, *, value=1):
     ref = next((t for t in (input, tensor1, tensor2) if isinstance(t, NestedTensor)), None)
     if ref is None:
         return torch.addcdiv(input, tensor1, tensor2, value=value)
-    try:
+    with suppress(NotImplementedError):
         return torch.ops.aten.addcdiv.default(input, tensor1, tensor2, value=value)
-    except NotImplementedError:
-        pass
     return _ternary_op(ref, input, tensor1, tensor2, torch.addcdiv, value=value)
 
 
@@ -149,10 +143,8 @@ def addcmul(input, tensor1, tensor2, *, value=1):
     ref = next((t for t in (input, tensor1, tensor2) if isinstance(t, NestedTensor)), None)
     if ref is None:
         return torch.addcmul(input, tensor1, tensor2, value=value)
-    try:
+    with suppress(NotImplementedError):
         return torch.ops.aten.addcmul.default(input, tensor1, tensor2, value=value)
-    except NotImplementedError:
-        pass
     return _ternary_op(ref, input, tensor1, tensor2, torch.addcmul, value=value)
 
 
@@ -336,11 +328,11 @@ def cat(tensors: tuple[Tensor | NestedTensor, ...], dim: int = 0):
             if merged is None:
                 # Incompatible packed layouts (e.g., one flattened, one N-D packed):
                 # fall back to unpack→repack.
-                storage: list[Tensor] = []
-                state: Mapping = ref._meta()
+                fallback_storage: list[Tensor] = []
+                fallback_state: Mapping = ref._meta()
                 for tensor in nt_tensors:
-                    storage.extend(tensor._storage)
-                return NestedTensor(storage, **state)
+                    fallback_storage.extend(tensor._storage)
+                return NestedTensor(fallback_storage, **fallback_state)
             return merged
         # Fallback: mix of NT and plain tensors
         storage: list = []
@@ -1087,7 +1079,7 @@ def masked_scatter(input: NestedTensor, mask, source):
         >>> torch.equal(out, ref)
         True
     """
-    from .aten_functions import _masked_scatter_source_consumption_matches, _offsets_match
+    from .aten_functions import _masked_scatter_source_consumption_matches
     from .nested_tensor import NestedTensor
 
     aligned_mask = input._maybe_exact_shape_nested_like(mask)
@@ -2617,10 +2609,8 @@ def where(condition, input, other):
     ref = next((v for v in (input, other, condition) if isinstance(v, NestedTensor)), None)
     if ref is None:
         return torch.where(condition, input, other)
-    try:
+    with suppress(NotImplementedError):
         return select_aten_where(input, other)(condition, input, other)
-    except NotImplementedError:
-        pass
 
     cond_nt = to_nested(condition, ref, dtype=torch.bool)
     input_nt = to_nested(input, ref)

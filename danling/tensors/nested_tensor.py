@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Mapping, Sequence
-from typing import Any, Iterable, SupportsFloat
+from typing import Any, Iterable, SupportsFloat, cast
 
 import torch
 from torch import Tensor
@@ -324,7 +324,8 @@ class NestedTensor(torch.Tensor):
             elif t.ndim != common_ndim:
                 raise ValueError(
                     f"All tensors must have the same number of dimensions, got ndim {common_ndim} and {t.ndim}. "
-                    "If using a DataLoader with drop_last=False, squeeze the last batch before constructing NestedTensor."
+                    "If using a DataLoader with drop_last=False, squeeze the last batch before constructing "
+                    "NestedTensor."
                 )
 
             result.append(t)
@@ -636,15 +637,16 @@ class NestedTensor(torch.Tensor):
             logical_shape = torch.Size(outer_size)
         else:
             logical_shape = cls._logical_shape_from_physical_shape(shape_tensor, offsets, batch_first)
-        if packed_sizes is None or element_shapes is None:
-            if not (_is_fake_tensor(offsets) or _is_fake_tensor(shape_tensor)):
-                packed_sizes, element_shapes = cls._infer_python_meta_from_packed(
-                    values,
-                    offsets,
-                    shape_tensor,
-                    packed_sizes=packed_sizes,
-                    element_shapes=element_shapes,
-                )
+        if (packed_sizes is None or element_shapes is None) and not (
+            _is_fake_tensor(offsets) or _is_fake_tensor(shape_tensor)
+        ):
+            packed_sizes, element_shapes = cls._infer_python_meta_from_packed(
+                values,
+                offsets,
+                shape_tensor,
+                packed_sizes=packed_sizes,
+                element_shapes=element_shapes,
+            )
 
         result = torch.Tensor._make_wrapper_subclass(
             cls,
@@ -1192,10 +1194,12 @@ class NestedTensor(torch.Tensor):
 
         packed_sizes = None
         if all(tensor._packed_sizes is not None for tensor in tensors):
-            packed_sizes = tuple(size for tensor in tensors for size in tensor._packed_sizes)
+            packed_sizes = tuple(size for tensor in tensors for size in cast(tuple[int, ...], tensor._packed_sizes))
         element_shapes = None
         if all(tensor._element_shapes is not None for tensor in tensors):
-            element_shapes = tuple(shape for tensor in tensors for shape in tensor._element_shapes)
+            element_shapes = tuple(
+                shape for tensor in tensors for shape in cast(tuple[tuple[int, ...], ...], tensor._element_shapes)
+            )
 
         return cls._from_packed(
             new_values,
@@ -1308,7 +1312,7 @@ class NestedTensor(torch.Tensor):
 
     def _materialize_mask(self) -> Tensor:
         batch_size = len(self)
-        logical_shape = self.size()
+        logical_shape = self._logical_shape
         squeeze_channel = self._mask_squeezes_channel()
 
         if batch_size == 0:
@@ -1346,7 +1350,7 @@ class NestedTensor(torch.Tensor):
 
     def _materialize_batch_leading(self, fill_value) -> Tensor:
         r"""Materialize a padded dense tensor with the batch dimension in front."""
-        logical_shape = self.size()
+        logical_shape = self._logical_shape
         batch_size = len(self)
         if batch_size == 0:
             if self.batch_first:
@@ -1666,7 +1670,8 @@ class NestedTensor(torch.Tensor):
             tensor(True)
             >>> f = nested_tensor.nested_like(torch.randn(2, 2))
             Traceback (most recent call last):
-            ValueError: The shape of NestedTensor and input tensor does not match, torch.Size([2, 3]) != torch.Size([2, 2])
+            ValueError: The shape of NestedTensor and input tensor does not match, torch.Size([2, 3]) !=
+            torch.Size([2, 2])
             >>> p = nested_tensor.nested_like(torch.randn(2, 2), False)
             >>> p = nested_tensor.nested_like(torch.randn(3, 3), False)
             Traceback (most recent call last):

@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Callable
-from contextlib import suppress
 from typing import TYPE_CHECKING
 
 import torch
@@ -44,7 +43,6 @@ from torch.nn import functional as F
 
 from .ops import (
     NestedTensorFuncRegistry,
-    _can_concat_normalize,
     _concat_apply,
     _concat_apply_same_shape,
     _concat_dim_for_tensor_dim,
@@ -63,14 +61,13 @@ if TYPE_CHECKING:
 
 _LOW_PRECISION_CUDA_DTYPES = {torch.float16, torch.bfloat16}
 
-with suppress(Exception):
+try:
     import torch.nn.attention.flex_attention as _torch_flex_attention_module
     from torch.nn.attention.flex_attention import AuxOutput as _FlexAuxOutput
     from torch.nn.attention.flex_attention import BlockMask as _TorchBlockMask
     from torch.nn.attention.flex_attention import create_block_mask as _torch_create_block_mask
     from torch.nn.attention.flex_attention import flex_attention as _torch_flex_attention
-
-if "_torch_flex_attention" not in globals():
+except Exception:
     _torch_flex_attention_module = None
     _torch_flex_attention = None
     _torch_create_block_mask = None
@@ -2225,9 +2222,13 @@ def _grid_sample_impl(input, grid, *args, **kwargs):
             )
         if input._values.dim() in (4, 5) and grid._values.dim() in (4, 5) and _packed_pair_offsets_match(input, grid):
             return _from_batch_preserving_values(input, F.grid_sample(input._values, grid._values, *args, **kwargs))
-    elif isinstance(grid, Tensor):
-        if input._values.dim() in (4, 5) and grid.dim() in (4, 5) and grid.size(0) == input._values.size(0):
-            return _from_batch_preserving_values(input, F.grid_sample(input._values, grid, *args, **kwargs))
+    elif (
+        isinstance(grid, Tensor)
+        and input._values.dim() in (4, 5)
+        and grid.dim() in (4, 5)
+        and grid.size(0) == input._values.size(0)
+    ):
+        return _from_batch_preserving_values(input, F.grid_sample(input._values, grid, *args, **kwargs))
     return _apply_pair(input, grid, F.grid_sample, *args, **kwargs)
 
 

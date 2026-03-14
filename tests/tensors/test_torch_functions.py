@@ -53,7 +53,7 @@ def _packed_result(ref: NT, values: torch.Tensor) -> NT:
 def _run_or_expect_unsupported(nested_call, tensor_call):
     try:
         reference = tensor_call()
-    except (RuntimeError, NotImplementedError) as error:
+    except RuntimeError as error:
         with pytest.raises(type(error)):
             nested_call()
         return None
@@ -2330,7 +2330,7 @@ class TestLinalgOps:
         try:
             _, S_a, _ = torch.linalg.svd(a)
             _, S_b, _ = torch.linalg.svd(b)
-        except (RuntimeError, NotImplementedError) as error:
+        except RuntimeError as error:
             with pytest.raises(type(error)):
                 torch.linalg.svd(nt)
             return
@@ -2349,7 +2349,7 @@ class TestLinalgOps:
         try:
             torch.linalg.qr(a)
             torch.linalg.qr(b)
-        except (RuntimeError, NotImplementedError) as error:
+        except RuntimeError as error:
             with pytest.raises(type(error)):
                 torch.linalg.qr(nt)
             return
@@ -2394,7 +2394,7 @@ class TestLinalgOps:
         try:
             w_a, _ = torch.linalg.eigh(a)
             w_b, _ = torch.linalg.eigh(b)
-        except (RuntimeError, NotImplementedError) as error:
+        except RuntimeError as error:
             with pytest.raises(type(error)):
                 torch.linalg.eigh(nt)
             return
