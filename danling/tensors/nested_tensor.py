@@ -240,11 +240,14 @@ class NestedTensor(torch.Tensor):
 
         # Pack into values, offsets, tensor-shape metadata, and Python metadata.
         values, offsets, shape_tensor, packed_sizes, element_shapes = cls._pack(validated, dtype=out_dtype)
+        values = cls._maybe_pin_values(values, pin_memory)
         permutation = cls._permutation_from_element_shapes(element_shapes)
 
         # Compute logical shape
         logical_shape = cls._compute_logical_shape(validated, batch_first)
-        out_requires_grad = requires_grad if requires_grad is not None else False
+        if requires_grad is not None and values.requires_grad != requires_grad:
+            values.requires_grad_(requires_grad)
+        out_requires_grad = values.requires_grad
 
         result = torch.Tensor._make_wrapper_subclass(
             cls,
@@ -261,7 +264,7 @@ class NestedTensor(torch.Tensor):
         result.batch_first = batch_first
         result.padding_value = float(padding_value)
         result.mask_value = mask_value
-        result._pin_memory = pin_memory
+        result._pin_memory = bool(pin_memory and values.device.type == "cpu" and values.is_pinned())
         result._packed_sizes = packed_sizes
         result._element_shapes = element_shapes
         result._cached_storage = None
@@ -381,6 +384,13 @@ class NestedTensor(torch.Tensor):
         packed_sizes = tuple(int(size) for size in sizes.tolist())
 
         return values, offsets, shape_tensor, packed_sizes, element_shapes
+
+    @staticmethod
+    def _maybe_pin_values(values: Tensor, pin_memory: bool) -> Tensor:
+        r"""Pin packed storage when requested and the values live on CPU."""
+        if pin_memory and values.device.type == "cpu" and not values.is_pinned():
+            return values.pin_memory()
+        return values
 
     @staticmethod
     def _trim_shape(shape: Sequence[int]) -> tuple[int, ...]:
@@ -648,6 +658,7 @@ class NestedTensor(torch.Tensor):
                 element_shapes=element_shapes,
             )
 
+        values = cls._maybe_pin_values(values, pin_memory)
         result = torch.Tensor._make_wrapper_subclass(
             cls,
             logical_shape,
@@ -667,7 +678,7 @@ class NestedTensor(torch.Tensor):
         result.batch_first = batch_first
         result.padding_value = padding_value
         result.mask_value = mask_value
-        result._pin_memory = pin_memory
+        result._pin_memory = bool(pin_memory and values.device.type == "cpu" and values.is_pinned())
         result._packed_sizes = packed_sizes
         result._element_shapes = element_shapes
         result._cached_storage = None
@@ -762,6 +773,7 @@ class NestedTensor(torch.Tensor):
         self._cached_hierarchical_offsets = None
         tensors = tuple(tensors) if not isinstance(tensors, tuple) else tensors
         values, offsets, shape_tensor, packed_sizes, element_shapes = self._pack(tensors)
+        values = type(self)._maybe_pin_values(values, self._pin_memory)
         self._values = values
         self._offsets = offsets
         self._permutation = type(self)._permutation_from_element_shapes(element_shapes)
@@ -1257,8 +1269,7 @@ class NestedTensor(torch.Tensor):
     @requires_grad.setter
     def requires_grad(self, value: bool):
         r"""Enable or disable gradient computation for this tensor."""
-        if self._values.numel() > 0:
-            self._values.requires_grad_(value)
+        self._values.requires_grad_(value)
 
     # ------------------------------------------------------------------
     # Cached padded views
@@ -1468,8 +1479,12 @@ class NestedTensor(torch.Tensor):
             return cls([], **kwargs)
 
         num_elements = [shape.numel() for shape in shapes]
+        element_shapes = tuple(tuple(int(dim) for dim in shape) for shape in shapes)
+        varying_dims, static_dims = cls._pack_layout_from_element_shapes(element_shapes)
+        permutation = varying_dims + static_dims
+        identity_permutation = tuple(range(len(element_shapes[0]))) if element_shapes and element_shapes[0] else ()
 
-        if len(set(shapes)) == 1:
+        if len(set(shapes)) == 1 and permutation == identity_permutation:
             shape = shapes[0]
             total_elements = sum(num_elements)
             if concat_tensor.numel() == total_elements:
@@ -1483,9 +1498,9 @@ class NestedTensor(torch.Tensor):
                     tensors = [t.reshape(shape) for t in reshaped.unbind(0)]
                     return cls(tensors, **kwargs)
 
-        flattened = concat_tensor.flatten()
+        packed_sizes = tuple(cls._packed_size_from_shape(shape, varying_dims) for shape in element_shapes)
         total_expected = sum(num_elements)
-        num_provided = flattened.numel()
+        num_provided = concat_tensor.numel()
         if num_provided != total_expected:
             raise ValueError(
                 f"Concatenated tensor has {num_provided} elements "
@@ -1494,9 +1509,14 @@ class NestedTensor(torch.Tensor):
 
         tensors = []
         start = 0
-        for shape in shapes:
-            end = start + shape.numel()
-            tensor_data = flattened[start:end].reshape(shape)
+        inverse_permutation = cls._inverse_permutation(permutation)
+        for shape, packed_size in zip(element_shapes, packed_sizes):
+            end = start + packed_size
+            chunk = concat_tensor.narrow(0, start, packed_size)
+            packed_shape = tuple(shape[dim] for dim in varying_dims) + tuple(shape[dim] for dim in static_dims)
+            tensor_data = chunk.reshape(packed_shape)
+            if permutation != tuple(range(len(shape))):
+                tensor_data = tensor_data.permute(inverse_permutation)
             tensors.append(tensor_data)
             start = end
 
@@ -1585,6 +1605,22 @@ class NestedTensor(torch.Tensor):
         if tensor_iter.size(0) != mask_iter.size(0):
             raise ValueError("Tensor/mask batch dimension mismatch: " f"{tensor_iter.size(0)} vs {mask_iter.size(0)}")
         trimmed = []
+
+        def _is_prefix_mask(mask_1d: Tensor) -> bool:
+            count = int(mask_1d.sum().item())
+            prefix = torch.arange(mask_1d.size(0), device=mask_1d.device, dtype=torch.long) < count
+            return bool(torch.equal(mask_1d, prefix))
+
+        def _is_hierarchical_prefix_mask(mask_nd: Tensor) -> bool:
+            if mask_nd.dim() == 1:
+                return _is_prefix_mask(mask_nd)
+            leading_valid = mask_nd.reshape(mask_nd.size(0), -1).any(dim=1)
+            valid_count = int(leading_valid.sum().item())
+            prefix = torch.arange(mask_nd.size(0), device=mask_nd.device, dtype=torch.long) < valid_count
+            if not torch.equal(leading_valid, prefix):
+                return False
+            return all(_is_hierarchical_prefix_mask(mask_nd[index]) for index in range(valid_count))
+
         if mask.ndim == 2:
             # 1-D per-element mask: only contiguous-prefix masks can be reconstructed
             # via slicing without changing dense semantics.
@@ -1599,8 +1635,7 @@ class NestedTensor(torch.Tensor):
             for t, count in zip(tensor_iter, counts.tolist()):
                 trimmed.append(t[:count])
         else:
-            # N-D per-element mask: bounding-box slice + mask fill for interior False positions.
-            padding_value = kwargs.get("padding_value", 0.0)
+            # N-D per-element mask: only hierarchical ragged-prefix masks are representable as NestedTensor.
             extents = torch.zeros((mask_iter.size(0), mask_iter.dim() - 1), dtype=torch.long, device=mask_iter.device)
             nonzero = mask_iter.nonzero(as_tuple=False)
             if nonzero.numel() > 0:
@@ -1608,14 +1643,19 @@ class NestedTensor(torch.Tensor):
                 extents.scatter_reduce_(0, batch_index, nonzero[:, 1:] + 1, reduce="amax", include_self=False)
             extent_rows = extents.cpu().tolist()
             for t, em, sizes in zip(tensor_iter, mask_iter, extent_rows):
+                if not _is_hierarchical_prefix_mask(em):
+                    raise ValueError(
+                        "from_tensor_mask() with N-D masks requires each element mask to be a valid hierarchical "
+                        "ragged prefix; "
+                        "interior False gaps are not supported."
+                    )
                 slices = tuple(slice(0, size) for size in sizes)
                 t_slice = t[slices]
                 m_slice = em[slices]
                 valid_mask = m_slice
                 if t_slice.dim() > m_slice.dim():
                     valid_mask = m_slice.view(m_slice.shape + (1,) * (t_slice.dim() - m_slice.dim()))
-                t_slice = t_slice.masked_fill(~valid_mask, padding_value)
-                trimmed.append(t_slice)
+                trimmed.append(t_slice.masked_fill(~valid_mask, kwargs.get("padding_value", 0.0)))
         return cls(trimmed, dtype=tensor.dtype, **kwargs)
 
     def _dense_to_packed_values(self, tensor: Tensor) -> Tensor | None:
@@ -2171,8 +2211,10 @@ class NestedTensor(torch.Tensor):
         return "\n".join(result_lines)
 
     def __bool__(self) -> bool:
-        r"""Return True if the NestedTensor contains any elements."""
-        return len(self) > 0
+        r"""NestedTensor follows tensor-style truthiness and never acts like a Python container."""
+        raise RuntimeError(
+            "Boolean value of NestedTensor is ambiguous. Use .numel(), .any(), .all(), or an explicit reduction."
+        )
 
     def __iter__(self):
         r"""Iterate over the tensors in the batch."""

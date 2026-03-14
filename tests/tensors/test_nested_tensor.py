@@ -74,8 +74,22 @@ class TestConstruction:
         assert nested_tensor.mask.shape == torch.Size([0])
         assert nested_tensor.occupancy == 0.0
 
-    def test_bool_empty_nested_tensor(self):
-        assert bool(NestedTensor([])) is False
+    def test_bool_nested_tensor_raises(self):
+        with pytest.raises(RuntimeError, match="Boolean value of NestedTensor is ambiguous"):
+            bool(NestedTensor([]))
+
+    def test_requires_grad_tracks_packed_values(self):
+        nt = NestedTensor([torch.tensor([1.0], requires_grad=True), torch.tensor([2.0])])
+        assert nt.requires_grad is True
+
+    def test_empty_requires_grad_is_preserved(self):
+        nt = NestedTensor([], dtype=torch.float32, requires_grad=True)
+        assert nt.requires_grad is True
+
+    def test_pin_memory_pins_packed_storage_when_requested(self):
+        nt = NestedTensor([torch.tensor([1.0, 2.0]), torch.tensor([3.0])], pin_memory=True)
+        assert nt._pin_memory is nt._values.is_pinned()
+        assert nt._pin_memory is True
 
     def test_dense_to_packed_values_uses_packed_dense_index_without_python_meta(self):
         nt = NestedTensor(
@@ -238,7 +252,7 @@ class TestFromFactoryMethods:
         reference = NT([torch.tensor([[1, 2], [3, 0]])])
         assert_close(output, reference)
 
-    def test_from_tensor_mask_ndim3_sparse_selects_only_true_values(self):
+    def test_from_tensor_mask_ndim3_non_prefix_box_raises(self):
         padded = torch.tensor(
             [
                 [[1, 2], [3, 4]],
@@ -253,14 +267,8 @@ class TestFromFactoryMethods:
             ],
             dtype=torch.bool,
         )
-        output = NestedTensor.from_tensor_mask(padded, mask)
-        reference = NT(
-            [
-                torch.tensor([[1.0, 0.0], [0.0, 4.0]]),
-                torch.tensor([[5.0, 6.0]]),
-            ]
-        )
-        assert_close(output, reference)
+        with pytest.raises(ValueError, match="valid hierarchical ragged prefix"):
+            NestedTensor.from_tensor_mask(padded, mask)
 
     def test_from_tensor_mask_2d_non_prefix_raises(self):
         padded = torch.tensor([[1, 2, 3, 4], [5, 6, 7, 8]], dtype=torch.float32)
@@ -296,6 +304,12 @@ class TestFromFactoryMethods:
 
     def test_from_concatenated_round_trip_mixed_shapes(self):
         nested_tensor = NestedTensor([torch.randn(2, 3, 4), torch.randn(1, 3, 4)])
+        concat, shapes = nested_tensor.concatenate()
+        output = NestedTensor.from_concatenated(concat, shapes)
+        assert_close(output, nested_tensor)
+
+    def test_from_concatenated_round_trip_non_leading_ragged_dim(self):
+        nested_tensor = NestedTensor([torch.randn(2, 3, 4), torch.randn(2, 5, 4)])
         concat, shapes = nested_tensor.concatenate()
         output = NestedTensor.from_concatenated(concat, shapes)
         assert_close(output, nested_tensor)
