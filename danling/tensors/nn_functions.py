@@ -334,362 +334,6 @@ def _apply_batch_preserving_packed(input: NestedTensor, op: Callable, *args, **k
     raise TypeError(f"Unsupported return type from packed op {op}: {type(result)}")
 
 
-# Linear & Embeddings
-
-
-@NestedTensorFuncRegistry.implement(F.embedding)
-def embedding(
-    input: NestedTensor,
-    weight: Tensor,
-    padding_idx: int | None = None,
-    max_norm: float | None = None,
-    norm_type: float = 2.0,
-    scale_grad_by_freq: bool = False,
-    sparse: bool = False,
-) -> NestedTensor:
-    r"""
-    Generate a simple lookup table that looks up embeddings in a fixed dictionary and size.
-    See also [torch.nn.functional.embedding][].
-
-    Args:
-        input: The input NestedTensor of indices.
-        weight: The embedding matrix with number of rows equal to the maximum index + 1.
-        padding_idx: If specified, entries at this index do not contribute to the gradient.
-        max_norm: If given, renormalize embeddings to have norm at most this value.
-        norm_type: The p of the p-norm to compute for max_norm.
-        scale_grad_by_freq: If True, scale gradients by inverse frequency of the words.
-        sparse: If True, gradient w.r.t. weight will be a sparse tensor.
-
-    Returns:
-        NestedTensor: The embedded output.
-
-    Examples:
-        >>> import torch
-        >>> from torch.nn import functional as F
-        >>> from danling.tensors import NestedTensor
-        >>> weight = torch.arange(6.0).reshape(3, 2)
-        >>> nt = NestedTensor(torch.tensor([0, 1]), torch.tensor([1, 2, 0]))
-        >>> out = F.embedding(nt, weight)
-        >>> ref = F.embedding(nt.tensor, weight)
-        >>> torch.allclose(out, ref)
-        True
-    """
-    return _concat_apply(
-        input,
-        lambda t: F.embedding(
-            t,
-            weight,
-            padding_idx,
-            max_norm,
-            norm_type,
-            scale_grad_by_freq,
-            sparse,
-        ),
-        lambda shape: torch.Size([*shape, weight.shape[1]]),
-    )
-
-
-@NestedTensorFuncRegistry.implement(F.embedding_bag)
-def embedding_bag(
-    input: NestedTensor,
-    weight: Tensor,
-    offsets: Tensor | None = None,
-    max_norm: float | None = None,
-    norm_type: float = 2.0,
-    scale_grad_by_freq: bool = False,
-    mode: str = "mean",
-    sparse: bool = False,
-    per_sample_weights: Tensor | None = None,
-    include_last_offset: bool = False,
-    padding_idx: int | None = None,
-) -> NestedTensor:
-    r"""
-    Compute sums, means or maxes of `bags` of embeddings.
-    See also [torch.nn.functional.embedding_bag][].
-
-    Args:
-        input: The input NestedTensor of indices.
-        weight: The embedding matrix.
-        offsets: Offsets into input for each bag. Required for 1D input.
-        max_norm: If given, renormalize embeddings to have norm at most this value.
-        norm_type: The p of the p-norm to compute for max_norm.
-        scale_grad_by_freq: If True, scale gradients by inverse frequency of the words.
-        mode: Aggregation mode: 'mean', 'sum', or 'max'.
-        sparse: If True, gradient w.r.t. weight will be a sparse tensor.
-        per_sample_weights: Per-sample weights for weighted sum mode.
-        include_last_offset: If True, treat the last offset as the size of input.
-        padding_idx: If specified, entries at this index do not contribute to the gradient.
-
-    Returns:
-        NestedTensor: The embedded bag output.
-
-    Examples:
-        >>> import torch
-        >>> from torch.nn import functional as F
-        >>> from danling.tensors import NestedTensor
-        >>> weight = torch.arange(6.0).reshape(3, 2)
-        >>> offsets = torch.tensor([0])
-        >>> a = torch.tensor([0, 1])
-        >>> b = torch.tensor([1, 2, 0])
-        >>> nt = NestedTensor(a, b)
-        >>> out = F.embedding_bag(nt, weight, offsets=offsets)
-        >>> ref = NestedTensor(
-        ...     F.embedding_bag(a, weight, offsets=offsets),
-        ...     F.embedding_bag(b, weight, offsets=offsets),
-        ... )
-        >>> torch.allclose(out, ref)
-        True
-    """
-    return _map_storage_serial(
-        input,
-        lambda t: F.embedding_bag(
-            t,
-            weight,
-            offsets=offsets if offsets is not None else torch.tensor([0], device=t.device, dtype=torch.long),
-            max_norm=max_norm,
-            norm_type=norm_type,
-            scale_grad_by_freq=scale_grad_by_freq,
-            mode=mode,
-            sparse=sparse,
-            per_sample_weights=per_sample_weights,
-            include_last_offset=include_last_offset,
-            padding_idx=padding_idx,
-        ),
-    )
-
-
-@NestedTensorFuncRegistry.implement(F.linear)
-def linear(input: NestedTensor, weight: Tensor, bias: Tensor | None = None) -> NestedTensor:
-    r"""
-    Applies a linear transformation to the incoming data: :math:`y = xA^T + b`.
-    See also [torch.nn.functional.linear][].
-
-    Args:
-        input: The input NestedTensor.
-        weight: The weight matrix.
-        bias: Optional bias vector.
-
-    Returns:
-        NestedTensor: The linearly transformed output.
-
-    Examples:
-        >>> import torch
-        >>> from torch.nn import functional as F
-        >>> from danling.tensors import NestedTensor
-        >>> weight = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
-        >>> bias = torch.tensor([0.5, -0.5])
-        >>> nt = NestedTensor(torch.tensor([[1.0, 2.0]]), torch.tensor([[3.0, 4.0], [5.0, 6.0]]))
-        >>> out = F.linear(nt, weight, bias)
-        >>> ref = F.linear(nt.tensor, weight, bias)
-        >>> torch.allclose(out, ref)
-        True
-    """
-    cls = type(input)
-    if len(input) == 0:
-        return cls([], **input._meta(include_dtype=True))
-    # Fast path: single-ragged packing (2D+ _values) → F.linear directly on packed data
-    if input._values.dim() >= 2:
-        from .aten_functions import _packed_new_last_dim
-
-        new_values = F.linear(input._values, weight, bias)
-        return _packed_new_last_dim(input, new_values, int(weight.shape[0]))
-    # Multi-ragged (flattened 1D _values) or scalar elements: per-element
-    return _apply_per_element(input, F.linear, weight, bias)
-
-
-if hasattr(F, "grouped_mm"):
-
-    @NestedTensorFuncRegistry.implement(F.grouped_mm)
-    def grouped_mm(
-        mat_a: NestedTensor,
-        mat_b: Tensor | NestedTensor,
-        *,
-        offs: Tensor | None = None,
-        bias: Tensor | None = None,
-        out_dtype: torch.dtype | None = None,
-    ) -> NestedTensor:
-        r"""
-        Applies grouped matrix multiplication.
-        See also [torch.nn.functional.grouped_mm][].
-
-        Args:
-            mat_a: The first input NestedTensor.
-            mat_b: The second input Tensor or NestedTensor.
-            offs: Optional offsets tensor for grouping.
-            bias: Optional bias tensor.
-            out_dtype: Optional output dtype.
-
-        Returns:
-            NestedTensor: The result of grouped matrix multiplication.
-
-        Note:
-            No inline doctest is provided here because ``torch.nn.functional.grouped_mm``
-            is backend-sensitive and may require kernel-specific layout constraints that
-            are not portable across test environments.
-        """
-        from .nested_tensor import NestedTensor
-
-        cls = type(mat_a)
-        if isinstance(mat_b, NestedTensor):
-            if len(mat_a) != len(mat_b):
-                raise ValueError(
-                    "NestedTensor batch length mismatch between mat_a and mat_b: "
-                    f"mat_a={len(mat_a)}, mat_b={len(mat_b)}"
-                )
-            if len(mat_a) == 0:
-                return cls([], **mat_a._meta(include_dtype=True))
-            outputs = [
-                F.grouped_mm(a, b, offs=offs, bias=bias, out_dtype=out_dtype)
-                for a, b in zip(mat_a._storage, mat_b._storage)
-            ]
-        else:
-            if len(mat_a) == 0:
-                return cls([], **mat_a._meta(include_dtype=True))
-            outputs = [F.grouped_mm(a, mat_b, offs=offs, bias=bias, out_dtype=out_dtype) for a in mat_a._storage]
-        return cls(outputs, **mat_a._meta())
-
-
-def _scaled_mm(mat_a: NestedTensor, mat_b, fn, **kwargs) -> NestedTensor:
-    r"""Shared implementation for scaled_mm and scaled_grouped_mm."""
-    from .nested_tensor import NestedTensor
-
-    cls = type(mat_a)
-    if len(mat_a) == 0:
-        return cls([], **mat_a._meta(include_dtype=True))
-    if isinstance(mat_b, NestedTensor):
-        if len(mat_a) != len(mat_b):
-            raise ValueError(
-                "NestedTensor batch length mismatch between mat_a and mat_b: " f"mat_a={len(mat_a)}, mat_b={len(mat_b)}"
-            )
-        outputs = [fn(a, b, **kwargs) for a, b in zip(mat_a._storage, mat_b._storage)]
-    else:
-        outputs = [fn(a, mat_b, **kwargs) for a in mat_a._storage]
-    return cls(outputs, **mat_a._meta())
-
-
-if hasattr(F, "scaled_mm"):
-
-    @NestedTensorFuncRegistry.implement(F.scaled_mm)
-    def scaled_mm(
-        mat_a: NestedTensor,
-        mat_b: Tensor | NestedTensor,
-        scale_a,
-        scale_recipe_a,
-        scale_b,
-        scale_recipe_b,
-        swizzle_a=None,
-        swizzle_b=None,
-        bias: Tensor | None = None,
-        output_dtype: torch.dtype | None = torch.bfloat16,
-        contraction_dim=(),
-        use_fast_accum: bool = False,
-    ) -> NestedTensor:
-        r"""
-        Applies scaled matrix multiplication.
-        See also [torch.nn.functional.scaled_mm][].
-
-        Args:
-            mat_a: The first input NestedTensor.
-            mat_b: The second input Tensor or NestedTensor.
-            scale_a: Scale factor for mat_a.
-            scale_recipe_a: Scale recipe for mat_a.
-            scale_b: Scale factor for mat_b.
-            scale_recipe_b: Scale recipe for mat_b.
-            swizzle_a: Optional swizzle pattern for mat_a.
-            swizzle_b: Optional swizzle pattern for mat_b.
-            bias: Optional bias tensor.
-            output_dtype: Optional output dtype.
-            contraction_dim: Contraction dimensions.
-            use_fast_accum: Whether to use fast accumulation.
-
-        Returns:
-            NestedTensor: The result of scaled matrix multiplication.
-
-        Note:
-            No inline doctest is provided here because ``torch.nn.functional.scaled_mm``
-            has evolving upstream argument requirements and backend-specific execution
-            constraints.
-        """
-        return _scaled_mm(
-            mat_a,
-            mat_b,
-            F.scaled_mm,
-            scale_a=scale_a,
-            scale_recipe_a=scale_recipe_a,
-            scale_b=scale_b,
-            scale_recipe_b=scale_recipe_b,
-            swizzle_a=swizzle_a,
-            swizzle_b=swizzle_b,
-            bias=bias,
-            output_dtype=output_dtype,
-            contraction_dim=contraction_dim,
-            use_fast_accum=use_fast_accum,
-        )
-
-
-if hasattr(F, "scaled_grouped_mm"):
-
-    @NestedTensorFuncRegistry.implement(F.scaled_grouped_mm)
-    def scaled_grouped_mm(
-        mat_a: NestedTensor,
-        mat_b: Tensor | NestedTensor,
-        scale_a,
-        scale_recipe_a,
-        scale_b,
-        scale_recipe_b,
-        swizzle_a=None,
-        swizzle_b=None,
-        bias: Tensor | None = None,
-        offs: Tensor | None = None,
-        output_dtype: torch.dtype | None = torch.bfloat16,
-        contraction_dim=(),
-        use_fast_accum: bool = False,
-    ) -> NestedTensor:
-        r"""
-        Applies scaled grouped matrix multiplication.
-        See also [torch.nn.functional.scaled_grouped_mm][].
-
-        Args:
-            mat_a: The first input NestedTensor.
-            mat_b: The second input Tensor or NestedTensor.
-            scale_a: Scale factor for mat_a.
-            scale_recipe_a: Scale recipe for mat_a.
-            scale_b: Scale factor for mat_b.
-            scale_recipe_b: Scale recipe for mat_b.
-            swizzle_a: Optional swizzle pattern for mat_a.
-            swizzle_b: Optional swizzle pattern for mat_b.
-            bias: Optional bias tensor.
-            offs: Optional offsets tensor for grouping.
-            output_dtype: Optional output dtype.
-            contraction_dim: Contraction dimensions.
-            use_fast_accum: Whether to use fast accumulation.
-
-        Returns:
-            NestedTensor: The result of scaled grouped matrix multiplication.
-
-        Note:
-            No inline doctest is provided here because
-            ``torch.nn.functional.scaled_grouped_mm`` has evolving upstream argument
-            requirements and backend-specific execution constraints.
-        """
-        return _scaled_mm(
-            mat_a,
-            mat_b,
-            F.scaled_grouped_mm,
-            scale_a=scale_a,
-            scale_recipe_a=scale_recipe_a,
-            scale_b=scale_b,
-            scale_recipe_b=scale_recipe_b,
-            swizzle_a=swizzle_a,
-            swizzle_b=swizzle_b,
-            bias=bias,
-            offs=offs,
-            output_dtype=output_dtype,
-            contraction_dim=contraction_dim,
-            use_fast_accum=use_fast_accum,
-        )
-
-
 # Activations
 # Most activations (F.relu, F.gelu, F.silu, etc.) are NOT registered here.
 # They fall through to torch.* registrations in torch_functions.py or aten dispatch
@@ -1695,6 +1339,459 @@ if _torch_flex_attention is not None:
         _torch_flex_attention_module.flex_attention = _public_flex_attention
 
 
+# Criterions
+
+
+@NestedTensorFuncRegistry.implement(F.ctc_loss)
+def ctc_loss(
+    input: NestedTensor,
+    target: NestedTensor | Tensor,
+    input_lengths: Tensor,
+    target_lengths: Tensor,
+    blank: int = 0,
+    reduction: str = "mean",
+    zero_infinity: bool = False,
+) -> Tensor:
+    r"""
+    Compute the Connectionist Temporal Classification loss.
+    See also [torch.nn.functional.ctc_loss][].
+
+    Args:
+        input: The input NestedTensor of log probabilities.
+        target: The target tensor or NestedTensor.
+        input_lengths: Lengths of the inputs.
+        target_lengths: Lengths of the targets.
+        blank: Blank label index.
+        reduction: Specifies the reduction: 'none', 'mean', or 'sum'.
+        zero_infinity: If True, zero infinite losses and associated gradients.
+
+    Returns:
+        Tensor: The computed loss.
+
+    Examples:
+        >>> import torch
+        >>> from torch.nn import functional as F
+        >>> from danling.tensors import NestedTensor
+        >>> input = NestedTensor(torch.tensor([[-1.0, -2.0]]), torch.tensor([[-2.0, -1.0]]))
+        >>> target = NestedTensor(torch.tensor([0]), torch.tensor([1]))
+        >>> input_lengths = torch.tensor([1, 1])
+        >>> target_lengths = torch.tensor([1, 1])
+        >>> out = F.ctc_loss(input, target, input_lengths, target_lengths)
+        >>> logits = input.tensor.transpose(0, 1)
+        >>> ref = F.ctc_loss(logits, target.concat, input_lengths, target_lengths)
+        >>> torch.allclose(out, ref)
+        True
+    """
+    from .nested_tensor import NestedTensor
+
+    if isinstance(input, NestedTensor):
+        logits = input.tensor
+        if input.batch_first:
+            logits = logits.transpose(0, 1)
+    else:
+        logits = input
+    targets = target.concat if isinstance(target, NestedTensor) else target
+    return F.ctc_loss(
+        logits,
+        targets,
+        input_lengths=input_lengths,
+        target_lengths=target_lengths,
+        blank=blank,
+        reduction=reduction,
+        zero_infinity=zero_infinity,
+    )
+
+
+# Table-driven registrations — loss functions
+# All loss functions concat NestedTensor positional args, then call the original function.
+
+_LOSS_OPS_2 = [
+    F.binary_cross_entropy,
+    F.binary_cross_entropy_with_logits,
+    F.cross_entropy,
+    F.gaussian_nll_loss,
+    F.hinge_embedding_loss,
+    F.huber_loss,
+    F.kl_div,
+    F.l1_loss,
+    F.mse_loss,
+    F.multi_margin_loss,
+    F.multilabel_margin_loss,
+    F.multilabel_soft_margin_loss,
+    F.nll_loss,
+    F.poisson_nll_loss,
+    F.smooth_l1_loss,
+    F.soft_margin_loss,
+]
+_LOSS_OPS_3 = [
+    F.cosine_embedding_loss,
+    F.margin_ranking_loss,
+    F.triplet_margin_loss,
+    F.triplet_margin_with_distance_loss,
+]
+
+for _op, _n in [*((op, 2) for op in _LOSS_OPS_2), *((op, 3) for op in _LOSS_OPS_3)]:
+
+    @NestedTensorFuncRegistry.implement(_op)
+    def _loss_impl(*args, _fn=_op, _n=_n, **kwargs):
+        tensor_args = _concat_tensors(*args[:_n])
+        return _fn(*tensor_args, *args[_n:], **kwargs)
+
+
+# Linear & Embeddings
+
+
+@NestedTensorFuncRegistry.implement(F.embedding)
+def embedding(
+    input: NestedTensor,
+    weight: Tensor,
+    padding_idx: int | None = None,
+    max_norm: float | None = None,
+    norm_type: float = 2.0,
+    scale_grad_by_freq: bool = False,
+    sparse: bool = False,
+) -> NestedTensor:
+    r"""
+    Generate a simple lookup table that looks up embeddings in a fixed dictionary and size.
+    See also [torch.nn.functional.embedding][].
+
+    Args:
+        input: The input NestedTensor of indices.
+        weight: The embedding matrix with number of rows equal to the maximum index + 1.
+        padding_idx: If specified, entries at this index do not contribute to the gradient.
+        max_norm: If given, renormalize embeddings to have norm at most this value.
+        norm_type: The p of the p-norm to compute for max_norm.
+        scale_grad_by_freq: If True, scale gradients by inverse frequency of the words.
+        sparse: If True, gradient w.r.t. weight will be a sparse tensor.
+
+    Returns:
+        NestedTensor: The embedded output.
+
+    Examples:
+        >>> import torch
+        >>> from torch.nn import functional as F
+        >>> from danling.tensors import NestedTensor
+        >>> weight = torch.arange(6.0).reshape(3, 2)
+        >>> nt = NestedTensor(torch.tensor([0, 1]), torch.tensor([1, 2, 0]))
+        >>> out = F.embedding(nt, weight)
+        >>> ref = F.embedding(nt.tensor, weight)
+        >>> torch.allclose(out, ref)
+        True
+    """
+    return _concat_apply(
+        input,
+        lambda t: F.embedding(
+            t,
+            weight,
+            padding_idx,
+            max_norm,
+            norm_type,
+            scale_grad_by_freq,
+            sparse,
+        ),
+        lambda shape: torch.Size([*shape, weight.shape[1]]),
+    )
+
+
+@NestedTensorFuncRegistry.implement(F.embedding_bag)
+def embedding_bag(
+    input: NestedTensor,
+    weight: Tensor,
+    offsets: Tensor | None = None,
+    max_norm: float | None = None,
+    norm_type: float = 2.0,
+    scale_grad_by_freq: bool = False,
+    mode: str = "mean",
+    sparse: bool = False,
+    per_sample_weights: Tensor | None = None,
+    include_last_offset: bool = False,
+    padding_idx: int | None = None,
+) -> NestedTensor:
+    r"""
+    Compute sums, means or maxes of `bags` of embeddings.
+    See also [torch.nn.functional.embedding_bag][].
+
+    Args:
+        input: The input NestedTensor of indices.
+        weight: The embedding matrix.
+        offsets: Offsets into input for each bag. Required for 1D input.
+        max_norm: If given, renormalize embeddings to have norm at most this value.
+        norm_type: The p of the p-norm to compute for max_norm.
+        scale_grad_by_freq: If True, scale gradients by inverse frequency of the words.
+        mode: Aggregation mode: 'mean', 'sum', or 'max'.
+        sparse: If True, gradient w.r.t. weight will be a sparse tensor.
+        per_sample_weights: Per-sample weights for weighted sum mode.
+        include_last_offset: If True, treat the last offset as the size of input.
+        padding_idx: If specified, entries at this index do not contribute to the gradient.
+
+    Returns:
+        NestedTensor: The embedded bag output.
+
+    Examples:
+        >>> import torch
+        >>> from torch.nn import functional as F
+        >>> from danling.tensors import NestedTensor
+        >>> weight = torch.arange(6.0).reshape(3, 2)
+        >>> offsets = torch.tensor([0])
+        >>> a = torch.tensor([0, 1])
+        >>> b = torch.tensor([1, 2, 0])
+        >>> nt = NestedTensor(a, b)
+        >>> out = F.embedding_bag(nt, weight, offsets=offsets)
+        >>> ref = NestedTensor(
+        ...     F.embedding_bag(a, weight, offsets=offsets),
+        ...     F.embedding_bag(b, weight, offsets=offsets),
+        ... )
+        >>> torch.allclose(out, ref)
+        True
+    """
+    return _map_storage_serial(
+        input,
+        lambda t: F.embedding_bag(
+            t,
+            weight,
+            offsets=offsets if offsets is not None else torch.tensor([0], device=t.device, dtype=torch.long),
+            max_norm=max_norm,
+            norm_type=norm_type,
+            scale_grad_by_freq=scale_grad_by_freq,
+            mode=mode,
+            sparse=sparse,
+            per_sample_weights=per_sample_weights,
+            include_last_offset=include_last_offset,
+            padding_idx=padding_idx,
+        ),
+    )
+
+
+if hasattr(F, "grouped_mm"):
+
+    @NestedTensorFuncRegistry.implement(F.grouped_mm)
+    def grouped_mm(
+        mat_a: NestedTensor,
+        mat_b: Tensor | NestedTensor,
+        *,
+        offs: Tensor | None = None,
+        bias: Tensor | None = None,
+        out_dtype: torch.dtype | None = None,
+    ) -> NestedTensor:
+        r"""
+        Applies grouped matrix multiplication.
+        See also [torch.nn.functional.grouped_mm][].
+
+        Args:
+            mat_a: The first input NestedTensor.
+            mat_b: The second input Tensor or NestedTensor.
+            offs: Optional offsets tensor for grouping.
+            bias: Optional bias tensor.
+            out_dtype: Optional output dtype.
+
+        Returns:
+            NestedTensor: The result of grouped matrix multiplication.
+
+        Note:
+            No inline doctest is provided here because ``torch.nn.functional.grouped_mm``
+            is backend-sensitive and may require kernel-specific layout constraints that
+            are not portable across test environments.
+        """
+        from .nested_tensor import NestedTensor
+
+        cls = type(mat_a)
+        if isinstance(mat_b, NestedTensor):
+            if len(mat_a) != len(mat_b):
+                raise ValueError(
+                    "NestedTensor batch length mismatch between mat_a and mat_b: "
+                    f"mat_a={len(mat_a)}, mat_b={len(mat_b)}"
+                )
+            if len(mat_a) == 0:
+                return cls([], **mat_a._meta(include_dtype=True))
+            outputs = [
+                F.grouped_mm(a, b, offs=offs, bias=bias, out_dtype=out_dtype)
+                for a, b in zip(mat_a._storage, mat_b._storage)
+            ]
+        else:
+            if len(mat_a) == 0:
+                return cls([], **mat_a._meta(include_dtype=True))
+            outputs = [F.grouped_mm(a, mat_b, offs=offs, bias=bias, out_dtype=out_dtype) for a in mat_a._storage]
+        return cls(outputs, **mat_a._meta())
+
+
+@NestedTensorFuncRegistry.implement(F.linear)
+def linear(input: NestedTensor, weight: Tensor, bias: Tensor | None = None) -> NestedTensor:
+    r"""
+    Applies a linear transformation to the incoming data: :math:`y = xA^T + b`.
+    See also [torch.nn.functional.linear][].
+
+    Args:
+        input: The input NestedTensor.
+        weight: The weight matrix.
+        bias: Optional bias vector.
+
+    Returns:
+        NestedTensor: The linearly transformed output.
+
+    Examples:
+        >>> import torch
+        >>> from torch.nn import functional as F
+        >>> from danling.tensors import NestedTensor
+        >>> weight = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+        >>> bias = torch.tensor([0.5, -0.5])
+        >>> nt = NestedTensor(torch.tensor([[1.0, 2.0]]), torch.tensor([[3.0, 4.0], [5.0, 6.0]]))
+        >>> out = F.linear(nt, weight, bias)
+        >>> ref = F.linear(nt.tensor, weight, bias)
+        >>> torch.allclose(out, ref)
+        True
+    """
+    cls = type(input)
+    if len(input) == 0:
+        return cls([], **input._meta(include_dtype=True))
+    if input._values.dim() >= 2:
+        from .aten_functions import _packed_new_last_dim
+
+        new_values = F.linear(input._values, weight, bias)
+        return _packed_new_last_dim(input, new_values, int(weight.shape[0]))
+    return _apply_per_element(input, F.linear, weight, bias)
+
+
+def _scaled_mm(mat_a: NestedTensor, mat_b, fn, **kwargs) -> NestedTensor:
+    r"""Shared implementation for scaled_mm and scaled_grouped_mm."""
+    from .nested_tensor import NestedTensor
+
+    cls = type(mat_a)
+    if len(mat_a) == 0:
+        return cls([], **mat_a._meta(include_dtype=True))
+    if isinstance(mat_b, NestedTensor):
+        if len(mat_a) != len(mat_b):
+            raise ValueError(
+                "NestedTensor batch length mismatch between mat_a and mat_b: " f"mat_a={len(mat_a)}, mat_b={len(mat_b)}"
+            )
+        outputs = [fn(a, b, **kwargs) for a, b in zip(mat_a._storage, mat_b._storage)]
+    else:
+        outputs = [fn(a, mat_b, **kwargs) for a in mat_a._storage]
+    return cls(outputs, **mat_a._meta())
+
+
+if hasattr(F, "scaled_grouped_mm"):
+
+    @NestedTensorFuncRegistry.implement(F.scaled_grouped_mm)
+    def scaled_grouped_mm(
+        mat_a: NestedTensor,
+        mat_b: Tensor | NestedTensor,
+        scale_a,
+        scale_recipe_a,
+        scale_b,
+        scale_recipe_b,
+        swizzle_a=None,
+        swizzle_b=None,
+        bias: Tensor | None = None,
+        offs: Tensor | None = None,
+        output_dtype: torch.dtype | None = torch.bfloat16,
+        contraction_dim=(),
+        use_fast_accum: bool = False,
+    ) -> NestedTensor:
+        r"""
+        Applies scaled grouped matrix multiplication.
+        See also [torch.nn.functional.scaled_grouped_mm][].
+
+        Args:
+            mat_a: The first input NestedTensor.
+            mat_b: The second input Tensor or NestedTensor.
+            scale_a: Scale factor for mat_a.
+            scale_recipe_a: Scale recipe for mat_a.
+            scale_b: Scale factor for mat_b.
+            scale_recipe_b: Scale recipe for mat_b.
+            swizzle_a: Optional swizzle pattern for mat_a.
+            swizzle_b: Optional swizzle pattern for mat_b.
+            bias: Optional bias tensor.
+            offs: Optional offsets tensor for grouping.
+            output_dtype: Optional output dtype.
+            contraction_dim: Contraction dimensions.
+            use_fast_accum: Whether to use fast accumulation.
+
+        Returns:
+            NestedTensor: The result of scaled grouped matrix multiplication.
+
+        Note:
+            No inline doctest is provided here because
+            ``torch.nn.functional.scaled_grouped_mm`` has evolving upstream argument
+            requirements and backend-specific execution constraints.
+        """
+        return _scaled_mm(
+            mat_a,
+            mat_b,
+            F.scaled_grouped_mm,
+            scale_a=scale_a,
+            scale_recipe_a=scale_recipe_a,
+            scale_b=scale_b,
+            scale_recipe_b=scale_recipe_b,
+            swizzle_a=swizzle_a,
+            swizzle_b=swizzle_b,
+            bias=bias,
+            offs=offs,
+            output_dtype=output_dtype,
+            contraction_dim=contraction_dim,
+            use_fast_accum=use_fast_accum,
+        )
+
+
+if hasattr(F, "scaled_mm"):
+
+    @NestedTensorFuncRegistry.implement(F.scaled_mm)
+    def scaled_mm(
+        mat_a: NestedTensor,
+        mat_b: Tensor | NestedTensor,
+        scale_a,
+        scale_recipe_a,
+        scale_b,
+        scale_recipe_b,
+        swizzle_a=None,
+        swizzle_b=None,
+        bias: Tensor | None = None,
+        output_dtype: torch.dtype | None = torch.bfloat16,
+        contraction_dim=(),
+        use_fast_accum: bool = False,
+    ) -> NestedTensor:
+        r"""
+        Applies scaled matrix multiplication.
+        See also [torch.nn.functional.scaled_mm][].
+
+        Args:
+            mat_a: The first input NestedTensor.
+            mat_b: The second input Tensor or NestedTensor.
+            scale_a: Scale factor for mat_a.
+            scale_recipe_a: Scale recipe for mat_a.
+            scale_b: Scale factor for mat_b.
+            scale_recipe_b: Scale recipe for mat_b.
+            swizzle_a: Optional swizzle pattern for mat_a.
+            swizzle_b: Optional swizzle pattern for mat_b.
+            bias: Optional bias tensor.
+            output_dtype: Optional output dtype.
+            contraction_dim: Contraction dimensions.
+            use_fast_accum: Whether to use fast accumulation.
+
+        Returns:
+            NestedTensor: The result of scaled matrix multiplication.
+
+        Note:
+            No inline doctest is provided here because ``torch.nn.functional.scaled_mm``
+            has evolving upstream argument requirements and backend-specific execution
+            constraints.
+        """
+        return _scaled_mm(
+            mat_a,
+            mat_b,
+            F.scaled_mm,
+            scale_a=scale_a,
+            scale_recipe_a=scale_recipe_a,
+            scale_b=scale_b,
+            scale_recipe_b=scale_recipe_b,
+            swizzle_a=swizzle_a,
+            swizzle_b=swizzle_b,
+            bias=bias,
+            output_dtype=output_dtype,
+            contraction_dim=contraction_dim,
+            use_fast_accum=use_fast_accum,
+        )
+
+
 # Normalization
 
 
@@ -1951,103 +2048,26 @@ def rms_norm(
     return _apply_per_element(input, F.rms_norm, normalized, weight, eps)
 
 
-# Criterions
+@NestedTensorFuncRegistry.implement(F.normalize)
+def _normalize_impl(input, p=2.0, dim=1, eps=1e-12, out=None):
+    dim_adj = _translate_non_batch_dim(input, dim)
+    if dim_adj == 0:
+        if out is not None:
+            raise NotImplementedError("F.normalize(..., out=...) is not supported on ragged dimensions.")
+        if isinstance(p, (int, float)) and p > 0:
+            from .aten_functions import _packed_like, _packed_to_padded
 
-
-@NestedTensorFuncRegistry.implement(F.ctc_loss)
-def ctc_loss(
-    input: NestedTensor,
-    target: NestedTensor | Tensor,
-    input_lengths: Tensor,
-    target_lengths: Tensor,
-    blank: int = 0,
-    reduction: str = "mean",
-    zero_infinity: bool = False,
-) -> Tensor:
-    r"""
-    Compute the Connectionist Temporal Classification loss.
-    See also [torch.nn.functional.ctc_loss][].
-
-    Args:
-        input: The input NestedTensor of log probabilities.
-        target: The target tensor or NestedTensor.
-        input_lengths: Lengths of the inputs.
-        target_lengths: Lengths of the targets.
-        blank: Blank label index.
-        reduction: Specifies the reduction: 'none', 'mean', or 'sum'.
-        zero_infinity: If True, zero infinite losses and associated gradients.
-
-    Returns:
-        Tensor: The computed loss.
-
-    Examples:
-        >>> import torch
-        >>> from torch.nn import functional as F
-        >>> from danling.tensors import NestedTensor
-        >>> input = NestedTensor(torch.tensor([[-1.0, -2.0]]), torch.tensor([[-2.0, -1.0]]))
-        >>> target = NestedTensor(torch.tensor([0]), torch.tensor([1]))
-        >>> input_lengths = torch.tensor([1, 1])
-        >>> target_lengths = torch.tensor([1, 1])
-        >>> out = F.ctc_loss(input, target, input_lengths, target_lengths)
-        >>> logits = input.tensor.transpose(0, 1)
-        >>> ref = F.ctc_loss(logits, target.concat, input_lengths, target_lengths)
-        >>> torch.allclose(out, ref)
-        True
-    """
-    from .nested_tensor import NestedTensor
-
-    if isinstance(input, NestedTensor):
-        logits = input.tensor
-        if input.batch_first:
-            logits = logits.transpose(0, 1)
-    else:
-        logits = input
-    targets = target.concat if isinstance(target, NestedTensor) else target
-    return F.ctc_loss(
-        logits,
-        targets,
-        input_lengths=input_lengths,
-        target_lengths=target_lengths,
-        blank=blank,
-        reduction=reduction,
-        zero_infinity=zero_infinity,
-    )
-
-
-# Table-driven registrations — loss functions
-# All loss functions concat NestedTensor positional args, then call the original function.
-
-_LOSS_OPS_2 = [
-    F.binary_cross_entropy,
-    F.binary_cross_entropy_with_logits,
-    F.cross_entropy,
-    F.gaussian_nll_loss,
-    F.hinge_embedding_loss,
-    F.huber_loss,
-    F.kl_div,
-    F.l1_loss,
-    F.mse_loss,
-    F.multi_margin_loss,
-    F.multilabel_margin_loss,
-    F.multilabel_soft_margin_loss,
-    F.nll_loss,
-    F.poisson_nll_loss,
-    F.smooth_l1_loss,
-    F.soft_margin_loss,
-]
-_LOSS_OPS_3 = [
-    F.cosine_embedding_loss,
-    F.margin_ranking_loss,
-    F.triplet_margin_loss,
-    F.triplet_margin_with_distance_loss,
-]
-
-for _op, _n in [*((op, 2) for op in _LOSS_OPS_2), *((op, 3) for op in _LOSS_OPS_3)]:
-
-    @NestedTensorFuncRegistry.implement(_op)
-    def _loss_impl(*args, _fn=_op, _n=_n, **kwargs):
-        tensor_args = _concat_tensors(*args[:_n])
-        return _fn(*tensor_args, *args[_n:], **kwargs)
+            padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(input, fill_value=0.0)
+            denom = torch.linalg.vector_norm(padded, ord=float(p), dim=1, keepdim=True)
+            denom = torch.clamp(denom, min=eps)
+            return _packed_like(input, (padded / denom)[batch_idx, local_idx])
+        return _apply_per_element(input, F.normalize, p=p, dim=dim_adj, eps=eps, out=None)
+    concat_dim = _concat_dim_for_tensor_dim(input, dim_adj)
+    if concat_dim is None:
+        if out is not None:
+            raise NotImplementedError("F.normalize(..., out=...) is not supported on ragged dimensions.")
+        return _apply_per_element(input, F.normalize, p=p, dim=dim_adj, eps=eps, out=None)
+    return _apply_packed(input, F.normalize, p=p, dim=concat_dim, eps=eps, out=out)
 
 
 @NestedTensorFuncRegistry.implement(F.pdist)
@@ -2299,25 +2319,6 @@ for _op in _MAX_UNPOOL_OPS:
 # Softmax family
 
 
-@NestedTensorFuncRegistry.implement(F.softmax)
-def _f_softmax_impl(input, dim=-1, _stacklevel=3, dtype=None):
-    del _stacklevel  # keep F.softmax-compatible signature
-    return torch.softmax(input, dim=dim, dtype=dtype)
-
-
-@NestedTensorFuncRegistry.implement(F.log_softmax)
-def _f_log_softmax_impl(input, dim=-1, _stacklevel=3, dtype=None):
-    del _stacklevel  # keep F.log_softmax-compatible signature
-    return torch.log_softmax(input, dim=dim, dtype=dtype)
-
-
-@NestedTensorFuncRegistry.implement(F.softmin)
-def _f_softmin_impl(input, dim=-1, _stacklevel=3, dtype=None):
-    del _stacklevel  # keep F.softmin-compatible signature
-    source = input if dtype is None else input.to(dtype=dtype)
-    return torch.softmax(torch.neg(source), dim=dim, dtype=None)
-
-
 @NestedTensorFuncRegistry.implement(F.gumbel_softmax)
 def _gumbel_softmax_impl(logits, *args, dim=-1, **kwargs):
     from .aten_functions import _packed_like, _packed_to_padded
@@ -2333,29 +2334,23 @@ def _gumbel_softmax_impl(logits, *args, dim=-1, **kwargs):
     return _map_storage_serial(logits, lambda t: F.gumbel_softmax(t, *args, dim=dim_adj, **kwargs))
 
 
-# F.normalize — needs dim translation
+@NestedTensorFuncRegistry.implement(F.log_softmax)
+def _f_log_softmax_impl(input, dim=-1, _stacklevel=3, dtype=None):
+    del _stacklevel  # keep F.log_softmax-compatible signature
+    return torch.log_softmax(input, dim=dim, dtype=dtype)
 
 
-@NestedTensorFuncRegistry.implement(F.normalize)
-def _normalize_impl(input, p=2.0, dim=1, eps=1e-12, out=None):
-    dim_adj = _translate_non_batch_dim(input, dim)
-    if dim_adj == 0:
-        if out is not None:
-            raise NotImplementedError("F.normalize(..., out=...) is not supported on ragged dimensions.")
-        if isinstance(p, (int, float)) and p > 0:
-            from .aten_functions import _packed_like, _packed_to_padded
+@NestedTensorFuncRegistry.implement(F.softmax)
+def _f_softmax_impl(input, dim=-1, _stacklevel=3, dtype=None):
+    del _stacklevel  # keep F.softmax-compatible signature
+    return torch.softmax(input, dim=dim, dtype=dtype)
 
-            padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(input, fill_value=0.0)
-            denom = torch.linalg.vector_norm(padded, ord=float(p), dim=1, keepdim=True)
-            denom = torch.clamp(denom, min=eps)
-            return _packed_like(input, (padded / denom)[batch_idx, local_idx])
-        return _apply_per_element(input, F.normalize, p=p, dim=dim_adj, eps=eps, out=None)
-    concat_dim = _concat_dim_for_tensor_dim(input, dim_adj)
-    if concat_dim is None:
-        if out is not None:
-            raise NotImplementedError("F.normalize(..., out=...) is not supported on ragged dimensions.")
-        return _apply_per_element(input, F.normalize, p=p, dim=dim_adj, eps=eps, out=None)
-    return _apply_packed(input, F.normalize, p=p, dim=concat_dim, eps=eps, out=out)
+
+@NestedTensorFuncRegistry.implement(F.softmin)
+def _f_softmin_impl(input, dim=-1, _stacklevel=3, dtype=None):
+    del _stacklevel  # keep F.softmin-compatible signature
+    source = input if dtype is None else input.to(dtype=dtype)
+    return torch.softmax(torch.neg(source), dim=dim, dtype=None)
 
 
 # Fractional max pool — boolean_dispatch wrappers that support return_indices

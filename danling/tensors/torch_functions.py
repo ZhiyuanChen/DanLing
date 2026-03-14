@@ -639,13 +639,6 @@ def cummin(input: NestedTensor, dim: int):
     return torch.ops.aten.cummin.default(input, dim)
 
 
-@NestedTensorFuncRegistry.implement(torch.cumsum)
-def cumsum(input: NestedTensor, dim: int, *, dtype: torch.dtype | None = None):
-    if dtype is None:
-        return torch.ops.aten.cumsum.default(input, dim)
-    return torch.ops.aten.cumsum.default(input, dim, dtype=dtype)
-
-
 @NestedTensorFuncRegistry.implement(torch.cumprod)
 def cumprod(input: NestedTensor, dim: int, *, dtype: torch.dtype | None = None):
     if dtype is None:
@@ -653,39 +646,29 @@ def cumprod(input: NestedTensor, dim: int, *, dtype: torch.dtype | None = None):
     return torch.ops.aten.cumprod.default(input, dim, dtype=dtype)
 
 
+@NestedTensorFuncRegistry.implement(torch.cumsum)
+def cumsum(input: NestedTensor, dim: int, *, dtype: torch.dtype | None = None):
+    if dtype is None:
+        return torch.ops.aten.cumsum.default(input, dim)
+    return torch.ops.aten.cumsum.default(input, dim, dtype=dtype)
+
+
 @NestedTensorFuncRegistry.implement(torch.logcumsumexp)
 def logcumsumexp(input: NestedTensor, dim: int):
     return torch.ops.aten.logcumsumexp.default(input, dim)
 
-
-@NestedTensorFuncRegistry.implement(torch.layer_norm)
-def layer_norm(
-    input: NestedTensor,
-    normalized_shape,
-    weight: Tensor | None = None,
-    bias: Tensor | None = None,
-    eps: float = 1e-5,
-    cudnn_enable: bool = True,
-):
-    normalized = _normalize_shape_tuple(normalized_shape)
-    output = _packed_layer_norm(input, normalized, weight, bias, eps)
-    if output is not None:
-        return output
-    return _map_storage_serial(input, lambda t: torch.layer_norm(t, normalized, weight, bias, eps, cudnn_enable))
-
-
-if hasattr(torch, "rms_norm"):
-
-    @NestedTensorFuncRegistry.implement(torch.rms_norm)
-    def rms_norm(input: NestedTensor, normalized_shape, weight: Tensor | None = None, eps: float | None = None):
-        normalized = _normalize_shape_tuple(normalized_shape)
-        output = _packed_rms_norm(input, normalized, weight, eps)
-        if output is not None:
-            return output
-        return _map_storage_serial(input, lambda t: torch.rms_norm(t, normalized, weight, eps))
-
-
 # Dropout & Sampling
+
+
+@NestedTensorFuncRegistry.implement(torch.alpha_dropout)
+def alpha_dropout(input: NestedTensor, p: float = 0.5, train: bool = False):
+    r"""Applies alpha dropout to the input NestedTensor."""
+    _validate_probability(float(p), error_type=RuntimeError)
+    if (not train) or p == 0:
+        return input
+    from .aten_functions import _packed_like
+
+    return _packed_like(input, torch.ops.aten.alpha_dropout.default(input._values, p, train))
 
 
 @NestedTensorFuncRegistry.implement(torch.bernoulli)
@@ -741,17 +724,6 @@ def dropout(input: NestedTensor, p: float = 0.5, train: bool = True):
     from .aten_functions import _packed_like
 
     return _packed_like(input, torch.ops.aten.dropout.default(input._values, p, train))
-
-
-@NestedTensorFuncRegistry.implement(torch.alpha_dropout)
-def alpha_dropout(input: NestedTensor, p: float = 0.5, train: bool = False):
-    r"""Applies alpha dropout to the input NestedTensor."""
-    _validate_probability(float(p), error_type=RuntimeError)
-    if (not train) or p == 0:
-        return input
-    from .aten_functions import _packed_like
-
-    return _packed_like(input, torch.ops.aten.alpha_dropout.default(input._values, p, train))
 
 
 @NestedTensorFuncRegistry.implement(torch.feature_alpha_dropout)
@@ -1485,6 +1457,42 @@ def bmm(input, mat2, *, out=None):
     return torch.bmm(input, mat2)
 
 
+@NestedTensorFuncRegistry.implement(torch.einsum)
+def einsum(equation, *operands):
+    r"""
+    Apply [torch.einsum][] per element of a NestedTensor.
+
+    The equation string describes the dimensions of individual elements
+    (without the batch dimension). At least one operand must be a NestedTensor;
+    plain Tensor operands are broadcast to every element.
+    """
+    from .nested_tensor import NestedTensor
+
+    nt_indices = [i for i, op in enumerate(operands) if isinstance(op, NestedTensor)]
+    if not nt_indices:
+        raise TypeError("einsum: at least one operand must be a NestedTensor")
+
+    ref_idx = nt_indices[0]
+    ref = operands[ref_idx]
+    for idx in nt_indices[1:]:
+        other = operands[idx]
+        _validate_pairwise_batch_length(
+            ref, other, op_name="einsum", lhs_name=f"operand[{ref_idx}]", rhs_name=f"operand[{idx}]"
+        )
+
+    n = len(ref._storage)
+    results = []
+    for elem_idx in range(n):
+        elem_operands = []
+        for op in operands:
+            if isinstance(op, NestedTensor):
+                elem_operands.append(op._storage[elem_idx])
+            else:
+                elem_operands.append(op)
+        results.append(torch.einsum(equation, *elem_operands))
+    return NestedTensor(results, **ref._meta())
+
+
 @NestedTensorFuncRegistry.implement(torch.matmul)
 def matmul(input, other, *, out=None):
     r"""
@@ -1600,6 +1608,250 @@ def mm(input, mat2, *, out=None):
     return torch.mm(input, mat2)
 
 
+# Matrix / Linalg Ops
+# ---------------------------------------------------------------------------
+# These operate on each element independently. Most are shape-preserving;
+# some return scalars per element, and some return tuples.
+
+
+@NestedTensorFuncRegistry.implement(torch.diag)
+def diag(input, diagonal=0):
+    r"""
+    Apply [torch.diag][] to each element of a NestedTensor.
+
+    For 1-D elements, returns a 2-D diagonal matrix per element.
+    For 2-D elements, returns the diagonal as a 1-D tensor per element.
+    """
+    # ``diag`` only admits a packed fast path for dense same-shape batches.
+    # We intentionally keep NestedTensor on the per-element path here; callers
+    # with uniform shapes should use a plain dense Tensor instead.
+    return _map_storage_serial(input, lambda t: torch.diag(t, diagonal=diagonal))
+
+
+@NestedTensorFuncRegistry.implement(torch.diagflat)
+def diagflat(input, offset=0):
+    r"""Apply [torch.diagflat][] to each element of a NestedTensor."""
+    # ``diagflat`` flattens each element before materializing a square matrix,
+    # so ragged element lengths directly control the output size. Keep the
+    # semantics explicit and per-element instead of adding same-shape special cases.
+    return _map_storage_serial(input, lambda t: torch.diagflat(t, offset=offset))
+
+
+@NestedTensorFuncRegistry.implement(torch.diagonal)
+def diagonal(input, offset=0, dim1=0, dim2=1):
+    r"""
+    Apply [torch.diagonal][] to each element of a NestedTensor.
+
+    Dimensions are translated to skip the batch dimension.
+    """
+    # The aten handler preserves the packed fast path for static dims and keeps
+    # ragged-dim diagonals on the per-element path.
+    return torch.ops.aten.diagonal.default(input, offset, dim1, dim2)
+
+
+def _matrix_last2_to_scalar_public(input, op):
+    if input._values.dim() > 2 or input._physical_shape.size(1) != 2:
+        return None
+
+    device = input.device
+    batch = len(input)
+    rows = input._physical_shape[:, 0].to(device=device, dtype=torch.long)
+    cols = input._physical_shape[:, 1].to(device=device, dtype=torch.long)
+    max_rows, max_cols = input._logical_physical_dims()
+
+    padded = input._values.new_zeros((batch, max_rows, max_cols))
+    if input._values.numel() > 0:
+        padded[input._packed_dense_index(device=device)] = input._values
+
+    row_coords = torch.arange(max_rows, device=device, dtype=torch.long).view(1, max_rows, 1)
+    col_coords = torch.arange(max_cols, device=device, dtype=torch.long).view(1, 1, max_cols)
+    inside = (row_coords < rows.view(batch, 1, 1)) & (col_coords < cols.view(batch, 1, 1))
+    eye = torch.eye(max_rows, max_cols, dtype=input.dtype, device=device).expand(batch, -1, -1)
+    values = op(torch.where(inside, padded, eye))
+    return input._from_scalar_result_values(values)
+
+
+@NestedTensorFuncRegistry.implement(torch.det)
+def det(input):
+    r"""Apply [torch.det][] to each element of a NestedTensor."""
+    output = _matrix_last2_to_scalar_public(input, torch.det)
+    if output is not None:
+        return output
+    return torch.ops.aten.det.default(input)
+
+
+@NestedTensorFuncRegistry.implement(torch.inverse)
+def inverse(input):
+    r"""Apply [torch.inverse][] to each element of a NestedTensor."""
+    return torch.ops.aten.inverse.default(input)
+
+
+@NestedTensorFuncRegistry.implement(torch.linalg.cholesky)
+def linalg_cholesky(input, *, upper=False):
+    r"""Apply [torch.linalg.cholesky][] to each element of a NestedTensor."""
+    return torch.ops.aten.linalg_cholesky.default(input, upper=upper)
+
+
+@NestedTensorFuncRegistry.implement(torch.linalg.det)
+def linalg_det(input):
+    r"""Apply [torch.linalg.det][] to each element of a NestedTensor."""
+    output = _matrix_last2_to_scalar_public(input, torch.linalg.det)
+    if output is not None:
+        return output
+    return torch.ops.aten.linalg_det.default(input)
+
+
+@NestedTensorFuncRegistry.implement(torch.linalg.eigh)
+def linalg_eigh(input, UPLO="L"):
+    r"""
+    Apply [torch.linalg.eigh][] to each element of a NestedTensor.
+
+    Returns a tuple of two NestedTensors ``(eigenvalues, eigenvectors)``.
+    """
+    return torch.ops.aten.linalg_eigh.default(input, UPLO=UPLO)
+
+
+@NestedTensorFuncRegistry.implement(torch.linalg.inv)
+def linalg_inv(input):
+    r"""Apply [torch.linalg.inv][] to each element of a NestedTensor."""
+    return torch.ops.aten.linalg_inv.default(input)
+
+
+@NestedTensorFuncRegistry.implement(torch.linalg.norm)
+def linalg_norm(input, ord=None, dim=None, keepdim=False, *, dtype=None):
+    r"""
+    Apply [torch.linalg.norm][] to each element of a NestedTensor.
+
+    ``dim`` is translated to skip the batch dimension when specified.
+    """
+    flattened = input._physical_shape.size(1) > 1 and input._values.dim() == 1
+    vector_ord = 2 if ord is None else ord
+    if not flattened and dim is None:
+        if _zero_padding_safe_vector_ord(vector_ord):
+            return torch.ops.aten.linalg_vector_norm.default(input, vector_ord, None, keepdim, dtype=dtype)
+    elif not flattened and isinstance(dim, int):
+        dim_adj = _translate_non_batch_dim(input, dim, name="linalg.norm")
+        if (dim_adj == 0 and _zero_padding_safe_vector_ord(vector_ord)) or (
+            dim_adj != 0 and isinstance(vector_ord, (int, float)) and not isinstance(vector_ord, bool)
+        ):
+            return torch.ops.aten.linalg_vector_norm.default(input, vector_ord, [dim], keepdim, dtype=dtype)
+    elif not flattened:
+        dims = tuple(dim)
+        if len(dims) == 1:
+            dim_adj = _translate_non_batch_dim(input, dims[0], name="linalg.norm")
+            if (dim_adj == 0 and _zero_padding_safe_vector_ord(vector_ord)) or (
+                dim_adj != 0 and isinstance(vector_ord, (int, float)) and not isinstance(vector_ord, bool)
+            ):
+                return torch.ops.aten.linalg_vector_norm.default(input, vector_ord, list(dims), keepdim, dtype=dtype)
+
+    if dim is not None:
+        if isinstance(dim, int):
+            dim = _translate_non_batch_dim(input, dim, name="linalg.norm")
+        else:
+            dim = tuple(_translate_non_batch_dim(input, d, name="linalg.norm") for d in dim)
+    return _map_storage_serial(input, lambda t: torch.linalg.norm(t, ord=ord, dim=dim, keepdim=keepdim, dtype=dtype))
+
+
+@NestedTensorFuncRegistry.implement(torch.linalg.qr)
+def linalg_qr(input, mode="reduced"):
+    r"""
+    Apply [torch.linalg.qr][] to each element of a NestedTensor.
+
+    Returns a tuple of two NestedTensors ``(Q, R)``.
+    """
+    return torch.ops.aten.linalg_qr.default(input, mode=mode)
+
+
+@NestedTensorFuncRegistry.implement(torch.linalg.solve)
+def linalg_solve(input, B):
+    r"""
+    Apply [torch.linalg.solve][] to each element pair of two NestedTensors.
+
+    ``input`` is the coefficient matrix A, ``B`` is the right-hand side.
+    """
+    from .nested_tensor import NestedTensor
+
+    if isinstance(B, NestedTensor):
+        _validate_pairwise_batch_length(input, B, op_name="linalg.solve", lhs_name="input", rhs_name="B")
+    return torch.ops.aten.linalg_solve.default(input, B)
+
+
+@NestedTensorFuncRegistry.implement(torch.linalg.svd)
+def linalg_svd(input, full_matrices=True):
+    r"""
+    Apply [torch.linalg.svd][] to each element of a NestedTensor.
+
+    Returns a tuple of three NestedTensors ``(U, S, Vh)``.
+    """
+    return torch.ops.aten.linalg_svd.default(input, full_matrices=full_matrices)
+
+
+@NestedTensorFuncRegistry.implement(torch.matrix_exp)
+def matrix_exp(input):
+    r"""Apply [torch.matrix_exp][] via aten fastpaths when possible."""
+    return torch.ops.aten.matrix_exp.default(input)
+
+
+@NestedTensorFuncRegistry.implement(torch.matrix_power)
+def matrix_power(input, n):
+    r"""Apply [torch.matrix_power][] to each element of a NestedTensor."""
+    # Eager aten.matrix_power decomposes before our intended dispatch boundary, so
+    # the explicit per-element wrapper is still the stable public path here.
+    return _map_storage_serial(input, lambda t: torch.matrix_power(t, n))
+
+
+@NestedTensorFuncRegistry.implement(torch.trace)
+def trace(input):
+    r"""
+    Apply [torch.trace][] to each element of a NestedTensor.
+
+    Returns a NestedTensor of scalar tensors (one per element).
+    """
+    return torch.ops.aten.trace.default(input)
+
+
+@NestedTensorFuncRegistry.implement(torch.tril)
+def tril(input, diagonal=0):
+    r"""Apply [torch.tril][] via aten fastpaths when possible."""
+    return torch.ops.aten.tril.default(input, diagonal)
+
+
+@NestedTensorFuncRegistry.implement(torch.triu)
+def triu(input, diagonal=0):
+    r"""Apply [torch.triu][] via aten fastpaths when possible."""
+    return torch.ops.aten.triu.default(input, diagonal)
+
+
+# Normalization
+
+
+@NestedTensorFuncRegistry.implement(torch.layer_norm)
+def layer_norm(
+    input: NestedTensor,
+    normalized_shape,
+    weight: Tensor | None = None,
+    bias: Tensor | None = None,
+    eps: float = 1e-5,
+    cudnn_enable: bool = True,
+):
+    normalized = _normalize_shape_tuple(normalized_shape)
+    output = _packed_layer_norm(input, normalized, weight, bias, eps)
+    if output is not None:
+        return output
+    return _map_storage_serial(input, lambda t: torch.layer_norm(t, normalized, weight, bias, eps, cudnn_enable))
+
+
+if hasattr(torch, "rms_norm"):
+
+    @NestedTensorFuncRegistry.implement(torch.rms_norm)
+    def rms_norm(input: NestedTensor, normalized_shape, weight: Tensor | None = None, eps: float | None = None):
+        normalized = _normalize_shape_tuple(normalized_shape)
+        output = _packed_rms_norm(input, normalized, weight, eps)
+        if output is not None:
+            return output
+        return _map_storage_serial(input, lambda t: torch.rms_norm(t, normalized, weight, eps))
+
+
 # Reductions
 
 
@@ -1607,8 +1859,8 @@ def mm(input, mat2, *, out=None):
 _SIMPLE_REDUCE_OPS = [
     (torch.all, {"fill_value": True}),
     (torch.any, {"fill_value": False}),
-    (torch.sum, {"fill_value": 0}),
     (torch.prod, {}),
+    (torch.sum, {"fill_value": 0}),
 ]
 
 for _op, _extra_kwargs in _SIMPLE_REDUCE_OPS:
@@ -1616,23 +1868,6 @@ for _op, _extra_kwargs in _SIMPLE_REDUCE_OPS:
     @NestedTensorFuncRegistry.implement(_op)
     def _reduce_impl(input, dim=None, keepdim=False, *, _fn=_op, _extra=_extra_kwargs, **kwargs):
         return _reduce(input, _fn, dim, keepdim, **kwargs, **_extra)
-
-
-@NestedTensorFuncRegistry.implement(torch.sum)
-def sum(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: bool = False, *, dtype=None):
-    r"""Compute sums via aten fastpaths for global and single-dim reductions."""
-    if dim is None:
-        return _reduce_none(input, torch.sum, dtype=dtype, keepdim=keepdim)
-    if isinstance(dim, (list, tuple)):
-        if len(dim) == 1:
-            dim = dim[0]
-        else:
-            dims = tuple(_normalize_dim(d, input.dim()) for d in dim)
-            # Preserve the previous masked path when reducing batch with other dims.
-            if _get_batch_dim(input) in dims:
-                return _reduce(input, torch.sum, dim, keepdim, dtype=dtype, fill_value=0)
-            return torch.ops.aten.sum.dim_IntList(input, list(dim), keepdim, dtype=dtype)
-    return torch.ops.aten.sum.dim_IntList(input, [dim], keepdim, dtype=dtype)
 
 
 @NestedTensorFuncRegistry.implement(torch.amax)
@@ -2045,6 +2280,23 @@ def std(
     return torch.ops.aten.std.correction(input, dims, correction=correction, keepdim=keepdim)
 
 
+@NestedTensorFuncRegistry.implement(torch.sum)
+def sum(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: bool = False, *, dtype=None):
+    r"""Compute sums via aten fastpaths for global and single-dim reductions."""
+    if dim is None:
+        return _reduce_none(input, torch.sum, dtype=dtype, keepdim=keepdim)
+    if isinstance(dim, (list, tuple)):
+        if len(dim) == 1:
+            dim = dim[0]
+        else:
+            dims = tuple(_normalize_dim(d, input.dim()) for d in dim)
+            # Preserve the previous masked path when reducing batch with other dims.
+            if _get_batch_dim(input) in dims:
+                return _reduce(input, torch.sum, dim, keepdim, dtype=dtype, fill_value=0)
+            return torch.ops.aten.sum.dim_IntList(input, list(dim), keepdim, dtype=dtype)
+    return torch.ops.aten.sum.dim_IntList(input, [dim], keepdim, dtype=dtype)
+
+
 @NestedTensorFuncRegistry.implement(torch.var)
 def var(
     input: NestedTensor,
@@ -2295,6 +2547,24 @@ def reshape(input: NestedTensor, shape: Sequence[int]) -> NestedTensor:
         True
     """
     return torch.ops.aten.reshape.default(input, list(shape))
+
+
+@NestedTensorFuncRegistry.implement(torch.repeat_interleave)
+def repeat_interleave(input, repeats, dim=None, *, output_size=None):
+    r"""
+    Apply [torch.repeat_interleave][] to each element of a NestedTensor.
+
+    ``dim=None`` flattens each element before repeating. Other dims are
+    translated to skip the batch dimension.
+    """
+    if dim is None:
+        return _map_storage_serial(
+            input, lambda t: torch.repeat_interleave(t, repeats, dim=None, output_size=output_size)
+        )
+    dim_adj = _translate_non_batch_dim(input, dim, name="repeat_interleave")
+    return _map_storage_serial(
+        input, lambda t: torch.repeat_interleave(t, repeats, dim=dim_adj, output_size=output_size)
+    )
 
 
 @NestedTensorFuncRegistry.implement(torch.roll)
@@ -2962,6 +3232,55 @@ def quantile(
     return _quantile(input, torch.quantile, q, dim, keepdim, interpolation)
 
 
+@NestedTensorFuncRegistry.implement(torch.searchsorted)
+def searchsorted(sorted_sequence, values, *, out_int32=False, right=False, side=None, sorter=None):
+    r"""Apply [torch.searchsorted][] using aten fastpaths when available."""
+    from .nested_tensor import NestedTensor
+
+    sorted_is_nt = isinstance(sorted_sequence, NestedTensor)
+    values_is_nt = isinstance(values, NestedTensor)
+    sorter_is_nt = isinstance(sorter, NestedTensor)
+
+    if sorter_is_nt and not sorted_is_nt:
+        raise TypeError("searchsorted: NestedTensor sorter requires sorted_sequence to be a NestedTensor.")
+
+    if not isinstance(values, (NestedTensor, Tensor)):
+        if sorted_is_nt:
+            if sorter_is_nt:
+                if len(sorter) != len(sorted_sequence):
+                    raise ValueError(
+                        "searchsorted: NestedTensor batch length mismatch between sorted_sequence and sorter: "
+                        f"sorted_sequence={len(sorted_sequence)}, sorter={len(sorter)}"
+                    )
+                return NestedTensor(
+                    (
+                        torch.searchsorted(t, values, out_int32=out_int32, right=right, side=side, sorter=s)
+                        for t, s in zip(sorted_sequence._storage, sorter._storage)
+                    ),
+                    **sorted_sequence._meta(),
+                )
+            return _map_storage_serial(
+                sorted_sequence,
+                lambda t: torch.searchsorted(t, values, out_int32=out_int32, right=right, side=side, sorter=sorter),
+            )
+        return torch.searchsorted(sorted_sequence, values, out_int32=out_int32, right=right, side=side, sorter=sorter)
+
+    if sorted_is_nt and values_is_nt:
+        _validate_pairwise_batch_length(
+            sorted_sequence, values, op_name="searchsorted", lhs_name="sorted_sequence", rhs_name="values"
+        )
+        return torch.ops.aten.searchsorted.Tensor(
+            sorted_sequence, values, out_int32=out_int32, right=right, side=side, sorter=sorter
+        )
+
+    if values_is_nt or sorted_is_nt:
+        return torch.ops.aten.searchsorted.Tensor(
+            sorted_sequence, values, out_int32=out_int32, right=right, side=side, sorter=sorter
+        )
+
+    return torch.searchsorted(sorted_sequence, values, out_int32=out_int32, right=right, side=side, sorter=sorter)
+
+
 @NestedTensorFuncRegistry.implement(torch.sort)
 def sort(input: NestedTensor, dim: int = -1, descending: bool = False, stable: bool | None = None):
     r"""
@@ -3018,327 +3337,6 @@ def topk(input: NestedTensor, k, dim: int | None = None, largest: bool = True, s
     """
     dim = -1 if dim is None else dim
     return torch.ops.aten.topk.default(input, k, dim, largest, sorted)
-
-
-@NestedTensorFuncRegistry.implement(torch.einsum)
-def einsum(equation, *operands):
-    r"""
-    Apply [torch.einsum][] per element of a NestedTensor.
-
-    The equation string describes the dimensions of individual elements
-    (without the batch dimension). At least one operand must be a NestedTensor;
-    plain Tensor operands are broadcast to every element.
-    """
-    from .nested_tensor import NestedTensor
-
-    # Find the NestedTensor operand(s) and the reference for metadata
-    nt_indices = [i for i, op in enumerate(operands) if isinstance(op, NestedTensor)]
-    if not nt_indices:
-        raise TypeError("einsum: at least one operand must be a NestedTensor")
-
-    ref_idx = nt_indices[0]
-    ref = operands[ref_idx]
-    for idx in nt_indices[1:]:
-        other = operands[idx]
-        _validate_pairwise_batch_length(
-            ref, other, op_name="einsum", lhs_name=f"operand[{ref_idx}]", rhs_name=f"operand[{idx}]"
-        )
-
-    n = len(ref._storage)
-    results = []
-    for elem_idx in range(n):
-        elem_operands = []
-        for _op_idx, op in enumerate(operands):
-            if isinstance(op, NestedTensor):
-                elem_operands.append(op._storage[elem_idx])
-            else:
-                elem_operands.append(op)
-        results.append(torch.einsum(equation, *elem_operands))
-    return NestedTensor(results, **ref._meta())
-
-
-@NestedTensorFuncRegistry.implement(torch.searchsorted)
-def searchsorted(sorted_sequence, values, *, out_int32=False, right=False, side=None, sorter=None):
-    r"""Apply [torch.searchsorted][] using aten fastpaths when available."""
-    from .nested_tensor import NestedTensor
-
-    sorted_is_nt = isinstance(sorted_sequence, NestedTensor)
-    values_is_nt = isinstance(values, NestedTensor)
-    sorter_is_nt = isinstance(sorter, NestedTensor)
-
-    if sorter_is_nt and not sorted_is_nt:
-        raise TypeError("searchsorted: NestedTensor sorter requires sorted_sequence to be a NestedTensor.")
-
-    if not isinstance(values, (NestedTensor, Tensor)):
-        if sorted_is_nt:
-            if sorter_is_nt:
-                if len(sorter) != len(sorted_sequence):
-                    raise ValueError(
-                        "searchsorted: NestedTensor batch length mismatch between sorted_sequence and sorter: "
-                        f"sorted_sequence={len(sorted_sequence)}, sorter={len(sorter)}"
-                    )
-                return NestedTensor(
-                    (
-                        torch.searchsorted(t, values, out_int32=out_int32, right=right, side=side, sorter=s)
-                        for t, s in zip(sorted_sequence._storage, sorter._storage)
-                    ),
-                    **sorted_sequence._meta(),
-                )
-            return _map_storage_serial(
-                sorted_sequence,
-                lambda t: torch.searchsorted(t, values, out_int32=out_int32, right=right, side=side, sorter=sorter),
-            )
-        return torch.searchsorted(sorted_sequence, values, out_int32=out_int32, right=right, side=side, sorter=sorter)
-
-    if sorted_is_nt and values_is_nt:
-        _validate_pairwise_batch_length(
-            sorted_sequence, values, op_name="searchsorted", lhs_name="sorted_sequence", rhs_name="values"
-        )
-        return torch.ops.aten.searchsorted.Tensor(
-            sorted_sequence, values, out_int32=out_int32, right=right, side=side, sorter=sorter
-        )
-
-    if values_is_nt or sorted_is_nt:
-        return torch.ops.aten.searchsorted.Tensor(
-            sorted_sequence, values, out_int32=out_int32, right=right, side=side, sorter=sorter
-        )
-
-    return torch.searchsorted(sorted_sequence, values, out_int32=out_int32, right=right, side=side, sorter=sorter)
-
-
-# Matrix / linalg ops (per-element)
-# ---------------------------------------------------------------------------
-# These operate on each element independently. Most are shape-preserving;
-# some return scalars per element, and some return tuples.
-
-
-@NestedTensorFuncRegistry.implement(torch.triu)
-def triu(input, diagonal=0):
-    r"""Apply [torch.triu][] via aten fastpaths when possible."""
-    return torch.ops.aten.triu.default(input, diagonal)
-
-
-@NestedTensorFuncRegistry.implement(torch.tril)
-def tril(input, diagonal=0):
-    r"""Apply [torch.tril][] via aten fastpaths when possible."""
-    return torch.ops.aten.tril.default(input, diagonal)
-
-
-@NestedTensorFuncRegistry.implement(torch.matrix_exp)
-def matrix_exp(input):
-    r"""Apply [torch.matrix_exp][] via aten fastpaths when possible."""
-    return torch.ops.aten.matrix_exp.default(input)
-
-
-@NestedTensorFuncRegistry.implement(torch.diag)
-def diag(input, diagonal=0):
-    r"""
-    Apply [torch.diag][] to each element of a NestedTensor.
-
-    For 1-D elements, returns a 2-D diagonal matrix per element.
-    For 2-D elements, returns the diagonal as a 1-D tensor per element.
-    """
-    # ``diag`` only admits a packed fast path for dense same-shape batches.
-    # We intentionally keep NestedTensor on the per-element path here; callers
-    # with uniform shapes should use a plain dense Tensor instead.
-    return _map_storage_serial(input, lambda t: torch.diag(t, diagonal=diagonal))
-
-
-@NestedTensorFuncRegistry.implement(torch.diagflat)
-def diagflat(input, offset=0):
-    r"""Apply [torch.diagflat][] to each element of a NestedTensor."""
-    # ``diagflat`` flattens each element before materializing a square matrix,
-    # so ragged element lengths directly control the output size. Keep the
-    # semantics explicit and per-element instead of adding same-shape special cases.
-    return _map_storage_serial(input, lambda t: torch.diagflat(t, offset=offset))
-
-
-@NestedTensorFuncRegistry.implement(torch.diagonal)
-def diagonal(input, offset=0, dim1=0, dim2=1):
-    r"""
-    Apply [torch.diagonal][] to each element of a NestedTensor.
-
-    Dimensions are translated to skip the batch dimension.
-    """
-    # The aten handler preserves the packed fast path for static dims and keeps
-    # ragged-dim diagonals on the per-element path.
-    return torch.ops.aten.diagonal.default(input, offset, dim1, dim2)
-
-
-@NestedTensorFuncRegistry.implement(torch.trace)
-def trace(input):
-    r"""
-    Apply [torch.trace][] to each element of a NestedTensor.
-
-    Returns a NestedTensor of scalar tensors (one per element).
-    """
-    return torch.ops.aten.trace.default(input)
-
-
-def _matrix_last2_to_scalar_public(input, op):
-    if input._values.dim() > 2 or input._physical_shape.size(1) != 2:
-        return None
-
-    device = input.device
-    batch = len(input)
-    rows = input._physical_shape[:, 0].to(device=device, dtype=torch.long)
-    cols = input._physical_shape[:, 1].to(device=device, dtype=torch.long)
-    max_rows, max_cols = input._logical_physical_dims()
-
-    padded = input._values.new_zeros((batch, max_rows, max_cols))
-    if input._values.numel() > 0:
-        padded[input._packed_dense_index(device=device)] = input._values
-
-    row_coords = torch.arange(max_rows, device=device, dtype=torch.long).view(1, max_rows, 1)
-    col_coords = torch.arange(max_cols, device=device, dtype=torch.long).view(1, 1, max_cols)
-    inside = (row_coords < rows.view(batch, 1, 1)) & (col_coords < cols.view(batch, 1, 1))
-    eye = torch.eye(max_rows, max_cols, dtype=input.dtype, device=device).expand(batch, -1, -1)
-    values = op(torch.where(inside, padded, eye))
-    return input._from_scalar_result_values(values)
-
-
-@NestedTensorFuncRegistry.implement(torch.det)
-def det(input):
-    r"""Apply [torch.det][] to each element of a NestedTensor."""
-    output = _matrix_last2_to_scalar_public(input, torch.det)
-    if output is not None:
-        return output
-    return torch.ops.aten.det.default(input)
-
-
-@NestedTensorFuncRegistry.implement(torch.inverse)
-def inverse(input):
-    r"""Apply [torch.inverse][] to each element of a NestedTensor."""
-    return torch.ops.aten.inverse.default(input)
-
-
-@NestedTensorFuncRegistry.implement(torch.matrix_power)
-def matrix_power(input, n):
-    r"""Apply [torch.matrix_power][] to each element of a NestedTensor."""
-    # Eager aten.matrix_power decomposes before our intended dispatch boundary, so
-    # the explicit per-element wrapper is still the stable public path here.
-    return _map_storage_serial(input, lambda t: torch.matrix_power(t, n))
-
-
-@NestedTensorFuncRegistry.implement(torch.repeat_interleave)
-def repeat_interleave(input, repeats, dim=None, *, output_size=None):
-    r"""
-    Apply [torch.repeat_interleave][] to each element of a NestedTensor.
-
-    ``dim=None`` flattens each element before repeating. Other dims are
-    translated to skip the batch dimension.
-    """
-    if dim is None:
-        return _map_storage_serial(
-            input, lambda t: torch.repeat_interleave(t, repeats, dim=None, output_size=output_size)
-        )
-    dim_adj = _translate_non_batch_dim(input, dim, name="repeat_interleave")
-    return _map_storage_serial(
-        input, lambda t: torch.repeat_interleave(t, repeats, dim=dim_adj, output_size=output_size)
-    )
-
-
-# --- torch.linalg ops ---
-
-
-@NestedTensorFuncRegistry.implement(torch.linalg.inv)
-def linalg_inv(input):
-    r"""Apply [torch.linalg.inv][] to each element of a NestedTensor."""
-    return torch.ops.aten.linalg_inv.default(input)
-
-
-@NestedTensorFuncRegistry.implement(torch.linalg.det)
-def linalg_det(input):
-    r"""Apply [torch.linalg.det][] to each element of a NestedTensor."""
-    output = _matrix_last2_to_scalar_public(input, torch.linalg.det)
-    if output is not None:
-        return output
-    return torch.ops.aten.linalg_det.default(input)
-
-
-@NestedTensorFuncRegistry.implement(torch.linalg.norm)
-def linalg_norm(input, ord=None, dim=None, keepdim=False, *, dtype=None):
-    r"""
-    Apply [torch.linalg.norm][] to each element of a NestedTensor.
-
-    ``dim`` is translated to skip the batch dimension when specified.
-    """
-    flattened = input._physical_shape.size(1) > 1 and input._values.dim() == 1
-    vector_ord = 2 if ord is None else ord
-    if not flattened and dim is None:
-        if _zero_padding_safe_vector_ord(vector_ord):
-            return torch.ops.aten.linalg_vector_norm.default(input, vector_ord, None, keepdim, dtype=dtype)
-    elif not flattened and isinstance(dim, int):
-        dim_adj = _translate_non_batch_dim(input, dim, name="linalg.norm")
-        if (dim_adj == 0 and _zero_padding_safe_vector_ord(vector_ord)) or (
-            dim_adj != 0 and isinstance(vector_ord, (int, float)) and not isinstance(vector_ord, bool)
-        ):
-            return torch.ops.aten.linalg_vector_norm.default(input, vector_ord, [dim], keepdim, dtype=dtype)
-    elif not flattened:
-        dims = tuple(dim)
-        if len(dims) == 1:
-            dim_adj = _translate_non_batch_dim(input, dims[0], name="linalg.norm")
-            if (dim_adj == 0 and _zero_padding_safe_vector_ord(vector_ord)) or (
-                dim_adj != 0 and isinstance(vector_ord, (int, float)) and not isinstance(vector_ord, bool)
-            ):
-                return torch.ops.aten.linalg_vector_norm.default(input, vector_ord, list(dims), keepdim, dtype=dtype)
-
-    if dim is not None:
-        if isinstance(dim, int):
-            dim = _translate_non_batch_dim(input, dim, name="linalg.norm")
-        else:
-            dim = tuple(_translate_non_batch_dim(input, d, name="linalg.norm") for d in dim)
-    return _map_storage_serial(input, lambda t: torch.linalg.norm(t, ord=ord, dim=dim, keepdim=keepdim, dtype=dtype))
-
-
-@NestedTensorFuncRegistry.implement(torch.linalg.svd)
-def linalg_svd(input, full_matrices=True):
-    r"""
-    Apply [torch.linalg.svd][] to each element of a NestedTensor.
-
-    Returns a tuple of three NestedTensors ``(U, S, Vh)``.
-    """
-    return torch.ops.aten.linalg_svd.default(input, full_matrices=full_matrices)
-
-
-@NestedTensorFuncRegistry.implement(torch.linalg.qr)
-def linalg_qr(input, mode="reduced"):
-    r"""
-    Apply [torch.linalg.qr][] to each element of a NestedTensor.
-
-    Returns a tuple of two NestedTensors ``(Q, R)``.
-    """
-    return torch.ops.aten.linalg_qr.default(input, mode=mode)
-
-
-@NestedTensorFuncRegistry.implement(torch.linalg.cholesky)
-def linalg_cholesky(input, *, upper=False):
-    r"""Apply [torch.linalg.cholesky][] to each element of a NestedTensor."""
-    return torch.ops.aten.linalg_cholesky.default(input, upper=upper)
-
-
-@NestedTensorFuncRegistry.implement(torch.linalg.eigh)
-def linalg_eigh(input, UPLO="L"):
-    r"""
-    Apply [torch.linalg.eigh][] to each element of a NestedTensor.
-
-    Returns a tuple of two NestedTensors ``(eigenvalues, eigenvectors)``.
-    """
-    return torch.ops.aten.linalg_eigh.default(input, UPLO=UPLO)
-
-
-@NestedTensorFuncRegistry.implement(torch.linalg.solve)
-def linalg_solve(input, B):
-    r"""
-    Apply [torch.linalg.solve][] to each element pair of two NestedTensors.
-
-    ``input`` is the coefficient matrix A, ``B`` is the right-hand side.
-    """
-    from .nested_tensor import NestedTensor
-
-    if isinstance(B, NestedTensor):
-        _validate_pairwise_batch_length(input, B, op_name="linalg.solve", lhs_name="input", rhs_name="B")
-    return torch.ops.aten.linalg_solve.default(input, B)
 
 
 # Bulk elementwise registrations
