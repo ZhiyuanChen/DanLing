@@ -27,7 +27,7 @@ from typing import Any, Iterable, SupportsFloat, cast
 import torch
 from torch import Tensor
 
-from .aten_functions import per_element_fallback
+from .aten_functions import _is_fake_tensor, per_element_fallback
 from .ops import NestedTensorAtenRegistry
 
 try:
@@ -36,17 +36,6 @@ except ImportError:
     from typing_extensions import Self
 
 from torch import nested
-
-try:
-    from torch._subclasses.fake_tensor import is_fake as _torch_is_fake
-except ImportError:
-    _torch_is_fake = None
-
-
-def _is_fake_tensor(tensor: Tensor) -> bool:
-    if _torch_is_fake is None:
-        return False
-    return bool(_torch_is_fake(tensor))
 
 
 _WARN_ONCE_KEYS: set[str] = set()
@@ -1710,8 +1699,8 @@ class NestedTensor(torch.Tensor):
             tensor(True)
             >>> f = nested_tensor.nested_like(torch.randn(2, 2))
             Traceback (most recent call last):
-            ValueError: The shape of NestedTensor and input tensor does not match, torch.Size([2, 3]) !=
-            torch.Size([2, 2])
+            ...
+            ValueError: The shape of NestedTensor and input tensor does not match, torch.Size([2, 3]) != torch.Size([2, 2])
             >>> p = nested_tensor.nested_like(torch.randn(2, 2), False)
             >>> p = nested_tensor.nested_like(torch.randn(3, 3), False)
             Traceback (most recent call last):

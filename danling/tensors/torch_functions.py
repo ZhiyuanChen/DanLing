@@ -53,7 +53,9 @@ from .ops import (
     TORCH_UNARY_ELEMENTWISE_OPS,
     NestedTensorFuncRegistry,
     _binary_op_maybe_tensor,
+    _concat_apply_same_shape,
     _get_batch_dim,
+    _map_storage_pair,
     _map_storage_serial,
     _normalize_dim,
     _normalize_shape_tuple,
@@ -1204,7 +1206,7 @@ def nonzero(input: NestedTensor, *, out=None, as_tuple: bool = False):
     if out is not None:
         raise NotImplementedError("torch.nonzero(..., out=...) is not supported for NestedTensor.")
 
-    if not input._storage:
+    if len(input) == 0:
         if as_tuple:
             return ()
         return NestedTensor([], device=input.device, dtype=torch.long, **input._meta(include_dtype=False))
@@ -1792,7 +1794,7 @@ def dist(input: NestedTensor, other: NestedTensor | Tensor, p=2):
         raise ValueError(
             "NestedTensor batch length mismatch between input and other: " f"input={len(input)}, other={len(other)}"
         )
-    if not input._storage:
+    if len(input) == 0:
         return torch.empty((0,), device=input.device)
     return torch.stack([torch.dist(x, y, p=p) for x, y in zip(input._storage, other._storage)])
 

@@ -521,7 +521,7 @@ def _concat_apply(
 ):
     r"""Apply op to concatenated storage and split back using shape_fn."""
     cls = type(input)
-    if not input._storage:
+    if len(input) == 0:
         return cls([], **input._meta(include_dtype=True))
 
     concat, shapes = input.concatenate()

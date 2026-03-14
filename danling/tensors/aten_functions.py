@@ -2546,7 +2546,7 @@ def _native_dropout(func, args, kwargs):
     r"""Apply native dropout per element, returning (output, mask) as NestedTensors."""
     source = args[0]
     cls = type(source)
-    if not source._storage:
+    if len(source) == 0:
         empty = cls([], **source._meta())
         return empty, empty
 
@@ -3608,7 +3608,7 @@ def _random_creation_handler(func, args, kwargs):
     r"""Create random tensors per element to preserve RNG parity with per-element eager calls."""
     source = args[0]
     cls = type(source)
-    if not source._storage:
+    if len(source) == 0:
         return cls([], **source._meta())
     return cls([func(t, *args[1:], **kwargs) for t in source._storage], **source._meta())
 
