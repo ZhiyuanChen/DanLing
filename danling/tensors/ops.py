@@ -261,6 +261,56 @@ def _maybe_align_dense_to_nested(ref: NestedTensor, value) -> NestedTensor | Non
     return ref._maybe_exact_shape_nested_like(value)
 
 
+def _resolve_dense_for_values(nt: NestedTensor, other) -> Tensor | None:
+    r"""
+    Resolve a dense tensor into a form that can operate directly with ``_values``.
+
+    Three cases, tried in order:
+
+    1. **Broadcastable with _values** (e.g. ``[D]``, ``[1, D]``):
+       return ``other`` as-is — PyTorch broadcasting handles it.
+    2. **Has a batch + variable-length dim** (e.g. ``[1, max_seq, D]`` or
+       ``[B, max_seq, D]``): gather per-element positions from ``other``
+       to produce a tensor aligned to ``_values``.
+    3. Otherwise return ``None`` (caller should raise).
+    """
+    if not isinstance(other, Tensor) or other.dim() == 0:
+        return None
+
+    if len(nt) == 0 or nt._values.dim() == 0:
+        return None
+
+    values = nt._values  # [sum_lengths, *tail]
+
+    # Case 1: broadcastable with _values directly
+    # other has <= same ndim as _values and all dims are 1 or match
+    if other.dim() <= values.dim():
+        try:
+            torch.broadcast_shapes(values.shape, other.shape)
+            return other
+        except RuntimeError:
+            pass
+
+    # Case 2: other has one extra dim (batch) with a variable-length dim
+    elem_ndim = values.dim()
+    if other.dim() == elem_ndim + 1:
+        nt_shape = nt.shape
+        max_var_len = nt_shape[1] if nt.batch_first else nt_shape[0]
+        if other.shape[1] == max_var_len:
+            offsets = nt._offsets.to(device=values.device)
+            lengths = offsets[1:] - offsets[:-1]
+            total = values.shape[0]
+            pos_indices = torch.arange(total, device=values.device) - offsets[:-1].repeat_interleave(lengths)
+
+            if other.shape[0] == 1:
+                return other[0, pos_indices]
+            else:
+                batch_indices = torch.arange(len(nt), device=values.device).repeat_interleave(lengths)
+                return other[batch_indices, pos_indices]
+
+    return None
+
+
 def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
     r"""
     Apply a binary op between a NestedTensor and a tensor/scalar/NestedTensor.
@@ -332,14 +382,18 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
             **input._meta(),
         )
 
-    # General tensor: per-element fallback
-    elements = []
-    for t in input._storage:
-        if reverse:
-            elements.append(op(_as_tensor_like(other, t), t, *extra_args, **extra_kwargs))
-        else:
-            elements.append(op(t, _as_tensor_like(other, t), *extra_args, **extra_kwargs))
-    return cls(elements, **input._meta())
+    # Resolve dense tensor to a form compatible with _values
+    from .aten_functions import _packed_with_shape
+
+    resolved = _resolve_dense_for_values(input, other)
+    if resolved is None:
+        raise ValueError(
+            f"Cannot apply binary op between NestedTensor (values shape {input._values.shape}) "
+            f"and tensor of shape {other.shape}"
+        )
+    lhs, rhs = (resolved, input._values) if reverse else (input._values, resolved)
+    new_values = op(lhs, rhs, *extra_args, **extra_kwargs)
+    return _packed_with_shape(input, new_values, input._physical_shape)
 
 
 def _binary_op_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:

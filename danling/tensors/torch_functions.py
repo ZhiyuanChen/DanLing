@@ -51,6 +51,7 @@ from torch.nn import functional as F
 from .ops import (
     TORCH_BINARY_ELEMENTWISE_OPS,
     TORCH_UNARY_ELEMENTWISE_OPS,
+    NestedTensorAtenRegistry,
     NestedTensorFuncRegistry,
     _binary_op_compile_safe,
     _binary_op_maybe_tensor,
@@ -2672,11 +2673,12 @@ def mean(
     """
     if dim is None:
         return _reduce_none(input, torch.mean, dtype=dtype, keepdim=keepdim)
+    mean_dim = NestedTensorAtenRegistry[torch.ops.aten.mean.dim]
     if isinstance(dim, int):
-        return torch.ops.aten.mean.dim(input, [dim], keepdim, dtype=dtype)
+        return mean_dim(torch.ops.aten.mean.dim, (input, [dim], keepdim), {"dtype": dtype})
     if isinstance(dim, (list, tuple)):
         dims = [dim[0]] if len(dim) == 1 else list(dim)
-        return torch.ops.aten.mean.dim(input, dims, keepdim, dtype=dtype)
+        return mean_dim(torch.ops.aten.mean.dim, (input, dims, keepdim), {"dtype": dtype})
     return _reduce_dim(input, torch.mean, dim, keepdim, dtype=dtype)
 
 

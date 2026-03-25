@@ -90,6 +90,38 @@ class TestArithmeticFunctions:
         reference = NT([torch.add(x, y) for x, y in zip(nt, other)], **nt._meta())
         assert_close(output, reference)
 
+    def test_add_dense_with_variable_length_dim(self, device, float_dtype):
+        """NT[B, var_seq, D] + dense[1, max_seq, D] — the positional embedding pattern."""
+        nt = NT(
+            [
+                torch.randn(5, 8, device=device, dtype=float_dtype),
+                torch.randn(3, 8, device=device, dtype=float_dtype),
+            ]
+        )
+        dense = torch.randn(1, 5, 8, device=device, dtype=float_dtype)
+        output = nt + dense
+        for i, elem in enumerate(nt):
+            expected = elem + dense[0, : elem.shape[0]]
+            assert_close(output._storage[i], expected)
+        # Reverse
+        output_rev = dense + nt
+        for i, elem in enumerate(nt):
+            expected = dense[0, : elem.shape[0]] + elem
+            assert_close(output_rev._storage[i], expected)
+
+    def test_add_dense_broadcastable_with_values(self, device, float_dtype):
+        """NT[B, var_seq, D] + dense[D] — broadcast across packed dim."""
+        nt = NT(
+            [
+                torch.randn(5, 8, device=device, dtype=float_dtype),
+                torch.randn(3, 8, device=device, dtype=float_dtype),
+            ]
+        )
+        bias = torch.randn(8, device=device, dtype=float_dtype)
+        output = nt + bias
+        for i, elem in enumerate(nt):
+            assert_close(output._storage[i], elem + bias)
+
     def test_wrapped_ops_preserve_state(self):
         nt = NestedTensor(
             [torch.tensor([1, 2]), torch.tensor([3])],

@@ -122,6 +122,9 @@ def _concat_tensors(*values: NestedTensor | Tensor) -> tuple[Tensor, ...]:
     for v in values:
         if isinstance(v, NestedTensor):
             result.append(v.concat)  # type: ignore[union-attr]
+        elif v.dim() < ref.dim():  # type: ignore[union-attr]
+            # Per-sample tensor (e.g. labels [B]) — pass through unchanged
+            result.append(v)
         else:
             if v.shape != ref.shape:  # type: ignore[union-attr]
                 raise ValueError(

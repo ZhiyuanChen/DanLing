@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-TORCH_MNIST_PATH = Path(__file__).resolve().parents[2] / "examples" / "vision" / "torch_mnist.py"
+TORCH_MNIST_PATH = Path(__file__).resolve().parents[2] / "examples" / "runners" / "torch_mnist.py"
 
 
 def _load_torch_mnist_module():

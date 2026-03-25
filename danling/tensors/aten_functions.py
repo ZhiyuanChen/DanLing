@@ -444,7 +444,12 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
     dim_adj = _translate_dim(source, dim)
     if dim_adj == 0:
         if ragged_fill is None:
-            return _fallback([dim_adj], keepdim)
+            # Reducing the variable-length dim always produces uniform elements.
+            # Stack into a regular tensor rather than returning an NT.
+            reduced = torch.stack([_call(t, [0], False) for t in source._storage])
+            if keepdim:
+                reduced = reduced.unsqueeze(dim)
+            return reduced
         padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=ragged_fill)
         return _call(padded, [1], keepdim)
 
