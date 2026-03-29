@@ -336,6 +336,23 @@ class TestClassificationLosses:
         )
         assert_close(output, reference)
 
+    def test_binary_cross_entropy_with_logits_after_method_squeeze_preserves_grad(self, device, float_dtype):
+        logits = NT(
+            [
+                torch.randn(2, 3, 1, device=device, dtype=float_dtype, requires_grad=True),
+                torch.randn(1, 3, 1, device=device, dtype=float_dtype, requires_grad=True),
+            ]
+        )
+        targets = NT(
+            [
+                torch.rand(2, 3, 1, device=device, dtype=float_dtype),
+                torch.rand(1, 3, 1, device=device, dtype=float_dtype),
+            ]
+        )
+        output = F.binary_cross_entropy_with_logits(logits.squeeze(-1), targets.squeeze(-1), reduction="mean")
+        assert output.requires_grad
+        assert output.grad_fn is not None
+
     def test_cross_entropy_loss(self, device, float_dtype):
         logits = NT(
             [

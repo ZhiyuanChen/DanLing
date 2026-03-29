@@ -310,6 +310,7 @@ class NestedTensor(torch.Tensor):
         *,
         dtype: torch.dtype | None = None,
         device: torch.device | None = None,
+        permutation: tuple[int, ...] | None = None,
     ) -> tuple[Tensor, Tensor, Tensor, tuple[int, ...], tuple[tuple[int, ...], ...]]:
         r"""Pack a sequence of tensors into values, offsets, tensor metadata, and Python metadata."""
         if not tensors:
@@ -326,15 +327,23 @@ class NestedTensor(torch.Tensor):
 
         # Offsets and shape_tensor are metadata - always on CPU to avoid CUDA syncs.
         shape_tensor = torch.tensor([list(t.shape) + [0] * (max_ndim - t.ndim) for t in tensors], dtype=torch.long)
-        varying_dims, static_dims = NestedTensor._pack_layout_from_element_shapes(element_shapes)
         if max_ndim == 0:
             values = torch.stack(tensors)
             sizes = torch.ones(len(tensors), dtype=torch.long)
             packed_sizes = tuple(1 for _ in tensors)
         else:
+            if permutation is None:
+                varying_dims, static_dims = NestedTensor._pack_layout_from_element_shapes(element_shapes)
+                permutation = varying_dims + static_dims
+            else:
+                permutation = tuple(int(dim) for dim in permutation)
+                if len(permutation) != max_ndim or tuple(sorted(permutation)) != tuple(range(max_ndim)):
+                    raise ValueError(f"Invalid permutation dims {permutation} for tensors with rank {max_ndim}")
+                ragged_rank = len(NestedTensor._hierarchical_level_sizes_from_element_shapes(element_shapes))
+                varying_dims = permutation[:ragged_rank]
+                static_dims = permutation[ragged_rank:]
             packed = []
             packed_sizes_list = []
-            permutation = varying_dims + static_dims
             identity_permutation = tuple(range(max_ndim))
             for tensor, shape in zip(tensors, element_shapes):
                 packed_size = NestedTensor._packed_size_from_shape(shape, varying_dims)
@@ -751,12 +760,15 @@ class NestedTensor(torch.Tensor):
             "_state_version",
             "_values",
             "_offsets",
+            "_permutation",
             "_physical_shape",
             "_logical_shape",
             "batch_first",
             "padding_value",
             "mask_value",
             "_pin_memory",
+            "_packed_sizes",
+            "_element_shapes",
         )
         missing = [key for key in required if key not in state]
         if missing:
@@ -946,7 +958,6 @@ class NestedTensor(torch.Tensor):
                 _compile_unsupported(name, "handler is marked eager-only")
             return handler(*args, **kwargs)
 
-        # Fall through to aten decomposition → __torch_dispatch__.
         with torch._C.DisableTorchFunctionSubclass():
             return func(*args, **kwargs)
 
@@ -965,7 +976,6 @@ class NestedTensor(torch.Tensor):
                 _compile_unsupported(name or repr(func), "aten handler is marked eager-only")
             return NestedTensorAtenRegistry[func](func, args, kwargs)
 
-        # Per-element fallback
         if _is_compiling():
             name = getattr(func, "name", None)
             if callable(name):
@@ -994,8 +1004,13 @@ class NestedTensor(torch.Tensor):
             element_shapes = tuple(tuple(int(dim) for dim in shape) for shape in self._original_shapes())
 
         splits = self._values.split(packed_sizes, dim=0)
-        varying_dims, static_dims = type(self)._pack_layout_meta(self._physical_shape, element_shapes)
-        permutation = self._permutation if hasattr(self, "_permutation") else (varying_dims + static_dims)
+        permutation = self._permutation
+        if permutation:
+            varying_dims = self._varying_dims
+            static_dims = self._static_dims
+        else:
+            varying_dims, static_dims = type(self)._pack_layout_meta(self._physical_shape, element_shapes)
+            permutation = varying_dims + static_dims
         inverse_permutation = type(self)._inverse_permutation(permutation)
 
         result = []
@@ -1017,11 +1032,18 @@ class NestedTensor(torch.Tensor):
         since tensors originate from _unpack or __setitem__ validation)."""
         self._invalidate_transient_caches()
         tensors = tuple(tensors) if not isinstance(tensors, tuple) else tensors
-        values, offsets, shape_tensor, packed_sizes, element_shapes = self._pack(tensors)
+        if tensors and len(self._permutation) != tensors[0].ndim:
+            raise RuntimeError(
+                "NestedTensor._repack received tensors with rank "
+                f"{tensors[0].ndim} but current permutation has rank {len(self._permutation)}"
+            )
+        values, offsets, shape_tensor, packed_sizes, element_shapes = self._pack(
+            tensors,
+            permutation=self._permutation if tensors else None,
+        )
         values = type(self)._maybe_pin_values(values, self._pin_memory)
         self._values = values
         self._offsets = offsets
-        self._permutation = type(self)._permutation_from_element_shapes(element_shapes)
         self._physical_shape = shape_tensor
         self._logical_shape = self._compute_logical_shape(tensors, self.batch_first)
         self._packed_sizes = packed_sizes
@@ -2491,7 +2513,7 @@ class NestedTensor(torch.Tensor):
         type(self)._validate_serialized_state(state)
         self._values = state["_values"]
         self._offsets = state["_offsets"]
-        self._permutation = tuple(int(dim) for dim in state.get("_permutation", ()))
+        self._permutation = tuple(int(dim) for dim in state["_permutation"])
         self._physical_shape = state["_physical_shape"]
         self._logical_shape = state["_logical_shape"]
         self._set_runtime_config(
@@ -2500,16 +2522,8 @@ class NestedTensor(torch.Tensor):
             mask_value=state["mask_value"],
         )
         self._pin_memory = state["_pin_memory"]
-        self._packed_sizes = state.get("_packed_sizes")
-        self._element_shapes = state.get("_element_shapes")
-        if "_packed_sizes" not in state or "_element_shapes" not in state:
-            self._packed_sizes, self._element_shapes = self._python_meta_from_packed(
-                self._values,
-                self._offsets,
-                self._physical_shape,
-            )
-        if not self._permutation:
-            self._permutation = type(self)._permutation_from_physical_shape(self._physical_shape, self._element_shapes)
+        self._packed_sizes = state["_packed_sizes"]
+        self._element_shapes = state["_element_shapes"]
         # Serialized state intentionally excludes transient caches.
         self._invalidate_transient_caches()
         self._validate_metadata()
@@ -2524,14 +2538,14 @@ class NestedTensor(torch.Tensor):
             state["_values"],
             state["_offsets"],
             state["_physical_shape"],
-            permutation=tuple(int(dim) for dim in state.get("_permutation", ())),
+            permutation=tuple(int(dim) for dim in state["_permutation"]),
             batch_first=state["batch_first"],
             padding_value=state["padding_value"],
             mask_value=state["mask_value"],
             pin_memory=state["_pin_memory"],
             outer_size=state["_logical_shape"],
-            packed_sizes=state.get("_packed_sizes"),
-            element_shapes=state.get("_element_shapes"),
+            packed_sizes=state["_packed_sizes"],
+            element_shapes=state["_element_shapes"],
         )
 
     def __copy__(self):
@@ -2704,6 +2718,14 @@ class NestedTensor(torch.Tensor):
         """
         return torch.permute(self, dims)
 
+    def moveaxis(self, source, destination) -> Self:
+        r"""Move per-element dimensions to new positions."""
+        return torch.moveaxis(self, source, destination)
+
+    def movedim(self, source, destination) -> Self:
+        r"""Alias for `moveaxis()`."""
+        return torch.movedim(self, source, destination)
+
     # to(), clone(), detach(), contiguous(), half(), float(), double(), etc.
     # are all handled by aten dispatch in aten_functions.py (aten._to_copy, aten.clone,
     # aten.detach). No custom Python methods needed.
@@ -2758,6 +2780,14 @@ class NestedTensor(torch.Tensor):
             raise TypeError("reshape() missing shape")
         target_shape = shape[0] if len(shape) == 1 and isinstance(shape[0], (tuple, list, torch.Size)) else shape
         return torch.reshape(self, target_shape)
+
+    def flatten(self, start_dim: int = 0, end_dim: int = -1):
+        r"""Flatten each tensor in the NestedTensor."""
+        return torch.flatten(self, start_dim=start_dim, end_dim=end_dim)
+
+    def flip(self, dims) -> Self:
+        r"""Flip each tensor in the NestedTensor along the given dimensions."""
+        return torch.flip(self, dims)
 
     @property
     def shape(self) -> torch.Size:  # type: ignore[override, name-defined]
@@ -2876,6 +2906,18 @@ class NestedTensor(torch.Tensor):
         """
         return torch.transpose(self, dim0, dim1)
 
+    def swapaxes(self, axis0: int, axis1: int) -> Self:
+        r"""Alias for `transpose()`."""
+        return torch.swapaxes(self, axis0, axis1)
+
+    def swapdims(self, dim0: int, dim1: int) -> Self:
+        r"""Alias for `swapaxes()`."""
+        return torch.swapdims(self, dim0, dim1)
+
+    def squeeze(self, dim: int | None = None) -> Self:  # type: ignore[valid-type]
+        r"""Squeeze singleton dimensions from each tensor in the NestedTensor."""
+        return torch.squeeze(self, dim=dim)
+
     def unsqueeze(self, dim: int) -> Self:  # type: ignore[valid-type]
         r"""
         Unsqueeze each tensor in the NestedTensor by adding a singleton dimension at the specified position.
@@ -2904,6 +2946,18 @@ class NestedTensor(torch.Tensor):
         """
         return torch.unsqueeze(self, dim)
 
+    def unflatten(self, dim: int, sizes) -> Self:  # type: ignore[valid-type]
+        r"""Unflatten one dimension of each tensor in the NestedTensor."""
+        return torch.unflatten(self, dim, sizes)
+
+    def roll(self, shifts, dims=None) -> Self:
+        r"""Roll each tensor in the NestedTensor along the given dimensions."""
+        return torch.roll(self, shifts, dims=dims)
+
+    def rot90(self, k: int = 1, dims: Sequence[int] = (0, 1)) -> Self:
+        r"""Rotate each tensor in the NestedTensor by 90 degrees in the given plane."""
+        return torch.rot90(self, k, dims)
+
     def view(self, *shape) -> Self:
         r"""
         View each tensor in the NestedTensor with a different shape.
@@ -2925,7 +2979,9 @@ class NestedTensor(torch.Tensor):
         if not shape:
             raise TypeError("view() missing shape")
         target_shape = shape[0] if len(shape) == 1 and isinstance(shape[0], (tuple, list, torch.Size)) else shape
-        return torch.ops.aten.view.default(self, list(target_shape))
+        return NestedTensorAtenRegistry[torch.ops.aten.view.default](
+            torch.ops.aten.view.default, (self, list(target_shape)), {}
+        )
 
     def _view_shapes(self, shape) -> list[tuple[int, ...]]:  # type: ignore[valid-type]
         r"""

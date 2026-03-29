@@ -379,7 +379,9 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
         lhs_s, rhs_s = (other._storage, input._storage) if reverse else (input._storage, other._storage)
         return cls(
             (op(x, y, *extra_args, **extra_kwargs) for x, y in zip(lhs_s, rhs_s)),
-            **input._meta(),
+            batch_first=input.batch_first,
+            padding_value=input.padding_value,
+            mask_value=input.mask_value,
         )
 
     # Resolve dense tensor to a form compatible with _values

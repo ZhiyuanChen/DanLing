@@ -242,6 +242,54 @@ class TestCompile:
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     @pytest.mark.parametrize(
+        "view_fn",
+        [
+            pytest.param(lambda x: x.view(-1, 3), id="packed_fastpath"),
+            pytest.param(lambda x: x.view(2, -1), id="explicit_batch_reduced_rank"),
+        ],
+    )
+    def test_compile_view_method(self, view_fn, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(2, 3, device=device, dtype=float_dtype),
+                torch.randn(4, 3, device=device, dtype=float_dtype),
+            ]
+        )
+        compiled = torch.compile(view_fn, backend="inductor", fullgraph=True)
+        output = compiled(nt)
+        reference = view_fn(nt)
+        assert isinstance(output, NestedTensor)
+        assert output._has_same_layout(reference)
+        assert_close(output, reference)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize(
+        ("op", "ref_fn"),
+        [
+            pytest.param(lambda x: x.unsqueeze(2).squeeze(2), lambda t: t.unsqueeze(1).squeeze(1), id="squeeze"),
+            pytest.param(
+                lambda x: x.view(-1, 3).unflatten(2, (1, 3)),
+                lambda t: t.view(-1, 3).unflatten(1, (1, 3)),
+                id="unflatten",
+            ),
+        ],
+    )
+    def test_compile_shape_rebuild_ops(self, op, ref_fn, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(2, 3, device=device, dtype=float_dtype),
+                torch.randn(4, 3, device=device, dtype=float_dtype),
+            ]
+        )
+        compiled = torch.compile(op, backend="inductor", fullgraph=True)
+        output = compiled(nt)
+        reference = NT([ref_fn(t) for t in nt], **nt._meta())
+        assert isinstance(output, NestedTensor)
+        assert output._has_same_layout(reference)
+        assert_close(output, reference)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize(
         "torch_fn,ref_fn",
         [
             pytest.param(
@@ -499,6 +547,63 @@ class TestDimensionTransforms:
         reference = torch.unsqueeze(torch.squeeze(nt.tensor, dim=1), dim=2)
         assert_close(output, reference)
 
+    def test_view_like_ops_preserve_autograd(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(2, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
+                torch.randn(3, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
+            ]
+        )
+
+        outputs = [
+            nt.squeeze(2),
+            torch.squeeze(nt, dim=2),
+            nt.unsqueeze(2),
+            torch.unsqueeze(nt, dim=2),
+            torch.transpose(nt, 1, 3),
+            torch.permute(nt, (0, 3, 2, 1)),
+            torch.reshape(nt, (-1, 3)),
+            nt.flatten(1, 3),
+            nt.view(-1, 3),
+            nt.view(-1, 3).unflatten(2, (1, 3)),
+        ]
+
+        for output in outputs:
+            assert isinstance(output, NestedTensor)
+            assert output.requires_grad
+            assert output._values.requires_grad
+            assert output._values.grad_fn is not None
+            grad = torch.autograd.grad(output._values.sum(), nt._values, retain_graph=True)[0]
+            assert grad is not None
+            assert grad.shape == nt._values.shape
+
+    def test_axis_alias_methods_preserve_autograd(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(2, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
+                torch.randn(3, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
+            ]
+        )
+        outputs = [
+            nt.moveaxis(1, 3),
+            nt.movedim(1, 3),
+            nt.swapaxes(1, 3),
+            nt.swapdims(1, 3),
+            torch.moveaxis(nt, 1, 3),
+            torch.movedim(nt, 1, 3),
+            torch.swapaxes(nt, 1, 3),
+            torch.swapdims(nt, 1, 3),
+        ]
+
+        for output in outputs:
+            assert isinstance(output, NestedTensor)
+            assert output.requires_grad
+            assert output._values.requires_grad
+            assert output._values.grad_fn is not None
+            grad = torch.autograd.grad(output._values.sum(), nt._values, retain_graph=True)[0]
+            assert grad is not None
+            assert grad.shape == nt._values.shape
+
     def test_swapaxes_batch_dim_raises(self):
         nt = NestedTensor([torch.ones(2, 2)])
         with pytest.raises(ValueError):
@@ -549,6 +654,44 @@ class TestDimensionTransforms:
         ref = torch.moveaxis(nt, -1, 1)
         assert_close(result[0], ref[0])
         assert_close(result[1], ref[1])
+
+    def test_pairwise_unsqueeze_multiply_builds_square_map(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(26, 8, device=device, dtype=float_dtype),
+                torch.randn(14, 8, device=device, dtype=float_dtype),
+                torch.randn(9, 8, device=device, dtype=float_dtype),
+            ]
+        )
+        output = nt.unsqueeze(1) * nt.unsqueeze(2)
+        reference = NT(
+            [torch.unsqueeze(t, 0) * torch.unsqueeze(t, 1) for t in nt],
+            batch_first=nt.batch_first,
+            padding_value=nt.padding_value,
+            mask_value=nt.mask_value,
+        )
+        assert_close(output, reference)
+        assert output.shape == torch.Size([3, 26, 26, 8])
+        assert tuple(output._values.shape) == (26 * 26 + 14 * 14 + 9 * 9, 8)
+        assert torch.equal(output._physical_shape[:, :2], torch.tensor([[26, 26], [14, 14], [9, 9]]))
+
+    def test_pairwise_unsqueeze_multiply_from_tensor_mask_preserves_square_metadata(self, device, float_dtype):
+        dense = torch.randn(1, 5, 3, device=device, dtype=float_dtype)
+        mask = torch.ones(1, 5, device=device, dtype=torch.bool)
+        nt = NestedTensor.from_tensor_mask(dense, mask)
+
+        output = nt.unsqueeze(1) * nt.unsqueeze(2)
+        reference = torch.unsqueeze(dense, 1) * torch.unsqueeze(dense, 2)
+
+        assert output.shape == torch.Size([1, 5, 5, 3])
+        expected_shape = torch.tensor([[5, 5, 3]], dtype=output._physical_shape.dtype)
+        assert torch.equal(output._physical_shape, expected_shape)
+        assert_close(output, reference)
+
+        channels_first = torch.transpose(output, 1, 3)
+        normalized = torch.nn.functional.group_norm(channels_first, 1)
+        assert normalized.shape == torch.Size([1, 3, 5, 5])
+        assert_close(normalized, torch.nn.functional.group_norm(torch.transpose(reference, 1, 3), 1))
 
 
 class TestDist:
@@ -726,6 +869,31 @@ class TestFlipAndRoll:
 
         with pytest.raises(ValueError):
             torch.roll(nt, shifts=1, dims=0)
+
+    def test_flip_roll_rot90_preserve_autograd(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(2, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
+                torch.randn(3, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
+            ]
+        )
+        outputs = [
+            nt.flip((3,)),
+            torch.flip(nt, dims=(3,)),
+            nt.roll((1,), (3,)),
+            torch.roll(nt, shifts=(1,), dims=(3,)),
+            nt.rot90(1, (2, 3)),
+            torch.rot90(nt, 1, (2, 3)),
+        ]
+
+        for output in outputs:
+            assert isinstance(output, NestedTensor)
+            assert output.requires_grad
+            assert output._values.requires_grad
+            assert output._values.grad_fn is not None
+            grad = torch.autograd.grad(output._values.sum(), nt._values, retain_graph=True)[0]
+            assert grad is not None
+            assert grad.shape == nt._values.shape
 
 
 class TestGatherScatter:
@@ -2606,6 +2774,28 @@ class TestRot90:
 
         with pytest.raises(ValueError):
             torch.rot90(nt)
+
+    @pytest.mark.parametrize(
+        ("k", "expected_shapes"),
+        [
+            pytest.param(1, ((2, 5, 3), (4, 5, 3)), id="k1_swaps_plane"),
+            pytest.param(2, ((2, 3, 5), (4, 3, 5)), id="k2_preserves_plane"),
+            pytest.param(3, ((2, 5, 3), (4, 5, 3)), id="k3_swaps_plane"),
+            pytest.param(4, ((2, 3, 5), (4, 3, 5)), id="k4_preserves_plane"),
+        ],
+    )
+    def test_rot90_static_plane_metadata_respects_k(self, device, float_dtype, k, expected_shapes):
+        nt = NT(
+            [
+                torch.randn(2, 3, 5, device=device, dtype=float_dtype),
+                torch.randn(4, 3, 5, device=device, dtype=float_dtype),
+            ]
+        )
+
+        output = torch.rot90(nt, k=k, dims=(2, 3))
+        reference = NT([torch.rot90(t, k=k, dims=(1, 2)) for t in nt], **nt._meta())
+        assert_close(output, reference)
+        assert output._element_shapes == expected_shapes
 
 
 class TestScatterOps:

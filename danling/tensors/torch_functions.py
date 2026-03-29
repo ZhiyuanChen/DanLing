@@ -2961,7 +2961,9 @@ def flatten(input: NestedTensor, start_dim: int = 0, end_dim: int = -1):
     batch_dim = _get_batch_dim(input)
     if start <= batch_dim <= end:
         return torch.flatten(input.tensor, start_dim=start_dim, end_dim=end_dim)
-    return torch.ops.aten.flatten.using_ints(input, start, end)
+    from .aten_functions import flatten as _aten_flatten
+
+    return _aten_flatten(torch.ops.aten.flatten.using_ints, (input, start, end), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.flip)
@@ -2992,7 +2994,9 @@ def flip(input: NestedTensor, dims: Sequence[int]) -> NestedTensor:
         >>> torch.equal(out, ref)
         True
     """
-    return torch.ops.aten.flip.default(input, list(dims))
+    from .aten_functions import flip as _aten_flip
+
+    return _aten_flip(torch.ops.aten.flip.default, (input, list(dims)), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.moveaxis)
@@ -3073,7 +3077,9 @@ def permute(input: NestedTensor, dims: Sequence[int]) -> NestedTensor:
     if normalized_dims[batch_dim] != batch_dim:
         raise ValueError("Permuting the batch dimension is not supported for NestedTensor.")
 
-    return torch.ops.aten.permute.default(input, list(normalized_dims))
+    from .aten_functions import permute as _aten_permute
+
+    return _aten_permute(torch.ops.aten.permute.default, (input, list(normalized_dims)), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.repeat_interleave, compile_safe=True)
@@ -3133,7 +3139,9 @@ def reshape(input: NestedTensor, shape: Sequence[int]) -> NestedTensor:
         >>> torch.equal(out, ref)
         True
     """
-    return torch.ops.aten.reshape.default(input, list(shape))
+    from .aten_functions import view_like as _aten_view_like
+
+    return _aten_view_like(torch.ops.aten.reshape.default, (input, list(shape)), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.roll)
@@ -3172,13 +3180,15 @@ def roll(input: NestedTensor, shifts, dims=None):
     else:
         shifts = list(shifts)
 
+    from .aten_functions import roll as _aten_roll
+
     if dims is None:
-        return torch.ops.aten.roll.default(input, shifts, [])
+        return _aten_roll(torch.ops.aten.roll.default, (input, shifts, []), {})
     if isinstance(dims, int):
         dims = [dims]
     else:
         dims = list(dims)
-    return torch.ops.aten.roll.default(input, shifts, dims)
+    return _aten_roll(torch.ops.aten.roll.default, (input, shifts, dims), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.rot90)
@@ -3209,7 +3219,9 @@ def rot90(input: NestedTensor, k: int = 1, dims: Sequence[int] = (0, 1)) -> Nest
     """
     if len(dims) != 2:
         raise ValueError("rot90 dims must be a sequence of two dimensions.")
-    return torch.ops.aten.rot90.default(input, k, list(dims))
+    from .aten_functions import rot90 as _aten_rot90
+
+    return _aten_rot90(torch.ops.aten.rot90.default, (input, k, list(dims)), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.squeeze)
@@ -3234,13 +3246,16 @@ def squeeze(input: NestedTensor, dim: int | None = None):
         >>> torch.equal(out, ref)
         True
     """
+    from .aten_functions import squeeze_default as _aten_squeeze_default
+    from .aten_functions import squeeze_dim as _aten_squeeze_dim
+
     if dim is None:
-        return torch.ops.aten.squeeze.default(input)
+        return _aten_squeeze_default(torch.ops.aten.squeeze.default, (input,), {})
     dim_norm = _normalize_dim(dim, input.dim())
     batch_dim = _get_batch_dim(input)
     if dim_norm <= batch_dim:
         raise ValueError("Cannot squeeze the batch dimension or dimensions before it for NestedTensor.")
-    return torch.ops.aten.squeeze.dim(input, dim_norm)
+    return _aten_squeeze_dim(torch.ops.aten.squeeze.dim, (input, dim_norm), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.swapaxes)
@@ -3274,7 +3289,7 @@ def swapaxes(input: NestedTensor, axis0: int, axis1: int):
     batch_dim = _get_batch_dim(input)
     if axis0 == batch_dim or axis1 == batch_dim:
         raise ValueError("Cannot swap the batch dimension for NestedTensor.")
-    return torch.ops.aten.transpose.int(input, axis0, axis1)
+    return transpose(input, axis0, axis1)
 
 
 # swapdims is an alias for swapaxes and must preserve compile policy metadata.
@@ -3341,7 +3356,9 @@ def transpose(input: NestedTensor, dim0: int, dim1: int) -> NestedTensor:
             element_shapes=input._element_shapes,
             permutation=input._permutation,
         )
-    return torch.ops.aten.transpose.int(input, dim0, dim1)
+    from .aten_functions import transpose as _aten_transpose
+
+    return _aten_transpose(torch.ops.aten.transpose.int, (input, dim0, dim1), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.unflatten)
@@ -3371,7 +3388,9 @@ def unflatten(input: NestedTensor, dim: int, sizes):
     batch_dim = _get_batch_dim(input)
     if dim <= batch_dim:
         raise ValueError("unflatten at or before the batch dimension is not supported for NestedTensor.")
-    return torch.ops.aten.unflatten.int(input, dim, sizes)
+    from .aten_functions import unflatten as _aten_unflatten
+
+    return _aten_unflatten(torch.ops.aten.unflatten.int, (input, dim, sizes), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.unsqueeze)
@@ -3405,7 +3424,9 @@ def unsqueeze(input: NestedTensor, dim: int):
     batch_dim = _get_batch_dim(input)
     if dim <= batch_dim:
         raise ValueError("Cannot unsqueeze at or before the batch dimension for NestedTensor.")
-    return torch.ops.aten.unsqueeze.default(input, dim)
+    from .aten_functions import unsqueeze as _aten_unsqueeze
+
+    return _aten_unsqueeze(torch.ops.aten.unsqueeze.default, (input, dim), {})
 
 
 # Softmax

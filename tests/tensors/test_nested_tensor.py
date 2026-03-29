@@ -529,6 +529,15 @@ class TestCopySemantics:
         assert_close(restored.tensor, nt.tensor)
         assert_close(restored.mask, nt.mask)
 
+    def test_pickle_roundtrip_preserves_noncanonical_permutation(self):
+        nt = NestedTensor([torch.arange(6.0).reshape(2, 3)]).unsqueeze(1)
+
+        restored = pickle.loads(pickle.dumps(nt))
+
+        assert restored._permutation == nt._permutation
+        assert restored._has_same_structure(nt)
+        assert_close(restored.tensor, nt.tensor)
+
     def test_getstate_serializes_physical_shape(self):
         nt = NestedTensor([torch.tensor([1.0, 2.0, 3.0]), torch.tensor([4.0, 5.0])])
         state = nt.__getstate__()
@@ -541,6 +550,16 @@ class TestCopySemantics:
         state = nt.__getstate__()
         state["_state_version"] = state["_state_version"] + 1
         with pytest.raises(ValueError, match="Unsupported NestedTensor state version"):
+            restored = copy.copy(nt)
+            restored.__setstate__(state)
+
+    @pytest.mark.parametrize("missing_key", ["_permutation", "_packed_sizes", "_element_shapes"])
+    def test_setstate_rejects_missing_layout_metadata(self, missing_key):
+        nt = NestedTensor([torch.arange(6.0).reshape(2, 3)]).unsqueeze(1)
+        state = dict(nt.__getstate__())
+        del state[missing_key]
+
+        with pytest.raises(KeyError, match=missing_key):
             restored = copy.copy(nt)
             restored.__setstate__(state)
 
@@ -1019,6 +1038,19 @@ class TestPackOptimization:
 
         assert not nt._has_same_layout(mismatched)
         assert nt._has_same_layout(nt.clone())
+
+    def test_repack_preserves_permutation(self):
+        original = NestedTensor([torch.arange(6.0).reshape(2, 3)]).unsqueeze(1)
+        rebuilt = NestedTensor([torch.arange(6.0).reshape(2, 3)]).unsqueeze(1)
+        original_permutation = original._permutation
+        original_values_shape = original._values.shape
+
+        original._storage = original._storage
+
+        assert original._permutation == original_permutation
+        assert original._values.shape == original_values_shape
+        assert original._has_same_structure(rebuilt)
+        assert_close(original.tensor, rebuilt.tensor)
 
     def test_structure_match_allows_different_static_suffix(self):
         lhs = NestedTensor(torch.randn(2, 1, 3), torch.randn(1, 1, 3))

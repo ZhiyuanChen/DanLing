@@ -2462,11 +2462,21 @@ def flatten(func, args, kwargs):
     )
     physical_dims = list(source._max_physical_dims())
     physical_dims[start_adj : end_adj + 1] = [math.prod(physical_dims[start_adj : end_adj + 1])]
+    out_packed_sizes = None
+    out_element_shapes = None
+    if source._element_shapes is not None:
+        out_element_shapes = tuple(
+            shape[:start_adj] + (math.prod(shape[start_adj : end_adj + 1]),) + shape[end_adj + 1 :]
+            for shape in source._element_shapes
+        )
+        out_packed_sizes = source._packed_sizes_like(out_element_shapes)
     return _packed_with_shape(
         source,
         out_values,
         out_shape,
         source._logical_shape_from_physical_dims(physical_dims),
+        packed_sizes=out_packed_sizes,
+        element_shapes=out_element_shapes,
     )
 
 
@@ -2505,7 +2515,19 @@ def permute(func, args, kwargs):
     out_logical = source._logical_shape_from_physical_dims(
         tuple(source._max_physical_dims()[dim] for dim in tensor_dims)
     )
-    return _packed_with_shape(source, out_values, out_shape, out_logical)
+    out_packed_sizes = None
+    out_element_shapes = None
+    if source._element_shapes is not None:
+        out_element_shapes = tuple(tuple(shape[dim] for dim in tensor_dims) for shape in source._element_shapes)
+        out_packed_sizes = source._packed_sizes_like(out_element_shapes)
+    return _packed_with_shape(
+        source,
+        out_values,
+        out_shape,
+        out_logical,
+        packed_sizes=out_packed_sizes,
+        element_shapes=out_element_shapes,
+    )
 
 
 @NestedTensorAtenRegistry.implement(aten.squeeze.default)
@@ -2536,11 +2558,22 @@ def squeeze_default(func, args, kwargs):
 
     out_shape = source._physical_shape[:, ~squeeze_mask]
     physical_dims = [size for index, size in enumerate(source._max_physical_dims()) if not bool(squeeze_mask[index])]
+    out_packed_sizes = None
+    out_element_shapes = None
+    if source._element_shapes is not None:
+        squeeze_mask_list = tuple(bool(value) for value in squeeze_mask.tolist())
+        out_element_shapes = tuple(
+            tuple(size for index, size in enumerate(shape) if not squeeze_mask_list[index])
+            for shape in source._element_shapes
+        )
+        out_packed_sizes = source._packed_sizes_like(out_element_shapes)
     return _packed_with_shape(
         source,
         out_values,
         out_shape,
         source._logical_shape_from_physical_dims(physical_dims),
+        packed_sizes=out_packed_sizes,
+        element_shapes=out_element_shapes,
     )
 
 
@@ -2568,11 +2601,18 @@ def squeeze_dim(func, args, kwargs):
     )
     physical_dims = list(source._max_physical_dims())
     del physical_dims[dim_adj]
+    out_packed_sizes = None
+    out_element_shapes = None
+    if source._element_shapes is not None:
+        out_element_shapes = tuple(shape[:dim_adj] + shape[dim_adj + 1 :] for shape in source._element_shapes)
+        out_packed_sizes = source._packed_sizes_like(out_element_shapes)
     return _packed_with_shape(
         source,
         out_values,
         out_shape,
         source._logical_shape_from_physical_dims(physical_dims),
+        packed_sizes=out_packed_sizes,
+        element_shapes=out_element_shapes,
     )
 
 
@@ -2615,11 +2655,23 @@ def transpose(func, args, kwargs):
     out_shape[:, [dim0_adj, dim1_adj]] = out_shape[:, [dim1_adj, dim0_adj]]
     physical_dims = list(source._max_physical_dims())
     physical_dims[dim0_adj], physical_dims[dim1_adj] = physical_dims[dim1_adj], physical_dims[dim0_adj]
+    out_packed_sizes = None
+    out_element_shapes = None
+    if source._element_shapes is not None:
+        transposed_shapes = []
+        for shape in source._element_shapes:
+            shape_list = list(shape)
+            shape_list[dim0_adj], shape_list[dim1_adj] = shape_list[dim1_adj], shape_list[dim0_adj]
+            transposed_shapes.append(tuple(shape_list))
+        out_element_shapes = tuple(transposed_shapes)
+        out_packed_sizes = source._packed_sizes_like(out_element_shapes)
     return _packed_with_shape(
         source,
         out_values,
         out_shape,
         source._logical_shape_from_physical_dims(physical_dims),
+        packed_sizes=out_packed_sizes,
+        element_shapes=out_element_shapes,
     )
 
 
@@ -2649,11 +2701,21 @@ def unflatten(func, args, kwargs):
     )
     physical_dims = list(source._max_physical_dims())
     physical_dims[dim_adj : dim_adj + 1] = [int(size) for size in resolved_sizes]
+    out_packed_sizes = None
+    out_element_shapes = None
+    if source._element_shapes is not None:
+        inserted_sizes = tuple(int(size) for size in resolved_sizes)
+        out_element_shapes = tuple(
+            shape[:dim_adj] + inserted_sizes + shape[dim_adj + 1 :] for shape in source._element_shapes
+        )
+        out_packed_sizes = source._packed_sizes_like(out_element_shapes)
     return _packed_with_shape(
         source,
         out_values,
         out_shape,
         source._logical_shape_from_physical_dims(physical_dims),
+        packed_sizes=out_packed_sizes,
+        element_shapes=out_element_shapes,
     )
 
 
@@ -2703,9 +2765,9 @@ def unsqueeze(func, args, kwargs):
     )
 
 
-@NestedTensorAtenRegistry.implement(aten.view.default)
-@NestedTensorAtenRegistry.implement(aten.view_copy.default)
-@NestedTensorAtenRegistry.implement(aten.reshape.default)
+@NestedTensorAtenRegistry.implement(aten.view.default, compile_safe=True)
+@NestedTensorAtenRegistry.implement(aten.view_copy.default, compile_safe=True)
+@NestedTensorAtenRegistry.implement(aten.reshape.default, compile_safe=True)
 def view_like(func, args, kwargs):
     r"""Apply view-like reshapes with packed fastpath when output tails are uniform."""
     source = args[0]
@@ -3164,14 +3226,34 @@ def rot90(func, args, kwargs):
     dim_count = source.dim()
     dims_norm = tuple(_normalize_dim(d, dim_count) for d in dims)
     dims_adj = tuple(_translate_dim(source, d) for d in dims_norm)
+    k_mod = int(k) % 4
 
     if source._values.dim() > 1 and all(dim > 0 for dim in dims_adj):
         out_values = func(source._values, k, list(dims_adj), **kwargs)
+        if k_mod % 2 == 0:
+            return _packed_like(source, out_values)
         out_shape = source._physical_shape.clone()
         out_shape[:, [dims_adj[0], dims_adj[1]]] = out_shape[:, [dims_adj[1], dims_adj[0]]]
         out_logical = list(source._logical_shape)
         out_logical[dims_norm[0]], out_logical[dims_norm[1]] = out_logical[dims_norm[1]], out_logical[dims_norm[0]]
-        return _packed_with_shape(source, out_values, out_shape, out_logical)
+        out_packed_sizes = None
+        out_element_shapes = None
+        if source._element_shapes is not None:
+            rotated_shapes = []
+            for shape in source._element_shapes:
+                shape_list = list(shape)
+                shape_list[dims_adj[0]], shape_list[dims_adj[1]] = shape_list[dims_adj[1]], shape_list[dims_adj[0]]
+                rotated_shapes.append(tuple(shape_list))
+            out_element_shapes = tuple(rotated_shapes)
+            out_packed_sizes = source._packed_sizes_like(out_element_shapes)
+        return _packed_with_shape(
+            source,
+            out_values,
+            out_shape,
+            out_logical,
+            packed_sizes=out_packed_sizes,
+            element_shapes=out_element_shapes,
+        )
 
     if _is_compiling():
         _compile_unsupported("aten.rot90.default", "only non-ragged rotation planes are compile-safe")
