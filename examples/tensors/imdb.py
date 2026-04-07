@@ -17,10 +17,12 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 """
-Train a Transformer classifier on IMDB — NestedTensor vs Padded side-by-side.
+Train a BERT-large-shaped Transformer classifier on IMDB.
+
+NestedTensor vs Padded side-by-side.
 
 - Uses real IMDB from HuggingFace `datasets`.
-- Uses `torch.nn.TransformerEncoder`.
+- Uses `torch.nn.TransformerEncoder` with standard BERT-large dimensions.
 - Uses `PNTensor + register_pn_tensor_collate`.
 
 Two identical models train side-by-side on IMDB.
@@ -40,21 +42,32 @@ from danling.tensors import NestedTensor, PNTensor, register_pn_tensor_collate
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DTYPE = torch.bfloat16 if DEVICE.type == "cuda" else torch.float32
 
-TOTAL_EPOCHS = 1
+MODEL_NAME = "bert-large-uncased"
+TOTAL_EPOCHS = 2
 BATCH_SIZE = 32
 TRAIN_SPLIT = "train"
 VAL_SPLIT = "test"
+VOCAB_SIZE = 30522
 MAX_LEN = 8192
 D_MODEL = 1024
 NHEAD = 16
-NUM_LAYERS = 4
+NUM_LAYERS = 24
 
 
 class TransformerClassifier(nn.Module):
-    def __init__(self, vocab_size=30522, d_model=256, nhead=8, num_layers=1, num_classes=2, max_len=8192):
+    def __init__(
+        self,
+        vocab_size=VOCAB_SIZE,
+        d_model=D_MODEL,
+        nhead=NHEAD,
+        num_layers=NUM_LAYERS,
+        num_classes=2,
+        max_len=MAX_LEN,
+    ):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.pos_embedding = nn.Embedding(max_len, d_model)
+        self.embedding_norm = nn.LayerNorm(d_model, eps=1e-12)
         # dropout=0 so NT dispatch and padded paths are deterministically comparable
         encoder_layer = nn.TransformerEncoderLayer(
             d_model,
@@ -62,6 +75,8 @@ class TransformerClassifier(nn.Module):
             dim_feedforward=d_model * 4,
             batch_first=True,
             dropout=0.0,
+            activation="gelu",
+            layer_norm_eps=1e-12,
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers, enable_nested_tensor=False)
         self.classifier = nn.Linear(d_model, num_classes)
@@ -73,6 +88,7 @@ class TransformerClassifier(nn.Module):
         seq_len = input_ids.shape[1]
         positions = torch.arange(seq_len, device=input_ids.device).unsqueeze(0)
         x = self.embedding(input_ids) * math.sqrt(self.d_model) + self.pos_embedding(positions)
+        x = self.embedding_norm(x)
         x = self.encoder(x, src_key_padding_mask=padding_mask)
         # Mean-pool over non-padding positions
         if is_nested:
@@ -87,7 +103,7 @@ class IMDBDataset(Dataset):
         from datasets import load_dataset
         from transformers import AutoTokenizer
 
-        self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", model_max_length=MAX_LEN)
+        self.tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, model_max_length=MAX_LEN)
         self.tokenizer.model_max_length = MAX_LEN
         self.dataset = load_dataset("stanfordnlp/imdb", split=split)
 
@@ -97,10 +113,12 @@ class IMDBDataset(Dataset):
     def __getitem__(self, idx):
         row = self.dataset[idx]
         ids = PNTensor(
-            self.tokenizer.encode(
+            self.tokenizer(
                 row["text"],
-                add_special_tokens=False,
-            )
+                add_special_tokens=True,
+                truncation=True,
+                max_length=MAX_LEN,
+            )["input_ids"]
         ).to(torch.long)
         return {"input_ids": ids, "label": row["label"]}
 
@@ -135,7 +153,7 @@ def train():
     register_pn_tensor_collate()
 
     print(
-        f"Config: epochs={TOTAL_EPOCHS} batch_size={BATCH_SIZE} max_len={MAX_LEN} "
+        f"Config: model={MODEL_NAME} epochs={TOTAL_EPOCHS} batch_size={BATCH_SIZE} max_len={MAX_LEN} "
         f"d_model={D_MODEL} nhead={NHEAD} num_layers={NUM_LAYERS}"
     )
 
@@ -247,8 +265,6 @@ def train():
         print("\nPeak extra CUDA memory per training step:")
         print(f"  NestedTensor: {format_gib(peak_nt_memory)}")
         print(f"  Padded:       {format_gib(peak_pad_memory)}")
-
-    print("\nPASSED: Step 0 parity check succeeded; see epoch metrics for training drift.\n")
 
 
 if __name__ == "__main__":

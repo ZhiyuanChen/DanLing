@@ -283,50 +283,69 @@ NestedTensorAtenRegistry[aten.my_op.default] = _my_handler
 
 ## Benchmarks
 
-Benchmarked on a single NVIDIA H100 80GB GPU with PyTorch 2.10, bfloat16.
+Benchmarked on a single NVIDIA B200 180GB GPU with PyTorch 2.11, bfloat16.
 
 Run with: `python scripts/benchmark_nested_tensor.py`
 
+### IMDB Training
+
+Real workload benchmark from [`examples/tensors/imdb.py`](../../examples/tensors/imdb.py), using a BERT-large-shaped `torch.nn.TransformerEncoder` on IMDB with long variable-length sequences.
+
+Config: `bert-large-uncased`, 2 epochs, batch size `32`, max length `8192`, `d_model=1024`, `nhead=16`, `num_layers=24`
+
+| Metric                                                 | NestedTensor  | Padded        | Result         |
+| :----------------------------------------------------- | :------------ | :------------ | :------------- |
+| Training step compute (forward + backward, all epochs) | `154819.4 ms` | `306926.7 ms` | `1.98x faster` |
+| Peak extra CUDA memory per training step               | `12.68 GiB`   | `74.67 GiB`   | `83% lower`    |
+
+This run measured nearly 2x faster model compute and an 83% reduction in peak extra CUDA memory for the NestedTensor path.
+
+> **Note:** This benchmark compares native PyTorch `nn.TransformerEncoder` execution on NestedTensor vs padded input. The timing is model forward+backward compute, not full end-to-end wall clock including tokenization, data loading, or validation.
+
 ### Models
+
+Synthetic model benchmarks covering `TransformerEncoder`, `TransformerDecoder`, `Transformer`, and `ResNet-50` across varying occupancy levels on a single NVIDIA B200 180GB GPU.
 
 | Model              | Mode  | Occ. | Padded (eager) | Padded (compiled) | DanLing (eager) | DanLing (compiled) | DL vs Padded | DL vs Compiled |
 | :----------------- | :---- | :--- | :------------- | :---------------- | :-------------- | :----------------- | :----------- | :------------- |
-| TransformerEncoder | Infer | 20%  | 3.59 ms        | 44.01 ms          | 8.25 ms         | 11.48 ms           | 0.43x        | 5.33x          |
-| TransformerEncoder | Train | 20%  | 67.58 ms       | 57.92 ms          | 13.29 ms        | ERR ms             | 5.08x        | 4.36x          |
-| TransformerEncoder | Infer | 35%  | 5.12 ms        | 43.70 ms          | 8.40 ms         | 3.13 ms            | 0.61x        | 5.20x          |
-| TransformerEncoder | Train | 35%  | 67.38 ms       | 57.71 ms          | 17.27 ms        | ERR ms             | 3.90x        | 3.34x          |
-| TransformerEncoder | Infer | 77%  | 9.95 ms        | 42.75 ms          | 8.72 ms         | 7.78 ms            | 1.14x        | 4.90x          |
-| TransformerEncoder | Train | 77%  | 67.73 ms       | 58.04 ms          | 30.28 ms        | ERR ms             | 2.24x        | 1.92x          |
-| TransformerDecoder | Infer | 20%  | 61.00 ms       | 38.25 ms          | 14.93 ms        | 2.90 ms            | 4.09x        | 2.56x          |
-| TransformerDecoder | Train | 20%  | 120.40 ms      | 104.08 ms         | 23.01 ms        | ERR ms             | 5.23x        | 4.52x          |
-| TransformerDecoder | Infer | 35%  | 61.37 ms       | 38.29 ms          | 14.57 ms        | 4.91 ms            | 4.21x        | 2.63x          |
-| TransformerDecoder | Train | 35%  | 120.56 ms      | 104.20 ms         | 28.84 ms        | ERR ms             | 4.18x        | 3.61x          |
-| TransformerDecoder | Infer | 77%  | 60.55 ms       | 38.56 ms          | 14.91 ms        | 12.44 ms           | 4.06x        | 2.59x          |
-| TransformerDecoder | Train | 77%  | 121.02 ms      | 104.72 ms         | 49.87 ms        | ERR ms             | 2.43x        | 2.10x          |
-| Transformer        | Infer | 21%  | 57.28 ms       | 71.10 ms          | 23.87 ms        | 4.77 ms            | 2.40x        | 2.98x          |
-| Transformer        | Train | 21%  | 161.77 ms      | 137.56 ms         | 37.80 ms        | ERR ms             | 4.28x        | 3.64x          |
-| Transformer        | Infer | 40%  | 58.26 ms       | 70.96 ms          | 24.07 ms        | 8.47 ms            | 2.42x        | 2.95x          |
-| Transformer        | Train | 40%  | 161.93 ms      | 137.71 ms         | 47.95 ms        | ERR ms             | 3.38x        | 2.87x          |
-| Transformer        | Infer | 84%  | 62.11 ms       | 70.01 ms          | 24.19 ms        | 20.92 ms           | 2.57x        | 2.89x          |
-| Transformer        | Train | 84%  | 162.80 ms      | 139.16 ms         | 82.53 ms        | ERR ms             | 1.97x        | 1.69x          |
-| ResNet-50          | Infer | 41%  | 61.21 ms       | ERR ms            | 298.47 ms       | ERR ms             | 0.21x        | N/A            |
-| ResNet-50          | Train | 41%  | 256.04 ms      | ERR ms            | 241.48 ms       | ERR ms             | 1.06x        | N/A            |
-| ResNet-50          | Infer | 52%  | 61.25 ms       | ERR ms            | 336.67 ms       | ERR ms             | 0.18x        | N/A            |
-| ResNet-50          | Train | 52%  | 255.27 ms      | ERR ms            | 242.00 ms       | ERR ms             | 1.05x        | N/A            |
-| ResNet-50          | Infer | 81%  | 61.29 ms       | ERR ms            | 435.88 ms       | ERR ms             | 0.14x        | N/A            |
-| ResNet-50          | Train | 81%  | 255.17 ms      | ERR ms            | 245.97 ms       | ERR ms             | 1.04x        | N/A            |
+| TransformerEncoder | Infer | 20%  | 2.70 ms        | 39.98 ms          | 5.00 ms         | 1.10 ms            | 0.54x        | 7.99x          |
+| TransformerEncoder | Train | 20%  | 26.95 ms       | 19.39 ms          | 8.60 ms         | ERR ms             | 3.13x        | 2.25x          |
+| TransformerEncoder | Infer | 35%  | 3.68 ms        | 38.93 ms          | 5.20 ms         | 1.79 ms            | 0.71x        | 7.48x          |
+| TransformerEncoder | Train | 35%  | 27.05 ms       | 19.46 ms          | 11.55 ms        | ERR ms             | 2.34x        | 1.68x          |
+| TransformerEncoder | Infer | 77%  | 6.95 ms        | 36.39 ms          | 5.52 ms         | 4.45 ms            | 1.26x        | 6.59x          |
+| TransformerEncoder | Train | 77%  | 27.15 ms       | 19.71 ms          | 21.37 ms        | ERR ms             | 1.27x        | 0.92x          |
+| TransformerDecoder | Infer | 20%  | 47.38 ms       | 10.86 ms          | 9.27 ms         | 1.79 ms            | 5.11x        | 1.17x          |
+| TransformerDecoder | Train | 20%  | 45.86 ms       | 33.16 ms          | 15.00 ms        | ERR ms             | 3.06x        | 2.21x          |
+| TransformerDecoder | Infer | 35%  | 46.33 ms       | 10.91 ms          | 9.19 ms         | 2.91 ms            | 5.04x        | 1.19x          |
+| TransformerDecoder | Train | 35%  | 45.98 ms       | 33.30 ms          | 19.67 ms        | ERR ms             | 2.34x        | 1.69x          |
+| TransformerDecoder | Infer | 77%  | 43.79 ms       | 11.02 ms          | 9.41 ms         | 7.47 ms            | 4.65x        | 1.17x          |
+| TransformerDecoder | Train | 77%  | 46.18 ms       | 33.50 ms          | 36.00 ms        | ERR ms             | 1.28x        | 0.93x          |
+| Transformer        | Infer | 21%  | 47.99 ms       | 48.51 ms          | 14.81 ms        | 2.93 ms            | 3.24x        | 3.27x          |
+| Transformer        | Train | 21%  | 68.79 ms       | 47.25 ms          | 24.53 ms        | ERR ms             | 2.80x        | 1.93x          |
+| Transformer        | Infer | 40%  | 47.54 ms       | 47.52 ms          | 14.26 ms        | 5.39 ms            | 3.34x        | 3.33x          |
+| Transformer        | Train | 40%  | 69.03 ms       | 47.49 ms          | 32.72 ms        | ERR ms             | 2.11x        | 1.45x          |
+| Transformer        | Infer | 84%  | 48.37 ms       | 45.12 ms          | 15.76 ms        | 12.51 ms           | 3.07x        | 2.86x          |
+| Transformer        | Train | 84%  | 69.52 ms       | 48.81 ms          | 59.88 ms        | ERR ms             | 1.16x        | 0.82x          |
+| ResNet-50          | Infer | 41%  | 42.42 ms       | ERR ms            | 219.49 ms       | ERR ms             | 0.19x        | N/A            |
+| ResNet-50          | Train | 41%  | 221.80 ms      | ERR ms            | 513.08 ms       | ERR ms             | 0.43x        | N/A            |
+| ResNet-50          | Infer | 52%  | 42.56 ms       | ERR ms            | 246.27 ms       | ERR ms             | 0.17x        | N/A            |
+| ResNet-50          | Train | 52%  | 221.37 ms      | ERR ms            | 551.29 ms       | ERR ms             | 0.40x        | N/A            |
+| ResNet-50          | Infer | 81%  | 42.60 ms       | ERR ms            | 318.03 ms       | ERR ms             | 0.13x        | N/A            |
+| ResNet-50          | Train | 81%  | 229.88 ms      | ERR ms            | 709.83 ms       | ERR ms             | 0.32x        | N/A            |
 
 > **Note:** ResNet-50 uses per-element dispatch (each image processed individually through conv/pool/BN layers). Inference is slower than padded due to per-element repacking overhead. BatchNorm statistics are computed correctly across all elements via concatenated storage.
 
 ### Operators
 
+Synthetic operator benchmarks covering common transformer-hot ops and tensor primitives across padded tensors, DanLing `NestedTensor`, and `torch.nested`.
+
 | Operator     | Occ. | Padded (eager) | Padded (compiled) | DanLing (eager) | DanLing (compiled) | torch.nested (eager) | torch.nested (compiled) | DL vs Padded | DL vs torch.nested |
 | :----------- | :--- | :------------- | :---------------- | :-------------- | :----------------- | :------------------- | :---------------------- | :----------- | :----------------- |
-| F.linear     | 35%  | 0.10 ms        | 0.10 ms           | 0.22 ms         | 0.27 ms            | 0.20 ms              | 0.61 ms                 | 0.37x        | 2.23x              |
-| F.layer_norm | 35%  | 0.17 ms        | 0.10 ms           | 0.17 ms         | 0.26 ms            | 0.32 ms              | 0.58 ms                 | 0.37x        | 2.26x              |
-| F.relu       | 35%  | 0.09 ms        | 0.09 ms           | 0.14 ms         | 0.25 ms            | 0.16 ms              | 0.57 ms                 | 0.37x        | 2.25x              |
-| F.gelu       | 35%  | 0.10 ms        | 0.10 ms           | 0.14 ms         | 0.25 ms            | 0.16 ms              | 0.57 ms                 | 0.42x        | 2.29x              |
-| F.softmax    | 35%  | 0.12 ms        | 0.09 ms           | 0.17 ms         | 0.25 ms            | 0.24 ms              | 0.56 ms                 | 0.38x        | 2.26x              |
-| F.embedding  | 35%  | 0.05 ms        | 0.05 ms           | 0.25 ms         | 0.26 ms            | 0.21 ms              | 0.57 ms                 | 0.20x        | 2.20x              |
-| torch.matmul | 35%  | 0.10 ms        | 0.10 ms           | 0.27 ms         | 0.27 ms            | 0.24 ms              | 0.60 ms                 | 0.37x        | 2.23x              |
-| torch.add    | 35%  | 0.09 ms        | 0.09 ms           | 0.19 ms         | 0.26 ms            | 0.17 ms              | 0.56 ms                 | 0.37x        | 2.20x              |
+| F.linear     | 35%  | 0.05 ms        | 0.05 ms           | 0.13 ms         | 0.17 ms            | 0.13 ms              | 0.39 ms                 | 0.27x        | 2.29x              |
+| F.layer_norm | 35%  | 0.17 ms        | 0.05 ms           | 0.10 ms         | 0.16 ms            | 0.20 ms              | 0.38 ms                 | 0.28x        | 2.36x              |
+| F.relu       | 35%  | 0.05 ms        | 0.05 ms           | 0.09 ms         | 0.16 ms            | 0.10 ms              | 0.37 ms                 | 0.29x        | 2.38x              |
+| F.gelu       | 35%  | 0.08 ms        | 0.08 ms           | 0.08 ms         | 0.16 ms            | 0.10 ms              | 0.36 ms                 | 0.51x        | 2.33x              |
+| F.softmax    | 35%  | 0.12 ms        | 0.06 ms           | 0.11 ms         | 0.16 ms            | 0.15 ms              | 0.37 ms                 | 0.36x        | 2.31x              |
+| F.embedding  | 35%  | 0.04 ms        | 0.04 ms           | 0.15 ms         | 0.16 ms            | 0.14 ms              | 0.36 ms                 | 0.25x        | 2.27x              |
+| torch.matmul | 35%  | 0.04 ms        | 0.05 ms           | 0.17 ms         | 0.17 ms            | 0.15 ms              | 0.39 ms                 | 0.28x        | 2.31x              |
+| torch.add    | 35%  | 0.05 ms        | 0.05 ms           | 0.12 ms         | 0.15 ms            | 0.11 ms              | 0.36 ms                 | 0.29x        | 2.36x              |
