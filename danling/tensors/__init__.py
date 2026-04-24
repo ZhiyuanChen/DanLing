@@ -74,3 +74,8 @@ def unregister_pn_tensor_collate(collate_fn_map: dict[type | tuple[type, ...], C
     r"""Remove PNTensor collation from a collate map (default: PyTorch global map)."""
     target = default_collate_fn_map if collate_fn_map is None else collate_fn_map
     target.pop(PNTensor, None)
+
+
+# PNTensor is DanLing's marker type, so make DataLoader integration work on import
+# while preserving any registration a user installed before importing this module.
+default_collate_fn_map.setdefault(PNTensor, collate_pn_tensor_fn)

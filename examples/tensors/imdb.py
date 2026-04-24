@@ -23,7 +23,7 @@ NestedTensor vs Padded side-by-side.
 
 - Uses real IMDB from HuggingFace `datasets`.
 - Uses `torch.nn.TransformerEncoder` with standard BERT-large dimensions.
-- Uses `PNTensor + register_pn_tensor_collate`.
+- Uses `PNTensor` default DataLoader collation.
 
 Two identical models train side-by-side on IMDB.
 """
@@ -37,7 +37,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-from danling.tensors import NestedTensor, PNTensor, register_pn_tensor_collate
+from danling.tensors import NestedTensor, PNTensor
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DTYPE = torch.bfloat16 if DEVICE.type == "cuda" else torch.float32
@@ -150,8 +150,6 @@ def format_gib(num_bytes):
 
 
 def train():
-    register_pn_tensor_collate()
-
     print(
         f"Config: model={MODEL_NAME} epochs={TOTAL_EPOCHS} batch_size={BATCH_SIZE} max_len={MAX_LEN} "
         f"d_model={D_MODEL} nhead={NHEAD} num_layers={NUM_LAYERS}"

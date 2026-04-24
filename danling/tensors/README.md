@@ -172,13 +172,10 @@ class VariableLengthDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        # Return a PNTensor; DataLoader can collate it into NestedTensor
-        # after explicit registration.
+        # Return a PNTensor; DataLoader collates it into NestedTensor.
         return PNTensor(self.data[idx])
 
 # Example usage
-from danling.tensors import register_pn_tensor_collate
-register_pn_tensor_collate()
 dataset = VariableLengthDataset([
     [1, 2, 3],
     [4, 5],

@@ -20,7 +20,7 @@
 r"""
 [PNTensor][] (Potential Nested Tensor) — a [torch.Tensor][] subclass
 that collates into [NestedTensor][nested_tensor.NestedTensor] via PyTorch
-DataLoader when registered with [register_pn_tensor_collate][].
+DataLoader after importing [danling.tensors][].
 """
 
 # pylint: disable=protected-access
@@ -37,9 +37,9 @@ def tensor(data: Any, dtype=None, device=None, requires_grad: bool = False, pin_
     Create a PNTensor from data, similar to torch.tensor() but returning a PNTensor.
 
     This function is a convenient way to create PNTensor objects that can be
-    collated into NestedTensor when used with PyTorch DataLoader after calling
-    ``register_pn_tensor_collate()``. The interface mirrors torch.tensor() to
-    make it easy to switch between regular tensors and PNTensors.
+    collated into NestedTensor when used with PyTorch DataLoader after importing
+    ``danling.tensors``. The interface mirrors torch.tensor() to make it easy to
+    switch between regular tensors and PNTensors.
 
     Args:
         data: Initial data for the tensor. Can be a list, tuple, NumPy ndarray, scalar, etc.
@@ -84,8 +84,7 @@ class PNTensor(Tensor):
         Basic usage with PyTorch DataLoader:
 
         >>> from torch.utils.data import Dataset, DataLoader
-        >>> from danling.tensors import PNTensor, register_pn_tensor_collate
-        >>> register_pn_tensor_collate()
+        >>> from danling.tensors import PNTensor
         >>> class VariableLengthDataset(Dataset):
         ...     def __init__(self, data):
         ...         self.data = data
@@ -96,7 +95,7 @@ class PNTensor(Tensor):
         >>> # Create a dataset with variable-length sequences
         >>> dataset = VariableLengthDataset([[1, 2, 3], [4, 5], [6, 7, 8, 9]])
         >>> dataloader = DataLoader(dataset, batch_size=3)
-        >>> # The DataLoader produces NestedTensor batches after registration
+        >>> # The DataLoader produces NestedTensor batches by default for PNTensor
         >>> batch = next(iter(dataloader))
         >>> batch
         NestedTensor([
