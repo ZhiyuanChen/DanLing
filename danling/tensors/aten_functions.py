@@ -2618,7 +2618,7 @@ def squeeze_dim(func, args, kwargs):
 
 @NestedTensorAtenRegistry.implement(aten.transpose.int)
 def transpose(func, args, kwargs):
-    r"""Transpose two non-batch logical dims by swapping per-element dimensions."""
+    r"""Transpose two non-batch logical dims, using packed storage only for static-dim swaps."""
     source = args[0]
     dim0 = _normalize_dim(args[1], source.dim())
     dim1 = _normalize_dim(args[2], source.dim())
@@ -2644,24 +2644,27 @@ def transpose(func, args, kwargs):
             permutation=source._permutation,
         )
 
-    dim0_adj = _translate_dim(source, dim0)
-    dim1_adj = _translate_dim(source, dim1)
-    if dim0_adj == 0 or dim1_adj == 0:
-        # Same rationale as permute: preserve NestedTensor output without forcing
-        # a dynamo-disabled generic fallback.
-        return _apply_per_element_nested(source, lambda t: t.transpose(dim0_adj, dim1_adj))
-    out_values = func(source._values, dim0_adj, dim1_adj, **kwargs)
+    elem_dim0 = _translate_dim(source, dim0)
+    elem_dim1 = _translate_dim(source, dim1)
+    if elem_dim0 in source._varying_dims or elem_dim1 in source._varying_dims:
+        # Packed storage flattens ragged dimensions into the leading payload axis, so
+        # swaps that touch them must happen per element to preserve shape semantics.
+        return _apply_per_element_nested(source, lambda t: t.transpose(elem_dim0, elem_dim1))
+
+    packed_dim0 = 1 + source._static_dims.index(elem_dim0)
+    packed_dim1 = 1 + source._static_dims.index(elem_dim1)
+    out_values = func(source._values, packed_dim0, packed_dim1, **kwargs)
     out_shape = source._physical_shape.clone()
-    out_shape[:, [dim0_adj, dim1_adj]] = out_shape[:, [dim1_adj, dim0_adj]]
+    out_shape[:, [elem_dim0, elem_dim1]] = out_shape[:, [elem_dim1, elem_dim0]]
     physical_dims = list(source._max_physical_dims())
-    physical_dims[dim0_adj], physical_dims[dim1_adj] = physical_dims[dim1_adj], physical_dims[dim0_adj]
+    physical_dims[elem_dim0], physical_dims[elem_dim1] = physical_dims[elem_dim1], physical_dims[elem_dim0]
     out_packed_sizes = None
     out_element_shapes = None
     if source._element_shapes is not None:
         transposed_shapes = []
         for shape in source._element_shapes:
             shape_list = list(shape)
-            shape_list[dim0_adj], shape_list[dim1_adj] = shape_list[dim1_adj], shape_list[dim0_adj]
+            shape_list[elem_dim0], shape_list[elem_dim1] = shape_list[elem_dim1], shape_list[elem_dim0]
             transposed_shapes.append(tuple(shape_list))
         out_element_shapes = tuple(transposed_shapes)
         out_packed_sizes = source._packed_sizes_like(out_element_shapes)

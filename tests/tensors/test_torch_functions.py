@@ -547,6 +547,22 @@ class TestDimensionTransforms:
         reference = torch.unsqueeze(torch.squeeze(nt.tensor, dim=1), dim=2)
         assert_close(output, reference)
 
+    def test_transpose_swaps_last_two_element_dims(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(4, 5, 7, device=device, dtype=float_dtype),
+                torch.randn(4, 4, 6, device=device, dtype=float_dtype),
+            ]
+        )
+
+        output = nt.transpose(-1, -2)
+        alias = nt.mT
+        reference = NT([tensor.transpose(-1, -2) for tensor in nt], **nt._meta())
+
+        assert_close(output, reference)
+        assert_close(alias, reference)
+        assert output.shape == torch.Size([2, 4, 7, 5])
+
     def test_view_like_ops_preserve_autograd(self, device, float_dtype):
         nt = NT(
             [
