@@ -2587,13 +2587,20 @@ def squeeze_dim(func, args, kwargs):
         raise ValueError("Cannot squeeze the batch dimension or dimensions before it for NestedTensor.")
 
     dim_adj = _translate_dim(source, dim)
-    if dim_adj == 0:
-        # Squeezing ragged dim-0 is per-element but shape-structure preserving.
+    if source._element_shapes is not None:
+        can_squeeze = all(dim_adj < len(shape) and int(shape[dim_adj]) == 1 for shape in source._element_shapes)
+    else:
+        if _is_compiling():
+            _compile_unsupported("aten.squeeze.dim", "requires static element shape metadata")
+        can_squeeze = bool(source._physical_shape[:, dim_adj].eq(1).all())
+    if not can_squeeze:
+        return source
+    if dim_adj not in source._static_dims:
+        # Squeezing ragged dims is per-element because packed values collapse them.
         return _apply_per_element_nested(source, lambda t: t.squeeze(dim_adj))
 
-    out_values = func(source._values, dim_adj, **kwargs)
-    if source._values.size(dim_adj) != 1:
-        return _packed_like(source, out_values)
+    values_dim = 1 + source._static_dims.index(dim_adj)
+    out_values = func(source._values, values_dim, **kwargs)
 
     out_shape = torch.cat(
         (source._physical_shape[:, :dim_adj], source._physical_shape[:, dim_adj + 1 :]),
@@ -2601,6 +2608,7 @@ def squeeze_dim(func, args, kwargs):
     )
     physical_dims = list(source._max_physical_dims())
     del physical_dims[dim_adj]
+    permutation = tuple(dim if dim < dim_adj else dim - 1 for dim in source._permutation if dim != dim_adj)
     out_packed_sizes = None
     out_element_shapes = None
     if source._element_shapes is not None:
@@ -2611,6 +2619,7 @@ def squeeze_dim(func, args, kwargs):
         out_values,
         out_shape,
         source._logical_shape_from_physical_dims(physical_dims),
+        permutation=permutation,
         packed_sizes=out_packed_sizes,
         element_shapes=out_element_shapes,
     )

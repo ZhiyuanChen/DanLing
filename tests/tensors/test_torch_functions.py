@@ -547,6 +547,17 @@ class TestDimensionTransforms:
         reference = torch.unsqueeze(torch.squeeze(nt.tensor, dim=1), dim=2)
         assert_close(output, reference)
 
+    def test_squeeze_trailing_static_dim_after_ragged_dims(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(4, 4, 1, device=device, dtype=float_dtype),
+                torch.randn(2, 2, 1, device=device, dtype=float_dtype),
+            ]
+        )
+        output = torch.squeeze(nt, dim=-1)
+        reference = NT([torch.squeeze(t, dim=-1) for t in nt], **nt._meta())
+        assert_close(output, reference)
+
     def test_transpose_swaps_last_two_element_dims(self, device, float_dtype):
         nt = NT(
             [
