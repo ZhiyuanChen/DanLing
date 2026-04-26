@@ -18,6 +18,7 @@
 # See the LICENSE file for more details.
 
 import copy
+import io
 import pickle
 import random
 
@@ -528,6 +529,20 @@ class TestCopySemantics:
         # Accessors should work after deserialization (regression for missing _cached_storage)
         assert_close(restored.tensor, nt.tensor)
         assert_close(restored.mask, nt.mask)
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA map_location")
+    def test_torch_load_map_location_keeps_metadata_on_cpu(self):
+        nt = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+        buffer = io.BytesIO()
+        torch.save(nt, buffer)
+        buffer.seek(0)
+
+        restored = torch.load(buffer, map_location="cuda:0", weights_only=False)
+
+        assert restored.device.type == "cuda"
+        assert restored._offsets.device.type == "cpu"
+        assert restored._physical_shape.device.type == "cpu"
+        assert_close(restored.tensor.cpu(), nt.tensor)
 
     def test_pickle_roundtrip_preserves_noncanonical_permutation(self):
         nt = NestedTensor([torch.arange(6.0).reshape(2, 3)]).unsqueeze(1)

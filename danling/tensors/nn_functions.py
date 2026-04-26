@@ -47,6 +47,19 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
+from .functions.channel import channel_shuffle as _channel_shuffle_handler
+from .functions.channel import pixel_shuffle as _pixel_shuffle_handler
+from .functions.channel import pixel_unshuffle as _pixel_unshuffle_handler
+from .functions.conv1d import conv1d as _conv1d_handler
+from .functions.conv2d import conv2d as _conv2d_handler
+from .functions.conv_transpose1d import conv_transpose1d as _conv_transpose1d_handler
+from .functions.conv_transpose2d import conv_transpose2d as _conv_transpose2d_handler
+from .functions.pool1d import avg_pool1d as _avg_pool1d_handler
+from .functions.pool1d import max_pool1d as _max_pool1d_handler
+from .functions.pool2d import avg_pool2d as _avg_pool2d_handler
+from .functions.pool2d import max_pool2d as _max_pool2d_handler
+from .functions.pool3d import avg_pool3d as _avg_pool3d_handler
+from .functions.pool3d import max_pool3d as _max_pool3d_handler
 from .ops import (
     NestedTensorFuncRegistry,
     _batch_leading_valid_mask_from_sizes,
@@ -2396,26 +2409,15 @@ def pad(input, pad, mode="constant", value=None):
 
 
 NN_EAGER_ONLY_PER_ELEMENT_OPS = [
-    # Conv
-    F.conv1d,
-    F.conv2d,
-    F.conv3d,
-    F.conv_transpose1d,
-    F.conv_transpose2d,
-    F.conv_transpose3d,
-    # Pooling
-    F.avg_pool1d,
-    F.avg_pool2d,
-    F.avg_pool3d,
-    F.max_pool1d,
-    F.max_pool2d,
-    F.max_pool3d,
     F.adaptive_avg_pool1d,
     F.adaptive_avg_pool2d,
     F.adaptive_avg_pool3d,
     F.adaptive_max_pool1d,
     F.adaptive_max_pool2d,
     F.adaptive_max_pool3d,
+    # 3D tile paths lose to per-element on the large-volume workloads we target.
+    F.conv3d,
+    F.conv_transpose3d,
     F.lp_pool1d,
     F.lp_pool2d,
     F.lp_pool3d,
@@ -2423,10 +2425,6 @@ NN_EAGER_ONLY_PER_ELEMENT_OPS = [
     F.fold,
     F.interpolate,
     F.unfold,
-    # Pixel shuffle / channel
-    F.channel_shuffle,
-    F.pixel_shuffle,
-    F.pixel_unshuffle,
 ]
 
 
@@ -2534,6 +2532,7 @@ def _per_element_handler(input, *args, _fn=None, **kwargs):
     ``DisableTorchFunctionSubclass`` to avoid re-entering the NestedTensor
     dispatch machinery on each element.
     """
+    _check_execution_guard(_ExecutionGuardKind.STORAGE_MAP, "_per_element_handler")
     cls = type(input)
     if len(input) == 0:
         return cls([], **input._meta(include_dtype=True))
@@ -2579,16 +2578,31 @@ def _unpool_handler(input, indices, *args, _fn=None, **kwargs):
 # ---------------------------------------------------------------------------
 
 _NN_HANDLER_TABLE: list[tuple] = [
-    # _per_element_handler — conv, pool, spatial ops
+    # Convolution handlers - packed 1x1 path, spatial tile path, per-element fallback
+    (F.conv1d, _conv1d_handler, False),
+    (F.conv2d, _conv2d_handler, False),
+    (F.conv_transpose1d, _conv_transpose1d_handler, False),
+    (F.conv_transpose2d, _conv_transpose2d_handler, False),
+    # Pool/channel handlers - packed direct path, per-element fallback
+    (F.avg_pool1d, _avg_pool1d_handler, False),
+    (F.avg_pool2d, _avg_pool2d_handler, False),
+    (F.avg_pool3d, _avg_pool3d_handler, False),
+    (F.max_pool1d, _max_pool1d_handler, False),
+    (F.max_pool2d, _max_pool2d_handler, False),
+    (F.max_pool3d, _max_pool3d_handler, False),
+    (F.channel_shuffle, _channel_shuffle_handler, False),
+    (F.pixel_shuffle, _pixel_shuffle_handler, False),
+    (F.pixel_unshuffle, _pixel_unshuffle_handler, False),
+    # Remaining non-hot spatial ops stay on per-element execution.
     *((op, _per_element_handler, False) for op in NN_EAGER_ONLY_PER_ELEMENT_OPS),
     # _dropout_handler
     *((op, _dropout_handler, False) for op in NN_EAGER_ONLY_DROPOUT_OPS),
-    # _make_loss_handler — loss functions (2 or 3 tensor args)
+    # _make_loss_handler - loss functions (2 or 3 tensor args)
     *((op, _make_loss_handler(2), True) for op in NN_LOSS_OPS_2),
     *((op, _make_loss_handler(3), True) for op in NN_LOSS_OPS_3),
-    # _pool_indices_handler — pool ops returning (output, indices)
+    # _pool_indices_handler - pool ops returning (output, indices)
     *((op, _pool_indices_handler, False) for op in NN_POOL_WITH_INDICES_OPS),
-    # _unpool_handler — max-unpool ops
+    # _unpool_handler - max-unpool ops
     *((op, _unpool_handler, False) for op in NN_MAX_UNPOOL_OPS),
 ]
 
@@ -2604,6 +2618,19 @@ NN_TIER_A_PACKED_COMPILE_SAFE_OPS: tuple = (
 
 NN_TIER_B_EAGER_ONLY_OPS: tuple = (
     F.bilinear,
+    F.conv1d,
+    F.conv2d,
+    F.conv_transpose1d,
+    F.conv_transpose2d,
+    F.avg_pool1d,
+    F.avg_pool2d,
+    F.avg_pool3d,
+    F.max_pool1d,
+    F.max_pool2d,
+    F.max_pool3d,
+    F.channel_shuffle,
+    F.pixel_shuffle,
+    F.pixel_unshuffle,
     *NN_EAGER_ONLY_PER_ELEMENT_OPS,
     *NN_EAGER_ONLY_DROPOUT_OPS,
     *NN_POOL_WITH_INDICES_OPS,

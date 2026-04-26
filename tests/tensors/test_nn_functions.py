@@ -535,6 +535,20 @@ class TestConcatTensors:
 
 class TestConv:
 
+    @staticmethod
+    def _tolerances(device, dtype):
+        if dtype == torch.float64:
+            return 1e-8, 1e-8
+        if device.type != "cuda":
+            return 1e-5, 1e-5
+        return low_precision_cuda_tolerances(
+            device,
+            dtype,
+            default=(5e-3, 5e-3),
+            fp16=(5e-3, 5e-3),
+            bf16=(1e-1, 1e-1),
+        )
+
     @pytest.mark.parametrize("shape", [[(5, 8), (7, 8)]])
     @pytest.mark.parametrize("kernel_size", [1, 2])
     @pytest.mark.parametrize("stride", [1, 2])
@@ -548,7 +562,8 @@ class TestConv:
         input = base.transpose(-1, -2)
         output = F.conv1d(input, weight, bias, stride, padding, dilation, groups)
         reference = NT([F.conv1d(t, weight, bias, stride, padding, dilation, groups) for t in input], **input._meta())
-        assert_close(output, reference, atol=1e-5, rtol=1e-5)
+        atol, rtol = self._tolerances(device, float_dtype)
+        assert_close(output, reference, atol=atol, rtol=rtol)
 
     def test_conv1d_batch_first_false(self, device, float_dtype):
         input = NT(
@@ -562,7 +577,8 @@ class TestConv:
         bias = torch.randn(4, device=device, dtype=float_dtype)
         output = F.conv1d(input, weight, bias, stride=1, padding=1)
         reference = NT([F.conv1d(t, weight, bias, stride=1, padding=1) for t in input], **input._meta())
-        assert_close(output, reference, atol=1e-5, rtol=1e-5)
+        atol, rtol = self._tolerances(device, float_dtype)
+        assert_close(output, reference, atol=atol, rtol=rtol)
 
     def test_conv1d_ragged_nonzero_padding_value(self, device, float_dtype):
         input = NT(
@@ -576,7 +592,8 @@ class TestConv:
         bias = torch.randn(4, device=device, dtype=float_dtype)
         output = F.conv1d(input, weight, bias, stride=1, padding=1)
         reference = NT([F.conv1d(t, weight, bias, stride=1, padding=1) for t in input], **input._meta())
-        assert_close(output, reference, atol=1e-5, rtol=1e-5)
+        atol, rtol = self._tolerances(device, float_dtype)
+        assert_close(output, reference, atol=atol, rtol=rtol)
 
     @pytest.mark.parametrize("shape", [[(5, 7, 8), (11, 13, 8)]])
     @pytest.mark.parametrize("kernel_size", [1, 2])
@@ -591,7 +608,8 @@ class TestConv:
         input = base.transpose(1, -1)
         output = F.conv2d(input, weight, bias, stride, padding, dilation, groups)
         reference = NT([F.conv2d(t, weight, bias, stride, padding, dilation, groups) for t in input], **input._meta())
-        assert_close(output, reference, atol=1e-5, rtol=1e-5)
+        atol, rtol = self._tolerances(device, float_dtype)
+        assert_close(output, reference, atol=atol, rtol=rtol)
 
     @pytest.mark.parametrize("shape", [[(5, 7, 9, 8), (11, 13, 15, 8)]])
     @pytest.mark.parametrize("kernel_size", [1, 2])
@@ -608,10 +626,25 @@ class TestConv:
         input = base.permute(0, 4, 1, 2, 3)
         output = F.conv3d(input, weight, bias, stride, padding, dilation, groups)
         reference = NT([F.conv3d(t, weight, bias, stride, padding, dilation, groups) for t in input], **input._meta())
-        assert_close(output, reference, atol=1e-5, rtol=1e-5)
+        atol, rtol = self._tolerances(device, float_dtype)
+        assert_close(output, reference, atol=atol, rtol=rtol)
 
 
 class TestConvTranspose:
+
+    @staticmethod
+    def _tolerances(device, dtype):
+        if dtype == torch.float64:
+            return 1e-8, 1e-8
+        if device.type != "cuda":
+            return 1e-5, 1e-5
+        return low_precision_cuda_tolerances(
+            device,
+            dtype,
+            default=(5e-3, 5e-3),
+            fp16=(5e-3, 5e-3),
+            bf16=(1e-1, 1e-1),
+        )
 
     @pytest.mark.parametrize("shape", [[(5, 8), (7, 8)]])
     @pytest.mark.parametrize("kernel_size", [1, 2])
@@ -634,7 +667,8 @@ class TestConvTranspose:
             [F.conv_transpose1d(t, weight, bias, stride, padding, output_padding, groups, dilation) for t in input],
             **input._meta(),
         )
-        assert_close(output, reference, atol=1e-5, rtol=1e-5)
+        atol, rtol = self._tolerances(device, float_dtype)
+        assert_close(output, reference, atol=atol, rtol=rtol)
 
     @pytest.mark.parametrize("shape", [[(5, 7, 8), (11, 13, 8)]])
     @pytest.mark.parametrize("kernel_size", [1, 2])
@@ -657,7 +691,8 @@ class TestConvTranspose:
             [F.conv_transpose2d(t, weight, bias, stride, padding, output_padding, groups, dilation) for t in input],
             **input._meta(),
         )
-        assert_close(output, reference, atol=1e-5, rtol=1e-5)
+        atol, rtol = self._tolerances(device, float_dtype)
+        assert_close(output, reference, atol=atol, rtol=rtol)
 
     @pytest.mark.parametrize("shape", [[(5, 7, 9, 8), (11, 13, 15, 8)]])
     @pytest.mark.parametrize("kernel_size", [1, 2])
@@ -682,7 +717,8 @@ class TestConvTranspose:
             [F.conv_transpose3d(t, weight, bias, stride, padding, output_padding, groups, dilation) for t in input],
             **input._meta(),
         )
-        assert_close(output, reference, atol=1e-5, rtol=1e-5)
+        atol, rtol = self._tolerances(device, float_dtype)
+        assert_close(output, reference, atol=atol, rtol=rtol)
 
 
 class TestDropout:
@@ -1176,12 +1212,13 @@ class TestModuleIntegration:
         output = layer(input)
         reference_storage = [reference_layer(t.unsqueeze(0)).squeeze(0) for t in input]
         reference = NT(reference_storage, **input._meta())
-        assert_close(output, reference, atol=1e-5, rtol=1e-5)
+        atol, rtol = TestConv._tolerances(device, float_dtype)
+        assert_close(output, reference, atol=atol, rtol=rtol)
 
         output.sum().backward()
         sum(part.sum() for part in reference_storage).backward()
-        assert_close(layer.weight.grad, reference_layer.weight.grad, atol=1e-5, rtol=1e-2)
-        assert_close(layer.bias.grad, reference_layer.bias.grad, atol=1e-5, rtol=1e-2)
+        assert_close(layer.weight.grad, reference_layer.weight.grad, atol=atol, rtol=max(rtol, 1e-2))
+        assert_close(layer.bias.grad, reference_layer.bias.grad, atol=atol, rtol=max(rtol, 1e-2))
 
     def test_linear_module(self, device, float_dtype):
         input = nested_rand([(3, 5), (2, 5)], device, float_dtype)

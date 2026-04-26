@@ -2512,16 +2512,16 @@ class NestedTensor(torch.Tensor):
     def __setstate__(self, state: Mapping) -> None:
         type(self)._validate_serialized_state(state)
         self._values = state["_values"]
-        self._offsets = state["_offsets"]
+        self._offsets = state["_offsets"].cpu()
         self._permutation = tuple(int(dim) for dim in state["_permutation"])
-        self._physical_shape = state["_physical_shape"]
+        self._physical_shape = state["_physical_shape"].cpu()
         self._logical_shape = state["_logical_shape"]
         self._set_runtime_config(
             batch_first=state["batch_first"],
             padding_value=state["padding_value"],
             mask_value=state["mask_value"],
         )
-        self._pin_memory = state["_pin_memory"]
+        self._pin_memory = bool(state["_pin_memory"] and self._values.device.type == "cpu" and self._values.is_pinned())
         self._packed_sizes = state["_packed_sizes"]
         self._element_shapes = state["_element_shapes"]
         # Serialized state intentionally excludes transient caches.
@@ -2536,8 +2536,8 @@ class NestedTensor(torch.Tensor):
         cls._validate_serialized_state(state)
         return cls._from_packed(
             state["_values"],
-            state["_offsets"],
-            state["_physical_shape"],
+            state["_offsets"].cpu(),
+            state["_physical_shape"].cpu(),
             permutation=tuple(int(dim) for dim in state["_permutation"]),
             batch_first=state["batch_first"],
             padding_value=state["padding_value"],
