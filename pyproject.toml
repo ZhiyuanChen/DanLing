@@ -92,6 +92,10 @@ messages_control.disable = """
 """
 reports.output-format = "colorized"
 
+# fail_under = 80
+[tool.mypy]
+ignore_missing_imports = true
+
 [tool.pytest]
 norecursedirs = [ "examples/*" ]
 addopts = [ "--doctest-modules", "--cov" ]
@@ -103,8 +107,3 @@ paths.source = [ "danling" ]
 report.show_missing = true
 json.output = "coverage.json"
 xml.output = "coverage.xml"
-
-# fail_under = 80
-
-[tool.mypy]
-ignore_missing_imports = true
