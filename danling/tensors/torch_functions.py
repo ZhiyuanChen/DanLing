@@ -21,17 +21,18 @@ r"""
 
 This module is the **Level 2** dispatch layer.  When a ``torch.*`` call
 (e.g. ``torch.cat``, ``torch.mean``, ``torch.einsum``) involves a
-[NestedTensor][], ``__torch_function__`` checks
-[NestedTensorFuncRegistry][] for a registered handler.
+[NestedTensor][danling.tensors.NestedTensor], ``__torch_function__`` checks
+[NestedTensorFuncRegistry][danling.tensors.NestedTensorFuncRegistry] for a
+registered handler.
 
 Handlers here use several strategies depending on the op's needs:
 
 * **Packed fast-path** — ops that work directly on the concatenated
-  ``_values`` tensor (via [_from_packed][nested_tensor.NestedTensor._from_packed]) without
-  knowing element boundaries.
+  ``_values`` tensor via ``NestedTensor._from_packed`` without knowing element
+  boundaries.
 * **Per-element dispatch** — ops that must be applied to each element
-  individually (via [_map_storage_serial][ops._map_storage_serial]), e.g. when dimension
-  indices need translation or output shapes differ per element.
+  individually via ``_map_storage_serial``, e.g. when dimension indices need
+  translation or output shapes differ per element.
 
 If no handler is registered here, the call falls through to aten
 decomposition and then to ``__torch_dispatch__`` (see ``aten_functions``).

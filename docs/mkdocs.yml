@@ -21,7 +21,6 @@ nav:
       - NestedTensor: tensors/nested_tensor.md
       - PNTensor: tensors/pn_tensor.md
       - Functions: tensors/functions.md
-      - Utils: tensors/utils.md
   - Optim:
       - LRScheduler: optim/lr_scheduler.md
   - Metrics:
