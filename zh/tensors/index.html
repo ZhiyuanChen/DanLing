@@ -1357,8 +1357,18 @@ The core feature is the <a class="autorefs autorefs-internal" title="&lt;code cl
 <li><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;NestedTensor&lt;/span&gt;" href="nested_tensor/#danling.tensors.nested_tensor.NestedTensor"><code>NestedTensor</code></a>: Main class for handling variable-length tensors in a batch.</li>
 <li><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;PNTensor&lt;/span&gt;" href="pn_tensor/#danling.tensors.pn_tensor.PNTensor"><code>PNTensor</code></a>: A tensor wrapper that can be converted to NestedTensor by PyTorch DataLoader.</li>
 <li><code>tensor()</code>: Function to create a <a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;PNTensor&lt;/span&gt;" href="pn_tensor/#danling.tensors.pn_tensor.PNTensor"><code>PNTensor</code></a> object (similar to <code>torch.tensor()</code>).</li>
-<li>[<code>NestedTensorFuncRegistry</code>][danling.tensors.NestedTensorFuncRegistry]: Registry for <code>torch.*</code> and <code>F.*</code> dispatch handlers.</li>
-<li>[<code>NestedTensorAtenRegistry</code>][danling.tensors.NestedTensorAtenRegistry]: Registry for <code>aten</code> dispatch handlers.</li>
+<li><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-attribute&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-attribute-name&quot;&gt;NestedTensorFuncRegistry&lt;/span&gt;
+
+
+  &lt;span class=&quot;doc doc-labels&quot;&gt;
+      &lt;small class=&quot;doc doc-label doc-label-module-attribute&quot;&gt;&lt;code&gt;module-attribute&lt;/code&gt;&lt;/small&gt;
+  &lt;/span&gt;" href="functions/#danling.tensors.ops.NestedTensorFuncRegistry"><code>NestedTensorFuncRegistry</code></a>: Registry for <code>torch.*</code> and <code>F.*</code> dispatch handlers.</li>
+<li><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-attribute&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-attribute-name&quot;&gt;NestedTensorAtenRegistry&lt;/span&gt;
+
+
+  &lt;span class=&quot;doc doc-labels&quot;&gt;
+      &lt;small class=&quot;doc doc-label doc-label-module-attribute&quot;&gt;&lt;code&gt;module-attribute&lt;/code&gt;&lt;/small&gt;
+  &lt;/span&gt;" href="functions/#danling.tensors.ops.NestedTensorAtenRegistry"><code>NestedTensorAtenRegistry</code></a>: Registry for <code>aten</code> dispatch handlers.</li>
 </ul>
 <h2 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
 <h3 id="creating-a-nestedtensor">Creating a NestedTensor<a class="headerlink" href="#creating-a-nestedtensor" title="Permanent link">&para;</a></h3>

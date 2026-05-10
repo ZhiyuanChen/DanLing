@@ -1213,7 +1213,7 @@
 
     <div class="doc doc-contents first">
             <p class="doc doc-class-bases">
-              Bases: <code><span title="chanfig.Config">Config</span></code></p>
+              Bases: <code><a class="autorefs autorefs-external" title="&lt;code&gt;chanfig.Config&lt;/code&gt;" href="https://chanfig.danling.org/zh/config/#chanfig.Config">Config</a></code></p>
 
 
         <p>Configuration class for managing and persisting all states of a DanLing Runner.</p>
@@ -1224,7 +1224,7 @@
 <li><strong>Serialization</strong>: Save/load configurations from files or command line</li>
 <li><strong>Reproducibility</strong>: Tracking seeds and settings for reproducible runs</li>
 </ol>
-<p>RunnerConfig inherits from [<code>Config</code>][chanfig.Config] and provides attribute-style access to nested values:</p>
+<p>RunnerConfig inherits from <a class="autorefs autorefs-external" href="https://chanfig.danling.org/zh/config/#chanfig.Config"><code>Config</code></a> and provides attribute-style access to nested values:</p>
 <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-1">1</a></span>
 <span class="normal"><a href="#__codelineno-0-2">2</a></span>
 <span class="normal"><a href="#__codelineno-0-3">3</a></span>
@@ -1290,7 +1290,7 @@ then override values via command line arguments:</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.stack">stack</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1318,7 +1318,7 @@ Defaults to <code>"auto"</code> (resolved to <code>"ddp"</code> at runtime).</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.seed">seed</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1329,7 +1329,7 @@ Defaults to <code>"auto"</code> (resolved to <code>"ddp"</code> at runtime).</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.deterministic">deterministic</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1355,7 +1355,7 @@ Defaults to <code>False</code> for better performance. Set to <code>True</code> 
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.steps">steps</span></code></td>
             <td>
-                  <code><span title="int">int</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1367,7 +1367,7 @@ In step mode, training stops when <code>global_step &gt;= steps</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.epochs">epochs</span></code></td>
             <td>
-                  <code><span title="int">int</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1393,7 +1393,7 @@ In epoch mode, training iterates epochs until <code>epoch == epochs</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.score_split">score_split</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1406,7 +1406,7 @@ unless that split disappears from results.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.score_name">score_name</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1417,7 +1417,7 @@ unless that split disappears from results.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.scheduler.interval">scheduler.interval</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1432,7 +1432,7 @@ round result is available.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.scheduler.monitor">scheduler.monitor</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1460,7 +1460,7 @@ otherwise resolves <code>score_name</code> from the aggregated result.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.optim.param_groups">optim.param_groups</span></code></td>
             <td>
-                  <code><span title="list">list</span>[<span title="dict">dict</span>] | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#list">list</a>[<a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#dict">dict</a>] | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1493,7 +1493,7 @@ Unmatched parameters keep the optimizer-level defaults.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.workspace_root">workspace_root</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1504,7 +1504,7 @@ Unmatched parameters keep the optimizer-level defaults.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.auto_resume">auto_resume</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1517,7 +1517,7 @@ Priority is <code>resume</code> &gt; <code>auto_resume</code> &gt; <code>pretrai
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.resume">resume</span></code></td>
             <td>
-                  <code><span title="str">str</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1529,7 +1529,7 @@ This is a path-like identifier consumed by runner <code>load_checkpoint(...)</co
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.pretrained">pretrained</span></code></td>
             <td>
-                  <code><span title="str">str</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1541,7 +1541,7 @@ This is a path-like identifier consumed by runner <code>load_pretrained(...)</co
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.lineage">lineage</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1554,7 +1554,7 @@ Defaults to <code>"lin"</code> when unset.
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.experiment">experiment</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1565,7 +1565,7 @@ Defaults to <code>"lin"</code> when unset.
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.checkpoint.dir_name">checkpoint.dir_name</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1576,7 +1576,7 @@ Defaults to <code>"lin"</code> when unset.
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.checkpoint.async_enabled">checkpoint.async_enabled</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1588,7 +1588,7 @@ Defaults to <code>True</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.checkpoint.async_mode">checkpoint.async_mode</span></code></td>
             <td>
-                  <code><span title="str">str</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1601,7 +1601,7 @@ When unset (<code>None</code>), the runner derives the mode from <code>checkpoin
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.checkpoint.dedicated_async_process_group">checkpoint.dedicated_async_process_group</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1613,7 +1613,7 @@ checkpoint I/O to reduce interference with training collectives. Defaults to <co
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.checkpoint.async_process_group_backend">checkpoint.async_process_group_backend</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1625,7 +1625,7 @@ group. Defaults to <code>"gloo"</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.checkpoint.backend">checkpoint.backend</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1637,7 +1637,7 @@ group. Defaults to <code>"gloo"</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.checkpoint.wait_timeout">checkpoint.wait_timeout</span></code></td>
             <td>
-                  <code><span title="float">float</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#float">float</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1649,7 +1649,7 @@ during runner shutdown (<code>None</code> waits indefinitely).</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.parallel.axes.replicate">parallel.axes.replicate</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1661,7 +1661,7 @@ Defaults to <code>1</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.parallel.axes.shard">parallel.axes.shard</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1674,7 +1674,7 @@ to auto-fill it from <code>WORLD_SIZE</code> and the other configured axes.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.parallel.axes.context">parallel.axes.context</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1685,7 +1685,7 @@ to auto-fill it from <code>WORLD_SIZE</code> and the other configured axes.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.parallel.axes.pipeline">parallel.axes.pipeline</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1696,7 +1696,7 @@ to auto-fill it from <code>WORLD_SIZE</code> and the other configured axes.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.parallel.axes.tensor">parallel.axes.tensor</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1707,7 +1707,7 @@ to auto-fill it from <code>WORLD_SIZE</code> and the other configured axes.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.parallel.axes.expert">parallel.axes.expert</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1718,7 +1718,7 @@ to auto-fill it from <code>WORLD_SIZE</code> and the other configured axes.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.parallel.axes.expert_tensor">parallel.axes.expert_tensor</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1729,7 +1729,7 @@ to auto-fill it from <code>WORLD_SIZE</code> and the other configured axes.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.parallel.pipeline_schedule">parallel.pipeline_schedule</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1742,7 +1742,7 @@ Defaults to <code>"1F1B"</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.parallel.pipeline_microbatch_size">parallel.pipeline_microbatch_size</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1755,7 +1755,7 @@ Defaults to <code>1</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.parallel.pipeline_n_microbatches">parallel.pipeline_n_microbatches</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1767,7 +1767,7 @@ When set, overrides <code>pipeline_microbatch_size</code>-based inference.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.parallel.module_fqns_per_model_part">parallel.module_fqns_per_model_part</span></code></td>
             <td>
-                  <code><span title="list">list</span>[<span title="list">list</span>[<span title="str">str</span>]] | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#list">list</a>[<a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#list">list</a>[<a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a>]] | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1784,7 +1784,7 @@ length is the total pipeline stage count and must be divisible by
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.log">log</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1796,7 +1796,7 @@ Logging is initialized on the main process only.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.tensorboard">tensorboard</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1807,7 +1807,7 @@ Logging is initialized on the main process only.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.wandb.enabled">wandb.enabled</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1818,7 +1818,7 @@ Logging is initialized on the main process only.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.wandb.project">wandb.project</span></code></td>
             <td>
-                  <code><span title="str">str</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1829,7 +1829,7 @@ Logging is initialized on the main process only.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.wandb.entity">wandb.entity</span></code></td>
             <td>
-                  <code><span title="str">str</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1840,7 +1840,7 @@ Logging is initialized on the main process only.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.wandb.group">wandb.group</span></code></td>
             <td>
-                  <code><span title="str">str</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1851,7 +1851,7 @@ Logging is initialized on the main process only.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.wandb.name">wandb.name</span></code></td>
             <td>
-                  <code><span title="str">str</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1862,7 +1862,7 @@ Logging is initialized on the main process only.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.wandb.job_type">wandb.job_type</span></code></td>
             <td>
-                  <code><span title="str">str</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1873,7 +1873,7 @@ Logging is initialized on the main process only.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.wandb.tags">wandb.tags</span></code></td>
             <td>
-                  <code><span title="list">list</span>[<span title="str">str</span>] | <span title="str">str</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#list">list</a>[<a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a>] | <a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1884,7 +1884,7 @@ Logging is initialized on the main process only.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.wandb.dir">wandb.dir</span></code></td>
             <td>
-                  <code><span title="str">str</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1895,7 +1895,7 @@ Logging is initialized on the main process only.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.wandb.mode">wandb.mode</span></code></td>
             <td>
-                  <code><span title="str">str</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1906,7 +1906,7 @@ Logging is initialized on the main process only.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.ft.enabled">ft.enabled</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1917,7 +1917,7 @@ Logging is initialized on the main process only.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.ft.process_group">ft.process_group</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1929,7 +1929,7 @@ Defaults to <code>"gloo"</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.ft.process_group_timeout_ms">ft.process_group_timeout_ms</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1941,7 +1941,7 @@ Defaults to <code>10000</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.ft.replica_id">ft.replica_id</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1952,7 +1952,7 @@ Defaults to <code>10000</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.ft.group_size">ft.group_size</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1963,7 +1963,7 @@ Defaults to <code>10000</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.ft.min_replica_size">ft.min_replica_size</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1975,7 +1975,7 @@ Defaults to <code>1</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.log_interval">log_interval</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1986,7 +1986,7 @@ Defaults to <code>1</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.checkpoint.interval">checkpoint.interval</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2000,7 +2000,7 @@ If unset, runner defaults are used by mode.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.checkpoint.keep_latest_k">checkpoint.keep_latest_k</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2012,7 +2012,7 @@ If unset, runner defaults are used by mode.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.checkpoint.load_only">checkpoint.load_only</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2023,7 +2023,7 @@ If unset, runner defaults are used by mode.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.checkpoint.enable_ft_dataloader_checkpoints">checkpoint.enable_ft_dataloader_checkpoints</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2036,7 +2036,7 @@ Uses DCP and stores checkpoints under
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.checkpoint.ft_replica_id">checkpoint.ft_replica_id</span></code></td>
             <td>
-                  <code><span title="str">str</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2048,7 +2048,7 @@ Defaults to <code>FT_REPLICA_ID</code> environment variable, then process rank.<
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.checkpoint.ft_dataloader_checkpoint_prefix">checkpoint.ft_dataloader_checkpoint_prefix</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2060,7 +2060,7 @@ Defaults to <code>"ft-replica"</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.checkpoint.exclude_from_loading">checkpoint.exclude_from_loading</span></code></td>
             <td>
-                  <code><span title="list">list</span>[<span title="str">str</span>] | <span title="str">str</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#list">list</a>[<a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a>] | <a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2073,7 +2073,7 @@ The aliases <code>"data_loader"</code>, <code>"dataloader"</code>, and <code>"lr
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.checkpoint.last_save_model_only">checkpoint.last_save_model_only</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2084,7 +2084,7 @@ The aliases <code>"data_loader"</code>, <code>"dataloader"</code>, and <code>"lr
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.checkpoint.export_dtype">checkpoint.export_dtype</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2096,7 +2096,7 @@ The aliases <code>"data_loader"</code>, <code>"dataloader"</code>, and <code>"lr
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.dataloader.batch_size">dataloader.batch_size</span></code></td>
             <td>
-                  <code><span title="int">int</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2108,7 +2108,7 @@ The aliases <code>"data_loader"</code>, <code>"dataloader"</code>, and <code>"lr
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.dataloader.shuffle">dataloader.shuffle</span></code></td>
             <td>
-                  <code><span title="bool">bool</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2120,7 +2120,7 @@ splits shuffle and non-train splits do not.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.dataloader.drop_last">dataloader.drop_last</span></code></td>
             <td>
-                  <code><span title="bool">bool</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2143,7 +2143,7 @@ train splits drop incomplete batches and non-train splits keep them.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.dataloader.in_order">dataloader.in_order</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2154,7 +2154,7 @@ train splits drop incomplete batches and non-train splits keep them.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.dataloader.snapshot_every_n_steps">dataloader.snapshot_every_n_steps</span></code></td>
             <td>
-                  <code><span title="int">int</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2165,7 +2165,7 @@ train splits drop incomplete batches and non-train splits keep them.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.dataloader.<split>">dataloader.&lt;split&gt;</span></code></td>
             <td>
-                  <code><span title="dict">dict</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#dict">dict</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2177,7 +2177,7 @@ dataloader kwargs, for example <code>dataloader.train.shuffle=False</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.fsdp.enabled">fsdp.enabled</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2190,7 +2190,7 @@ The FSDP mesh is derived from <code>parallel.axes.replicate</code>,
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.fsdp.reshard_after_forward">fsdp.reshard_after_forward</span></code></td>
             <td>
-                  <code><span title="bool">bool</span> | <span title="int">int</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a> | <a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2201,7 +2201,7 @@ The FSDP mesh is derived from <code>parallel.axes.replicate</code>,
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.fsdp.mp_policy">fsdp.mp_policy</span></code></td>
             <td>
-                  <code><span title="bool">bool</span> | <span title="int">int</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a> | <a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2212,7 +2212,7 @@ The FSDP mesh is derived from <code>parallel.axes.replicate</code>,
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.fsdp.offload_policy">fsdp.offload_policy</span></code></td>
             <td>
-                  <code><span title="bool">bool</span> | <span title="int">int</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a> | <a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2223,7 +2223,7 @@ The FSDP mesh is derived from <code>parallel.axes.replicate</code>,
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.compile.enable">compile.enable</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2234,7 +2234,7 @@ The FSDP mesh is derived from <code>parallel.axes.replicate</code>,
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.compile.backend">compile.backend</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2245,7 +2245,7 @@ The FSDP mesh is derived from <code>parallel.axes.replicate</code>,
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.compile.fullgraph">compile.fullgraph</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2256,7 +2256,7 @@ The FSDP mesh is derived from <code>parallel.axes.replicate</code>,
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.compile.dynamic">compile.dynamic</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2267,7 +2267,7 @@ The FSDP mesh is derived from <code>parallel.axes.replicate</code>,
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.compile.mode">compile.mode</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2278,7 +2278,7 @@ The FSDP mesh is derived from <code>parallel.axes.replicate</code>,
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.compile.options">compile.options</span></code></td>
             <td>
-                  <code><span title="dict">dict</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#dict">dict</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2289,7 +2289,7 @@ The FSDP mesh is derived from <code>parallel.axes.replicate</code>,
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.compile.optimize_ddp">compile.optimize_ddp</span></code></td>
             <td>
-                  <code><span title="str">str</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2301,7 +2301,7 @@ Defaults to <code>"ddp_optimizer"</code> when model compile is enabled.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.compile.precompile_artifact_dir">compile.precompile_artifact_dir</span></code></td>
             <td>
-                  <code><span title="str">str</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2313,7 +2313,7 @@ cache artifacts. Current eager runners ignore this setting.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.compile.memory_policy">compile.memory_policy</span></code></td>
             <td>
-                  <code><span title="str">str</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2326,7 +2326,7 @@ dedicated graph pass pipeline.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.comm.init_timeout_seconds">comm.init_timeout_seconds</span></code></td>
             <td>
-                  <code><span title="int">int</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2338,7 +2338,7 @@ initialization and early startup.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.comm.train_timeout_seconds">comm.train_timeout_seconds</span></code></td>
             <td>
-                  <code><span title="int">int</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2350,7 +2350,7 @@ once after the first successful optimizer step.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.gc.interval">gc.interval</span></code></td>
             <td>
-                  <code><span title="int">int</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2362,7 +2362,7 @@ When unset, runner-managed GC pacing is disabled.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.gc.generation">gc.generation</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2374,7 +2374,7 @@ Defaults to <code>1</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.gc.disable_automatic">gc.disable_automatic</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2386,7 +2386,7 @@ Defaults to <code>True</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.profiling.enabled">profiling.enabled</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2397,7 +2397,7 @@ Defaults to <code>True</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.profiling.wait">profiling.wait</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2408,7 +2408,7 @@ Defaults to <code>True</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.profiling.warmup">profiling.warmup</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2419,7 +2419,7 @@ Defaults to <code>True</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.profiling.active">profiling.active</span></code></td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2430,7 +2430,7 @@ Defaults to <code>True</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.profiling.repeat">profiling.repeat</span></code></td>
             <td>
-                  <code><span title="int">int</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2441,7 +2441,7 @@ Defaults to <code>True</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.profiling.record_shapes">profiling.record_shapes</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2452,7 +2452,7 @@ Defaults to <code>True</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.profiling.profile_memory">profiling.profile_memory</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2463,7 +2463,7 @@ Defaults to <code>True</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.profiling.with_stack">profiling.with_stack</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2474,7 +2474,7 @@ Defaults to <code>True</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.profiling.with_flops">profiling.with_flops</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2485,7 +2485,7 @@ Defaults to <code>True</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.profiling.trace_dir">profiling.trace_dir</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2496,7 +2496,7 @@ Defaults to <code>True</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.heartbeat.enabled">heartbeat.enabled</span></code></td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2507,7 +2507,7 @@ Defaults to <code>True</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.heartbeat.interval_seconds">heartbeat.interval_seconds</span></code></td>
             <td>
-                  <code><span title="float">float</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#float">float</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2518,7 +2518,7 @@ Defaults to <code>True</code>.</p>
           <tr class="doc-section-item">
             <td><code><span title="danling.runners.RunnerConfig.heartbeat.dir_name">heartbeat.dir_name</span></code></td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">

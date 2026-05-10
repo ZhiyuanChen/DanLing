@@ -1878,11 +1878,11 @@
 <a href="#danling.metrics.factory.binary_metrics" class="headerlink" title="Permanent link">&para;</a></h3>
 <div class="language-python doc-signature highlight"><span class="filename">Python</span><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">binary_metrics</span><span class="p">(</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="o">*</span><span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;*metric_funcs&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.binary_metrics(*metric_funcs)&lt;/code&gt;)" href="#danling.metrics.factory.binary_metrics(*metric_funcs)">metric_funcs</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;MetricFunc&lt;/span&gt; (&lt;code&gt;danling.metrics.functional.MetricFunc&lt;/code&gt;)" href="../functional/#danling.metrics.functional.MetricFunc">MetricFunc</a></span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;mode&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.binary_metrics(mode)&lt;/code&gt;)" href="#danling.metrics.factory.binary_metrics(mode)">mode</a></span><span class="p">:</span> <span class="n"><span title="str">str</span></span> <span class="o">=</span> <span class="s2">&quot;global&quot;</span><span class="p">,</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;ignore_index&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.binary_metrics(ignore_index)&lt;/code&gt;)" href="#danling.metrics.factory.binary_metrics(ignore_index)">ignore_index</a></span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="o">-</span><span class="mi">100</span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;distributed&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.binary_metrics(distributed)&lt;/code&gt;)" href="#danling.metrics.factory.binary_metrics(distributed)">distributed</a></span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;mode&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.binary_metrics(mode)&lt;/code&gt;)" href="#danling.metrics.factory.binary_metrics(mode)">mode</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></span> <span class="o">=</span> <span class="s2">&quot;global&quot;</span><span class="p">,</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;ignore_index&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.binary_metrics(ignore_index)&lt;/code&gt;)" href="#danling.metrics.factory.binary_metrics(ignore_index)">ignore_index</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="o">-</span><span class="mi">100</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;distributed&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.binary_metrics(distributed)&lt;/code&gt;)" href="#danling.metrics.factory.binary_metrics(distributed)">distributed</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;device&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.binary_metrics(device)&lt;/code&gt;)" href="#danling.metrics.factory.binary_metrics(device)">device</a></span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;preprocess&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.binary_metrics(preprocess)&lt;/code&gt;)" href="#danling.metrics.factory.binary_metrics(preprocess)">preprocess</a></span><span class="p">:</span> <span class="n"><span title="collections.abc.Callable">Callable</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;preprocess&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.binary_metrics(preprocess)&lt;/code&gt;)" href="#danling.metrics.factory.binary_metrics(preprocess)">preprocess</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" title="&lt;code&gt;collections.abc.Callable&lt;/code&gt;" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Callable">Callable</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="o">**</span><span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;**metrics&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.binary_metrics(**metrics)&lt;/code&gt;)" href="#danling.metrics.factory.binary_metrics(**metrics)">metrics</a></span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="p">)</span>
 </span></code></pre></div>
@@ -1908,7 +1908,7 @@
 <h4 id="danling.metrics.factory.binary_metrics(mode)" class="doc doc-heading doc-heading-parameter">                  <code>mode</code>
 <a href="#danling.metrics.factory.binary_metrics(mode)" class="headerlink" title="Permanent link">&para;</a></h4>            </td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1940,7 +1940,7 @@
 <h4 id="danling.metrics.factory.binary_metrics(ignore_index)" class="doc doc-heading doc-heading-parameter">                  <code>ignore_index</code>
 <a href="#danling.metrics.factory.binary_metrics(ignore_index)" class="headerlink" title="Permanent link">&para;</a></h4>            </td>
             <td>
-                  <code><span title="int">int</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1956,7 +1956,7 @@
 <h4 id="danling.metrics.factory.binary_metrics(distributed)" class="doc doc-heading doc-heading-parameter">                  <code>distributed</code>
 <a href="#danling.metrics.factory.binary_metrics(distributed)" class="headerlink" title="Permanent link">&para;</a></h4>            </td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -1987,7 +1987,7 @@
 <h4 id="danling.metrics.factory.binary_metrics(preprocess)" class="doc doc-heading doc-heading-parameter">                  <code>preprocess</code>
 <a href="#danling.metrics.factory.binary_metrics(preprocess)" class="headerlink" title="Permanent link">&para;</a></h4>            </td>
             <td>
-                  <code><span title="collections.abc.Callable">Callable</span> | None</code>
+                  <code><a class="autorefs autorefs-external" title="&lt;code&gt;collections.abc.Callable&lt;/code&gt;" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Callable">Callable</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2115,14 +2115,14 @@
 
 <a href="#danling.metrics.factory.multiclass_metrics" class="headerlink" title="Permanent link">&para;</a></h3>
 <div class="language-python doc-signature highlight"><span class="filename">Python</span><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">multiclass_metrics</span><span class="p">(</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;num_classes&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.multiclass_metrics(num_classes)&lt;/code&gt;)" href="#danling.metrics.factory.multiclass_metrics(num_classes)">num_classes</a></span><span class="p">:</span> <span class="n"><span title="int">int</span></span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;average&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.multiclass_metrics(average)&lt;/code&gt;)" href="#danling.metrics.factory.multiclass_metrics(average)">average</a></span><span class="p">:</span> <span class="n"><span title="str">str</span></span> <span class="o">=</span> <span class="s2">&quot;macro&quot;</span><span class="p">,</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;num_classes&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.multiclass_metrics(num_classes)&lt;/code&gt;)" href="#danling.metrics.factory.multiclass_metrics(num_classes)">num_classes</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;average&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.multiclass_metrics(average)&lt;/code&gt;)" href="#danling.metrics.factory.multiclass_metrics(average)">average</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></span> <span class="o">=</span> <span class="s2">&quot;macro&quot;</span><span class="p">,</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;*metric_funcs&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.multiclass_metrics(*metric_funcs)&lt;/code&gt;)" href="#danling.metrics.factory.multiclass_metrics(*metric_funcs)">metric_funcs</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;MetricFunc&lt;/span&gt; (&lt;code&gt;danling.metrics.functional.MetricFunc&lt;/code&gt;)" href="../functional/#danling.metrics.functional.MetricFunc">MetricFunc</a></span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;mode&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.multiclass_metrics(mode)&lt;/code&gt;)" href="#danling.metrics.factory.multiclass_metrics(mode)">mode</a></span><span class="p">:</span> <span class="n"><span title="str">str</span></span> <span class="o">=</span> <span class="s2">&quot;global&quot;</span><span class="p">,</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;ignore_index&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.multiclass_metrics(ignore_index)&lt;/code&gt;)" href="#danling.metrics.factory.multiclass_metrics(ignore_index)">ignore_index</a></span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="o">-</span><span class="mi">100</span><span class="p">,</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n"><span title="danling.metrics.factory.multiclass_metrics(distributed)">distributed</span></span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;mode&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.multiclass_metrics(mode)&lt;/code&gt;)" href="#danling.metrics.factory.multiclass_metrics(mode)">mode</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></span> <span class="o">=</span> <span class="s2">&quot;global&quot;</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;ignore_index&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.multiclass_metrics(ignore_index)&lt;/code&gt;)" href="#danling.metrics.factory.multiclass_metrics(ignore_index)">ignore_index</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="o">-</span><span class="mi">100</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n"><span title="danling.metrics.factory.multiclass_metrics(distributed)">distributed</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n"><span title="danling.metrics.factory.multiclass_metrics(device)">device</span></span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n"><span title="danling.metrics.factory.multiclass_metrics(preprocess)">preprocess</span></span><span class="p">:</span> <span class="n"><span title="collections.abc.Callable">Callable</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n"><span title="danling.metrics.factory.multiclass_metrics(preprocess)">preprocess</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" title="&lt;code&gt;collections.abc.Callable&lt;/code&gt;" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Callable">Callable</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="o">**</span><span class="n"><span title="danling.metrics.factory.multiclass_metrics(**metrics)">metrics</span></span>
 </span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="p">)</span>
 </span></code></pre></div>
@@ -2148,7 +2148,7 @@
 <h4 id="danling.metrics.factory.multiclass_metrics(num_classes)" class="doc doc-heading doc-heading-parameter">                  <code>num_classes</code>
 <a href="#danling.metrics.factory.multiclass_metrics(num_classes)" class="headerlink" title="Permanent link">&para;</a></h4>            </td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2164,7 +2164,7 @@
 <h4 id="danling.metrics.factory.multiclass_metrics(average)" class="doc doc-heading doc-heading-parameter">                  <code>average</code>
 <a href="#danling.metrics.factory.multiclass_metrics(average)" class="headerlink" title="Permanent link">&para;</a></h4>            </td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2180,7 +2180,7 @@
 <h4 id="danling.metrics.factory.multiclass_metrics(mode)" class="doc doc-heading doc-heading-parameter">                  <code>mode</code>
 <a href="#danling.metrics.factory.multiclass_metrics(mode)" class="headerlink" title="Permanent link">&para;</a></h4>            </td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2212,7 +2212,7 @@
 <h4 id="danling.metrics.factory.multiclass_metrics(ignore_index)" class="doc doc-heading doc-heading-parameter">                  <code>ignore_index</code>
 <a href="#danling.metrics.factory.multiclass_metrics(ignore_index)" class="headerlink" title="Permanent link">&para;</a></h4>            </td>
             <td>
-                  <code><span title="int">int</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2325,14 +2325,14 @@
 
 <a href="#danling.metrics.factory.multilabel_metrics" class="headerlink" title="Permanent link">&para;</a></h3>
 <div class="language-python doc-signature highlight"><span class="filename">Python</span><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">multilabel_metrics</span><span class="p">(</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;num_labels&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.multilabel_metrics(num_labels)&lt;/code&gt;)" href="#danling.metrics.factory.multilabel_metrics(num_labels)">num_labels</a></span><span class="p">:</span> <span class="n"><span title="int">int</span></span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;average&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.multilabel_metrics(average)&lt;/code&gt;)" href="#danling.metrics.factory.multilabel_metrics(average)">average</a></span><span class="p">:</span> <span class="n"><span title="str">str</span></span> <span class="o">=</span> <span class="s2">&quot;macro&quot;</span><span class="p">,</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;num_labels&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.multilabel_metrics(num_labels)&lt;/code&gt;)" href="#danling.metrics.factory.multilabel_metrics(num_labels)">num_labels</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;average&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.multilabel_metrics(average)&lt;/code&gt;)" href="#danling.metrics.factory.multilabel_metrics(average)">average</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></span> <span class="o">=</span> <span class="s2">&quot;macro&quot;</span><span class="p">,</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;*metric_funcs&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.multilabel_metrics(*metric_funcs)&lt;/code&gt;)" href="#danling.metrics.factory.multilabel_metrics(*metric_funcs)">metric_funcs</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;MetricFunc&lt;/span&gt; (&lt;code&gt;danling.metrics.functional.MetricFunc&lt;/code&gt;)" href="../functional/#danling.metrics.functional.MetricFunc">MetricFunc</a></span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;mode&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.multilabel_metrics(mode)&lt;/code&gt;)" href="#danling.metrics.factory.multilabel_metrics(mode)">mode</a></span><span class="p">:</span> <span class="n"><span title="str">str</span></span> <span class="o">=</span> <span class="s2">&quot;global&quot;</span><span class="p">,</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;ignore_index&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.multilabel_metrics(ignore_index)&lt;/code&gt;)" href="#danling.metrics.factory.multilabel_metrics(ignore_index)">ignore_index</a></span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="o">-</span><span class="mi">100</span><span class="p">,</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n"><span title="danling.metrics.factory.multilabel_metrics(distributed)">distributed</span></span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;mode&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.multilabel_metrics(mode)&lt;/code&gt;)" href="#danling.metrics.factory.multilabel_metrics(mode)">mode</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></span> <span class="o">=</span> <span class="s2">&quot;global&quot;</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;ignore_index&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.multilabel_metrics(ignore_index)&lt;/code&gt;)" href="#danling.metrics.factory.multilabel_metrics(ignore_index)">ignore_index</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="o">-</span><span class="mi">100</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n"><span title="danling.metrics.factory.multilabel_metrics(distributed)">distributed</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n"><span title="danling.metrics.factory.multilabel_metrics(device)">device</span></span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n"><span title="danling.metrics.factory.multilabel_metrics(preprocess)">preprocess</span></span><span class="p">:</span> <span class="n"><span title="collections.abc.Callable">Callable</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n"><span title="danling.metrics.factory.multilabel_metrics(preprocess)">preprocess</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" title="&lt;code&gt;collections.abc.Callable&lt;/code&gt;" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Callable">Callable</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="o">**</span><span class="n"><span title="danling.metrics.factory.multilabel_metrics(**metrics)">metrics</span></span>
 </span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="p">)</span>
 </span></code></pre></div>
@@ -2358,7 +2358,7 @@
 <h4 id="danling.metrics.factory.multilabel_metrics(num_labels)" class="doc doc-heading doc-heading-parameter">                  <code>num_labels</code>
 <a href="#danling.metrics.factory.multilabel_metrics(num_labels)" class="headerlink" title="Permanent link">&para;</a></h4>            </td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2374,7 +2374,7 @@
 <h4 id="danling.metrics.factory.multilabel_metrics(average)" class="doc doc-heading doc-heading-parameter">                  <code>average</code>
 <a href="#danling.metrics.factory.multilabel_metrics(average)" class="headerlink" title="Permanent link">&para;</a></h4>            </td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2390,7 +2390,7 @@
 <h4 id="danling.metrics.factory.multilabel_metrics(mode)" class="doc doc-heading doc-heading-parameter">                  <code>mode</code>
 <a href="#danling.metrics.factory.multilabel_metrics(mode)" class="headerlink" title="Permanent link">&para;</a></h4>            </td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2422,7 +2422,7 @@
 <h4 id="danling.metrics.factory.multilabel_metrics(ignore_index)" class="doc doc-heading doc-heading-parameter">                  <code>ignore_index</code>
 <a href="#danling.metrics.factory.multilabel_metrics(ignore_index)" class="headerlink" title="Permanent link">&para;</a></h4>            </td>
             <td>
-                  <code><span title="int">int</span> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2535,13 +2535,13 @@
 
 <a href="#danling.metrics.factory.regression_metrics" class="headerlink" title="Permanent link">&para;</a></h3>
 <div class="language-python doc-signature highlight"><span class="filename">Python</span><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">regression_metrics</span><span class="p">(</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;num_outputs&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.regression_metrics(num_outputs)&lt;/code&gt;)" href="#danling.metrics.factory.regression_metrics(num_outputs)">num_outputs</a></span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;ignore_nan&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.regression_metrics(ignore_nan)&lt;/code&gt;)" href="#danling.metrics.factory.regression_metrics(ignore_nan)">ignore_nan</a></span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;num_outputs&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.regression_metrics(num_outputs)&lt;/code&gt;)" href="#danling.metrics.factory.regression_metrics(num_outputs)">num_outputs</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;ignore_nan&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.regression_metrics(ignore_nan)&lt;/code&gt;)" href="#danling.metrics.factory.regression_metrics(ignore_nan)">ignore_nan</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;*metric_funcs&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.regression_metrics(*metric_funcs)&lt;/code&gt;)" href="#danling.metrics.factory.regression_metrics(*metric_funcs)">metric_funcs</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;MetricFunc&lt;/span&gt; (&lt;code&gt;danling.metrics.functional.MetricFunc&lt;/code&gt;)" href="../functional/#danling.metrics.functional.MetricFunc">MetricFunc</a></span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;mode&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.regression_metrics(mode)&lt;/code&gt;)" href="#danling.metrics.factory.regression_metrics(mode)">mode</a></span><span class="p">:</span> <span class="n"><span title="str">str</span></span> <span class="o">=</span> <span class="s2">&quot;global&quot;</span><span class="p">,</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n"><span title="danling.metrics.factory.regression_metrics(distributed)">distributed</span></span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n"><a class="autorefs autorefs-internal" title="&lt;code&gt;mode&lt;/code&gt; (&lt;code&gt;danling.metrics.factory.regression_metrics(mode)&lt;/code&gt;)" href="#danling.metrics.factory.regression_metrics(mode)">mode</a></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></span> <span class="o">=</span> <span class="s2">&quot;global&quot;</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n"><span title="danling.metrics.factory.regression_metrics(distributed)">distributed</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n"><span title="danling.metrics.factory.regression_metrics(device)">device</span></span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n"><span title="danling.metrics.factory.regression_metrics(preprocess)">preprocess</span></span><span class="p">:</span> <span class="n"><span title="collections.abc.Callable">Callable</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n"><span title="danling.metrics.factory.regression_metrics(preprocess)">preprocess</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" title="&lt;code&gt;collections.abc.Callable&lt;/code&gt;" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Callable">Callable</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="o">**</span><span class="n"><span title="danling.metrics.factory.regression_metrics(**metrics)">metrics</span></span>
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">)</span>
 </span></code></pre></div>
@@ -2567,7 +2567,7 @@
 <h4 id="danling.metrics.factory.regression_metrics(num_outputs)" class="doc doc-heading doc-heading-parameter">                  <code>num_outputs</code>
 <a href="#danling.metrics.factory.regression_metrics(num_outputs)" class="headerlink" title="Permanent link">&para;</a></h4>            </td>
             <td>
-                  <code><span title="int">int</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#int">int</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2583,7 +2583,7 @@
 <h4 id="danling.metrics.factory.regression_metrics(ignore_nan)" class="doc doc-heading doc-heading-parameter">                  <code>ignore_nan</code>
 <a href="#danling.metrics.factory.regression_metrics(ignore_nan)" class="headerlink" title="Permanent link">&para;</a></h4>            </td>
             <td>
-                  <code><span title="bool">bool</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2599,7 +2599,7 @@
 <h4 id="danling.metrics.factory.regression_metrics(mode)" class="doc doc-heading doc-heading-parameter">                  <code>mode</code>
 <a href="#danling.metrics.factory.regression_metrics(mode)" class="headerlink" title="Permanent link">&para;</a></h4>            </td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#str">str</a></code>
             </td>
             <td>
               <div class="doc-md-description">
