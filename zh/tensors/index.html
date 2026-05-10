@@ -36,11 +36,18 @@
         <link rel="next" href="nested_tensor/">
       
       
+        
+          <link rel="alternate" href="../../tensors/" hreflang="en">
+        
+          <link rel="alternate" href="./" hreflang="zh">
+        
+      
+      
         <link rel="alternate" type="application/rss+xml" title="RSS 订阅" href="../../feed_rss_created.xml">
         <link rel="alternate" type="application/rss+xml" title="已更新内容的 RSS 订阅" href="../../feed_rss_updated.xml">
       
       <link rel="icon" href="../../assets/images/logo.ico">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.23">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
     
     
       
@@ -48,10 +55,10 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.84d31ad4.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
       
         
-        <link rel="stylesheet" href="../../assets/stylesheets/palette.06af60db.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -88,7 +95,6 @@
 
     
     
-    
   </head>
   
   
@@ -106,6 +112,11 @@
     <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
     <label class="md-overlay" for="__drawer"></label>
     <div data-md-component="skip">
+      
+        
+        <a href="#tensor" class="md-skip">
+          跳转至
+        </a>
       
     </div>
     <div data-md-component="announce">
@@ -495,9 +506,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     DanLing
+  
+
     
   </span>
+  
   
 
       </a>
@@ -513,10 +529,6 @@
   
     
     
-      
-        
-      
-        
       
         
       
@@ -553,9 +565,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     Runners
+  
+
     
   </span>
+  
   
 
       
@@ -579,8 +596,6 @@
   
     
     
-      
-        
       
         
       
@@ -615,9 +630,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     Tensors
+  
+
     
   </span>
+  
   
 
             </a>
@@ -632,7 +652,11 @@
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
-            Tensors
+            
+  
+    Tensors
+  
+
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
@@ -648,9 +672,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     NestedTensor
+  
+
     
   </span>
+  
   
 
       </a>
@@ -666,14 +695,19 @@
   
   
     <li class="md-nav__item">
-      <a href="../../tensors/tensors.md" class="md-nav__link">
+      <a href="pn_tensor/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
+    
+  
     PNTensor
+  
+
     
   </span>
+  
   
 
       </a>
@@ -694,32 +728,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     Functions
+  
+
     
   </span>
   
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="utils/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Utils
-    
-  </span>
   
 
       </a>
@@ -771,9 +787,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     Optim
+  
+
     
   </span>
+  
   
 
       
@@ -833,9 +854,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     Metrics
+  
+
     
   </span>
+  
   
 
       
@@ -891,9 +917,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     Utils
+  
+
     
   </span>
+  
   
 
       
@@ -919,9 +950,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     package
+  
+
     
   </span>
+  
   
 
       </a>
@@ -971,9 +1007,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     About
+  
+
     
   </span>
+  
   
 
       
@@ -1004,6 +1045,277 @@
   
   
   
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#key-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key Components
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Start
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Quick Start">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#creating-a-nestedtensor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Creating a NestedTensor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#creating-from-non-tensor-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Creating from Non-Tensor Data
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#converting-to-torchnested_tensor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Converting to torch.nested_tensor
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#working-with-nestedtensor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Working with NestedTensor
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Working with NestedTensor">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#operations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operations
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#unpacking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unpacking
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#dispatch-system" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dispatch System
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#key-internal-helpers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key Internal Helpers
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#integration-with-pytorch-dataloader" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Integration with PyTorch DataLoader
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#advanced-usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Advanced Usage
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Advanced Usage">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#custom-collation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Custom Collation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#working-with-pytorch-models" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Working with PyTorch Models
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#extending-with-new-operations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Extending with New Operations
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#benchmarks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Benchmarks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Benchmarks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#imdb-training" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        IMDB Training
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#models" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Models
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#operators" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operators
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
   
 </nav>
                   </div>
@@ -1013,6 +1325,7 @@
           
           
             <div class="md-content" data-md-component="content">
+              
               <article class="md-content__inner md-typeset">
                  
                   
@@ -1022,9 +1335,803 @@
   
 
 
-  <h1>Tensors</h1>
-
-
+<h1 id="tensor">Tensor<a class="headerlink" href="#tensor" title="Permanent link">&para;</a></h1>
+<p>The <code>danling.tensors</code> module provides utilities for handling tensors with variable lengths in batched operations.
+The core feature is the <a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;NestedTensor&lt;/span&gt;" href="nested_tensor/#danling.tensors.nested_tensor.NestedTensor"><code>NestedTensor</code></a> class which allows efficient representation of sequences of different lengths without excessive padding.</p>
+<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
+<p>In many deep learning tasks, especially those involving sequences (text, time series, etc.), each example in a batch may have a different length. Traditional approaches include:</p>
+<ol>
+<li><strong>Padding</strong>: Adding placeholder values to make all examples the same length (wastes computation)</li>
+<li><strong>Bucketing</strong>: Grouping similar-length examples (complicates training)</li>
+<li><strong>Processing one sample at a time</strong>: Slow and inefficient</li>
+</ol>
+<p>The <code>NestedTensor</code> solves these problems by providing:</p>
+<ul>
+<li>A way to store variable-length tensors in a single object</li>
+<li>Automatic padding and mask generation for efficient computation</li>
+<li>Transparent access to the original tensors or padded representations</li>
+<li>Support for 615+ PyTorch operations via a multi-level dispatch system</li>
+</ul>
+<h2 id="key-components">Key Components<a class="headerlink" href="#key-components" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;NestedTensor&lt;/span&gt;" href="nested_tensor/#danling.tensors.nested_tensor.NestedTensor"><code>NestedTensor</code></a>: Main class for handling variable-length tensors in a batch.</li>
+<li><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;PNTensor&lt;/span&gt;" href="pn_tensor/#danling.tensors.pn_tensor.PNTensor"><code>PNTensor</code></a>: A tensor wrapper that can be converted to NestedTensor by PyTorch DataLoader.</li>
+<li><code>tensor()</code>: Function to create a <a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;PNTensor&lt;/span&gt;" href="pn_tensor/#danling.tensors.pn_tensor.PNTensor"><code>PNTensor</code></a> object (similar to <code>torch.tensor()</code>).</li>
+<li>[<code>NestedTensorFuncRegistry</code>][danling.tensors.NestedTensorFuncRegistry]: Registry for <code>torch.*</code> and <code>F.*</code> dispatch handlers.</li>
+<li>[<code>NestedTensorAtenRegistry</code>][danling.tensors.NestedTensorAtenRegistry]: Registry for <code>aten</code> dispatch handlers.</li>
+</ul>
+<h2 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
+<h3 id="creating-a-nestedtensor">Creating a NestedTensor<a class="headerlink" href="#creating-a-nestedtensor" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-1"> 1</a></span>
+<span class="normal"><a href="#__codelineno-0-2"> 2</a></span>
+<span class="normal"><a href="#__codelineno-0-3"> 3</a></span>
+<span class="normal"><a href="#__codelineno-0-4"> 4</a></span>
+<span class="normal"><a href="#__codelineno-0-5"> 5</a></span>
+<span class="normal"><a href="#__codelineno-0-6"> 6</a></span>
+<span class="normal"><a href="#__codelineno-0-7"> 7</a></span>
+<span class="normal"><a href="#__codelineno-0-8"> 8</a></span>
+<span class="normal"><a href="#__codelineno-0-9"> 9</a></span>
+<span class="normal"><a href="#__codelineno-0-10">10</a></span>
+<span class="normal"><a href="#__codelineno-0-11">11</a></span>
+<span class="normal"><a href="#__codelineno-0-12">12</a></span>
+<span class="normal"><a href="#__codelineno-0-13">13</a></span>
+<span class="normal"><a href="#__codelineno-0-14">14</a></span>
+<span class="normal"><a href="#__codelineno-0-15">15</a></span>
+<span class="normal"><a href="#__codelineno-0-16">16</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensor</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3"></a>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4"></a><span class="c1"># Create from a list of tensors with different lengths</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5"></a><span class="n">tensor1</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">])</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6"></a><span class="n">tensor2</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([</span><span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">])</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7"></a><span class="n">nested</span> <span class="o">=</span> <span class="n">NestedTensor</span><span class="p">(</span><span class="n">tensor1</span><span class="p">,</span> <span class="n">tensor2</span><span class="p">)</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8"></a>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9"></a><span class="c1"># Access properties</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10"></a><span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">tensor</span><span class="p">)</span>  <span class="c1"># Padded tensor: [[1, 2, 3], [4, 5, 0]]</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11"></a><span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">mask</span><span class="p">)</span>    <span class="c1"># Mask: [[True, True, True], [True, True, False]]</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12"></a><span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">concat</span><span class="p">)</span>  <span class="c1"># Concatenated: [1, 2, 3, 4, 5]</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13"></a>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14"></a><span class="c1"># Index operations</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15"></a><span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>      <span class="c1"># First tensor: [1, 2, 3]</span>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16"></a><span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">:])</span>  <span class="c1"># Slice: NestedTensor([[2, 3], [5]])</span>
+</span></code></pre></div></td></tr></table></div>
+<h3 id="creating-from-non-tensor-data">Creating from Non-Tensor Data<a class="headerlink" href="#creating-from-non-tensor-data" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-1-1">1</a></span>
+<span class="normal"><a href="#__codelineno-1-2">2</a></span>
+<span class="normal"><a href="#__codelineno-1-3">3</a></span>
+<span class="normal"><a href="#__codelineno-1-4">4</a></span>
+<span class="normal"><a href="#__codelineno-1-5">5</a></span>
+<span class="normal"><a href="#__codelineno-1-6">6</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensor</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2"></a>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3"></a><span class="c1"># Create directly from lists</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4"></a><span class="n">nested</span> <span class="o">=</span> <span class="n">NestedTensor</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span> <span class="p">[</span><span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">])</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5"></a><span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="p">)</span>  <span class="c1"># NestedTensor([[1, 2, 3], [4, 5]])</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6"></a><span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>  <span class="c1"># [[1, 2, 3], [4, 5]]</span>
+</span></code></pre></div></td></tr></table></div>
+<h3 id="converting-to-torchnested_tensor">Converting to torch.nested_tensor<a class="headerlink" href="#converting-to-torchnested_tensor" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-2-1">1</a></span>
+<span class="normal"><a href="#__codelineno-2-2">2</a></span>
+<span class="normal"><a href="#__codelineno-2-3">3</a></span>
+<span class="normal"><a href="#__codelineno-2-4">4</a></span>
+<span class="normal"><a href="#__codelineno-2-5">5</a></span>
+<span class="normal"><a href="#__codelineno-2-6">6</a></span>
+<span class="normal"><a href="#__codelineno-2-7">7</a></span>
+<span class="normal"><a href="#__codelineno-2-8">8</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensor</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3"></a>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4"></a><span class="n">nested</span> <span class="o">=</span> <span class="n">NestedTensor</span><span class="p">([</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">,</span> <span class="mf">3.0</span><span class="p">],</span> <span class="p">[</span><span class="mf">4.0</span><span class="p">,</span> <span class="mf">5.0</span><span class="p">])</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5"></a>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6"></a><span class="c1"># Convert to PyTorch&#39;s native nested tensor</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7"></a><span class="n">native</span> <span class="o">=</span> <span class="n">nested</span><span class="o">.</span><span class="n">to_torch_nested</span><span class="p">()</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8"></a><span class="nb">print</span><span class="p">(</span><span class="nb">type</span><span class="p">(</span><span class="n">native</span><span class="p">))</span>  <span class="c1"># &lt;class &#39;torch.Tensor&#39;&gt; (nested layout)</span>
+</span></code></pre></div></td></tr></table></div>
+<h2 id="working-with-nestedtensor">Working with NestedTensor<a class="headerlink" href="#working-with-nestedtensor" title="Permanent link">&para;</a></h2>
+<h3 id="operations">Operations<a class="headerlink" href="#operations" title="Permanent link">&para;</a></h3>
+<p>NestedTensor supports many PyTorch operations:</p>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-3-1"> 1</a></span>
+<span class="normal"><a href="#__codelineno-3-2"> 2</a></span>
+<span class="normal"><a href="#__codelineno-3-3"> 3</a></span>
+<span class="normal"><a href="#__codelineno-3-4"> 4</a></span>
+<span class="normal"><a href="#__codelineno-3-5"> 5</a></span>
+<span class="normal"><a href="#__codelineno-3-6"> 6</a></span>
+<span class="normal"><a href="#__codelineno-3-7"> 7</a></span>
+<span class="normal"><a href="#__codelineno-3-8"> 8</a></span>
+<span class="normal"><a href="#__codelineno-3-9"> 9</a></span>
+<span class="normal"><a href="#__codelineno-3-10">10</a></span>
+<span class="normal"><a href="#__codelineno-3-11">11</a></span>
+<span class="normal"><a href="#__codelineno-3-12">12</a></span>
+<span class="normal"><a href="#__codelineno-3-13">13</a></span>
+<span class="normal"><a href="#__codelineno-3-14">14</a></span>
+<span class="normal"><a href="#__codelineno-3-15">15</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1"></a><span class="c1"># Arithmetic operations</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2"></a><span class="n">result</span> <span class="o">=</span> <span class="n">nested</span> <span class="o">+</span> <span class="mi">10</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3"></a><span class="n">result</span> <span class="o">=</span> <span class="n">nested</span> <span class="o">*</span> <span class="mi">2</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4"></a>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5"></a><span class="c1"># Type conversion</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6"></a><span class="n">float_nested</span> <span class="o">=</span> <span class="n">nested</span><span class="o">.</span><span class="n">float</span><span class="p">()</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7"></a><span class="n">half_nested</span> <span class="o">=</span> <span class="n">nested</span><span class="o">.</span><span class="n">half</span><span class="p">()</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8"></a>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9"></a><span class="c1"># Device movement</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10"></a><span class="n">gpu_nested</span> <span class="o">=</span> <span class="n">nested</span><span class="o">.</span><span class="n">cuda</span><span class="p">()</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11"></a><span class="n">cpu_nested</span> <span class="o">=</span> <span class="n">gpu_nested</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12"></a>
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13"></a><span class="c1"># Shape operations</span>
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14"></a><span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>  <span class="c1"># torch.Size([2, 3])</span>
+</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15"></a><span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">size</span><span class="p">(</span><span class="mi">0</span><span class="p">))</span>  <span class="c1"># 2</span>
+</span></code></pre></div></td></tr></table></div>
+<h3 id="unpacking">Unpacking<a class="headerlink" href="#unpacking" title="Permanent link">&para;</a></h3>
+<p>You can easily convert back to original tensors:</p>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-4-1">1</a></span>
+<span class="normal"><a href="#__codelineno-4-2">2</a></span>
+<span class="normal"><a href="#__codelineno-4-3">3</a></span>
+<span class="normal"><a href="#__codelineno-4-4">4</a></span>
+<span class="normal"><a href="#__codelineno-4-5">5</a></span>
+<span class="normal"><a href="#__codelineno-4-6">6</a></span>
+<span class="normal"><a href="#__codelineno-4-7">7</a></span>
+<span class="normal"><a href="#__codelineno-4-8">8</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1"></a><span class="c1"># Get as a list of lists</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2"></a><span class="n">data</span> <span class="o">=</span> <span class="n">nested</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3"></a>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4"></a><span class="c1"># Get as a tuple of (padded_tensor, mask)</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5"></a><span class="n">tensor</span><span class="p">,</span> <span class="n">mask</span> <span class="o">=</span> <span class="n">nested</span><span class="o">.</span><span class="n">tensor_mask</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6"></a>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7"></a><span class="c1"># Access individual items</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8"></a><span class="n">first_item</span> <span class="o">=</span> <span class="n">nested</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>  <span class="c1"># Returns the first tensor</span>
+</span></code></pre></div></td></tr></table></div>
+<h2 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h2>
+<p>NestedTensor uses a <strong>packed representation</strong> that stores all variable-length elements concatenated into a single contiguous tensor, tracked by offset metadata:</p>
+<ul>
+<li><code>_values</code>: All element tensors concatenated along dim 0 (e.g., shape <code>[total_elements, *]</code>)</li>
+<li><code>_offsets</code>: Cumulative element counts, shape <code>(B+1,)</code>, marking where each element starts/ends</li>
+<li><code>_physical_shape</code>: Per-element shapes, shape <code>(B, ndim)</code>, recording each element&rsquo;s original dimensions</li>
+</ul>
+<p>This avoids the waste of padding in the internal representation while allowing efficient batch operations.</p>
+<h3 id="dispatch-system">Dispatch System<a class="headerlink" href="#dispatch-system" title="Permanent link">&para;</a></h3>
+<p>Operations on NestedTensor are handled by a <strong>three-tier dispatch system</strong>, ordered from fastest to most flexible:</p>
+<p><strong>Level 1 — Aten dispatch</strong> (<code>aten_functions.py</code>, 285 ops): Operates directly on the packed <code>_values</code> tensor via <code>__torch_dispatch__</code>. This is the fastest path — no Python loops, no unpacking. Used for elementwise ops (add, mul, sin, exp, &hellip;), reductions, softmax, layer_norm, etc.</p>
+<p><strong>Level 2 — Torch function dispatch</strong> (<code>torch_functions.py</code>, 217 ops): Intercepts <code>torch.*</code> calls via <code>__torch_function__</code>. Handles ops that need dimension translation (e.g., <code>torch.flatten</code>, <code>torch.softmax</code> with non-default dim), multi-operand dispatch (e.g., <code>torch.einsum</code>), per-element matrix ops (e.g., <code>torch.det</code>, <code>torch.linalg.svd</code>), and fused attention (<code>torch._native_multi_head_attention</code>, <code>torch._transformer_encoder_layer_fwd</code>).</p>
+<p><strong>Level 3 — NN function dispatch</strong> (<code>nn_functions.py</code>, 113 ops): Also via <code>__torch_function__</code>, handles <code>torch.nn.functional.*</code> ops including convolutions, pooling, normalization, attention, embedding, activations (F.relu, F.gelu, F.silu, &hellip;), and loss functions. Transformer-hot ops use packed fast paths; activation handlers strip inplace flags to preserve autograd on the wrapper subclass.</p>
+<p><strong>Fallback</strong>: Any aten op without an explicit handler falls back to <code>per_element_fallback</code>, which unpacks to individual tensors, applies the op element-by-element, and repacks. Under <code>torch.compile</code>, DanLing prefers explicit failure over silently entering those eager-only fallbacks.</p>
+<div class="language-text highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Text Only</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-5-1"> 1</a></span>
+<span class="normal"><a href="#__codelineno-5-2"> 2</a></span>
+<span class="normal"><a href="#__codelineno-5-3"> 3</a></span>
+<span class="normal"><a href="#__codelineno-5-4"> 4</a></span>
+<span class="normal"><a href="#__codelineno-5-5"> 5</a></span>
+<span class="normal"><a href="#__codelineno-5-6"> 6</a></span>
+<span class="normal"><a href="#__codelineno-5-7"> 7</a></span>
+<span class="normal"><a href="#__codelineno-5-8"> 8</a></span>
+<span class="normal"><a href="#__codelineno-5-9"> 9</a></span>
+<span class="normal"><a href="#__codelineno-5-10">10</a></span>
+<span class="normal"><a href="#__codelineno-5-11">11</a></span>
+<span class="normal"><a href="#__codelineno-5-12">12</a></span>
+<span class="normal"><a href="#__codelineno-5-13">13</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1"></a>torch.some_op(nested_tensor)
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2"></a>    │
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3"></a>    ▼
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4"></a>__torch_function__  ──── handler in TorchFuncRegistry? ──── yes ──→ dispatch
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5"></a>    │ no
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6"></a>    ▼
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7"></a>aten decomposition  (PyTorch lowers to aten ops)
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8"></a>    │
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9"></a>    ▼
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10"></a>__torch_dispatch__  ──── handler in NestedTensorAtenRegistry? ──── yes ──→ dispatch
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11"></a>    │ no
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12"></a>    ▼
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13"></a>per_element_fallback  (unpack → apply per element → repack)
+</span></code></pre></div></td></tr></table></div>
+<h3 id="key-internal-helpers">Key Internal Helpers<a class="headerlink" href="#key-internal-helpers" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>_from_packed(values, offsets, shape_tensor, ...)</code>: Direct constructor from packed representation. Used by all aten handlers to build results without function call overhead.</li>
+<li><code>_map_storage_serial(input, fn)</code>: Per-element slow path — applies <code>fn</code> to each element via <code>_unpack()</code>. Used when ops need individual element dimensionality.</li>
+<li><code>_translate_non_batch_dim(nt, dim)</code>: Converts a NestedTensor dim index to the corresponding element-level dim (skipping the batch dimension).</li>
+</ul>
+<h2 id="integration-with-pytorch-dataloader">Integration with PyTorch DataLoader<a class="headerlink" href="#integration-with-pytorch-dataloader" title="Permanent link">&para;</a></h2>
+<p>The <code>PNTensor</code> class makes it easy to use <code>NestedTensor</code> with PyTorch&rsquo;s DataLoader:</p>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-6-1"> 1</a></span>
+<span class="normal"><a href="#__codelineno-6-2"> 2</a></span>
+<span class="normal"><a href="#__codelineno-6-3"> 3</a></span>
+<span class="normal"><a href="#__codelineno-6-4"> 4</a></span>
+<span class="normal"><a href="#__codelineno-6-5"> 5</a></span>
+<span class="normal"><a href="#__codelineno-6-6"> 6</a></span>
+<span class="normal"><a href="#__codelineno-6-7"> 7</a></span>
+<span class="normal"><a href="#__codelineno-6-8"> 8</a></span>
+<span class="normal"><a href="#__codelineno-6-9"> 9</a></span>
+<span class="normal"><a href="#__codelineno-6-10">10</a></span>
+<span class="normal"><a href="#__codelineno-6-11">11</a></span>
+<span class="normal"><a href="#__codelineno-6-12">12</a></span>
+<span class="normal"><a href="#__codelineno-6-13">13</a></span>
+<span class="normal"><a href="#__codelineno-6-14">14</a></span>
+<span class="normal"><a href="#__codelineno-6-15">15</a></span>
+<span class="normal"><a href="#__codelineno-6-16">16</a></span>
+<span class="normal"><a href="#__codelineno-6-17">17</a></span>
+<span class="normal"><a href="#__codelineno-6-18">18</a></span>
+<span class="normal"><a href="#__codelineno-6-19">19</a></span>
+<span class="normal"><a href="#__codelineno-6-20">20</a></span>
+<span class="normal"><a href="#__codelineno-6-21">21</a></span>
+<span class="normal"><a href="#__codelineno-6-22">22</a></span>
+<span class="normal"><a href="#__codelineno-6-23">23</a></span>
+<span class="normal"><a href="#__codelineno-6-24">24</a></span>
+<span class="normal"><a href="#__codelineno-6-25">25</a></span>
+<span class="normal"><a href="#__codelineno-6-26">26</a></span>
+<span class="normal"><a href="#__codelineno-6-27">27</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">torch.utils.data</span><span class="w"> </span><span class="kn">import</span> <span class="n">Dataset</span><span class="p">,</span> <span class="n">DataLoader</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">PNTensor</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3"></a>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">VariableLengthDataset</span><span class="p">(</span><span class="n">Dataset</span><span class="p">):</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5"></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">data</span> <span class="o">=</span> <span class="n">data</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7"></a>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8"></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__len__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9"></a>        <span class="k">return</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="p">)</span>
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10"></a>
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11"></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__getitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">idx</span><span class="p">):</span>
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12"></a>        <span class="c1"># Return a PNTensor; DataLoader collates it into NestedTensor.</span>
+</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13"></a>        <span class="k">return</span> <span class="n">PNTensor</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="p">[</span><span class="n">idx</span><span class="p">])</span>
+</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14"></a>
+</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15"></a><span class="c1"># Example usage</span>
+</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16"></a><span class="n">dataset</span> <span class="o">=</span> <span class="n">VariableLengthDataset</span><span class="p">([</span>
+</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17"></a>    <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span>
+</span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18"></a>    <span class="p">[</span><span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">],</span>
+</span><span id="__span-6-19"><a id="__codelineno-6-19" name="__codelineno-6-19"></a>    <span class="p">[</span><span class="mi">6</span><span class="p">,</span> <span class="mi">7</span><span class="p">,</span> <span class="mi">8</span><span class="p">,</span> <span class="mi">9</span><span class="p">]</span>
+</span><span id="__span-6-20"><a id="__codelineno-6-20" name="__codelineno-6-20"></a><span class="p">])</span>
+</span><span id="__span-6-21"><a id="__codelineno-6-21" name="__codelineno-6-21"></a><span class="n">dataloader</span> <span class="o">=</span> <span class="n">DataLoader</span><span class="p">(</span><span class="n">dataset</span><span class="p">,</span> <span class="n">batch_size</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
+</span><span id="__span-6-22"><a id="__codelineno-6-22" name="__codelineno-6-22"></a>
+</span><span id="__span-6-23"><a id="__codelineno-6-23" name="__codelineno-6-23"></a><span class="c1"># The batches are NestedTensor objects</span>
+</span><span id="__span-6-24"><a id="__codelineno-6-24" name="__codelineno-6-24"></a><span class="k">for</span> <span class="n">batch</span> <span class="ow">in</span> <span class="n">dataloader</span><span class="p">:</span>
+</span><span id="__span-6-25"><a id="__codelineno-6-25" name="__codelineno-6-25"></a>    <span class="nb">print</span><span class="p">(</span><span class="nb">type</span><span class="p">(</span><span class="n">batch</span><span class="p">))</span>  <span class="c1"># &lt;class &#39;danling.tensors.nested_tensor.NestedTensor&#39;&gt;</span>
+</span><span id="__span-6-26"><a id="__codelineno-6-26" name="__codelineno-6-26"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">batch</span><span class="o">.</span><span class="n">tensor</span><span class="p">)</span>  <span class="c1"># Padded tensor</span>
+</span><span id="__span-6-27"><a id="__codelineno-6-27" name="__codelineno-6-27"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">batch</span><span class="o">.</span><span class="n">mask</span><span class="p">)</span>    <span class="c1"># Mask</span>
+</span></code></pre></div></td></tr></table></div>
+<h2 id="advanced-usage">Advanced Usage<a class="headerlink" href="#advanced-usage" title="Permanent link">&para;</a></h2>
+<h3 id="custom-collation">Custom Collation<a class="headerlink" href="#custom-collation" title="Permanent link">&para;</a></h3>
+<p>If you need more control over collation:</p>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-7-1"> 1</a></span>
+<span class="normal"><a href="#__codelineno-7-2"> 2</a></span>
+<span class="normal"><a href="#__codelineno-7-3"> 3</a></span>
+<span class="normal"><a href="#__codelineno-7-4"> 4</a></span>
+<span class="normal"><a href="#__codelineno-7-5"> 5</a></span>
+<span class="normal"><a href="#__codelineno-7-6"> 6</a></span>
+<span class="normal"><a href="#__codelineno-7-7"> 7</a></span>
+<span class="normal"><a href="#__codelineno-7-8"> 8</a></span>
+<span class="normal"><a href="#__codelineno-7-9"> 9</a></span>
+<span class="normal"><a href="#__codelineno-7-10">10</a></span>
+<span class="normal"><a href="#__codelineno-7-11">11</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">torch.utils.data</span><span class="w"> </span><span class="kn">import</span> <span class="n">DataLoader</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensor</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3"></a>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">custom_collate_fn</span><span class="p">(</span><span class="n">batch</span><span class="p">):</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5"></a>    <span class="k">return</span> <span class="n">NestedTensor</span><span class="p">(</span><span class="o">*</span><span class="n">batch</span><span class="p">)</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6"></a>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7"></a><span class="n">dataloader</span> <span class="o">=</span> <span class="n">DataLoader</span><span class="p">(</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8"></a>    <span class="n">dataset</span><span class="p">,</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9"></a>    <span class="n">batch_size</span><span class="o">=</span><span class="mi">32</span><span class="p">,</span>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10"></a>    <span class="n">collate_fn</span><span class="o">=</span><span class="n">custom_collate_fn</span>
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11"></a><span class="p">)</span>
+</span></code></pre></div></td></tr></table></div>
+<h3 id="working-with-pytorch-models">Working with PyTorch Models<a class="headerlink" href="#working-with-pytorch-models" title="Permanent link">&para;</a></h3>
+<p><code>NestedTensor</code> works natively with PyTorch&rsquo;s built-in transformer and vision models — no padding or masks needed:</p>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-8-1"> 1</a></span>
+<span class="normal"><a href="#__codelineno-8-2"> 2</a></span>
+<span class="normal"><a href="#__codelineno-8-3"> 3</a></span>
+<span class="normal"><a href="#__codelineno-8-4"> 4</a></span>
+<span class="normal"><a href="#__codelineno-8-5"> 5</a></span>
+<span class="normal"><a href="#__codelineno-8-6"> 6</a></span>
+<span class="normal"><a href="#__codelineno-8-7"> 7</a></span>
+<span class="normal"><a href="#__codelineno-8-8"> 8</a></span>
+<span class="normal"><a href="#__codelineno-8-9"> 9</a></span>
+<span class="normal"><a href="#__codelineno-8-10">10</a></span>
+<span class="normal"><a href="#__codelineno-8-11">11</a></span>
+<span class="normal"><a href="#__codelineno-8-12">12</a></span>
+<span class="normal"><a href="#__codelineno-8-13">13</a></span>
+<span class="normal"><a href="#__codelineno-8-14">14</a></span>
+<span class="normal"><a href="#__codelineno-8-15">15</a></span>
+<span class="normal"><a href="#__codelineno-8-16">16</a></span>
+<span class="normal"><a href="#__codelineno-8-17">17</a></span>
+<span class="normal"><a href="#__codelineno-8-18">18</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">torch.nn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nn</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensor</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3"></a>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4"></a><span class="c1"># Variable-length sequences</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5"></a><span class="n">nt</span> <span class="o">=</span> <span class="n">NestedTensor</span><span class="p">([</span><span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">512</span><span class="p">),</span> <span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">7</span><span class="p">,</span> <span class="mi">512</span><span class="p">)])</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6"></a>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7"></a><span class="c1"># Passes directly through nn.TransformerEncoder, nn.Transformer, etc.</span>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8"></a><span class="n">encoder</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">TransformerEncoder</span><span class="p">(</span>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9"></a>    <span class="n">nn</span><span class="o">.</span><span class="n">TransformerEncoderLayer</span><span class="p">(</span><span class="n">d_model</span><span class="o">=</span><span class="mi">512</span><span class="p">,</span> <span class="n">nhead</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span> <span class="n">batch_first</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10"></a>    <span class="n">num_layers</span><span class="o">=</span><span class="mi">6</span><span class="p">,</span>
+</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11"></a><span class="p">)</span>
+</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12"></a><span class="n">output</span> <span class="o">=</span> <span class="n">encoder</span><span class="p">(</span><span class="n">nt</span><span class="p">)</span>  <span class="c1"># NestedTensor — only real tokens computed</span>
+</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13"></a>
+</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14"></a><span class="c1"># Also works with torchvision models for variable-size images</span>
+</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15"></a><span class="kn">import</span><span class="w"> </span><span class="nn">torchvision.models</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">models</span>
+</span><span id="__span-8-16"><a id="__codelineno-8-16" name="__codelineno-8-16"></a><span class="n">resnet</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">resnet18</span><span class="p">()</span>
+</span><span id="__span-8-17"><a id="__codelineno-8-17" name="__codelineno-8-17"></a><span class="n">images</span> <span class="o">=</span> <span class="n">NestedTensor</span><span class="p">([</span><span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">224</span><span class="p">,</span> <span class="mi">224</span><span class="p">),</span> <span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">160</span><span class="p">,</span> <span class="mi">160</span><span class="p">)])</span>
+</span><span id="__span-8-18"><a id="__codelineno-8-18" name="__codelineno-8-18"></a><span class="n">features</span> <span class="o">=</span> <span class="n">resnet</span><span class="p">(</span><span class="n">images</span><span class="p">)</span>
+</span></code></pre></div></td></tr></table></div>
+<p>For models that require padded input (e.g., HuggingFace transformers), materialize with <code>.tensor</code> and <code>.mask</code>:</p>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-9-1">1</a></span>
+<span class="normal"><a href="#__codelineno-9-2">2</a></span>
+<span class="normal"><a href="#__codelineno-9-3">3</a></span>
+<span class="normal"><a href="#__codelineno-9-4">4</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1"></a><span class="n">outputs</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2"></a>    <span class="n">input_ids</span><span class="o">=</span><span class="n">nested_inputs</span><span class="o">.</span><span class="n">tensor</span><span class="p">,</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3"></a>    <span class="n">attention_mask</span><span class="o">=</span><span class="n">nested_inputs</span><span class="o">.</span><span class="n">mask</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4"></a><span class="p">)</span>
+</span></code></pre></div></td></tr></table></div>
+<h3 id="extending-with-new-operations">Extending with New Operations<a class="headerlink" href="#extending-with-new-operations" title="Permanent link">&para;</a></h3>
+<p>You can register new <code>torch.*</code> functions to work with NestedTensor:</p>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-10-1">1</a></span>
+<span class="normal"><a href="#__codelineno-10-2">2</a></span>
+<span class="normal"><a href="#__codelineno-10-3">3</a></span>
+<span class="normal"><a href="#__codelineno-10-4">4</a></span>
+<span class="normal"><a href="#__codelineno-10-5">5</a></span>
+<span class="normal"><a href="#__codelineno-10-6">6</a></span>
+<span class="normal"><a href="#__codelineno-10-7">7</a></span>
+<span class="normal"><a href="#__codelineno-10-8">8</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors.ops</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensorFuncRegistry</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3"></a>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4"></a><span class="nd">@NestedTensorFuncRegistry</span><span class="o">.</span><span class="n">implement</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">my_custom_op</span><span class="p">)</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5"></a><span class="k">def</span><span class="w"> </span><span class="nf">my_custom_op</span><span class="p">(</span><span class="nb">input</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors.aten_functions</span><span class="w"> </span><span class="kn">import</span> <span class="n">_packed_like</span>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7"></a>    <span class="c1"># For elementwise ops, apply on packed _values:</span>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8"></a>    <span class="k">return</span> <span class="n">_packed_like</span><span class="p">(</span><span class="nb">input</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">my_custom_op</span><span class="p">(</span><span class="nb">input</span><span class="o">.</span><span class="n">_values</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">))</span>
+</span></code></pre></div></td></tr></table></div>
+<p>For ops that are purely elementwise on the packed data, register at the aten level instead:</p>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-11-1"> 1</a></span>
+<span class="normal"><a href="#__codelineno-11-2"> 2</a></span>
+<span class="normal"><a href="#__codelineno-11-3"> 3</a></span>
+<span class="normal"><a href="#__codelineno-11-4"> 4</a></span>
+<span class="normal"><a href="#__codelineno-11-5"> 5</a></span>
+<span class="normal"><a href="#__codelineno-11-6"> 6</a></span>
+<span class="normal"><a href="#__codelineno-11-7"> 7</a></span>
+<span class="normal"><a href="#__codelineno-11-8"> 8</a></span>
+<span class="normal"><a href="#__codelineno-11-9"> 9</a></span>
+<span class="normal"><a href="#__codelineno-11-10">10</a></span>
+<span class="normal"><a href="#__codelineno-11-11">11</a></span>
+<span class="normal"><a href="#__codelineno-11-12">12</a></span>
+<span class="normal"><a href="#__codelineno-11-13">13</a></span>
+<span class="normal"><a href="#__codelineno-11-14">14</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors.ops</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensorAtenRegistry</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2"></a><span class="n">aten</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">ops</span><span class="o">.</span><span class="n">aten</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3"></a>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">_my_handler</span><span class="p">(</span><span class="n">func</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">):</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5"></a>    <span class="n">source</span> <span class="o">=</span> <span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6"></a>    <span class="k">return</span> <span class="nb">type</span><span class="p">(</span><span class="n">source</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7"></a>        <span class="n">func</span><span class="p">(</span><span class="n">source</span><span class="o">.</span><span class="n">_values</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">[</span><span class="mi">1</span><span class="p">:],</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">),</span>
+</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8"></a>        <span class="n">source</span><span class="o">.</span><span class="n">_offsets</span><span class="p">,</span> <span class="n">source</span><span class="o">.</span><span class="n">_physical_shape</span><span class="p">,</span>
+</span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9"></a>        <span class="n">batch_first</span><span class="o">=</span><span class="n">source</span><span class="o">.</span><span class="n">batch_first</span><span class="p">,</span> <span class="n">padding_value</span><span class="o">=</span><span class="n">source</span><span class="o">.</span><span class="n">padding_value</span><span class="p">,</span>
+</span><span id="__span-11-10"><a id="__codelineno-11-10" name="__codelineno-11-10"></a>        <span class="n">mask_value</span><span class="o">=</span><span class="n">source</span><span class="o">.</span><span class="n">mask_value</span><span class="p">,</span> <span class="n">pin_memory</span><span class="o">=</span><span class="n">source</span><span class="o">.</span><span class="n">_pin_memory</span><span class="p">,</span>
+</span><span id="__span-11-11"><a id="__codelineno-11-11" name="__codelineno-11-11"></a>        <span class="n">outer_size</span><span class="o">=</span><span class="n">source</span><span class="o">.</span><span class="n">_logical_shape</span><span class="p">,</span>
+</span><span id="__span-11-12"><a id="__codelineno-11-12" name="__codelineno-11-12"></a>    <span class="p">)</span>
+</span><span id="__span-11-13"><a id="__codelineno-11-13" name="__codelineno-11-13"></a>
+</span><span id="__span-11-14"><a id="__codelineno-11-14" name="__codelineno-11-14"></a><span class="n">NestedTensorAtenRegistry</span><span class="p">[</span><span class="n">aten</span><span class="o">.</span><span class="n">my_op</span><span class="o">.</span><span class="n">default</span><span class="p">]</span> <span class="o">=</span> <span class="n">_my_handler</span>
+</span></code></pre></div></td></tr></table></div>
+<h2 id="benchmarks">Benchmarks<a class="headerlink" href="#benchmarks" title="Permanent link">&para;</a></h2>
+<p>Benchmarked on a single NVIDIA B200 180GB GPU with PyTorch 2.11, bfloat16.</p>
+<p>Run with: <code>python scripts/benchmark_nested_tensor.py</code></p>
+<h3 id="imdb-training">IMDB Training<a class="headerlink" href="#imdb-training" title="Permanent link">&para;</a></h3>
+<p>Real workload benchmark from <a href="../../examples/tensors/imdb.py"><code>examples/tensors/imdb.py</code></a>, using a BERT-large-shaped <code>torch.nn.TransformerEncoder</code> on IMDB with long variable-length sequences.</p>
+<p>Config: <code>bert-large-uncased</code>, 2 epochs, batch size <code>32</code>, max length <code>8192</code>, <code>d_model=1024</code>, <code>nhead=16</code>, <code>num_layers=24</code></p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Metric</th>
+<th style="text-align: left;">NestedTensor</th>
+<th style="text-align: left;">Padded</th>
+<th style="text-align: left;">Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">Training step compute (forward + backward, all epochs)</td>
+<td style="text-align: left;"><code>154819.4 ms</code></td>
+<td style="text-align: left;"><code>306926.7 ms</code></td>
+<td style="text-align: left;"><code>1.98x faster</code></td>
+</tr>
+<tr>
+<td style="text-align: left;">Peak extra CUDA memory per training step</td>
+<td style="text-align: left;"><code>12.68 GiB</code></td>
+<td style="text-align: left;"><code>74.67 GiB</code></td>
+<td style="text-align: left;"><code>83% lower</code></td>
+</tr>
+</tbody>
+</table>
+<p>This run measured nearly 2x faster model compute and an 83% reduction in peak extra CUDA memory for the NestedTensor path.</p>
+<blockquote>
+<p><strong>Note:</strong> This benchmark compares native PyTorch <code>nn.TransformerEncoder</code> execution on NestedTensor vs padded input. The timing is model forward+backward compute, not full end-to-end wall clock including tokenization, data loading, or validation.</p>
+</blockquote>
+<h3 id="models">Models<a class="headerlink" href="#models" title="Permanent link">&para;</a></h3>
+<p>Synthetic model benchmarks covering <code>TransformerEncoder</code>, <code>TransformerDecoder</code>, <code>Transformer</code>, and <code>ResNet-50</code> across varying occupancy levels on a single NVIDIA B200 180GB GPU.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Model</th>
+<th style="text-align: left;">Mode</th>
+<th style="text-align: left;">Occ.</th>
+<th style="text-align: left;">Padded (eager)</th>
+<th style="text-align: left;">Padded (compiled)</th>
+<th style="text-align: left;">DanLing (eager)</th>
+<th style="text-align: left;">DanLing (compiled)</th>
+<th style="text-align: left;">DL vs Padded</th>
+<th style="text-align: left;">DL vs Compiled</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">TransformerEncoder</td>
+<td style="text-align: left;">Infer</td>
+<td style="text-align: left;">20%</td>
+<td style="text-align: left;">2.70 ms</td>
+<td style="text-align: left;">39.98 ms</td>
+<td style="text-align: left;">5.00 ms</td>
+<td style="text-align: left;">1.10 ms</td>
+<td style="text-align: left;">0.54x</td>
+<td style="text-align: left;">7.99x</td>
+</tr>
+<tr>
+<td style="text-align: left;">TransformerEncoder</td>
+<td style="text-align: left;">Train</td>
+<td style="text-align: left;">20%</td>
+<td style="text-align: left;">26.95 ms</td>
+<td style="text-align: left;">19.39 ms</td>
+<td style="text-align: left;">8.60 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">3.13x</td>
+<td style="text-align: left;">2.25x</td>
+</tr>
+<tr>
+<td style="text-align: left;">TransformerEncoder</td>
+<td style="text-align: left;">Infer</td>
+<td style="text-align: left;">35%</td>
+<td style="text-align: left;">3.68 ms</td>
+<td style="text-align: left;">38.93 ms</td>
+<td style="text-align: left;">5.20 ms</td>
+<td style="text-align: left;">1.79 ms</td>
+<td style="text-align: left;">0.71x</td>
+<td style="text-align: left;">7.48x</td>
+</tr>
+<tr>
+<td style="text-align: left;">TransformerEncoder</td>
+<td style="text-align: left;">Train</td>
+<td style="text-align: left;">35%</td>
+<td style="text-align: left;">27.05 ms</td>
+<td style="text-align: left;">19.46 ms</td>
+<td style="text-align: left;">11.55 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">2.34x</td>
+<td style="text-align: left;">1.68x</td>
+</tr>
+<tr>
+<td style="text-align: left;">TransformerEncoder</td>
+<td style="text-align: left;">Infer</td>
+<td style="text-align: left;">77%</td>
+<td style="text-align: left;">6.95 ms</td>
+<td style="text-align: left;">36.39 ms</td>
+<td style="text-align: left;">5.52 ms</td>
+<td style="text-align: left;">4.45 ms</td>
+<td style="text-align: left;">1.26x</td>
+<td style="text-align: left;">6.59x</td>
+</tr>
+<tr>
+<td style="text-align: left;">TransformerEncoder</td>
+<td style="text-align: left;">Train</td>
+<td style="text-align: left;">77%</td>
+<td style="text-align: left;">27.15 ms</td>
+<td style="text-align: left;">19.71 ms</td>
+<td style="text-align: left;">21.37 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">1.27x</td>
+<td style="text-align: left;">0.92x</td>
+</tr>
+<tr>
+<td style="text-align: left;">TransformerDecoder</td>
+<td style="text-align: left;">Infer</td>
+<td style="text-align: left;">20%</td>
+<td style="text-align: left;">47.38 ms</td>
+<td style="text-align: left;">10.86 ms</td>
+<td style="text-align: left;">9.27 ms</td>
+<td style="text-align: left;">1.79 ms</td>
+<td style="text-align: left;">5.11x</td>
+<td style="text-align: left;">1.17x</td>
+</tr>
+<tr>
+<td style="text-align: left;">TransformerDecoder</td>
+<td style="text-align: left;">Train</td>
+<td style="text-align: left;">20%</td>
+<td style="text-align: left;">45.86 ms</td>
+<td style="text-align: left;">33.16 ms</td>
+<td style="text-align: left;">15.00 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">3.06x</td>
+<td style="text-align: left;">2.21x</td>
+</tr>
+<tr>
+<td style="text-align: left;">TransformerDecoder</td>
+<td style="text-align: left;">Infer</td>
+<td style="text-align: left;">35%</td>
+<td style="text-align: left;">46.33 ms</td>
+<td style="text-align: left;">10.91 ms</td>
+<td style="text-align: left;">9.19 ms</td>
+<td style="text-align: left;">2.91 ms</td>
+<td style="text-align: left;">5.04x</td>
+<td style="text-align: left;">1.19x</td>
+</tr>
+<tr>
+<td style="text-align: left;">TransformerDecoder</td>
+<td style="text-align: left;">Train</td>
+<td style="text-align: left;">35%</td>
+<td style="text-align: left;">45.98 ms</td>
+<td style="text-align: left;">33.30 ms</td>
+<td style="text-align: left;">19.67 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">2.34x</td>
+<td style="text-align: left;">1.69x</td>
+</tr>
+<tr>
+<td style="text-align: left;">TransformerDecoder</td>
+<td style="text-align: left;">Infer</td>
+<td style="text-align: left;">77%</td>
+<td style="text-align: left;">43.79 ms</td>
+<td style="text-align: left;">11.02 ms</td>
+<td style="text-align: left;">9.41 ms</td>
+<td style="text-align: left;">7.47 ms</td>
+<td style="text-align: left;">4.65x</td>
+<td style="text-align: left;">1.17x</td>
+</tr>
+<tr>
+<td style="text-align: left;">TransformerDecoder</td>
+<td style="text-align: left;">Train</td>
+<td style="text-align: left;">77%</td>
+<td style="text-align: left;">46.18 ms</td>
+<td style="text-align: left;">33.50 ms</td>
+<td style="text-align: left;">36.00 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">1.28x</td>
+<td style="text-align: left;">0.93x</td>
+</tr>
+<tr>
+<td style="text-align: left;">Transformer</td>
+<td style="text-align: left;">Infer</td>
+<td style="text-align: left;">21%</td>
+<td style="text-align: left;">47.99 ms</td>
+<td style="text-align: left;">48.51 ms</td>
+<td style="text-align: left;">14.81 ms</td>
+<td style="text-align: left;">2.93 ms</td>
+<td style="text-align: left;">3.24x</td>
+<td style="text-align: left;">3.27x</td>
+</tr>
+<tr>
+<td style="text-align: left;">Transformer</td>
+<td style="text-align: left;">Train</td>
+<td style="text-align: left;">21%</td>
+<td style="text-align: left;">68.79 ms</td>
+<td style="text-align: left;">47.25 ms</td>
+<td style="text-align: left;">24.53 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">2.80x</td>
+<td style="text-align: left;">1.93x</td>
+</tr>
+<tr>
+<td style="text-align: left;">Transformer</td>
+<td style="text-align: left;">Infer</td>
+<td style="text-align: left;">40%</td>
+<td style="text-align: left;">47.54 ms</td>
+<td style="text-align: left;">47.52 ms</td>
+<td style="text-align: left;">14.26 ms</td>
+<td style="text-align: left;">5.39 ms</td>
+<td style="text-align: left;">3.34x</td>
+<td style="text-align: left;">3.33x</td>
+</tr>
+<tr>
+<td style="text-align: left;">Transformer</td>
+<td style="text-align: left;">Train</td>
+<td style="text-align: left;">40%</td>
+<td style="text-align: left;">69.03 ms</td>
+<td style="text-align: left;">47.49 ms</td>
+<td style="text-align: left;">32.72 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">2.11x</td>
+<td style="text-align: left;">1.45x</td>
+</tr>
+<tr>
+<td style="text-align: left;">Transformer</td>
+<td style="text-align: left;">Infer</td>
+<td style="text-align: left;">84%</td>
+<td style="text-align: left;">48.37 ms</td>
+<td style="text-align: left;">45.12 ms</td>
+<td style="text-align: left;">15.76 ms</td>
+<td style="text-align: left;">12.51 ms</td>
+<td style="text-align: left;">3.07x</td>
+<td style="text-align: left;">2.86x</td>
+</tr>
+<tr>
+<td style="text-align: left;">Transformer</td>
+<td style="text-align: left;">Train</td>
+<td style="text-align: left;">84%</td>
+<td style="text-align: left;">69.52 ms</td>
+<td style="text-align: left;">48.81 ms</td>
+<td style="text-align: left;">59.88 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">1.16x</td>
+<td style="text-align: left;">0.82x</td>
+</tr>
+<tr>
+<td style="text-align: left;">ResNet-50</td>
+<td style="text-align: left;">Infer</td>
+<td style="text-align: left;">41%</td>
+<td style="text-align: left;">42.42 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">219.49 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">0.19x</td>
+<td style="text-align: left;">N/A</td>
+</tr>
+<tr>
+<td style="text-align: left;">ResNet-50</td>
+<td style="text-align: left;">Train</td>
+<td style="text-align: left;">41%</td>
+<td style="text-align: left;">221.80 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">513.08 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">0.43x</td>
+<td style="text-align: left;">N/A</td>
+</tr>
+<tr>
+<td style="text-align: left;">ResNet-50</td>
+<td style="text-align: left;">Infer</td>
+<td style="text-align: left;">52%</td>
+<td style="text-align: left;">42.56 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">246.27 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">0.17x</td>
+<td style="text-align: left;">N/A</td>
+</tr>
+<tr>
+<td style="text-align: left;">ResNet-50</td>
+<td style="text-align: left;">Train</td>
+<td style="text-align: left;">52%</td>
+<td style="text-align: left;">221.37 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">551.29 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">0.40x</td>
+<td style="text-align: left;">N/A</td>
+</tr>
+<tr>
+<td style="text-align: left;">ResNet-50</td>
+<td style="text-align: left;">Infer</td>
+<td style="text-align: left;">81%</td>
+<td style="text-align: left;">42.60 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">318.03 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">0.13x</td>
+<td style="text-align: left;">N/A</td>
+</tr>
+<tr>
+<td style="text-align: left;">ResNet-50</td>
+<td style="text-align: left;">Train</td>
+<td style="text-align: left;">81%</td>
+<td style="text-align: left;">229.88 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">709.83 ms</td>
+<td style="text-align: left;">ERR ms</td>
+<td style="text-align: left;">0.32x</td>
+<td style="text-align: left;">N/A</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Note:</strong> ResNet-50 uses per-element dispatch (each image processed individually through conv/pool/BN layers). Inference is slower than padded due to per-element repacking overhead. BatchNorm statistics are computed correctly across all elements via concatenated storage.</p>
+</blockquote>
+<h3 id="operators">Operators<a class="headerlink" href="#operators" title="Permanent link">&para;</a></h3>
+<p>Synthetic operator benchmarks covering common transformer-hot ops and tensor primitives across padded tensors, DanLing <code>NestedTensor</code>, and <code>torch.nested</code>.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Operator</th>
+<th style="text-align: left;">Occ.</th>
+<th style="text-align: left;">Padded (eager)</th>
+<th style="text-align: left;">Padded (compiled)</th>
+<th style="text-align: left;">DanLing (eager)</th>
+<th style="text-align: left;">DanLing (compiled)</th>
+<th style="text-align: left;">torch.nested (eager)</th>
+<th style="text-align: left;">torch.nested (compiled)</th>
+<th style="text-align: left;">DL vs Padded</th>
+<th style="text-align: left;">DL vs torch.nested</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">F.linear</td>
+<td style="text-align: left;">35%</td>
+<td style="text-align: left;">0.05 ms</td>
+<td style="text-align: left;">0.05 ms</td>
+<td style="text-align: left;">0.13 ms</td>
+<td style="text-align: left;">0.17 ms</td>
+<td style="text-align: left;">0.13 ms</td>
+<td style="text-align: left;">0.39 ms</td>
+<td style="text-align: left;">0.27x</td>
+<td style="text-align: left;">2.29x</td>
+</tr>
+<tr>
+<td style="text-align: left;">F.layer_norm</td>
+<td style="text-align: left;">35%</td>
+<td style="text-align: left;">0.17 ms</td>
+<td style="text-align: left;">0.05 ms</td>
+<td style="text-align: left;">0.10 ms</td>
+<td style="text-align: left;">0.16 ms</td>
+<td style="text-align: left;">0.20 ms</td>
+<td style="text-align: left;">0.38 ms</td>
+<td style="text-align: left;">0.28x</td>
+<td style="text-align: left;">2.36x</td>
+</tr>
+<tr>
+<td style="text-align: left;">F.relu</td>
+<td style="text-align: left;">35%</td>
+<td style="text-align: left;">0.05 ms</td>
+<td style="text-align: left;">0.05 ms</td>
+<td style="text-align: left;">0.09 ms</td>
+<td style="text-align: left;">0.16 ms</td>
+<td style="text-align: left;">0.10 ms</td>
+<td style="text-align: left;">0.37 ms</td>
+<td style="text-align: left;">0.29x</td>
+<td style="text-align: left;">2.38x</td>
+</tr>
+<tr>
+<td style="text-align: left;">F.gelu</td>
+<td style="text-align: left;">35%</td>
+<td style="text-align: left;">0.08 ms</td>
+<td style="text-align: left;">0.08 ms</td>
+<td style="text-align: left;">0.08 ms</td>
+<td style="text-align: left;">0.16 ms</td>
+<td style="text-align: left;">0.10 ms</td>
+<td style="text-align: left;">0.36 ms</td>
+<td style="text-align: left;">0.51x</td>
+<td style="text-align: left;">2.33x</td>
+</tr>
+<tr>
+<td style="text-align: left;">F.softmax</td>
+<td style="text-align: left;">35%</td>
+<td style="text-align: left;">0.12 ms</td>
+<td style="text-align: left;">0.06 ms</td>
+<td style="text-align: left;">0.11 ms</td>
+<td style="text-align: left;">0.16 ms</td>
+<td style="text-align: left;">0.15 ms</td>
+<td style="text-align: left;">0.37 ms</td>
+<td style="text-align: left;">0.36x</td>
+<td style="text-align: left;">2.31x</td>
+</tr>
+<tr>
+<td style="text-align: left;">F.embedding</td>
+<td style="text-align: left;">35%</td>
+<td style="text-align: left;">0.04 ms</td>
+<td style="text-align: left;">0.04 ms</td>
+<td style="text-align: left;">0.15 ms</td>
+<td style="text-align: left;">0.16 ms</td>
+<td style="text-align: left;">0.14 ms</td>
+<td style="text-align: left;">0.36 ms</td>
+<td style="text-align: left;">0.25x</td>
+<td style="text-align: left;">2.27x</td>
+</tr>
+<tr>
+<td style="text-align: left;">torch.matmul</td>
+<td style="text-align: left;">35%</td>
+<td style="text-align: left;">0.04 ms</td>
+<td style="text-align: left;">0.05 ms</td>
+<td style="text-align: left;">0.17 ms</td>
+<td style="text-align: left;">0.17 ms</td>
+<td style="text-align: left;">0.15 ms</td>
+<td style="text-align: left;">0.39 ms</td>
+<td style="text-align: left;">0.28x</td>
+<td style="text-align: left;">2.31x</td>
+</tr>
+<tr>
+<td style="text-align: left;">torch.add</td>
+<td style="text-align: left;">35%</td>
+<td style="text-align: left;">0.05 ms</td>
+<td style="text-align: left;">0.05 ms</td>
+<td style="text-align: left;">0.12 ms</td>
+<td style="text-align: left;">0.15 ms</td>
+<td style="text-align: left;">0.11 ms</td>
+<td style="text-align: left;">0.36 ms</td>
+<td style="text-align: left;">0.29x</td>
+<td style="text-align: left;">2.36x</td>
+</tr>
+</tbody>
+</table>
 
 
 
@@ -1045,7 +2152,7 @@
     <span class="md-icon" title="最后更新">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime" title="April 9, 2025 07:30:49 UTC">2025-04-09 07:30:49</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime" title="August 9, 2024 08:24:01 UTC">2024-08-09 08:24:01</span>
   </span>
 
     
@@ -1268,10 +2375,11 @@
     
     
       
-      <script id="__config" type="application/json">{"base": "../..", "features": ["announce.dismiss", "content.code.annotate", "content.code.copy", "content.code.select", "content.tabs.link", "content.tooltips", "header.autohide", "navigation.expand", "navigation.footer", "navigation.indexes", "navigation.instant", "navigation.instant.prefetch", "navigation.instant.progress", "navigation.prune", "navigation.sections", "navigation.tabs", "navigation.tabs.sticky", "navigation.top", "navigation.tracking", "search.highlight", "search.share", "search.suggest", "toc.follow"], "search": "../../assets/javascripts/workers/search.973d3a69.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["announce.dismiss", "content.code.annotate", "content.code.copy", "content.code.select", "content.tabs.link", "content.tooltips", "header.autohide", "navigation.expand", "navigation.footer", "navigation.indexes", "navigation.instant", "navigation.instant.prefetch", "navigation.instant.progress", "navigation.prune", "navigation.sections", "navigation.tabs", "navigation.tabs.sticky", "navigation.top", "navigation.tracking", "search.highlight", "search.share", "search.suggest", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.f55a23d4.min.js"></script>
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
       
         <script src="../../javascripts/mathjax.js"></script>
       

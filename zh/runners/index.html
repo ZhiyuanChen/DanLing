@@ -36,11 +36,18 @@
         <link rel="next" href="config/">
       
       
+        
+          <link rel="alternate" href="../../runners/" hreflang="en">
+        
+          <link rel="alternate" href="./" hreflang="zh">
+        
+      
+      
         <link rel="alternate" type="application/rss+xml" title="RSS 订阅" href="../../feed_rss_created.xml">
         <link rel="alternate" type="application/rss+xml" title="已更新内容的 RSS 订阅" href="../../feed_rss_updated.xml">
       
       <link rel="icon" href="../../assets/images/logo.ico">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.23">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
     
     
       
@@ -48,10 +55,10 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.84d31ad4.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
       
         
-        <link rel="stylesheet" href="../../assets/stylesheets/palette.06af60db.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -88,7 +95,6 @@
 
     
     
-    
   </head>
   
   
@@ -106,6 +112,11 @@
     <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
     <label class="md-overlay" for="__drawer"></label>
     <div data-md-component="skip">
+      
+        
+        <a href="#danling-runner" class="md-skip">
+          跳转至
+        </a>
       
     </div>
     <div data-md-component="announce">
@@ -495,9 +506,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     DanLing
+  
+
     
   </span>
+  
   
 
       </a>
@@ -515,10 +531,6 @@
   
     
     
-      
-        
-      
-        
       
         
       
@@ -557,9 +569,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     Runners
+  
+
     
   </span>
+  
   
 
             </a>
@@ -574,7 +591,11 @@
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_2">
             <span class="md-nav__icon md-icon"></span>
-            Runners
+            
+  
+    Runners
+  
+
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
@@ -590,9 +611,14 @@
   
   
   <span class="md-ellipsis">
-    Config
+    
+  
+    RunnerConfig
+  
+
     
   </span>
+  
   
 
       </a>
@@ -608,14 +634,19 @@
   
   
     <li class="md-nav__item">
-      <a href="../../runners/runners.md" class="md-nav__link">
+      <a href="runner/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
+    
+  
     Runner
+  
+
     
   </span>
+  
   
 
       </a>
@@ -636,55 +667,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     TorchRunner
+  
+
     
   </span>
   
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="deepspeed_runner/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    DeepSpeedRunner
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="accelerate_runner/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    AccelerateRunner
-    
-  </span>
   
 
       </a>
@@ -705,9 +695,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     BaseRunner
+  
+
     
   </span>
+  
   
 
       </a>
@@ -728,9 +723,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     Utilities
+  
+
     
   </span>
+  
   
 
       </a>
@@ -754,8 +754,6 @@
   
     
     
-      
-        
       
         
       
@@ -788,9 +786,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     Tensors
+  
+
     
   </span>
+  
   
 
       
@@ -840,9 +843,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     Optim
+  
+
     
   </span>
+  
   
 
       
@@ -902,9 +910,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     Metrics
+  
+
     
   </span>
+  
   
 
       
@@ -960,9 +973,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     Utils
+  
+
     
   </span>
+  
   
 
       
@@ -988,9 +1006,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     package
+  
+
     
   </span>
+  
   
 
       </a>
@@ -1040,9 +1063,14 @@
   
   
   <span class="md-ellipsis">
+    
+  
     About
+  
+
     
   </span>
+  
   
 
       
@@ -1073,6 +1101,137 @@
   
   
   
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#core-apis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core APIs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#baserunner-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        BaseRunner contract
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#launch-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Launch modes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#checkpoint-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Checkpoint semantics
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dataloader-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dataloader state
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#torchft" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TorchFT
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#directory-hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Directory hierarchy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#runner-state-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Runner state layout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#runner-construction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Runner Construction
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pipeline-aware-hooks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pipeline-aware hooks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#platform-support" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Platform support
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
   
 </nav>
                   </div>
@@ -1082,6 +1241,7 @@
           
           
             <div class="md-content" data-md-component="content">
+              
               <article class="md-content__inner md-typeset">
                  
                   
@@ -1091,9 +1251,352 @@
   
 
 
-  <h1>Runners</h1>
-
-
+<h1 id="danling-runner">DanLing Runner<a class="headerlink" href="#danling-runner" title="Permanent link">&para;</a></h1>
+<p>DanLing runners are now <strong>Torch-only</strong> and focus on scalable distributed training.</p>
+<p>The new design borrows from TorchTitan&rsquo;s Trainer philosophy:</p>
+<ul>
+<li>A single, explicit training lifecycle</li>
+<li>Backend-agnostic extension through <code>Runner</code>, with opt-in stack-specific subclasses when needed</li>
+<li>Backend-specific distributed logic in dedicated subclass runners</li>
+<li>Minimal shared contracts in <code>BaseRunner</code></li>
+</ul>
+<h2 id="core-apis">Core APIs<a class="headerlink" href="#core-apis" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>RunnerConfig</code>: <code>chanfig</code>-based long-term configuration surface</li>
+<li><code>Runner</code>: stack-selecting backend-agnostic entrypoint (<code>ddp</code>/<code>torch</code>, <code>deepspeed</code>/<code>ds</code>, <code>parallel</code>; default <code>ddp</code>)</li>
+<li><code>TorchRunner</code>: shared Torch training core with explicit epoch-mode and step-mode loops</li>
+<li><code>TorchRunner</code> / <code>ParallelRunner</code> / <code>DeepSpeedRunner</code>: class-based stack runners</li>
+</ul>
+<p>Parallel topology is configured through semantic axes:</p>
+<div class="language-yaml highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">YAML</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-1">1</a></span>
+<span class="normal"><a href="#__codelineno-0-2">2</a></span>
+<span class="normal"><a href="#__codelineno-0-3">3</a></span>
+<span class="normal"><a href="#__codelineno-0-4">4</a></span>
+<span class="normal"><a href="#__codelineno-0-5">5</a></span>
+<span class="normal"><a href="#__codelineno-0-6">6</a></span>
+<span class="normal"><a href="#__codelineno-0-7">7</a></span>
+<span class="normal"><a href="#__codelineno-0-8">8</a></span>
+<span class="normal"><a href="#__codelineno-0-9">9</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1"></a><span class="nt">parallel</span><span class="p">:</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2"></a><span class="w">  </span><span class="nt">axes</span><span class="p">:</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3"></a><span class="w">    </span><span class="nt">replicate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4"></a><span class="w">    </span><span class="nt">shard</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5"></a><span class="w">    </span><span class="nt">context</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6"></a><span class="w">    </span><span class="nt">pipeline</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7"></a><span class="w">    </span><span class="nt">tensor</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8"></a><span class="w">    </span><span class="nt">expert</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9"></a><span class="w">    </span><span class="nt">expert_tensor</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</span></code></pre></div></td></tr></table></div>
+<p>Data loading and metric reduction are scoped to the logical <code>data</code> domain.
+Middle pipeline stages automatically use step-only proxy loaders so pipeline schedules
+preserve step count and dataloader state without consuming real input batches locally.
+Optimizer control decisions, such as non-finite-gradient skip, are reduced over
+the <code>optimizer</code> domain covering all configured parallel axes so stages/shards do
+not diverge on step/skip boundaries.
+<code>TorchRunner</code>-based stacks build <code>torchdata.stateful_dataloader.StatefulDataLoader</code>
+by default so train dataloader progress is checkpointable across restart paths.
+Explicit user-provided dataloaders are not rewrapped.</p>
+<p><code>ParallelRunner</code> exposes topology-, pipeline-, and FSDP-aware extension points:</p>
+<ul>
+<li><code>build_topology</code>: validate/construct ordered parallel axes from config + world state</li>
+<li><code>init_model_parallel_groups</code>: initialize model-parallel process groups/device mesh</li>
+<li><code>parallelize_model</code>: apply model-specific TP/CP/EP transforms before compile/FSDP wrapping</li>
+<li><code>build_pipeline_schedule</code>: build <code>torch.distributed.pipelining</code> schedule from config</li>
+<li><code>bind_pipeline_modules</code>: bind local model parts to pipeline stages</li>
+<li><code>apply_activation_checkpointing</code>: wrap local model parts before compile/FSDP wrapping</li>
+<li><code>fsdp_kwargs</code> / <code>build_mixed_precision_policy</code> / <code>build_offload_policy</code>: customize FSDP wrapping policy</li>
+<li><code>build_optimizer</code>: deduplicate parameters across local model parts before optimizer build</li>
+</ul>
+<p>If any of <code>parallel.axes.tensor</code>, <code>parallel.axes.context</code>, <code>parallel.axes.expert</code>,
+or <code>parallel.axes.expert_tensor</code> is greater than <code>1</code>, the model must either expose
+<code>model.parallelize(parallel_context)</code> or the runner must override
+<code>parallelize_model</code>. DanLing intentionally does not silently no-op model-parallel
+axes, because TP/CP/EP transforms are model-architecture specific.</p>
+<h2 id="baserunner-contract">BaseRunner contract<a class="headerlink" href="#baserunner-contract" title="Permanent link">&para;</a></h2>
+<p><code>BaseRunner</code> is inheritance-first and keeps only cross-backend functionality.
+There is no plugin/spec registry layer.</p>
+<p>Construction is intentionally direct: subclasses set concrete components in
+<code>__init__</code>, call <code>super().__init__(config)</code>, then assign model/data/optimizer
+objects. <code>MetaRunner</code> invokes <code>__post_init__</code> after subclass construction so
+concrete runners can materialize models, optimizers, checkpoint state, and
+metadata once user-owned attributes are present.</p>
+<p>Execution API stubs in <code>BaseRunner</code> (all overridable):</p>
+<ul>
+<li><code>train</code> / <code>train_epoch</code> / <code>train_steps</code> / <code>train_step</code></li>
+<li><code>evaluate</code> / <code>evaluate_epoch</code> / <code>evaluate_steps</code> / <code>evaluate_step</code></li>
+<li><code>infer</code></li>
+</ul>
+<p>Step-mode semantics:</p>
+<ul>
+<li><code>train</code> dispatches to <code>train_steps</code> when <code>epochs</code> is unset (<code>is_step_mode=True</code>).</li>
+<li><code>TorchRunner</code> keeps epoch-mode and step-mode loops separate on purpose to keep control flow local and
+  override points explicit.</li>
+<li><code>evaluate_steps(split, steps=None)</code> is always bounded-step evaluation.
+  When <code>steps</code> is omitted, it defaults to <code>max(steps_budget // 20, 1)</code>.</li>
+</ul>
+<p>Checkpoint/score contracts (all overridable):</p>
+<ul>
+<li><code>load_model</code></li>
+<li><code>read_checkpoint</code></li>
+<li><code>load_optimizer</code> / <code>load_scheduler</code></li>
+<li><code>load_state_dict</code></li>
+<li><code>scores</code></li>
+<li><code>best_index</code></li>
+</ul>
+<h2 id="launch-modes">Launch modes<a class="headerlink" href="#launch-modes" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Scratch: <code>runner = Runner(config)</code></li>
+<li>Resume: <code>runner = Runner.from_checkpoint(checkpoint)</code> or <code>runner.load_checkpoint(checkpoint)</code></li>
+<li>Finetune: <code>runner = Runner.from_pretrained(config, checkpoint)</code> or <code>runner.load_pretrained(checkpoint)</code></li>
+</ul>
+<p>Config source hints:</p>
+<ul>
+<li><code>config.auto_resume</code>: when enabled, auto-resume from backend latest checkpoint source</li>
+<li><code>config.resume</code>: source used for full-state resume workflows</li>
+<li><code>config.pretrained</code>: source used for model-only initialization workflows</li>
+<li><code>config.checkpoint</code>: checkpoint policy only (backend/async/interval/retention), never a source path</li>
+</ul>
+<p>Source precedence:</p>
+<ul>
+<li><code>resume</code> &gt; <code>auto_resume</code> &gt; <code>pretrained</code></li>
+</ul>
+<h2 id="checkpoint-semantics">Checkpoint semantics<a class="headerlink" href="#checkpoint-semantics" title="Permanent link">&para;</a></h2>
+<p>The user-facing checkpoint contract is intentionally small:</p>
+<ul>
+<li><code>latest</code>: the most recent persisted full-state checkpoint.</li>
+<li><code>best</code>: the best persisted full-state checkpoint, updated only when <code>save_best=True</code> and the current score is best.</li>
+<li>History checkpoints: periodic snapshots created by the training loop.</li>
+<li>epoch mode: <code>ckpt-e{completed_epoch:06d}</code></li>
+<li>step mode: <code>ckpt-s{global_step:012d}</code></li>
+<li><code>checkpoint.keep_latest_k</code>: number of framework-generated historical checkpoints to retain.
+  <code>0</code> disables automatic retention pruning. When enabled, current <code>latest</code> and <code>best</code> targets are protected.</li>
+</ul>
+<p>Periodic checkpoint attempts are controlled by <code>checkpoint_interval</code>.
+When <code>checkpoint_interval</code> is unset, runner defaults are used by mode (<code>epochs</code>: every epoch, <code>steps</code>: budget/20).
+Forced checkpoints, including final and graceful-shutdown checkpoints, bypass the interval and update <code>latest</code>.</p>
+<p>Backend storage is an implementation detail:</p>
+<ul>
+<li>File backend stores <code>latest.pth</code>, <code>best.pth</code>, and <code>ckpt-*.pth</code>.
+  <code>best</code> and history files are updated from <code>latest</code> via hardlink-first aliasing with copy fallback.
+  It is intended for local, single-process, and small-run workflows. In async mode it snapshots live tensors before
+  background writes; use DCP for distributed or large-model training.</li>
+<li>DCP backend exposes the same logical names (<code>latest</code>, <code>best</code>, <code>ckpt-*</code>) but stores immutable physical target directories plus pointer files.
+  This avoids overwriting checkpoints while async writers or external readers may still hold references.</li>
+<li>DeepSpeed backend stores engine checkpoint tag directories plus pointer files for the same logical names.</li>
+<li>Retention policy is enforced by DanLing-managed file and DCP checkpoint managers.</li>
+</ul>
+<p>Rank participation contract:</p>
+<ul>
+<li><code>BaseRunner.save_checkpoint</code> is main-process only and backs file-style single-writer saves.</li>
+<li><code>TorchRunner.save_checkpoint</code> bypasses that main-process guard when <code>checkpoint.backend="dcp"</code>; all ranks must participate in DCP saves.</li>
+<li><code>DeepSpeedRunner.save_checkpoint</code> uses DeepSpeed engine checkpointing; all ranks participate in those saves.</li>
+<li>When <code>config.ft.enabled=True</code> under <code>TorchRunner</code>/DDP or <code>ParallelRunner</code> FSDP, full DCP saves are gated to the TorchFT participating replica group.
+  Other replica groups save only their per-replica dataloader state.</li>
+</ul>
+<p>Checkpoint persistence internals are implemented under <code>danling.runners.checkpoints</code>:</p>
+<ul>
+<li><code>CheckpointManager</code>: base contract</li>
+<li><code>FileCheckpointManager</code>: default async filesystem manager with reliable history/best queueing plus latest-wins coalescing for non-critical saves</li>
+<li><code>TorchDistributedCheckpointManager</code>: Torch DCP backend used when <code>checkpoint.backend="dcp"</code> in <code>TorchRunner</code></li>
+</ul>
+<p><code>ParallelRunner</code> forces <code>checkpoint.backend="dcp"</code> by default.</p>
+<h2 id="dataloader-state">Dataloader state<a class="headerlink" href="#dataloader-state" title="Permanent link">&para;</a></h2>
+<p>Full-state checkpoints include split-keyed dataloader progress under the top-level
+<code>dataloaders</code> payload.</p>
+<ul>
+<li><code>TorchRunner.build_dataloaders()</code> uses <code>StatefulDataLoader</code> for datasets that have not already been materialized.</li>
+<li>User-provided dataloaders participate when they implement <code>state_dict()</code> and <code>load_state_dict()</code>.</li>
+<li>Non-stateful dataloaders are skipped rather than wrapped or special-cased.</li>
+<li><code>BaseRunner.load_checkpoint()</code> restores dataloaders after model/EMA/optimizer/scheduler state.</li>
+<li>DCP checkpoints carry dataloader state in the main checkpoint payload.</li>
+<li>With TorchFT enabled, per-replica dataloader checkpoints take precedence over the main checkpoint dataloader payload during restore.</li>
+<li><code>ParallelRunner</code> middle-stage proxy loaders delegate <code>state_dict()</code> and <code>load_state_dict()</code> to the real first-stage loader while yielding placeholders locally.</li>
+</ul>
+<h2 id="torchft">TorchFT<a class="headerlink" href="#torchft" title="Permanent link">&para;</a></h2>
+<p>DanLing has an opt-in TorchFT integration for replicated-weight runners:</p>
+<ul>
+<li>enable with <code>config.ft.enabled=True</code></li>
+<li>configure replica layout with:</li>
+<li><code>ft.replica_id</code></li>
+<li><code>ft.group_size</code></li>
+<li><code>ft.min_replica_size</code></li>
+<li><code>ft.process_group</code></li>
+<li><code>ft.process_group_timeout_ms</code></li>
+<li>requires the external <code>torchft</code> package and a TorchFT lighthouse setup</li>
+</ul>
+<p>Current scope:</p>
+<ul>
+<li>supported: <code>TorchRunner</code>/DDP, <code>ParallelRunner</code> FSDP without tensor/pipeline axes</li>
+<li>not yet supported: <code>ParallelRunner</code> tensor/pipeline runs, <code>DeepSpeedRunner</code></li>
+</ul>
+<p>Current launch contract:</p>
+<ul>
+<li>launch one <code>torchrun</code> per replica group</li>
+<li><code>WORLD_SIZE</code> is replica-local data-parallel size, while <code>ft.group_size</code> counts replica groups</li>
+<li>a single global <code>torchrun</code> spanning all replica groups is not a supported TorchFT launch mode</li>
+</ul>
+<p>When TorchFT is enabled:</p>
+<ul>
+<li>dataloader sharding and seed bias are expanded across replica groups using <code>ft.replica_id</code> and <code>ft.group_size</code></li>
+<li>FSDP2 replicated-dimension all-reduce hooks use TorchFT-managed process groups</li>
+<li>loss/normalizer logging reductions use the TorchFT managed replica group when available</li>
+<li>per-replica dataloader checkpoints are enabled automatically through the DCP checkpoint manager and win over main-checkpoint dataloader state on restore</li>
+</ul>
+<p>Distributed state-dict invariants:</p>
+<ul>
+<li>Parallel distributed runs require DCP state-dict APIs for model/optimizer restore.</li>
+<li>Checkpoint restore order is model -&gt; EMA -&gt; optimizer -&gt; scheduler -&gt; dataloaders.</li>
+<li>File checkpoint fallback is only for non-distributed/basic flows.</li>
+</ul>
+<p>Async policy is configured by <code>checkpoint.async_mode</code>:</p>
+<ul>
+<li><code>disabled</code>: synchronous checkpoint writes</li>
+<li><code>async</code>: asynchronous uploads</li>
+<li><code>async_with_pinned_mem</code>: process-based async uploads with staging hook support (<code>maybe_wait_for_staging</code>)</li>
+</ul>
+<p>When <code>checkpoint.async_mode</code> is unset, DanLing falls back to legacy <code>checkpoint_async</code> (<code>True</code> -&gt; <code>async</code>, <code>False</code> -&gt; <code>disabled</code>).</p>
+<h2 id="directory-hierarchy">Directory hierarchy<a class="headerlink" href="#directory-hierarchy" title="Permanent link">&para;</a></h2>
+<p>DanLing now uses a stable run layout with per-attempt timestamps:</p>
+<p><code>workspace_root/lineage[-code_id]/id</code></p>
+<ul>
+<li><code>lineage</code>: top-level lineage namespace</li>
+<li><code>code_id</code>: git code identity (<code>&lt;short_sha&gt;</code> for clean trees, <code>&lt;short_sha&gt;-d&lt;diff_sha10&gt;</code> when dirty) appended to lineage when available</li>
+<li><code>experiment</code>: experiment namespace</li>
+<li><code>config_id</code>: deterministic hash of canonical config (<code>hash(config)</code> derived)</li>
+<li><code>id</code>: stable run identifier, defaults to <code>code_id-config_id</code> when git metadata is available and <code>config_id</code> otherwise</li>
+<li>
+<p><code>timestamp</code>: per-attempt runtime timestamp
+  By default:</p>
+</li>
+<li>
+<p><code>dir</code> points to <code>workspace_root/lineage[-code_id]/id</code></p>
+</li>
+<li>checkpoints and result snapshots are stored at <code>dir</code></li>
+<li>logs are stored as <code>dir/logs/{timestamp}.log</code></li>
+<li>tensorboard logs are stored as <code>dir/tensorboard/{timestamp}</code></li>
+<li>W&amp;B local run files default to <code>dir/wandb/</code> when W&amp;B logging is enabled</li>
+<li>reproducibility artifacts are stored at <code>dir/metadata</code>:</li>
+<li><code>config.full.yaml</code></li>
+<li><code>config.canonical.yaml</code></li>
+<li><code>config.diff.yaml</code> (diff against baseline/default config)</li>
+<li><code>git.yaml</code></li>
+<li><code>git.diff</code></li>
+<li>logging is initialized on the global main process only</li>
+</ul>
+<p><code>id</code> is stable across retries for the same run. <code>timestamp</code> changes for each attempt.</p>
+<h2 id="runner-state-layout">Runner state layout<a class="headerlink" href="#runner-state-layout" title="Permanent link">&para;</a></h2>
+<p><code>BaseRunner</code> uses a small checkpointed runtime boundary:</p>
+<ul>
+<li><code>runner</code>: config snapshot used for semantic resume validation</li>
+<li><code>state</code>: <code>RunnerState</code> training metadata (<code>train</code>, <code>elastic</code>, <code>rng</code>)</li>
+<li><code>dataloaders</code>: split-keyed progress for stateful dataloaders</li>
+</ul>
+<p>Concrete runners and checkpoint managers add model/EMA/optimizer/scheduler payloads
+around that shared boundary. Runtime metadata (<code>timestamp</code>, <code>mode</code>) and live
+trainable/data/metric objects (<code>model</code>, <code>optimizer</code>, <code>datasets</code>, <code>dataloaders</code>,
+<code>results</code>, <code>meters</code>, etc.) stay as direct runner attributes for minimal
+indirection in hot paths.</p>
+<h2 id="runner-construction">Runner Construction<a class="headerlink" href="#runner-construction" title="Permanent link">&para;</a></h2>
+<p><code>TorchRunner</code> is explicit-first: define components in your runner <code>__init__</code>.</p>
+<p>Example:</p>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-1-1"> 1</a></span>
+<span class="normal"><a href="#__codelineno-1-2"> 2</a></span>
+<span class="normal"><a href="#__codelineno-1-3"> 3</a></span>
+<span class="normal"><a href="#__codelineno-1-4"> 4</a></span>
+<span class="normal"><a href="#__codelineno-1-5"> 5</a></span>
+<span class="normal"><a href="#__codelineno-1-6"> 6</a></span>
+<span class="normal"><a href="#__codelineno-1-7"> 7</a></span>
+<span class="normal"><a href="#__codelineno-1-8"> 8</a></span>
+<span class="normal"><a href="#__codelineno-1-9"> 9</a></span>
+<span class="normal"><a href="#__codelineno-1-10">10</a></span>
+<span class="normal"><a href="#__codelineno-1-11">11</a></span>
+<span class="normal"><a href="#__codelineno-1-12">12</a></span>
+<span class="normal"><a href="#__codelineno-1-13">13</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">danling</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">dl</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">torch</span><span class="w"> </span><span class="kn">import</span> <span class="n">nn</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3"></a>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4"></a>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5"></a><span class="k">class</span><span class="w"> </span><span class="nc">MyRunner</span><span class="p">(</span><span class="n">dl</span><span class="o">.</span><span class="n">TorchRunner</span><span class="p">):</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6"></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">config</span><span class="p">):</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7"></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">model</span> <span class="o">=</span> <span class="n">MyModel</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">model</span><span class="p">)</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">criterion</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">CrossEntropyLoss</span><span class="p">()</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">optimizer</span> <span class="o">=</span> <span class="n">dl</span><span class="o">.</span><span class="n">OPTIMIZERS</span><span class="o">.</span><span class="n">build</span><span class="p">(</span><span class="n">params</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">parameters</span><span class="p">(),</span> <span class="o">**</span><span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">optim</span><span class="p">)</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11"></a>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12"></a><span class="n">config</span> <span class="o">=</span> <span class="n">dl</span><span class="o">.</span><span class="n">RunnerConfig</span><span class="p">()</span>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13"></a><span class="n">runner</span> <span class="o">=</span> <span class="n">MyRunner</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+</span></code></pre></div></td></tr></table></div>
+<p>For class-based stack presets:</p>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-2-1"> 1</a></span>
+<span class="normal"><a href="#__codelineno-2-2"> 2</a></span>
+<span class="normal"><a href="#__codelineno-2-3"> 3</a></span>
+<span class="normal"><a href="#__codelineno-2-4"> 4</a></span>
+<span class="normal"><a href="#__codelineno-2-5"> 5</a></span>
+<span class="normal"><a href="#__codelineno-2-6"> 6</a></span>
+<span class="normal"><a href="#__codelineno-2-7"> 7</a></span>
+<span class="normal"><a href="#__codelineno-2-8"> 8</a></span>
+<span class="normal"><a href="#__codelineno-2-9"> 9</a></span>
+<span class="normal"><a href="#__codelineno-2-10">10</a></span>
+<span class="normal"><a href="#__codelineno-2-11">11</a></span>
+<span class="normal"><a href="#__codelineno-2-12">12</a></span>
+<span class="normal"><a href="#__codelineno-2-13">13</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">danling</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">dl</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2"></a>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3"></a><span class="c1"># Default entrypoint is DDP preset:</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4"></a><span class="n">runner</span> <span class="o">=</span> <span class="n">dl</span><span class="o">.</span><span class="n">Runner</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>  <span class="c1"># -&gt; TorchRunner by default</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5"></a>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6"></a><span class="c1"># Explicit preset classes:</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7"></a><span class="n">ddp_runner</span> <span class="o">=</span> <span class="n">dl</span><span class="o">.</span><span class="n">TorchRunner</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8"></a><span class="n">parallel_runner</span> <span class="o">=</span> <span class="n">dl</span><span class="o">.</span><span class="n">ParallelRunner</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9"></a>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10"></a><span class="c1"># Stack selection through Runner:</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11"></a><span class="n">cfg</span> <span class="o">=</span> <span class="n">dl</span><span class="o">.</span><span class="n">RunnerConfig</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12"></a><span class="n">cfg</span><span class="o">.</span><span class="n">stack</span> <span class="o">=</span> <span class="s2">&quot;parallel&quot;</span>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13"></a><span class="n">parallel_from_runner</span> <span class="o">=</span> <span class="n">dl</span><span class="o">.</span><span class="n">Runner</span><span class="p">(</span><span class="n">cfg</span><span class="p">)</span>
+</span></code></pre></div></td></tr></table></div>
+<h2 id="pipeline-aware-hooks">Pipeline-aware hooks<a class="headerlink" href="#pipeline-aware-hooks" title="Permanent link">&para;</a></h2>
+<p><code>TorchRunner</code> exposes core training hooks that can be overridden:</p>
+<ul>
+<li><code>train_context</code></li>
+</ul>
+<p><code>ParallelRunner</code> wires pipeline execution through <code>build_pipeline_schedule</code> and
+<code>bind_pipeline_modules</code>, and routes train/eval/infer paths based on whether a
+pipeline schedule is active.</p>
+<p>When <code>parallel.axes.pipeline &gt; 1</code> and no explicit schedule is provided, <code>ParallelRunner</code> now
+builds a <code>torch.distributed.pipelining</code> schedule internally from
+<code>config.parallel.pipeline_schedule</code> (default: <code>"1F1B"</code>). The default is intentionally
+non-interleaved for current pipeline+FSDP stability, with migration to
+<code>"Interleaved1F1B"</code> planned after upstream issue
+<code>pytorch/pytorch#164756</code> is resolved.</p>
+<h2 id="platform-support">Platform support<a class="headerlink" href="#platform-support" title="Permanent link">&para;</a></h2>
+<p>Supported runner stacks:</p>
+<table>
+<thead>
+<tr>
+<th>Stack</th>
+<th>Checkpoint path</th>
+<th>Stateful dataloaders</th>
+<th>TorchFT runtime</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>torch</code> / <code>ddp</code></td>
+<td>file default, DCP opt-in</td>
+<td>default for built loaders</td>
+<td>supported</td>
+</tr>
+<tr>
+<td><code>parallel</code></td>
+<td>DCP default</td>
+<td>default plus pipeline proxy state delegation</td>
+<td>FSDP-only supported</td>
+</tr>
+<tr>
+<td><code>deepspeed</code> / <code>ds</code></td>
+<td>DeepSpeed engine checkpoint, file-style aliases</td>
+<td>default for built loaders via client state</td>
+<td>not supported</td>
+</tr>
+</tbody>
+</table>
 
 
 
@@ -1114,7 +1617,7 @@
     <span class="md-icon" title="最后更新">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime" title="June 30, 2023 09:12:14 UTC">2023-06-30 09:12:14</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime" title="August 9, 2024 08:24:01 UTC">2024-08-09 08:24:01</span>
   </span>
 
     
@@ -1219,13 +1722,13 @@
         
         
           
-          <a href="config/" class="md-footer__link md-footer__link--next" aria-label="下一页: Config">
+          <a href="config/" class="md-footer__link md-footer__link--next" aria-label="下一页: RunnerConfig">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 下一页
               </span>
               <div class="md-ellipsis">
-                Config
+                RunnerConfig
               </div>
             </div>
             <div class="md-footer__button md-icon">
@@ -1337,10 +1840,11 @@
     
     
       
-      <script id="__config" type="application/json">{"base": "../..", "features": ["announce.dismiss", "content.code.annotate", "content.code.copy", "content.code.select", "content.tabs.link", "content.tooltips", "header.autohide", "navigation.expand", "navigation.footer", "navigation.indexes", "navigation.instant", "navigation.instant.prefetch", "navigation.instant.progress", "navigation.prune", "navigation.sections", "navigation.tabs", "navigation.tabs.sticky", "navigation.top", "navigation.tracking", "search.highlight", "search.share", "search.suggest", "toc.follow"], "search": "../../assets/javascripts/workers/search.973d3a69.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["announce.dismiss", "content.code.annotate", "content.code.copy", "content.code.select", "content.tabs.link", "content.tooltips", "header.autohide", "navigation.expand", "navigation.footer", "navigation.indexes", "navigation.instant", "navigation.instant.prefetch", "navigation.instant.progress", "navigation.prune", "navigation.sections", "navigation.tabs", "navigation.tabs.sticky", "navigation.top", "navigation.tracking", "search.highlight", "search.share", "search.suggest", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.f55a23d4.min.js"></script>
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
       
         <script src="../../javascripts/mathjax.js"></script>
       
