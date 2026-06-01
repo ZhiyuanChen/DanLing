@@ -329,7 +329,9 @@ class TorchDistributedCheckpointManager(CheckpointManager):
         epochs = self.runner.train_state.epoch if epochs is None else epochs
         if self.runner.config.get("checkpoint.load_only", False):
             return
-        if not self.should_persist_checkpoint(epochs=epochs, last_step=last_step, force=force):
+        should_persist = self.should_persist_checkpoint(epochs=epochs, last_step=last_step, force=force)
+        should_update_best = bool(save_best and self.runner.is_best)
+        if not should_persist and not should_update_best:
             return
 
         async_mode = self.checkpoint_async_mode()

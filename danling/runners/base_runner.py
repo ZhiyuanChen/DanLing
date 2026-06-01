@@ -955,8 +955,9 @@ class BaseRunner(metaclass=MetaRunner):
         main process only; collective managers require every rank to enter this
         method together.
 
-        **Called when:** training loops hit checkpoint cadence, final
-        `last_step` saves run, or the supervisor handles a shutdown signal.
+        **Called when:** training loops hit checkpoint cadence, the score
+        improves (to refresh the best alias), final `last_step` saves run, or
+        the supervisor handles a shutdown signal.
 
         Args:
             name: Logical checkpoint alias, usually `"latest"` or `"best"`.

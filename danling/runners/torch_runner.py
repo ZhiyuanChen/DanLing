@@ -1651,8 +1651,9 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         Run epoch-mode training until `self.epochs` is reached.
 
         Each epoch runs all train splits, then all evaluation splits, advances
-        epoch/metric schedulers, appends and writes results, and saves periodic
-        checkpoints.
+        epoch/metric schedulers, appends and writes results, saves periodic
+        checkpoints on `checkpoint_interval`, and refreshes the best checkpoint
+        whenever the score improves.
 
         **Called when:** `train` dispatches while `config.epochs` is set, or
         user code explicitly wants epoch-mode semantics.
@@ -1676,7 +1677,6 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         if total_epochs is None:
             raise ValueError("cannot run epoch-mode training: config.epochs is not set")
         print(f"train: epoch mode start epoch={self.train_state.epoch} total_epochs={total_epochs}")
-        checkpoint_cadence = self.checkpoint_interval
         early_stop_counter = 0
         patience = self.patience
         for epoch in range(self.train_state.epoch, total_epochs):
@@ -1694,8 +1694,9 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             print(self.format_epoch_result(result, epochs=epoch, total_epochs=total_epochs))
             self.save_result()
             self.train_state.epoch = epoch + 1
-            if checkpoint_cadence > 0 and self.train_state.epoch % checkpoint_cadence == 0:
-                self.save_checkpoint(epochs=epoch)
+            # Call every epoch: the manager persists periodic history on cadence and
+            # publishes `best.pth` whenever the score improved this epoch.
+            self.save_checkpoint(epochs=epoch)
             early_stop_counter = 0 if self.is_best else early_stop_counter + 1
             if early_stop_counter > patience:
                 print("train: early-stop triggered")
@@ -1721,8 +1722,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             Epoch-level metric mapping for this split.
 
         **Side effects:** updates optimizer state through `train_step`,
-        advances `train_state.global_step` on optimizer flushes, writes step
-        logs, and may save step-cadence checkpoints.
+        advances `train_state.global_step` on optimizer flushes, and writes
+        step logs.
 
         !!! danger "Do not"
             - Call this for evaluation data; use `evaluate_epoch`.
@@ -1758,11 +1759,9 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             self.optimizer_container.zero_grad()
         elif self.optimizer is not None:
             self.optimizer.zero_grad()
-        checkpoint_cadence = self.checkpoint_interval
 
         for iteration, data, will_flush in self._iter_train_batches(loader):
             self.supervisor.maybe_handle_termination_signal()
-            step_before = self.train_state.global_step
             # Positive int = weighted-loss signal; None = no signal (uniform window).
             # 0 or missing collapses to None so the accumulation state machine
             # picks "uniform" cleanly instead of being silently coerced to 1.
@@ -1787,10 +1786,6 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                 # criteria that emit a real loss for zero-valid-token batches are not supported here.
                 self.meters.loss.update(loss.detach(), n=loss_n or 1)
             telemetry.observe(iteration=iteration, data=data, current_time=current_time)
-
-            step_after = self.train_state.global_step
-            if checkpoint_cadence > 0 and step_after != step_before and step_after % checkpoint_cadence == 0:
-                self.save_checkpoint()
 
             if self.log_interval > 0 and (
                 (iteration > 0 and iteration % self.log_interval == 0) or iteration == length

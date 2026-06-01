@@ -70,7 +70,15 @@ class FileCheckpointManager(CheckpointManager):
         force: bool = False,
     ) -> None:
         epochs = self.runner.train_state.epoch if epochs is None else epochs
-        if not self.should_persist_checkpoint(epochs=epochs, last_step=last_step, force=force):
+        if self.runner.config.get("checkpoint.load_only", False):
+            return
+        # Periodic history and the `best` alias have independent cadences: history fires
+        # on `checkpoint_interval`/`last_step`/`force`, while `best` fires whenever the
+        # score improves. Persist when either is due so an improving non-cadence step
+        # still publishes `best.pth` (and the `latest.pth` it is aliased from).
+        should_persist = self.should_persist_checkpoint(epochs=epochs, last_step=last_step, force=force)
+        should_update_best = bool(save_best and self.runner.is_best)
+        if not should_persist and not should_update_best:
             return
 
         payload = self.build_checkpoint_payload(last_step=last_step)
@@ -80,8 +88,8 @@ class FileCheckpointManager(CheckpointManager):
         task = CheckpointTask(
             payload=payload,
             name=name,
-            history_name=self.resolve_history_name(epochs, suffix=".pth"),
-            should_update_best=bool(save_best and self.runner.is_best),
+            history_name=self.resolve_history_name(epochs, suffix=".pth") if should_persist else None,
+            should_update_best=should_update_best,
         )
         if async_mode == "async_with_pinned_mem" and not self._warned_unsupported_staging_mode:
             warn(
@@ -109,7 +117,8 @@ class FileCheckpointManager(CheckpointManager):
     @classmethod
     def _snapshot_payload(cls, payload: Any) -> Any:
         if torch.is_tensor(payload):
-            return payload.detach().clone()
+            payload = payload.detach()
+            return payload.cpu() if payload.is_cuda else payload.clone()
         if isinstance(payload, Mapping):
             return {key: cls._snapshot_payload(value) for key, value in payload.items()}
         if isinstance(payload, list):
