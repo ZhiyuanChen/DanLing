@@ -54,8 +54,17 @@ except Exception:  # pragma: no cover - optional dependency/runtime
 # ---------------------------------------------------------------------------
 
 
+def _unwrap_single_conv_arg(value):
+    if isinstance(value, (tuple, list)) and len(value) == 1:
+        return value[0]
+    return value
+
+
 def conv1d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1, *, _fn=None):
     r"""Use packed pointwise or spatial tile conv1d, otherwise fall back to per-element conv."""
+    stride = _unwrap_single_conv_arg(stride)
+    padding = _unwrap_single_conv_arg(padding)
+    dilation = _unwrap_single_conv_arg(dilation)
     if len(input) != 0:
         channel_dim = _packed_pointwise_conv1d_channel_dim(input, weight, stride, padding, dilation, groups)
         if channel_dim is not None:
@@ -1400,6 +1409,19 @@ class _SpatialTileConv1dCudnnFunction(torch.autograd.Function):
         )
 
 
+def _normalize_spatial_tile1d_str_padding(padding, weight, stride, dilation) -> int | None:
+    if padding == "valid":
+        return 0
+    if padding != "same" or not isinstance(weight, Tensor) or weight.dim() != 3:
+        return None
+    if not isinstance(stride, int) or stride != 1 or not isinstance(dilation, int):
+        return None
+    total = dilation * (int(weight.shape[2]) - 1)
+    if total % 2 != 0:
+        return None
+    return total // 2
+
+
 def _spatial_tile_conv1d(
     input: NestedTensor,
     weight: Tensor,
@@ -1417,6 +1439,10 @@ def _spatial_tile_conv1d(
     r"""Run ragged ``conv1d`` by batching fixed-size 1D tiles through PyTorch/cuDNN."""
     if triton is None or not _can_use_spatial_tile_convolution(input, weight, groups, rank=1, input_channel_dim=1):
         return None
+    if isinstance(padding, str):
+        padding = _normalize_spatial_tile1d_str_padding(padding, weight, stride, dilation)
+        if padding is None:
+            return None
     if not isinstance(stride, int) or not isinstance(padding, int) or not isinstance(dilation, int):
         return None
     stride_single = int(stride)

@@ -850,6 +850,28 @@ class TestIndexing:
         for a, b in zip(recombined, nt):
             torch.testing.assert_close(a, b)
 
+    def test_ellipsis_indexing_with_newaxis(self):
+        nt = NestedTensor([torch.randn(3, 4), torch.randn(5, 4)])
+        output = nt[..., None]
+        reference = NT([tensor[..., None] for tensor in nt], **nt._meta())
+        assert_close(output, reference)
+
+    def test_ellipsis_setitem_targets_last_dim(self):
+        nt = NestedTensor([torch.randn(3, 4), torch.randn(5, 4)])
+        reference = [t.clone() for t in nt]
+        nt[..., 0] = 0.0
+        for tensor in reference:
+            tensor[..., 0] = 0.0
+        for output, expected in zip(nt, reference):
+            assert_close(output, expected)
+
+    def test_duplicate_ellipsis_raises(self):
+        nt = NestedTensor([torch.randn(3, 4), torch.randn(5, 4)])
+        with pytest.raises(IndexError):
+            _ = nt[..., ..., 0]
+        with pytest.raises(IndexError):
+            nt[..., ..., 0] = -1.0
+
     def test_setitem_different_shape_slow_path(self):
         """Different-shape __setitem__ triggers full repack."""
         nt = NestedTensor([torch.tensor([1.0, 2.0, 3.0]), torch.tensor([4.0, 5.0])])

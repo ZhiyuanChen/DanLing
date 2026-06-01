@@ -64,13 +64,17 @@ def collate_pn_tensor_fn(batch, *, collate_fn_map: dict[type | tuple[type, ...],
     return NestedTensor(batch)
 
 
-def register_pn_tensor_collate(collate_fn_map: dict[type | tuple[type, ...], Callable] | None = None) -> None:
+def register_pn_tensor_collate(
+    collate_fn_map: dict[type | tuple[type, ...], Callable] | None = None,
+) -> None:
     r"""Register PNTensor collation into a collate map (default: PyTorch global map)."""
     target = default_collate_fn_map if collate_fn_map is None else collate_fn_map
     target[PNTensor] = collate_pn_tensor_fn
 
 
-def unregister_pn_tensor_collate(collate_fn_map: dict[type | tuple[type, ...], Callable] | None = None) -> None:
+def unregister_pn_tensor_collate(
+    collate_fn_map: dict[type | tuple[type, ...], Callable] | None = None,
+) -> None:
     r"""Remove PNTensor collation from a collate map (default: PyTorch global map)."""
     target = default_collate_fn_map if collate_fn_map is None else collate_fn_map
     target.pop(PNTensor, None)

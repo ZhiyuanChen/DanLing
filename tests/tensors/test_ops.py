@@ -63,9 +63,12 @@ class TestCompilePolicy:
         nt = NT([torch.randn(2, 3), torch.randn(1, 3)])
         assert not NestedTensorAtenRegistry.is_compile_safe(torch.ops.aten.sort.default, (nt, 1, False), {})
         assert not NestedTensorAtenRegistry.is_compile_safe(torch.ops.aten.topk.default, (nt, 2, 1, True, True), {})
-        assert not NestedTensorAtenRegistry.is_compile_safe(torch.ops.aten.cumsum.default, (nt, 1), {})
         assert not NestedTensorAtenRegistry.is_compile_safe(torch.ops.aten.cummax.default, (nt, 1), {})
         assert not NestedTensorAtenRegistry.is_compile_safe(torch.ops.aten.flip.default, (nt, [1]), {})
+
+    def test_aten_cumsum_registry_accepts_ragged_dim(self):
+        nt = NT([torch.randn(2, 3), torch.randn(1, 3)])
+        assert NestedTensorAtenRegistry.is_compile_safe(torch.ops.aten.cumsum.default, (nt, 1), {})
 
 
 class TestDimTranslation:

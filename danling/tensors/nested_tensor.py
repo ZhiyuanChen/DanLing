@@ -41,7 +41,9 @@ from .ops import (
     NestedTensorAtenRegistry,
     _batch_leading_valid_mask_from_sizes,
     _check_execution_guard,
+    _compile_unsupported,
     _ExecutionGuardKind,
+    _is_compiling,
 )
 
 try:
@@ -155,6 +157,8 @@ class NestedTensor(torch.Tensor):
     _cached_hierarchical_offsets: tuple[Tensor, ...] | None
     _cached_tensor_view: tuple[bool, float, tuple[int, int, int], Tensor] | None
     _cached_mask_view: tuple[bool, bool, tuple[int, int], Tensor] | None
+    _cached_packed_local_indices: dict[tuple[int, str, torch.dtype, tuple[int, int]], Tensor] | None
+    _cached_ragged_level_offsets: dict[tuple[int, str, torch.dtype, tuple[int, int]], Tensor] | None
     _SERIALIZATION_VERSION = 1
 
     # Construction & Initialization
@@ -396,11 +400,12 @@ class NestedTensor(torch.Tensor):
 
     @staticmethod
     def _offsets_from_sizes(sizes: Sequence[int], *, dtype: torch.dtype = torch.long) -> Tensor:
-        offsets = torch.empty((len(sizes) + 1,), dtype=dtype)
-        offsets[0] = 0
-        if sizes:
-            offsets[1:] = torch.cumsum(torch.tensor(sizes, dtype=dtype), dim=0)
-        return offsets
+        sizes_tensor = sizes if isinstance(sizes, Tensor) else torch.tensor(sizes, dtype=dtype)
+        if sizes_tensor.dtype != dtype:
+            sizes_tensor = sizes_tensor.to(dtype)
+        if sizes_tensor.numel() == 0:
+            return torch.zeros((1,), dtype=dtype, device=sizes_tensor.device)
+        return torch.cat([sizes_tensor.new_zeros((1,)), torch.cumsum(sizes_tensor, dim=0)])
 
     @staticmethod
     def _meta_tensor_equal(lhs: Tensor, rhs: Tensor) -> bool:
@@ -737,22 +742,34 @@ class NestedTensor(torch.Tensor):
         self._cached_hierarchical_offsets = None
         self._cached_tensor_view = None
         self._cached_mask_view = None
+        self._cached_packed_local_indices = None
+        self._cached_ragged_level_offsets = None
 
     def _values_cache_token(self) -> tuple[int, int, int]:
         r"""Return a cache token for views that depend on packed values and layout metadata.
 
-        Under ``torch.inference_mode`` tensors do not track version counters and
-        in-place mutation is forbidden, so the cache is always valid.
+        Tensors created under ``torch.inference_mode`` do not track version
+        counters, even after leaving the context. Fall back to object identity
+        for those immutable tensors so cached views remain usable.
         """
-        if torch.is_inference_mode_enabled():
-            return (0, 0, 0)
-        return (int(self._values._version), int(self._offsets._version), int(self._physical_shape._version))
+        return (
+            self._cache_version(self._values),
+            self._cache_version(self._offsets),
+            self._cache_version(self._physical_shape),
+        )
 
     def _shape_cache_token(self) -> tuple[int, int]:
         r"""Return a cache token for views that depend only on shape metadata."""
-        if torch.is_inference_mode_enabled():
-            return (0, 0)
-        return (int(self._offsets._version), int(self._physical_shape._version))
+        return (self._cache_version(self._offsets), self._cache_version(self._physical_shape))
+
+    @staticmethod
+    def _cache_version(tensor: Tensor) -> int:
+        try:
+            return int(tensor._version)
+        except RuntimeError as exc:
+            if "Inference tensors do not track version counter" not in str(exc):
+                raise
+            return id(tensor)
 
     @classmethod
     def _validate_serialized_state(cls, state: Mapping) -> None:
@@ -778,7 +795,6 @@ class NestedTensor(torch.Tensor):
             raise ValueError(f"Unsupported NestedTensor state version {version}; expected {cls._SERIALIZATION_VERSION}")
 
     @classmethod
-    @torch._dynamo.disable
     def _from_packed(
         cls,
         values: Tensor,
@@ -793,6 +809,7 @@ class NestedTensor(torch.Tensor):
         outer_size: torch.Size | tuple | None = None,
         packed_sizes: tuple[int, ...] | None = None,
         element_shapes: tuple[tuple[int, ...], ...] | None = None,
+        validate: bool = True,
     ) -> Self:
         r"""Construct a NestedTensor directly from packed representation."""
         # offsets and shape_tensor MUST live on CPU to avoid implicit CUDA syncs
@@ -802,16 +819,31 @@ class NestedTensor(torch.Tensor):
         if shape_tensor.device.type != "cpu":
             raise ValueError(f"shape_tensor must be on CPU, got {shape_tensor.device}")
 
+        compiling = _is_compiling()
+        if validate and compiling:
+            _compile_unsupported("NestedTensor._from_packed", "metadata validation is eager-only")
         if outer_size is not None:
             logical_shape = torch.Size(outer_size)
+        elif compiling:
+            _compile_unsupported("NestedTensor._from_packed", "outer_size must be provided for compile-safe rebuilds")
         else:
             logical_shape = cls._logical_shape_from_physical_shape(shape_tensor, offsets, batch_first)
+        if packed_sizes is None and compiling:
+            _compile_unsupported("NestedTensor._from_packed", "packed_sizes must be provided for compile-safe rebuilds")
+        if element_shapes is None and compiling:
+            _compile_unsupported(
+                "NestedTensor._from_packed", "element_shapes must be provided for compile-safe rebuilds"
+            )
         if packed_sizes is None and not _is_fake_tensor(offsets):
             packed_sizes = tuple(int(size) for size in (offsets[1:] - offsets[:-1]).tolist())
         if element_shapes is None and not _is_fake_tensor(shape_tensor):
             element_shapes = tuple(cls._trim_shape(shape) for shape in shape_tensor.tolist())
 
-        if _is_fake_tensor(values) and not (_is_fake_tensor(offsets) and _is_fake_tensor(shape_tensor)):
+        if (
+            not compiling
+            and _is_fake_tensor(values)
+            and not (_is_fake_tensor(offsets) and _is_fake_tensor(shape_tensor))
+        ):
             from torch._subclasses.fake_tensor import maybe_get_fake_mode
 
             fake_mode = maybe_get_fake_mode(values)
@@ -822,41 +854,61 @@ class NestedTensor(torch.Tensor):
                     shape_tensor = fake_mode.from_tensor(shape_tensor, static_shapes=True, trace=False)
 
         values = cls._maybe_pin_values(values, pin_memory)
-        result = torch.Tensor._make_wrapper_subclass(
-            cls,
-            logical_shape,
-            dtype=values.dtype,
-            device=values.device,
-            requires_grad=values.requires_grad,
-        )
-        result._values = values
-        result._offsets = offsets
-        result._permutation = (
-            tuple(int(dim) for dim in permutation)
-            if permutation is not None
-            else cls._permutation_from_physical_shape(shape_tensor, element_shapes)
-        )
-        result._physical_shape = shape_tensor
-        result._logical_shape = logical_shape
-        result._set_runtime_config(
-            batch_first=batch_first,
-            padding_value=padding_value,
-            mask_value=mask_value,
-        )
-        result._pin_memory = bool(pin_memory and values.device.type == "cpu" and values.is_pinned())
-        result._packed_sizes = packed_sizes
-        result._element_shapes = element_shapes
-        result._invalidate_transient_caches()
-        cls._validate_packed_metadata(
-            result._values,
-            result._offsets,
-            result._physical_shape,
-            permutation=result._permutation,
-            logical_shape=result._logical_shape,
-            batch_first=result.batch_first,
-            packed_sizes=result._packed_sizes,
-            element_shapes=result._element_shapes,
-        )
+        if compiling and cls is NestedTensor:
+            result = _make_nested_tensor_from_packed(
+                values,
+                offsets,
+                shape_tensor,
+                logical_shape,
+                (
+                    tuple(int(dim) for dim in permutation)
+                    if permutation is not None
+                    else cls._permutation_from_physical_shape(shape_tensor, element_shapes)
+                ),
+                bool(batch_first),
+                float(padding_value),
+                bool(mask_value),
+                bool(pin_memory and values.device.type == "cpu" and values.is_pinned()),
+                packed_sizes,
+                element_shapes,
+            )
+        else:
+            result = torch.Tensor._make_wrapper_subclass(
+                cls,
+                logical_shape,
+                dtype=values.dtype,
+                device=values.device,
+                requires_grad=values.requires_grad,
+            )
+            result._values = values
+            result._offsets = offsets
+            result._permutation = (
+                tuple(int(dim) for dim in permutation)
+                if permutation is not None
+                else cls._permutation_from_physical_shape(shape_tensor, element_shapes)
+            )
+            result._physical_shape = shape_tensor
+            result._logical_shape = logical_shape
+            result._set_runtime_config(
+                batch_first=batch_first,
+                padding_value=padding_value,
+                mask_value=mask_value,
+            )
+            result._pin_memory = bool(pin_memory and values.device.type == "cpu" and values.is_pinned())
+            result._packed_sizes = packed_sizes
+            result._element_shapes = element_shapes
+            result._invalidate_transient_caches()
+        if validate:
+            cls._validate_packed_metadata(
+                result._values,
+                result._offsets,
+                result._physical_shape,
+                permutation=result._permutation,
+                logical_shape=result._logical_shape,
+                batch_first=result.batch_first,
+                packed_sizes=result._packed_sizes,
+                element_shapes=result._element_shapes,
+            )
         return result
 
     # ------------------------------------------------------------------
@@ -906,6 +958,7 @@ class NestedTensor(torch.Tensor):
                 offsets,
                 shape_tensor,
                 outer_size=outer,
+                validate=False,
                 **ctx,
             )
 
@@ -989,6 +1042,7 @@ class NestedTensor(torch.Tensor):
 
     def _unpack(self) -> tuple[Tensor, ...]:
         r"""Reconstruct individual tensors from packed representation."""
+        _check_execution_guard(_ExecutionGuardKind.STORAGE_MAP, "NestedTensor._unpack")
         batch_size = len(self._offsets) - 1
         if batch_size == 0:
             return ()
@@ -1066,6 +1120,8 @@ class NestedTensor(torch.Tensor):
                     self._cached_hierarchical_offsets = (self._offsets,)
                 else:
                     self._cached_hierarchical_offsets = ()
+            elif len(level_sizes) == 1:
+                self._cached_hierarchical_offsets = (self._offsets,)
             else:
                 self._cached_hierarchical_offsets = tuple(
                     type(self)._offsets_from_sizes(level_sizes[level], dtype=self._offsets.dtype)
@@ -1083,9 +1139,77 @@ class NestedTensor(torch.Tensor):
             return self._offsets
         return offsets[level]
 
+    def ragged_level_offsets(
+        self,
+        level: int = -1,
+        *,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> Tensor:
+        r"""Return ragged-level offsets, caching device and dtype conversions."""
+        offsets = self._ragged_level_offsets(level)
+        target_device = offsets.device if device is None else torch.device(device)
+        target_dtype = offsets.dtype if dtype is None else dtype
+        if offsets.device == target_device and offsets.dtype == target_dtype:
+            return offsets
+        key = (int(level), str(target_device), target_dtype, self._shape_cache_token())
+        if self._cached_ragged_level_offsets is not None:
+            cached = self._cached_ragged_level_offsets.get(key)
+            if cached is not None:
+                return cached
+        elif not _is_fake_tensor(offsets):
+            self._cached_ragged_level_offsets = {}
+        converted = offsets.to(device=target_device, dtype=target_dtype)
+        if self._cached_ragged_level_offsets is not None:
+            self._cached_ragged_level_offsets[key] = converted
+        return converted
+
     def _ragged_level_sizes(self, level: int = -1) -> Tensor:
         offsets = self._ragged_level_offsets(level)
         return offsets[1:] - offsets[:-1]
+
+    def packed_local_indices(
+        self,
+        level: int = 0,
+        *,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype = torch.long,
+    ) -> Tensor:
+        r"""Return local coordinates within the selected packed ragged level."""
+        target_device = self.device if device is None else torch.device(device)
+        level = int(level)
+        key = (level, str(target_device), dtype, self._shape_cache_token())
+        if self._cached_packed_local_indices is not None:
+            cached = self._cached_packed_local_indices.get(key)
+            if cached is not None:
+                return cached
+        elif not _is_fake_tensor(self._offsets) and not _is_compiling():
+            self._cached_packed_local_indices = {}
+
+        packed_sizes = self._packed_sizes
+        if level == 0 and packed_sizes is not None and (_is_compiling() or _is_fake_tensor(self._offsets)):
+            lengths_tuple = tuple(int(size) for size in packed_sizes)
+            starts_tuple: list[int] = []
+            running = 0
+            for length in lengths_tuple:
+                starts_tuple.append(running)
+                running += length
+            lengths = torch.tensor(lengths_tuple, dtype=torch.long, device=target_device)
+            starts_source = torch.tensor(starts_tuple, dtype=dtype, device=target_device)
+            total = running
+        else:
+            offsets = self._ragged_level_offsets(level)
+            if _is_fake_tensor(offsets):
+                raise RuntimeError("NestedTensor packed local indices require concrete offsets or packed_sizes.")
+            lengths = offsets[1:] - offsets[:-1]
+            total = int(offsets[-1])
+            starts_source = offsets[:-1].to(device=target_device, dtype=dtype)
+        positions = torch.arange(total, dtype=dtype, device=target_device)
+        starts = torch.repeat_interleave(starts_source, lengths.to(target_device), output_size=total)
+        local_indices = positions - starts
+        if self._cached_packed_local_indices is not None:
+            self._cached_packed_local_indices[key] = local_indices
+        return local_indices
 
     @property
     def _varying_dims(self) -> tuple[int, ...]:
@@ -1416,6 +1540,7 @@ class NestedTensor(torch.Tensor):
             outer_size=outer_size,
             packed_sizes=packed_sizes,
             element_shapes=element_shapes,
+            validate=False,
         )
 
     @classmethod
@@ -1492,6 +1617,7 @@ class NestedTensor(torch.Tensor):
             outer_size=tuple(out_logical),
             packed_sizes=packed_sizes,
             element_shapes=element_shapes,
+            validate=False,
         )
 
     @property
@@ -1785,6 +1911,67 @@ class NestedTensor(torch.Tensor):
         _check_execution_guard(_ExecutionGuardKind.ITERATION, "NestedTensor.__iter__")
         return iter(self._storage)
 
+    @staticmethod
+    def _operator_result(op, *args):
+        try:
+            return op(*args)
+        except TypeError:
+            return NotImplemented
+
+    def __add__(self, other):
+        return self._operator_result(torch.add, self, other)
+
+    def __radd__(self, other):
+        return self._operator_result(torch.add, other, self)
+
+    def __sub__(self, other):
+        return self._operator_result(torch.sub, self, other)
+
+    def __rsub__(self, other):
+        return self._operator_result(torch.sub, other, self)
+
+    def __mul__(self, other):
+        return self._operator_result(torch.mul, self, other)
+
+    def __rmul__(self, other):
+        return self._operator_result(torch.mul, other, self)
+
+    def __truediv__(self, other):
+        return self._operator_result(torch.true_divide, self, other)
+
+    def __rtruediv__(self, other):
+        return self._operator_result(torch.true_divide, other, self)
+
+    def __floordiv__(self, other):
+        return self._operator_result(torch.floor_divide, self, other)
+
+    def __rfloordiv__(self, other):
+        return self._operator_result(torch.floor_divide, other, self)
+
+    def __mod__(self, other):
+        return self._operator_result(torch.remainder, self, other)
+
+    def __rmod__(self, other):
+        return self._operator_result(torch.remainder, other, self)
+
+    def __pow__(self, other):
+        return self._operator_result(torch.pow, self, other)
+
+    def __rpow__(self, other):
+        return self._operator_result(torch.pow, other, self)
+
+    def __matmul__(self, other):
+        return self._operator_result(torch.matmul, self, other)
+
+    def __rmatmul__(self, other):
+        return self._operator_result(torch.matmul, other, self)
+
+    def __neg__(self):
+        return self._operator_result(torch.neg, self)
+
+    def __abs__(self):
+        return self._operator_result(torch.abs, self)
+
     def __eq__(self, other):  # type: ignore[override]
         r"""Element-wise equality comparison."""
         try:
@@ -1802,10 +1989,6 @@ class NestedTensor(torch.Tensor):
     # Python sets __hash__ = None when __eq__ is overridden in a subclass.
     # Preserve Tensor's identity hash so AOT/torch.compile memoization works.
     __hash__ = Tensor.__hash__
-
-    # Arithmetic, comparison, and in-place operators are handled by the base
-    # Tensor class, which routes through C++ → aten → __torch_dispatch__ →
-    # aten_functions.py. No Python-level overrides needed.
 
     # ------------------------------------------------------------------
     # Conversion & Factory Methods
@@ -2072,6 +2255,7 @@ class NestedTensor(torch.Tensor):
                 outer_size=self._logical_shape,
                 packed_sizes=self._packed_sizes,
                 element_shapes=element_shapes,
+                validate=False,
             )
         dense_tensor = tensor.to(device=self.device)
         element_shapes = self._original_shapes()
@@ -2148,6 +2332,101 @@ class NestedTensor(torch.Tensor):
     # Indexing
     # ------------------------------------------------------------------
 
+    def _batch_select_static_position(self, position: int, tail_index: tuple = ()) -> Tensor | None:
+        r"""Select one ragged position from every batch element without unpacking storage."""
+        if self._varying_dims != (0,):
+            return None
+        if len(self) == 0:
+            return self._values.new_empty((0, *self._values.shape[1:]))[(slice(None), *tail_index)]
+
+        if self._packed_sizes is not None:
+            lengths = self._packed_sizes
+        elif _is_fake_tensor(self._offsets):
+            return None
+        else:
+            lengths = tuple(int(size) for size in (self._offsets[1:] - self._offsets[:-1]).tolist())
+
+        idx = int(position)
+        if idx >= 0:
+            if any(idx >= int(length) for length in lengths):
+                raise IndexError(f"index {position} is out of bounds for at least one NestedTensor element")
+            local: Tensor | int = idx
+        else:
+            normalized: list[int] = []
+            for length in lengths:
+                idx = int(position)
+                idx += int(length)
+                if idx < 0 or idx >= int(length):
+                    raise IndexError(f"index {position} is out of bounds for at least one NestedTensor element")
+                normalized.append(idx)
+            local = torch.as_tensor(normalized, dtype=torch.long, device=self._values.device)
+
+        offsets = self._offsets[:-1].to(device=self._values.device, dtype=torch.long)
+        selected = self._values.index_select(0, offsets + local)
+        if tail_index:
+            selected = selected[(slice(None), *tail_index)]
+        return selected
+
+    def _packed_static_slice(self, rest: tuple) -> Self | None:
+        r"""Slice static physical dims directly on packed ``_values`` when the batch dim is untouched."""
+        if not self.batch_first:
+            return None
+        physical_rank = int(self._physical_shape.size(1))
+        if len(rest) > physical_rank:
+            return None
+        index = (*rest, *((slice(None),) for _ in range(physical_rank - len(rest))))
+        if not all(isinstance(selector, slice) for selector in index):
+            return None
+
+        static_dims = self._static_dims
+        static_lookup = {dim: axis for axis, dim in enumerate(static_dims)}
+        physical_dims = list(self._max_physical_dims())
+        value_index: list[slice] = [slice(None)] * self._values.dim()
+        replace_dims: dict[int, int] = {}
+        changed = False
+        for dim, selector in enumerate(index):
+            axis = static_lookup.get(dim)
+            if axis is None:
+                if selector.start is None and selector.stop is None and selector.step is None:
+                    continue
+                return None
+            size = int(physical_dims[dim])
+            start, stop, step = selector.indices(size)
+            new_size = len(range(start, stop, step))
+            value_index[1 + axis] = slice(start, stop, step)
+            replace_dims[dim] = new_size
+            physical_dims[dim] = new_size
+            changed = changed or start != 0 or stop != size or step != 1
+        if not changed:
+            return self
+
+        element_shapes = None
+        if self._element_shapes is not None:
+            if any(len(shape) != physical_rank for shape in self._element_shapes):
+                return None
+            element_shapes = tuple(
+                tuple(replace_dims.get(dim, int(size)) for dim, size in enumerate(shape))
+                for shape in self._element_shapes
+            )
+
+        new_physical_shape = self._physical_shape.clone()
+        for dim, size in replace_dims.items():
+            new_physical_shape[:, dim] = size
+        return type(self)._from_packed(
+            self._values[tuple(value_index)],
+            self._offsets,
+            new_physical_shape,
+            permutation=self._permutation,
+            batch_first=self.batch_first,
+            padding_value=self.padding_value,
+            mask_value=self.mask_value,
+            pin_memory=self._pin_memory,
+            outer_size=self._logical_shape_from_physical_dims(physical_dims),
+            packed_sizes=self._packed_sizes,
+            element_shapes=element_shapes,
+            validate=False,
+        )
+
     def __getitem__(self, index: int | slice | list | tuple | Tensor | NestedTensor) -> Tensor | NestedTensor:
         r"""Retrieve element(s) by index, slice, list, tuple, or tensor mask."""
         if isinstance(index, int):
@@ -2167,9 +2446,11 @@ class NestedTensor(torch.Tensor):
             # ``nt[:, :, :, :2]``.  The batch dim is consumed first, so Ellipsis
             # fills the gap between the number of explicit indices and the total
             # number of logical dimensions.
+            if index.count(Ellipsis) > 1:
+                raise IndexError("an index can only have a single ellipsis ('...')")
             if Ellipsis in index:
                 eidx = index.index(Ellipsis)
-                n_explicit = len(index) - 1  # exclude Ellipsis itself
+                n_explicit = sum(1 for entry in index if entry is not Ellipsis and entry is not None)
                 n_expand = self.dim() - n_explicit
                 index = index[:eidx] + (slice(None),) * n_expand + index[eidx + 1 :]
 
@@ -2189,6 +2470,20 @@ class NestedTensor(torch.Tensor):
                     return tensor[tuple(rest)]
                 return tensor
             elif isinstance(batch_index, (slice, list)):
+                if (
+                    self.batch_first
+                    and isinstance(batch_index, slice)
+                    and batch_index == slice(None)
+                    and rest
+                    and isinstance(rest[0], int)
+                ):
+                    selected = self._batch_select_static_position(rest[0], tuple(rest[1:]))
+                    if selected is not None:
+                        return selected
+                if isinstance(batch_index, slice) and batch_index == slice(None) and rest:
+                    selected = self._packed_static_slice(tuple(rest))
+                    if selected is not None:
+                        return selected
                 if isinstance(batch_index, slice):
                     selected = self._storage[batch_index]
                 else:
@@ -2343,6 +2638,16 @@ class NestedTensor(torch.Tensor):
         elif isinstance(index, tuple):
             if len(index) == 0:
                 return
+            # Expand Ellipsis (e.g. ``nt[..., 0] = 0``) the same way __getitem__ does:
+            # the batch dim is consumed first, so Ellipsis fills the gap between the
+            # explicit indices and the total number of logical dimensions.
+            if index.count(Ellipsis) > 1:
+                raise IndexError("an index can only have a single ellipsis ('...')")
+            if Ellipsis in index:
+                eidx = index.index(Ellipsis)
+                n_explicit = sum(1 for entry in index if entry is not Ellipsis and entry is not None)
+                n_expand = self.dim() - n_explicit
+                index = index[:eidx] + (slice(None),) * n_expand + index[eidx + 1 :]
             if len(index) == 1:
                 self[index[0]] = value
                 return
@@ -2440,7 +2745,10 @@ class NestedTensor(torch.Tensor):
     @property
     def dtype(self) -> torch.dtype:  # type: ignore[override]
         r"""Data type of the underlying tensor elements."""
-        return self._values.dtype
+        values = vars(self).get("_values")
+        if isinstance(values, Tensor):
+            return values.dtype
+        return torch.Tensor.dtype.__get__(self)
 
     @dtype.setter
     def dtype(self, value: torch.dtype | None):
@@ -2450,7 +2758,10 @@ class NestedTensor(torch.Tensor):
     @property
     def device(self) -> torch.device:  # type: ignore[override]
         r"""Device on which the underlying tensor data resides."""
-        return self._values.device
+        values = vars(self).get("_values")
+        if isinstance(values, Tensor):
+            return values.device
+        return torch.Tensor.device.__get__(self)
 
     @device.setter
     def device(self, value: torch.device | None):
@@ -2460,7 +2771,10 @@ class NestedTensor(torch.Tensor):
     @property
     def requires_grad(self) -> bool:  # type: ignore[override]
         r"""Whether gradient computation is enabled for this tensor."""
-        return self._values.requires_grad
+        values = vars(self).get("_values")
+        if isinstance(values, Tensor):
+            return values.requires_grad
+        return torch.Tensor.requires_grad.__get__(self)
 
     @requires_grad.setter
     def requires_grad(self, value: bool):
@@ -2562,6 +2876,7 @@ class NestedTensor(torch.Tensor):
             outer_size=self._logical_shape,
             packed_sizes=self._packed_sizes,
             element_shapes=self._element_shapes,
+            validate=False,
         )
 
     def __deepcopy__(self, memo):
@@ -2578,6 +2893,7 @@ class NestedTensor(torch.Tensor):
             outer_size=self._logical_shape,
             packed_sizes=self._packed_sizes,
             element_shapes=self._element_shapes,
+            validate=False,
         )
         memo[id(self)] = result
         return result
@@ -2743,6 +3059,7 @@ class NestedTensor(torch.Tensor):
             outer_size=self._logical_shape,
             packed_sizes=self._packed_sizes,
             element_shapes=self._element_shapes,
+            validate=False,
         )
 
     def prod(
@@ -3091,3 +3408,44 @@ class NestedTensor(torch.Tensor):
             ])
         """
         return torch.where(condition, self, other)
+
+
+def _make_nested_tensor_from_packed(
+    values: Tensor,
+    offsets: Tensor,
+    shape_tensor: Tensor,
+    logical_shape: torch.Size,
+    permutation: tuple[int, ...],
+    batch_first: bool,
+    padding_value: float,
+    mask_value: bool,
+    pin_memory: bool,
+    packed_sizes: tuple[int, ...] | None,
+    element_shapes: tuple[tuple[int, ...], ...] | None,
+) -> NestedTensor:
+    result = torch.Tensor._make_wrapper_subclass(
+        NestedTensor,
+        logical_shape,
+        dtype=values.dtype,
+        device=values.device,
+        requires_grad=values.requires_grad,
+    )
+    result._values = values
+    result._offsets = offsets
+    result._permutation = permutation
+    result._physical_shape = shape_tensor
+    result._logical_shape = logical_shape
+    result._set_runtime_config(
+        batch_first=batch_first,
+        padding_value=padding_value,
+        mask_value=mask_value,
+    )
+    result._pin_memory = pin_memory
+    result._packed_sizes = packed_sizes
+    result._element_shapes = element_shapes
+    result._invalidate_transient_caches()
+    return result
+
+
+if hasattr(torch, "compiler") and hasattr(torch.compiler, "allow_in_graph"):
+    _make_nested_tensor_from_packed = torch.compiler.allow_in_graph(_make_nested_tensor_from_packed)
