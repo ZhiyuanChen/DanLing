@@ -71,18 +71,14 @@ write_to = "danling/_version.py"
 line-length = 120
 
 [tool.isort]
-line_length = 120
 profile = "black"
+line_length = 120
 
 [tool.flake8]
 max-line-length = 120
 extend-ignore = [ "E203" ]
 
 [tool.pylint]
-format.max-line-length = 120
-design.max-args = 15
-design.max-attributes = 15
-design.max-branches = 15
 main.fail-under = 9.8
 messages_control.disable = """
   invalid-name,
@@ -91,10 +87,18 @@ messages_control.disable = """
   pointless-string-statement,
 """
 reports.output-format = "colorized"
+format.max-line-length = 120
+design.max-args = 15
+design.max-attributes = 15
+design.max-branches = 15
+
+# fail_under = 80
+[tool.mypy]
+ignore_missing_imports = true
 
 [tool.pytest]
-norecursedirs = [ "examples/*" ]
 addopts = [ "--doctest-modules", "--cov" ]
+norecursedirs = [ "examples/*" ]
 
 [tool.coverage]
 run.branch = true
@@ -103,8 +107,3 @@ paths.source = [ "danling" ]
 report.show_missing = true
 json.output = "coverage.json"
 xml.output = "coverage.xml"
-
-# fail_under = 80
-
-[tool.mypy]
-ignore_missing_imports = true
