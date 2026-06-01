@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import math
 from contextlib import suppress
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 from torch import Tensor
@@ -48,8 +48,10 @@ from .ops import (
     _ExecutionGuardKind,
     _get_batch_dim,
     _is_compiling,
+    _is_packed_identity,
     _maybe_align_dense_to_nested,
     _normalize_dim,
+    _resolve_dense_for_values,
     _stack_or_nest,
     _translate_dim,
     _translate_dims,
@@ -216,6 +218,7 @@ def _apply_per_element_nested(source: NestedTensor, op):
     Unlike ``per_element_fallback``, this helper is not ``@torch._dynamo.disable``.
     Use this only when we intentionally preserve NestedTensor output structure.
     """
+    _check_execution_guard(_ExecutionGuardKind.STORAGE_MAP, "_apply_per_element_nested")
     cls = type(source)
     if len(source) == 0:
         return cls([], **source._meta(include_dtype=True))
@@ -242,12 +245,26 @@ def _resolve_other(source, other, func):
     if isinstance(other, NestedTensor):
         if source._has_same_structure(other):
             return other._values
+        if len(source) != len(other):
+            raise ValueError(
+                "NestedTensor batch length mismatch between source and other: "
+                f"source={len(source)}, other={len(other)}"
+            )
         raise NotImplementedError(f"NestedTensor: {func} with mismatched packing layouts")
+    device = source._values.device
     if isinstance(other, Tensor) and other.dim() > 0:
         aligned = _maybe_align_dense_to_nested(source, other)
         if aligned is not None and source._has_same_structure(aligned):
-            return aligned._values
-        raise NotImplementedError(f"NestedTensor: {func} with non-scalar Tensor operand; convert to NestedTensor first")
+            values = aligned._values
+            return values if values.device == device else values.to(device=device)
+        candidate = other if other.device == device else other.to(device=device)
+        resolved = _resolve_dense_for_values(source, candidate)
+        if resolved is not None:
+            return resolved
+        raise NotImplementedError(
+            f"NestedTensor: {func} with non-scalar Tensor operand that is neither shape-aligned nor "
+            "broadcast-compatible with packed values"
+        )
     return other
 
 
@@ -325,10 +342,16 @@ def _elementwise_binary_handler(func, args, kwargs):
     lhs, rhs = args[0], args[1]
     extra = args[2:]
     if isinstance(lhs, NestedTensor):
-        resolved = _resolve_other(lhs, rhs, func)
+        try:
+            resolved = _resolve_other(lhs, rhs, func)
+        except NotImplementedError:
+            return per_element_fallback(func, args, kwargs)
         return _packed_like(lhs, func(lhs._values, resolved, *extra, **kwargs))
     # lhs is scalar/tensor, rhs is NestedTensor
-    resolved = _resolve_other(rhs, lhs, func)
+    try:
+        resolved = _resolve_other(rhs, lhs, func)
+    except NotImplementedError:
+        return per_element_fallback(func, args, kwargs)
     return _packed_like(rhs, func(resolved, rhs._values, *extra, **kwargs))
 
 
@@ -390,7 +413,7 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
     Shared 4-way dispatch for single-value dim reductions.
 
     Args:
-        ragged_fill: Fill value for padded ragged-dim-0 path, or ``None`` for per-element fallback.
+        ragged_fill: Fill value for fallback padded ragged-dim-0 path, or ``None`` for per-element fallback.
         keepdim_kw: If True, pass keepdim as keyword arg (for std/var correction schema).
         none_dim: What to pass as the dim argument for "reduce all elements" calls.
             ``None`` for ops like sum/mean, ``[]`` for ops like amax/amin.
@@ -399,7 +422,7 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
     1. ``len(dims) == 0`` → global reduction on packed ``_values``
     2. ``len(dims) > 1`` → multi-dim: packed fast path on static dims, padded or fallback for ragged
     3. ``dim == batch_dim`` → stack per-element reductions
-    4. ``dim_adj == 0`` (ragged) → padded with ``ragged_fill`` or fallback if ``None``
+    4. single ragged dim → segment reduce when supported, otherwise padded/fallback
     5. ``dim_adj > 0`` (static) → apply directly to packed ``_values``
     """
 
@@ -422,6 +445,8 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
             dims_adj = _translate_dims(source, dims)
         except ValueError as exc:
             raise NotImplementedError(f"NestedTensor: {func} with dim={dims} is not supported") from exc
+        if not _is_packed_identity(source):
+            return _fallback(list(dims_adj), keepdim)
         if source._values.dim() > 1 and all(dim_i > 0 for dim_i in dims_adj):
             return _reduce_non_ragged_packed_dims(
                 source, _call(source._values, list(dims_adj), keepdim), dims_adj, keepdim
@@ -442,6 +467,17 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
         return reduced
 
     dim_adj = _translate_dim(source, dim)
+    segment_reduced = _segment_reduce_ragged_dim(func, source, dim_adj, dim, keepdim, kwargs)
+    if segment_reduced is not None:
+        return segment_reduced
+
+    if not _is_packed_identity(source):
+        if dim_adj in source._varying_dims:
+            reduced = torch.stack([_call(t, [dim_adj], False) for t in source._unpack()])
+            if keepdim:
+                reduced = reduced.unsqueeze(dim)
+            return reduced
+        return _fallback([dim_adj], keepdim)
     if dim_adj == 0:
         if ragged_fill is None:
             # Reducing the variable-length dim always produces uniform elements.
@@ -478,6 +514,10 @@ def arg_extrema_reduction(func, args, kwargs):
         return output
 
     dim_adj = _translate_dim(source, dim)
+    segment_indices = _segment_arg_extrema_ragged_dim(source, dim_adj, keepdim, largest=largest)
+    if segment_indices is not None:
+        return segment_indices
+
     if dim_adj == 0:
         fill_value = _topk_fill_value(source._values.dtype, largest=largest)
         padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=fill_value)
@@ -511,6 +551,10 @@ def count_nonzero_dim_reduction(func, args, kwargs):
         return torch.stack([torch.count_nonzero(t) for t in source._storage])
 
     dim_adj = _translate_dim(source, dim)
+    segment_counts = _segment_count_nonzero_ragged_dim(source, dim_adj)
+    if segment_counts is not None:
+        return segment_counts
+
     if dim_adj == 0:
         padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=0)
         return func(padded, [1], **kwargs)
@@ -631,6 +675,9 @@ def linalg_vector_norm(func, args, kwargs):
     if len(dims) == 0:
         if not _vector_norm_zero_padding_safe(ord_value):
             raise NotImplementedError(f"NestedTensor: {func} requires zero-padding-safe ord for ragged reductions")
+        segment_norm = _segment_vector_norm_ragged_dim(source, ord_value, None, keepdim, dtype=dtype)
+        if segment_norm is not None:
+            return segment_norm
         padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=0)
         reduce_dims = list(range(1, padded.dim()))
         out_values = func(padded, ord_value, reduce_dims, keepdim, dtype=dtype, **kwargs)
@@ -648,6 +695,9 @@ def linalg_vector_norm(func, args, kwargs):
     if dim_adj == 0:
         if not _vector_norm_zero_padding_safe(ord_value):
             raise NotImplementedError(f"NestedTensor: {func} requires zero-padding-safe ord for ragged reductions")
+        segment_norm = _segment_vector_norm_ragged_dim(source, ord_value, dim_adj, keepdim, dtype=dtype)
+        if segment_norm is not None:
+            return segment_norm
         padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=0)
         out_values = func(padded, ord_value, [1], keepdim, dtype=dtype, **kwargs)
         return _from_uniform_batched_output(source, out_values)
@@ -700,6 +750,10 @@ def max_min_dim_reduction(func, args, kwargs):
         return values, indices
 
     dim_adj = _translate_dim(source, dim)
+    segment_pair = _segment_max_min_ragged_dim(source, dim_adj, keepdim, largest=largest)
+    if segment_pair is not None:
+        return segment_pair
+
     if dim_adj == 0:
         fill_value = _topk_fill_value(source._values.dtype, largest=largest)
         padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=fill_value)
@@ -803,13 +857,29 @@ def _masked_scatter_source_consumption_matches(mask: NestedTensor, source: Neste
 
 
 def _masked_fill_handler(func, args, kwargs):
-    r"""Dispatch handler for masked_fill with matching-offset fast path."""
+    r"""Dispatch handler for masked_fill: packed fast path + per-element broadcast fallback."""
     from .nested_tensor import NestedTensor
 
     source, mask, value = args[0], args[1], args[2]
     if isinstance(mask, NestedTensor) and source._has_same_layout(mask):
         return _packed_like(source, func(source._values, mask._values, value, **kwargs))
-    raise NotImplementedError(f"NestedTensor: {func} requires mask with matching packed layout")
+    aligned = source._maybe_exact_shape_nested_like(mask)
+    if aligned is not None:
+        mask = aligned
+    if isinstance(mask, NestedTensor):
+        if len(source) != len(mask):
+            raise ValueError(
+                "NestedTensor batch length mismatch between input and mask: " f"input={len(source)}, mask={len(mask)}"
+            )
+        return type(source)(
+            (func(t, m, value, **kwargs) for t, m in zip(source._storage, mask._storage)),
+            **source._meta(),
+        )
+    if not isinstance(mask, Tensor):
+        mask = torch.as_tensor(mask, dtype=torch.bool, device=source._values.device)
+    padded = source.tensor
+    filled = func(padded, mask.to(device=padded.device), value, **kwargs)
+    return source.nested_like(filled)
 
 
 @NestedTensorAtenRegistry.implement(aten.masked_select.default)
@@ -854,6 +924,7 @@ def masked_select(func, args, kwargs):
         padding_value=source.padding_value,
         mask_value=source.mask_value,
         pin_memory=source._pin_memory,
+        validate=False,
     )
 
 
@@ -901,6 +972,7 @@ def nonzero(func, args, kwargs):
         padding_value=source.padding_value,
         mask_value=source.mask_value,
         pin_memory=source._pin_memory,
+        validate=False,
     )
 
 
@@ -1106,6 +1178,7 @@ def gather(func, args, kwargs):
                 outer_size=torch.Size(index._logical_shape),
                 packed_sizes=index._packed_sizes,
                 element_shapes=index._element_shapes,
+                validate=False,
             )
 
         storage = []
@@ -1416,6 +1489,7 @@ def index_select(func, args, kwargs):
             pin_memory=source._pin_memory,
             packed_sizes=selected_packed_sizes,
             element_shapes=selected_element_shapes,
+            validate=False,
         )
 
     dim_adj = _translate_dim(source, dim)
@@ -1598,7 +1672,7 @@ def _packed_new_dim_size(source: NestedTensor, new_values: Tensor, dim_adj: int,
 
 def _packed_like(source: NestedTensor, new_values: Tensor) -> NestedTensor:
     r"""Rebuild a NestedTensor from source metadata and a new packed value tensor."""
-    return _packed_with_shape(
+    result = _packed_with_shape(
         source,
         new_values,
         source._physical_shape,
@@ -1607,6 +1681,9 @@ def _packed_like(source: NestedTensor, new_values: Tensor) -> NestedTensor:
         packed_sizes=source._packed_sizes,
         element_shapes=source._element_shapes,
     )
+    if source._cached_hierarchical_offsets is not None:
+        result._cached_hierarchical_offsets = source._cached_hierarchical_offsets
+    return result
 
 
 def _packed_with_shape(
@@ -1639,6 +1716,7 @@ def _packed_with_shape(
         outer_size=torch.Size(new_logical_shape),
         packed_sizes=packed_sizes,
         element_shapes=element_shapes,
+        validate=False,
     )
 
 
@@ -1665,6 +1743,222 @@ def _packed_with_tail_from_values(source: NestedTensor, new_values: Tensor) -> N
         packed_sizes=packed_sizes,
         element_shapes=element_shapes,
     )
+
+
+def _offsets_from_packed_sizes(source: NestedTensor, sizes: tuple[int, ...]) -> Tensor:
+    offsets = [0]
+    for size in sizes:
+        offsets.append(offsets[-1] + int(size))
+    return source._offsets.new_tensor(offsets)
+
+
+def _same_batch_meta(lhs: NestedTensor, rhs: NestedTensor) -> bool:
+    if len(lhs) != len(rhs) or lhs.batch_first != rhs.batch_first:
+        return False
+    if _is_fake_tensor(lhs._offsets) or _is_fake_tensor(rhs._offsets):
+        return lhs._packed_sizes is not None and lhs._packed_sizes == rhs._packed_sizes
+    return _offsets_match_identity_if_fake(lhs._offsets, rhs._offsets)
+
+
+def _packed_pair_indices_from_sizes(
+    source: NestedTensor,
+    sizes: tuple[int, ...],
+) -> tuple[Tensor, Tensor, tuple[int, ...]]:
+    pair_sizes = tuple(int(size) * int(size) for size in sizes)
+    total = sum(pair_sizes)
+    device = source._values.device
+    sizes_tensor = torch.tensor(sizes, device=device, dtype=torch.long)
+    pair_sizes_tensor = torch.tensor(pair_sizes, device=device, dtype=torch.long)
+    seq = torch.repeat_interleave(
+        torch.arange(len(sizes), device=device, dtype=torch.long),
+        pair_sizes_tensor,
+        output_size=total,
+    )
+    if total == 0:
+        empty = torch.empty((0,), device=device, dtype=torch.long)
+        return empty, empty, pair_sizes
+    pair_starts = torch.cumsum(pair_sizes_tensor, 0) - pair_sizes_tensor
+    local = torch.arange(total, device=device, dtype=torch.long) - pair_starts.index_select(0, seq)
+    offsets = _offsets_from_packed_sizes(source, sizes).to(device=device, dtype=torch.long)
+    lengths = sizes_tensor.index_select(0, seq)
+    starts = offsets[:-1].index_select(0, seq)
+    query = starts + torch.div(local, lengths, rounding_mode="floor")
+    key = starts + torch.remainder(local, lengths)
+    return query, key, pair_sizes
+
+
+def _packed_pair_indices(source: NestedTensor) -> tuple[Tensor, Tensor, tuple[int, ...]] | None:
+    if source._packed_sizes is None:
+        return None
+    return _packed_pair_indices_from_sizes(source, tuple(int(size) for size in source._packed_sizes))
+
+
+def _jagged_outer_matmul_meta(lhs: NestedTensor, rhs: NestedTensor) -> tuple[int, tuple[int, ...]] | None:
+    rank = int(lhs._physical_shape.size(1))
+    if rank < 2 or int(rhs._physical_shape.size(1)) != rank:
+        return None
+    prefix_rank = rank - 2
+    if lhs._varying_dims != (prefix_rank,) or rhs._varying_dims != (rank - 1,):
+        return None
+    if lhs._element_shapes is None or rhs._element_shapes is None or lhs._packed_sizes is None:
+        return None
+    if rhs._packed_sizes != lhs._packed_sizes or lhs._values.dim() != rank or rhs._values.dim() != rank:
+        return None
+    if tuple(lhs._values.shape[1:]) != tuple(rhs._values.shape[1:]) or not _same_batch_meta(lhs, rhs):
+        return None
+    for lhs_shape, rhs_shape in zip(lhs._element_shapes, rhs._element_shapes):
+        if len(lhs_shape) != rank or len(rhs_shape) != rank:
+            return None
+        if lhs_shape[:prefix_rank] != rhs_shape[:prefix_rank]:
+            return None
+        if lhs_shape[prefix_rank] != rhs_shape[-1] or lhs_shape[-1] != rhs_shape[prefix_rank]:
+            return None
+    return prefix_rank, tuple(int(size) for size in lhs._packed_sizes)
+
+
+def _jagged_contract_matmul_meta(lhs: NestedTensor, rhs: NestedTensor) -> tuple[int, tuple[int, ...]] | None:
+    rank = int(rhs._physical_shape.size(1))
+    if rank < 2 or int(lhs._physical_shape.size(1)) != rank:
+        return None
+    prefix_rank = rank - 2
+    if len(lhs) != len(rhs) or lhs.batch_first != rhs.batch_first:
+        return None
+    if lhs._varying_dims != (prefix_rank, prefix_rank + 1) or rhs._varying_dims != (prefix_rank,):
+        return None
+    if lhs._element_shapes is None or rhs._element_shapes is None or rhs._packed_sizes is None:
+        return None
+    if lhs._values.dim() != rank - 1 or rhs._values.dim() != rank:
+        return None
+    if tuple(lhs._values.shape[1:]) != tuple(rhs._values.shape[1:-1]):
+        return None
+    pair_sizes = tuple(int(size) * int(size) for size in rhs._packed_sizes)
+    if lhs._packed_sizes != pair_sizes:
+        return None
+    for lhs_shape, rhs_shape in zip(lhs._element_shapes, rhs._element_shapes):
+        if len(lhs_shape) != rank or len(rhs_shape) != rank:
+            return None
+        if lhs_shape[:prefix_rank] != rhs_shape[:prefix_rank]:
+            return None
+        if lhs_shape[prefix_rank] != rhs_shape[prefix_rank] or lhs_shape[prefix_rank + 1] != rhs_shape[prefix_rank]:
+            return None
+    if not _is_fake_tensor(lhs._offsets) and not torch.equal(lhs._offsets, _offsets_from_packed_sizes(lhs, pair_sizes)):
+        return None
+    return prefix_rank, tuple(int(size) for size in rhs._packed_sizes)
+
+
+def _packed_jagged_matmul_kind(lhs, rhs) -> str | None:
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(lhs, NestedTensor) or not isinstance(rhs, NestedTensor):
+        return None
+    if _jagged_outer_matmul_meta(lhs, rhs) is not None:
+        return "outer"
+    if _jagged_contract_matmul_meta(lhs, rhs) is not None:
+        return "contract"
+    return None
+
+
+def _packed_jagged_outer_matmul(lhs: NestedTensor, rhs: NestedTensor) -> NestedTensor | None:
+    meta = _jagged_outer_matmul_meta(lhs, rhs)
+    if meta is None:
+        return None
+    prefix_rank, _ = meta
+    pair_indices = _packed_pair_indices(lhs)
+    if pair_indices is None:
+        return None
+    query, key, pair_sizes = pair_indices
+    values = (lhs._values.index_select(0, query) * rhs._values.index_select(0, key)).sum(-1)
+    keep_dims = (*range(prefix_rank), prefix_rank, prefix_rank)
+    shape, _, element_shapes = lhs._shape_meta_from_components(keep_dims=keep_dims)
+    return _packed_with_shape(
+        lhs,
+        values,
+        shape,
+        lhs._logical_shape_from_components(keep_dims=keep_dims),
+        offsets=_offsets_from_packed_sizes(lhs, pair_sizes),
+        permutation=(prefix_rank, prefix_rank + 1, *range(prefix_rank)),
+        packed_sizes=pair_sizes,
+        element_shapes=element_shapes,
+    )
+
+
+def _packed_jagged_contract_matmul(lhs: NestedTensor, rhs: NestedTensor) -> NestedTensor | None:
+    meta = _jagged_contract_matmul_meta(lhs, rhs)
+    if meta is None:
+        return None
+    pair_indices = _packed_pair_indices(rhs)
+    if pair_indices is None:
+        return None
+    query, key, _ = pair_indices
+    values = torch.zeros_like(rhs._values).index_add(
+        0, query, lhs._values.unsqueeze(-1) * rhs._values.index_select(0, key)
+    )
+    return _packed_like(rhs, values)
+
+
+def _packed_jagged_matmul(lhs: NestedTensor, rhs: NestedTensor) -> NestedTensor | None:
+    output = _packed_jagged_outer_matmul(lhs, rhs)
+    if output is not None:
+        return output
+    return _packed_jagged_contract_matmul(lhs, rhs)
+
+
+def _packed_square_softmax(source: NestedTensor, dim_adj: int, *, log: bool) -> NestedTensor | None:
+    rank = int(source._physical_shape.size(1))
+    if rank < 2:
+        return None
+    prefix_rank = rank - 2
+    if dim_adj != prefix_rank + 1 or source._varying_dims != (prefix_rank, prefix_rank + 1):
+        return None
+    if source._element_shapes is None or source._packed_sizes is None or source._values.dim() != rank - 1:
+        return None
+    sizes = []
+    for shape in source._element_shapes:
+        if len(shape) != rank or shape[prefix_rank] != shape[prefix_rank + 1]:
+            return None
+        sizes.append(int(shape[prefix_rank]))
+    sizes_tuple = tuple(sizes)
+    if tuple(size * size for size in sizes_tuple) != source._packed_sizes:
+        return None
+    query, _, _ = _packed_pair_indices_from_sizes(source, sizes_tuple)
+    total = sum(sizes_tuple)
+    values = source._values
+    tail = tuple(values.shape[1:])
+    segment = query.reshape((-1, *([1] * len(tail)))).expand((-1, *tail))
+    max_values = values.new_full((total, *tail), float("-inf"))
+    max_values = max_values.scatter_reduce(0, segment, values, "amax", include_self=False)
+    shifted = values - max_values.index_select(0, query)
+    exp_values = torch.exp(shifted)
+    sums = values.new_zeros((total, *tail)).index_add(0, query, exp_values)
+    out_values = shifted - torch.log(sums.index_select(0, query)) if log else exp_values / sums.index_select(0, query)
+    return _packed_like(source, out_values)
+
+
+def _matmul_has_packed_path(lhs, rhs) -> bool:
+    from .nested_tensor import NestedTensor
+
+    if isinstance(lhs, NestedTensor):
+        if isinstance(rhs, NestedTensor):
+            return (lhs._has_same_structure(rhs) and lhs._values.dim() > 2 and rhs._values.dim() > 2) or (
+                _packed_jagged_matmul_kind(lhs, rhs) is not None
+            )
+        return isinstance(rhs, Tensor) and lhs._values.dim() >= 2 and rhs.dim() <= 2
+    if isinstance(rhs, NestedTensor):
+        if isinstance(lhs, Tensor) and lhs.dim() <= 2 and rhs._values.dim() > 2:
+            return True
+        if not isinstance(lhs, Tensor) or rhs._values.dim() != 2:
+            return False
+        if lhs.dim() == 2:
+            return 0 not in rhs._varying_dims or (rhs._packed_sizes is not None and len(set(rhs._packed_sizes)) == 1)
+        return (
+            lhs.dim() > 2
+            and rhs._packed_sizes is not None
+            and len(set(rhs._packed_sizes)) == 1
+            and rhs._physical_shape.size(1) == 2
+            and rhs._element_shapes is not None
+            and len({int(shape[1]) for shape in rhs._element_shapes}) == 1
+        )
+    return False
 
 
 def _from_uniform_batched_output(source: NestedTensor, batched_values: Tensor) -> NestedTensor:
@@ -1753,6 +2047,223 @@ def _reduce_non_ragged_packed_dims(source: NestedTensor, out_values: Tensor, dim
     )
 
 
+def _has_single_packed_ragged_dim(source: NestedTensor, dim_adj: int) -> bool:
+    rank = int(source._physical_shape.size(1))
+    static_dims = tuple(dim for dim in range(rank) if dim != dim_adj)
+    return (
+        source._varying_dims == (dim_adj,)
+        and source._static_dims == static_dims
+        and tuple(source._permutation or tuple(range(rank))) == (dim_adj, *static_dims)
+    )
+
+
+def _segment_sum(source: NestedTensor, values: Tensor, lengths: Tensor) -> Tensor:
+    segment_reduce = getattr(torch, "segment_reduce", None)
+    if segment_reduce is not None and values.dtype.is_floating_point and not values.dtype.is_complex:
+        return segment_reduce(values, reduce="sum", lengths=lengths)
+    out = values.new_zeros((len(source), *values.shape[1:]))
+    batch_idx = source.packed_batch_indices(device=values.device)
+    return out.index_add(0, batch_idx, values)
+
+
+def _segment_extrema_values(source: NestedTensor, values: Tensor, lengths: Tensor, *, largest: bool) -> Tensor | None:
+    if values.dtype.is_complex:
+        return None
+    segment_reduce = getattr(torch, "segment_reduce", None)
+    if segment_reduce is not None and values.dtype.is_floating_point:
+        return segment_reduce(values, reduce="max" if largest else "min", lengths=lengths)
+    out = values.new_full((len(source), *values.shape[1:]), _topk_fill_value(values.dtype, largest=largest))
+    batch_idx = source.packed_batch_indices(device=values.device)
+    index = batch_idx.reshape(-1, *([1] * (values.dim() - 1))).expand_as(values)
+    return out.scatter_reduce(0, index, values, "amax" if largest else "amin", include_self=False)
+
+
+def _matches_extrema(values: Tensor, extrema: Tensor) -> Tensor:
+    matches = values == extrema
+    if values.dtype.is_floating_point:
+        matches = matches | (torch.isnan(values) & torch.isnan(extrema))
+    return matches
+
+
+def _segment_extrema_indices(source: NestedTensor, values: Tensor, extrema: Tensor) -> Tensor:
+    batch_idx = source.packed_batch_indices(device=values.device)
+    local_idx = source.packed_local_indices(device=values.device)
+    selected = extrema.index_select(0, batch_idx)
+    matches = _matches_extrema(values, selected)
+    if values.dim() > 1:
+        local_idx = local_idx.reshape(-1, *([1] * (values.dim() - 1))).expand_as(values)
+        batch_idx = batch_idx.reshape(-1, *([1] * (values.dim() - 1))).expand_as(values)
+    sentinel = values.shape[0]
+    candidates = torch.where(matches, local_idx, torch.full_like(local_idx, sentinel))
+    indices = torch.full((len(source), *values.shape[1:]), sentinel, device=values.device, dtype=torch.long)
+    return indices.scatter_reduce(0, batch_idx, candidates, "amin", include_self=True)
+
+
+def _segment_arg_extrema_ragged_dim(
+    source: NestedTensor,
+    dim_adj: int,
+    keepdim: bool,
+    *,
+    largest: bool,
+) -> Tensor | None:
+    if not _has_single_packed_ragged_dim(source, dim_adj):
+        return None
+    values = source._values
+    offsets = source.ragged_level_offsets(0, device=values.device, dtype=torch.long)
+    extrema = _segment_extrema_values(source, values, offsets[1:] - offsets[:-1], largest=largest)
+    if extrema is None:
+        return None
+    indices = _segment_extrema_indices(source, values, extrema)
+    return indices.unsqueeze(1) if keepdim else indices
+
+
+def _segment_max_min_ragged_dim(
+    source: NestedTensor,
+    dim_adj: int,
+    keepdim: bool,
+    *,
+    largest: bool,
+) -> tuple[Tensor, Tensor] | None:
+    if not _has_single_packed_ragged_dim(source, dim_adj):
+        return None
+    values = source._values
+    offsets = source.ragged_level_offsets(0, device=values.device, dtype=torch.long)
+    extrema = _segment_extrema_values(source, values, offsets[1:] - offsets[:-1], largest=largest)
+    if extrema is None:
+        return None
+    indices = _segment_extrema_indices(source, values, extrema)
+    if keepdim:
+        extrema = extrema.unsqueeze(1)
+        indices = indices.unsqueeze(1)
+    return extrema, indices
+
+
+def _segment_count_nonzero_ragged_dim(source: NestedTensor, dim_adj: int) -> Tensor | None:
+    if not _has_single_packed_ragged_dim(source, dim_adj):
+        return None
+    values = source._values.ne(0).to(dtype=torch.long)
+    offsets = source.ragged_level_offsets(0, device=values.device, dtype=torch.long)
+    return _segment_sum(source, values, offsets[1:] - offsets[:-1])
+
+
+def _resolve_vector_norm_ord(ord_value) -> float | None:
+    if ord_value is None:
+        return 2.0
+    if isinstance(ord_value, bool) or not isinstance(ord_value, (int, float)):
+        return None
+    ord_float = float(ord_value)
+    if math.isnan(ord_float) or math.isinf(ord_float) or ord_float < 0.0:
+        return None
+    return ord_float
+
+
+def _segment_vector_norm_ragged_dim(
+    source: NestedTensor,
+    ord_value,
+    dim_adj: int | None,
+    keepdim: bool,
+    *,
+    dtype: torch.dtype | None,
+) -> NestedTensor | None:
+    if dim_adj is not None and not _has_single_packed_ragged_dim(source, dim_adj):
+        return None
+    if dim_adj is None and not _has_single_packed_ragged_dim(source, 0):
+        return None
+
+    ord_float = _resolve_vector_norm_ord(ord_value)
+    if ord_float is None or not source._values.dtype.is_floating_point or source._values.dtype.is_complex:
+        return None
+
+    values = source._values if dtype is None else source._values.to(dtype=dtype)
+    offsets = source.ragged_level_offsets(0, device=values.device, dtype=torch.long)
+    lengths = offsets[1:] - offsets[:-1]
+
+    if ord_float == 0.0:
+        reduced = values.ne(0).to(dtype=values.dtype)
+    else:
+        reduced = values.abs().pow(ord_float)
+
+    if dim_adj is None and reduced.dim() > 1:
+        reduced = reduced.reshape(reduced.shape[0], -1).sum(dim=1)
+
+    out = _segment_sum(source, reduced, lengths)
+    if ord_float != 0.0:
+        out = out.pow(1.0 / ord_float)
+
+    if dim_adj is None and keepdim:
+        out = out.reshape(len(source), *([1] * int(source._physical_shape.size(1))))
+    elif dim_adj is not None and keepdim:
+        out = out.unsqueeze(1)
+    return _from_uniform_batched_output(source, out)
+
+
+def _segment_reduce_ragged_dim(
+    func,
+    source: NestedTensor,
+    dim_adj: int,
+    logical_dim: int,
+    keepdim: bool,
+    kwargs,
+) -> Tensor | None:
+    if not _has_single_packed_ragged_dim(source, dim_adj):
+        return None
+
+    values = source._values
+    batch_size = len(source)
+    offsets = source.ragged_level_offsets(0, device=values.device, dtype=torch.long)
+    lengths = offsets[1:] - offsets[:-1]
+    segment_reduce = getattr(torch, "segment_reduce", None)
+
+    if func is aten.sum.dim_IntList:
+        dtype = kwargs.get("dtype")
+        segment_values = values if dtype is None else values.to(dtype=dtype)
+        if (
+            segment_reduce is not None
+            and segment_values.dtype.is_floating_point
+            and not segment_values.dtype.is_complex
+        ):
+            out = segment_reduce(segment_values, reduce="sum", lengths=lengths)
+            return out.unsqueeze(logical_dim) if keepdim else out
+        sample = func(values[:0], [0], False, **kwargs)
+        out = sample.new_zeros((batch_size, *sample.shape))
+        batch_idx = source.packed_batch_indices(device=values.device)
+        add_values = values if values.dtype == out.dtype else values.to(dtype=out.dtype)
+        out = out.index_add(0, batch_idx, add_values)
+    elif func is aten.mean.dim:
+        dtype = kwargs.get("dtype")
+        segment_values = values if dtype is None else values.to(dtype=dtype)
+        if (
+            segment_reduce is not None
+            and segment_values.dtype.is_floating_point
+            and not segment_values.dtype.is_complex
+        ):
+            out = segment_reduce(segment_values, reduce="mean", lengths=lengths)
+            return out.unsqueeze(logical_dim) if keepdim else out
+        sample = func(values[:0], [0], False, **kwargs)
+        out = sample.new_zeros((batch_size, *sample.shape))
+        batch_idx = source.packed_batch_indices(device=values.device)
+        add_values = values if values.dtype == out.dtype else values.to(dtype=out.dtype)
+        out = out.index_add(0, batch_idx, add_values)
+        denominator = lengths.reshape(batch_size, *([1] * (out.dim() - 1)))
+        out = out / denominator
+    elif func in (aten.amax.default, aten.amin.default):
+        if values.dtype.is_complex:
+            return None
+        largest = func is aten.amax.default
+        if segment_reduce is not None and values.dtype.is_floating_point:
+            out = segment_reduce(values, reduce="max" if largest else "min", lengths=lengths)
+            return out.unsqueeze(logical_dim) if keepdim else out
+        fill_value = _topk_fill_value(values.dtype, largest=largest)
+        out = values.new_full((batch_size, *values.shape[1:]), fill_value)
+        batch_idx = source.packed_batch_indices(device=values.device)
+        index = batch_idx.reshape(-1, *([1] * (values.dim() - 1))).expand_as(values)
+        out = out.scatter_reduce(0, index, values, "amax" if largest else "amin", include_self=False)
+    else:
+        return None
+
+    return out.unsqueeze(logical_dim) if keepdim else out
+
+
 def _packed_new_ragged_size(source: NestedTensor, new_values: Tensor, new_ragged_size) -> NestedTensor:
     r"""Rebuild a NestedTensor when per-element dim-0 size changes uniformly."""
     batch_size = source._offsets.size(0) - 1
@@ -1780,6 +2291,272 @@ def _packed_to_padded(source: NestedTensor, *, fill_value) -> tuple[Tensor, Tens
     batch_idx, local_idx = source._packed_batch_local_indices(device=device)
     max_len = int(padded.size(1)) if padded.dim() > 1 else 0
     return padded, lengths, lengths_dev, batch_idx, local_idx, max_len
+
+
+def _is_native_attention_layout(nt: NestedTensor) -> bool:
+    r"""Return True when attention elements are stored as second-dim ragged packed values."""
+    return (
+        nt._physical_shape.size(1) == 3
+        and nt._values.dim() == 3
+        and nt._varying_dims == (1,)
+        and nt._static_dims == (0, 2)
+    )
+
+
+def _sdpa_pack_native(nt: NestedTensor) -> tuple[Tensor, Tensor, int]:
+    r"""
+    Return the native varlen layout for ``(heads, seq_i, dim)`` elements:
+    ``(sum_seq, heads, dim)`` plus cumulative sequence lengths.
+    """
+    if not _is_native_attention_layout(nt):
+        raise ValueError("Native SDPA fast path requires elements shaped like (heads, seq, dim).")
+
+    cumulative = nt.ragged_level_offsets(0, device=nt.device, dtype=torch.int32)
+    if nt._element_shapes is not None and all(
+        isinstance(shape[1], int) for shape in nt._element_shapes if len(shape) > 1
+    ):
+        max_seqlen = max((int(shape[1]) for shape in nt._element_shapes), default=0)
+    else:
+        lengths_cpu = nt._ragged_level_sizes(0)
+        max_seqlen = int(lengths_cpu.max().item()) if lengths_cpu.numel() else 0
+    return nt._values.contiguous(), cumulative, max_seqlen
+
+
+def _sdpa_restore_native(attention: Tensor, query: NestedTensor) -> NestedTensor:
+    r"""Restore fused-kernel output without unpacking per-element tensors."""
+    if not _is_native_attention_layout(query):
+        raise ValueError("Native SDPA restore requires elements shaped like (heads, seq, dim).")
+
+    output_shape, packed_sizes, element_shapes = query._replace_trailing_physical_dims_meta((attention.size(-1),))
+    return _packed_with_shape(
+        query,
+        attention.contiguous(),
+        output_shape,
+        query._logical_shape[:-1] + (attention.size(-1),),
+        permutation=query._permutation_after_replacing_trailing_dims(1, 1),
+        packed_sizes=packed_sizes,
+        element_shapes=element_shapes,
+    )
+
+
+def _same_ragged_offsets(lhs: NestedTensor, rhs: NestedTensor) -> bool:
+    r"""Return whether two native-attention tensors share the same sequence lengths."""
+    if lhs._offsets is rhs._offsets:
+        return True
+    try:
+        return lhs._offsets.data_ptr() == rhs._offsets.data_ptr()
+    except RuntimeError:
+        return False
+
+
+def _pad_last_dim_for_flash(tensor: Tensor, alignment_size: int = 8) -> Tensor:
+    r"""Pad the last dim for Flash Attention alignment requirements."""
+    last_dim = tensor.size(-1)
+    if last_dim % alignment_size == 0:
+        return tensor
+    return torch.nn.functional.pad(tensor, (0, alignment_size - (last_dim % alignment_size)))
+
+
+def _flash_attention_forward_raw(
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    q_cumulative: Tensor,
+    k_cumulative: Tensor,
+    q_max: int,
+    k_max: int,
+    *,
+    dropout_p: float,
+    is_causal: bool,
+    return_debug_mask: bool,
+    scale: float | None,
+    window_size_left: int | None = None,
+    window_size_right: int | None = None,
+    seqused_k: Tensor | None = None,
+    alibi_slopes: Tensor | None = None,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    r"""Run the underlying varlen FlashAttention op on packed dense values."""
+    original_head_dim = query.size(-1)
+    q_padded = _pad_last_dim_for_flash(query)
+    k_padded = _pad_last_dim_for_flash(key)
+    v_padded = _pad_last_dim_for_flash(value)
+    softmax_scale = scale if scale is not None else original_head_dim**-0.5
+    attention, logsumexp, rng_state, unused, debug_mask = aten._flash_attention_forward.default(
+        q_padded,
+        k_padded,
+        v_padded,
+        q_cumulative,
+        k_cumulative,
+        q_max,
+        k_max,
+        dropout_p,
+        is_causal,
+        return_debug_mask,
+        scale=softmax_scale,
+        window_size_left=window_size_left,
+        window_size_right=window_size_right,
+        seqused_k=seqused_k,
+        alibi_slopes=alibi_slopes,
+    )
+    if attention.size(-1) != original_head_dim:
+        attention = attention[..., :original_head_dim]
+    return attention, logsumexp, rng_state, unused, debug_mask
+
+
+def _flash_attention_forward_values(
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    q_cumulative: Tensor,
+    k_cumulative: Tensor,
+    q_max: int,
+    k_max: int,
+    *,
+    dropout_p: float,
+    is_causal: bool,
+    scale: float | None,
+    alibi_slopes: Tensor | None = None,
+) -> Tensor:
+    r"""Run varlen FlashAttention directly on packed ``(total_seq, heads, dim)`` values."""
+    return _flash_attention_forward_raw(
+        query,
+        key,
+        value,
+        q_cumulative,
+        k_cumulative,
+        q_max,
+        k_max,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+        return_debug_mask=False,
+        scale=scale,
+        alibi_slopes=alibi_slopes,
+    )[0]
+
+
+def _sdpa_via_native_flash(
+    query: NestedTensor,
+    key: NestedTensor,
+    value: NestedTensor,
+    *,
+    dropout_p: float,
+    is_causal: bool,
+    scale: float | None,
+    alibi_slopes: Tensor | None = None,
+) -> NestedTensor:
+    r"""Run SDPA directly on DanLing storage via varlen Flash Attention kernels."""
+    q_values, q_cumulative, q_max = _sdpa_pack_native(query)
+    if _same_ragged_offsets(query, key):
+        k_values = key._values.contiguous()
+        k_cumulative = q_cumulative
+        k_max = q_max
+    else:
+        k_values, k_cumulative, k_max = _sdpa_pack_native(key)
+    attention = _flash_attention_forward_values(
+        q_values,
+        k_values,
+        value._values.contiguous(),
+        q_cumulative,
+        k_cumulative,
+        q_max,
+        k_max,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+        scale=scale,
+        alibi_slopes=alibi_slopes,
+    )
+    return _sdpa_restore_native(attention, query)
+
+
+def _flash_attention_forward_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
+    r"""Return whether an ``aten._flash_attention_forward`` call stays on the packed native path."""
+    from .nested_tensor import NestedTensor
+
+    query = args[0] if len(args) > 0 else kwargs.get("query")
+    key = args[1] if len(args) > 1 else kwargs.get("key")
+    value = args[2] if len(args) > 2 else kwargs.get("value")
+    if not isinstance(query, NestedTensor):
+        return True
+    cum_seq_q = args[3] if len(args) > 3 else kwargs.get("cum_seq_q")
+    cum_seq_k = args[4] if len(args) > 4 else kwargs.get("cum_seq_k")
+    max_q = cast(Any, args[5] if len(args) > 5 else kwargs.get("max_q", 0))
+    max_k = cast(Any, args[6] if len(args) > 6 else kwargs.get("max_k", 0))
+    if cum_seq_q is not None or cum_seq_k is not None:
+        return False
+    if int(max_q or 0) != 0 or int(max_k or 0) != 0:
+        return False
+    return (
+        isinstance(key, NestedTensor)
+        and isinstance(value, NestedTensor)
+        and _is_native_attention_layout(query)
+        and _is_native_attention_layout(key)
+        and _is_native_attention_layout(value)
+    )
+
+
+@NestedTensorAtenRegistry.implement(
+    aten._flash_attention_forward.default,
+    compile_safe=True,
+    compile_guard=_flash_attention_forward_compile_safe_inputs,
+)
+def flash_attention_forward(_func, args, kwargs):
+    r"""Varlen FlashAttention on packed NestedTensors, with optional ALiBi ``alibi_slopes``."""
+    from .nested_tensor import NestedTensor
+
+    query = args[0] if len(args) > 0 else kwargs.get("query")
+    key = args[1] if len(args) > 1 else kwargs.get("key")
+    value = args[2] if len(args) > 2 else kwargs.get("value")
+    cum_seq_q = args[3] if len(args) > 3 else kwargs.get("cum_seq_q")
+    cum_seq_k = args[4] if len(args) > 4 else kwargs.get("cum_seq_k")
+    max_q = args[5] if len(args) > 5 else kwargs.get("max_q", 0)
+    max_k = args[6] if len(args) > 6 else kwargs.get("max_k", 0)
+    dropout_p = float(args[7] if len(args) > 7 else kwargs.get("dropout_p", 0.0))
+    is_causal = bool(args[8] if len(args) > 8 else kwargs.get("is_causal", False))
+    return_debug_mask = bool(args[9] if len(args) > 9 else kwargs.get("return_debug_mask", False))
+    scale = kwargs.get("scale")
+    window_size_left = kwargs.get("window_size_left")
+    window_size_right = kwargs.get("window_size_right")
+    seqused_k = kwargs.get("seqused_k")
+    alibi_slopes = kwargs.get("alibi_slopes")
+
+    if not (isinstance(query, NestedTensor) and isinstance(key, NestedTensor) and isinstance(value, NestedTensor)):
+        raise TypeError("DanLing _flash_attention_forward expects NestedTensor query, key, and value together.")
+    if cum_seq_q is not None or cum_seq_k is not None or int(max_q or 0) != 0 or int(max_k or 0) != 0:
+        raise ValueError("DanLing _flash_attention_forward derives cum_seq/max values from NestedTensor structure.")
+    if not (
+        len(query) == len(key) == len(value)
+        and query.batch_first == key.batch_first == value.batch_first
+        and _is_native_attention_layout(query)
+        and _is_native_attention_layout(key)
+        and _is_native_attention_layout(value)
+    ):
+        raise ValueError("DanLing _flash_attention_forward requires matching native attention NestedTensors.")
+
+    q_values, q_cumulative, q_max = _sdpa_pack_native(query)
+    if _same_ragged_offsets(query, key):
+        k_values = key._values.contiguous()
+        k_cumulative = q_cumulative
+        k_max = q_max
+    else:
+        k_values, k_cumulative, k_max = _sdpa_pack_native(key)
+    output, logsumexp, rng_state, unused, debug_mask = _flash_attention_forward_raw(
+        q_values,
+        k_values,
+        value._values.contiguous(),
+        q_cumulative,
+        k_cumulative,
+        q_max,
+        k_max,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+        return_debug_mask=return_debug_mask,
+        scale=scale,
+        window_size_left=window_size_left,
+        window_size_right=window_size_right,
+        seqused_k=seqused_k,
+        alibi_slopes=alibi_slopes,
+    )
+    return _sdpa_restore_native(output, query), logsumexp, rng_state, unused, debug_mask
 
 
 def _topk_fill_value(dtype: torch.dtype, largest: bool):
@@ -2180,6 +2957,9 @@ def matmul(func, args, kwargs):
 
     if isinstance(lhs, NestedTensor):
         if isinstance(rhs, NestedTensor):
+            jagged = _packed_jagged_matmul(lhs, rhs)
+            if jagged is not None:
+                return jagged
             if lhs._has_same_structure(rhs) and lhs._values.dim() > 2 and rhs._values.dim() > 2:
                 return _packed_with_tail_from_values(lhs, func(lhs._values, rhs._values, **kwargs))
             return per_element_fallback(func, args, kwargs)
@@ -2403,7 +3183,6 @@ ATEN_UNARY_LIKE_OPS = [
     aten.clamp_min.default,
     aten.clamp_max.default,
     aten.nan_to_num.default,
-    aten.dropout.default,
     aten.alpha_dropout.default,
     aten.feature_alpha_dropout.default,
     aten.feature_dropout.default,
@@ -2443,15 +3222,108 @@ def flatten(func, args, kwargs):
 
     batch_dim = _get_batch_dim(source)
     if start <= batch_dim <= end:
-        # Flattening the batch axis yields a plain tensor by definition.
+        if source._ragged_rank >= 2 and start == 0 and end == 1:
+            element_shapes = source._element_shapes
+            if element_shapes is None:
+                element_shapes = tuple(type(source)._trim_shape(shape) for shape in source._physical_shape.tolist())
+            row_counts = tuple(int(shape[0]) for shape in element_shapes)
+            if source.batch_first:
+                row_pairs = tuple((batch, row) for batch, count in enumerate(row_counts) for row in range(count))
+            else:
+                max_rows = max(row_counts, default=0)
+                row_pairs = tuple(
+                    (batch, row) for row in range(max_rows) for batch, count in enumerate(row_counts) if row < count
+                )
+            row_shapes = tuple(element_shapes[batch][1:] for batch, _ in row_pairs)
+            rank = int(source._physical_shape.size(1)) - 1
+            if not row_shapes:
+                shape = source._physical_shape.new_empty((0, rank))
+                max_dims = tuple(
+                    int(source._physical_shape[:, dim].max()) if source._physical_shape.size(0) else 0
+                    for dim in range(1, rank + 1)
+                )
+                outer_size = (
+                    torch.Size((0, *max_dims)) if source.batch_first else torch.Size((max_dims[0], 0, *max_dims[1:]))
+                )
+                return type(source)._from_packed(
+                    source._values,
+                    type(source)._offsets_from_sizes((), dtype=source._offsets.dtype),
+                    shape,
+                    permutation=tuple(range(rank)),
+                    batch_first=source.batch_first,
+                    padding_value=source.padding_value,
+                    mask_value=source.mask_value,
+                    pin_memory=source._pin_memory,
+                    outer_size=outer_size,
+                    packed_sizes=(),
+                    element_shapes=(),
+                    validate=False,
+                )
+            if source._permutation[:1] == (0,):
+                row_varying, row_static = type(source)._pack_layout_from_element_shapes(row_shapes)
+                packed_sizes = tuple(type(source)._packed_size_from_shape(shape, row_varying) for shape in row_shapes)
+                offsets = type(source)._offsets_from_sizes(packed_sizes, dtype=source._offsets.dtype)
+                row_block_sizes = []
+                for element_shape in element_shapes:
+                    block = 1
+                    for dim in source._varying_dims:
+                        if dim != 0:
+                            block *= int(element_shape[dim])
+                    row_block_sizes.append(block)
+                if source.batch_first:
+                    values = source._values
+                else:
+                    starts = [int(source._offsets[batch]) + row * row_block_sizes[batch] for batch, row in row_pairs]
+                    starts_t = torch.tensor(starts, dtype=torch.long, device=source._values.device)
+                    lengths_t = torch.tensor(packed_sizes, dtype=torch.long, device=source._values.device)
+                    row_id = torch.repeat_interleave(
+                        torch.arange(len(row_pairs), device=source._values.device),
+                        lengths_t,
+                    )
+                    prefix = lengths_t.cumsum(0)
+                    local = (
+                        torch.arange(int(prefix[-1]), device=source._values.device) - prefix[row_id] + lengths_t[row_id]
+                    )
+                    values = source._values.index_select(0, starts_t[row_id] + local)
+                shape = source._physical_shape.new_tensor(row_shapes)
+                max_dims = tuple(max(shape[dim] for shape in row_shapes) for dim in range(len(row_shapes[0])))
+                outer_size = (
+                    torch.Size((len(row_shapes), *max_dims))
+                    if source.batch_first
+                    else torch.Size((max_dims[0], len(row_shapes), *max_dims[1:]))
+                )
+                return type(source)._from_packed(
+                    values,
+                    offsets,
+                    shape,
+                    permutation=row_varying + row_static,
+                    batch_first=source.batch_first,
+                    padding_value=source.padding_value,
+                    mask_value=source.mask_value,
+                    pin_memory=source._pin_memory,
+                    outer_size=outer_size,
+                    packed_sizes=packed_sizes,
+                    element_shapes=row_shapes,
+                    validate=False,
+                )
+            rows: list = []
+            storage = source._storage
+            if source.batch_first:
+                for element in storage:
+                    rows.extend(element.unbind(0))
+            else:
+                max_rows = max((element.shape[0] for element in storage), default=0)
+                for row in range(max_rows):
+                    rows.extend(element[row] for element in storage if row < element.shape[0])
+            return type(source)(rows, **source._meta())
         return func(source.tensor, start_dim, end_dim, **kwargs)
 
     start_adj = _translate_dim(source, start)
     end_adj = _translate_dim(source, end)
     if start_adj == 0:
-        # Flattening across ragged dim-0 can alter per-element rank/shape patterns.
-        # Keep the generic fallback here because it preserves "stack when uniform"
-        # behavior used by NestedTensor reductions/fallback semantics.
+        return per_element_fallback(func, (source, start_adj, end_adj), kwargs)
+
+    if source._ragged_rank > 1:
         return per_element_fallback(func, (source, start_adj, end_adj), kwargs)
 
     out_values = func(source._values, start_adj, end_adj, **kwargs)
@@ -2476,6 +3348,41 @@ def flatten(func, args, kwargs):
         out_shape,
         source._logical_shape_from_physical_dims(physical_dims),
         packed_sizes=out_packed_sizes,
+        element_shapes=out_element_shapes,
+    )
+
+
+def _packed_metadata_permute(source: NestedTensor, tensor_dims: tuple[int, ...]) -> NestedTensor | None:
+    r"""Relabel a logical per-element permutation when packed storage order is unchanged."""
+    rank = int(source._physical_shape.size(1))
+    if len(tensor_dims) != rank:
+        return None
+    old_packed_order = source._permutation
+    if not old_packed_order:
+        old_varying, old_static = type(source)._pack_layout_meta(source._physical_shape, source._element_shapes)
+        old_packed_order = old_varying + old_static
+
+    out_shape = source._physical_shape[:, tensor_dims]
+    out_element_shapes = None
+    if source._element_shapes is not None:
+        out_element_shapes = tuple(tuple(shape[dim] for dim in tensor_dims) for shape in source._element_shapes)
+
+    new_varying, new_static = type(source)._pack_layout_meta(out_shape, out_element_shapes)
+    new_packed_order = new_varying + new_static
+    new_packed_order_in_old_dims = tuple(tensor_dims[dim] for dim in new_packed_order)
+    if new_packed_order_in_old_dims != old_packed_order:
+        return None
+
+    out_logical = source._logical_shape_from_physical_dims(
+        tuple(source._max_physical_dims()[dim] for dim in tensor_dims)
+    )
+    return _packed_with_shape(
+        source,
+        source._values,
+        out_shape,
+        out_logical,
+        permutation=new_packed_order,
+        packed_sizes=source._packed_sizes,
         element_shapes=out_element_shapes,
     )
 
@@ -2506,6 +3413,9 @@ def permute(func, args, kwargs):
         raise ValueError("Permuting the batch dimension is not supported for NestedTensor.")
 
     tensor_dims = tuple(_translate_dim(source, d) for d in normalized_dims if d != batch_dim)
+    metadata_only = _packed_metadata_permute(source, tensor_dims)
+    if metadata_only is not None:
+        return metadata_only
     if tensor_dims[0] != 0:
         # Ragged dim move stays per-element but should remain in the compile graph
         # when possible, so we avoid the dynamo-disabled generic fallback.
@@ -2651,11 +3561,17 @@ def transpose(func, args, kwargs):
             packed_sizes=source._packed_sizes,
             element_shapes=source._element_shapes,
             permutation=source._permutation,
+            validate=False,
         )
 
     elem_dim0 = _translate_dim(source, dim0)
     elem_dim1 = _translate_dim(source, dim1)
     if elem_dim0 in source._varying_dims or elem_dim1 in source._varying_dims:
+        tensor_dims = list(range(int(source._physical_shape.size(1))))
+        tensor_dims[elem_dim0], tensor_dims[elem_dim1] = tensor_dims[elem_dim1], tensor_dims[elem_dim0]
+        metadata_only = _packed_metadata_permute(source, tuple(tensor_dims))
+        if metadata_only is not None:
+            return metadata_only
         # Packed storage flattens ragged dimensions into the leading payload axis, so
         # swaps that touch them must happen per element to preserve shape semantics.
         return _apply_per_element_nested(source, lambda t: t.transpose(elem_dim0, elem_dim1))
@@ -2797,6 +3713,7 @@ def view_like(func, args, kwargs):
         return type(source)([], **source._meta(include_dtype=True))
 
     def rebuild_per_element():
+        _check_execution_guard(_ExecutionGuardKind.STORAGE_MAP, f"{func}.view_like_rebuild")
         outputs = [func(t, list(s), **kwargs) for t, s in zip(source._unpack(), view_shapes)]
         return type(source)(outputs, **source._meta())
 
@@ -2840,11 +3757,16 @@ def view_like(func, args, kwargs):
         element_shapes = tuple(() for _ in view_shapes)
         max_sizes = []
 
-    lengths_tensor = torch.as_tensor(lengths, dtype=source._offsets.dtype, device=source._offsets.device)
-    out_offsets = torch.empty((lengths_tensor.numel() + 1,), dtype=source._offsets.dtype, device=source._offsets.device)
-    out_offsets[0] = 0
-    if lengths_tensor.numel() > 0:
-        out_offsets[1:] = torch.cumsum(lengths_tensor, dim=0)
+    if packed_sizes == source._packed_sizes:
+        out_offsets = source._offsets
+    else:
+        lengths_tensor = torch.as_tensor(lengths, dtype=source._offsets.dtype, device=source._offsets.device)
+        out_offsets = torch.empty(
+            (lengths_tensor.numel() + 1,), dtype=source._offsets.dtype, device=source._offsets.device
+        )
+        out_offsets[0] = 0
+        if lengths_tensor.numel() > 0:
+            out_offsets[1:] = torch.cumsum(lengths_tensor, dim=0)
 
     if source.batch_first:
         out_logical = [len(source), *max_sizes]
@@ -2889,11 +3811,17 @@ def _softmax_handler(func, args, kwargs):
     r"""Dispatch handler for softmax/log_softmax that translates the dim argument."""
     source = args[0]
     dim_adj = _translate_dim(source, args[1])
-    if dim_adj == 0:
-        # Normalize each ragged row independently by masking padding with -inf.
-        padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(source, fill_value=float("-inf"))
-        out_padded = func(padded, 1, *args[2:], **kwargs)
-        return _packed_like(source, out_padded[batch_idx, local_idx])
+    if dim_adj in source._varying_dims:
+        square = _packed_square_softmax(source, dim_adj, log=func is aten._log_softmax.default)
+        if square is not None:
+            return square
+        if dim_adj == 0 and _is_packed_identity(source):
+            padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(source, fill_value=float("-inf"))
+            out_padded = func(padded, 1, *args[2:], **kwargs)
+            return _packed_like(source, out_padded[batch_idx, local_idx])
+        return _apply_per_element_nested(source, lambda t: func(t, dim_adj, *args[2:], **kwargs))
+    if dim_adj >= source._values.dim() or not _is_packed_identity(source):
+        return _apply_per_element_nested(source, lambda t: func(t, dim_adj, *args[2:], **kwargs))
     return _packed_like(source, func(source._values, dim_adj, *args[2:], **kwargs))
 
 
@@ -2940,6 +3868,58 @@ def _cumulative_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
     return source._values.dim() > 1 and dim_adj > 0
 
 
+def _cumsum_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
+    r"""Return whether cumsum stays on packed compile-safe paths."""
+    source = args[0]
+    kw_dim = kwargs.get("dim", _MISSING)
+    if len(args) > 1:
+        if kw_dim is not _MISSING:
+            return False
+        dim = args[1]
+    else:
+        if kw_dim is _MISSING:
+            return False
+        dim = kw_dim
+    try:
+        dim_adj = _translate_dim(source, dim)
+    except (TypeError, ValueError, IndexError):
+        return False
+    return dim_adj == 0 or (source._values.dim() > 1 and dim_adj > 0)
+
+
+def _segmented_cumsum_values(source: NestedTensor, *extra_args, **kwargs) -> Tensor:
+    r"""Compute cumsum along the leading ragged dimension without padding."""
+    values = source._values
+    out_values = aten.cumsum.default(values, 0, *extra_args, **kwargs)
+    if values.numel() == 0 or values.shape[0] == 0:
+        return out_values
+
+    offsets = source._offsets.to(device=values.device, dtype=torch.long)
+    batch_size = offsets.numel() - 1
+    if batch_size == 0:
+        return out_values
+
+    start_offsets = offsets[:-1]
+    zero_prefix = out_values.new_zeros((1, *out_values.shape[1:]))
+    prefix_indices = torch.clamp(start_offsets - 1, min=0)
+    raw_prefix = out_values.index_select(0, prefix_indices)
+    has_prefix = start_offsets > 0
+    while has_prefix.dim() < raw_prefix.dim():
+        has_prefix = has_prefix.unsqueeze(-1)
+    segment_prefix = torch.where(has_prefix, raw_prefix, zero_prefix)
+
+    prefix_delta = torch.cat((segment_prefix[:1], segment_prefix[1:] - segment_prefix[:-1]), dim=0)
+    active = start_offsets < values.shape[0]
+    while active.dim() < prefix_delta.dim():
+        active = active.unsqueeze(-1)
+    prefix_delta = torch.where(active, prefix_delta, torch.zeros_like(prefix_delta))
+    safe_start_offsets = torch.where(start_offsets < values.shape[0], start_offsets, torch.zeros_like(start_offsets))
+
+    correction = out_values.new_zeros(out_values.shape)
+    correction = correction.index_add(0, safe_start_offsets, prefix_delta)
+    return out_values - aten.cumsum.default(correction, 0, *extra_args, **kwargs)
+
+
 def _flip_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
     r"""Return whether flip stays on packed compile-safe paths."""
     source = args[0]
@@ -2956,7 +3936,7 @@ def _flip_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
         dims_adj = tuple(_translate_dim(source, dim) for dim in dims)
     except (TypeError, ValueError, IndexError):
         return False
-    return source._values.dim() > 1 and all(dim > 0 for dim in dims_adj)
+    return source._values.dim() > 1 and all(dim in source._static_dims for dim in dims_adj)
 
 
 def _topk_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
@@ -3044,7 +4024,7 @@ def argsort(func, args, kwargs):
 @NestedTensorAtenRegistry.implement(
     aten.cumsum.default,
     compile_safe=True,
-    compile_guard=_cumulative_compile_safe,
+    compile_guard=_cumsum_compile_safe,
 )
 @NestedTensorAtenRegistry.implement(
     aten.cumprod.default,
@@ -3073,6 +4053,8 @@ def cumulative(func, args, kwargs):
     if source._values.dim() > 1 and dim_adj > 0:
         return _packed_like(source, func(source._values, dim_adj, *extra_args, **kwargs))
     if dim_adj == 0:
+        if func is aten.cumsum.default:
+            return _packed_like(source, _segmented_cumsum_values(source, *extra_args, **kwargs))
         if _is_compiling():
             _compile_unsupported(
                 f"{func._schema.name.split('::')[-1]}",
@@ -3089,6 +4071,17 @@ def cumulative(func, args, kwargs):
         out_padded = func(padded, 1, *extra_args, **kwargs)
         return _packed_like(source, out_padded[batch_idx, local_idx])
     return per_element_fallback(func, (source, dim_adj, *extra_args), kwargs)
+
+
+@NestedTensorAtenRegistry.implement(aten.dropout.default, compile_safe=True)
+def dropout(func, args, kwargs):
+    r"""Apply aten dropout on packed values, preserving eval-mode identity."""
+    source = args[0]
+    p = args[1] if len(args) > 1 else kwargs.get("p", 0.5)
+    train = args[2] if len(args) > 2 else kwargs.get("train", True)
+    if (not bool(train)) or float(p) == 0:
+        return source
+    return _packed_like(source, func(source._values, *args[1:], **kwargs))
 
 
 @NestedTensorAtenRegistry.implement(
@@ -3137,7 +4130,7 @@ def cumulative_pair(func, args, kwargs):
     compile_guard=_flip_compile_safe,
 )
 def flip(func, args, kwargs):
-    r"""Flip along non-ragged dims by operating directly on packed _values."""
+    r"""Flip packed values when the requested dims have packed row/tail semantics."""
     source = args[0]
     kw_dims = kwargs.pop("dims", _MISSING)
     if len(args) > 1:
@@ -3149,22 +4142,25 @@ def flip(func, args, kwargs):
     if isinstance(dims, int):
         dims = (dims,)
     dims_adj = tuple(_translate_dim(source, dim) for dim in dims)
-    if source._values.dim() > 1 and all(dim > 0 for dim in dims_adj):
-        return _packed_like(source, func(source._values, dims_adj, **kwargs))
-    if any(dim == 0 for dim in dims_adj):
+    varying_dims = tuple(dim for dim in dims_adj if dim in source._varying_dims)
+    static_dims = tuple(dim for dim in dims_adj if dim in source._static_dims)
+    if len(varying_dims) == 0 and all(dim in source._static_dims for dim in dims_adj):
+        packed_dims = tuple(source._static_dims.index(dim) + 1 for dim in static_dims)
+        return _packed_like(source, func(source._values, packed_dims, **kwargs))
+    if len(set(varying_dims)) == 1 and _has_single_packed_ragged_dim(source, varying_dims[0]):
         if _is_compiling():
             _compile_unsupported("aten.flip.default", "ragged-dimension flip is eager-only under compile")
-        padded, _, lengths_dev, batch_idx, local_idx, max_len = _packed_to_padded(
-            source, fill_value=source.padding_value
-        )
-        padded_dims = tuple(1 if dim == 0 else dim + 1 for dim in dims_adj)
-        out_padded = func(padded, padded_dims, **kwargs)
-        ragged_flips = sum(dim == 0 for dim in dims_adj)
-        if ragged_flips % 2 == 1:
-            row_idx = max_len - lengths_dev[batch_idx] + local_idx
-        else:
-            row_idx = local_idx
-        return _packed_like(source, out_padded[batch_idx, row_idx])
+        values = source._values
+        offsets = source.ragged_level_offsets(0, device=values.device, dtype=torch.long)
+        lengths = offsets[1:] - offsets[:-1]
+        batch_idx = source.packed_batch_indices(device=values.device)
+        local_idx = source.packed_local_indices(device=values.device)
+        gather = offsets[batch_idx] + lengths[batch_idx] - 1 - local_idx
+        out_values = values.index_select(0, gather)
+        if static_dims:
+            packed_dims = tuple(source._static_dims.index(dim) + 1 for dim in static_dims)
+            out_values = func(out_values, packed_dims, **kwargs)
+        return _packed_like(source, out_values)
     return per_element_fallback(func, (source, dims_adj), kwargs)
 
 
@@ -3605,6 +4601,7 @@ def clone(func, args, kwargs):
         packed_sizes=source._packed_sizes,
         element_shapes=source._element_shapes,
         permutation=source._permutation,
+        validate=False,
     )
 
 
@@ -3615,6 +4612,12 @@ def constant_pad_nd(func, args, kwargs):
     pad = tuple(args[1])
     if len(pad) % 2 != 0:
         return per_element_fallback(func, args, kwargs)
+
+    if len(pad) == 2:
+        value = args[2] if len(args) > 2 else kwargs.get("value", 0)
+        output = _constant_pad_packed_variable_last_dim(source, pad, value)
+        if output is not None:
+            return output
 
     padded_dims = len(pad) // 2
     # Packed fast path is valid only when padding targets trailing static dims.
@@ -3637,6 +4640,68 @@ def constant_pad_nd(func, args, kwargs):
     )
 
 
+def _constant_pad_packed_variable_last_dim(source: NestedTensor, pad: tuple[int, int], value) -> NestedTensor | None:
+    r"""Pad a packed ragged last physical dimension by inserting values between packed rows."""
+    left, right = int(pad[0]), int(pad[1])
+    if left < 0 or right < 0:
+        return None
+    if left == 0 and right == 0:
+        return source
+
+    rank = source._physical_shape.size(1)
+    if rank < 1:
+        return None
+    target_dim = rank - 1
+    if len(source._permutation) == 0 or int(source._permutation[0]) != target_dim:
+        return None
+    if source._varying_dims != (target_dim,):
+        return None
+    if source._element_shapes is not None and any(len(shape) != rank for shape in source._element_shapes):
+        return None
+
+    pad_width = left + right
+    batch_steps = torch.arange(len(source) + 1, dtype=source._offsets.dtype, device=source._offsets.device)
+    new_offsets = source._offsets + batch_steps * pad_width
+
+    old_total = source._values.size(0)
+    new_total = old_total + len(source) * pad_width
+    output_values = source._values.new_full((new_total, *source._values.shape[1:]), value)
+    batch_indices = source.packed_batch_indices(device=source._values.device)
+    source_indices = torch.arange(old_total, device=source._values.device)
+    destination_indices = source_indices + batch_indices * pad_width + left
+    output_values.index_copy_(0, destination_indices, source._values)
+
+    shape_tensor = source._physical_shape.clone()
+    shape_tensor[:, target_dim] += pad_width
+    element_shapes = None
+    if source._element_shapes is not None:
+        element_shapes = tuple(
+            (*shape[:target_dim], shape[target_dim] + pad_width, *shape[target_dim + 1 :])
+            for shape in source._element_shapes
+        )
+    if source._packed_sizes is not None:
+        packed_sizes = tuple(int(size) + pad_width for size in source._packed_sizes)
+    else:
+        packed_sizes = tuple(int(size) for size in (new_offsets[1:] - new_offsets[:-1]).tolist())
+
+    outer_size = list(source._logical_shape)
+    outer_size[-1] += pad_width
+    return type(source)._from_packed(
+        output_values,
+        new_offsets,
+        shape_tensor,
+        permutation=source._permutation,
+        batch_first=source.batch_first,
+        padding_value=source.padding_value,
+        mask_value=source.mask_value,
+        pin_memory=source._pin_memory,
+        outer_size=torch.Size(outer_size),
+        packed_sizes=packed_sizes,
+        element_shapes=element_shapes,
+        validate=False,
+    )
+
+
 @NestedTensorAtenRegistry.implement(aten.detach.default)
 def detach(func, args, kwargs):
     r"""Detach all internal tensors from the computation graph."""
@@ -3653,6 +4718,7 @@ def detach(func, args, kwargs):
         packed_sizes=source._packed_sizes,
         element_shapes=source._element_shapes,
         permutation=source._permutation,
+        validate=False,
     )
 
 

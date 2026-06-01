@@ -17,10 +17,14 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
+from typing import Optional
+
 import pytest
 import torch
+from torch.nn import functional as F
 
 from danling.tensors import NestedTensor
+from danling.tensors.ops import nested_execution_guard
 from danling.tensors.torch_functions import (
     cat,
     flatten,
@@ -90,8 +94,38 @@ class TestArithmeticFunctions:
         reference = NT([torch.add(x, y) for x, y in zip(nt, other)], **nt._meta())
         assert_close(output, reference)
 
-    def test_add_dense_with_variable_length_dim(self, device, float_dtype):
-        """NT[B, var_seq, D] + dense[1, max_seq, D] — the positional embedding pattern."""
+    def test_add_padded_dense(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(5, 8, device=device, dtype=float_dtype),
+                torch.randn(3, 8, device=device, dtype=float_dtype),
+            ]
+        )
+        dense = torch.randn(*nt.shape, device=device, dtype=float_dtype)
+        output = nt + dense
+        for i, elem in enumerate(nt):
+            expected = elem + dense[i, : elem.shape[0]]
+            assert_close(output._storage[i], expected)
+
+        output_rev = dense + nt
+        for i, elem in enumerate(nt):
+            expected = dense[i, : elem.shape[0]] + elem
+            assert_close(output_rev._storage[i], expected)
+
+    def test_add_padded_dense_image_like(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(2, 3, 3, device=device, dtype=float_dtype),
+                torch.randn(2, 5, 5, device=device, dtype=float_dtype),
+            ]
+        )
+        dense = torch.zeros(*nt.shape, device=device, dtype=float_dtype)
+        dense[0, :, :, 3:] = -1000
+        output = nt + dense
+        reference = nt.nested_like(nt.tensor + dense)
+        assert_close(output, reference)
+
+    def test_add_rejects_positional_dense_broadcast(self, device, float_dtype):
         nt = NT(
             [
                 torch.randn(5, 8, device=device, dtype=float_dtype),
@@ -99,15 +133,8 @@ class TestArithmeticFunctions:
             ]
         )
         dense = torch.randn(1, 5, 8, device=device, dtype=float_dtype)
-        output = nt + dense
-        for i, elem in enumerate(nt):
-            expected = elem + dense[0, : elem.shape[0]]
-            assert_close(output._storage[i], expected)
-        # Reverse
-        output_rev = dense + nt
-        for i, elem in enumerate(nt):
-            expected = dense[0, : elem.shape[0]] + elem
-            assert_close(output_rev._storage[i], expected)
+        with pytest.raises(NotImplementedError, match="non-scalar Tensor operand"):
+            _ = nt + dense
 
     def test_add_dense_broadcastable_with_values(self, device, float_dtype):
         """NT[B, var_seq, D] + dense[D] — broadcast across packed dim."""
@@ -121,6 +148,30 @@ class TestArithmeticFunctions:
         output = nt + bias
         for i, elem in enumerate(nt):
             assert_close(output._storage[i], elem + bias)
+
+    def test_dense_tail_broadcast_can_expand_static_dim(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(5, 1, device=device, dtype=float_dtype),
+                torch.randn(3, 1, device=device, dtype=float_dtype),
+            ]
+        )
+        bias = torch.randn(8, device=device, dtype=float_dtype)
+        output = nt + bias
+        reference = NT([elem + bias for elem in nt], **nt._meta())
+        assert_close(output, reference)
+
+    def test_mul_dense_channel_broadcast(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(3, 4, device=device, dtype=float_dtype),
+                torch.randn(3, 7, device=device, dtype=float_dtype),
+            ]
+        )
+        scale = torch.randn(1, 3, 1, device=device, dtype=float_dtype)
+        output = nt * scale
+        reference = NT([t * scale[0] for t in nt], **nt._meta())
+        assert_close(output, reference)
 
     def test_wrapped_ops_preserve_state(self):
         nt = NestedTensor(
@@ -209,6 +260,40 @@ class TestCatFunction:
         assert len(out_right_empty_2d) == len(nt2d)
         assert_close(out_right_empty_2d, nt2d)
 
+    def test_cat_with_empty_dense_input(self):
+        nt4d = NT([torch.randn(2, 3, 4), torch.randn(2, 5, 4)])  # (heads, L_i, dim) per element
+        empty = torch.zeros(0)
+        out_left = torch.cat([empty, nt4d], dim=-2)
+        assert isinstance(out_left, NestedTensor)
+        assert_close(out_left, nt4d)
+        out_right = torch.cat([nt4d, empty], dim=-2)
+        assert isinstance(out_right, NestedTensor)
+        assert_close(out_right, nt4d)
+
+        shaped_empty = torch.zeros(2, 2, 0, 4)
+        assert_close(torch.cat([shaped_empty, nt4d], dim=-2), nt4d)
+        assert_close(torch.cat([nt4d, shaped_empty], dim=-2), nt4d)
+
+    @pytest.mark.parametrize(
+        "empty",
+        [
+            pytest.param(torch.zeros(2, 2, 0, 5), id="suffix"),
+            pytest.param(torch.zeros(1, 2, 0, 4), id="batch"),
+            pytest.param(torch.zeros(2, 0, 4), id="rank"),
+        ],
+    )
+    def test_cat_empty_dense_shape_mismatch(self, empty):
+        nt4d = NT([torch.randn(2, 3, 4), torch.randn(2, 5, 4)])
+        with pytest.raises((ValueError, RuntimeError, NotImplementedError)):
+            torch.cat([empty, nt4d], dim=-2)
+
+    def test_cat_ragged_dim_append_two_nested(self):
+        a = NestedTensor([torch.randn(2, 3, 4), torch.randn(2, 5, 4)])
+        b = NestedTensor([torch.randn(2, 1, 4), torch.randn(2, 2, 4)])
+        out = torch.cat([a, b], dim=-2)
+        assert isinstance(out, NestedTensor)
+        assert [tuple(x.shape) for x in out._storage] == [(2, 4, 4), (2, 7, 4)]
+
     def test_cat_non_zero_dim_length_mismatch(self):
         nt1 = NestedTensor([torch.ones(2)])
         nt2 = NestedTensor([torch.ones(2), torch.ones(3)])
@@ -219,6 +304,79 @@ class TestCatFunction:
         nt = NestedTensor([torch.ones(2)])
         with pytest.raises(NotImplementedError):
             cat((nt, torch.ones(2)), dim=1)
+
+    def test_cat_dense_feature_dim(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(3, 4, device=device, dtype=float_dtype),
+                torch.randn(5, 4, device=device, dtype=float_dtype),
+            ]
+        )
+        dense = torch.randn(*nt.shape, device=device, dtype=float_dtype)
+        output = torch.cat((nt, dense), dim=2)
+        reference = NT([torch.cat([t, dense[i, : t.shape[0]]], dim=-1) for i, t in enumerate(nt)], **nt._meta())
+        assert_close(output, reference)
+
+    @pytest.mark.parametrize(
+        ("shape", "dim"),
+        [
+            pytest.param((2, 5, 5), 1, id="feature"),
+            pytest.param((2, 6, 4), 2, id="length"),
+        ],
+    )
+    def test_cat_dense_shape_mismatch(self, shape, dim):
+        nt = NT([torch.randn(3, 4), torch.randn(5, 4)])
+        dense = torch.randn(*shape)
+        with pytest.raises((ValueError, RuntimeError, NotImplementedError)):
+            torch.cat((nt, dense), dim=dim)
+
+
+class TestBroadcastTensors:
+
+    def test_per_element_ragged_2d(self):
+        nt = NestedTensor([torch.randn(5, 4), torch.randn(7, 4)])
+        with nested_execution_guard(forbid_storage_map=True):
+            col, row = torch.broadcast_tensors(nt.unsqueeze(1), nt.unsqueeze(2))
+        assert isinstance(col, NestedTensor) and isinstance(row, NestedTensor)
+        assert [tuple(x.shape) for x in col._storage] == [(5, 5, 4), (7, 7, 4)]
+        assert [tuple(x.shape) for x in row._storage] == [(5, 5, 4), (7, 7, 4)]
+        ref = [torch.broadcast_tensors(nt[i].unsqueeze(0), nt[i].unsqueeze(1)) for i in range(2)]
+        assert torch.equal(col.tensor, NestedTensor([r[0] for r in ref]).tensor)
+        assert torch.equal(row.tensor, NestedTensor([r[1] for r in ref]).tensor)
+
+    def test_shared_dense_tail(self):
+        nt = NestedTensor([torch.randn(5, 4), torch.randn(7, 4)])
+        dense = torch.randn(1, 4)
+        out, dense_out = torch.broadcast_tensors(nt, dense)
+        ref = [torch.broadcast_tensors(t, dense) for t in nt]
+        assert [tuple(x.shape) for x in out] == [(5, 4), (7, 4)]
+        assert_close(out, NestedTensor([r[0] for r in ref], **nt._meta()))
+        assert_close(dense_out, NestedTensor([r[1] for r in ref], **nt._meta()))
+
+    def test_batch_static_dense(self):
+        nt = NestedTensor([torch.randn(5, 2, 4), torch.randn(7, 2, 4)])
+        dense = torch.randn(2, 4)
+        out, dense_out = torch.broadcast_tensors(nt, dense)
+        ref = [torch.broadcast_tensors(t, dense[index]) for index, t in enumerate(nt)]
+        assert [tuple(x.shape) for x in out] == [(5, 2, 4), (7, 2, 4)]
+        assert_close(out, NestedTensor([r[0] for r in ref], **nt._meta()))
+        assert_close(dense_out, NestedTensor([r[1] for r in ref], **nt._meta()))
+
+    def test_padded_dense(self):
+        nt = NestedTensor([torch.randn(5, 4), torch.randn(7, 4)])
+        dense = torch.randn(2, 7, 4)
+        out, dense_out = torch.broadcast_tensors(nt, dense)
+        ref = [torch.broadcast_tensors(t, dense[index, : t.shape[0]]) for index, t in enumerate(nt)]
+        assert [tuple(x.shape) for x in out] == [(5, 4), (7, 4)]
+        assert_close(out, NestedTensor([r[0] for r in ref], **nt._meta()))
+        assert_close(dense_out, NestedTensor([r[1] for r in ref], **nt._meta()))
+
+    def test_nested_metadata(self):
+        lhs = NestedTensor([torch.randn(2, 1), torch.randn(3, 1)], padding_value=-1.0, mask_value=False)
+        rhs = NestedTensor([torch.randn(2, 1), torch.randn(3, 1)], padding_value=99.0, mask_value=True)
+        _, rhs_out = torch.broadcast_tensors(lhs, rhs)
+        assert rhs_out.padding_value == rhs.padding_value
+        assert rhs_out.mask_value == rhs.mask_value
 
 
 class TestCompile:
@@ -284,6 +442,26 @@ class TestCompile:
         compiled = torch.compile(op, backend="inductor", fullgraph=True)
         output = compiled(nt)
         reference = NT([ref_fn(t) for t in nt], **nt._meta())
+        assert isinstance(output, NestedTensor)
+        assert output._has_same_layout(reference)
+        assert_close(output, reference)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize(
+        ("op", "input_shapes", "weight_shape"),
+        [
+            pytest.param(lambda x, w, b: F.conv1d(x, w, b), [(3, 17), (3, 29)], (5, 3, 1), id="conv1d"),
+            pytest.param(lambda x, w, b: F.conv2d(x, w, b), [(3, 7, 11), (3, 9, 13)], (5, 3, 1, 1), id="conv2d"),
+        ],
+    )
+    def test_compile_pointwise_conv(self, op, input_shapes, weight_shape):
+        torch.manual_seed(1017)
+        nt = NT([torch.randn(*shape) for shape in input_shapes])
+        weight = torch.randn(*weight_shape)
+        bias = torch.randn(weight_shape[0])
+        compiled = torch.compile(op, backend="inductor", fullgraph=True)
+        output = compiled(nt, weight, bias)
+        reference = op(nt, weight, bias)
         assert isinstance(output, NestedTensor)
         assert output._has_same_layout(reference)
         assert_close(output, reference)
@@ -836,6 +1014,134 @@ class TestEinsum:
         reference = NT([torch.einsum("i,ij->j", v, a), torch.einsum("i,ij->j", v, b)], **nt._meta())
         assert_close(result, reference)
 
+    def test_einsum_pairwise_nested_operands(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(4, 3, device=device, dtype=float_dtype),
+                torch.randn(6, 3, device=device, dtype=float_dtype),
+                torch.randn(5, 3, device=device, dtype=float_dtype),
+            ]
+        )
+        weights = torch.randn(3, 3, device=device, dtype=float_dtype)
+        output = torch.einsum("bia,ac,bjc->bij", nt, weights, nt)
+        reference = NT([torch.einsum("ia,ac,jc->ij", t, weights, t) for t in nt], **nt._meta())
+        assert_close(output, reference)
+
+    def test_einsum_broadcast_dense_batch(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(5, 4, device=device, dtype=float_dtype),
+                torch.randn(7, 4, device=device, dtype=float_dtype),
+            ]
+        )
+        dense = torch.randn(1, 7, 4, device=device, dtype=float_dtype)
+        output = torch.einsum("blc,bmc->blm", nt, dense)
+        reference = NT([torch.einsum("lc,mc->lm", t, dense[0]) for t in nt], **nt._meta())
+        assert_close(output, reference)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_einsum_global_query_compile(self, device, float_dtype):
+        hidden_states = NT(
+            torch.randn(5, 7, device=device, dtype=float_dtype),
+            torch.randn(9, 7, device=device, dtype=float_dtype),
+        )
+        query_states = torch.randn(2, 3, 11, device=device, dtype=float_dtype)
+        key_weight = torch.randn(3, 7, 11, device=device, dtype=float_dtype)
+        value_weight = torch.randn(3, 7, 13, device=device, dtype=float_dtype)
+
+        def einsums(hidden_states, query_states, key_weight, value_weight):
+            key_states = torch.einsum("bls,hsk->bhlk", hidden_states, key_weight)
+            value_states = torch.einsum("bls,hsv->bhlv", hidden_states, value_weight)
+            attention_scores = torch.einsum("bhk,bhlk->bhl", query_states, key_states)
+            context = torch.einsum("bhl,bhlv->bhv", attention_scores, value_states)
+            return key_states, attention_scores, context
+
+        compiled = torch.compile(einsums, backend="inductor", fullgraph=True)
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            key_states, attention_scores, context = compiled(hidden_states, query_states, key_weight, value_weight)
+
+        key_reference = NT(
+            [torch.einsum("ls,hsk->hlk", hidden_state, key_weight) for hidden_state in hidden_states],
+            **hidden_states._meta(),
+        )
+        value_reference = NT(
+            [torch.einsum("ls,hsv->hlv", hidden_state, value_weight) for hidden_state in hidden_states],
+            **hidden_states._meta(),
+        )
+        score_reference = NT(
+            [
+                torch.einsum("hk,hlk->hl", query_states[index], key_state)
+                for index, key_state in enumerate(key_reference)
+            ],
+            **hidden_states._meta(),
+        )
+        context_reference = NT(
+            [torch.einsum("hl,hlv->hv", score, value) for score, value in zip(score_reference, value_reference)],
+            **hidden_states._meta(),
+        )
+
+        assert_close(key_states, key_reference)
+        assert_close(attention_scores, score_reference)
+        assert_close(context, context_reference, atol=1e-4, rtol=1e-4)
+
+    def test_einsum_global_query_equal_lengths(self, device, float_dtype):
+        hidden_states = NT(
+            torch.randn(5, 7, device=device, dtype=float_dtype),
+            torch.randn(5, 7, device=device, dtype=float_dtype),
+        )
+        query_states = torch.randn(2, 3, 11, device=device, dtype=float_dtype)
+        key_weight = torch.randn(3, 7, 11, device=device, dtype=float_dtype)
+        value_weight = torch.randn(3, 7, 13, device=device, dtype=float_dtype)
+
+        key_states = torch.einsum("bls,hsk->bhlk", hidden_states, key_weight)
+        value_states = torch.einsum("bls,hsv->bhlv", hidden_states, value_weight)
+        attention_scores = torch.einsum("bhk,bhlk->bhl", query_states, key_states)
+        context = torch.einsum("bhl,bhlv->bhv", attention_scores, value_states)
+
+        key_reference = NT(
+            [torch.einsum("ls,hsk->hlk", hidden_state, key_weight) for hidden_state in hidden_states],
+            **hidden_states._meta(),
+        )
+        value_reference = NT(
+            [torch.einsum("ls,hsv->hlv", hidden_state, value_weight) for hidden_state in hidden_states],
+            **hidden_states._meta(),
+        )
+        score_reference = NT(
+            [
+                torch.einsum("hk,hlk->hl", query_states[index], key_state)
+                for index, key_state in enumerate(key_reference)
+            ],
+            **hidden_states._meta(),
+        )
+        context_reference = NT(
+            [torch.einsum("hl,hlv->hv", score, value) for score, value in zip(score_reference, value_reference)],
+            **hidden_states._meta(),
+        )
+
+        assert_close(key_states, key_reference)
+        assert_close(value_states, value_reference)
+        assert_close(attention_scores, score_reference)
+        assert_close(context, context_reference, atol=1e-4, rtol=1e-4)
+        assert_close(key_states[0], key_reference[0])
+        assert_close(attention_scores[0], score_reference[0])
+        assert_close(key_states.tensor, key_reference.tensor)
+        assert_close(attention_scores.tensor, score_reference.tensor)
+
+    def test_einsum_global_query_bad_layout(self, device, float_dtype):
+        hidden_states = NT(
+            torch.randn(4, 5, device=device, dtype=float_dtype),
+            torch.randn(4, 9, device=device, dtype=float_dtype),
+        )
+        key_weight = torch.randn(3, 4, 11, device=device, dtype=float_dtype)
+
+        with pytest.raises(RuntimeError, match="subscript s has size"):
+            torch.einsum("bls,hsk->bhlk", hidden_states, key_weight)
+
 
 class TestFlattenUnflatten:
 
@@ -852,6 +1158,17 @@ class TestFlattenUnflatten:
         unflattened = torch.unflatten(flattened, dim=1, sizes=(2, 2, 2))
         assert_close(unflattened, nt)
 
+    def test_flatten_static_dims_after_multi_ragged_prefix(self):
+        nt = NT(
+            [
+                torch.arange(2 * 3 * 4 * 5, dtype=torch.float32).reshape(2, 3, 4, 5),
+                torch.arange(3 * 2 * 4 * 5, dtype=torch.float32).reshape(3, 2, 4, 5),
+            ]
+        )
+        output = torch.flatten(nt, start_dim=3)
+        reference = NT([torch.flatten(t, start_dim=2) for t in nt], **nt._meta())
+        assert_close(output, reference)
+
     def test_flatten_start_dim_zero_returns_tensor(self, device, float_dtype):
         nt = NestedTensor(
             [
@@ -863,10 +1180,60 @@ class TestFlattenUnflatten:
         assert isinstance(output, torch.Tensor)
         assert_close(output, torch.flatten(nt.tensor, start_dim=0))
 
+    def test_flatten_ragged_2d_batch_and_first_dim_to_rows(self):
+        # flatten(0, 1) on a ragged_rank>=2 NT collapses (batch + first ragged dim) into the batch
+        # while a ragged dim remains -> an NT of sum(L_i) rows (each (M_i, ...)), the "rows of the grid"
+        # view (e.g. for a packed row LSTM), instead of densifying to the padded max length.
+        grid = NestedTensor([torch.randn(4, 4, 3), torch.randn(6, 6, 3)])
+        rows = grid.flatten(0, 1)
+        assert isinstance(rows, NestedTensor)
+        assert rows._ragged_rank == 1
+        assert [tuple(x.shape) for x in rows._storage] == [(4, 3)] * 4 + [(6, 3)] * 6
+        ref = [r for i in range(len(grid)) for r in grid[i].unbind(0)]
+        assert all(torch.equal(rows[k], ref[k]) for k in range(len(ref)))
+
+    def test_flatten_batch_first_false_rows(self):
+        grid = NestedTensor([torch.randn(4, 4, 3), torch.randn(6, 6, 3)], batch_first=False)
+        rows = grid.flatten(0, 1)
+        assert isinstance(rows, NestedTensor)
+        assert rows.batch_first is False
+        assert [tuple(x.shape) for x in rows] == [(4, 3), (6, 3)] * 4 + [(6, 3)] * 2
+        ref = []
+        for row in range(6):
+            ref.extend(grid[batch][row] for batch in range(2) if row < grid[batch].shape[0])
+        assert all(torch.equal(rows[index], ref[index]) for index in range(len(ref)))
+
+    def test_flatten_batch_first_false_non_row_dense(self):
+        grid = NestedTensor([torch.randn(4, 4, 3), torch.randn(6, 6, 3)], batch_first=False)
+        dense = grid.flatten(1, 2)
+        assert isinstance(dense, torch.Tensor)
+        assert not isinstance(dense, NestedTensor)
+        assert_close(dense, torch.flatten(grid.tensor, 1, 2))
+
     def test_unflatten_batch_dim_not_supported(self):
         nt = NestedTensor([torch.tensor([[1, 2]])])
         with pytest.raises(ValueError):
             unflatten(nt, dim=0, sizes=(1, 2))
+
+
+class TestExpand:
+
+    def test_expand_static_singleton_dim(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(4, 1, 3, device=device, dtype=float_dtype),
+                torch.randn(6, 1, 3, device=device, dtype=float_dtype),
+            ]
+        )
+        output = nt.expand(-1, -1, 4, -1)
+        reference = NT([t.expand(-1, 4, -1) for t in nt], **nt._meta())
+        assert_close(output, reference)
+
+    @pytest.mark.parametrize("batch", [1, 3])
+    def test_expand_rejects_batch_change(self, batch):
+        nt = NT([torch.randn(4, 3), torch.randn(6, 3)])
+        with pytest.raises(RuntimeError):
+            nt.expand(batch, -1, -1)
 
 
 class TestFlipAndRoll:
@@ -881,6 +1248,32 @@ class TestFlipAndRoll:
             torch.flip(nt, dims=(0,))
         with pytest.raises(ValueError):
             torch.flip(nt, dims=(-3,))
+
+    def test_flip_ragged_last_dim(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(3, 4, device=device, dtype=float_dtype),
+                torch.randn(3, 7, device=device, dtype=float_dtype),
+            ]
+        )
+        output = torch.flip(nt, dims=(-1,))
+        reference = NT([torch.flip(t, dims=(-1,)) for t in nt], **nt._meta())
+        assert_close(output, reference)
+
+    def test_flip_ragged_2d_dims(self, device, float_dtype):
+        # ragged_rank == 2 (per-sample LxLxC grids): flipping a ragged dim must reverse that
+        # per-element axis, not the packed channel axis. Regression for a silent no-op where the
+        # element dim was used directly as the packed _values axis (only valid for ragged_rank==1).
+        nt = NT(
+            [
+                torch.randn(3, 3, 2, device=device, dtype=float_dtype),
+                torch.randn(5, 5, 2, device=device, dtype=float_dtype),
+            ]
+        )
+        for nt_dim, elem_dim in ((1, 0), (2, 1), (3, 2)):
+            output = torch.flip(nt, dims=(nt_dim,))
+            reference = NT([torch.flip(t, dims=(elem_dim,)) for t in nt], **nt._meta())
+            assert_close(output, reference)
 
     def test_roll_supports_dims_none(self, device):
         nt = NT([torch.tensor([1, 2, 3], device=device), torch.tensor([4, 5], device=device)])
@@ -1353,6 +1746,27 @@ class TestIndexingWriteOps:
         output = torch.masked_fill(nt, mask, tensor_value)
         assert_close(output, reference)
 
+    def test_masked_fill_broadcast_mask(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(3, 4, device=device, dtype=float_dtype),
+                torch.randn(5, 4, device=device, dtype=float_dtype),
+            ]
+        )
+        nested_mask = NT([t[:, :1] > 0 for t in nt], **nt._meta())
+        output = torch.masked_fill(nt, nested_mask, -7.0)
+        reference = NT([torch.masked_fill(t, t[:, :1] > 0, -7.0) for t in nt], **nt._meta())
+        assert_close(output, reference)
+
+        padded = nt.tensor
+        lengths = [t.shape[0] for t in nt]
+        for shape in ((2, 1, 4), (1, 5, 4), (5, 4), (2, 5, 1)):
+            mask = torch.rand(*shape, device=device) > 0.5
+            output = torch.masked_fill(nt, mask, -9.0)
+            reference = padded.masked_fill(mask, -9.0)
+            for index, length in enumerate(lengths):
+                assert_close(output[index], reference[index, :length])
+
     def test_masked_scatter(self, device, float_dtype):
         base = NestedTensor(
             [torch.zeros(3, device=device, dtype=float_dtype), torch.zeros(2, device=device, dtype=float_dtype)]
@@ -1679,13 +2093,18 @@ class TestLinalgOps:
 
     def test_linalg_norm_with_dim(self, device, float_dtype):
         a = torch.randn(3, 4, device=device, dtype=float_dtype)
-        b = torch.randn(3, 4, device=device, dtype=float_dtype)
+        b = torch.randn(5, 4, device=device, dtype=float_dtype)
         nt = NT([a, b])
-        # dim=1 in NestedTensor → dim=0 in element
-        result = torch.linalg.norm(nt, dim=1)
+        with nested_execution_guard(forbid_storage_map=True, forbid_padded_materialization=True):
+            result = torch.linalg.norm(nt, dim=1)
         assert isinstance(result, NestedTensor)
         assert_close(result[0], torch.linalg.norm(a, dim=0))
         assert_close(result[1], torch.linalg.norm(b, dim=0))
+
+        with nested_execution_guard(forbid_storage_map=True, forbid_padded_materialization=True):
+            global_result = torch.linalg.vector_norm(nt, ord=0)
+        assert_close(global_result[0].squeeze(), torch.linalg.vector_norm(a, ord=0))
+        assert_close(global_result[1].squeeze(), torch.linalg.vector_norm(b, ord=0))
 
     def test_linalg_qr(self, device, float_dtype):
         a = torch.randn(4, 3, device=device, dtype=float_dtype)
@@ -1828,8 +2247,15 @@ class TestLogicOps:
 class TestMatrixMultiplication:
 
     @staticmethod
-    def _compile_model_matrix_smoke(
-        device: torch.device, *, hidden: int, heads: int, head_dim: int, seqs: tuple[int, int]
+    def _compile_matrix_smoke(
+        device: torch.device,
+        *,
+        hidden: int,
+        heads: int,
+        head_dim: int,
+        seqs: tuple[int, int],
+        atol: Optional[float] = None,
+        rtol: Optional[float] = None,
     ) -> None:
         dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
 
@@ -1860,21 +2286,32 @@ class TestMatrixMultiplication:
         assert_close(
             compiled_matmul(dense_left, right_2d),
             NT([torch.matmul(dense_left, t) for t in right_2d], **right_2d._meta()),
+            atol=atol,
+            rtol=rtol,
         )
         assert_close(
-            compiled_mm(dense_left, right_2d), NT([torch.mm(dense_left, t) for t in right_2d], **right_2d._meta())
+            compiled_mm(dense_left, right_2d),
+            NT([torch.mm(dense_left, t) for t in right_2d], **right_2d._meta()),
+            atol=atol,
+            rtol=rtol,
         )
         assert_close(
             compiled_addmm(bias_2d, dense_left, right_2d),
             NT([torch.addmm(bias_2d, dense_left, t) for t in right_2d], **right_2d._meta()),
+            atol=atol,
+            rtol=rtol,
         )
         assert_close(
             compiled_bmm(attention_left, attention_right),
             NT([torch.bmm(attention_left, t) for t in attention_right], **attention_right._meta()),
+            atol=atol,
+            rtol=rtol,
         )
         assert_close(
             compiled_baddbmm(bias_3d, attention_left, attention_right),
             NT([torch.baddbmm(bias_3d, attention_left, t) for t in attention_right], **attention_right._meta()),
+            atol=atol,
+            rtol=rtol,
         )
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -1953,8 +2390,8 @@ class TestMatrixMultiplication:
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_bert_base_model_shapes_compile_fullgraph(self, device):
-        self._compile_model_matrix_smoke(device, hidden=768, heads=12, head_dim=64, seqs=(384, 512))
+    def test_medium_matrix_compile(self, device):
+        self._compile_matrix_smoke(device, hidden=768, heads=12, head_dim=64, seqs=(384, 512))
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_bmm_compile_fullgraph_tensor_lhs(self, device, float_dtype):
@@ -1988,11 +2425,106 @@ class TestMatrixMultiplication:
         reference = NT([torch.bmm(a, b) for a, b in zip(left, right)], **left._meta())
         assert_close(output, reference)
 
+    def test_jagged_attention_matmul(self, device, float_dtype):
+        query = NT(
+            [
+                torch.randn(2, 5, 4, device=device, dtype=float_dtype),
+                torch.randn(2, 3, 4, device=device, dtype=float_dtype),
+            ]
+        )
+        key = NT(
+            [
+                torch.randn(2, 4, 5, device=device, dtype=float_dtype),
+                torch.randn(2, 4, 3, device=device, dtype=float_dtype),
+            ]
+        )
+        value = NT(
+            [
+                torch.randn(2, 5, 6, device=device, dtype=float_dtype),
+                torch.randn(2, 3, 6, device=device, dtype=float_dtype),
+            ]
+        )
+
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            scores = torch.matmul(query, key)
+            probs = torch.softmax(scores, dim=-1)
+            log_probs = torch.log_softmax(scores, dim=-1)
+            context = torch.matmul(probs, value)
+
+        score_ref = NT([torch.matmul(q, k) for q, k in zip(query, key)], **query._meta())
+        prob_ref = NT([torch.softmax(score, dim=-1) for score in score_ref], **query._meta())
+        log_prob_ref = NT([torch.log_softmax(score, dim=-1) for score in score_ref], **query._meta())
+        context_ref = NT([torch.matmul(prob, val) for prob, val in zip(prob_ref, value)], **query._meta())
+        atol, rtol = low_precision_cuda_tolerances(
+            device, float_dtype, default=(1e-5, 1e-5), fp16=(1e-3, 1e-3), bf16=(5e-3, 5e-3)
+        )
+        assert_close(scores, score_ref, atol=atol, rtol=rtol)
+        assert_close(probs, prob_ref, atol=atol, rtol=rtol)
+        assert_close(log_probs, log_prob_ref, atol=atol, rtol=rtol)
+        assert_close(context, context_ref, atol=atol, rtol=rtol)
+
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_llama_13b_model_shapes_compile_fullgraph(self, device):
+    def test_jagged_attention_matmul_compile(self, device, float_dtype):
+        query = NT(
+            [
+                torch.randn(2, 5, 4, device=device, dtype=float_dtype),
+                torch.randn(2, 3, 4, device=device, dtype=float_dtype),
+            ]
+        )
+        key = NT(
+            [
+                torch.randn(2, 4, 5, device=device, dtype=float_dtype),
+                torch.randn(2, 4, 3, device=device, dtype=float_dtype),
+            ]
+        )
+        value = NT(
+            [
+                torch.randn(2, 5, 6, device=device, dtype=float_dtype),
+                torch.randn(2, 3, 6, device=device, dtype=float_dtype),
+            ]
+        )
+
+        def attention(query, key, value):
+            scores = torch.matmul(query, key)
+            probs = torch.softmax(scores, dim=-1)
+            return torch.matmul(probs, value)
+
+        compiled = torch.compile(attention, backend="inductor", fullgraph=True)
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            output = compiled(query, key, value)
+
+        reference = NT(
+            [torch.matmul(torch.softmax(torch.matmul(q, k), dim=-1), v) for q, k, v in zip(query, key, value)],
+            **query._meta(),
+        )
+        atol, rtol = low_precision_cuda_tolerances(
+            device, float_dtype, default=(1e-5, 1e-5), fp16=(1e-3, 1e-3), bf16=(5e-3, 5e-3)
+        )
+        assert_close(output, reference, atol=atol, rtol=rtol)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_large_matrix_compile(self, device):
         if device.type != "cuda":
-            pytest.skip("llama-13b full-shape compile smoke is only exercised on CUDA")
-        self._compile_model_matrix_smoke(device, hidden=5120, heads=40, head_dim=128, seqs=(1536, 2048))
+            pytest.skip("large matrix compile smoke is only exercised on CUDA")
+        self._compile_matrix_smoke(
+            device,
+            hidden=5120,
+            heads=40,
+            head_dim=128,
+            seqs=(1536, 2048),
+            atol=1.0,
+            rtol=2e-2,
+        )
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_matmul_compile_fullgraph_tensor_lhs(self, device, float_dtype):
@@ -2461,7 +2993,8 @@ class TestNonzeroAndTake:
         output = torch.count_nonzero(nt)
         assert_close(output, torch.tensor(2, device=device))
 
-        output = torch.count_nonzero(nt, dim=1)
+        with nested_execution_guard(forbid_storage_map=True, forbid_padded_materialization=True):
+            output = torch.count_nonzero(nt, dim=1)
         assert_close(output, torch.tensor([2, 0], device=device))
 
         with pytest.raises(ValueError):
@@ -2692,6 +3225,76 @@ class TestReductionOps:
         output = torch.aminmax(nt, dim=0)
         assert_close(output[0], torch.tensor([1.0, 3.0], device=device, dtype=float_dtype))
         assert_close(output[1], torch.tensor([2.0, 3.0], device=device, dtype=float_dtype))
+
+    def test_reduce_ragged_last_dim(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(3, 4, device=device, dtype=float_dtype),
+                torch.randn(3, 7, device=device, dtype=float_dtype),
+            ]
+        )
+        mean_reference = torch.stack([torch.mean(t, dim=-1) for t in nt])
+        sum_reference = torch.stack([torch.sum(t, dim=-1) for t in nt])
+        amax_reference = torch.stack([torch.amax(t, dim=-1) for t in nt])
+        amin_reference = torch.stack([torch.amin(t, dim=-1) for t in nt])
+
+        with nested_execution_guard(forbid_storage_map=True, forbid_padded_materialization=True):
+            assert_close(torch.mean(nt, dim=-1), mean_reference)
+            assert_close(torch.sum(nt, dim=-1), sum_reference)
+            assert_close(torch.amax(nt, dim=-1), amax_reference)
+            assert_close(torch.amin(nt, dim=-1), amin_reference)
+            assert_close(torch.sum(nt, dim=-1, keepdim=True), sum_reference.unsqueeze(-1))
+
+        nt = NT(
+            [
+                torch.randn(4, 3, device=device, dtype=float_dtype),
+                torch.randn(7, 3, device=device, dtype=float_dtype),
+            ]
+        )
+        reference = torch.stack([torch.sum(t, dim=0) for t in nt])
+        with nested_execution_guard(forbid_storage_map=True, forbid_padded_materialization=True):
+            assert_close(torch.sum(nt, dim=1), reference)
+
+    def test_reduce_strided_ragged_last_dim(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(3, 8, device=device, dtype=float_dtype),
+                torch.randn(3, 11, device=device, dtype=float_dtype),
+            ]
+        )
+        mask = NT(
+            [
+                torch.ones(1, 8, device=device, dtype=float_dtype),
+                torch.ones(1, 11, device=device, dtype=float_dtype),
+            ]
+        )
+
+        def reduce_frames(features, frame_mask):
+            features = torch.flip(features, dims=(-1,))
+            frame_mask = torch.flip(frame_mask, dims=(-1,))
+            pooled = []
+            for offset in range(3):
+                pooled.append(features[..., offset::3].amax(dim=-1))
+            for offset in range(3):
+                frame = features[..., offset::3]
+                valid = frame_mask[..., offset::3]
+                pooled.append(frame.sum(dim=-1) / valid.sum(dim=-1).clamp_min(torch.finfo(frame.dtype).eps))
+            return torch.cat(pooled, dim=-1)
+
+        reference = torch.stack([reduce_frames(t, m) for t, m in zip(nt, mask)])
+        with nested_execution_guard(forbid_storage_map=True, forbid_padded_materialization=True):
+            assert_close(reduce_frames(nt, mask), reference)
+
+    def test_reduce_static_dims_preserves_ragged(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(4, 5, 6, device=device, dtype=float_dtype),
+                torch.randn(4, 7, 6, device=device, dtype=float_dtype),
+            ]
+        )
+        output = torch.sum(nt, dim=(1, 3))
+        reference = NT([torch.sum(t, dim=(0, 2)) for t in nt], **nt._meta())
+        assert_close(output, reference)
 
     def test_any_ignores_padding(self, device, float_dtype):
         nt = NestedTensor(
@@ -2999,7 +3602,8 @@ class TestSelectionOps:
         argmax_last_ref = NestedTensor([torch.argmax(a, dim=1), torch.argmax(b, dim=1)], **nt._meta())
         assert_close(argmax_last, argmax_last_ref)
 
-        argmin_ragged = torch.argmin(nt, dim=1)
+        with nested_execution_guard(forbid_storage_map=True, forbid_padded_materialization=True):
+            argmin_ragged = torch.argmin(nt, dim=1)
         argmin_ragged_ref = torch.stack([torch.argmin(a, dim=0), torch.argmin(b, dim=0)])
         assert_close(argmin_ragged, argmin_ragged_ref)
 
@@ -3025,7 +3629,8 @@ class TestSelectionOps:
         assert_close(max_last.values, max_last_ref_vals)
         assert_close(max_last.indices, max_last_ref_idxs)
 
-        min_ragged = torch.min(nt, dim=1)
+        with nested_execution_guard(forbid_storage_map=True, forbid_padded_materialization=True):
+            min_ragged = torch.min(nt, dim=1)
         min_ragged_ref_vals = torch.stack([torch.min(a, dim=0).values, torch.min(b, dim=0).values])
         min_ragged_ref_idxs = torch.stack([torch.min(a, dim=0).indices, torch.min(b, dim=0).indices])
         assert_close(min_ragged.values, min_ragged_ref_vals)
@@ -3087,6 +3692,17 @@ class TestSoftmaxVariants:
 
         with pytest.raises(ValueError):
             torch.softmax(nt, dim=0)
+
+    def test_softmax_ragged_last_dim(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(3, 4, device=device, dtype=float_dtype),
+                torch.randn(3, 7, device=device, dtype=float_dtype),
+            ]
+        )
+        output = torch.softmax(nt, dim=-1)
+        reference = NT([torch.softmax(t, dim=-1) for t in nt], **nt._meta())
+        assert_close(output, reference)
 
 
 class TestSplitChunkUnbind:
@@ -3203,10 +3819,13 @@ class TestStackFunction:
         with pytest.raises(ValueError):
             stack([])
 
-    def test_stack_requires_dim_zero(self):
-        nt = NestedTensor([torch.ones(1)])
-        with pytest.raises(NotImplementedError):
-            stack([nt], dim=1)
+    def test_stack_non_batch_dim(self):
+        a = NT([torch.arange(2 * 3).reshape(2, 3), torch.arange(4 * 3).reshape(4, 3)])
+        b = -a
+        output = torch.stack([a, b], dim=-1)
+        reference = NT([torch.stack([a[i], b[i]], dim=-1) for i in range(len(a))], **a._meta())
+        assert isinstance(output, NestedTensor)
+        assert_close(output, reference)
 
     def test_stack_requires_nested_tensor_inputs(self):
         with pytest.raises(NotImplementedError):

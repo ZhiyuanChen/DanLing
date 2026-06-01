@@ -31,6 +31,7 @@ from ._convolution import (
     _can_use_spatial_tile_convolution,
     _conv_output_size,
     _has_cuda_tensors,
+    _has_static_input_channels,
     _resolve_element_shapes,
     _spatial_tile_length_occupancy,
     _spatial_tile_max_batch,
@@ -54,8 +55,17 @@ except Exception:  # pragma: no cover - optional dependency/runtime
 # ---------------------------------------------------------------------------
 
 
+def _unwrap_single_conv_arg(value):
+    if isinstance(value, (tuple, list)) and len(value) == 1:
+        return value[0]
+    return value
+
+
 def conv1d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1, *, _fn=None):
     r"""Use packed pointwise or spatial tile conv1d, otherwise fall back to per-element conv."""
+    stride = _unwrap_single_conv_arg(stride)
+    padding = _unwrap_single_conv_arg(padding)
+    dilation = _unwrap_single_conv_arg(dilation)
     if len(input) != 0:
         channel_dim = _packed_pointwise_conv1d_channel_dim(input, weight, stride, padding, dilation, groups)
         if channel_dim is not None:
@@ -84,13 +94,8 @@ def _packed_pointwise_conv1d_channel_dim(input: NestedTensor, weight, stride, pa
         return None
     if padding_single != 0:
         return None
-    if input._physical_shape.size(1) != 2:
-        return None
-    if input._element_shapes is not None and any(len(shape) != 2 for shape in input._element_shapes):
-        return None
-
     in_channels = int(weight.shape[1])
-    if not bool(torch.equal(input._physical_shape[:, 0], torch.full_like(input._physical_shape[:, 0], in_channels))):
+    if not _has_static_input_channels(input, in_channels, rank=1):
         return None
 
     suffix_rank = input._values.dim() - 1
@@ -137,8 +142,10 @@ def _packed_pointwise_conv1d(
         padding_value=input.padding_value,
         mask_value=input.mask_value,
         pin_memory=input._pin_memory,
+        outer_size=input._logical_shape_from_components(replace_dims={0: out_channels}),
         packed_sizes=input._packed_sizes,
         element_shapes=element_shapes,
+        validate=False,
     )
 
 
@@ -197,9 +204,8 @@ def _conv1d_spatial_tiles(
     return tiles
 
 
-def _auto_spatial_tile1d_config(length_occupancy: float) -> tuple[int, int]:
-    tile_length = 1024
-    return tile_length, _auto_spatial_tile1d_batch(tile_length, length_occupancy)
+def _auto_spatial_tile1d_config(_length_occupancy: float) -> int:
+    return 1024
 
 
 def _auto_spatial_tile1d_batch(tile_length: int, _length_occupancy: float) -> int:
@@ -246,17 +252,16 @@ def _resolve_spatial_tile1d_config(
     if isinstance(tile_size, str):
         if tile_size != "auto":
             return None
-        tile_length, auto_batch = _auto_spatial_tile1d_config(length_occupancy)
+        tile_length = _auto_spatial_tile1d_config(length_occupancy)
     else:
         if not isinstance(tile_size, int) or tile_size <= 0:
             return None
         tile_length = int(tile_size)
-        auto_batch = _auto_spatial_tile1d_batch(tile_length, length_occupancy)
 
     if isinstance(max_tiles_per_batch, str):
         if max_tiles_per_batch != "auto":
             return None
-        return tile_length, auto_batch
+        return tile_length, None
     if max_tiles_per_batch is None:
         return tile_length, None
     return tile_length, max(int(max_tiles_per_batch), 1)
@@ -1400,6 +1405,19 @@ class _SpatialTileConv1dCudnnFunction(torch.autograd.Function):
         )
 
 
+def _normalize_spatial_tile1d_str_padding(padding, weight, stride, dilation) -> int | None:
+    if padding == "valid":
+        return 0
+    if padding != "same" or not isinstance(weight, Tensor) or weight.dim() != 3:
+        return None
+    if not isinstance(stride, int) or stride != 1 or not isinstance(dilation, int):
+        return None
+    total = dilation * (int(weight.shape[2]) - 1)
+    if total % 2 != 0:
+        return None
+    return total // 2
+
+
 def _spatial_tile_conv1d(
     input: NestedTensor,
     weight: Tensor,
@@ -1417,6 +1435,10 @@ def _spatial_tile_conv1d(
     r"""Run ragged ``conv1d`` by batching fixed-size 1D tiles through PyTorch/cuDNN."""
     if triton is None or not _can_use_spatial_tile_convolution(input, weight, groups, rank=1, input_channel_dim=1):
         return None
+    if isinstance(padding, str):
+        padding = _normalize_spatial_tile1d_str_padding(padding, weight, stride, dilation)
+        if padding is None:
+            return None
     if not isinstance(stride, int) or not isinstance(padding, int) or not isinstance(dilation, int):
         return None
     stride_single = int(stride)
@@ -1467,7 +1489,7 @@ def _spatial_tile_conv1d(
     if capped_tile_length != tile_length:
         tile_length = capped_tile_length
         if max_tiles_per_batch == "auto":
-            resolved_max_tiles = _auto_spatial_tile1d_batch(tile_length, _spatial_tile_length_occupancy(input_shapes))
+            resolved_max_tiles = None
     input_tile_length = (tile_length - 1) * stride_single + dilation_single * (kernel_size - 1) + 1
     if input_tile_length <= 0:
         return None

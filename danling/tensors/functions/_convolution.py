@@ -27,7 +27,7 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
-from ..ops import _check_execution_guard, _ExecutionGuardKind
+from ..ops import _check_execution_guard, _ExecutionGuardKind, _is_compiling
 
 if TYPE_CHECKING:
     from ..nested_tensor import NestedTensor
@@ -40,6 +40,17 @@ def _per_element(input: NestedTensor, fn: Callable, *args, **kwargs) -> NestedTe
         return cls([], **input._meta(include_dtype=True))
     with torch._C.DisableTorchFunctionSubclass():
         return cls([fn(t, *args, **kwargs) for t in input._storage], **input._meta())
+
+
+def _has_static_input_channels(input: NestedTensor, channels: int, rank: int) -> bool:
+    if input._physical_shape.size(1) != rank + 1:
+        return False
+    if input._element_shapes is not None:
+        return all(len(shape) == rank + 1 and int(shape[0]) == int(channels) for shape in input._element_shapes)
+    if _is_compiling():
+        return False
+    expected = torch.full_like(input._physical_shape[:, 0], int(channels))
+    return bool(torch.equal(input._physical_shape[:, 0], expected))
 
 
 def _packed_pointwise_conv_transpose_channel_dim(
@@ -86,13 +97,8 @@ def _packed_pointwise_conv_transpose_channel_dim(
     ):
         return None
 
-    if input._physical_shape.size(1) != rank + 1:
-        return None
-    if input._element_shapes is not None and any(len(shape) != rank + 1 for shape in input._element_shapes):
-        return None
-
     in_channels = int(weight.shape[0])
-    if not bool(torch.equal(input._physical_shape[:, 0], torch.full_like(input._physical_shape[:, 0], in_channels))):
+    if not _has_static_input_channels(input, in_channels, rank):
         return None
 
     suffix_rank = input._values.dim() - 1
@@ -138,8 +144,10 @@ def _packed_pointwise_conv_transpose(
         padding_value=input.padding_value,
         mask_value=input.mask_value,
         pin_memory=input._pin_memory,
+        outer_size=input._logical_shape_from_components(replace_dims={0: out_channels}),
         packed_sizes=input._packed_sizes,
         element_shapes=element_shapes,
+        validate=False,
     )
 
 
@@ -187,8 +195,6 @@ def _can_use_spatial_tile_convolution(
         return False
     if input._physical_shape.size(1) != rank + 1:
         return False
-    if input._element_shapes is not None and any(len(shape) != rank + 1 for shape in input._element_shapes):
-        return False
     if tuple(int(dim) for dim in input._permutation) != (*range(1, rank + 1), 0) or input._values.dim() != 2:
         return False
     if not input._values.is_contiguous():
@@ -197,7 +203,7 @@ def _can_use_spatial_tile_convolution(
     in_channels = int(weight.shape[input_channel_dim])
     if int(input._values.shape[1]) != in_channels:
         return False
-    return bool(torch.equal(input._physical_shape[:, 0], torch.full_like(input._physical_shape[:, 0], in_channels)))
+    return _has_static_input_channels(input, in_channels, rank)
 
 
 def _valid_conv_bias(bias: Tensor | None, *, out_channels: int, device: torch.device, dtype: torch.dtype) -> bool:

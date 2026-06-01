@@ -25,13 +25,13 @@ from torch import nn
 from torch.nn import functional as F
 
 from danling.tensors import NestedTensor, create_flex_block_mask
+from danling.tensors.aten_functions import _sdpa_pack_native, _sdpa_restore_native
 from danling.tensors.nn_functions import (
     _concat_tensors,
     _nested_from_padded_tensor,
     _restore_flex_dense_tensor,
-    _sdpa_pack_native,
-    _sdpa_restore_native,
 )
+from danling.tensors.ops import nested_execution_guard
 from tests.tensors.utils import (
     assert_close,
     assert_nested_function_matches,
@@ -565,6 +565,36 @@ class TestConv:
         atol, rtol = self._tolerances(device, float_dtype)
         assert_close(output, reference, atol=atol, rtol=rtol)
 
+    def test_conv1d_module_pointwise(self, device, float_dtype):
+        input = NT(
+            [
+                torch.randn(2, 5, device=device, dtype=float_dtype),
+                torch.randn(2, 7, device=device, dtype=float_dtype),
+            ]
+        )
+        module = nn.Conv1d(2, 4, kernel_size=1).to(device=device, dtype=float_dtype).eval()
+
+        with nested_execution_guard(forbid_storage_map=True):
+            output = module(input)
+
+        reference = NT([module(t) for t in input], **input._meta())
+        atol, rtol = self._tolerances(device, float_dtype)
+        assert_close(output, reference, atol=atol, rtol=rtol)
+
+    def test_conv1d_padding_same(self, device, float_dtype):
+        input = NT(
+            [
+                torch.randn(2, 5, device=device, dtype=float_dtype),
+                torch.randn(2, 7, device=device, dtype=float_dtype),
+            ]
+        )
+        weight = torch.randn(4, 2, 3, device=device, dtype=float_dtype)
+        bias = torch.randn(4, device=device, dtype=float_dtype)
+        output = F.conv1d(input, weight, bias, padding="same")
+        reference = NT([F.conv1d(t, weight, bias, padding="same") for t in input], **input._meta())
+        atol, rtol = self._tolerances(device, float_dtype)
+        assert_close(output, reference, atol=atol, rtol=rtol)
+
     def test_conv1d_batch_first_false(self, device, float_dtype):
         input = NT(
             [
@@ -959,13 +989,17 @@ class TestInterpolate:
     def test_interpolate_bilinear(self, device, float_dtype):
         nt = NT(
             [
-                torch.arange(4.0, device=device, dtype=float_dtype).view(1, 1, 2, 2),
-                torch.ones(1, 1, 2, 2, device=device, dtype=float_dtype),
+                torch.arange(8.0, device=device, dtype=float_dtype).view(2, 2, 2),
+                torch.ones(2, 2, 2, device=device, dtype=float_dtype),
             ]
         )
-        output = F.interpolate(nt, scale_factor=2, mode="bilinear", align_corners=False)
+        with nested_execution_guard(forbid_storage_map=True):
+            output = F.interpolate(nt, scale_factor=2, mode="bilinear", align_corners=False)
         reference = NT(
-            [F.interpolate(t, scale_factor=2, mode="bilinear", align_corners=False) for t in nt],
+            [
+                F.interpolate(t.unsqueeze(0), scale_factor=2, mode="bilinear", align_corners=False).squeeze(0)
+                for t in nt
+            ],
             **nt._meta(),
         )
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
@@ -973,12 +1007,28 @@ class TestInterpolate:
     def test_interpolate_nearest(self, device, float_dtype):
         nt = NT(
             [
-                torch.arange(4.0, device=device, dtype=float_dtype).view(1, 1, 2, 2),
-                torch.ones(1, 1, 2, 2, device=device, dtype=float_dtype),
+                torch.arange(8.0, device=device, dtype=float_dtype).view(2, 2, 2),
+                torch.ones(2, 2, 2, device=device, dtype=float_dtype),
+            ]
+        )
+        with nested_execution_guard(forbid_storage_map=True):
+            output = F.interpolate(nt, scale_factor=2, mode="nearest")
+        reference = NT(
+            [F.interpolate(t.unsqueeze(0), scale_factor=2, mode="nearest").squeeze(0) for t in nt], **nt._meta()
+        )
+        assert_close(output, reference)
+
+    def test_interpolate_ragged_spatial(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.arange(8.0, device=device, dtype=float_dtype).view(2, 2, 2),
+                torch.ones(2, 3, 2, device=device, dtype=float_dtype),
             ]
         )
         output = F.interpolate(nt, scale_factor=2, mode="nearest")
-        reference = NT([F.interpolate(t, scale_factor=2, mode="nearest") for t in nt], **nt._meta())
+        reference = NT(
+            [F.interpolate(t.unsqueeze(0), scale_factor=2, mode="nearest").squeeze(0) for t in nt], **nt._meta()
+        )
         assert_close(output, reference)
 
 
@@ -1235,6 +1285,68 @@ class TestModuleIntegration:
         reference.sum().backward()
         assert_close(layer.weight.grad, reference_layer.weight.grad)
         assert_close(layer.bias.grad, reference_layer.bias.grad)
+
+    @pytest.mark.parametrize(
+        "module_factory",
+        [
+            pytest.param(lambda: nn.RNN(8, 16, batch_first=True), id="rnn"),
+            pytest.param(lambda: nn.GRU(8, 16, batch_first=True), id="gru"),
+            pytest.param(lambda: nn.LSTM(8, 16, num_layers=2, bidirectional=True, batch_first=True), id="lstm"),
+        ],
+    )
+    def test_recurrent_module(self, device, module_factory):
+        dtype = torch.float32
+        elements = [torch.randn(length, 8, device=device, dtype=dtype) for length in (4, 7, 5)]
+        nested = NT([t.clone() for t in elements])
+        module = module_factory().to(device=device, dtype=dtype).eval()
+
+        with torch.no_grad():
+            output = module(nested)[0]
+            reference = NT([module(t.unsqueeze(0))[0].squeeze(0) for t in elements], **nested._meta())
+
+        assert isinstance(output, NestedTensor)
+        assert_close(output, reference, atol=1e-4, rtol=1e-4)
+
+    def test_lstm_state(self, device):
+        dtype = torch.float32
+        elements = [torch.randn(length, 8, device=device, dtype=dtype) for length in (4, 7, 5)]
+        nested = NT([t.clone() for t in elements])
+        module = nn.LSTM(8, 16, batch_first=True).to(device=device, dtype=dtype).eval()
+
+        with torch.no_grad():
+            _, (h_n, c_n) = module(nested)
+            states = [module(t.unsqueeze(0))[1] for t in elements]
+
+        assert_close(h_n, torch.cat([state[0] for state in states], dim=1), atol=1e-4, rtol=1e-4)
+        assert_close(c_n, torch.cat([state[1] for state in states], dim=1), atol=1e-4, rtol=1e-4)
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_recurrent_empty(self, device, batch_first):
+        dtype = torch.float32
+        elements = [torch.randn(0, 8, device=device, dtype=dtype), torch.randn(3, 8, device=device, dtype=dtype)]
+        nested = NT([t.clone() for t in elements], batch_first=batch_first)
+        module = nn.GRU(8, 16, batch_first=batch_first).to(device=device, dtype=dtype).eval()
+        batch_axis = 0 if batch_first else 1
+
+        with torch.no_grad():
+            output, hidden = module(nested)
+            reference = module(elements[1].unsqueeze(batch_axis))[0].squeeze(batch_axis)
+
+        assert [tuple(t.shape) for t in output] == [(0, 16), (3, 16)]
+        assert_close(output[1], reference, atol=1e-4, rtol=1e-4)
+        assert hidden.shape == (1, 2, 16)
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_recurrent_all_empty(self, device, batch_first):
+        dtype = torch.float32
+        nested = NT([torch.randn(0, 8, device=device, dtype=dtype) for _ in range(2)], batch_first=batch_first)
+        module = nn.GRU(8, 16, batch_first=batch_first).to(device=device, dtype=dtype).eval()
+
+        with torch.no_grad():
+            output, hidden = module(nested)
+
+        assert [tuple(t.shape) for t in output] == [(0, 16), (0, 16)]
+        assert hidden.shape == (1, 2, 16)
 
 
 class TestMultiHeadAttentionForward:
@@ -1625,6 +1737,32 @@ class TestNormalizationOps:
         )
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
+    def test_batch_norm_eval_channel_first_stays_packed(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(4, 17, device=device, dtype=float_dtype),
+                torch.randn(4, 29, device=device, dtype=float_dtype),
+            ]
+        )
+        running_mean = torch.randn(4, device=device, dtype=float_dtype)
+        running_var = torch.rand(4, device=device, dtype=float_dtype) + 0.5
+        weight = torch.randn(4, device=device, dtype=float_dtype)
+        bias = torch.randn(4, device=device, dtype=float_dtype)
+
+        with nested_execution_guard(forbid_padded_materialization=True, forbid_dense_repack=True):
+            output = F.batch_norm(nt, running_mean, running_var, weight, bias, training=False)
+        reference = NT(
+            [
+                F.batch_norm(t.unsqueeze(0), running_mean, running_var, weight, bias, training=False).squeeze(0)
+                for t in nt
+            ],
+            **nt._meta(),
+        )
+
+        assert isinstance(output, NestedTensor)
+        assert output._has_same_layout(reference)
+        assert_close(output, reference, atol=1e-5, rtol=1e-5)
+
     def test_group_norm(self, device, float_dtype):
         nt = nested_rand([(3, 4), (2, 4)], device, float_dtype)
         output = F.group_norm(nt, num_groups=1)
@@ -1699,6 +1837,19 @@ class TestOneHot:
         reference = NT([F.one_hot(t, num_classes=3) for t in x], **x._meta())
         assert_close(output, reference)
 
+    def test_one_hot_stays_packed(self):
+        x = NT([torch.tensor([0, 1, 2], dtype=torch.long), torch.tensor([1, 0], dtype=torch.long)])
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            output = F.one_hot(x, num_classes=3)
+        reference = NT([F.one_hot(t, num_classes=3) for t in x], **x._meta())
+        assert output._has_same_layout(reference)
+        assert_close(output, reference)
+
 
 class TestPad:
 
@@ -1722,6 +1873,45 @@ class TestPad:
         )
         output = F.pad(nt, (1, 1, 1, 1), value=0.25)
         reference = NT([F.pad(t, (1, 1, 1, 1), value=0.25) for t in nt], **nt._meta())
+        assert_close(output, reference)
+
+    def test_pad_variable_last_dim_stays_packed(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(4, 17, device=device, dtype=float_dtype),
+                torch.randn(4, 29, device=device, dtype=float_dtype),
+            ]
+        )
+        with nested_execution_guard(
+            forbid_storage_map=True, forbid_padded_materialization=True, forbid_dense_repack=True
+        ):
+            output = F.pad(nt, (3, 5), value=0.25)
+        reference = NT([F.pad(t, (3, 5), value=0.25) for t in nt], **nt._meta())
+        assert output._has_same_layout(reference)
+        assert_close(output, reference)
+
+    def test_pad_custom_permutation_multi_varying_last_dim_falls_back(self, device, float_dtype):
+        tensors = (
+            torch.randn(2, 3, device=device, dtype=float_dtype),
+            torch.randn(4, 5, device=device, dtype=float_dtype),
+        )
+        values, offsets, shape_tensor, packed_sizes, element_shapes = NT._pack(tensors, permutation=(1, 0))
+        nt = NT._from_packed(
+            values,
+            offsets,
+            shape_tensor,
+            permutation=(1, 0),
+            batch_first=True,
+            padding_value=0.0,
+            mask_value=False,
+            pin_memory=False,
+            outer_size=torch.Size((len(tensors), 4, 5)),
+            packed_sizes=packed_sizes,
+            element_shapes=element_shapes,
+        )
+
+        output = F.pad(nt, (1, 2), value=0.25)
+        reference = NT([F.pad(t, (1, 2), value=0.25) for t in tensors], **nt._meta())
         assert_close(output, reference)
 
 
@@ -2274,7 +2464,7 @@ class TestScaledDotProductAttention:
             ]
         )
 
-        packed, _lengths, _cumulative, _max_seqlen = _sdpa_pack_native(query)
+        packed, _cumulative, _max_seqlen = _sdpa_pack_native(query)
         restored = _sdpa_restore_native(packed, query)
 
         assert_close(restored, query)
@@ -2304,6 +2494,48 @@ class TestScaledDotProductAttention:
         assert restored._packed_sizes == query._packed_sizes
         assert restored.shape[-1] == 16
 
+    def test_flash_attention_forward_wrapper(self, device):
+        if device.type != "cuda":
+            pytest.skip("DanLing FlashAttention wrapper is CUDA-only")
+
+        query = NT(
+            [
+                torch.randn(4, 11, 32, device=device, dtype=torch.float16),
+                torch.randn(4, 7, 32, device=device, dtype=torch.float16),
+            ]
+        )
+        key = NT(
+            [
+                torch.randn(4, 11, 32, device=device, dtype=torch.float16),
+                torch.randn(4, 7, 32, device=device, dtype=torch.float16),
+            ]
+        )
+        value = NT(
+            [
+                torch.randn(4, 11, 32, device=device, dtype=torch.float16),
+                torch.randn(4, 7, 32, device=device, dtype=torch.float16),
+            ]
+        )
+
+        output = torch.ops.aten._flash_attention_forward.default(
+            query,
+            key,
+            value,
+            None,
+            None,
+            0,
+            0,
+            0.0,
+            False,
+            False,
+        )[0]
+        reference = NT(
+            [F.scaled_dot_product_attention(q, k, v, dropout_p=0.0) for q, k, v in zip(query, key, value)],
+            **query._meta(),
+        )
+        assert isinstance(output, NT)
+        assert_close(output, reference, atol=1e-3, rtol=1e-3)
+
     def test_sdpa_tensor_key_value(self, device, float_dtype):
         query = NT(
             [
@@ -2321,6 +2553,96 @@ class TestScaledDotProductAttention:
             bf16=(5e-3, 5e-3),
         )
         assert_close(output, reference, atol=atol, rtol=rtol)
+
+    @staticmethod
+    def _ragged_attention_reference(query, key, value, score_mod=None, scale=None):
+        scale = scale if scale is not None else query[0].shape[-1] ** -0.5
+        outputs = []
+        for index, (q, k, v) in enumerate(zip(query, key, value)):
+            heads, q_len, _ = q.shape
+            kv_len = k.shape[1]
+            scores = (q @ k.transpose(-1, -2)) * scale
+            if score_mod is not None:
+                head = torch.arange(heads, device=q.device).view(heads, 1, 1)
+                q_idx = torch.arange(q_len, device=q.device).view(1, q_len, 1)
+                kv_idx = torch.arange(kv_len, device=q.device).view(1, 1, kv_len)
+                batch = torch.tensor(index, device=q.device)
+                scores = score_mod(scores, batch, head, q_idx, kv_idx).broadcast_to(scores.shape)
+            outputs.append(torch.softmax(scores, dim=-1) @ v)
+        return NT(outputs, **query._meta())
+
+    @pytest.mark.skipif(flex_attention is None, reason="FlexAttention not available")
+    def test_flex_eager_default_matches_sdpa(self, device):
+        query = NT([torch.randn(4, 3, 16, device=device), torch.randn(4, 5, 16, device=device)])
+        key = NT([torch.randn(4, 7, 16, device=device), torch.randn(4, 2, 16, device=device)])
+        value = NT([torch.randn(4, 7, 8, device=device), torch.randn(4, 2, 8, device=device)])
+
+        output = flex_attention(query, key, value)
+        reference = NT(
+            [F.scaled_dot_product_attention(q, k, v, dropout_p=0.0) for q, k, v in zip(query, key, value)],
+            **query._meta(),
+        )
+        assert isinstance(output, NT)
+        assert_close(output, reference, atol=1e-4, rtol=1e-4)
+
+    @pytest.mark.skipif(flex_attention is None, reason="FlexAttention not available")
+    def test_flex_eager_cross_attention(self, device):
+        # Eager ragged Flex with per-sequence q_len != kv_len must not shape-error.
+        query = NT([torch.randn(4, 3, 16, device=device), torch.randn(4, 5, 16, device=device)])
+        key = NT([torch.randn(4, 7, 16, device=device), torch.randn(4, 2, 16, device=device)])
+        value = NT([torch.randn(4, 7, 16, device=device), torch.randn(4, 2, 16, device=device)])
+        slopes = torch.arange(1, 5, device=device, dtype=torch.float32) * 0.1
+
+        def score_mod(score, b, h, q_idx, kv_idx):
+            return score - slopes[h] * (q_idx - kv_idx).abs()
+
+        output = flex_attention(query, key, value, score_mod=score_mod)
+        reference = self._ragged_attention_reference(query, key, value, score_mod)
+        assert isinstance(output, NT)
+        assert_close(output, reference, atol=1e-4, rtol=1e-4)
+
+    @pytest.mark.skipif(flex_attention is None, reason="FlexAttention not available")
+    def test_flex_eager_non_additive_score_mod(self, device):
+        # score_mod is an arbitrary transform, not necessarily an additive bias.
+        query = NT([torch.randn(4, 3, 16, device=device), torch.randn(4, 7, 16, device=device)])
+        key = NT([torch.randn(4, 3, 16, device=device), torch.randn(4, 7, 16, device=device)])
+        value = NT([torch.randn(4, 3, 16, device=device), torch.randn(4, 7, 16, device=device)])
+
+        def score_mod(score, b, h, q_idx, kv_idx):
+            return score * 2
+
+        output = flex_attention(query, key, value, score_mod=score_mod)
+        reference = self._ragged_attention_reference(query, key, value, score_mod)
+        assert_close(output, reference, atol=1e-4, rtol=1e-4)
+
+    @pytest.mark.skipif(flex_attention is None, reason="FlexAttention not available")
+    def test_flex_eager_broadcast_valued_score_mod(self, device):
+        # score_mod may return a broadcastable result rather than a fully expanded (heads, q, kv).
+        query = NT([torch.randn(4, 5, 16, device=device), torch.randn(4, 2, 16, device=device)])
+        key = NT([torch.randn(4, 5, 16, device=device), torch.randn(4, 2, 16, device=device)])
+        value = NT([torch.randn(4, 5, 16, device=device), torch.randn(4, 2, 16, device=device)])
+
+        def score_mod(score, b, h, q_idx, kv_idx):
+            return q_idx.to(score.dtype)
+
+        output = flex_attention(query, key, value, score_mod=score_mod)
+        reference = self._ragged_attention_reference(query, key, value, score_mod)
+        assert isinstance(output, NT)
+        assert_close(output, reference, atol=1e-4, rtol=1e-4)
+
+    @pytest.mark.skipif(flex_attention is None, reason="FlexAttention not available")
+    def test_flex_eager_preserves_batch_first(self, device):
+        query = NT([torch.randn(4, 3, 16, device=device), torch.randn(4, 5, 16, device=device)], batch_first=False)
+        key = NT([torch.randn(4, 3, 16, device=device), torch.randn(4, 5, 16, device=device)], batch_first=False)
+        value = NT([torch.randn(4, 3, 16, device=device), torch.randn(4, 5, 16, device=device)], batch_first=False)
+
+        def score_mod(score, b, h, q_idx, kv_idx):
+            return score * 2
+
+        output = flex_attention(query, key, value, score_mod=score_mod)
+        assert output.batch_first is False
+        reference = self._ragged_attention_reference(query, key, value, score_mod)
+        assert_close(output, reference, atol=1e-4, rtol=1e-4)
 
 
 class TestSequenceLosses:
@@ -2370,6 +2692,18 @@ class TestSoftmaxFamily:
         output = F.softmax(nt, dim=2)
         reference = F.softmax(nt.tensor, dim=2)
         assert_close(output, reference)
+
+    @pytest.mark.parametrize("op", [F.softmax, F.log_softmax, F.softmin])
+    def test_softmax_family_nonleading_ragged_axis(self, op, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(2, 3, 3, device=device, dtype=float_dtype),
+                torch.randn(2, 5, 5, device=device, dtype=float_dtype),
+            ]
+        )
+        output = op(nt, dim=-1)
+        reference = NT([op(t, dim=-1) for t in nt], **nt._meta())
+        assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
     @pytest.mark.parametrize("op", [F.softmax, F.log_softmax, F.softmin])
     def test_softmax_family_ragged_axis(self, op, device, float_dtype):

@@ -40,6 +40,7 @@ decomposition and then to ``__torch_dispatch__`` (see ``aten_functions``).
 
 from __future__ import annotations
 
+import builtins
 import contextlib
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
@@ -57,7 +58,9 @@ from .ops import (
     _binary_op_compile_safe,
     _binary_op_maybe_tensor,
     _bind_fn,
+    _check_execution_guard,
     _compile_unsupported,
+    _ExecutionGuardKind,
     _get_batch_dim,
     _is_compiling,
     _map_storage_serial,
@@ -448,6 +451,19 @@ def cat(tensors: tuple[Tensor | NestedTensor, ...], dim: int = 0):
     dim = _normalize_dim(dim, ref.dim())
     batch_dim = _get_batch_dim(ref)
 
+    def _dense_empty_is_identity(tensor) -> bool:
+        if not torch.is_tensor(tensor) or tensor.numel() != 0:
+            return False
+        if tensor.dim() == 1 and tensor.shape[0] == 0:
+            return True
+        if tensor.dim() != ref.dim() or tensor.shape[dim] != 0:
+            return False
+        return all(axis == dim or tensor.shape[axis] == ref.shape[axis] for axis in range(ref.dim()))
+
+    tensors = tuple(t for t in tensors if isinstance(t, NestedTensor) or not _dense_empty_is_identity(t))
+    if len(tensors) == 1:
+        return tensors[0]
+
     if dim == batch_dim:
         # Check if all inputs are NestedTensor (common case — enables packed fast path)
         all_nt = all(isinstance(t, NestedTensor) for t in tensors)
@@ -473,19 +489,48 @@ def cat(tensors: tuple[Tensor | NestedTensor, ...], dim: int = 0):
                 storage.append(tensor)
         return NestedTensor(storage, **state)
 
-    if not all(isinstance(t, NestedTensor) for t in tensors):
-        raise NotImplementedError("NestedTensor cat along non-batch dim requires all inputs to be NestedTensor.")
-    first: NestedTensor = tensors[0]  # type: ignore[index]
-    if any(len(t) != len(first) for t in tensors):
-        lengths = [len(t) for t in tensors]
+    first: NestedTensor = ref  # the first NestedTensor input (tensors[0] may be dense)
+    nt_lengths = [len(t) for t in tensors if isinstance(t, NestedTensor)]
+    if any(length != len(first) for length in nt_lengths):
         raise ValueError(
-            "NestedTensor cat along non-batch dim requires the same batch length, " f"but got lengths {lengths}."
+            "NestedTensor cat along non-batch dim requires the same batch length, " f"but got lengths {nt_lengths}."
         )
+    dim_logical = _normalize_dim(dim, first.dim())
+    for tensor in tensors:
+        if isinstance(tensor, NestedTensor):
+            continue
+        # A dense input is concatenated per element by splitting along the batch dim. Its
+        # logical shape must match the NestedTensor on every axis except the batch dim and
+        # the concatenation dim (only the padded ragged axes are cropped per element below).
+        if tensor.dim() != first.dim():
+            raise NotImplementedError(
+                f"NestedTensor cat with a dense input requires matching ndim, "
+                f"but got dense ndim {tensor.dim()} vs NestedTensor ndim {first.dim()}."
+            )
+        for axis in range(first.dim()):
+            if axis == dim_logical:
+                continue  # the concatenation axis may differ in size
+            if tensor.shape[axis] != first.shape[axis]:
+                raise ValueError(
+                    f"NestedTensor cat with a dense input requires matching size at dim {axis}, "
+                    f"but got dense {tensor.shape[axis]} vs NestedTensor {first.shape[axis]}."
+                )
 
     dim_adj = _translate_dim(first, dim)
-    storage = [
-        torch.cat([t._storage[i] for t in tensors], dim=dim_adj) for i in range(len(first))  # type: ignore[index]
-    ]
+    varying = set(first._varying_dims)  # element-dim indices that carry ragged padding
+
+    def _element(tensor, i):
+        if isinstance(tensor, NestedTensor):
+            return tensor._storage[i]
+        elem = first._storage[i]
+        sub = tensor.select(batch_dim, i)
+        index = tuple(
+            slice(0, elem.shape[axis]) if (axis in varying and axis != dim_adj) else slice(None)
+            for axis in range(sub.dim())
+        )
+        return sub[index]
+
+    storage = [torch.cat([_element(t, i) for t in tensors], dim=dim_adj) for i in range(len(first))]
     return NestedTensor(storage, **first._meta())
 
 
@@ -495,6 +540,224 @@ for _alias in (torch.concat, torch.concatenate):
     @NestedTensorFuncRegistry.implement(_alias)
     def _cat_alias(tensors, dim: int = 0, _fn=_alias):  # noqa: B023 — default binds loop var
         return torch.cat(tuple(tensors), dim=dim)
+
+
+def _broadcast_nested_tensors_packed(tensors):
+    r"""Broadcast same-batch NestedTensor operands directly in packed layout."""
+    from .nested_tensor import NestedTensor
+
+    if not tensors or not all(isinstance(t, NestedTensor) for t in tensors):
+        return None
+
+    ref = tensors[0]
+    if len(ref) == 0:
+        return None
+    if any(t.batch_first != ref.batch_first or t.device != ref.device for t in tensors):
+        return None
+
+    source_shapes = []
+    for tensor in tensors:
+        if tensor._element_shapes is None:
+            source_shapes.append(tuple(type(tensor)._trim_shape(shape) for shape in tensor._physical_shape.tolist()))
+        else:
+            source_shapes.append(tensor._element_shapes)
+
+    output_shapes = []
+    for index in range(len(ref)):
+        try:
+            output_shapes.append(tuple(torch.broadcast_shapes(*(shapes[index] for shapes in source_shapes))))
+        except RuntimeError:
+            return None
+    output_shapes = tuple(output_shapes)
+    output_rank = len(output_shapes[0])
+    if output_rank == 0:
+        return None
+
+    output_varying, output_static = type(ref)._pack_layout_from_element_shapes(output_shapes)
+    output_permutation = output_varying + output_static
+    packed_sizes = tuple(type(ref)._packed_size_from_shape(shape, output_varying) for shape in output_shapes)
+    output_offsets = type(ref)._offsets_from_sizes(packed_sizes, dtype=ref._offsets.dtype)
+    output_shape = ref._physical_shape.new_tensor(output_shapes)
+    output_logical_shape = ref._logical_shape_from_physical_dims(
+        tuple(builtins.max(shape[dim] for shape in output_shapes) for dim in range(output_rank))
+    )
+
+    output_offsets_device = output_offsets.to(device=ref.device, dtype=torch.long)
+    flat_idx = torch.arange(int(output_offsets[-1]), device=ref.device, dtype=torch.long)
+    batch_idx = torch.searchsorted(output_offsets_device[1:], flat_idx, right=True)
+    local_idx = flat_idx - output_offsets_device[batch_idx]
+    output_shape_device = output_shape.to(device=ref.device, dtype=torch.long)
+
+    output_coords: dict[int, Tensor] = {}
+    if output_varying:
+        varying_sizes = output_shape_device[:, list(output_varying)][batch_idx]
+        strides = torch.ones_like(varying_sizes)
+        running = torch.ones(varying_sizes.size(0), dtype=torch.long, device=ref.device)
+        for dim in range(varying_sizes.size(1) - 1, -1, -1):
+            strides[:, dim] = running
+            running = running * varying_sizes[:, dim]
+        remainder = local_idx
+        for position, dim in enumerate(output_varying):
+            coord = remainder // strides[:, position]
+            output_coords[int(dim)] = coord
+            remainder = remainder - coord * strides[:, position]
+
+    def _values_for(tensor: NestedTensor, shapes: tuple[tuple[int, ...], ...]) -> Tensor | None:
+        source_rank = len(shapes[0])
+        align = output_rank - source_rank
+        if align < 0:
+            return None
+        source_varying = tensor._varying_dims
+        source_static = tensor._static_dims
+        source_shape_device = tensor._physical_shape.to(device=tensor.device, dtype=torch.long)
+        source_offsets = tensor._offsets.to(device=tensor.device, dtype=torch.long)
+
+        source_local = torch.zeros_like(local_idx, device=tensor.device)
+        if source_varying:
+            sizes = source_shape_device[:, list(source_varying)][batch_idx]
+            strides = torch.ones_like(sizes)
+            running = torch.ones(sizes.size(0), dtype=torch.long, device=tensor.device)
+            for dim in range(sizes.size(1) - 1, -1, -1):
+                strides[:, dim] = running
+                running = running * sizes[:, dim]
+            for position, source_dim in enumerate(source_varying):
+                output_dim = align + int(source_dim)
+                if output_dim not in output_coords:
+                    return None
+                coord = output_coords[output_dim].to(device=tensor.device)
+                coord = torch.where(sizes[:, position] == 1, torch.zeros_like(coord), coord)
+                source_local = source_local + coord * strides[:, position]
+        source_flat = source_offsets[batch_idx.to(device=tensor.device)] + source_local
+        selected = tensor._values[source_flat]
+
+        tail_index: list[object] = [slice(None)]
+        kept_static_dims: list[int] = []
+        for source_dim in source_static:
+            output_dim = align + int(source_dim)
+            if output_dim in output_static:
+                tail_index.append(slice(None))
+                kept_static_dims.append(int(source_dim))
+            else:
+                if any(shape[int(source_dim)] != 1 for shape in shapes):
+                    return None
+                tail_index.append(0)
+        selected = selected[tuple(tail_index)]
+
+        ordered_existing = [
+            output_dim - align
+            for output_dim in output_static
+            if 0 <= output_dim - align < source_rank and output_dim - align in kept_static_dims
+        ]
+        if len(ordered_existing) > 1:
+            perm = [0, *(1 + kept_static_dims.index(dim) for dim in ordered_existing)]
+            selected = selected.permute(perm)
+
+        reshape_tail = []
+        for output_dim in output_static:
+            source_dim = output_dim - align
+            if 0 <= source_dim < source_rank and source_dim in kept_static_dims:
+                reshape_tail.append(shapes[0][source_dim])
+            else:
+                reshape_tail.append(1)
+        output_tail = [output_shapes[0][dim] for dim in output_static]
+        selected = selected.reshape(selected.shape[0], *reshape_tail)
+        return selected.expand(selected.shape[0], *output_tail).contiguous()
+
+    outputs = []
+    for tensor, shapes in zip(tensors, source_shapes):
+        values = _values_for(tensor, shapes)
+        if values is None:
+            return None
+        outputs.append(
+            type(tensor)._from_packed(
+                values,
+                output_offsets,
+                output_shape,
+                permutation=output_permutation,
+                batch_first=tensor.batch_first,
+                padding_value=tensor.padding_value,
+                mask_value=tensor.mask_value,
+                pin_memory=tensor._pin_memory,
+                outer_size=output_logical_shape,
+                packed_sizes=packed_sizes,
+                element_shapes=output_shapes,
+                validate=False,
+            )
+        )
+    return tuple(outputs)
+
+
+@NestedTensorFuncRegistry.implement(torch.broadcast_tensors)
+def broadcast_tensors(*tensors):
+    r"""
+    Broadcast a mix of NestedTensors / dense tensors, per element.
+
+    [torch.broadcast_tensors][] computes a single broadcast shape from the operands' shapes,
+    which for a NestedTensor would use the padded/max length, so every element would be
+    (wrongly) broadcast to the batch maximum. Instead broadcast each element independently to
+    its own ragged shape and re-nest. This is what makes a per-sample outer product such as
+    ``torch.broadcast_tensors(nt.unsqueeze(1), nt.unsqueeze(2))`` yield ragged ``(L_i, L_i, ...)``
+    grids rather than a uniform ``(L_max, L_max, ...)`` one.
+
+    Examples:
+        >>> import torch
+        >>> from danling.tensors import NestedTensor
+        >>> nt = NestedTensor([torch.arange(2.0), torch.arange(3.0)])
+        >>> a, b = torch.broadcast_tensors(nt.unsqueeze(1), nt.unsqueeze(2))
+        >>> [tuple(x.shape) for x in a]
+        [(2, 2), (3, 3)]
+        >>> bool((a[0] == torch.tensor([[0.0, 1.0], [0.0, 1.0]])).all())
+        True
+    """
+    from .nested_tensor import NestedTensor
+
+    ref = next((t for t in tensors if isinstance(t, NestedTensor)), None)
+    if ref is None:
+        return torch.broadcast_tensors(*tensors)
+    n = len(ref)
+    for t in tensors:
+        if isinstance(t, NestedTensor) and len(t) != n:
+            raise ValueError(
+                "torch.broadcast_tensors requires all NestedTensor operands to share the batch "
+                f"length, but got {len(t)} and {n}."
+            )
+
+    packed = _broadcast_nested_tensors_packed(tensors)
+    if packed is not None:
+        return packed
+
+    batch_dim = _get_batch_dim(ref)
+    varying = set(ref._varying_dims)
+
+    def _dense_element(tensor: Tensor, index: int) -> Tensor:
+        elem = ref._storage[index]
+        if tensor.dim() == ref.dim() and tensor.shape[batch_dim] in (1, n):
+            tensor = tensor.select(batch_dim, 0 if tensor.shape[batch_dim] == 1 else index)
+        elif tensor.dim() > 1 and tensor.shape[0] in (1, n):
+            tensor = tensor[0 if tensor.shape[0] == 1 else index]
+        if tensor.dim() == elem.dim():
+            slices = []
+            for dim, (size, elem_size) in enumerate(zip(tensor.shape, elem.shape)):
+                if dim in varying and size > elem_size:
+                    slices.append(slice(0, int(elem_size)))
+                else:
+                    slices.append(slice(None))
+            tensor = tensor[tuple(slices)]
+        return tensor
+
+    def _element(tensor, index: int):
+        if isinstance(tensor, NestedTensor):
+            return tensor._storage[index]
+        return _dense_element(tensor, index)
+
+    _check_execution_guard(_ExecutionGuardKind.STORAGE_MAP, "broadcast_tensors")
+    with torch._C.DisableTorchFunctionSubclass():
+        per_element = [torch.broadcast_tensors(*[_element(t, i) for t in tensors]) for i in range(n)]
+    outputs = []
+    for output_index, tensor in enumerate(tensors):
+        meta_source = tensor if isinstance(tensor, NestedTensor) else ref
+        outputs.append(type(meta_source)([per_element[i][output_index] for i in range(n)], **meta_source._meta()))
+    return tuple(outputs)
 
 
 @NestedTensorFuncRegistry.implement(torch.chunk)
@@ -668,7 +931,7 @@ def split(input: NestedTensor, split_size_or_sections, dim: int = 0):
     )
 
 
-@NestedTensorFuncRegistry.implement(torch.stack)
+@NestedTensorFuncRegistry.implement(torch.stack, compile_safe=True)
 def stack(*args, **kwargs):
     r"""
     Concatenates a sequence of tensors along a new dimension.
@@ -676,7 +939,7 @@ def stack(*args, **kwargs):
 
     Args:
         *args: Positional arguments; first is the sequence of NestedTensors.
-        **kwargs: Keyword arguments; supports `dim` (only 0 is supported).
+        **kwargs: Keyword arguments; supports `dim`.
 
     Returns:
         NestedTensor: The stacked result.
@@ -694,9 +957,12 @@ def stack(*args, **kwargs):
         True
     """
     tensors = args[0] if args else ()
-    dim = kwargs.get("dim", 0)
-    if dim != 0:
-        raise NotImplementedError(f"NestedTensor only supports stack when dim=0, but got {dim}")
+    if len(args) > 1:
+        if "dim" in kwargs:
+            raise TypeError("stack() got multiple values for argument 'dim'")
+        dim = args[1]
+    else:
+        dim = kwargs.get("dim", 0)
     if not isinstance(tensors, (tuple, list)) or not tensors:
         raise ValueError("Expected a non-empty sequence of NestedTensor objects.")
     from .nested_tensor import NestedTensor
@@ -713,6 +979,72 @@ def stack(*args, **kwargs):
         raise ValueError("All NestedTensor inputs must share batch_first, padding_value, and mask_value to stack.")
     if any(len(t) != len(first) for t in tensors[1:]):
         raise ValueError("All NestedTensor inputs must have the same batch length to stack.")
+    if any(not first._has_same_structure(t) for t in tensors[1:]):
+        raise NotImplementedError("torch.stack for NestedTensor requires all inputs to share the same packed layout.")
+    dim = _normalize_dim(int(dim), first.dim() + 1)
+    batch_dim = _get_batch_dim(first)
+    if first.batch_first:
+        storage_dim = dim - 1 if dim > batch_dim else dim
+    else:
+        storage_dim = dim if dim < batch_dim else dim - 1
+    element_rank = int(first._physical_shape.size(1))
+    if storage_dim < 0 or storage_dim > element_rank:
+        raise IndexError(
+            f"Dimension out of range (expected to be in range of [{-element_rank - 1}, {element_rank}], "
+            f"but got {storage_dim})"
+        )
+    if all(first._has_same_layout(t) for t in tensors[1:]):
+        from .aten_functions import _packed_with_shape
+
+        stack_size = len(tensors)
+        shifted_varying = tuple(dim if dim < storage_dim else dim + 1 for dim in first._varying_dims)
+        shifted_static = [dim if dim < storage_dim else dim + 1 for dim in first._static_dims]
+        insert_at = 0
+        for index, dim in enumerate(first._static_dims):
+            if dim < storage_dim:
+                insert_at = index + 1
+        static_dims = (*shifted_static[:insert_at], storage_dim, *shifted_static[insert_at:])
+        packed_dim = 1 + insert_at
+        new_values = torch.stack([t._values for t in tensors], dim=packed_dim)
+        if first._element_shapes is not None:
+            element_shapes = tuple(
+                (*shape[:storage_dim], stack_size, *shape[storage_dim:]) for shape in first._element_shapes
+            )
+            max_ndim = element_rank + 1
+            new_physical_shape = first._physical_shape.new_tensor(
+                [list(shape) + [0] * (max_ndim - len(shape)) for shape in element_shapes]
+            )
+            physical_dims = tuple(
+                builtins.max((shape[index] if index < len(shape) else 0) for shape in element_shapes)
+                for index in range(max_ndim)
+            )
+            return _packed_with_shape(
+                first,
+                new_values,
+                new_physical_shape,
+                first._logical_shape_from_physical_dims(physical_dims),
+                permutation=(*shifted_varying, *static_dims),
+                packed_sizes=first._packed_sizes,
+                element_shapes=element_shapes,
+            )
+        column = first._physical_shape.new_full((len(first), 1), stack_size)
+        new_physical_shape = torch.cat(
+            (first._physical_shape[:, :storage_dim], column, first._physical_shape[:, storage_dim:]),
+            dim=1,
+        )
+        physical_dims = list(first._max_physical_dims())
+        physical_dims.insert(storage_dim, stack_size)
+        return _packed_with_shape(
+            first,
+            new_values,
+            new_physical_shape,
+            first._logical_shape_from_physical_dims(physical_dims),
+            permutation=(*shifted_varying, *static_dims),
+            packed_sizes=first._packed_sizes,
+            element_shapes=None,
+        )
+    if _is_compiling():
+        _compile_unsupported("torch.stack", "only same-layout packed stack is compile-safe")
     state = {
         "batch_first": first.batch_first,
         "padding_value": first.padding_value,
@@ -721,7 +1053,7 @@ def stack(*args, **kwargs):
         "device": first.device,
         "dtype": first.dtype,
     }
-    storage = [torch.stack([t._storage[i] for t in tensors], dim=0) for i in range(len(first))]
+    storage = [torch.stack([t._storage[i] for t in tensors], dim=storage_dim) for i in range(len(first))]
     return NestedTensor(storage, **state)
 
 
@@ -1106,15 +1438,10 @@ def masked_fill(input: NestedTensor, mask, value):
         if input._has_same_layout(mask):
             return masked_fill_op(input, mask, value)
         return NestedTensor(torch.masked_fill(t, m, value) for t, m in zip(input._storage, mask._storage))
-    storage = []
-    for t in input._storage:
-        m = mask
-        if not isinstance(m, Tensor):
-            m = torch.as_tensor(m, dtype=torch.bool, device=t.device)
-        else:
-            m = m.to(device=t.device)
-        storage.append(torch.masked_fill(t, m, value))
-    return NestedTensor(storage, **input._meta())
+    if not isinstance(mask, Tensor):
+        mask = torch.as_tensor(mask, dtype=torch.bool, device=input._values.device)
+    padded = input.tensor
+    return input.nested_like(torch.masked_fill(padded, mask.to(device=padded.device), value))
 
 
 @NestedTensorFuncRegistry.implement(torch.masked_scatter)
@@ -1878,6 +2205,10 @@ def einsum(equation, *operands):
         )
 
     normalized_equation = equation.replace(" ", "")
+    output = _einsum_packed_fastpath(normalized_equation, operands)
+    if output is not None:
+        return output
+
     if normalized_equation in {
         "ij,jk->ik",
         "...ij,jk->...ik",
@@ -1896,17 +2227,199 @@ def einsum(equation, *operands):
     if _is_compiling():
         _compile_unsupported("torch.einsum", f"equation {equation!r} is not on a compile-safe fast path")
 
+    stripped = None
+    if "->" in normalized_equation and "..." not in normalized_equation:
+        lhs_terms = normalized_equation.split("->")[0].split(",")
+        if ref_idx < len(lhs_terms) and len(lhs_terms[ref_idx]) == ref.dim():
+            stripped = _einsum_strip_batch(normalized_equation)
+    elem_equation, batched = stripped if stripped is not None else (None, None)
     n = len(ref._storage)
     results = []
     for elem_idx in range(n):
         elem_operands = []
-        for op in operands:
+        for op_idx, op in enumerate(operands):
             if isinstance(op, NestedTensor):
-                elem_operands.append(op._storage[elem_idx])
+                elem_operands.append(op._storage[elem_idx])  # NT operand: drop batch -> element
+            elif batched is not None and batched[op_idx] and isinstance(op, Tensor) and op.dim() >= 1:
+                if op.shape[0] == n:
+                    elem_operands.append(op[elem_idx])  # dense operand carrying the batch dim
+                elif op.shape[0] == 1:
+                    elem_operands.append(op[0])  # dense operand with a singleton (broadcast) batch
+                else:
+                    elem_operands.append(op)  # let torch.einsum raise on a genuine mismatch
             else:
-                elem_operands.append(op)
-        results.append(torch.einsum(equation, *elem_operands))
+                elem_operands.append(op)  # shared/broadcast dense operand (no batch axis)
+        results.append(torch.einsum(elem_equation or equation, *elem_operands))
     return NestedTensor(results, **ref._meta())
+
+
+def _einsum_packed_fastpath(equation: str, operands: tuple):
+    r"""Handle common batch-aware NestedTensor einsum projections without per-element unpacking."""
+    if equation in {"bls,hsk->bhlk", "bls,hsv->bhlv"}:
+        return _einsum_bls_hso_to_bhlo(*operands)
+    if equation == "bhk,bhlk->bhl":
+        return _einsum_bhk_bhlk_to_bhl(*operands)
+    if equation == "bhl,bhlv->bhv":
+        return _einsum_bhl_bhlv_to_bhv(*operands)
+    return None
+
+
+def _source_packed_sizes(source) -> tuple:
+    if source._packed_sizes is not None:
+        return source._packed_sizes
+    offsets = source._offsets
+    return tuple(int(x) for x in (offsets[1:] - offsets[:-1]).tolist())
+
+
+def _einsum_bls_hso_to_bhlo(hidden_states, weight):
+    r"""Packed fast path for ``bls,hso->bhlo`` projection-style equations."""
+    from .aten_functions import _packed_with_shape
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(hidden_states, NestedTensor) or not isinstance(weight, Tensor):
+        return None
+    if hidden_states._physical_shape.size(1) != 2 or weight.dim() != 3:
+        return None
+    if hidden_states._varying_dims != (0,):
+        return None
+    if hidden_states._values.shape[-1] != weight.shape[1]:
+        return None
+
+    heads = int(weight.shape[0])
+    output_dim = int(weight.shape[2])
+    projection_weight = weight.permute(0, 2, 1).reshape(heads * output_dim, weight.shape[1])
+    projected = torch.matmul(hidden_states._values, projection_weight.transpose(0, 1))
+    new_values = projected.reshape(hidden_states._values.shape[0], heads, output_dim)
+    new_shape, _, element_shapes = hidden_states._shape_meta_from_components(
+        prefix=(heads,), keep_dims=(0,), suffix=(output_dim,)
+    )
+    return _packed_with_shape(
+        hidden_states,
+        new_values,
+        new_shape,
+        hidden_states._logical_shape_from_components(prefix=(heads,), keep_dims=(0,), suffix=(output_dim,)),
+        permutation=(1, 0, 2),
+        packed_sizes=_source_packed_sizes(hidden_states),
+        element_shapes=element_shapes,
+    )
+
+
+def _einsum_bhk_bhlk_to_bhl(query_states, key_states):
+    r"""Packed fast path for global-query scores over ragged sequence keys."""
+    from .aten_functions import _packed_with_shape
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(query_states, Tensor) or isinstance(query_states, NestedTensor):
+        return None
+    if not isinstance(key_states, NestedTensor):
+        return None
+    if query_states.dim() != 3 or key_states._values.dim() != 3 or key_states._physical_shape.size(1) != 3:
+        return None
+    if key_states._varying_dims != (1,):
+        return None
+    if query_states.shape[0] != len(key_states):
+        return None
+    if query_states.shape[1] != key_states._values.shape[1] or query_states.shape[2] != key_states._values.shape[2]:
+        return None
+
+    batch_idx = key_states.packed_batch_indices(device=key_states._values.device)
+    query_values = query_states.index_select(0, batch_idx)
+    new_values = (query_values * key_states._values).sum(dim=-1)
+    new_shape, _, element_shapes = key_states._shape_meta_from_components(keep_dims=(0, 1))
+    return _packed_with_shape(
+        key_states,
+        new_values,
+        new_shape,
+        key_states._logical_shape_from_components(keep_dims=(0, 1)),
+        permutation=(1, 0),
+        packed_sizes=_source_packed_sizes(key_states),
+        element_shapes=element_shapes,
+    )
+
+
+def _einsum_bhl_bhlv_to_bhv(attention_probs, value_states):
+    r"""Packed fast path for reducing ragged sequence values into per-batch global context."""
+    from .aten_functions import _offsets_match_identity_if_fake, _packed_with_shape
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(attention_probs, NestedTensor) or not isinstance(value_states, NestedTensor):
+        return None
+    if len(attention_probs) != len(value_states):
+        return None
+    if not _offsets_match_identity_if_fake(attention_probs._offsets, value_states._offsets):
+        return None
+    if attention_probs._values.dim() != 2 or value_states._values.dim() != 3:
+        return None
+    if attention_probs._physical_shape.size(1) != 2 or value_states._physical_shape.size(1) != 3:
+        return None
+    if attention_probs._varying_dims != (1,) or value_states._varying_dims != (1,):
+        return None
+    if attention_probs._values.shape[1] != value_states._values.shape[1]:
+        return None
+    if (
+        attention_probs._packed_sizes is not None
+        and value_states._packed_sizes is not None
+        and attention_probs._packed_sizes != value_states._packed_sizes
+    ):
+        return None
+
+    batch_idx = attention_probs.packed_batch_indices(device=attention_probs._values.device)
+    weighted_values = attention_probs._values.unsqueeze(-1) * value_states._values
+    heads = int(weighted_values.shape[1])
+    value_dim = int(weighted_values.shape[2])
+    context = weighted_values.new_zeros((len(attention_probs), heads, value_dim))
+    context = context.index_add(0, batch_idx, weighted_values)
+
+    new_offsets = (
+        torch.arange(
+            len(attention_probs) + 1,
+            dtype=attention_probs._offsets.dtype,
+            device=attention_probs._offsets.device,
+        )
+        * heads
+    )
+    new_values = context.reshape(len(attention_probs) * heads, value_dim)
+    new_shape = attention_probs._physical_shape.new_tensor((heads, value_dim)).reshape(1, 2)
+    new_shape = new_shape.expand(len(attention_probs), -1).clone()
+    element_shapes = tuple((heads, value_dim) for _ in range(len(attention_probs)))
+    packed_sizes = tuple(heads for _ in range(len(attention_probs)))
+    return _packed_with_shape(
+        attention_probs,
+        new_values,
+        new_shape,
+        attention_probs._logical_shape_from_physical_dims((heads, value_dim)),
+        offsets=new_offsets,
+        permutation=(0, 1),
+        packed_sizes=packed_sizes,
+        element_shapes=element_shapes,
+    )
+
+
+def _einsum_strip_batch(equation: str):
+    if "->" not in equation or "..." in equation:
+        return None
+    lhs, rhs = equation.split("->")
+    terms = lhs.split(",")
+    if not rhs or any(len(term) == 0 for term in terms):
+        return None
+    batch = rhs[0]
+    if rhs.count(batch) != 1:
+        return None
+    new_terms, batched = [], []
+    for term in terms:
+        if term[0] == batch:
+            if term.count(batch) != 1:
+                return None  # batch subscript repeated within a term — not a clean batch axis
+            new_terms.append(term[1:])
+            batched.append(True)
+        elif batch in term:
+            return None  # batch appears non-leading — ambiguous, bail
+        else:
+            new_terms.append(term)  # shared operand without the batch axis
+            batched.append(False)
+    if not any(batched):
+        return None
+    return ",".join(new_terms) + "->" + rhs[1:], tuple(batched)
 
 
 if hasattr(torch, "ger"):
@@ -2108,33 +2621,10 @@ def matmul(input, other, *, out=None):
         raise NotImplementedError("torch.matmul(..., out=...) is not supported for NestedTensor.")
 
     if isinstance(input, NestedTensor) or isinstance(other, NestedTensor):
+        from .aten_functions import _matmul_has_packed_path
         from .aten_functions import matmul as _aten_matmul
 
-        def _can_use_packed_matmul() -> bool:
-            if isinstance(input, NestedTensor) and isinstance(other, NestedTensor):
-                return input._has_same_structure(other) and input._values.dim() > 2 and other._values.dim() > 2
-            if isinstance(input, NestedTensor) and isinstance(other, Tensor):
-                return input._values.dim() >= 2 and other.dim() <= 2
-            if isinstance(other, NestedTensor) and isinstance(input, Tensor):
-                if input.dim() <= 2 and other._values.dim() > 2:
-                    return True
-                if other._values.dim() != 2:
-                    return False
-                if input.dim() == 2:
-                    return 0 not in other._varying_dims or (
-                        other._packed_sizes is not None and len(set(other._packed_sizes)) == 1
-                    )
-                return (
-                    input.dim() > 2
-                    and other._packed_sizes is not None
-                    and len(set(other._packed_sizes)) == 1
-                    and other._physical_shape.size(1) == 2
-                    and other._element_shapes is not None
-                    and len({int(shape[1]) for shape in other._element_shapes}) == 1
-                )
-            return False
-
-        if _can_use_packed_matmul():
+        if _matmul_has_packed_path(input, other):
             return _aten_matmul(torch.ops.aten.matmul.default, (input, other), {})
 
     if _is_compiling() and (isinstance(input, NestedTensor) or isinstance(other, NestedTensor)):
@@ -2959,9 +3449,6 @@ def flatten(input: NestedTensor, start_dim: int = 0, end_dim: int = -1):
     if start > end:
         raise ValueError(f"start_dim must be <= end_dim, got ({start_dim}, {end_dim})")
 
-    batch_dim = _get_batch_dim(input)
-    if start <= batch_dim <= end:
-        return torch.flatten(input.tensor, start_dim=start_dim, end_dim=end_dim)
     from .aten_functions import flatten as _aten_flatten
 
     return _aten_flatten(torch.ops.aten.flatten.using_ints, (input, start, end), {})
@@ -3084,6 +3571,7 @@ def permute(input: NestedTensor, dims: Sequence[int]) -> NestedTensor:
 
 
 @NestedTensorFuncRegistry.implement(torch.repeat_interleave, compile_safe=True)
+@NestedTensorFuncRegistry.implement(torch.Tensor.repeat_interleave, compile_safe=True)
 def repeat_interleave(input, repeats, dim=None, *, output_size=None):
     r"""
     Apply [torch.repeat_interleave][] to each element of a NestedTensor.
@@ -3301,6 +3789,34 @@ NestedTensorFuncRegistry.register(
 )
 
 
+@NestedTensorFuncRegistry.implement(torch.Tensor.expand)
+def expand(input: NestedTensor, *sizes) -> NestedTensor:
+    r"""
+    Expand a NestedTensor per element. See also [torch.Tensor.expand][].
+
+    The batch-size argument is dropped and the remaining target sizes are applied to each
+    element with standard broadcasting (use ``-1`` to keep ragged/unchanged dims). Adding
+    new leading dimensions is not supported for NestedTensor.
+    """
+    from .nested_tensor import NestedTensor
+
+    if len(sizes) == 1 and isinstance(sizes[0], (list, tuple, torch.Size)):
+        sizes = tuple(int(s) for s in sizes[0])
+    if len(sizes) != input.dim():
+        raise NotImplementedError(
+            f"NestedTensor.expand expects {input.dim()} sizes (matching ndim) but got {len(sizes)}; "
+            "adding new leading dimensions is not supported."
+        )
+    batch_dim = _get_batch_dim(input)
+    if sizes[batch_dim] not in (-1, len(input)):
+        raise RuntimeError(
+            f"NestedTensor.expand cannot change the batch dimension (size {len(input)}) "
+            f"to {sizes[batch_dim]}; pass -1 or {len(input)} for the batch dim."
+        )
+    elem_sizes = tuple(size for index, size in enumerate(sizes) if index != batch_dim)
+    return NestedTensor((t.expand(*elem_sizes) for t in input._storage), **input._meta())
+
+
 @NestedTensorFuncRegistry.implement(torch.transpose)
 def transpose(input: NestedTensor, dim0: int, dim1: int) -> NestedTensor:
     r"""
@@ -3356,6 +3872,7 @@ def transpose(input: NestedTensor, dim0: int, dim1: int) -> NestedTensor:
             packed_sizes=input._packed_sizes,
             element_shapes=input._element_shapes,
             permutation=input._permutation,
+            validate=False,
         )
     from .aten_functions import transpose as _aten_transpose
 
@@ -3934,24 +4451,6 @@ def _inplace_binary_torch_handler(self, other, *args, _fn=None, **kwargs):
 # Constant tables
 # ---------------------------------------------------------------------------
 
-# Tensor.method → torch.func aliases (nt.add(x) dispatches as Tensor.add, not torch.add)
-TORCH_TENSOR_METHOD_TO_FUNC = {
-    torch.Tensor.add: torch.add,
-    torch.Tensor.sub: torch.sub,
-    torch.Tensor.mul: torch.mul,
-    torch.Tensor.div: torch.div,
-    torch.Tensor.remainder: torch.remainder,
-    torch.Tensor.floor_divide: torch.floor_divide,
-    torch.Tensor.pow: torch.pow,
-    torch.Tensor.eq: torch.eq,
-    torch.Tensor.ne: torch.ne,
-    torch.Tensor.lt: torch.lt,
-    torch.Tensor.le: torch.le,
-    torch.Tensor.gt: torch.gt,
-    torch.Tensor.ge: torch.ge,
-    torch.Tensor.fmod: torch.fmod,
-}
-
 # Python dunder wrappers → torch.func (e.g. __floordiv__ doesn't go through C++ method)
 # NOTE: Do NOT register __rsub__, __rtruediv__, __rmod__, __rfloordiv__ here —
 # they have reversed semantics that _binary_op_maybe_tensor can't distinguish.
@@ -3985,7 +4484,11 @@ _TORCH_HANDLER_TABLE: list[tuple] = [
     # _inplace_binary_torch_handler — converts operands before aten in-place dispatch
     *((op, _inplace_binary_torch_handler) for op, _ in TORCH_INPLACE_METHOD_MAP.items()),
     # _make_simple_reduce_handler — simple reductions delegating to _reduce
-    *((op, _make_simple_reduce_handler(extra)) for op, extra in TORCH_SIMPLE_REDUCE_OPS),
+    *(
+        (op, _make_simple_reduce_handler(extra))
+        for op, extra in TORCH_SIMPLE_REDUCE_OPS
+        if op not in NestedTensorFuncRegistry
+    ),
 ]
 
 TORCH_TIER1_COMPILE_SAFE_OPS: tuple = (
@@ -4047,15 +4550,6 @@ if hasattr(torch, "rms_norm") and torch.rms_norm in NestedTensorFuncRegistry:
 if hasattr(torch, "ger") and torch.ger in NestedTensorFuncRegistry:
     NestedTensorFuncRegistry.set_compile_safe(torch.ger, True)
 # Alias registrations — these point to already-registered handlers, not new handlers.
-# Tensor.method → torch.func: nt.add(x) dispatches as Tensor.add, needs the torch.add handler.
-for _method, _func in TORCH_TENSOR_METHOD_TO_FUNC.items():
-    if _func in NestedTensorFuncRegistry:
-        NestedTensorFuncRegistry.register(
-            _method,
-            NestedTensorFuncRegistry[_func],
-            compile_safe=NestedTensorFuncRegistry.is_compile_safe(_func),
-            compile_guard=NestedTensorFuncRegistry.get_compile_guard(_func),
-        )
 for _method, _func in TORCH_DUNDER_WRAPPER_TO_FUNC.items():
     if _func in NestedTensorFuncRegistry:
         NestedTensorFuncRegistry.register(

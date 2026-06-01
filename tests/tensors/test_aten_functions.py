@@ -23,6 +23,7 @@ import pytest
 import torch
 
 from danling.tensors import NestedTensor
+from danling.tensors import aten_functions as nt_aten
 from danling.tensors import ops as nt_ops
 from tests.tensors.utils import assert_close, nested_rand, ragged_shapes
 
@@ -129,7 +130,6 @@ class TestCompile:
             pytest.param(lambda x: torch.ops.aten.sort.default(x, 1, False), id="sort"),
             pytest.param(lambda x: torch.ops.aten.argsort.default(x, 1, False), id="argsort"),
             pytest.param(lambda x: torch.ops.aten.topk.default(x, 2, 1, True, True), id="topk"),
-            pytest.param(lambda x: torch.ops.aten.cumsum.default(x, 1), id="cumsum"),
             pytest.param(lambda x: torch.ops.aten.cummax.default(x, 1), id="cummax"),
             pytest.param(lambda x: torch.ops.aten.flip.default(x, [1]), id="flip"),
         ],
@@ -142,7 +142,8 @@ class TestCompile:
             ]
         )
         monkeypatch.setattr(nt_ops, "_is_compiling", lambda: True)
-        with pytest.raises(NotImplementedError, match="aten handler is marked eager-only"):
+        monkeypatch.setattr(nt_aten, "_is_compiling", lambda: True)
+        with pytest.raises(NotImplementedError, match="marked eager-only|eager-only under compile"):
             aten_fn(nt)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -207,6 +208,46 @@ class TestElementwiseOps:
         assert isinstance(result, NestedTensor)
         for r, t in zip(result, nt):
             assert_close(r, op(t, scalar))
+
+    @pytest.mark.parametrize("operand", [torch.tensor([[2.0], [4.0]]), torch.tensor([[[2.0]], [[4.0]]])])
+    def test_binary_op_batchwise_dense_operand(self, operand):
+        nt = NT(
+            [
+                torch.tensor([[2.0, 4.0], [6.0, 8.0]]),
+                torch.tensor([[12.0, 16.0], [20.0, 24.0], [28.0, 32.0]]),
+            ]
+        )
+        result = nt / operand
+        reference = NT([tensor / operand[index] for index, tensor in enumerate(nt)], **nt._meta())
+        assert_close(result, reference)
+
+    def test_binary_op_batchwise_dense_operand_with_static_head_dim(self):
+        nt = NT(
+            [
+                torch.arange(2 * 2 * 3, dtype=torch.float32).reshape(2, 2, 3),
+                torch.arange(3 * 2 * 3, dtype=torch.float32).reshape(3, 2, 3),
+            ],
+            batch_first=True,
+        )
+        operand = torch.randn(2, 2, 3)
+        result = nt * operand
+        reference = NT([tensor * operand[index] for index, tensor in enumerate(nt)], **nt._meta())
+        assert_close(result, reference)
+
+    @pytest.mark.parametrize(
+        "operand", [torch.tensor([[2.0, 3.0, 4.0], [5.0, 6.0, 7.0]]), torch.tensor([[2.0], [5.0]])]
+    )
+    def test_binary_op_batchwise_dense_operand_with_static_tail(self, operand):
+        nt = NT(
+            [
+                torch.arange(2 * 2 * 3, dtype=torch.float32).reshape(2, 2, 3),
+                torch.arange(3 * 2 * 3, dtype=torch.float32).reshape(3, 2, 3),
+            ],
+            batch_first=True,
+        )
+        result = nt * operand
+        reference = NT([tensor * operand[index] for index, tensor in enumerate(nt)], **nt._meta())
+        assert_close(result, reference)
 
     @pytest.mark.parametrize("op", [torch.abs, torch.neg, torch.exp, torch.sign])
     def test_unary_op_roundtrip(self, op):

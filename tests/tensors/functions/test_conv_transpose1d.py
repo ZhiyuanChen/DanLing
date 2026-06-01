@@ -70,7 +70,6 @@ def _compare_conv_transpose1d(
         torch.randn(3, 29, device=device, dtype=dtype, requires_grad=True),
     ]
     reference_inputs = [tensor.detach().clone().requires_grad_() for tensor in inputs]
-    input = NT(inputs)
     weight = torch.randn(3, 5, kernel_size, device=device, dtype=dtype, requires_grad=True)
     bias = torch.randn(5, device=device, dtype=dtype, requires_grad=True)
     reference_weight = weight.detach().clone().requires_grad_()
@@ -82,22 +81,24 @@ def _compare_conv_transpose1d(
         "output_padding": output_padding,
         "dilation": dilation,
     }
-    with _spatial_tile_context(device) if require_spatial_tile else nullcontext():
-        output = F.conv_transpose1d(input, weight, bias, **kwargs)
-    reference = NT([F.conv_transpose1d(t, reference_weight, reference_bias, **kwargs) for t in reference_inputs])
-    dense_reference = F.conv_transpose1d(
-        NT([tensor.detach() for tensor in inputs]).tensor,
-        weight.detach(),
-        bias.detach(),
-        **kwargs,
-    )
+    with torch.enable_grad():
+        input = NT(inputs)
+        with _spatial_tile_context(device) if require_spatial_tile else nullcontext():
+            output = F.conv_transpose1d(input, weight, bias, **kwargs)
+        reference = NT([F.conv_transpose1d(t, reference_weight, reference_bias, **kwargs) for t in reference_inputs])
+        dense_reference = F.conv_transpose1d(
+            NT([tensor.detach() for tensor in inputs]).tensor,
+            weight.detach(),
+            bias.detach(),
+            **kwargs,
+        )
 
-    atol, rtol = _tolerances(device, dtype)
-    assert_close(output, dense_reference, atol=atol, rtol=rtol)
-    assert_close(output, reference, atol=atol, rtol=rtol)
-    with _spatial_tile_context(device) if require_spatial_tile else nullcontext():
-        output.sum().backward()
-    reference.sum().backward()
+        atol, rtol = _tolerances(device, dtype)
+        assert_close(output, dense_reference, atol=atol, rtol=rtol)
+        assert_close(output, reference, atol=atol, rtol=rtol)
+        with _spatial_tile_context(device) if require_spatial_tile else nullcontext():
+            output.sum().backward()
+        reference.sum().backward()
     _assert_input_grads_match(inputs, reference_inputs, atol=atol, rtol=rtol)
     assert_close(weight.grad, reference_weight.grad, atol=atol, rtol=rtol)
     assert_close(bias.grad, reference_bias.grad, atol=atol, rtol=rtol)

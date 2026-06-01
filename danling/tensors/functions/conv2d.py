@@ -31,6 +31,7 @@ from ._convolution import (
     _can_use_spatial_tile_convolution,
     _conv_output_size,
     _has_cuda_tensors,
+    _has_static_input_channels,
     _resolve_element_shapes,
     _spatial_tile_area_occupancy,
     _spatial_tile_max_batch,
@@ -89,13 +90,8 @@ def _packed_pointwise_conv2d_channel_dim(input: NestedTensor, weight, stride, pa
         padding_pair = None
     if padding_pair != (0, 0):
         return None
-    if input._physical_shape.size(1) != 3:
-        return None
-    if input._element_shapes is not None and any(len(shape) != 3 for shape in input._element_shapes):
-        return None
-
     in_channels = int(weight.shape[1])
-    if not bool(torch.equal(input._physical_shape[:, 0], torch.full_like(input._physical_shape[:, 0], in_channels))):
+    if not _has_static_input_channels(input, in_channels, rank=2):
         return None
 
     suffix_rank = input._values.dim() - 1
@@ -142,8 +138,10 @@ def _packed_pointwise_conv2d(
         padding_value=input.padding_value,
         mask_value=input.mask_value,
         pin_memory=input._pin_memory,
+        outer_size=input._logical_shape_from_components(replace_dims={0: out_channels}),
         packed_sizes=input._packed_sizes,
         element_shapes=element_shapes,
+        validate=False,
     )
 
 
@@ -208,12 +206,8 @@ def _conv2d_spatial_tiles(
     return tiles
 
 
-def _auto_spatial_tile2d_config(_area_occupancy: float) -> tuple[tuple[int, int], int]:
-    return (64, 64), 128
-
-
-def _auto_spatial_tile2d_batch(_tile_shape: tuple[int, int], _area_occupancy: float) -> int:
-    return 128
+def _auto_spatial_tile2d_config(_area_occupancy: float) -> tuple[int, int]:
+    return 64, 64
 
 
 def _auto_spatial_weight_tile2d_batch(_tile_shape: tuple[int, int], _area_occupancy: float) -> int:
@@ -247,7 +241,7 @@ def _resolve_spatial_tile2d_config(
     if isinstance(tile_size, str):
         if tile_size != "auto":
             return None
-        tile_shape, auto_batch = _auto_spatial_tile2d_config(area_occupancy)
+        tile_shape = _auto_spatial_tile2d_config(area_occupancy)
     else:
         if isinstance(tile_size, int):
             parsed_tile_shape = (int(tile_size), int(tile_size))
@@ -258,12 +252,11 @@ def _resolve_spatial_tile2d_config(
         if parsed_tile_shape[0] <= 0 or parsed_tile_shape[1] <= 0:
             return None
         tile_shape = parsed_tile_shape
-        auto_batch = _auto_spatial_tile2d_batch(tile_shape, area_occupancy)
 
     if isinstance(max_tiles_per_batch, str):
         if max_tiles_per_batch != "auto":
             return None
-        return tile_shape, auto_batch
+        return tile_shape, None
     if max_tiles_per_batch is None:
         return tile_shape, None
     return tile_shape, max(int(max_tiles_per_batch), 1)
