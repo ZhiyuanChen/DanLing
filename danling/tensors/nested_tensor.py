@@ -741,18 +741,28 @@ class NestedTensor(torch.Tensor):
     def _values_cache_token(self) -> tuple[int, int, int]:
         r"""Return a cache token for views that depend on packed values and layout metadata.
 
-        Under ``torch.inference_mode`` tensors do not track version counters and
-        in-place mutation is forbidden, so the cache is always valid.
+        Tensors created under ``torch.inference_mode`` do not track version
+        counters, even after leaving the context. Fall back to object identity
+        for those immutable tensors so cached views remain usable.
         """
-        if torch.is_inference_mode_enabled():
-            return (0, 0, 0)
-        return (int(self._values._version), int(self._offsets._version), int(self._physical_shape._version))
+        return (
+            self._cache_version(self._values),
+            self._cache_version(self._offsets),
+            self._cache_version(self._physical_shape),
+        )
 
     def _shape_cache_token(self) -> tuple[int, int]:
         r"""Return a cache token for views that depend only on shape metadata."""
-        if torch.is_inference_mode_enabled():
-            return (0, 0)
-        return (int(self._offsets._version), int(self._physical_shape._version))
+        return (self._cache_version(self._offsets), self._cache_version(self._physical_shape))
+
+    @staticmethod
+    def _cache_version(tensor: Tensor) -> int:
+        try:
+            return int(tensor._version)
+        except RuntimeError as exc:
+            if "Inference tensors do not track version counter" not in str(exc):
+                raise
+            return id(tensor)
 
     @classmethod
     def _validate_serialized_state(cls, state: Mapping) -> None:
