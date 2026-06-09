@@ -94,7 +94,8 @@ class CheckpointManager(ABC):
         self._closing = False
         self.checkpoint_health = CheckpointHealth()
         self._checkpoint_error_to_raise: Exception | None = None
-        self._keep_latest_k = int(self.runner.config.get("checkpoint.keep_latest_k", 0) or 0)
+        self._keep_latest_k = int(self.runner.config.get("ckpt.keep_latest_k", 0) or 0)
+        self._retention_history: deque[str] = deque()
         if self._keep_latest_k < 0:
             raise ValueError(f"keep_latest_k must be non-negative, got {self._keep_latest_k}")
         self._purge_queue: queue.Queue[str | _PurgeTerminate] | None = None
@@ -119,10 +120,13 @@ class CheckpointManager(ABC):
     ) -> None:
         """Persist one checkpoint update."""
 
+    def save_model_checkpoint(self, name: str = "model") -> None:
+        """Persist a model-only checkpoint for publishing/pretrained loading."""
+
+        raise NotImplementedError(f"{self.__class__.__name__} does not support model-only checkpoint export")
+
     def checkpoint_async_mode(self) -> str:
-        mode = self.runner.config.get("checkpoint.async_mode")
-        if mode is None:
-            mode = self.runner.config.get("checkpoint.async_enabled", True)
+        mode = self.runner.config.get("ckpt.async_mode", "async")
 
         if isinstance(mode, bool):
             return "async" if mode else "disabled"
@@ -134,7 +138,7 @@ class CheckpointManager(ABC):
             return "disabled"
         if normalized not in self._VALID_ASYNC_MODES:
             valid = ", ".join(sorted(self._VALID_ASYNC_MODES))
-            raise ValueError(f"Unknown checkpoint.async_mode: {mode!r}. Valid options are: {valid}")
+            raise ValueError(f"Unknown ckpt.async_mode: {mode!r}. Valid options are: {valid}")
         return normalized
 
     def _is_async_task_reliable(self, task: Any) -> bool:
@@ -281,7 +285,7 @@ class CheckpointManager(ABC):
         """
         with self._lock:
             self.checkpoint_health.record_failure(exc, target=target, alias=alias)
-            if self.runner.config.get("checkpoint.fail_on_error", False) and self._checkpoint_error_to_raise is None:
+            if self.runner.config.get("ckpt.fail_on_error", False) and self._checkpoint_error_to_raise is None:
                 self._checkpoint_error_to_raise = exc
 
     def record_checkpoint_success(self, *, target: str | None = None, aliases: tuple[str, ...] = ()) -> None:
@@ -292,7 +296,7 @@ class CheckpointManager(ABC):
     def raise_checkpoint_error_if_requested(self) -> None:
         """Raise a deferred checkpoint error when fail-on-error is enabled."""
         with self._lock:
-            if not self.runner.config.get("checkpoint.fail_on_error", False):
+            if not self.runner.config.get("ckpt.fail_on_error", False):
                 self._checkpoint_error_to_raise = None
                 return
             failure = self._checkpoint_error_to_raise
@@ -326,6 +330,16 @@ class CheckpointManager(ABC):
                     to_delete.append(candidate)
                 attempts -= 1
         return to_delete
+
+    def record_retained_checkpoint(
+        self,
+        target: str,
+        *,
+        protected_entries: Sequence[str | None] = (),
+    ) -> list[str]:
+        """Record a retained physical checkpoint target and return stale targets."""
+
+        return self._record_retention_entry(self._retention_history, target, protected_entries=protected_entries)
 
     def enqueue_purge_path(self, path: str) -> None:
         """Queue or immediately run deletion of an obsolete checkpoint path."""
@@ -414,6 +428,11 @@ class CheckpointManager(ABC):
             )
         return dict(checkpoint_state)
 
+    def load_model_checkpoint(self, checkpoint: bytes | str | os.PathLike) -> dict[str, Any]:
+        """Load a model-only checkpoint payload from backend storage."""
+
+        return self.load_checkpoint(checkpoint)
+
     @classmethod
     def resolve_checkpoint_path(cls, checkpoint: bytes | str | os.PathLike) -> str:
         """Resolve checkpoint input path for this backend."""
@@ -460,7 +479,7 @@ class CheckpointManager(ABC):
         return model_state, optimizer_state
 
     def should_persist_checkpoint(self, *, epochs: int, last_step: bool = False, force: bool = False) -> bool:
-        if self.runner.config.get("checkpoint.load_only", False):
+        if not self.runner.config.get("ckpt.enabled", True):
             return False
 
         if force:
@@ -508,7 +527,7 @@ class CheckpointManager(ABC):
         }
         if normalized not in mapping:
             valid = ", ".join(sorted(mapping))
-            raise ValueError(f"Unknown checkpoint.export_dtype: {dtype_name!r}. Valid options are: {valid}")
+            raise ValueError(f"Unknown ckpt.export_dtype: {dtype_name!r}. Valid options are: {valid}")
         return mapping[normalized]
 
     def _cast_payload_tensors_dtype(self, payload: Any, dtype: Any) -> Any:
@@ -532,18 +551,20 @@ class CheckpointManager(ABC):
         return payload
 
     def build_checkpoint_payload(self, *, last_step: bool = False) -> Mapping[str, Any]:
+        del last_step
+        payload = self.runner.state_dict()
+        if not isinstance(payload, Mapping):
+            raise ValueError(f"runner.state_dict() must return a mapping, got {type(payload).__name__}")
+        return payload
+
+    def build_model_checkpoint_payload(self) -> Mapping[str, Any]:
         payload = self.runner.state_dict()
         if not isinstance(payload, Mapping):
             raise ValueError(f"runner.state_dict() must return a mapping, got {type(payload).__name__}")
 
-        if not last_step or not self.runner.config.get("checkpoint.last_save_model_only", False):
-            return payload
-
         model_only_payload = self._to_model_only_payload(payload)
 
-        export_dtype_name = self.runner.config.get("checkpoint.export_dtype")
-        if export_dtype_name is None:
-            export_dtype_name = self.runner.config.get("export_dtype")
+        export_dtype_name = self.runner.config.get("ckpt.export_dtype")
         if export_dtype_name is None:
             return model_only_payload
 

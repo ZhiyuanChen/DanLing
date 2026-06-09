@@ -27,16 +27,16 @@ import danling as dl
 
 class IMDBConfig(dl.RunnerConfig):
     epochs: int = 2
-    log: bool = False
-    tensorboard: bool = False
-    log_interval: int = 1000
-    score_split: str = "val"
-    score_name: str = "loss"
     debug: bool = False
-    patience: int = 1
 
     def __init__(self):
         super().__init__()
+        self.logging.enabled = False
+        self.logging.interval = 1000
+        self.tensorboard.enabled = False
+        self.score.split = "val"
+        self.score.metric = "loss"
+        self.score.patience = 1
         self.pretrained = "prajjwal1/bert-tiny"
         self.dataset.path = "stanfordnlp/imdb"
         self.dataloader.batch_size = 8
@@ -49,7 +49,7 @@ class IMDBConfig(dl.RunnerConfig):
     def post(self):
         super().post()
         self.transformers = AutoConfig.from_pretrained(self.pretrained)
-        self.experiment = f"{self.pretrained}_{self.optim.type}@{self.optim.lr}"
+        self.workspace.experiment = f"{self.pretrained}_{self.optim.type}@{self.optim.lr}"
 
 
 def transform(data):

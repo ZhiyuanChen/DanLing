@@ -44,7 +44,7 @@ class _CheckpointWorkspace:
 class _CheckpointRunner:
     def __init__(self, checkpoint_dir: Path) -> None:
         self.train_state = _TrainState()
-        self.config = {"checkpoint.async_mode": "disabled", "checkpoint.interval": None}
+        self.config = {"ckpt.async_mode": "disabled", "ckpt.interval": None}
         self.id = "test-runner"
         self.workspace = _CheckpointWorkspace(id=self.id, checkpoint_dir=str(checkpoint_dir))
         self.is_best = False
@@ -59,7 +59,7 @@ class _CheckpointRunner:
 
     @property
     def checkpoint_interval(self) -> int:
-        interval = self.config.get("checkpoint.interval")
+        interval = self.config.get("ckpt.interval")
         return int(interval) if interval is not None else -1
 
     @staticmethod
@@ -79,12 +79,17 @@ class _CoalescingFileCheckpointManager(FileCheckpointManager):
     def __init__(self, runner) -> None:
         super().__init__(runner)
         self.started_steps: list[int] = []
+        self.started_names: list[str] = []
         self.first_future: Future = Future()
 
     def _start_async_task_locked(self, task: CheckpointTask):
-        self.started_steps.append(int(task.payload["state"]["train"]["global_step"]))
-        if len(self.started_steps) == 1:
+        self.started_names.append(task.name)
+        state = task.payload.get("state")
+        if state is not None:
+            self.started_steps.append(int(state["train"]["global_step"]))
+        if len(self.started_names) == 1:
             return self.first_future
+        self._persist_checkpoint_payload(task)
         future: Future = Future()
         future.set_result(None)
         return future
@@ -103,7 +108,7 @@ class _CapturingFileCheckpointManager(FileCheckpointManager):
 
 def _retaining_file_manager(tmp_path: Path) -> tuple[_CheckpointRunner, FileCheckpointManager]:
     runner = _CheckpointRunner(tmp_path)
-    runner.config.update({"checkpoint.interval": 2, "checkpoint.keep_latest_k": 1})
+    runner.config.update({"ckpt.interval": 2, "ckpt.keep_latest_k": 1})
     return runner, FileCheckpointManager(runner)
 
 
@@ -127,22 +132,27 @@ def _assert_checkpoint_failure(manager: FileCheckpointManager, exc_type: type[Ba
     assert health.last_failed_target == target
 
 
-def test_file_last_step_model_only_export_with_dtype(tmp_path: Path) -> None:
+def test_file_final_checkpoint_and_model_export_are_separate(tmp_path: Path) -> None:
     runner = _CheckpointRunner(tmp_path)
-    runner.config.update({"checkpoint.last_save_model_only": True, "checkpoint.export_dtype": "fp16"})
+    runner.config.update({"ckpt.export_dtype": "fp16"})
     manager = FileCheckpointManager(runner)
 
     manager.save_checkpoint(last_step=True)
+    manager.save_model_checkpoint()
     assert manager.close(timeout=1.0) is True
 
-    payload = torch.load(tmp_path / "latest.pth", map_location="cpu")
-    assert list(payload) == ["model"]
-    assert payload["model"]["weight"].dtype == torch.float16
+    latest_payload = torch.load(tmp_path / "latest.pth", map_location="cpu", weights_only=False)
+    assert "optimizer" in latest_payload
+    assert latest_payload["model"]["weight"].dtype == torch.float32
+
+    model_payload = torch.load(tmp_path / "model.pth", map_location="cpu", weights_only=False)
+    assert list(model_payload) == ["model"]
+    assert model_payload["model"]["weight"].dtype == torch.float16
 
 
 def test_file_keep_latest_k_prunes_old_history_checkpoints(tmp_path: Path) -> None:
     runner = _CheckpointRunner(tmp_path)
-    runner.config.update({"checkpoint.interval": 1, "checkpoint.keep_latest_k": 2})
+    runner.config.update({"ckpt.interval": 1, "ckpt.keep_latest_k": 2})
     manager = FileCheckpointManager(runner)
 
     for epoch in range(3):
@@ -188,7 +198,7 @@ def test_file_checkpoint_writes_history(tmp_path: Path) -> None:
 
 def test_file_alias_failure_records_only_published_aliases(tmp_path: Path) -> None:
     runner = _CheckpointRunner(tmp_path)
-    runner.config.update({"checkpoint.interval": 1})
+    runner.config.update({"ckpt.interval": 1})
     runner.is_best = True
     manager = FileCheckpointManager(runner)
     best_dir = tmp_path / "best.pth"
@@ -255,7 +265,7 @@ def test_file_checkpoint_skips_periodic_writes_without_interval(tmp_path: Path) 
 
 def test_file_checkpoint_interval_controls_periodic_persist(tmp_path: Path) -> None:
     runner = _CheckpointRunner(tmp_path)
-    runner.config.update({"checkpoint.interval": 1})
+    runner.config.update({"ckpt.interval": 1})
     manager = FileCheckpointManager(runner)
 
     manager.save_checkpoint(epochs=0)
@@ -296,13 +306,13 @@ def test_file_checkpoint_failure_is_not_raised_after_fail_on_error_is_enabled_la
     with pytest.warns(RuntimeWarning, match="checkpoint save failed"):
         manager.save_checkpoint(force=True)
 
-    runner.config.update({"checkpoint.fail_on_error": True})
+    runner.config.update({"ckpt.fail_on_error": True})
     assert manager.close(timeout=1.0) is True
 
 
 def test_file_checkpoint_sync_save_failure_raises_when_configured(tmp_path: Path) -> None:
     runner = _FailingSaveRunner(tmp_path)
-    runner.config.update({"checkpoint.fail_on_error": True})
+    runner.config.update({"ckpt.fail_on_error": True})
     manager = FileCheckpointManager(runner)
 
     with pytest.warns(RuntimeWarning, match="checkpoint save failed"), pytest.raises(OSError, match="disk full"):
@@ -313,7 +323,7 @@ def test_file_checkpoint_sync_save_failure_raises_when_configured(tmp_path: Path
 
 def test_file_checkpoint_async_save_failure_is_recorded_on_wait(tmp_path: Path) -> None:
     runner = _FailingSaveRunner(tmp_path)
-    runner.config.update({"checkpoint.async_mode": "async"})
+    runner.config.update({"ckpt.async_mode": "async"})
     manager = FileCheckpointManager(runner)
 
     try:
@@ -329,7 +339,7 @@ def test_file_checkpoint_async_save_failure_is_recorded_on_wait(tmp_path: Path) 
 
 def test_file_close_timeout_preserves_running_state_for_retry(tmp_path: Path) -> None:
     runner = _CheckpointRunner(tmp_path)
-    runner.config.update({"checkpoint.async_mode": "async", "checkpoint.keep_latest_k": 1})
+    runner.config.update({"ckpt.async_mode": "async", "ckpt.keep_latest_k": 1})
     manager = _CapturingFileCheckpointManager(runner)
 
     manager.save_checkpoint(force=True)
@@ -361,7 +371,7 @@ def test_file_callback_ignores_submit_after_shutdown(tmp_path: Path) -> None:
             raise RuntimeError("cannot schedule new futures after interpreter shutdown")
 
     runner = _CheckpointRunner(tmp_path)
-    runner.config.update({"checkpoint.async_mode": "async"})
+    runner.config.update({"ckpt.async_mode": "async"})
     manager = FileCheckpointManager(runner)
 
     completed = Future()
@@ -388,7 +398,7 @@ def test_file_callback_ignores_submit_after_shutdown(tmp_path: Path) -> None:
 
 def test_file_async_latest_wins_coalesces_pending_saves(tmp_path: Path) -> None:
     runner = _CheckpointRunner(tmp_path)
-    runner.config.update({"checkpoint.async_mode": "async"})
+    runner.config.update({"ckpt.async_mode": "async"})
     manager = _CoalescingFileCheckpointManager(runner)
 
     runner.train_state.global_step = 1
@@ -407,9 +417,36 @@ def test_file_async_latest_wins_coalesces_pending_saves(tmp_path: Path) -> None:
     assert manager.close(timeout=1.0) is True
 
 
+def test_file_async_final_latest_and_model_export_are_both_reliable(tmp_path: Path) -> None:
+    runner = _CheckpointRunner(tmp_path)
+    runner.config.update({"ckpt.async_mode": "async", "ckpt.export_dtype": "fp16"})
+    manager = _CoalescingFileCheckpointManager(runner)
+
+    runner.train_state.global_step = 1
+    manager.save_checkpoint(force=True)
+    runner.train_state.global_step = 2
+    manager.save_checkpoint(last_step=True)
+    runner.train_state.global_step = 3
+    manager.save_model_checkpoint()
+
+    assert manager._pending_latest is None
+    assert [task.name for task in manager._pending_reliable] == ["latest", "model"]
+
+    manager.first_future.set_result(None)
+
+    assert manager.wait(timeout=1.0) is True
+    assert manager.close(timeout=1.0) is True
+    assert manager.started_names == ["latest", "latest", "model"]
+    assert manager.started_steps == [1, 2]
+    assert _checkpoint_step(tmp_path / "latest.pth") == 2
+    model_payload = torch.load(tmp_path / "model.pth", map_location="cpu", weights_only=False)
+    assert list(model_payload) == ["model"]
+    assert model_payload["model"]["weight"].dtype == torch.float16
+
+
 def test_file_async_checkpoint_snapshots_tensor_payload(tmp_path: Path) -> None:
     runner = _CheckpointRunner(tmp_path)
-    runner.config.update({"checkpoint.async_mode": "async"})
+    runner.config.update({"ckpt.async_mode": "async"})
     weight = torch.ones(2, 2)
     runner.state_dict = lambda: {"model": {"weight": weight}}  # type: ignore[method-assign]
     manager = _CapturingFileCheckpointManager(runner)

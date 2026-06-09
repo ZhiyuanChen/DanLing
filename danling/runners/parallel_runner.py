@@ -76,7 +76,7 @@ class ParallelRunner(TorchRunner):
     pipeline step, and checkpoint semantics.
 
     Checkpoint invariants:
-        - Distributed parallel runs use `checkpoint.backend="dcp"` only.
+        - Distributed parallel runs use `ckpt.backend="dcp"` only.
         - Single-local-part checkpoints use torch.distributed.checkpoint
           state-dict APIs when available.
         - Restore order is model first, then optimizer, then scheduler.
@@ -107,7 +107,7 @@ class ParallelRunner(TorchRunner):
     device_mesh = None
     _parallel_groups_initialized: bool = False
     _supports_torchft_runtime: bool = True
-    _ft_reduced_domains = frozenset({"data", "batch", "loss", "optimizer", "fsdp"})
+    _fault_tolerance_reduced_domains = frozenset({"data", "batch", "loss", "optimizer", "fsdp"})
     _pipeline_loss_divisor_local: float = 0.0
     _pipeline_loss_weighting: str | None = None
 
@@ -119,16 +119,16 @@ class ParallelRunner(TorchRunner):
         dcp.check()
         if not isinstance(config, RunnerConfig):
             config = RunnerConfig(config)
-        requested_backend = str(config.checkpoint.backend).strip().lower()
+        requested_backend = str(config.get("ckpt.backend")).strip().lower()
         config.stack = "parallel"
         if requested_backend != "dcp":
             if requested_backend != "auto":
                 warn(
-                    f"{self.__class__.__name__} overrides checkpoint.backend to 'dcp'",
+                    f"{self.__class__.__name__} overrides ckpt.backend to 'dcp'",
                     RuntimeWarning,
                     stacklevel=2,
                 )
-            config.checkpoint.backend = "dcp"
+            config["ckpt"]["backend"] = "dcp"
         super().__init__(config)
         self.dataloaders = _ParallelDataLoaderDict(self)
 
@@ -274,7 +274,7 @@ class ParallelRunner(TorchRunner):
             and int(self.config.parallel.axes.expert) == 1
             and int(self.config.parallel.axes.expert_tensor) == 1
         )
-        if self.ft is not None and self.ft.enabled and not torchft_config_supported:
+        if self.fault_tolerance is not None and self.fault_tolerance.enabled and not torchft_config_supported:
             raise NotImplementedError(
                 "ParallelRunner TorchFT integration currently requires FSDP with "
                 "pipeline/tensor/context/expert axes set to 1"
@@ -337,7 +337,7 @@ class ParallelRunner(TorchRunner):
         self.bind_pipeline_modules(self.model_parts)
 
         if self.fsdp_enabled:
-            self._apply_ft_all_reduce_hook()
+            self._apply_fault_tolerance_all_reduce_hook()
         if self.ema is not None:
             self.ema = self.ema.to(self.device)
 
@@ -368,9 +368,9 @@ class ParallelRunner(TorchRunner):
         self.pipeline_has_last_stage = self._pipeline_num_stages() - 1 in stage_indices
 
     def _pipeline_num_stages(self) -> int:
-        module_fqns_per_model_part = self.config.parallel.get("module_fqns_per_model_part")
-        if module_fqns_per_model_part is not None:
-            return len(module_fqns_per_model_part)
+        pipeline_partitions = self.config.parallel.get("pipeline_partitions")
+        if pipeline_partitions is not None:
+            return len(pipeline_partitions)
         return self.pipeline_degree
 
     def pipeline_stage_indices(self, num_stages: int | None = None) -> tuple[int, ...]:
@@ -407,7 +407,7 @@ class ParallelRunner(TorchRunner):
         The default supports two user-facing contracts:
 
         - If the model defines `build_pipeline_model_part(...)`, delegate to it.
-        - If `parallel.module_fqns_per_model_part` is configured, extract those
+        - If `parallel.pipeline_partitions` is configured, extract those
           named modules for the current pipeline rank. Multiple FQNs become a
           simple `nn.Sequential` in the provided order.
 
@@ -430,10 +430,10 @@ class ParallelRunner(TorchRunner):
             return [self.build_pipeline_model_part(model)]
 
         build_part = getattr(model, "build_pipeline_model_part", None)
-        has_fqn_partitions = self.config.parallel.get("module_fqns_per_model_part") is not None
+        has_fqn_partitions = self.config.parallel.get("pipeline_partitions") is not None
         if not callable(build_part) and not has_fqn_partitions:
             raise ValueError(
-                "multiple local pipeline stages require `parallel.module_fqns_per_model_part`, "
+                "multiple local pipeline stages require `parallel.pipeline_partitions`, "
                 "`model.build_pipeline_model_part(...)`, or an override of "
                 "`ParallelRunner.build_pipeline_model_parts`"
             )
@@ -478,22 +478,22 @@ class ParallelRunner(TorchRunner):
         return self._build_pipeline_model_part_from_fqns(model, module_fqns)
 
     def _pipeline_module_fqns_for_stage(self, stage_index: int) -> tuple[str, ...] | None:
-        module_fqns_per_model_part = self.config.parallel.get("module_fqns_per_model_part")
-        if module_fqns_per_model_part is None:
+        pipeline_partitions = self.config.parallel.get("pipeline_partitions")
+        if pipeline_partitions is None:
             return None
-        if stage_index < 0 or stage_index >= len(module_fqns_per_model_part):
+        if stage_index < 0 or stage_index >= len(pipeline_partitions):
             raise ValueError(
-                "pipeline stage index is outside parallel.module_fqns_per_model_part: "
-                f"stage_index={stage_index}, num_stages={len(module_fqns_per_model_part)}"
+                "pipeline stage index is outside parallel.pipeline_partitions: "
+                f"stage_index={stage_index}, num_stages={len(pipeline_partitions)}"
             )
-        module_fqns = module_fqns_per_model_part[stage_index]
+        module_fqns = pipeline_partitions[stage_index]
         if isinstance(module_fqns, str):
             module_fqns = (module_fqns,)
         else:
             module_fqns = tuple(str(module_fqn) for module_fqn in module_fqns)
         if not module_fqns:
             raise ValueError(
-                "parallel.module_fqns_per_model_part entries must not be empty; "
+                "parallel.pipeline_partitions entries must not be empty; "
                 f"pipeline stage {stage_index} has no modules"
             )
         return module_fqns
@@ -504,7 +504,7 @@ class ParallelRunner(TorchRunner):
     def _build_pipeline_model_part_from_fqns(self, model: nn.Module, module_fqns: Sequence[str]) -> nn.Module:
         modules = dict(model.named_modules())
         if "" in module_fqns:
-            raise ValueError("parallel.module_fqns_per_model_part may not select the root module")
+            raise ValueError("parallel.pipeline_partitions may not select the root module")
         missing = [module_fqn for module_fqn in module_fqns if module_fqn not in modules]
         if missing:
             raise ValueError(f"unknown pipeline module FQN(s): {missing}")
@@ -536,10 +536,10 @@ class ParallelRunner(TorchRunner):
         self.model = parts[0]
         return parts
 
-    def _apply_ft_all_reduce_hook(self) -> None:
-        if self.ft is None:
+    def _apply_fault_tolerance_all_reduce_hook(self) -> None:
+        if self.fault_tolerance is None:
             return
-        group = self.ft.replicate_process_group
+        group = self.fault_tolerance.replicate_process_group
         if group is None:
             return
 
@@ -618,9 +618,9 @@ class ParallelRunner(TorchRunner):
 
     def build_mixed_precision_policy(self) -> object | None:
         return build_mixed_precision_policy(
-            policy=self.config.fsdp.get("mp_policy"),
+            policy=self.config.fsdp.get("mixed_precision_policy"),
             mixed_precision_policy_cls=MixedPrecisionPolicy,
-            label="fsdp.mp_policy",
+            label="fsdp.mixed_precision_policy",
         )
 
     def build_offload_policy(self) -> object | None:
@@ -642,11 +642,11 @@ class ParallelRunner(TorchRunner):
                 "mesh",
                 "reshard_after_forward",
                 "shard_placement_fn",
-                "mp_policy",
+                "mixed_precision_policy",
                 "offload_policy",
                 "ignored_params",
             },
-            support_hint="mesh/reshard_after_forward/mp_policy/offload_policy",
+            support_hint="mesh/reshard_after_forward/shard_placement_fn/mixed_precision_policy/offload_policy",
         )
 
     def apply_activation_checkpointing(self, model: nn.Module) -> nn.Module:
@@ -713,7 +713,7 @@ class ParallelRunner(TorchRunner):
         return super().unwrap(model)
 
     def _train_no_sync_targets(self) -> tuple[nn.Module, ...]:
-        fsdp_parts = [
+        fsdp_parts: list[nn.Module] = [
             module for module in (self.model_parts or []) if FSDPModule is not None and isinstance(module, FSDPModule)
         ]
         if self.model is not None and not fsdp_parts and FSDPModule is not None and isinstance(self.model, FSDPModule):
@@ -722,15 +722,15 @@ class ParallelRunner(TorchRunner):
             return tuple(fsdp_parts)
         return super()._train_no_sync_targets()
 
-    def _resolve_pipeline_n_microbatches(self) -> int:
-        configured = self.config.parallel.get("pipeline_n_microbatches")
+    def _resolve_pipeline_microbatches(self) -> int:
+        configured = self.config.parallel.get("pipeline_microbatches")
         if configured is not None:
-            n_microbatches = int(configured)
-            if n_microbatches <= 0:
+            microbatches = int(configured)
+            if microbatches <= 0:
                 raise ValueError(
-                    f"invalid parallel.pipeline_n_microbatches: expected a positive integer, got {configured}"
+                    f"invalid parallel.pipeline_microbatches: expected a positive integer, got {configured}"
                 )
-            return n_microbatches
+            return microbatches
 
         microbatch_size = int(self.config.parallel.get("pipeline_microbatch_size", 1))
         if microbatch_size <= 0:
@@ -742,7 +742,7 @@ class ParallelRunner(TorchRunner):
             batch_size = int(self.batch_size)
         except (AttributeError, TypeError, ValueError) as exc:
             raise ValueError(
-                "cannot infer pipeline microbatch count: set `parallel.pipeline_n_microbatches` "
+                "cannot infer pipeline microbatch count: set `parallel.pipeline_microbatches` "
                 "or provide `dataloader.batch_size`."
             ) from exc
 
@@ -753,15 +753,15 @@ class ParallelRunner(TorchRunner):
                 f"batch size ({batch_size}) must be divisible by parallel.pipeline_microbatch_size ({microbatch_size})"
             )
 
-        n_microbatches = batch_size // microbatch_size
-        if n_microbatches < self.pipeline_degree:
+        microbatches = batch_size // microbatch_size
+        if microbatches < self.pipeline_degree:
             warn(
-                f"n_microbatches ({n_microbatches}) is less than pipeline_degree ({self.pipeline_degree}); "
+                f"pipeline_microbatches ({microbatches}) is less than pipeline_degree ({self.pipeline_degree}); "
                 "pipeline utilization may be suboptimal.",
                 RuntimeWarning,
                 stacklevel=2,
             )
-        return n_microbatches
+        return microbatches
 
     def _pipeline_loss(self, pred: Any, target: Any) -> torch.Tensor:
         if self.criterion is None:
@@ -813,7 +813,7 @@ class ParallelRunner(TorchRunner):
         """
         pipeline.check()
         schedule_name = str(self.config.parallel.get("pipeline_schedule", "1F1B")).strip() or "1F1B"
-        n_microbatches = self._resolve_pipeline_n_microbatches()
+        n_microbatches = self._resolve_pipeline_microbatches()
         schedule_class = get_schedule_class(schedule_name)
         loss_fn = self._pipeline_loss if self.criterion is not None else None
         stage_models = [stage_model] if isinstance(stage_model, nn.Module) else list(stage_model)
@@ -875,22 +875,22 @@ class ParallelRunner(TorchRunner):
         """
         num_replicas = self.data_degree
         rank = self.data_rank
-        if self.ft is not None:
-            num_replicas, rank = self.ft.data_parallel_info(num_replicas, rank)
+        if self.fault_tolerance is not None:
+            num_replicas, rank = self.fault_tolerance.data_parallel_info(num_replicas, rank)
         return utils.data.distributed.DistributedSampler(dataset, num_replicas=num_replicas, rank=rank, shuffle=shuffle)
 
     def set_seed(self, seed: int | None = None, bias: int | bool | None = None) -> int:
         if bias is None:
-            if self.ft is not None:
-                _, bias = self.ft.data_parallel_info(self.data_degree, self.data_rank)
+            if self.fault_tolerance is not None:
+                _, bias = self.fault_tolerance.data_parallel_info(self.data_degree, self.data_rank)
             else:
                 bias = self.data_rank
         return super().set_seed(seed=seed, bias=bias)
 
     def _reduce_degree(self, domain: str = "data") -> int:
         degree = max(self.topology.domain_degree(domain), 1)
-        if domain in self._ft_reduced_domains and self.ft is not None:
-            group = self.ft.replicate_process_group
+        if domain in self._fault_tolerance_reduced_domains and self.fault_tolerance is not None:
+            group = self.fault_tolerance.replicate_process_group
             if group is not None and dist.is_available() and dist.is_initialized():
                 degree *= max(int(dist.get_world_size(group=group)), 1)
         return degree
@@ -900,7 +900,11 @@ class ParallelRunner(TorchRunner):
             return tensor
         if self.topology.domain_degree(domain) > 1:
             self.parallel.all_reduce(tensor, domain=domain, op=op)
-        group = self.ft.replicate_process_group if domain in self._ft_reduced_domains and self.ft is not None else None
+        group = (
+            self.fault_tolerance.replicate_process_group
+            if domain in self._fault_tolerance_reduced_domains and self.fault_tolerance is not None
+            else None
+        )
         if group is not None:
             dist.all_reduce(tensor, op=op, group=group)
         return tensor
@@ -1144,7 +1148,7 @@ class ParallelRunner(TorchRunner):
         if self.pipeline_schedule is None:
             return super().evaluate_step(data)
 
-        with self.forward_context():
+        with self.infer_context():
             self._pipeline_loss_divisor_local = 0.0
             self._pipeline_loss_weighting = "eval"
             inputs, target = self._prepare_pipeline_batch(data)
@@ -1219,7 +1223,7 @@ class ParallelRunner(TorchRunner):
         if self.pipeline_schedule is None:
             return super().infer_step(data)
 
-        with self.forward_context():
+        with self.infer_context():
             inputs, _ = self._prepare_pipeline_batch(data)
             if self.pipeline_has_first_stage:
                 pred = self.pipeline_schedule.eval(inputs)
@@ -1387,7 +1391,7 @@ class ParallelRunner(TorchRunner):
                 FSDP topology metadata is missing/changed.
 
         **Side effects:** restores model/optimizer/scheduler/runner state and
-        updates `config.resume` for path inputs.
+        updates `config.checkpoint` for path inputs.
 
         !!! danger "Do not"
             - Suppress topology validation for FSDP restores; shard metadata is
@@ -1423,7 +1427,7 @@ class ParallelRunner(TorchRunner):
 
         super().load_checkpoint(ckpt, *args, **kwargs)
         if isinstance(checkpoint, (str, bytes, os.PathLike)):
-            self.config.resume = os.fsdecode(checkpoint)
+            self.config.checkpoint = os.fsdecode(checkpoint)
 
     def _validate_checkpoint_topology(self, checkpoint: Mapping[str, Any]) -> dict[str, int]:
         ckpt_topology = checkpoint.get("parallel")

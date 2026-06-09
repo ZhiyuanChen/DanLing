@@ -54,14 +54,14 @@ class FaultTolerance:
             raise ImportError("torchft is not installed. Install `torchft-nightly` to enable config.ft.enabled.")
 
         process_group = str(config.get("process_group", "gloo")).strip().lower()
-        process_group_timeout_ms = int(config.get("process_group_timeout_ms", 10000))
+        process_group_timeout_seconds = float(config.get("process_group_timeout_seconds", 10.0))
         self.replica_id = int(config.get("replica_id", 0))
         self.group_size = int(config.get("group_size", 1))
         min_replica_size = int(config.get("min_replica_size", 1))
 
-        if process_group_timeout_ms <= 0:
+        if process_group_timeout_seconds <= 0:
             raise ValueError(
-                f"config.ft.process_group_timeout_ms must be a positive integer, got {process_group_timeout_ms}"
+                "config.ft.process_group_timeout_seconds must be positive, " f"got {process_group_timeout_seconds}"
             )
         if self.group_size <= 0:
             raise ValueError(f"config.ft.group_size must be a positive integer, got {self.group_size}")
@@ -70,7 +70,7 @@ class FaultTolerance:
         if min_replica_size <= 0:
             raise ValueError(f"config.ft.min_replica_size must be a positive integer, got {min_replica_size}")
 
-        timeout = timedelta(milliseconds=process_group_timeout_ms)
+        timeout = timedelta(seconds=process_group_timeout_seconds)
         if process_group == "gloo":
             pg = torchft.ProcessGroupGloo(timeout=timeout)
         elif process_group == "nccl":
@@ -86,7 +86,7 @@ class FaultTolerance:
                 load_state_dict=self._load_state_dict,
                 state_dict=self._state_dict,
                 use_async_quorum=True,
-                replica_id=f"danling_ft_{self.replica_id}",
+                replica_id=f"danling_fault_tolerance_{self.replica_id}",
             )
             self._replicate_process_group = torchft.process_group.ManagedProcessGroup(self._manager)
             self._replicate_process_group.register("dp_replicate")

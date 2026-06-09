@@ -40,6 +40,7 @@ class CheckpointTask:
     name: str
     history_name: str | None
     should_update_best: bool
+    reliable: bool = False
 
 
 class FileCheckpointManager(CheckpointManager):
@@ -70,10 +71,10 @@ class FileCheckpointManager(CheckpointManager):
         force: bool = False,
     ) -> None:
         epochs = self.runner.train_state.epoch if epochs is None else epochs
-        if self.runner.config.get("checkpoint.load_only", False):
+        if not self.runner.config.get("ckpt.enabled", True):
             return
         # Periodic history and the `best` alias have independent cadences: history fires
-        # on `checkpoint_interval`/`last_step`/`force`, while `best` fires whenever the
+        # on `ckpt.interval`/`last_step`/`force`, while `best` fires whenever the
         # score improves. Persist when either is due so an improving non-cadence step
         # still publishes `best.pth` (and the `latest.pth` it is aliased from).
         should_persist = self.should_persist_checkpoint(epochs=epochs, last_step=last_step, force=force)
@@ -90,10 +91,11 @@ class FileCheckpointManager(CheckpointManager):
             name=name,
             history_name=self.resolve_history_name(epochs, suffix=".pth") if should_persist else None,
             should_update_best=should_update_best,
+            reliable=last_step,
         )
         if async_mode == "async_with_pinned_mem" and not self._warned_unsupported_staging_mode:
             warn(
-                "checkpoint.async_mode='async_with_pinned_mem' is not supported by file backend; "
+                "ckpt.async_mode='async_with_pinned_mem' is not supported by file backend; "
                 "falling back to regular async save",
                 RuntimeWarning,
                 stacklevel=2,
@@ -112,6 +114,32 @@ class FileCheckpointManager(CheckpointManager):
                     task.history_name = None
                 else:
                     self._history_names_inflight_or_pending.add(task.history_name)
+        self._enqueue_async_task(task)
+
+    def save_model_checkpoint(self, name: str = "model") -> None:
+        if not self.runner.config.get("ckpt.enabled", True):
+            return
+
+        payload = self.build_model_checkpoint_payload()
+        async_mode = self.checkpoint_async_mode()
+        if async_mode != "disabled":
+            payload = self._snapshot_payload(payload)
+        task = CheckpointTask(payload=payload, name=name, history_name=None, should_update_best=False, reliable=True)
+        if async_mode == "async_with_pinned_mem" and not self._warned_unsupported_staging_mode:
+            warn(
+                "ckpt.async_mode='async_with_pinned_mem' is not supported by file backend; "
+                "falling back to regular async save",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            self._warned_unsupported_staging_mode = True
+        if async_mode == "disabled":
+            try:
+                self._persist_checkpoint_payload(task)
+            except Exception as exc:
+                self._on_checkpoint_task_failed(task, exc)
+                self.raise_checkpoint_error_if_requested()
+            return
         self._enqueue_async_task(task)
 
     @classmethod
@@ -178,7 +206,7 @@ class FileCheckpointManager(CheckpointManager):
         self.record_checkpoint_success(target=success_target, aliases=tuple(published_aliases))
 
     def _is_async_task_reliable(self, task: CheckpointTask) -> bool:
-        return task.history_name is not None or task.should_update_best
+        return task.reliable or task.history_name is not None or task.should_update_best
 
     def _start_async_task_locked(self, task: CheckpointTask) -> Future | None:
         if self._closing:

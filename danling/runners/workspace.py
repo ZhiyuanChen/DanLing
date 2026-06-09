@@ -206,15 +206,15 @@ class RunnerWorkspace:
 
     @cached_ensure_dir
     def workspace_root(self) -> str:
-        return self.runner.config.get("workspace_root", "experiments")
+        return self.runner.config.get("workspace.root", "experiments")
 
     @cached_property
     def lineage(self) -> str:
-        return self.runner.config.get("lineage", "lin")
+        return self.runner.config.get("workspace.lineage", "lin")
 
     @property
     def experiment(self) -> str:
-        return self.runner.config.get("experiment", "exp")
+        return self.runner.config.get("workspace.experiment", "exp")
 
     @property
     def id(self) -> str:
@@ -226,8 +226,9 @@ class RunnerWorkspace:
 
     @cached_ensure_dir
     def dir(self) -> str:
-        if "dir" in self.runner.config:
-            return self.runner.config.dir
+        configured = self.runner.config.get("workspace.dir")
+        if configured is not None:
+            return configured
         lineage = self.lineage
         if self.code_id is not None:
             lineage += f"-{self.code_id}"
@@ -235,15 +236,14 @@ class RunnerWorkspace:
 
     @cached_ensure_parent_dir
     def log_file(self) -> str:
-        if "log_file" in self.runner.config:
-            return self.runner.config.log_file
+        configured = self.runner.config.get("logging.file")
+        if configured is not None:
+            return configured
         return os.path.join(self.dir, "logs", f"{self.runner.timestamp}.log")
 
     @cached_ensure_dir
     def checkpoint_dir(self) -> str:
-        if "checkpoint_dir" in self.runner.config:
-            return self.runner.config.checkpoint_dir
-        return os.path.join(self.dir, self.runner.config.get("checkpoint.dir_name", "checkpoints"))
+        return os.path.join(self.dir, self.runner.config.get("ckpt.dir", "checkpoints"))
 
     def init_logging(self) -> None:
         if not (self.runner.is_main_process or not self.runner.distributed):

@@ -142,10 +142,10 @@ def _parallel_gloo_smoke_worker(rank: int, world_size: int, workspace_root: str)
     os.environ["BACKEND"] = "gloo"
     runner = DistributedSmokeParallelRunner(
         {
-            "log": False,
-            "workspace_root": workspace_root,
+            "logging.enabled": False,
+            "workspace.root": workspace_root,
             "dataloader": {"batch_size": 2, "shuffle": False},
-            "checkpoint": {"async_mode": "disabled", "interval": 1},
+            "ckpt": {"async_mode": "disabled", "interval": 1},
             **_parallel_config(shard=1, pipeline=world_size, tensor=1, mesh_device_type="cpu"),
         }
     )
@@ -157,7 +157,7 @@ def _parallel_gloo_smoke_worker(rank: int, world_size: int, workspace_root: str)
         assert runner.tensor_rank == 0
         assert runner.pipeline_rank == rank
         assert runner.data_rank == 0
-        assert runner.config.checkpoint.backend == "dcp"
+        assert runner.config.get("ckpt.backend") == "dcp"
         assert runner.device_mesh is not None
         assert runner.tensor_group is not None
         assert runner.pipeline_group is not None
@@ -197,10 +197,10 @@ def _parallel_gloo_middle_stage_loader_state_worker(rank: int, world_size: int, 
     os.environ["BACKEND"] = "gloo"
     runner = DistributedSmokeParallelRunner(
         {
-            "log": False,
-            "workspace_root": workspace_root,
+            "logging.enabled": False,
+            "workspace.root": workspace_root,
             "dataloader": {"batch_size": 2, "shuffle": False},
-            "checkpoint": {"async_mode": "disabled", "interval": 1},
+            "ckpt": {"async_mode": "disabled", "interval": 1},
             **_parallel_config(shard=1, pipeline=world_size, tensor=1, mesh_device_type="cpu"),
         }
     )
@@ -237,9 +237,9 @@ def _parallel_gloo_all_reduce_worker(rank: int, world_size: int, workspace_root:
     os.environ["BACKEND"] = "gloo"
     runner = DistributedSmokeParallelRunner(
         {
-            "log": False,
-            "workspace_root": workspace_root,
-            "checkpoint": {"async_mode": "disabled", "interval": 1},
+            "logging.enabled": False,
+            "workspace.root": workspace_root,
+            "ckpt": {"async_mode": "disabled", "interval": 1},
             **_parallel_config(shard=2, pipeline=2, tensor=1, mesh_device_type="cpu"),
         }
     )
@@ -265,9 +265,9 @@ def _parallel_gloo_optimizer_skip_worker(rank: int, world_size: int, workspace_r
     os.environ["BACKEND"] = "gloo"
     runner = DistributedSmokeParallelRunner(
         {
-            "log": False,
-            "workspace_root": workspace_root,
-            "checkpoint": {"async_mode": "disabled", "interval": 1},
+            "logging.enabled": False,
+            "workspace.root": workspace_root,
+            "ckpt": {"async_mode": "disabled", "interval": 1},
             **_parallel_config(shard=2, pipeline=2, tensor=1, mesh_device_type="cpu"),
         }
     )
@@ -286,7 +286,7 @@ def _parallel_gloo_optimizer_skip_worker(rank: int, world_size: int, workspace_r
 class TestParallelRunnerTopology:
 
     def test_topology_properties(self) -> None:
-        runner = TinyParallelRunner({"log": False, **_parallel_config(shard=2, pipeline=8, tensor=1)})
+        runner = TinyParallelRunner({"logging.enabled": False, **_parallel_config(shard=2, pipeline=8, tensor=1)})
         try:
             assert runner.tensor_degree == 1
             assert runner.pipeline_degree == 8
@@ -309,10 +309,10 @@ class TestParallelRunnerTopology:
                 return 0
 
         with pytest.raises(ValueError, match="WORLD_SIZE"):
-            BadRunner({"log": False, **_parallel_config(shard=1, pipeline=3, tensor=4)})
+            BadRunner({"logging.enabled": False, **_parallel_config(shard=1, pipeline=3, tensor=4)})
 
     def test_dataloader_shards_by_data_domain(self) -> None:
-        runner = TinyParallelRunner({"log": False, **_parallel_config(shard=2, pipeline=8, tensor=1)})
+        runner = TinyParallelRunner({"logging.enabled": False, **_parallel_config(shard=2, pipeline=8, tensor=1)})
         try:
             runner.datasets["train"] = list(range(32))
             runner.build_dataloaders()
@@ -361,8 +361,8 @@ class TestParallelRunnerTopology:
             )
         }
 
-        runner = TelemetryParallelRunner({"log": False, **_parallel_config(shard=2, pipeline=4, tensor=2)})
-        reporter = ReporterParallelRunner({"log": False, **_parallel_config(shard=2, pipeline=4, tensor=2)})
+        runner = TelemetryParallelRunner({"logging.enabled": False, **_parallel_config(shard=2, pipeline=4, tensor=2)})
+        reporter = ReporterParallelRunner({"logging.enabled": False, **_parallel_config(shard=2, pipeline=4, tensor=2)})
         try:
             telemetry = LoopTelemetry(runner, start_time=0.0)
             assert runner.reports_batch_telemetry is False
@@ -376,7 +376,7 @@ class TestParallelRunnerTopology:
             runner.close()
 
     def test_state_dict_serializes_parallel_axes(self) -> None:
-        runner = TinyParallelRunner({"log": False, **_parallel_config(shard=2, pipeline=8, tensor=1)})
+        runner = TinyParallelRunner({"logging.enabled": False, **_parallel_config(shard=2, pipeline=8, tensor=1)})
         try:
             state = runner.state_dict()
             assert state["parallel"] == {"axes": runner.parallel_axes_state(dict)}
@@ -384,7 +384,7 @@ class TestParallelRunnerTopology:
             runner.close()
 
     def test_build_topology_auto_fills_shard_axis(self) -> None:
-        runner = TinyParallelRunner({"log": False, **_parallel_config(replicate=2, shard=-1, pipeline=4)})
+        runner = TinyParallelRunner({"logging.enabled": False, **_parallel_config(replicate=2, shard=-1, pipeline=4)})
         try:
             assert runner.topology.axis_degree("shard") == 2
             assert runner.parallel_axes_state(dict)["shard"] == 2
@@ -418,7 +418,7 @@ class TestParallelRunnerParallelization:
 
     def test_requires_model_parallelization_for_model_axes(self) -> None:
         with pytest.raises(NotImplementedError, match="model-specific parallelization"):
-            TinyParallelRunner({"log": False, **_parallel_config(context=2, pipeline=4, tensor=2)})
+            TinyParallelRunner({"logging.enabled": False, **_parallel_config(context=2, pipeline=4, tensor=2)})
 
 
 # ---------------------------------------------------------------------------
@@ -456,7 +456,7 @@ class TestParallelRunnerPipelineBinding:
                 self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
 
         runner = ModelParallelRunner(
-            {"log": False, **_parallel_config(context=2, pipeline=1, tensor=2, expert=2, expert_tensor=2)}
+            {"logging.enabled": False, **_parallel_config(context=2, pipeline=1, tensor=2, expert=2, expert_tensor=2)}
         )
         try:
             assert runner.model_parallel_axes == ("tensor", "context", "expert", "expert_tensor")
@@ -503,7 +503,7 @@ class TestParallelRunnerPipelineBinding:
                 self.parallelized_inputs.append(model)
                 return ParallelizedModule(model)
 
-        runner = ParallelizeRunner({"log": False, **_parallel_config(shard=1, pipeline=1, tensor=1)})
+        runner = ParallelizeRunner({"logging.enabled": False, **_parallel_config(shard=1, pipeline=1, tensor=1)})
         try:
             assert len(runner.parallelized_inputs) == 1
             assert isinstance(runner.model_parts[0], ParallelizedModule)
@@ -542,9 +542,9 @@ class TestParallelRunnerPipelineBinding:
 
         runner = CompileRunner(
             {
-                "log": False,
+                "logging.enabled": False,
                 **_parallel_config(shard=1, pipeline=1, tensor=1),
-                "compile": {"enable": True},
+                "compile": {"enabled": True},
             }
         )
         try:
@@ -589,7 +589,9 @@ class TestParallelRunnerPipelineBinding:
                 del recipe
                 return Fp8WrappedModule(module)
 
-        runner = Fp8Runner({"log": False, "precision": "fp8", **_parallel_config(shard=1, pipeline=1, tensor=1)})
+        runner = Fp8Runner(
+            {"logging.enabled": False, "precision": "fp8", **_parallel_config(shard=1, pipeline=1, tensor=1)}
+        )
         try:
             assert isinstance(runner.model_parts[0], Fp8WrappedModule)
             assert runner.pipeline_schedule.module is runner.model_parts[0]
@@ -635,9 +637,9 @@ class TestParallelRunnerPipelineBinding:
 
         runner = CompileRunner(
             {
-                "log": False,
+                "logging.enabled": False,
                 **_parallel_config(shard=1, pipeline=1, tensor=1),
-                "compile": {"enable": True},
+                "compile": {"enabled": True},
             }
         )
         try:
@@ -672,7 +674,7 @@ class TestParallelRunnerPipelineBinding:
                 captured["stage_model"] = stage_model
                 return sentinel_schedule
 
-        runner = PartitionRunner({"log": False, **_parallel_config(shard=1, pipeline=2, tensor=1)})
+        runner = PartitionRunner({"logging.enabled": False, **_parallel_config(shard=1, pipeline=2, tensor=1)})
         try:
             assert captured["stage_model"] is runner.model_parts[0]
             assert runner.pipeline_schedule is sentinel_schedule
@@ -717,12 +719,12 @@ class TestParallelRunnerPipelineBinding:
 
         runner = PartitionRunner(
             {
-                "log": False,
+                "logging.enabled": False,
                 **_parallel_config(
                     shard=1,
                     pipeline=2,
                     tensor=1,
-                    module_fqns_per_model_part=[["stem"], ["head"]],
+                    pipeline_partitions=[["stem"], ["head"]],
                 ),
             }
         )
@@ -772,7 +774,7 @@ class TestParallelRunnerPipelineBinding:
                 captured["stage_model"] = stage_model
                 return RecordingPipelineSchedule(stage_model)
 
-        runner = PartitionRunner({"log": False, **_parallel_config(shard=1, pipeline=2, tensor=1)})
+        runner = PartitionRunner({"logging.enabled": False, **_parallel_config(shard=1, pipeline=2, tensor=1)})
         try:
             assert runner.root_model.partition_calls == [(0, 2, None, runner.parallel)]
             assert runner.model is runner.root_model.parts[0]
@@ -792,12 +794,12 @@ class TestParallelRunnerPipelineBinding:
 
         runner = PartitionRunner(
             {
-                "log": False,
+                "logging.enabled": False,
                 **_parallel_config(
                     shard=1,
                     pipeline=2,
                     tensor=1,
-                    module_fqns_per_model_part=[["s0"], ["s1"], ["s2"], ["s3"]],
+                    pipeline_partitions=[["s0"], ["s1"], ["s2"], ["s3"]],
                 ),
             }
         )
@@ -807,7 +809,7 @@ class TestParallelRunnerPipelineBinding:
             runner.close()
 
     def test_pipeline_stage_indices_reject_non_multiple_virtual_stages(self) -> None:
-        runner = TinyParallelRunner({"log": False, **_parallel_config(shard=4, pipeline=4, tensor=1)})
+        runner = TinyParallelRunner({"logging.enabled": False, **_parallel_config(shard=4, pipeline=4, tensor=1)})
         try:
             with pytest.raises(ValueError, match="divisible"):
                 runner.pipeline_stage_indices(6)
@@ -852,12 +854,12 @@ class TestParallelRunnerPipelineBinding:
 
         runner = PartitionRunner(
             {
-                "log": False,
+                "logging.enabled": False,
                 **_parallel_config(
                     shard=1,
                     pipeline=2,
                     tensor=1,
-                    module_fqns_per_model_part=[["s0"], ["s1"], ["s2"], ["s3"]],
+                    pipeline_partitions=[["s0"], ["s1"], ["s2"], ["s3"]],
                 ),
             }
         )
@@ -893,7 +895,7 @@ class TestParallelRunnerPipelineBinding:
                 self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
 
         with pytest.raises(ValueError, match="multiple local model_parts"):
-            PartitionRunner({"log": False, **_parallel_config(shard=1, pipeline=2, tensor=1)})
+            PartitionRunner({"logging.enabled": False, **_parallel_config(shard=1, pipeline=2, tensor=1)})
 
     def test_auto_pipeline_compiles_and_rebinds(self) -> None:
         if not hasattr(torch, "compile"):
@@ -923,9 +925,9 @@ class TestParallelRunnerPipelineBinding:
 
         runner = PartitionRunner(
             {
-                "log": False,
+                "logging.enabled": False,
                 **_parallel_config(shard=1, pipeline=2, tensor=1),
-                "compile": {"enable": True},
+                "compile": {"enabled": True},
             }
         )
 
@@ -981,7 +983,7 @@ class TestParallelRunnerRuntimeBehavior:
                 self.model_parts = parts
                 self.model = parts[0]
 
-        runner = ModeRunner({"log": False, **_parallel_config(shard=1, pipeline=1, tensor=1)})
+        runner = ModeRunner({"logging.enabled": False, **_parallel_config(shard=1, pipeline=1, tensor=1)})
         try:
             first_part, second_part = runner.model_parts
             runner.mode = "evaluate"
@@ -1000,7 +1002,7 @@ class TestParallelRunnerRuntimeBehavior:
                 self.pipeline_has_first_stage = False
                 self.pipeline_has_last_stage = False
 
-        runner = RestoreRunner({"log": False, **_parallel_config(shard=2, pipeline=8, tensor=1)})
+        runner = RestoreRunner({"logging.enabled": False, **_parallel_config(shard=2, pipeline=8, tensor=1)})
         try:
             loader = StatefulDataLoader(list(range(8)), batch_size=2, shuffle=False)
             target_loader = StatefulDataLoader(list(range(8)), batch_size=2, shuffle=False)
@@ -1018,7 +1020,7 @@ class TestParallelRunnerRuntimeBehavior:
             runner.close()
 
     def test_timeout_process_groups_include_parallel_subgroups(self) -> None:
-        runner = TinyParallelRunner({"log": False, **_parallel_config(shard=2, pipeline=8, tensor=1)})
+        runner = TinyParallelRunner({"logging.enabled": False, **_parallel_config(shard=2, pipeline=8, tensor=1)})
         try:
             runner.parallel.groups = {
                 "replicate": "replicate_group",
@@ -1070,14 +1072,16 @@ class TestParallelRunnerRuntimeBehavior:
                 self.pipeline_has_first_stage = False
                 self.pipeline_has_last_stage = False
 
-        runner = MiddleStageRunner({"log": False, "log_interval": 0, **_parallel_config(shard=1, pipeline=3, tensor=1)})
+        runner = MiddleStageRunner(
+            {"logging.enabled": False, "logging.interval": 0, **_parallel_config(shard=1, pipeline=3, tensor=1)}
+        )
         runner.dataloaders["train"] = NoIterLoader()
 
         runner.train_epoch(split="train")
         assert runner.train_state.global_step == 3
 
     def test_load_optimizer_requires_state_dict(self) -> None:
-        runner = TinyParallelRunner({"log": False, **_parallel_config(shard=2, pipeline=8, tensor=1)})
+        runner = TinyParallelRunner({"logging.enabled": False, **_parallel_config(shard=2, pipeline=8, tensor=1)})
         with pytest.raises(ValueError, match="checkpoint has no optimizer state"):
             runner.load_optimizer(None)
 
@@ -1090,7 +1094,7 @@ class TestParallelRunnerRuntimeBehavior:
             def forward(self, data):
                 return data
 
-        runner = TinyParallelRunner({"log": False, **_parallel_config(shard=2, pipeline=8, tensor=1)})
+        runner = TinyParallelRunner({"logging.enabled": False, **_parallel_config(shard=2, pipeline=8, tensor=1)})
         try:
             shared = nn.Parameter(torch.ones(1))
             runner.model_parts = [SharedPart(shared), SharedPart(shared)]
@@ -1101,7 +1105,7 @@ class TestParallelRunnerRuntimeBehavior:
 
     def test_pipeline_loss_uses_token_weighted_sum(self) -> None:
         runner = TinyParallelRunner(
-            {"log": False, "accum_steps": 16, **_parallel_config(shard=2, pipeline=8, tensor=1)}
+            {"logging.enabled": False, "accum_steps": 16, **_parallel_config(shard=2, pipeline=8, tensor=1)}
         )
         try:
             runner._pipeline_loss_weighting = "train"
@@ -1144,7 +1148,7 @@ class TestParallelRunnerRuntimeBehavior:
                 self.pipeline_has_first_stage = True
                 self.pipeline_has_last_stage = True
 
-        runner = StrictRunner({"log": False, **_parallel_config(shard=1, pipeline=1, tensor=1)})
+        runner = StrictRunner({"logging.enabled": False, **_parallel_config(shard=1, pipeline=1, tensor=1)})
         _, loss = runner.train_step((torch.randn(2, 4), torch.randn(2, 2)))
         assert runner.schedule.called is True
         assert "return_outputs" not in runner.schedule.last_kwargs
@@ -1165,7 +1169,7 @@ class TestParallelRunnerRuntimeBehavior:
                 super().__init__(config)
                 self.pipeline_schedule = object()
 
-        runner = LocalPipelineRunner({"log": False, **_parallel_config(shard=1, pipeline=1, tensor=1)})
+        runner = LocalPipelineRunner({"logging.enabled": False, **_parallel_config(shard=1, pipeline=1, tensor=1)})
         try:
             reduced = runner.reduce_loss_for_logging(torch.tensor(2.0), 4)
             assert reduced is not None

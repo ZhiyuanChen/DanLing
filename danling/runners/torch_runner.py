@@ -131,10 +131,10 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         if not isinstance(config, RunnerConfig):
             config = RunnerConfig(config)
         config.stack = normalize_stack_name(config.get("stack", "ddp"))
-        checkpoint_backend = str(config.checkpoint.backend).strip().lower()
+        checkpoint_backend = str(config.get("ckpt.backend")).strip().lower()
         if checkpoint_backend == "auto":
             checkpoint_backend = "dcp" if self.world_size > 1 else "file"
-        config.checkpoint.backend = self._validate_checkpoint_backend(checkpoint_backend)
+        config["ckpt"]["backend"] = self._validate_checkpoint_backend(checkpoint_backend)
         super().__init__(config)
 
     def __post_init__(self):
@@ -147,7 +147,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             raise ValueError("cannot initialize TorchRunner: model is not initialized")
         if self.datasets:
             self.build_dataloaders()
-        if self.ft is not None and self.ft.enabled and not self._supports_torchft_runtime:
+        if self.fault_tolerance is not None and self.fault_tolerance.enabled and not self._supports_torchft_runtime:
             raise NotImplementedError(
                 "TorchFT integration is currently supported by TorchRunner/DDP and ParallelRunner FSDP only"
             )
@@ -196,7 +196,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         Raises:
             RuntimeError: the default process group is already initialized
                 when `WORLD_SIZE > 1`.
-            ValueError: `comm.init_timeout_seconds` is non-positive.
+            ValueError: `dist.init_timeout_seconds` is non-positive.
 
         **Side effects:** when `WORLD_SIZE > 1`, calls
         `dist.init_process_group(...)`, sets the active CUDA device when
@@ -220,9 +220,9 @@ class TorchRunner(Fp8Mixin, BaseRunner):
           default process group initialized here.
         """
 
-        backend = self.config.get("backend", os.getenv("BACKEND"))
-        init_method = self.config.get("init_method", os.getenv("INIT_METHOD"))
-        init_timeout = self._comm_timeout("comm.init_timeout_seconds")
+        backend = self.config.get("dist.backend") or os.getenv("BACKEND")
+        init_method = self.config.get("dist.init_method") or os.getenv("INIT_METHOD")
+        init_timeout = self._dist_timeout("dist.init_timeout_seconds")
         world_size = int(os.getenv("WORLD_SIZE", "1"))
         rank = int(os.getenv("RANK", "0"))
         runtime_device = self.device
@@ -263,11 +263,11 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
     def init_checkpoint_manager(self) -> None:
         """
-        Bind the checkpoint manager corresponding to `config.checkpoint.backend`.
+        Bind the checkpoint manager corresponding to `config.ckpt.backend`.
 
         The default dispatches by backend: when the backend is `"dcp"`, it
         binds a `TorchDistributedCheckpointManager` (or
-        `TorchFTCheckpointManager` when FT dataloader checkpoints are
+        `TorchFTCheckpointManager` when dataloader checkpoints are
         enabled). For `"file"` it leaves the `FileCheckpointManager` already
         bound by `BaseRunner.__init__` in place.
 
@@ -277,7 +277,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         should swap it via `set_checkpoint_manager(...)`, not by direct
         attribute assignment.
 
-        **Precondition:** `config.checkpoint.backend` is normalized to one
+        **Precondition:** `config.ckpt.backend` is normalized to one
         of `{"file", "dcp"}` (TorchRunner does this in `__init__`). When
         the backend is `"dcp"`, the default process group is initialized
         for distributed runs.
@@ -296,17 +296,16 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
         **Backend notes:**
 
-        - `DeepSpeedRunner` coerces `config.checkpoint.backend` to `"file"`
+        - `DeepSpeedRunner` coerces `config.ckpt.backend` to `"file"`
           in `__init__`, so this hook is a no-op for that backend.
         - `ParallelRunner` coerces the backend to `"dcp"`, so this hook
           always binds `TorchDistributedCheckpointManager` or
           `TorchFTCheckpointManager`.
         """
-        checkpoint_backend = self.config.checkpoint.backend.lower()
+        checkpoint_backend = str(self.config.get("ckpt.backend")).lower()
         if checkpoint_backend == "dcp":
             ft_checkpoint_enabled = bool(
-                self.config.get("ft.enabled", False)
-                or self.config.get("checkpoint.enable_ft_dataloader_checkpoints", False)
+                self.config.get("ft.enabled", False) or self.config.get("ckpt.dataloader_checkpoint.enabled", False)
             )
             manager_cls = TorchFTCheckpointManager if ft_checkpoint_enabled else TorchDistributedCheckpointManager
             self.set_checkpoint_manager(manager_cls(self))
@@ -315,7 +314,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         # remaining case and reuses the default `FileCheckpointManager` that
         # `BaseRunner.__init__` already bound.
 
-    def _comm_timeout(self, key: str) -> timedelta | None:
+    def _dist_timeout(self, key: str) -> timedelta | None:
         value = self.config.get(key)
         if value is None:
             return None
@@ -326,8 +325,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
     def _timeout_process_groups(self) -> tuple[Any | None, ...]:
         groups: list[Any | None] = [None]
-        if self.ft is not None and self.ft.replicate_process_group is not None:
-            groups.append(self.ft.replicate_process_group)
+        if self.fault_tolerance is not None and self.fault_tolerance.replicate_process_group is not None:
+            groups.append(self.fault_tolerance.replicate_process_group)
         return tuple(groups)
 
     def _set_process_group_timeout(self, timeout: timedelta) -> None:
@@ -337,7 +336,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         if not callable(set_pg_timeout):
             warn(
                 "torch.distributed does not expose process-group timeout mutation; "
-                "skipping comm.train_timeout_seconds update",
+                "skipping dist.train_timeout_seconds update",
                 RuntimeWarning,
                 stacklevel=2,
             )
@@ -361,7 +360,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                 if group is not None:
                     warn(
                         "torch.distributed does not support subgroup timeout mutation; "
-                        "skipping comm.train_timeout_seconds update for a non-default process group",
+                        "skipping dist.train_timeout_seconds update for a non-default process group",
                         RuntimeWarning,
                         stacklevel=2,
                     )
@@ -376,7 +375,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             return
         if self.train_state.global_step != 1:
             return
-        timeout = self._comm_timeout("comm.train_timeout_seconds")
+        timeout = self._dist_timeout("dist.train_timeout_seconds")
         if timeout is None:
             return
         self._set_process_group_timeout(timeout)
@@ -389,6 +388,30 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             dist.destroy_process_group()
         except Exception as exc:
             warn(f"failed to destroy default process group: {exc}", RuntimeWarning, stacklevel=2)
+
+    def _profiler_activities(self, configured: object | None) -> list[torch.profiler.ProfilerActivity]:
+        if configured is None:
+            activities = [torch.profiler.ProfilerActivity.CPU]
+            if torch.cuda.is_available() and self.device.type == "cuda":
+                activities.append(torch.profiler.ProfilerActivity.CUDA)
+            return activities
+
+        if isinstance(configured, str):
+            configured = (configured,)
+        if not isinstance(configured, Sequence):
+            raise ValueError("profiling.activities must be a string or sequence of strings")
+
+        aliases = {"cpu": "CPU", "cuda": "CUDA", "gpu": "CUDA", "xpu": "XPU"}
+        activities = []
+        for activity in configured:
+            if isinstance(activity, torch.profiler.ProfilerActivity):
+                activities.append(activity)
+                continue
+            name = aliases.get(str(activity).strip().lower(), str(activity).strip().upper())
+            if not hasattr(torch.profiler.ProfilerActivity, name):
+                raise ValueError(f"unsupported profiling activity: {activity!r}")
+            activities.append(getattr(torch.profiler.ProfilerActivity, name))
+        return activities
 
     def _init_profiler(self) -> None:
         profiling = self.config.get("profiling")
@@ -410,9 +433,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             if repeat <= 0:
                 raise ValueError(f"profiling.repeat must be a positive integer, got {repeat}")
 
-        activities = [torch.profiler.ProfilerActivity.CPU]
-        if torch.cuda.is_available() and self.device.type == "cuda":
-            activities.append(torch.profiler.ProfilerActivity.CUDA)
+        activities = self._profiler_activities(profiling.get("activities"))
 
         schedule_kwargs: dict[str, Any] = {"wait": wait, "warmup": warmup, "active": active}
         if repeat is not None:
@@ -423,14 +444,25 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             trace_dir = os.path.join(self.workspace.dir, trace_dir)
         trace_dir = os.path.join(trace_dir, self.timestamp, f"rank-{self.rank:05d}")
         os.makedirs(trace_dir, exist_ok=True)
+        profile_kwargs: dict[str, Any] = {
+            "activities": activities,
+            "schedule": torch.profiler.schedule(**schedule_kwargs),
+            "on_trace_ready": torch.profiler.tensorboard_trace_handler(trace_dir),
+            "record_shapes": bool(profiling.get("record_shapes", False)),
+            "profile_memory": bool(profiling.get("profile_memory", False)),
+            "with_stack": bool(profiling.get("with_stack", False)),
+            "with_flops": bool(profiling.get("with_flops", False)),
+            "with_modules": bool(profiling.get("with_modules", False)),
+            "acc_events": bool(profiling.get("acc_events", False)),
+        }
+        if profiling.get("use_cuda") is not None:
+            profile_kwargs["use_cuda"] = bool(profiling.get("use_cuda"))
+        post_processing_timeout_seconds = profiling.get("post_processing_timeout_seconds")
+        if post_processing_timeout_seconds is not None:
+            profile_kwargs["post_processing_timeout_s"] = float(post_processing_timeout_seconds)
+
         profiler_context = torch.profiler.profile(
-            activities=activities,
-            schedule=torch.profiler.schedule(**schedule_kwargs),
-            on_trace_ready=torch.profiler.tensorboard_trace_handler(trace_dir),
-            record_shapes=bool(profiling.get("record_shapes", False)),
-            profile_memory=bool(profiling.get("profile_memory", False)),
-            with_stack=bool(profiling.get("with_stack", False)),
-            with_flops=bool(profiling.get("with_flops", False)),
+            **profile_kwargs,
         )
         profiler = profiler_context.__enter__()
         if hasattr(profiler, "step_num"):
@@ -459,11 +491,15 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
         from torch.utils.tensorboard.writer import SummaryWriter  # pylint: disable=C0415
 
+        tensorboard_config = self.config.tensorboard
+        for key in ("log_dir", "comment", "purge_step", "max_queue", "flush_secs", "filename_suffix"):
+            if key not in kwargs and tensorboard_config.get(key) is not None:
+                kwargs[key] = tensorboard_config[key]
         if "log_dir" not in kwargs:
             kwargs["log_dir"] = os.path.join(self.workspace.dir, "tensorboard", self.timestamp)
 
         self.writer = SummaryWriter(*args, **kwargs)
-        self.writer.add_scalar = catch(OSError, verbose=False)(self.writer.add_scalar)
+        self.writer.add_scalar = catch(OSError, verbose=False)(self.writer.add_scalar)  # type: ignore[method-assign]
 
     def set_seed(self, seed: int | None = None, bias: int | bool | None = None) -> int:
         r"""
@@ -494,8 +530,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
         process_seed = base_seed
         if bias is None:
-            if self.ft is not None:
-                _, bias = self.ft.data_parallel_info(self.world_size, self.rank)
+            if self.fault_tolerance is not None:
+                _, bias = self.fault_tolerance.data_parallel_info(self.world_size, self.rank)
             else:
                 bias = self.rank
         if bias:
@@ -629,7 +665,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
     def _optimizer_param_group_options(
         self,
         group_cfg: Mapping[str, Any],
-        optim_cfg: Mapping[str, Any],
+        optimizer_cfg: Mapping[str, Any],
         *,
         index: int,
     ) -> dict[str, Any]:
@@ -639,28 +675,30 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             if key not in {"pattern", "params", "lr_multiplier", "weight_decay_multiplier", "beta1", "beta2"}
         }
         if "lr_multiplier" in group_cfg:
-            if "lr" not in optim_cfg:
+            if optimizer_cfg.get("lr") is None:
                 raise ValueError(f"optim.param_groups[{index}].lr_multiplier requires optim.lr")
-            options["lr"] = float(optim_cfg["lr"]) * float(group_cfg["lr_multiplier"])
+            options["lr"] = float(optimizer_cfg["lr"]) * float(group_cfg["lr_multiplier"])
         if "weight_decay_multiplier" in group_cfg:
-            if "weight_decay" not in optim_cfg:
+            if optimizer_cfg.get("weight_decay") is None:
                 raise ValueError(f"optim.param_groups[{index}].weight_decay_multiplier requires optim.weight_decay")
-            options["weight_decay"] = float(optim_cfg["weight_decay"]) * float(group_cfg["weight_decay_multiplier"])
+            options["weight_decay"] = float(optimizer_cfg["weight_decay"]) * float(group_cfg["weight_decay_multiplier"])
 
         beta1 = group_cfg.get("beta1")
         beta2 = group_cfg.get("beta2")
         if beta1 is not None or beta2 is not None:
-            if "betas" not in optim_cfg:
+            if optimizer_cfg.get("betas") is None:
                 raise ValueError(f"optim.param_groups[{index}].beta1/beta2 requires optim.betas")
-            beta1_default, beta2_default = optim_cfg["betas"]
+            beta1_default, beta2_default = optimizer_cfg["betas"]
             options["betas"] = (
                 float(beta1_default if beta1 is None else beta1),
                 float(beta2_default if beta2 is None else beta2),
             )
         return options
 
-    def _build_optimizer_param_groups(self, optim_cfg: Mapping[str, Any]) -> list[nn.Parameter] | list[dict[str, Any]]:
-        group_configs = optim_cfg.get("param_groups")
+    def _build_optimizer_param_groups(
+        self, optimizer_cfg: Mapping[str, Any]
+    ) -> list[nn.Parameter] | list[dict[str, Any]]:
+        group_configs = optimizer_cfg.get("param_groups")
         if group_configs is None:
             return list(self.iter_optimizer_parameters())
         if isinstance(group_configs, (str, bytes, Mapping)) or not isinstance(group_configs, Sequence):
@@ -695,7 +733,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             param_groups.append(
                 {
                     "params": parameters,
-                    **self._optimizer_param_group_options(group_cfg, optim_cfg, index=index),
+                    **self._optimizer_param_group_options(group_cfg, optimizer_cfg, index=index),
                 }
             )
 
@@ -706,8 +744,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
     def build_optimizer(self) -> None:
         """
-        Auto-build the optimizer from `config.optim` (or `config.optimizer`)
-        when `self.optimizer` is absent.
+        Auto-build the optimizer from `config.optim` when `self.optimizer`
+        is absent.
 
         The default iterates parameters via `iter_optimizer_parameters` and
         dispatches to the `OPTIMIZERS` registry with the merged config. If
@@ -745,30 +783,28 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         """
         if self.optimizer is not None or self.model is None:
             return
-        optim_cfg = self.config.get("optim")
-        if optim_cfg is None:
-            optim_cfg = self.config.get("optimizer")
-        if not isinstance(optim_cfg, Mapping) or not optim_cfg:
+        optimizer_cfg = self.config.get("optim")
+        if not isinstance(optimizer_cfg, Mapping) or not optimizer_cfg:
             return
-        optimizer_kwargs = dict(optim_cfg)
+        optimizer_kwargs = {str(key): value for key, value in optimizer_cfg.items() if value is not None}
         optimizer_kwargs.pop("param_groups", None)
-        parameters = self._build_optimizer_param_groups(optim_cfg)
+        if "type" not in optimizer_kwargs:
+            return
+        parameters = self._build_optimizer_param_groups(optimizer_cfg)
         if not parameters:
             return
         self.optimizer = OPTIMIZERS.build(params=parameters, **optimizer_kwargs)
 
     def _get_scheduler_config(self) -> Mapping[str, Any] | None:
-        sched_cfg = self.config.get("sched")
-        if sched_cfg is None:
-            sched_cfg = self.config.get("scheduler")
-        if not isinstance(sched_cfg, Mapping):
+        scheduler_cfg = self.config.get("sched")
+        if not isinstance(scheduler_cfg, Mapping):
             return None
-        return sched_cfg
+        return scheduler_cfg
 
     def build_scheduler(self) -> None:
         """
-        Auto-build the LR scheduler from `config.sched` (or
-        `config.scheduler`) when `self.scheduler` is absent.
+        Auto-build the LR scheduler from `config.sched` when
+        `self.scheduler` is absent.
 
         The default pops `interval` and `monitor` from the config (those
         drive runner-level dispatch, not scheduler construction), defaults
@@ -804,9 +840,11 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         sched_cfg = self._get_scheduler_config()
         if not isinstance(sched_cfg, Mapping) or not sched_cfg:
             return
-        scheduler_kwargs = dict(sched_cfg)
+        scheduler_kwargs = {str(key): value for key, value in sched_cfg.items() if value is not None}
         scheduler_kwargs.pop("interval", None)
         scheduler_kwargs.pop("monitor", None)
+        if "type" not in scheduler_kwargs:
+            return
         if "total_steps" not in scheduler_kwargs:
             steps = self.steps
             if steps is not None:
@@ -834,14 +872,14 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                 return value.item()
             return value
 
-        monitor = self.scheduler_monitor or self.config.score_name
+        monitor = self.scheduler_monitor or self.config.score.metric
 
         if "." in monitor:
             value: Any = result
             for key in monitor.split("."):
                 if not isinstance(value, Mapping) or key not in value:
                     raise ValueError(
-                        f"could not resolve scheduler.monitor={monitor!r} from aggregated result {dict(result)!r}"
+                        f"could not resolve sched.monitor={monitor!r} from aggregated result {dict(result)!r}"
                     )
                 value = value[key]
             return scalarize(value)
@@ -865,11 +903,11 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         if len(matches) > 1:
             splits = ", ".join(split_name for split_name, _ in matches)
             raise ValueError(
-                f"ambiguous scheduler.monitor={monitor!r}: matched multiple splits ({splits}). "
+                f"ambiguous sched.monitor={monitor!r}: matched multiple splits ({splits}). "
                 "Use '<split>.<metric>' to disambiguate."
             )
 
-        raise ValueError(f"could not resolve scheduler.monitor={monitor!r} from aggregated result {dict(result)!r}")
+        raise ValueError(f"could not resolve sched.monitor={monitor!r} from aggregated result {dict(result)!r}")
 
     def _step_epoch_scheduler(self, result: Mapping[str, Any]) -> bool:
         if self.scheduler is None or self.scheduler_interval != "epoch":
@@ -928,9 +966,24 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                 kwargs.merge(split_kwargs[k], overwrite=True)
             is_train_split = k in self.train_splits
             shuffle = kwargs.pop("shuffle", is_train_split)
+            collate_fn = kwargs.pop("collate_fn", self.collate_fn)
+            batch_sampler = kwargs.pop("batch_sampler", None)
+            if batch_sampler is not None:
+                kwargs.pop("batch_size", None)
+                kwargs.pop("drop_last", None)
+                kwargs.pop("sampler", None)
+                self.dataloaders[k] = StatefulDataLoader(
+                    dataset,
+                    batch_sampler=batch_sampler,
+                    collate_fn=collate_fn,
+                    **kwargs,
+                )
+                continue
             kwargs.setdefault("drop_last", is_train_split)
-            sampler = self.build_datasampler(dataset, split=k, shuffle=shuffle)
-            self.dataloaders[k] = StatefulDataLoader(dataset, sampler=sampler, collate_fn=self.collate_fn, **kwargs)
+            sampler = kwargs.pop("sampler", None)
+            if sampler is None:
+                sampler = self.build_datasampler(dataset, split=k, shuffle=shuffle)
+            self.dataloaders[k] = StatefulDataLoader(dataset, sampler=sampler, collate_fn=collate_fn, **kwargs)
 
     def build_datasampler(self, dataset: Any, *, split: str, shuffle: bool) -> Any:
         """
@@ -956,8 +1009,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         if self.distributed:
             num_replicas = self.world_size
             rank = self.rank
-            if self.ft is not None:
-                num_replicas, rank = self.ft.data_parallel_info(num_replicas, rank)
+            if self.fault_tolerance is not None:
+                num_replicas, rank = self.fault_tolerance.data_parallel_info(num_replicas, rank)
             return utils.data.distributed.DistributedSampler(
                 dataset,
                 num_replicas=num_replicas,
@@ -1080,8 +1133,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         return None
 
     def _loss_normalizer_sync_divisor(self) -> int:
-        if self.ft is not None and self.ft.replicate_process_group is not None:
-            return max(int(dist.get_world_size(group=self.ft.replicate_process_group)), 1)
+        if self.fault_tolerance is not None and self.fault_tolerance.replicate_process_group is not None:
+            return max(int(dist.get_world_size(group=self.fault_tolerance.replicate_process_group)), 1)
         if dist.is_available() and dist.is_initialized():
             return max(self.world_size, 1)
         return 1
@@ -1116,8 +1169,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         return torch.device("cpu")
 
     def all_reduce_group(self):
-        if self.ft is not None and self.ft.replicate_process_group is not None:
-            return self.ft.replicate_process_group
+        if self.fault_tolerance is not None and self.fault_tolerance.replicate_process_group is not None:
+            return self.fault_tolerance.replicate_process_group
         return None
 
     def all_reduce(self, tensor: torch.Tensor, *, op=dist.ReduceOp.SUM) -> torch.Tensor:
@@ -1276,7 +1329,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         micro_steps = self.train_state.micro_step + 1
         return self.accum_steps > 1 and micro_steps % self.accum_steps != 0
 
-    def forward_context(self):
+    def infer_context(self):
         """Precision context used by train/eval/infer forward passes."""
 
         if self.fp8_enabled:
@@ -1294,7 +1347,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
     @contextmanager
     def _train_step_context(self, *, no_sync_targets: tuple[nn.Module, ...] | list[nn.Module] = ()):
-        autocast_context = self.forward_context()
+        autocast_context = self.infer_context()
         if self._should_train_no_sync() and no_sync_targets:
             with ExitStack() as stack:
                 stack.enter_context(autocast_context)
@@ -1652,7 +1705,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
         Each epoch runs all train splits, then all evaluation splits, advances
         epoch/metric schedulers, appends and writes results, saves periodic
-        checkpoints on `checkpoint_interval`, and refreshes the best checkpoint
+        checkpoints on `ckpt.interval`, and refreshes the best checkpoint
         whenever the score improves.
 
         **Called when:** `train` dispatches while `config.epochs` is set, or
@@ -1702,6 +1755,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                 print("train: early-stop triggered")
                 break
         self.save_checkpoint(last_step=True)
+        self.save_model_checkpoint()
         return self.results
 
     def train_epoch(self, split: str = "train") -> RoundDict:
@@ -1999,6 +2053,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         print(f"train: step mode result={result}")
         self.save_result()
         self.save_checkpoint(last_step=True)
+        self.save_model_checkpoint()
         return self.results
 
     def evaluate_step(self, data: Any) -> tuple[Any, torch.Tensor | None]:
@@ -2006,8 +2061,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         Run one evaluation micro-step.
 
         The default implementation runs forward → optional loss → optional
-        metric update under `forward_context()`. No backward pass and no
-        optimizer step.
+        metric update under `infer_context()`. No backward pass and no optimizer step.
 
         **Called when:** once per micro-batch by `evaluate_epoch`/`evaluate_steps`,
         which run under `torch.inference_mode()`.
@@ -2031,7 +2085,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             ValueError: neither `self.model` nor `self.ema` is initialized.
 
         **Side effects:** moves `data` to `self.device`, runs forward through
-        `self.ema or self.model` under `forward_context()`, computes loss when
+        `self.ema or self.model` under `infer_context()`, computes loss when
         `criterion` is set, and updates `self.metrics` when bound.
 
         !!! danger "Do not"
@@ -2060,7 +2114,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         if self.model is None and self.ema is None:
             raise ValueError("cannot run evaluate_step: model is not initialized")
         model = self.ema or self.model
-        with self.forward_context():
+        with self.infer_context():
             pred = model(**inputs) if isinstance(inputs, Mapping) else model(inputs)
             loss = self.criterion(pred, target) if self.criterion is not None else None
 
@@ -2301,7 +2355,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             ValueError: neither `self.model` nor `self.ema` is initialized.
 
         **Side effects:** moves `data` to `self.device`, runs forward through
-        `self.ema or self.model` under `forward_context()`, then converts the
+        `self.ema or self.model` under `infer_context()`, then converts the
         output to a CPU list.
 
         !!! danger "Do not"
@@ -2328,7 +2382,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         if self.model is None and self.ema is None:
             raise ValueError("cannot run infer_step: model is not initialized")
         model = self.ema or self.model
-        with self.forward_context():
+        with self.infer_context():
             pred = model(**inputs) if isinstance(inputs, Mapping) else model(inputs)
         values = pred.squeeze(-1).detach().cpu().tolist()
         if isinstance(values, list):
@@ -2447,7 +2501,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
     def _restore_optimizer_checkpoint(self, state_dict: Mapping[str, Any], *args, **kwargs) -> None:
         if self.optimizer is None:
             return
-        self.optimizer.load_state_dict(state_dict, *args, **kwargs)
+        self.optimizer.load_state_dict(dict(state_dict), *args, **kwargs)
 
     def load_optimizer(self, state_dict: Mapping[str, Any] | None, *args, **kwargs) -> None:
         if self.optimizer is None:
@@ -2489,12 +2543,35 @@ class TorchRunner(Fp8Mixin, BaseRunner):
     # `save_checkpoint` is inherited from `BaseRunner`; collective vs main-only
     # dispatch is owned by `checkpoint_manager.is_collective`.
 
+    def load_pretrained(self, checkpoint: Mapping | bytes | str | os.PathLike, *args, **kwargs) -> None:
+        if not isinstance(checkpoint, Mapping) and str(self.config.get("ckpt.backend")).lower() == "dcp":
+            checkpoint_path = os.fsdecode(checkpoint)
+            if checkpoint_path.endswith(".pointer") or not os.path.isfile(checkpoint_path):
+                ckpt = self.checkpoint_manager.load_model_checkpoint(checkpoint)
+                if ckpt.get("ema") is not None:
+                    self.load_model(ckpt["ema"], *args, **kwargs)
+                elif "model" in ckpt:
+                    self.load_model(ckpt["model"], *args, **kwargs)
+                elif "model_parts" in ckpt:
+                    self.load_model(ckpt["model_parts"], *args, **kwargs)
+                else:
+                    raise ValueError(
+                        "cannot load pretrained weights: checkpoint has no EMA or model state\n"
+                        "Use `load_checkpoint` for full checkpoint restore instead of `load_pretrained`"
+                    )
+                self.config.pretrained = os.fsdecode(checkpoint)
+                return
+        super().load_pretrained(checkpoint, *args, **kwargs)
+
     def read_checkpoint(self, checkpoint: Mapping | bytes | str | os.PathLike, *args, **kwargs) -> Mapping[str, Any]:
         """Read checkpoint payload from mapping/file/DCP directory input."""
         if isinstance(checkpoint, Mapping):
             return checkpoint
 
-        if self.config.checkpoint.backend.lower() == "dcp":
+        checkpoint_path = os.fsdecode(checkpoint)
+        if str(self.config.get("ckpt.backend")).lower() == "dcp" and (
+            checkpoint_path.endswith(".pointer") or not os.path.isfile(checkpoint_path)
+        ):
             return self.checkpoint_manager.load_checkpoint(checkpoint)
         return super().read_checkpoint(checkpoint, *args, **kwargs)
 

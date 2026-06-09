@@ -92,10 +92,10 @@ class _RecordingCheckpointManager:
 
 def _config(tmp_path: Path, **kwargs):
     config = {
-        "log": False,
-        "workspace_root": str(tmp_path),
-        "lineage": "lineage-a",
-        "experiment": "experiment-a",
+        "logging.enabled": False,
+        "workspace.root": str(tmp_path),
+        "workspace.lineage": "lineage-a",
+        "workspace.experiment": "experiment-a",
     }
     config.update(kwargs)
     return config
@@ -106,7 +106,7 @@ def _config_hash(runner: MinimalRunner) -> str:
 
 
 def test_base_runner_log_interval_defaults_to_1024_for_unsized_loader() -> None:
-    runner = MinimalRunner({"log": False})
+    runner = MinimalRunner({"logging.enabled": False})
     try:
         runner.dataloaders["train"] = StreamingLoader()
         assert runner.log_interval == 1024
@@ -247,7 +247,12 @@ def test_base_runner_wandb_logs_flattened_result_once(tmp_path: Path) -> None:
                 tmp_path,
                 wandb={
                     "enabled": True,
+                    "id": "run-a",
+                    "notes": "smoke run",
                     "tags": ["mnist", "debug"],
+                    "resume": True,
+                    "save_code": True,
+                    "sync_tensorboard": True,
                 },
             )
         )
@@ -262,7 +267,12 @@ def test_base_runner_wandb_logs_flattened_result_once(tmp_path: Path) -> None:
         assert init_kwargs["group"] == "experiment-a"
         assert init_kwargs["name"] == runner.id
         assert init_kwargs["dir"] == runner.workspace.dir
+        assert init_kwargs["id"] == "run-a"
+        assert init_kwargs["notes"] == "smoke run"
         assert init_kwargs["tags"] == ["mnist", "debug"]
+        assert init_kwargs["resume"] is True
+        assert init_kwargs["save_code"] is True
+        assert init_kwargs["sync_tensorboard"] is True
         assert init_kwargs["config"] == runner.config.dict()
 
         runner.train_state.global_step = 5
@@ -296,11 +306,11 @@ def test_base_runner_wandb_logs_flattened_result_once(tmp_path: Path) -> None:
 
 
 def test_base_runner_load_checkpoint_restores_in_expected_order() -> None:
-    runner = SequencingRunner({"log": False})
+    runner = SequencingRunner({"logging.enabled": False})
     try:
         runner.load_checkpoint(
             {
-                "runner": {"log": False},
+                "runner": {"logging.enabled": False},
                 "state": {"train": {"global_step": 1, "epoch": 0}},
                 "model": {"w": 1},
                 "optimizer": {"opt": 1},
@@ -313,63 +323,8 @@ def test_base_runner_load_checkpoint_restores_in_expected_order() -> None:
         runner.close()
 
 
-def test_base_runner_load_checkpoint_excludes_configured_components() -> None:
-    runner = SequencingRunner(
-        {
-            "log": False,
-            "checkpoint": {
-                "exclude_from_loading": ["model", "optimizer", "lr_scheduler", "data_loader"],
-            },
-        }
-    )
-    try:
-        runner.load_checkpoint(
-            {
-                "runner": {"log": False},
-                "state": {"train": {"global_step": 1, "epoch": 0}},
-                "model": {"w": 1},
-                "optimizer": {"opt": 1},
-                "scheduler": {"sched": 1},
-                "dataloaders": {"train": {"cursor": 1}},
-            }
-        )
-        assert runner.calls == ["state"]
-    finally:
-        runner.close()
-
-
-def test_base_runner_load_checkpoint_excludes_nested_state_key() -> None:
-    runner = MinimalRunner({"log": False, "checkpoint": {"exclude_from_loading": ["state.train"]}})
-    try:
-        runner.load_checkpoint(
-            {
-                "runner": {"log": False},
-                "state": {"train": {"global_step": 9, "epoch": 3}},
-            }
-        )
-        assert runner.train_state.global_step == 0
-        assert runner.train_state.epoch == 0
-    finally:
-        runner.close()
-
-
-def test_base_runner_load_checkpoint_warns_when_runner_config_validation_is_excluded() -> None:
-    runner = MinimalRunner({"log": False, "checkpoint": {"exclude_from_loading": ["runner"]}})
-    try:
-        with pytest.warns(RuntimeWarning, match="semantic runner config validation"):
-            runner.load_checkpoint(
-                {
-                    "runner": {"log": False, "steps": 123},
-                    "state": {"train": {"global_step": 4, "epoch": 0}},
-                }
-            )
-        assert runner.train_state.global_step == 4
-    finally:
-        runner.close()
-
-
 def test_base_runner_save_seed_checkpoint_forces_last_step_save() -> None:
-    runner = MinimalRunner({"log": False})
+    runner = MinimalRunner({"logging.enabled": False})
     manager = _RecordingCheckpointManager()
     try:
         runner.checkpoint_manager = manager  # type: ignore[assignment]
@@ -397,7 +352,7 @@ def test_base_runner_from_checkpoint_path_restores_full_state(tmp_path: Path) ->
         source.train_state.epoch = 3
         source.elastic_state.restart_count = 2
         checkpoint = dict(source.state_dict())
-        checkpoint["runner"]["auto_resume"] = True
+        checkpoint["runner"]["resume"] = True
         checkpoint["runner"]["pretrained"] = "stale-pretrained"
         torch.save(checkpoint, checkpoint_path)
     finally:
@@ -408,8 +363,8 @@ def test_base_runner_from_checkpoint_path_restores_full_state(tmp_path: Path) ->
         assert restored.train_state.global_step == 7
         assert restored.train_state.epoch == 3
         assert restored.elastic_state.restart_count == 2
-        assert restored.config.resume == str(checkpoint_path)
-        assert restored.config.auto_resume is False
+        assert restored.config.checkpoint == str(checkpoint_path)
+        assert restored.config.resume is False
         assert restored.config.pretrained is None
         assert restored.rng_state.python is not None
     finally:
@@ -417,10 +372,10 @@ def test_base_runner_from_checkpoint_path_restores_full_state(tmp_path: Path) ->
 
 
 def test_base_runner_load_state_dict_ignores_resume_and_pretrained_sources(tmp_path: Path) -> None:
-    runner = MinimalRunner(_config(tmp_path, resume="latest-a", pretrained="model-a"))
+    runner = MinimalRunner(_config(tmp_path, checkpoint="latest-a", pretrained="model-a"))
     try:
         checkpoint_runner = runner.config.dict()
-        checkpoint_runner["resume"] = "latest-b"
+        checkpoint_runner["checkpoint"] = "latest-b"
         checkpoint_runner["pretrained"] = "model-b"
 
         runner.load_state_dict({"runner": checkpoint_runner, "state": {}})
@@ -434,7 +389,7 @@ def test_base_runner_load_state_dict_ignores_heartbeat_policy(tmp_path: Path) ->
         checkpoint_runner = runner.config.dict()
         checkpoint_runner["heartbeat"]["enabled"] = True
         checkpoint_runner["heartbeat"]["interval_seconds"] = 15.0
-        checkpoint_runner["heartbeat"]["dir_name"] = "hb"
+        checkpoint_runner["heartbeat"]["dir"] = "hb"
 
         runner.load_state_dict({"runner": checkpoint_runner, "state": {}})
     finally:
@@ -442,12 +397,12 @@ def test_base_runner_load_state_dict_ignores_heartbeat_policy(tmp_path: Path) ->
 
 
 def test_base_runner_load_state_dict_rejects_checkpoint_backend_change(tmp_path: Path) -> None:
-    runner = MinimalRunner(_config(tmp_path, checkpoint={"backend": "dcp"}))
+    runner = MinimalRunner(_config(tmp_path, ckpt={"backend": "dcp"}))
     try:
         checkpoint_runner = runner.config.dict()
-        checkpoint_runner["checkpoint"]["backend"] = "file"
+        checkpoint_runner["ckpt"]["backend"] = "file"
 
-        with pytest.raises(ValueError, match="checkpoint"):
+        with pytest.raises(ValueError, match="ckpt"):
             runner.load_state_dict({"runner": checkpoint_runner, "state": {}})
     finally:
         runner.close()

@@ -28,7 +28,6 @@ import torch
 from lazy_imports import try_import
 
 from danling.optim.optimizer import normalize_scheduler_interval
-from danling.utils import load
 
 from .base_runner import BaseRunner
 from .config import RunnerConfig
@@ -66,16 +65,16 @@ class DeepSpeedRunner(TorchRunner):
         if not isinstance(config, RunnerConfig):
             config = RunnerConfig(config)
         config.stack = "deepspeed"
-        requested_backend = str(config.checkpoint.backend).strip().lower()
+        requested_backend = str(config.get("ckpt.backend")).strip().lower()
         if requested_backend == "dcp":
             warn(
-                "DeepSpeedRunner overrides checkpoint.backend to 'file'",
+                "DeepSpeedRunner overrides ckpt.backend to 'file'",
                 RuntimeWarning,
                 stacklevel=2,
             )
         # DeepSpeed always uses the file backend; "auto" and "dcp" both fold to "file".
         coerced = "file" if requested_backend in {"auto", "dcp"} else requested_backend
-        config.checkpoint.backend = self._validate_checkpoint_backend(coerced)
+        config["ckpt"]["backend"] = self._validate_checkpoint_backend(coerced)
         super().__init__(config)
 
     def materialize_model(self) -> None:
@@ -216,6 +215,9 @@ class DeepSpeedRunner(TorchRunner):
     def _bind_optimizer_container(self) -> None:
         self.optimizer_container = None
 
+    def unwrap(self, model: Any) -> Any:
+        return getattr(model, "module", super().unwrap(model))
+
     def backward(self, loss: torch.Tensor) -> None:
         """
         Route one micro-step backward pass through the DeepSpeed engine.
@@ -284,13 +286,36 @@ class DeepSpeedRunner(TorchRunner):
             raise ValueError(f"invalid DeepSpeed checkpoint pointer: {pointer_path!r} is empty")
         return tag
 
-    def _resolve_physical_checkpoint_tag(self, *, name: str, epochs: int, should_update_best: bool) -> str:
+    def _read_checkpoint_pointer_alias(self, name: str) -> str | None:
+        pointer_path = self._checkpoint_pointer_path(name)
+        if not os.path.isfile(pointer_path):
+            return None
+        return self._read_checkpoint_pointer(pointer_path)
+
+    def _resolve_physical_checkpoint_tag(
+        self,
+        *,
+        name: str,
+        epochs: int,
+        should_update_best: bool,
+    ) -> tuple[str, bool]:
         history_name = self.checkpoint_manager.resolve_history_name(epochs)
         if history_name is not None:
-            return history_name
+            return history_name, True
         if should_update_best:
-            return f"ckpt-g{self.train_state.global_step:012d}"
-        return name
+            return f"ckpt-g{self.train_state.global_step:012d}", name == "latest"
+        return name, False
+
+    def _record_retained_deepspeed_checkpoint(self, physical_tag: str) -> None:
+        stale_tags = self.checkpoint_manager.record_retained_checkpoint(
+            physical_tag,
+            protected_entries=(
+                self._read_checkpoint_pointer_alias("latest"),
+                self._read_checkpoint_pointer_alias("best"),
+            ),
+        )
+        for stale_tag in stale_tags:
+            self.checkpoint_manager.enqueue_purge_path(os.path.join(self.workspace.checkpoint_dir, stale_tag))
 
     def save_checkpoint(
         self,
@@ -335,7 +360,7 @@ class DeepSpeedRunner(TorchRunner):
             self.scheduler.state_dict() if getattr(self, "_runner_owns_scheduler", False) and self.scheduler else None
         )
         should_update_best = bool(save_best and self.is_best)
-        physical_tag = self._resolve_physical_checkpoint_tag(
+        physical_tag, track_for_retention = self._resolve_physical_checkpoint_tag(
             name=name, epochs=epochs, should_update_best=should_update_best
         )
         try:
@@ -386,6 +411,9 @@ class DeepSpeedRunner(TorchRunner):
                 return
             published_aliases.append("best")
 
+        if track_for_retention:
+            self._record_retained_deepspeed_checkpoint(physical_tag)
+
         self.checkpoint_manager.record_checkpoint_success(target=physical_tag, aliases=tuple(published_aliases))
 
     @staticmethod
@@ -430,7 +458,7 @@ class DeepSpeedRunner(TorchRunner):
 
         **Side effects:** restores DeepSpeed engine state, runner state,
         optional EMA, runner-owned scheduler state, dataloader state, and
-        `config.resume`.
+        `config.checkpoint`.
 
         !!! danger "Do not"
             - Treat DeepSpeed pointer files as torch `load` payloads; resolve
@@ -454,7 +482,7 @@ class DeepSpeedRunner(TorchRunner):
             if self.dataloaders or "dataloaders" in client_state:
                 self.load_dataloaders(client_state.get("dataloaders"))
 
-        self.config.resume = os.fsdecode(checkpoint)
+        self.config.checkpoint = os.fsdecode(checkpoint)
         self.optimizer_container = None
 
     def load_pretrained(
@@ -519,7 +547,7 @@ class DeepSpeedRunner(TorchRunner):
                     tag = cls._read_checkpoint_pointer(latest_pointer)
                     tagged_runner_yaml = os.path.join(checkpoint_path, tag, "runner.yaml")
                     if os.path.isfile(tagged_runner_yaml):
-                        return load(tagged_runner_yaml, *args, **kwargs)
+                        return RunnerConfig.from_yaml(tagged_runner_yaml, *args, **kwargs)
 
                 latest_file = os.path.join(checkpoint_path, "latest")
                 if os.path.isfile(latest_file):
@@ -527,17 +555,17 @@ class DeepSpeedRunner(TorchRunner):
                     if tag:
                         tagged_runner_yaml = os.path.join(checkpoint_path, tag, "runner.yaml")
                         if os.path.isfile(tagged_runner_yaml):
-                            return load(tagged_runner_yaml, *args, **kwargs)
+                            return RunnerConfig.from_yaml(tagged_runner_yaml, *args, **kwargs)
                 elif os.path.isdir(latest_file):
                     tagged_runner_yaml = os.path.join(latest_file, "runner.yaml")
                     if os.path.isfile(tagged_runner_yaml):
-                        return load(tagged_runner_yaml, *args, **kwargs)
+                        return RunnerConfig.from_yaml(tagged_runner_yaml, *args, **kwargs)
 
             if os.path.isfile(checkpoint_path):
                 tag = cls._read_checkpoint_pointer(checkpoint_path)
                 if tag:
                     tagged_runner_yaml = os.path.join(os.path.dirname(checkpoint_path), tag, "runner.yaml")
                     if os.path.isfile(tagged_runner_yaml):
-                        return load(tagged_runner_yaml, *args, **kwargs)
+                        return RunnerConfig.from_yaml(tagged_runner_yaml, *args, **kwargs)
 
         return super().read_config(checkpoint, *args, **kwargs)

@@ -27,7 +27,7 @@ import chanfig
 
 
 class CompileConfig(chanfig.Config):
-    enable: bool = False
+    enabled: bool = False
     backend: Optional[str] = None
     mode: Optional[str] = None
     fullgraph: Optional[bool] = None
@@ -43,7 +43,7 @@ class FsdpConfig(chanfig.Config):
     mesh: Optional[Any] = None
     reshard_after_forward: Union[bool, int, None] = None
     shard_placement_fn: Optional[Any] = None
-    mp_policy: Union[Any, Mapping[str, Any], None] = None
+    mixed_precision_policy: Union[Any, Mapping[str, Any], None] = None
     offload_policy: Union[Any, Mapping[str, Any], None] = None
     ignored_params: Optional[Sequence[Any]] = None
 
@@ -62,8 +62,8 @@ class ParallelConfig(chanfig.Config):
     axes: ParallelAxesConfig
     pipeline_schedule: str = "1F1B"
     pipeline_microbatch_size: int = 1
-    pipeline_n_microbatches: Optional[int] = None
-    module_fqns_per_model_part: Optional[Sequence[Sequence[str]]] = None
+    pipeline_microbatches: Optional[int] = None
+    pipeline_partitions: Optional[Sequence[Sequence[str]]] = None
     use_device_mesh: bool = True
     mesh_device_type: Optional[str] = None
     allow_degree_change: bool = False
@@ -76,26 +76,66 @@ class ParallelConfig(chanfig.Config):
             self.axes = ParallelAxesConfig(self.axes)
 
 
+class DataloaderCheckpointConfig(chanfig.Config):
+    enabled: bool = False
+    replica_id: Optional[str] = None
+    prefix: str = "dataloader-replica"
+
+
 class CheckpointConfig(chanfig.Config):
-    dir_name: str = "checkpoints"
+    enabled: bool = True
+    dir: str = "checkpoints"
     backend: str = "auto"
-    wait_timeout: Optional[float] = None
+    wait_timeout_seconds: Optional[float] = None
     interval: Optional[int] = None
     keep_latest_k: int = 0
-    load_only: bool = False
-    async_enabled: bool = True
-    async_mode: Optional[str] = None
+    async_mode: str = "async"
     dedicated_async_process_group: bool = True
     async_process_group_backend: str = "gloo"
-    enable_ft_dataloader_checkpoints: bool = False
-    ft_replica_id: Optional[str] = None
-    ft_dataloader_checkpoint_prefix: str = "ft-replica"
-    exclude_from_loading: Optional[Sequence[str]] = None
-    last_save_model_only: bool = False
+    dataloader_checkpoint: DataloaderCheckpointConfig
+    fail_on_error: bool = False
     export_dtype: Optional[str] = None
 
+    def __post_init__(self, *args, **kwargs) -> None:
+        super().__post_init__(*args, **kwargs)
+        if "dataloader_checkpoint" not in self:
+            self.dataloader_checkpoint = DataloaderCheckpointConfig()
+        elif not isinstance(self.dataloader_checkpoint, DataloaderCheckpointConfig):
+            self.dataloader_checkpoint = DataloaderCheckpointConfig(self.dataloader_checkpoint)
 
-class CommConfig(chanfig.Config):
+
+class ScoreConfig(chanfig.Config):
+    split: Optional[str] = None
+    metric: str = "loss"
+    patience: Union[int, float] = float("inf")
+
+
+class WorkspaceConfig(chanfig.Config):
+    root: str = "experiments"
+    lineage: str = "lin"
+    experiment: str = "exp"
+    dir: Optional[str] = None
+
+
+class LoggingConfig(chanfig.Config):
+    enabled: bool = True
+    interval: Optional[int] = None
+    file: Optional[str] = None
+
+
+class TensorboardConfig(chanfig.Config):
+    enabled: bool = False
+    log_dir: Optional[str]
+    comment: Optional[str]
+    purge_step: Optional[int]
+    max_queue: Optional[int]
+    flush_secs: Optional[int]
+    filename_suffix: Optional[str]
+
+
+class DistributedConfig(chanfig.Config):
+    backend: Optional[str] = None
+    init_method: Optional[str] = None
     init_timeout_seconds: Optional[int] = None
     train_timeout_seconds: Optional[int] = None
 
@@ -108,6 +148,7 @@ class GcConfig(chanfig.Config):
 
 class ProfilingConfig(chanfig.Config):
     enabled: bool = False
+    activities: Union[Sequence[str], str, None] = None
     wait: int = 1
     warmup: int = 1
     active: int = 3
@@ -116,31 +157,90 @@ class ProfilingConfig(chanfig.Config):
     profile_memory: bool = False
     with_stack: bool = False
     with_flops: bool = False
+    with_modules: bool = False
+    acc_events: bool = False
+    use_cuda: Optional[bool] = None
+    post_processing_timeout_seconds: Optional[float] = None
     trace_dir: str = "profiles"
 
 
 class HeartbeatConfig(chanfig.Config):
     enabled: bool = False
     interval_seconds: float = 60.0
-    dir_name: str = "heartbeats"
+    dir: str = "heartbeats"
 
 
 class WandbConfig(chanfig.Config):
     enabled: bool = False
     project: Optional[str] = None
     entity: Optional[str] = None
+    id: Optional[str] = None
     group: Optional[str] = None
     name: Optional[str] = None
+    notes: Optional[str] = None
     job_type: Optional[str] = None
     tags: Union[Sequence[str], str, None] = None
     dir: Optional[str] = None
     mode: Optional[str] = None
+    resume: Any = None
+    save_code: Optional[bool] = None
+    sync_tensorboard: Optional[bool] = None
+
+
+class OptimizerConfig(chanfig.Config):
+    type: Optional[str]
+    lr: Optional[float]
+    weight_decay: Optional[float]
+    betas: Optional[Sequence[float]]
+    eps: Optional[float]
+    momentum: Optional[float]
+    dampening: Optional[float]
+    nesterov: Optional[bool]
+    amsgrad: Optional[bool]
+    foreach: Optional[bool]
+    maximize: Optional[bool]
+    capturable: Optional[bool]
+    differentiable: Optional[bool]
+    fused: Optional[bool]
+    param_groups: Optional[Sequence[Mapping[str, Any]]] = None
+
+
+class SchedulerConfig(chanfig.Config):
+    type: Optional[str]
+    interval: Optional[str] = None
+    monitor: Optional[str] = None
+    total_steps: Optional[int]
+    warmup_steps: Optional[int]
+    cooldown_steps: Optional[int]
+    final_lr_ratio: Optional[float]
+    final_lr: Optional[float]
+    min_lr: Optional[float]
+    step_size: Optional[int]
+    milestones: Optional[Sequence[int]]
+    gamma: Optional[float]
+    T_max: Optional[int]
+    T_0: Optional[int]
+    T_mult: Optional[int]
+    eta_min: Optional[float]
+    max_lr: Optional[Union[float, Sequence[float]]]
+    base_lr: Optional[Union[float, Sequence[float]]]
+    patience: Optional[int]
+    factor: Optional[float]
+    mode: Optional[str]
+
+
+class Fp8Config(chanfig.Config):
+    enabled: Optional[bool] = None
+    recipe: Optional[Any] = None
+    recipe_cls: Optional[Union[str, Any]] = None
+    recipe_kwargs: Optional[Mapping[str, Any]] = None
+    group: Optional[Any] = None
 
 
 class FaultToleranceConfig(chanfig.Config):
     enabled: bool = False
     process_group: str = "gloo"
-    process_group_timeout_ms: int = 10000
+    process_group_timeout_seconds: float = 10.0
     replica_id: int = 0
     group_size: int = 1
     min_replica_size: int = 1
@@ -155,6 +255,9 @@ class DataloaderConfig(chanfig.Config):
 
     batch_size: Optional[int]
     shuffle: Optional[bool]
+    sampler: Optional[Any]
+    batch_sampler: Optional[Any]
+    collate_fn: Optional[Any]
     drop_last: Optional[bool]
     num_workers: int
     pin_memory: bool
@@ -185,42 +288,34 @@ def normalize_stack_name(stack: object) -> str:
 
 
 NON_SEMANTIC_CONFIG_KEYS: tuple[str, ...] = (
-    "score_split",
-    "score_name",
     "score",
-    "log",
-    "log_interval",
+    "name",
+    "logging",
     "tensorboard",
     "wandb",
     "ft",
-    "workspace_root",
-    "comm",
+    "workspace",
+    "checkpoint",
+    "resume",
+    "pretrained",
+    "dist",
     "gc",
     "profiling",
     "heartbeat",
-    "lineage",
-    "experiment",
-    "resume",
-    "pretrained",
-    "auto_resume",
 )
 
 
-NON_SEMANTIC_CHECKPOINT_KEYS: tuple[str, ...] = (
-    "dir_name",
-    "wait_timeout",
+NON_SEMANTIC_CKPT_KEYS: tuple[str, ...] = (
+    "enabled",
+    "dir",
+    "wait_timeout_seconds",
     "interval",
     "keep_latest_k",
-    "load_only",
-    "async_enabled",
     "async_mode",
     "dedicated_async_process_group",
     "async_process_group_backend",
-    "enable_ft_dataloader_checkpoints",
-    "ft_replica_id",
-    "ft_dataloader_checkpoint_prefix",
-    "exclude_from_loading",
-    "last_save_model_only",
+    "dataloader_checkpoint",
+    "fail_on_error",
     "export_dtype",
 )
 
@@ -295,23 +390,31 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
             In step mode, training stops when `global_step >= steps`.
         epochs (int | None): Final epoch index boundary for training.
             In epoch mode, training iterates epochs until `epoch == epochs`.
+        accum_steps (int): Number of micro-batches per optimizer step.
+            Defaults to `1`.
 
     Attributes: Model Evaluation:
-        score_split (str): Dataset split to use for model selection. Defaults to None.
+        score.split (str): Dataset split to use for model selection. Defaults to None.
             If unset, runner infers once (`val` -> `validate` -> first available) and reuses it
             unless that split disappears from results.
-        score_name (str): Metric name to use for model selection. Defaults to "loss".
-        scheduler.interval (str): Scheduler advancement policy.
+        score.metric (str): Metric key to use for model selection. Defaults to "loss".
+        score.patience (int | float): Early-stop patience in epoch mode.
+            Defaults to infinity.
+        sched.interval (str): Scheduler advancement policy.
             Supported values: `"step"` and `"epoch"`/`"validation"`.
             Non-metric schedulers default to `"step"`. Metric schedulers such as
             `ReduceLROnPlateau` default to `"epoch"` and advance after the aggregated
             round result is available.
-        scheduler.monitor (str): Optional metric selector for metric schedulers.
+        sched.monitor (str): Optional metric selector for metric schedulers.
             Supports dotted paths such as `"val.loss"`.
-            When unset, the runner prefers `score_split/score_name` when available and
-            otherwise resolves `score_name` from the aggregated result.
+            When unset, the runner prefers `score.split`/`score.metric` when available and
+            otherwise resolves `score.metric` from the aggregated result.
 
     Attributes: Optimization:
+        optim.type (str | None): Optimizer registry key, for example `"adamw"` or `"sgd"`.
+            When unset, the runner does not auto-build an optimizer.
+        optim.lr / weight_decay / betas / eps / momentum: Common optimizer
+            kwargs forwarded to the optimizer registry when present.
         optim.param_groups (list[dict] | None): Optional regex-based optimizer
             parameter groups. Each entry requires `pattern`, matched against
             `TorchRunner.iter_optimizer_named_parameters()` with `re.search`
@@ -321,33 +424,37 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
             `weight_decay_multiplier`, `beta1`, and `beta2` derive group values
             from top-level `optim.lr`, `optim.weight_decay`, and `optim.betas`.
             Unmatched parameters keep the optimizer-level defaults.
+        sched.type (str | None): Scheduler registry key, for example `"cosine"`,
+            `"linear"`, `"step"`, or `"reduce_on_plateau"`. When unset, the runner
+            does not auto-build a scheduler.
+        sched.total_steps / warmup_steps / cooldown_steps / final_lr_ratio / final_lr:
+            Common DanLing `LRScheduler` kwargs forwarded when present.
+        sched.step_size / milestones / gamma / T_max / eta_min / patience / factor:
+            Common PyTorch scheduler kwargs forwarded when present.
 
     Attributes: I/O:
-        workspace_root (str): Root directory for experiments. Defaults to `"experiments"`.
-        auto_resume (bool): Auto-resume from backend latest checkpoint alias/path.
-            When `True`, runner resolves the backend-native latest checkpoint source.
-            Priority is `resume` > `auto_resume` > `pretrained`.
-        resume (str | None): Optional full-state checkpoint source for resume workflows.
+        workspace.root (str): Root directory for experiments. Defaults to `"experiments"`.
+        checkpoint (str | None): Optional full-state checkpoint source for resume workflows.
             This is a path-like identifier consumed by runner `load_checkpoint(...)`.
+        resume (bool): Auto-resume from the backend-native latest checkpoint source when `True`.
         pretrained (str | None): Optional model-only checkpoint source for finetune workflows.
             This is a path-like identifier consumed by runner `load_pretrained(...)`.
-        lineage (str): Top-level lineage namespace.
+            Source priority is `checkpoint` > `resume` > `pretrained`.
+        workspace.lineage (str): Top-level lineage namespace.
             Defaults to `"lin"` when unset.
             `RunnerWorkspace.dir` appends code identity (`-<git_hash>`) when available.
-        experiment (str): Experiment namespace. Defaults to `"exp"`.
-        checkpoint.dir_name (str): Subdirectory name for checkpoints. Defaults to `"checkpoints"`.
-        checkpoint.async_enabled (bool): Whether to persist checkpoints asynchronously.
-            Defaults to `True`.
-        checkpoint.async_mode (str | None): Checkpoint async behavior.
+        workspace.experiment (str): Experiment namespace. Defaults to `"exp"`.
+        ckpt.dir (str): Checkpoint directory. Relative paths are resolved under `workspace.dir`.
+            Defaults to `"checkpoints"`.
+        ckpt.async_mode (str): Checkpoint async behavior. Defaults to `"async"`.
             Supported values: `"disabled"`, `"async"`, `"async_with_pinned_mem"`.
-            When unset (`None`), the runner derives the mode from `checkpoint.async_enabled`.
-        checkpoint.dedicated_async_process_group (bool): Use a dedicated process group for async DCP
+        ckpt.dedicated_async_process_group (bool): Use a dedicated process group for async DCP
             checkpoint I/O to reduce interference with training collectives. Defaults to `True`.
-        checkpoint.async_process_group_backend (str): Backend for the dedicated async checkpoint process
+        ckpt.async_process_group_backend (str): Backend for the dedicated async checkpoint process
             group. Defaults to `"gloo"`.
-        checkpoint.backend (str): Checkpoint backend selected at runtime by the runner
+        ckpt.backend (str): Checkpoint backend selected at runtime by the runner
             (`"dcp"` for distributed runs, `"file"` otherwise when set to `"auto"`).
-        checkpoint.wait_timeout (float): Timeout in seconds when draining async checkpoint writes
+        ckpt.wait_timeout_seconds (float): Timeout in seconds when draining async checkpoint writes
             during runner shutdown (`None` waits indefinitely).
         parallel.axes.replicate (int): Data-replication degree for DDP/HSDP-style replication.
             Defaults to `1`.
@@ -365,61 +472,68 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
         parallel.pipeline_microbatch_size (int): Local microbatch size used to infer
             schedule microbatch count as `dataloader.batch_size // pipeline_microbatch_size`.
             Defaults to `1`.
-        parallel.pipeline_n_microbatches (int): Explicit schedule microbatch count.
+        parallel.pipeline_microbatches (int): Explicit schedule microbatch count.
             When set, overrides `pipeline_microbatch_size`-based inference.
-        parallel.module_fqns_per_model_part (list[list[str]] | None): Optional
+        parallel.pipeline_partitions (list[list[str]] | None): Optional
             module FQNs for simple pipeline stage extraction. The outer list
             length is the total pipeline stage count and must be divisible by
             `parallel.axes.pipeline`; complex partitioning should use
             `model.build_pipeline_model_part(...)` or override
             `ParallelRunner.build_pipeline_model_part` /
             `ParallelRunner.build_pipeline_model_parts`.
-        log (bool): Whether to enable file logging. Defaults to `True`.
+        logging.enabled (bool): Whether to enable file logging. Defaults to `True`.
             Logging is initialized on the main process only.
-        tensorboard (bool): Whether to use TensorBoard for visualization. Defaults to `False`.
+        logging.interval (int): Iterations between log outputs. If None, auto-calculated.
+        logging.file (str | None): Optional log file path.
+            Defaults to `workspace.dir/logs/{timestamp}.log`.
+        tensorboard.enabled (bool): Whether to use TensorBoard for visualization. Defaults to `False`.
+        tensorboard.log_dir (str | None): Optional TensorBoard log directory.
+            Defaults to `workspace.dir/tensorboard/{timestamp}`.
+        tensorboard.comment / purge_step / max_queue / flush_secs / filename_suffix:
+            Optional `torch.utils.tensorboard.SummaryWriter` kwargs.
         wandb.enabled (bool): Whether to enable Weights & Biases scalar logging. Defaults to `False`.
         wandb.project (str | None): Optional W&B project name. Defaults to `lineage`.
         wandb.entity (str | None): Optional W&B entity/team override.
+        wandb.id (str | None): Optional stable W&B run id.
         wandb.group (str | None): Optional W&B group name. Defaults to `experiment`.
         wandb.name (str | None): Optional W&B display name. Defaults to stable runner `id`.
+        wandb.notes (str | None): Optional W&B run notes.
         wandb.job_type (str | None): Optional W&B job type.
         wandb.tags (list[str] | str | None): Optional W&B run tags.
-        wandb.dir (str | None): Optional local W&B run directory. Defaults to run dir.
+        wandb.dir (str | None): Optional local W&B run directory. Defaults to run directory.
         wandb.mode (str | None): Optional W&B mode such as `"online"` or `"offline"`.
+        wandb.resume / save_code / sync_tensorboard: Optional common W&B init kwargs.
         ft.enabled (bool): Enable TorchFT-managed fault tolerance. Defaults to `False`.
         ft.process_group (str): TorchFT coordination backend. Supported values: `"gloo"` and `"nccl"`.
             Defaults to `"gloo"`.
-        ft.process_group_timeout_ms (int): TorchFT process-group timeout in milliseconds.
-            Defaults to `10000`.
+        ft.process_group_timeout_seconds (float): TorchFT process-group timeout in seconds.
+            Defaults to `10.0`.
         ft.replica_id (int): Replica-group identifier for this run. Defaults to `0`.
         ft.group_size (int): Number of replica groups participating in TorchFT. Defaults to `1`.
         ft.min_replica_size (int): Minimum healthy replicas required by TorchFT per step.
             Defaults to `1`.
-        log_interval (int): Iterations between log outputs. If None, auto-calculated.
-        checkpoint.interval (int): Interval between checkpoint save attempts for `latest`/`best`.
+        ckpt.interval (int): Interval between checkpoint save attempts for `latest`/`best`.
             The same cadence is used for history checkpoints.
             Uses epochs in epoch mode and global steps in step mode.
             If unset, runner defaults are used by mode.
-        checkpoint.keep_latest_k (int): Number of framework-generated history checkpoints to retain.
+        ckpt.keep_latest_k (int): Number of framework-generated history checkpoints to retain.
             `0` disables retention pruning.
-        checkpoint.load_only (bool): Disable checkpoint persistence entirely while still allowing checkpoint loading.
-        checkpoint.enable_ft_dataloader_checkpoints (bool): Enable per-replica dataloader checkpoints for FT recovery.
+        ckpt.enabled (bool): Whether to persist checkpoints. Set `False` to allow loading while disabling writes.
+        ckpt.dataloader_checkpoint.enabled (bool): Enable per-replica dataloader checkpoints.
             Uses DCP and stores checkpoints under
-            `checkpoint.ft_dataloader_checkpoint_prefix-{checkpoint.ft_replica_id}`.
-        checkpoint.ft_replica_id (str | None): Replica identifier used for FT dataloader checkpoint directory naming.
+            `ckpt.dataloader_checkpoint.prefix-{ckpt.dataloader_checkpoint.replica_id}`.
+        ckpt.dataloader_checkpoint.replica_id (str | None): Replica identifier used for dataloader checkpoint directory.
             Defaults to `FT_REPLICA_ID` environment variable, then process rank.
-        checkpoint.ft_dataloader_checkpoint_prefix (str): Prefix used for FT per-replica checkpoint directories.
-            Defaults to `"ft-replica"`.
-        checkpoint.exclude_from_loading (list[str] | str | None): Checkpoint keys to skip during
-            `load_checkpoint`, such as `"optimizer"`, `"scheduler"`, `"dataloaders"`, or dotted nested keys.
-            The aliases `"data_loader"`, `"dataloader"`, and `"lr_scheduler"` are accepted.
-        checkpoint.last_save_model_only (bool): Save model-only payload on final `last_step` checkpoint.
-        checkpoint.export_dtype (str): Optional dtype cast for final model-only export
+        ckpt.dataloader_checkpoint.prefix (str): Prefix used for per-replica dataloader checkpoint directories.
+            Defaults to `"dataloader-replica"`.
+        ckpt.export_dtype (str): Optional dtype cast for model-only checkpoint export
             (`fp32`/`fp16`/`bf16`/`fp64` aliases supported).
         dataloader.batch_size (int | None): Local dataloader batch size passed to
             `StatefulDataLoader`.
         dataloader.shuffle (bool | None): Optional shuffle override. When unset, train
             splits shuffle and non-train splits do not.
+        dataloader.sampler / batch_sampler / collate_fn: Optional DataLoader
+            construction hooks forwarded to `StatefulDataLoader`.
         dataloader.drop_last (bool | None): Optional drop-last override. When unset,
             train splits drop incomplete batches and non-train splits keep them.
         dataloader.num_workers / persistent_workers / prefetch_factor / pin_memory:
@@ -432,9 +546,11 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
             The FSDP mesh is derived from `parallel.axes.replicate`,
             `parallel.axes.shard`, and later `parallel.axes.context`.
         fsdp.reshard_after_forward (bool | int | None): Optional FSDP2 reshard policy.
-        fsdp.mp_policy: Optional FSDP2 mixed precision policy.
+        fsdp.shard_placement_fn: Optional FSDP2 shard placement callable.
+        fsdp.mixed_precision_policy: Optional FSDP2 mixed precision policy.
         fsdp.offload_policy: Optional FSDP2 CPU offload policy.
-        compile.enable (bool): Whether to enable `torch.compile` for runner-selected model compilation points.
+        fsdp.ignored_params: Optional parameters excluded from FSDP2 wrapping.
+        compile.enabled (bool): Whether to enable `torch.compile` for runner-selected model compilation points.
         compile.backend (str): Optional backend passed to `torch.compile`.
         compile.fullgraph (bool): Optional `fullgraph` flag for `torch.compile`.
         compile.dynamic (bool): Optional `dynamic` flag for `torch.compile`.
@@ -447,9 +563,9 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
         compile.memory_policy (str | None): Optional graph-memory policy label for experimental graph paths.
             GraphRunner currently accepts `None`/`"default"`; activation remat/offload policies require a
             dedicated graph pass pipeline.
-        comm.init_timeout_seconds (int | None): Optional distributed process-group timeout used during
+        dist.init_timeout_seconds (int | None): Optional distributed process-group timeout used during
             initialization and early startup.
-        comm.train_timeout_seconds (int | None): Optional tighter distributed process-group timeout applied
+        dist.train_timeout_seconds (int | None): Optional tighter distributed process-group timeout applied
             once after the first successful optimizer step.
         gc.interval (int | None): Optional periodic Python GC cadence.
             When unset, runner-managed GC pacing is disabled.
@@ -458,6 +574,9 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
         gc.disable_automatic (bool): Disable CPython automatic GC while runner-managed pacing is enabled.
             Defaults to `True`.
         profiling.enabled (bool): Enable bounded-step `torch.profiler` tracing. Defaults to `False`.
+        profiling.activities (str | list[str] | None): Explicit profiler activities such as
+            `"cpu"` or `["cpu", "cuda"]`. When unset, CPU is used and CUDA is added
+            for CUDA runners.
         profiling.wait (int): Profiler schedule wait steps before warmup. Defaults to `1`.
         profiling.warmup (int): Profiler schedule warmup steps. Defaults to `1`.
         profiling.active (int): Profiler schedule active trace steps. Defaults to `3`.
@@ -466,10 +585,14 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
         profiling.profile_memory (bool): Enable profiler-side memory recording. Defaults to `False`.
         profiling.with_stack (bool): Include Python stack traces in profiler output. Defaults to `False`.
         profiling.with_flops (bool): Enable profiler FLOPs estimation when available. Defaults to `False`.
+        profiling.with_modules / acc_events / use_cuda: Optional profiler kwargs.
+        profiling.post_processing_timeout_seconds (float | None): Optional profiler
+            post-processing timeout in seconds.
         profiling.trace_dir (str): Relative or absolute trace output directory. Defaults to `"profiles"`.
         heartbeat.enabled (bool): Enable a machine-readable per-rank heartbeat/progress file. Defaults to `False`.
         heartbeat.interval_seconds (float): Heartbeat write interval in seconds. Defaults to `60.0`.
-        heartbeat.dir_name (str): Subdirectory under the run dir for heartbeat files. Defaults to `"heartbeats"`.
+        heartbeat.dir (str): Heartbeat directory. Relative paths are resolved under `workspace.dir`.
+            Defaults to `"heartbeats"`.
     Examples:
         Basic usage:
         ```python
@@ -501,7 +624,7 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
                 # Called after parsing CLI args
                 super().post()
                 # Create derived settings
-                self.experiment = f"{self.network.type}_{self.optim.lr}"
+                self.workspace.experiment = f"{self.network.type}_{self.optim.lr}"
         ```
 
         Command-line integration:
@@ -522,6 +645,7 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
     # DO NOT set default value in class, as they won't be stored in `__dict__`.
 
     stack: str = "auto"
+    name: Optional[str] = None
 
     seed: Optional[int] = None
     deterministic: bool = False
@@ -529,53 +653,44 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
     steps: Optional[int] = None
     epochs: Optional[int] = None
     accum_steps: int = 1
+    train_splits: Union[Sequence[str], str, None] = None
+    evaluate_splits: Union[Sequence[str], str, None] = None
+    precision: Optional[str] = None
+    max_grad_value: Optional[float] = None
+    max_grad_norm: Optional[float] = None
+    skip_nonfinite_grad: bool = False
 
-    score_split: Optional[str] = None
-    score_name: str = "loss"
-
-    workspace_root: str = "experiments"
-    auto_resume: bool = False
-    resume: Optional[str] = None
+    checkpoint: Optional[str] = None
+    resume: bool = False
     pretrained: Optional[str] = None
-    log: bool = True
-    tensorboard: bool = False
+
+    optim: OptimizerConfig
+    sched: SchedulerConfig
+    fp8: Fp8Config
+    deepspeed: Optional[Mapping[str, Any]] = None
+
+    score: ScoreConfig
+    workspace: WorkspaceConfig
+    logging: LoggingConfig
+    tensorboard: TensorboardConfig
     wandb: WandbConfig
     ft: FaultToleranceConfig
-    log_interval: Optional[int] = None
 
     compile: CompileConfig
-    comm: CommConfig
+    dist: DistributedConfig
     gc: GcConfig
     profiling: ProfilingConfig
     heartbeat: HeartbeatConfig
-    checkpoint: CheckpointConfig
+    ckpt: CheckpointConfig
     dataloader: DataloaderConfig
     fsdp: FsdpConfig
     parallel: ParallelConfig
 
     def __post_init__(self, *args, **kwargs) -> None:
         super().__post_init__(*args, **kwargs)
+        if not isinstance(self.tensorboard, TensorboardConfig):
+            self.tensorboard = TensorboardConfig()
         self.validate()
-        if "compile" not in self:
-            self.compile = CompileConfig()
-        if "comm" not in self:
-            self.comm = CommConfig()
-        if "gc" not in self:
-            self.gc = GcConfig()
-        if "profiling" not in self:
-            self.profiling = ProfilingConfig()
-        if "heartbeat" not in self:
-            self.heartbeat = HeartbeatConfig()
-        if "wandb" not in self:
-            self.wandb = WandbConfig()
-        if "ft" not in self:
-            self.ft = FaultToleranceConfig()
-        if "checkpoint" not in self:
-            self.checkpoint = CheckpointConfig()
-        if "parallel" not in self:
-            self.parallel = ParallelConfig()
-        elif not isinstance(self.parallel, ParallelConfig):
-            self.parallel = ParallelConfig(self.parallel)
 
     def post(self) -> None:
         super().post()
@@ -585,6 +700,10 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
         if self.steps is not None and self.epochs is not None:
             raise ValueError("`steps` and `epochs` are mutually exclusive; set only one training boundary")
 
+    @staticmethod
+    def _semantic_section(section: Mapping[str, Any]) -> chanfig.NestedDict:
+        return chanfig.NestedDict({key: value for key, value in section.items() if value is not None})
+
     def canonical(self) -> chanfig.NestedDict:
         canonical = chanfig.NestedDict(self.dict())
         stack = normalize_stack_name(canonical.get("stack", "auto"))
@@ -592,18 +711,31 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
         for key in NON_SEMANTIC_CONFIG_KEYS:
             canonical.pop(key, None)
 
-        checkpoint = canonical.get("checkpoint")
-        if isinstance(checkpoint, Mapping):
-            semantic_checkpoint = chanfig.NestedDict(checkpoint)
-            backend = semantic_checkpoint.get("backend")
+        ckpt = canonical.get("ckpt")
+        if isinstance(ckpt, Mapping):
+            semantic_ckpt = chanfig.NestedDict(ckpt)
+            backend = semantic_ckpt.get("backend")
             if backend is not None:
-                semantic_checkpoint["backend"] = str(backend).strip().lower()
-            for key in NON_SEMANTIC_CHECKPOINT_KEYS:
-                semantic_checkpoint.pop(key, None)
-            if semantic_checkpoint:
-                canonical["checkpoint"] = semantic_checkpoint
+                backend = str(backend).strip().lower()
+                if backend == "auto":
+                    semantic_ckpt.pop("backend", None)
+                else:
+                    semantic_ckpt["backend"] = backend
+            for key in NON_SEMANTIC_CKPT_KEYS:
+                semantic_ckpt.pop(key, None)
+            if semantic_ckpt:
+                canonical["ckpt"] = semantic_ckpt
             else:
-                canonical.pop("checkpoint", None)
+                canonical.pop("ckpt", None)
+
+        for key in ("optim", "sched"):
+            section = canonical.get(key)
+            if isinstance(section, Mapping):
+                semantic_section = self._semantic_section(section)
+                if semantic_section:
+                    canonical[key] = semantic_section
+                else:
+                    canonical.pop(key, None)
 
         if stack != "parallel":
             canonical.pop("fsdp", None)

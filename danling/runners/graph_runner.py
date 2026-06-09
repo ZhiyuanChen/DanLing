@@ -74,8 +74,8 @@ class GraphRunner(TorchRunner):
                 "GraphRunner currently supports only `compile.memory_policy=None` or `'default'`; "
                 "graph-level activation remat/offload policies need an FX pass pipeline."
             )
-        if self.config.compile.get("precompile_artifact_dir") and not self.config.compile.get("enable", False):
-            raise ValueError("`compile.precompile_artifact_dir` requires `compile.enable=True` for GraphRunner")
+        if self.config.compile.get("precompile_artifact_dir") and not self.config.compile.get("enabled", False):
+            raise ValueError("`compile.precompile_artifact_dir` requires `compile.enabled=True` for GraphRunner")
 
     def materialize_model(self) -> None:
         """

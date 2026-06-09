@@ -51,11 +51,11 @@ class FTDataLoaderCheckpointer:
         return os.path.join(self.root_dir(), checkpoint_name)
 
     def root_dir(self) -> str:
-        prefix = str(self.runner.config.get("checkpoint.ft_dataloader_checkpoint_prefix", "ft-replica"))
+        prefix = str(self.runner.config.get("ckpt.dataloader_checkpoint.prefix", "dataloader-replica"))
         return os.path.join(self.runner.workspace.checkpoint_dir, f"{prefix}-{self.replica_id()}")
 
     def replica_id(self) -> str:
-        configured = self.runner.config.get("checkpoint.ft_replica_id")
+        configured = self.runner.config.get("ckpt.dataloader_checkpoint.replica_id")
         if configured is not None:
             return str(configured)
 
@@ -63,9 +63,9 @@ class FTDataLoaderCheckpointer:
         if env_replica_id:
             return env_replica_id
 
-        ft_manager = getattr(self.runner, "ft", None)
-        if ft_manager is not None and hasattr(ft_manager, "replica_id"):
-            return str(ft_manager.replica_id)
+        fault_tolerance = getattr(self.runner, "fault_tolerance", None)
+        if fault_tolerance is not None and hasattr(fault_tolerance, "replica_id"):
+            return str(fault_tolerance.replica_id)
         return str(getattr(self.runner, "rank", 0))
 
     def build_task(
@@ -133,13 +133,13 @@ class TorchFTCheckpointManager(TorchDistributedCheckpointManager):
     """Torch DCP checkpoint manager with per-replica dataloader checkpoints for TorchFT."""
 
     _async_dataloader_tasks: dict[str, FTDataLoaderCheckpointTask]
-    _ft_dataloader_retention_history: deque[str]
+    _dataloader_checkpoint_retention_history: deque[str]
 
     def __init__(self, runner: Any) -> None:
         super().__init__(runner)
-        self._ft_dataloader_checkpointer = FTDataLoaderCheckpointer(self.runner)
+        self._dataloader_checkpointer = FTDataLoaderCheckpointer(self.runner)
         self._async_dataloader_tasks = {}
-        self._ft_dataloader_retention_history = deque()
+        self._dataloader_checkpoint_retention_history = deque()
 
     def save_checkpoint(
         self,
@@ -150,7 +150,7 @@ class TorchFTCheckpointManager(TorchDistributedCheckpointManager):
         force: bool = False,
     ) -> None:
         epochs = self.runner.train_state.epoch if epochs is None else epochs
-        if self.runner.config.get("checkpoint.load_only", False):
+        if not self.runner.config.get("ckpt.enabled", True):
             return
         should_persist = self.should_persist_checkpoint(epochs=epochs, last_step=last_step, force=force)
         should_update_best = bool(save_best and self.runner.is_best)
@@ -159,7 +159,7 @@ class TorchFTCheckpointManager(TorchDistributedCheckpointManager):
 
         async_mode = self.checkpoint_async_mode()
         pointers, reliable = self._build_checkpoint_pointers(name=name, epochs=epochs, save_best=save_best)
-        dataloader_task, should_continue = self._prepare_ft_dataloader_task(
+        dataloader_task, should_continue = self._prepare_dataloader_checkpoint_task(
             checkpoint_name=pointers.target_name,
             track_for_retention=pointers.track_for_retention,
             async_mode=async_mode,
@@ -169,8 +169,8 @@ class TorchFTCheckpointManager(TorchDistributedCheckpointManager):
 
         if not self._should_save_full_checkpoint():
             if dataloader_task is not None:
-                if self._save_ft_checkpoint_task(dataloader_task):
-                    self._record_ft_checkpoint_success(dataloader_task)
+                if self._save_dataloader_checkpoint_task(dataloader_task):
+                    self._record_dataloader_checkpoint_success(dataloader_task)
                 self.raise_checkpoint_error_if_requested()
             return
 
@@ -197,7 +197,7 @@ class TorchFTCheckpointManager(TorchDistributedCheckpointManager):
             self.raise_checkpoint_error_if_requested()
             return
 
-        if dataloader_task is not None and not self._save_ft_checkpoint_task(dataloader_task):
+        if dataloader_task is not None and not self._save_dataloader_checkpoint_task(dataloader_task):
             self.purge_unpublished_checkpoint(task)
             self.raise_checkpoint_error_if_requested()
             return
@@ -206,35 +206,35 @@ class TorchFTCheckpointManager(TorchDistributedCheckpointManager):
             try:
                 self.apply_pointer_updates(task.pointers)
             except Exception as exc:
-                self._on_ft_pointer_update_failed(task, dataloader_task, exc)
+                self._on_pointer_update_failed_for_dataloader_checkpoint(task, dataloader_task, exc)
                 self.raise_checkpoint_error_if_requested()
                 return
 
         if dataloader_task is not None:
-            self._record_ft_checkpoint_success(dataloader_task)
+            self._record_dataloader_checkpoint_success(dataloader_task)
 
     def load_checkpoint(self, checkpoint: bytes | str | os.PathLike) -> dict[str, Any]:
         checkpoint_id = self._resolve_checkpoint_id(checkpoint)
         state = super().load_checkpoint(checkpoint_id)
-        dataloader_state = self._ft_dataloader_checkpointer.load(checkpoint_id=checkpoint_id)
+        dataloader_state = self._dataloader_checkpointer.load(checkpoint_id=checkpoint_id)
         if dataloader_state is not None:
             state["dataloaders"] = dataloader_state
         return state
 
     def _should_save_full_checkpoint(self) -> bool:
-        ft_manager = getattr(self.runner, "ft", None)
-        if ft_manager is None or not getattr(ft_manager, "enabled", False):
+        fault_tolerance = getattr(self.runner, "fault_tolerance", None)
+        if fault_tolerance is None or not getattr(fault_tolerance, "enabled", False):
             return True
-        return ft_manager.participating_rank() == 0
+        return fault_tolerance.participating_rank() == 0
 
-    def _prepare_ft_dataloader_task(
+    def _prepare_dataloader_checkpoint_task(
         self,
         *,
         checkpoint_name: str,
         track_for_retention: bool,
         async_mode: str,
     ) -> tuple[FTDataLoaderCheckpointTask | None, bool]:
-        task = self._ft_dataloader_checkpointer.build_task(
+        task = self._dataloader_checkpointer.build_task(
             checkpoint_name=checkpoint_name,
             track_for_retention=track_for_retention,
         )
@@ -258,21 +258,21 @@ class TorchFTCheckpointManager(TorchDistributedCheckpointManager):
             )
 
         exc = RuntimeError(
-            "async FT dataloader checkpoints require a dedicated async checkpoint process group; "
-            "set checkpoint.dedicated_async_process_group=True or use checkpoint.async_mode='disabled'"
+            "async dataloader checkpoints require a dedicated async checkpoint process group; "
+            "set ckpt.dedicated_async_process_group=True or use ckpt.async_mode='disabled'"
         )
         self.record_checkpoint_failure(exc, target=task.checkpoint_name)
         warn(str(exc), RuntimeWarning, stacklevel=2)
         self.raise_checkpoint_error_if_requested()
         return None, False
 
-    def _save_ft_checkpoint_task(self, task: FTDataLoaderCheckpointTask) -> bool:
+    def _save_dataloader_checkpoint_task(self, task: FTDataLoaderCheckpointTask) -> bool:
         try:
-            self._ft_dataloader_checkpointer.save(task)
+            self._dataloader_checkpointer.save(task)
         except Exception as exc:
             self.record_checkpoint_failure(exc, target=task.checkpoint_name)
-            warn(f"ft dataloader checkpoint save failed: {exc}", RuntimeWarning, stacklevel=2)
-            self._purge_ft_checkpoint_task(task)
+            warn(f"dataloader checkpoint save failed: {exc}", RuntimeWarning, stacklevel=2)
+            self._purge_dataloader_checkpoint_task(task)
             return False
         return True
 
@@ -283,10 +283,10 @@ class TorchFTCheckpointManager(TorchDistributedCheckpointManager):
         except Exception as exc:
             self._on_checkpoint_task_failed(task, exc)
             if dataloader_task is not None:
-                self._purge_ft_checkpoint_task(dataloader_task)
+                self._purge_dataloader_checkpoint_task(dataloader_task)
             return
 
-        if dataloader_task is not None and not self._save_ft_checkpoint_task(dataloader_task):
+        if dataloader_task is not None and not self._save_dataloader_checkpoint_task(dataloader_task):
             self.purge_unpublished_checkpoint(task)
             return
 
@@ -294,48 +294,48 @@ class TorchFTCheckpointManager(TorchDistributedCheckpointManager):
             try:
                 self.apply_pointer_updates(task.pointers)
             except Exception as exc:
-                self._on_ft_pointer_update_failed(task, dataloader_task, exc)
+                self._on_pointer_update_failed_for_dataloader_checkpoint(task, dataloader_task, exc)
                 return
 
         if dataloader_task is not None:
-            self._record_ft_checkpoint_success(dataloader_task)
+            self._record_dataloader_checkpoint_success(dataloader_task)
 
     def _on_checkpoint_task_failed(self, task: TorchDistributedCheckpointTask, exc: Exception) -> None:
         dataloader_task = self._pop_async_dataloader_task(task)
         super()._on_checkpoint_task_failed(task, exc)
         if dataloader_task is not None:
-            self._purge_ft_checkpoint_task(dataloader_task)
+            self._purge_dataloader_checkpoint_task(dataloader_task)
 
     def _on_async_task_dropped(self, task: TorchDistributedCheckpointTask) -> None:
         dataloader_task = self._pop_async_dataloader_task(task)
         self.purge_unpublished_checkpoint(task)
         if dataloader_task is not None:
-            self._purge_ft_checkpoint_task(dataloader_task)
+            self._purge_dataloader_checkpoint_task(dataloader_task)
 
     def _clear_drained_state(self) -> None:
         super()._clear_drained_state()
         with self._lock:
             self._async_dataloader_tasks.clear()
-            self._ft_dataloader_retention_history.clear()
+            self._dataloader_checkpoint_retention_history.clear()
 
     def _pop_async_dataloader_task(self, task: TorchDistributedCheckpointTask) -> FTDataLoaderCheckpointTask | None:
         with self._lock:
             return self._async_dataloader_tasks.pop(task.pointers.target_name, None)
 
-    def _record_ft_checkpoint_success(self, task: FTDataLoaderCheckpointTask) -> None:
+    def _record_dataloader_checkpoint_success(self, task: FTDataLoaderCheckpointTask) -> None:
         if task.track_for_retention:
             to_delete = self._record_retention_entry(
-                self._ft_dataloader_retention_history,
+                self._dataloader_checkpoint_retention_history,
                 task.checkpoint_name,
                 protected_entries=(self.read_pointer("latest"), self.read_pointer("best"), task.checkpoint_name),
             )
             for stale_target in to_delete:
-                self.enqueue_purge_path(self._ft_dataloader_checkpointer.checkpoint_id(stale_target))
+                self.enqueue_purge_path(self._dataloader_checkpointer.checkpoint_id(stale_target))
 
-    def _purge_ft_checkpoint_task(self, task: FTDataLoaderCheckpointTask) -> None:
+    def _purge_dataloader_checkpoint_task(self, task: FTDataLoaderCheckpointTask) -> None:
         self.purge_path(task.checkpoint_id)
 
-    def _on_ft_pointer_update_failed(
+    def _on_pointer_update_failed_for_dataloader_checkpoint(
         self,
         task: TorchDistributedCheckpointTask,
         dataloader_task: FTDataLoaderCheckpointTask | None,
@@ -345,6 +345,6 @@ class TorchFTCheckpointManager(TorchDistributedCheckpointManager):
         if dataloader_task is None:
             return
         if self.is_target_published(task.pointers.target_name):
-            self._record_ft_checkpoint_success(dataloader_task)
+            self._record_dataloader_checkpoint_success(dataloader_task)
             return
-        self._purge_ft_checkpoint_task(dataloader_task)
+        self._purge_dataloader_checkpoint_task(dataloader_task)

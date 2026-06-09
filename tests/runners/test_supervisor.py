@@ -36,10 +36,10 @@ class MinimalRunner(BaseRunner):
 
 def _config(tmp_path: Path, **kwargs):
     config = {
-        "log": False,
-        "workspace_root": str(tmp_path),
-        "lineage": "lineage-a",
-        "experiment": "experiment-a",
+        "logging.enabled": False,
+        "workspace.root": str(tmp_path),
+        "workspace.lineage": "lineage-a",
+        "workspace.experiment": "experiment-a",
     }
     config.update(kwargs)
     return config
@@ -135,7 +135,7 @@ def test_runner_supervisor_heartbeat_omits_unknown_step_budget(tmp_path: Path) -
 def test_runner_supervisor_sigterm_saves_and_drains_checkpoints() -> None:
     class Config:
         def get(self, key, default=None):
-            if key == "checkpoint.wait_timeout":
+            if key == "ckpt.wait_timeout_seconds":
                 return 7.5
             return default
 

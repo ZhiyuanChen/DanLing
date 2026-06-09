@@ -25,15 +25,15 @@ import danling as dl
 
 class MNISTConfig(dl.RunnerConfig):
     epochs: int = 2
-    log: bool = False
-    tensorboard: bool = False
-    score_split: str = "val"
-    score_name: str = "loss"
     debug: bool = False
-    patience: int = 1
 
     def __init__(self):
         super().__init__()
+        self.logging.enabled = False
+        self.tensorboard.enabled = False
+        self.score.split = "val"
+        self.score.metric = "loss"
+        self.score.patience = 1
         self.network.type = "resnet18"
         self.dataset.download = True
         self.dataset.root = "data"
@@ -46,7 +46,7 @@ class MNISTConfig(dl.RunnerConfig):
 
     def post(self):
         super().post()
-        self.experiment = f"{self.network.type}_{self.optim.type}@{self.optim.lr}"
+        self.workspace.experiment = f"{self.network.type}_{self.optim.type}@{self.optim.lr}"
 
 
 class MNISTRunner(dl.TorchRunner):

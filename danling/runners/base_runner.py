@@ -105,7 +105,7 @@ class BaseRunner(metaclass=MetaRunner):
         checkpoint_manager: Active checkpoint backend manager.
         workspace: Workspace, logging, metadata, and print-routing helper.
         supervisor: Signal, heartbeat, and garbage-collection helper.
-        ft: Optional fault-tolerance runtime handle.
+        fault_tolerance: Optional fault-tolerance runtime handle.
     """
 
     state: RunnerState
@@ -137,7 +137,7 @@ class BaseRunner(metaclass=MetaRunner):
     checkpoint_manager: CheckpointManager
     workspace: RunnerWorkspace
     supervisor: RunnerSupervisor
-    ft: FaultTolerance | None
+    fault_tolerance: FaultTolerance | None
 
     timestamp: str
     _print_process: int
@@ -155,7 +155,7 @@ class BaseRunner(metaclass=MetaRunner):
 
         self.timestamp = get_time_str()
         self.workspace = RunnerWorkspace(self)
-        self.name = str(self.config.get("name", f"{self.workspace.lineage}-{self.workspace.experiment}"))
+        self.name = str(self.config.get("name") or f"{self.workspace.lineage}-{self.workspace.experiment}")
         self.datasets = FlatDict()
         self.dataloaders = DataLoaderDict()
         self.results = RoundDict()
@@ -163,7 +163,7 @@ class BaseRunner(metaclass=MetaRunner):
         self.mode = RunnerMode.train
         self.checkpoint_manager = FileCheckpointManager(self)
         self.supervisor = RunnerSupervisor(self)
-        self.ft = None
+        self.fault_tolerance = None
 
         self.init_distributed()
         self.init_checkpoint_manager()
@@ -176,10 +176,10 @@ class BaseRunner(metaclass=MetaRunner):
         if self.config.deterministic:
             self.set_deterministic()
 
-        if self.config.log:
+        if self.config.logging.enabled:
             self.workspace.init_logging()
 
-        if self.config.tensorboard:
+        if self.config.tensorboard.enabled:
             self.init_tensorboard()
         if self.config.get("wandb.enabled", False):
             self.init_wandb()
@@ -252,8 +252,9 @@ class BaseRunner(metaclass=MetaRunner):
     def score_split(self) -> str | None:
         """Split used for best-score selection."""
 
-        if "score_split" in self.config and self.config.score_split is not None:
-            return self.config.score_split
+        configured = self.config.get("score.split")
+        if configured is not None:
+            return configured
 
         splits = self.evaluate_splits
         if not splits:
@@ -265,7 +266,7 @@ class BaseRunner(metaclass=MetaRunner):
 
     @property
     def scores(self) -> FlatDict | None:
-        """Index-to-score mapping extracted from `score_split/score_name`."""
+        """Index-to-score mapping extracted from `score.split`/`score.metric`."""
 
         if not self.results:
             return None
@@ -281,9 +282,9 @@ class BaseRunner(metaclass=MetaRunner):
             split_result = result[score_split]
             if not isinstance(split_result, Mapping):
                 continue
-            if self.config.score_name not in split_result:
+            if self.config.score.metric not in split_result:
                 continue
-            scores[index] = split_result[self.config.score_name]
+            scores[index] = split_result[self.config.score.metric]
 
         return scores or None
 
@@ -296,7 +297,7 @@ class BaseRunner(metaclass=MetaRunner):
 
         scores = self.scores
         indices = list(scores.keys())
-        reducer = min if self.config.score_name == "loss" else max
+        reducer = min if self.config.score.metric == "loss" else max
         return reducer(reversed(indices), key=scores.get)
 
     @property
@@ -354,7 +355,7 @@ class BaseRunner(metaclass=MetaRunner):
         Returns ``True`` only when comparable scalar scores are available and
         agree within tolerance. Returns ``True`` on the first iteration (no
         prior results), and ``False`` when scores cannot be resolved (e.g.,
-        no `score_split`/`score_name` configured) — silently reporting best
+        no `score.split`/`score.metric` configured) — silently reporting best
         in that case would trigger phantom "best" checkpoint copies.
         """
 
@@ -529,7 +530,7 @@ class BaseRunner(metaclass=MetaRunner):
         """Auto-load resume/pretrained sources declared in config.
 
         Precedence:
-            `config.resume` > `config.auto_resume` > `config.pretrained`.
+            `config.checkpoint` > `config.resume` > `config.pretrained`.
         """
 
         restore_target = self._resolve_auto_restore_target()
@@ -543,23 +544,24 @@ class BaseRunner(metaclass=MetaRunner):
         self.load_pretrained(restore_source)
 
     def _resolve_auto_restore_target(self) -> tuple[str, Mapping[Any, Any] | PathStr] | None:
-        resume_source = self.config.get("resume")
-        auto_resume = bool(self.config.get("auto_resume", False))
+        checkpoint_source = self.config.get("checkpoint")
+        checkpoint_source_is_path = checkpoint_source is not None and not isinstance(checkpoint_source, Mapping)
+        resume = self.config.get("resume") is True
         pretrained_source = self.config.get("pretrained")
 
-        specified_count = int(bool(resume_source)) + int(auto_resume) + int(bool(pretrained_source))
+        specified_count = int(checkpoint_source_is_path) + int(resume) + int(bool(pretrained_source))
         if specified_count > 2:
             warn(
-                "`config.resume`, `config.auto_resume`, and `config.pretrained` are all set; "
-                "precedence is `resume` > `auto_resume` > `pretrained`",
+                "`config.checkpoint`, `config.resume`, and `config.pretrained` are all set; "
+                "precedence is `checkpoint` > `resume` > `pretrained`",
                 RuntimeWarning,
                 stacklevel=2,
             )
 
-        if resume_source:
-            return ("checkpoint", resume_source)
+        if checkpoint_source_is_path:
+            return ("checkpoint", checkpoint_source)
 
-        if auto_resume:
+        if resume:
             return ("checkpoint", self._auto_resume_source())
 
         if pretrained_source:
@@ -568,7 +570,7 @@ class BaseRunner(metaclass=MetaRunner):
         return None
 
     def _auto_resume_source(self) -> str:
-        backend = str(self.config.get("checkpoint.backend", "auto")).strip().lower()
+        backend = str(self.config.get("ckpt.backend", "auto")).strip().lower()
         if backend == "dcp":
             return os.path.join(self.workspace.checkpoint_dir, "latest")
         return os.path.join(self.workspace.checkpoint_dir, "latest.pth")
@@ -598,7 +600,7 @@ class BaseRunner(metaclass=MetaRunner):
     def init_fault_tolerance(self) -> None:
         """Initialize optional fault-tolerance runtime support."""
 
-        self.ft = FaultTolerance(self)
+        self.fault_tolerance = FaultTolerance(self)
 
     def init_heartbeat(self) -> None:
         """Configure optional background heartbeat writer."""
@@ -650,10 +652,14 @@ class BaseRunner(metaclass=MetaRunner):
             kwargs["project"] = wandb_config.get("project") or self.workspace.lineage
         if "entity" not in kwargs and wandb_config.get("entity") is not None:
             kwargs["entity"] = wandb_config.entity
+        if "id" not in kwargs and wandb_config.get("id") is not None:
+            kwargs["id"] = wandb_config.id
         if "group" not in kwargs:
             kwargs["group"] = wandb_config.get("group") or self.workspace.experiment
         if "name" not in kwargs:
             kwargs["name"] = wandb_config.get("name") or self.id
+        if "notes" not in kwargs and wandb_config.get("notes") is not None:
+            kwargs["notes"] = wandb_config.notes
         if "job_type" not in kwargs and wandb_config.get("job_type") is not None:
             kwargs["job_type"] = wandb_config.job_type
         tags = wandb_config.get("tags")
@@ -663,6 +669,12 @@ class BaseRunner(metaclass=MetaRunner):
             kwargs["dir"] = wandb_config.get("dir") or self.workspace.dir
         if "mode" not in kwargs and wandb_config.get("mode") is not None:
             kwargs["mode"] = wandb_config.mode
+        if "resume" not in kwargs and wandb_config.get("resume") is not None:
+            kwargs["resume"] = wandb_config.resume
+        if "save_code" not in kwargs and wandb_config.get("save_code") is not None:
+            kwargs["save_code"] = wandb_config.save_code
+        if "sync_tensorboard" not in kwargs and wandb_config.get("sync_tensorboard") is not None:
+            kwargs["sync_tensorboard"] = wandb_config.sync_tensorboard
         if "config" not in kwargs:
             kwargs["config"] = self.config.dict()
 
@@ -888,57 +900,6 @@ class BaseRunner(metaclass=MetaRunner):
         ):
             np_random.set_state(self.rng_state.numpy)
 
-    @staticmethod
-    def _normalize_checkpoint_exclude_path(path: str) -> tuple[str, ...]:
-        aliases = {
-            "data_loader": "dataloaders",
-            "dataloader": "dataloaders",
-            "lr_scheduler": "scheduler",
-        }
-        parts = tuple(part for part in str(path).split(".") if part)
-        if not parts:
-            return ()
-        return (aliases.get(parts[0], parts[0]), *parts[1:])
-
-    def checkpoint_exclude_from_loading(self) -> tuple[tuple[str, ...], ...]:
-        excluded = self.config.get("checkpoint.exclude_from_loading")
-        if excluded is None:
-            return ()
-        if isinstance(excluded, str):
-            excluded = (excluded,)
-        return tuple(
-            normalized for path in excluded if (normalized := self._normalize_checkpoint_exclude_path(str(path)))
-        )
-
-    @staticmethod
-    def _drop_checkpoint_path(checkpoint: dict[str, Any], path: Sequence[str]) -> None:
-        if not path:
-            return
-        key = path[0]
-        if len(path) == 1:
-            checkpoint.pop(key, None)
-            return
-        child = checkpoint.get(key)
-        if isinstance(child, Mapping):
-            child_copy = dict(child)
-            checkpoint[key] = child_copy
-            BaseRunner._drop_checkpoint_path(child_copy, path[1:])
-
-    def _filter_checkpoint_for_loading(
-        self,
-        checkpoint: Mapping[str, Any],
-        excluded_paths: Sequence[Sequence[str]],
-    ) -> dict[str, Any]:
-        filtered = dict(checkpoint)
-        for path in excluded_paths:
-            self._drop_checkpoint_path(filtered, path)
-        return filtered
-
-    @staticmethod
-    def _is_top_level_checkpoint_excluded(excluded_paths: Sequence[Sequence[str]], *keys: str) -> bool:
-        key_set = set(keys)
-        return any(len(path) == 1 and path[0] in key_set for path in excluded_paths)
-
     def save_checkpoint(
         self,
         name: str = "latest",
@@ -988,15 +949,25 @@ class BaseRunner(metaclass=MetaRunner):
             force=force,
         )
 
+    def save_model_checkpoint(self, name: str = "model") -> None:
+        """
+        Persist a model-only checkpoint for publishing or `pretrained` loading.
+
+        Unlike `save_checkpoint`, this does not update `latest`, `best`, or
+        history aliases. Backend-specific managers decide the physical format.
+        """
+
+        if not (self.is_main_process or self.checkpoint_manager.is_collective):
+            return
+        self.checkpoint_manager.save_model_checkpoint(name=name)
+
     def save_seed_checkpoint(self, name: str = "seed") -> None:
         """
         Persist an initialization checkpoint for cross-topology experiments.
 
         Seed checkpoints are intended to be created before training advances,
-        then loaded with `checkpoint.load_only=True` or `resume`/`pretrained`
-        when comparing different parallel layouts from the same initial model
-        state. They are saved through the final-checkpoint path, so
-        `checkpoint.last_save_model_only=True` intentionally applies.
+        then loaded with `ckpt.enabled=False` or `checkpoint`/`pretrained`
+        when comparing different parallel layouts from the same initial model state.
         """
         if self.train_state.global_step != 0 or self.train_state.epoch != 0:
             warn(
@@ -1034,7 +1005,7 @@ class BaseRunner(metaclass=MetaRunner):
                 initialized component, or config validation fails.
 
         **Side effects:** updates runner state, model/EMA weights, optimizer,
-        scheduler, dataloader progress, and `config.resume` for path inputs.
+        scheduler, dataloader progress, and `config.checkpoint` for path inputs.
 
         !!! danger "Do not"
             - Use this for model-only finetuning payloads; use
@@ -1044,46 +1015,26 @@ class BaseRunner(metaclass=MetaRunner):
         """
 
         ckpt = self.read_checkpoint(checkpoint, *args, **kwargs)
-        excluded_paths = self.checkpoint_exclude_from_loading()
-        if excluded_paths:
-            if self._is_top_level_checkpoint_excluded(excluded_paths, "runner"):
-                warn(
-                    "`checkpoint.exclude_from_loading` contains 'runner'; "
-                    "semantic runner config validation will be skipped for this load.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-            ckpt = self._filter_checkpoint_for_loading(ckpt, excluded_paths)
-
         self.load_state_dict(ckpt)
-        if not self._is_top_level_checkpoint_excluded(excluded_paths, "model", "model_parts", "module"):
-            if "model" in ckpt:
-                self.load_model(ckpt["model"], *args, **kwargs)
-            elif "model_parts" in ckpt:
-                self.load_model(ckpt["model_parts"], *args, **kwargs)
-            elif self.model is not None:
-                raise ValueError(
-                    "cannot restore model: checkpoint has no model state\n"
-                    "Use `load_pretrained` only for model-only checkpoints with model/ema payloads"
-                )
-        if not self._is_top_level_checkpoint_excluded(excluded_paths, "ema") and (
-            self.ema is not None or "ema" in ckpt
-        ):
+        if "model" in ckpt:
+            self.load_model(ckpt["model"], *args, **kwargs)
+        elif "model_parts" in ckpt:
+            self.load_model(ckpt["model_parts"], *args, **kwargs)
+        elif self.model is not None:
+            raise ValueError(
+                "cannot restore model: checkpoint has no model state\n"
+                "Use `load_pretrained` only for model-only checkpoints with model/ema payloads"
+            )
+        if self.ema is not None or "ema" in ckpt:
             self.load_ema(ckpt.get("ema"), *args, **kwargs)
-        if not self._is_top_level_checkpoint_excluded(excluded_paths, "optimizer") and (
-            self.optimizer is not None or "optimizer" in ckpt
-        ):
+        if self.optimizer is not None or "optimizer" in ckpt:
             self.load_optimizer(ckpt.get("optimizer"), *args, **kwargs)
-        if not self._is_top_level_checkpoint_excluded(excluded_paths, "scheduler") and (
-            self.scheduler is not None or "scheduler" in ckpt
-        ):
+        if self.scheduler is not None or "scheduler" in ckpt:
             self.load_scheduler(ckpt.get("scheduler"), *args, **kwargs)
-        if not self._is_top_level_checkpoint_excluded(excluded_paths, "dataloaders") and (
-            self.dataloaders or "dataloaders" in ckpt
-        ):
+        if self.dataloaders or "dataloaders" in ckpt:
             self.load_dataloaders(ckpt.get("dataloaders"))
         if isinstance(checkpoint, (str, bytes, os.PathLike)):
-            self.config.resume = os.fsdecode(checkpoint)
+            self.config.checkpoint = os.fsdecode(checkpoint)
 
     @staticmethod
     def _require_checkpoint_component_state(component: str, state_dict: Any | None) -> Any:
@@ -1193,8 +1144,8 @@ class BaseRunner(metaclass=MetaRunner):
         """Instantiate runner from checkpoint config and restore full state."""
 
         config = cls.read_config(checkpoint, *args, **kwargs)
-        config.resume = None
-        config.auto_resume = False
+        config.checkpoint = None
+        config.resume = False
         config.pretrained = None
         runner = cls(config)
         runner.load_checkpoint(checkpoint, *args, **kwargs)
@@ -1253,8 +1204,8 @@ class BaseRunner(metaclass=MetaRunner):
         """Build a runner from config and load model weights only."""
 
         prepared = RunnerConfig(config)
-        prepared.resume = None
-        prepared.auto_resume = False
+        prepared.checkpoint = None
+        prepared.resume = False
         prepared.pretrained = None
         runner = cls(prepared)
         runner.load_pretrained(checkpoint, *args, **kwargs)
@@ -1284,7 +1235,7 @@ class BaseRunner(metaclass=MetaRunner):
         """Finalize checkpoint/log/writer resources before shutdown."""
 
         if timeout is None:
-            timeout = self.config.get("checkpoint.wait_timeout")
+            timeout = self.config.get("ckpt.wait_timeout_seconds")
 
         drained = True
         close_error: Exception | None = None
@@ -1309,8 +1260,8 @@ class BaseRunner(metaclass=MetaRunner):
 
         self.workspace.close()
         self.supervisor.close()
-        if self.ft is not None:
-            self.ft.close()
+        if self.fault_tolerance is not None:
+            self.fault_tolerance.close()
 
         if close_error is not None:
             raise close_error
@@ -1415,7 +1366,7 @@ class BaseRunner(metaclass=MetaRunner):
     @cached_property
     def patience(self) -> int | float:
         """Early-stop patience in epoch mode."""
-        return self.config.get("patience", float("inf"))
+        return self.config.get("score.patience", float("inf"))
 
     @property
     def progress(self) -> float:
@@ -1429,8 +1380,9 @@ class BaseRunner(metaclass=MetaRunner):
     @property
     def train_splits(self) -> list[str]:
         """Configured or inferred training split names."""
-        if "train_splits" in self.config:
-            return self._sorted_unique(self.config["train_splits"])
+        configured = self.config.get("train_splits")
+        if configured is not None:
+            return self._sorted_unique(configured)
         if self.datasets:
             inferred = [
                 split
@@ -1443,8 +1395,9 @@ class BaseRunner(metaclass=MetaRunner):
     @property
     def evaluate_splits(self) -> list[str]:
         """Configured or inferred evaluation split names."""
-        if "evaluate_splits" in self.config:
-            return self._sorted_unique(self.config["evaluate_splits"])
+        configured = self.config.get("evaluate_splits")
+        if configured is not None:
+            return self._sorted_unique(configured)
         if self.datasets:
             train_splits = set(self.train_splits)
             return sorted(split for split in self.datasets if split not in train_splits)
@@ -1459,7 +1412,7 @@ class BaseRunner(metaclass=MetaRunner):
     @property
     def checkpoint_interval(self) -> int:
         """Checkpoint cadence in optimizer steps (step mode) or epochs (epoch mode)."""
-        configured = self.config.get("checkpoint.interval")
+        configured = self.config.get("ckpt.interval")
         if configured is not None:
             return configured
         if self.epochs is not None:
@@ -1471,7 +1424,7 @@ class BaseRunner(metaclass=MetaRunner):
     @property
     def log_interval(self) -> int:
         """Step logging cadence."""
-        configured = self.config.get("log_interval")
+        configured = self.config.get("logging.interval")
         if configured is not None:
             return configured
         if self.steps is not None:

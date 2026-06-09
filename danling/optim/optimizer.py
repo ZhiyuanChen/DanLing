@@ -58,7 +58,7 @@ def normalize_scheduler_interval(interval: str | None, scheduler: object | None)
     resolved = aliases[normalized]
     if scheduler_requires_metric(scheduler) and resolved == "step":
         raise ValueError(
-            "metric-based schedulers require `scheduler.interval='epoch'` or `'validation'` "
+            "metric-based schedulers require `sched.interval='epoch'` or `'validation'` "
             "under the runner-owned scheduler contract."
         )
     return resolved
@@ -76,7 +76,7 @@ def step_scheduler(scheduler: object | None, *, scheduler_metric: Any = SCHEDULE
         if scheduler_metric is SCHEDULER_METRIC_UNSET:
             raise ValueError(
                 "scheduler step requires an explicit metric, but none was provided. "
-                "Set `scheduler.interval='epoch'` and expose a monitored metric."
+                "Set `sched.interval='epoch'` and expose a monitored metric."
             )
         step(scheduler_metric)
         return True

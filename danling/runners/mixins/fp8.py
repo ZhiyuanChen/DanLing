@@ -93,7 +93,7 @@ class Fp8Mixin:
         if recipe_cls is None:
             return None
 
-        recipe_kwargs = fp8_cfg.get("recipe_kwargs", {})
+        recipe_kwargs = fp8_cfg.get("recipe_kwargs") or {}
         if not isinstance(recipe_kwargs, Mapping):
             raise ValueError("config.fp8.recipe_kwargs must be a mapping")
 

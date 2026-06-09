@@ -79,8 +79,8 @@ def _batch() -> dict[str, torch.Tensor]:
 
 
 def test_graph_runner_train_step_matches_eager_update() -> None:
-    eager = TinyTorchRunner({"log": False})
-    graph = TinyGraphRunner({"log": False})
+    eager = TinyTorchRunner({"logging.enabled": False})
+    graph = TinyGraphRunner({"logging.enabled": False})
     try:
         assert eager.model is not None
         assert graph.model is not None
@@ -99,7 +99,7 @@ def test_graph_runner_train_step_matches_eager_update() -> None:
 
 
 def test_graph_runner_builds_step_key_from_single_parameter_iteration() -> None:
-    runner = CountingGraphRunner({"log": False})
+    runner = CountingGraphRunner({"logging.enabled": False})
     try:
         runner.train_step(_batch())
 
@@ -109,7 +109,7 @@ def test_graph_runner_builds_step_key_from_single_parameter_iteration() -> None:
 
 
 def test_graph_runner_reuses_built_graph_train_step() -> None:
-    runner = BuildCountingGraphRunner({"log": False})
+    runner = BuildCountingGraphRunner({"logging.enabled": False})
     try:
         runner.train_step(_batch())
         runner.train_step(_batch())
@@ -121,12 +121,12 @@ def test_graph_runner_reuses_built_graph_train_step() -> None:
 
 def test_graph_runner_rejects_non_default_memory_policy() -> None:
     with pytest.raises(NotImplementedError, match="memory_policy"):
-        TinyGraphRunner({"log": False, "compile": {"memory_policy": "budget_limited_offload"}})
+        TinyGraphRunner({"logging.enabled": False, "compile": {"memory_policy": "budget_limited_offload"}})
 
 
 def test_graph_runner_requires_compile_for_cache_artifacts() -> None:
     with pytest.raises(ValueError, match="precompile_artifact_dir"):
-        TinyGraphRunner({"log": False, "compile": {"precompile_artifact_dir": "/tmp/danling-graph-cache"}})
+        TinyGraphRunner({"logging.enabled": False, "compile": {"precompile_artifact_dir": "/tmp/danling-graph-cache"}})
 
 
 def test_graph_runner_persists_torch_compile_cache_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -141,9 +141,9 @@ def test_graph_runner_persists_torch_compile_cache_artifacts(tmp_path: Path, mon
 
     runner = TinyGraphRunner(
         {
-            "log": False,
+            "logging.enabled": False,
             "compile": {
-                "enable": True,
+                "enabled": True,
                 "backend": "eager",
                 "precompile_artifact_dir": str(tmp_path),
             },
@@ -181,9 +181,9 @@ def test_graph_runner_loads_existing_torch_compile_cache_artifact(
 
     runner = TinyGraphRunner(
         {
-            "log": False,
+            "logging.enabled": False,
             "compile": {
-                "enable": True,
+                "enabled": True,
                 "backend": "eager",
                 "precompile_artifact_dir": str(tmp_path),
             },
@@ -217,9 +217,9 @@ def test_graph_runner_skips_existing_cache_with_mismatched_metadata(
 
     runner = TinyGraphRunner(
         {
-            "log": False,
+            "logging.enabled": False,
             "compile": {
-                "enable": True,
+                "enabled": True,
                 "backend": "eager",
                 "precompile_artifact_dir": str(tmp_path),
             },

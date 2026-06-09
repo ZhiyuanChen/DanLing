@@ -68,16 +68,16 @@ def test_runner_resolve_runner_class_maps_supported_stacks(stack: str, expected_
 
 
 def test_runner_defaults_to_torch_stack() -> None:
-    runner = TinyRunner({"log": False})
+    runner = TinyRunner({"logging.enabled": False})
     assert isinstance(runner, TorchRunner)
     assert runner.config.stack == "ddp"
 
 
 def test_runner_entrypoint_does_not_mutate_input_config() -> None:
-    config = {"log": False}
+    config = {"logging.enabled": False}
     runner = TinyRunner(config)
     try:
-        assert config == {"log": False}
+        assert config == {"logging.enabled": False}
         assert runner.config.stack == "ddp"
     finally:
         runner.close()
@@ -96,7 +96,7 @@ def test_runner_direct_construction_post_init_runs_once(tmp_path) -> None:
     RUNNER_REGISTRY["torch"] = ImplRunner
     runner = None
     try:
-        runner = Runner({"stack": "ddp", "log": False, "workspace_root": str(tmp_path)})
+        runner = Runner({"stack": "ddp", "logging.enabled": False, "workspace.root": str(tmp_path)})
         assert isinstance(runner, ImplRunner)
         assert events == [("impl", "ImplRunner")]
     finally:

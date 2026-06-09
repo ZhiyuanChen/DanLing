@@ -35,7 +35,7 @@ def _launch_sigterm_worker(
     master_port: int,
     steps: int,
     signal_after_steps: int,
-    auto_resume: bool,
+    resume: bool,
     status_name: str,
 ) -> subprocess.Popen[str]:
     env = dict(os.environ)
@@ -65,8 +65,8 @@ def _launch_sigterm_worker(
         "--status-name",
         status_name,
     ]
-    if auto_resume:
-        cmd.append("--auto-resume")
+    if resume:
+        cmd.append("--resume")
     return subprocess.Popen(
         cmd,
         cwd=repo_root,
@@ -83,7 +83,7 @@ def _run_sigterm_workers(
     run_dir: Path,
     steps: int,
     signal_after_steps: int,
-    auto_resume: bool,
+    resume: bool,
     status_name: str,
     expected_returncode: int,
 ) -> list[str]:
@@ -98,7 +98,7 @@ def _run_sigterm_workers(
             master_port=master_port,
             steps=steps,
             signal_after_steps=signal_after_steps,
-            auto_resume=auto_resume,
+            resume=resume,
             status_name=status_name,
         )
         for rank in range(world_size)
@@ -137,7 +137,7 @@ def test_runner_supervisor_sigterm_saves_dcp_checkpoint_and_resume(tmp_path: Pat
         run_dir=run_dir,
         steps=4,
         signal_after_steps=2,
-        auto_resume=False,
+        resume=False,
         status_name="preempted",
         expected_returncode=expected_sigterm_code,
     )
@@ -155,7 +155,7 @@ def test_runner_supervisor_sigterm_saves_dcp_checkpoint_and_resume(tmp_path: Pat
         run_dir=run_dir,
         steps=4,
         signal_after_steps=0,
-        auto_resume=True,
+        resume=True,
         status_name="resumed",
         expected_returncode=0,
     )

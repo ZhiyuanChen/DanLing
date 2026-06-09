@@ -29,13 +29,13 @@ from danling.runners.config import CompileConfig
 class TestCompileConfig:
 
     def test_compiler_uses_single_enable_flag(self) -> None:
-        compiler = Compiler(CompileConfig({"enable": True}))
+        compiler = Compiler(CompileConfig({"enabled": True}))
 
         assert compiler.enabled is True
 
     def test_disabled_by_default(self) -> None:
         assert Compiler(CompileConfig()).enabled is False
-        assert Compiler(CompileConfig({"enable": False})).enabled is False
+        assert Compiler(CompileConfig({"enabled": False})).enabled is False
 
     def test_kwargs_forward_runtime_options(self) -> None:
         compiler = Compiler(
@@ -66,7 +66,7 @@ class TestCompileConfig:
         compiler = Compiler(
             CompileConfig(
                 {
-                    "enable": True,
+                    "enabled": True,
                     "precompile_artifact_dir": "/tmp/danling-compile",
                     "memory_policy": "cpu_offload_all",
                 }
@@ -91,7 +91,7 @@ class TestDdpOptimizerContext:
             pytest.skip("torch._dynamo.config.optimize_ddp is not available")
 
         previous = dynamo_config.optimize_ddp
-        compiler = Compiler(CompileConfig({"enable": True, "optimize_ddp": "python_reducer"}))
+        compiler = Compiler(CompileConfig({"enabled": True, "optimize_ddp": "python_reducer"}))
 
         with compiler.ddp_optimizer():
             assert dynamo_config.optimize_ddp == "python_reducer"
@@ -104,7 +104,7 @@ class TestDdpOptimizerContext:
             pytest.skip("torch._dynamo.config.optimize_ddp is not available")
 
         previous = dynamo_config.optimize_ddp
-        compiler = Compiler(CompileConfig({"enable": False, "optimize_ddp": "python_reducer"}))
+        compiler = Compiler(CompileConfig({"enabled": False, "optimize_ddp": "python_reducer"}))
 
         with compiler.ddp_optimizer():
             assert dynamo_config.optimize_ddp == previous

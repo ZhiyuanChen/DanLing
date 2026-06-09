@@ -11,7 +11,7 @@ license = "Unlicense OR AGPL-3.0-or-later OR GPL-3.0-or-later OR GPL-2.0-or-late
 license-files = [ "LICENSE", "LICENSES/*" ]
 maintainers = [ { name = "Zhiyuan Chen", email = "this@zyc.ai" } ]
 authors = [ { name = "Zhiyuan Chen", email = "this@zyc.ai" } ]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "Intended Audience :: Developers",
@@ -19,7 +19,6 @@ classifiers = [
   "Intended Audience :: Science/Research",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",

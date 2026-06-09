@@ -16,46 +16,46 @@ The new design borrows from TorchTitan's Trainer philosophy:
 - `TorchRunner`: shared Torch training core with explicit epoch-mode and step-mode loops
 - `TorchRunner` / `ParallelRunner` / `DeepSpeedRunner`: class-based stack runners
 
-Parallel topology is configured through semantic axes:
+## Common workflows
+
+The default entrypoint is direct:
+
+- Scratch: `runner = Runner(config)`
+- Resume full training state: `runner = Runner.from_checkpoint(checkpoint)` or `runner.load_checkpoint(checkpoint)`
+- Initialize model weights only: `runner = Runner.from_pretrained(config, checkpoint)` or `runner.load_pretrained(checkpoint)`
+
+The config keys follow the same split:
+
+| Key          | Meaning                                                                                                                             |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `checkpoint` | Explicit full-state checkpoint source. Loads runner state, model/EMA, optimizer, scheduler, and dataloaders.                        |
+| `resume`     | Boolean auto-resume switch. When `True`, loads `latest` from the current run checkpoint directory.                                  |
+| `pretrained` | Model-only initialization source. Loads EMA/model weights and leaves optimizer, scheduler, runner state, and dataloaders untouched. |
+| `ckpt`       | Checkpoint write policy only: backend, directory, async mode, interval, retention, export dtype, and write enablement.              |
+
+Load-source precedence is `checkpoint` > `resume` > `pretrained`.
+
+Common config shapes:
 
 ```yaml
-parallel:
-  axes:
-    replicate: 1
-    shard: 8
-    context: 1
-    pipeline: 4
-    tensor: 8
-    expert: 1
-    expert_tensor: 1
+# Resume from a known full-state checkpoint.
+checkpoint: experiments/lin-<code_id>/<id>/checkpoints/latest.pth
+
+# Or auto-resume from this run's own latest checkpoint.
+resume: true
+
+# Finetune from model weights only.
+pretrained: experiments/lin-<code_id>/<id>/checkpoints/model.pth
+
+# Disable all checkpoint writes while still allowing checkpoint/pretrained loading.
+ckpt:
+  enabled: false
 ```
 
-Data loading and metric reduction are scoped to the logical `data` domain.
-Middle pipeline stages automatically use step-only proxy loaders so pipeline schedules
-preserve step count and dataloader state without consuming real input batches locally.
-Optimizer control decisions, such as non-finite-gradient skip, are reduced over
-the `optimizer` domain covering all configured parallel axes so stages/shards do
-not diverge on step/skip boundaries.
-`TorchRunner`-based stacks build `torchdata.stateful_dataloader.StatefulDataLoader`
-by default so train dataloader progress is checkpointable across restart paths.
-Explicit user-provided dataloaders are not rewrapped.
-
-`ParallelRunner` exposes topology-, pipeline-, and FSDP-aware extension points:
-
-- `build_topology`: validate/construct ordered parallel axes from config + world state
-- `init_model_parallel_groups`: initialize model-parallel process groups/device mesh
-- `parallelize_model`: apply model-specific TP/CP/EP transforms before compile/FSDP wrapping
-- `build_pipeline_schedule`: build `torch.distributed.pipelining` schedule from config
-- `bind_pipeline_modules`: bind local model parts to pipeline stages
-- `apply_activation_checkpointing`: wrap local model parts before compile/FSDP wrapping
-- `fsdp_kwargs` / `build_mixed_precision_policy` / `build_offload_policy`: customize FSDP wrapping policy
-- `build_optimizer`: deduplicate parameters across local model parts before optimizer build
-
-If any of `parallel.axes.tensor`, `parallel.axes.context`, `parallel.axes.expert`,
-or `parallel.axes.expert_tensor` is greater than `1`, the model must either expose
-`model.parallelize(parallel_context)` or the runner must override
-`parallelize_model`. DanLing intentionally does not silently no-op model-parallel
-axes, because TP/CP/EP transforms are model-architecture specific.
+`ckpt.enabled=False` disables `latest`, `best`, history, and `model` writes. It does not disable reads from
+`checkpoint`, `resume`, or `pretrained`.
+CLI overrides use the same keys, for example `--checkpoint ...`, `--resume`, `--pretrained ...`, or
+`--ckpt.enabled false`.
 
 ## BaseRunner contract
 
@@ -91,38 +91,24 @@ Checkpoint/score contracts (all overridable):
 - `scores`
 - `best_index`
 
-## Launch modes
-
-- Scratch: `runner = Runner(config)`
-- Resume: `runner = Runner.from_checkpoint(checkpoint)` or `runner.load_checkpoint(checkpoint)`
-- Finetune: `runner = Runner.from_pretrained(config, checkpoint)` or `runner.load_pretrained(checkpoint)`
-
-Config source hints:
-
-- `config.auto_resume`: when enabled, auto-resume from backend latest checkpoint source
-- `config.resume`: source used for full-state resume workflows
-- `config.pretrained`: source used for model-only initialization workflows
-- `config.checkpoint`: checkpoint policy only (backend/async/interval/retention), never a source path
-
-Source precedence:
-
-- `resume` > `auto_resume` > `pretrained`
-
 ## Checkpoint semantics
 
 The user-facing checkpoint contract is intentionally small:
 
 - `latest`: the most recent persisted full-state checkpoint.
 - `best`: the best persisted full-state checkpoint, updated only when `save_best=True` and the current score is best.
+- `model`: a model-only checkpoint written after normal training completion for publishing or `pretrained` loading.
 - History checkpoints: periodic snapshots created by the training loop.
   - epoch mode: `ckpt-e{completed_epoch:06d}`
   - step mode: `ckpt-s{global_step:012d}`
-- `checkpoint.keep_latest_k`: number of framework-generated historical checkpoints to retain.
+- `ckpt.keep_latest_k`: number of framework-generated historical checkpoints to retain.
   `0` disables automatic retention pruning. When enabled, current `latest` and `best` targets are protected.
 
-Periodic checkpoint attempts are controlled by `checkpoint_interval`.
-When `checkpoint_interval` is unset, runner defaults are used by mode (`epochs`: every epoch, `steps`: budget/20).
+Periodic checkpoint attempts are controlled by `ckpt.interval`.
+When `ckpt.interval` is unset, runner defaults are used by mode (`epochs`: every epoch, `steps`: budget/20).
 Forced checkpoints, including final and graceful-shutdown checkpoints, bypass the interval and update `latest`.
+Normal training completion also writes `model` without changing `latest`, `best`, or history aliases.
+All checkpoint writes are gated by `ckpt.enabled`; loading paths are independent.
 
 Backend storage is an implementation detail:
 
@@ -132,14 +118,17 @@ Backend storage is an implementation detail:
   background writes; use DCP for distributed or large-model training.
 - DCP backend exposes the same logical names (`latest`, `best`, `ckpt-*`) but stores immutable physical target directories plus pointer files.
   This avoids overwriting checkpoints while async writers or external readers may still hold references.
-- DeepSpeed backend stores engine checkpoint tag directories plus pointer files for the same logical names.
+- DeepSpeed full-state saves use engine checkpoint tag directories plus pointer files for `latest`, `best`, and history names.
+  DeepSpeed model-only export still writes a DanLing `model` payload for publication and `pretrained` loading.
 - Retention policy is enforced by DanLing-managed file and DCP checkpoint managers.
 
 Rank participation contract:
 
-- `BaseRunner.save_checkpoint` is main-process only and backs file-style single-writer saves.
-- `TorchRunner.save_checkpoint` bypasses that main-process guard when `checkpoint.backend="dcp"`; all ranks must participate in DCP saves.
-- `DeepSpeedRunner.save_checkpoint` uses DeepSpeed engine checkpointing; all ranks participate in those saves.
+- `BaseRunner.save_checkpoint` and `save_model_checkpoint` delegate participation to the active checkpoint manager:
+  file-style managers write on the main process; collective managers require all participating ranks to enter the call.
+- `TorchRunner` uses the configured manager (`file`, `dcp`, or TorchFT-backed DCP) for full-state and model-only saves.
+- `DeepSpeedRunner.save_checkpoint` uses DeepSpeed engine checkpointing for full-state saves; all ranks participate in those saves.
+- `DeepSpeedRunner.save_model_checkpoint` exports the unwrapped engine module as a DanLing model-only checkpoint for publication or `pretrained`.
 - When `config.ft.enabled=True` under `TorchRunner`/DDP or `ParallelRunner` FSDP, full DCP saves are gated to the TorchFT participating replica group.
   Other replica groups save only their per-replica dataloader state.
 
@@ -147,9 +136,9 @@ Checkpoint persistence internals are implemented under `danling.runners.checkpoi
 
 - `CheckpointManager`: base contract
 - `FileCheckpointManager`: default async filesystem manager with reliable history/best queueing plus latest-wins coalescing for non-critical saves
-- `TorchDistributedCheckpointManager`: Torch DCP backend used when `checkpoint.backend="dcp"` in `TorchRunner`
+- `TorchDistributedCheckpointManager`: Torch DCP backend used when `ckpt.backend="dcp"` in `TorchRunner`
 
-`ParallelRunner` forces `checkpoint.backend="dcp"` by default.
+`ParallelRunner` forces `ckpt.backend="dcp"` by default.
 
 ## Dataloader state
 
@@ -174,7 +163,7 @@ DanLing has an opt-in TorchFT integration for replicated-weight runners:
   - `ft.group_size`
   - `ft.min_replica_size`
   - `ft.process_group`
-  - `ft.process_group_timeout_ms`
+  - `ft.process_group_timeout_seconds`
 - requires the external `torchft` package and a TorchFT lighthouse setup
 
 Current scope:
@@ -190,7 +179,8 @@ Current launch contract:
 
 When TorchFT is enabled:
 
-- dataloader sharding and seed bias are expanded across replica groups using `ft.replica_id` and `ft.group_size`
+- dataloader sharding and seed bias are expanded across replica groups using
+  `ft.replica_id` and `ft.group_size`
 - FSDP2 replicated-dimension all-reduce hooks use TorchFT-managed process groups
 - loss/normalizer logging reductions use the TorchFT managed replica group when available
 - per-replica dataloader checkpoints are enabled automatically through the DCP checkpoint manager and win over main-checkpoint dataloader state on restore
@@ -201,31 +191,31 @@ Distributed state-dict invariants:
 - Checkpoint restore order is model -> EMA -> optimizer -> scheduler -> dataloaders.
 - File checkpoint fallback is only for non-distributed/basic flows.
 
-Async policy is configured by `checkpoint.async_mode`:
+Async policy is configured by `ckpt.async_mode`:
 
 - `disabled`: synchronous checkpoint writes
 - `async`: asynchronous uploads
 - `async_with_pinned_mem`: process-based async uploads with staging hook support (`maybe_wait_for_staging`)
 
-When `checkpoint.async_mode` is unset, DanLing falls back to legacy `checkpoint_async` (`True` -> `async`, `False` -> `disabled`).
-
 ## Directory hierarchy
 
 DanLing now uses a stable run layout with per-attempt timestamps:
 
-`workspace_root/lineage[-code_id]/id`
+`workspace.root/workspace.lineage[-code_id]/id`
 
-- `lineage`: top-level lineage namespace
-- `code_id`: git code identity (`<short_sha>` for clean trees, `<short_sha>-d<diff_sha10>` when dirty) appended to lineage when available
-- `experiment`: experiment namespace
+- `workspace.lineage`: top-level lineage namespace
+- `code_id`: git code identity (`<short_sha>` for clean trees, `<short_sha>-d<diff_sha10>` when dirty) appended to `workspace.lineage` when available
 - `config_id`: deterministic hash of canonical config (`hash(config)` derived)
 - `id`: stable run identifier, defaults to `code_id-config_id` when git metadata is available and `config_id` otherwise
 - `timestamp`: per-attempt runtime timestamp
-  By default:
+- `workspace.experiment`: experiment label used in the default runner name and W&B group; it is not a path segment unless user code includes it in `workspace.dir`
 
-- `dir` points to `workspace_root/lineage[-code_id]/id`
-- checkpoints and result snapshots are stored at `dir`
-- logs are stored as `dir/logs/{timestamp}.log`
+By default:
+
+- `dir` points to `workspace.root/workspace.lineage[-code_id]/id`
+- checkpoints are stored at `ckpt.dir` (default `dir/checkpoints`)
+- result snapshots are stored at `dir`
+- logs are stored at `logging.file` (default `dir/logs/{timestamp}.log`)
 - tensorboard logs are stored as `dir/tensorboard/{timestamp}`
 - W&B local run files default to `dir/wandb/` when W&B logging is enabled
 - reproducibility artifacts are stored at `dir/metadata`:
@@ -292,6 +282,49 @@ cfg.stack = "parallel"
 parallel_from_runner = dl.Runner(cfg)
 ```
 
+## Parallel topology
+
+Parallel topology is configured through semantic axes:
+
+```yaml
+parallel:
+  axes:
+    replicate: 1
+    shard: 8
+    context: 1
+    pipeline: 4
+    tensor: 8
+    expert: 1
+    expert_tensor: 1
+```
+
+Data loading and metric reduction are scoped to the logical `data` domain.
+Middle pipeline stages automatically use step-only proxy loaders so pipeline schedules
+preserve step count and dataloader state without consuming real input batches locally.
+Optimizer control decisions, such as non-finite-gradient skip, are reduced over
+the `optimizer` domain covering all configured parallel axes so stages/shards do
+not diverge on step/skip boundaries.
+`TorchRunner`-based stacks build `torchdata.stateful_dataloader.StatefulDataLoader`
+by default so train dataloader progress is checkpointable across restart paths.
+Explicit user-provided dataloaders are not rewrapped.
+
+`ParallelRunner` exposes topology-, pipeline-, and FSDP-aware extension points:
+
+- `build_topology`: validate/construct ordered parallel axes from config + world state
+- `init_model_parallel_groups`: initialize model-parallel process groups/device mesh
+- `parallelize_model`: apply model-specific TP/CP/EP transforms before compile/FSDP wrapping
+- `build_pipeline_schedule`: build `torch.distributed.pipelining` schedule from config
+- `bind_pipeline_modules`: bind local model parts to pipeline stages
+- `apply_activation_checkpointing`: wrap local model parts before compile/FSDP wrapping
+- `fsdp_kwargs` / `build_mixed_precision_policy` / `build_offload_policy`: customize FSDP wrapping policy
+- `build_optimizer`: deduplicate parameters across local model parts before optimizer build
+
+If any of `parallel.axes.tensor`, `parallel.axes.context`, `parallel.axes.expert`,
+or `parallel.axes.expert_tensor` is greater than `1`, the model must either expose
+`model.parallelize(parallel_context)` or the runner must override
+`parallelize_model`. DanLing intentionally does not silently no-op model-parallel
+axes, because TP/CP/EP transforms are model-architecture specific.
+
 ## Pipeline-aware hooks
 
 `TorchRunner` exposes core training hooks that can be overridden:
@@ -313,8 +346,8 @@ non-interleaved for current pipeline+FSDP stability, with migration to
 
 Supported runner stacks:
 
-| Stack              | Checkpoint path                                 | Stateful dataloaders                         | TorchFT runtime     |
-| ------------------ | ----------------------------------------------- | -------------------------------------------- | ------------------- |
-| `torch` / `ddp`    | file default, DCP opt-in                        | default for built loaders                    | supported           |
-| `parallel`         | DCP default                                     | default plus pipeline proxy state delegation | FSDP-only supported |
-| `deepspeed` / `ds` | DeepSpeed engine checkpoint, file-style aliases | default for built loaders via client state   | not supported       |
+| Stack              | Full-state checkpoint path                                  | Model-only export         | Stateful dataloaders                         | TorchFT runtime     |
+| ------------------ | ----------------------------------------------------------- | ------------------------- | -------------------------------------------- | ------------------- |
+| `torch` / `ddp`    | file default, DCP opt-in                                    | DanLing payload           | default for built loaders                    | supported           |
+| `parallel`         | DCP default                                                 | DCP/DanLing model payload | default plus pipeline proxy state delegation | FSDP-only supported |
+| `deepspeed` / `ds` | DeepSpeed engine tag directories plus DanLing pointer files | DanLing payload           | default for built loaders via client state   | not supported       |

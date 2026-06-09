@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--replica-id", type=int, required=True)
     parser.add_argument("--group-size", type=int, required=True)
     parser.add_argument("--steps", type=int, required=True)
-    parser.add_argument("--auto-resume", action="store_true")
+    parser.add_argument("--resume", action="store_true")
     return parser.parse_args()
 
 
@@ -43,19 +43,19 @@ def main() -> None:
     local_world_size = int(os.environ.get("WORLD_SIZE", "1"))
     runner = TinyFaultToleranceParallelRunner(
         {
-            "log": False,
-            "dir": str(run_dir),
-            "backend": "nccl",
+            "logging.enabled": False,
+            "workspace.dir": str(run_dir),
+            "dist.backend": "nccl",
             "stack": "parallel",
             "steps": args.steps,
             "train_splits": ["train"],
             "evaluate_splits": [],
-            "auto_resume": args.auto_resume,
+            "resume": args.resume,
             "parallel": {"axes": {"replicate": 1, "shard": local_world_size, "pipeline": 1, "tensor": 1}},
             "fsdp": {"enabled": True},
             "dataloader": {"batch_size": 1, "shuffle": False},
             "optim": {"type": "sgd", "lr": 0.1},
-            "checkpoint": {
+            "ckpt": {
                 "backend": "dcp",
                 "interval": 1,
                 "async_mode": "disabled",

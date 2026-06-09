@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import torch
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from danling.data import DataLoaderDict
@@ -82,10 +83,10 @@ class _CheckpointRunner:
         dataloaders: bool = False,
     ) -> None:
         runner_config: dict[str, Any] = {
-            "log": False,
-            "checkpoint.backend": "dcp",
-            "checkpoint.async_mode": "disabled",
-            "checkpoint.interval": None,
+            "logging.enabled": False,
+            "ckpt.backend": "dcp",
+            "ckpt.async_mode": "disabled",
+            "ckpt.interval": None,
         }
         if config is not None:
             runner_config.update(config)
@@ -97,7 +98,7 @@ class _CheckpointRunner:
         self.distributed = False
         self.is_main_process = True
         self.is_step_mode = False
-        self.ft = None
+        self.fault_tolerance = None
         self.rank = 0
         self.dataloaders = DataLoaderDict()
         if dataloaders:
@@ -110,6 +111,7 @@ class _CheckpointRunner:
                 "epoch": self.train_state.epoch,
                 "global_step": self.train_state.global_step,
             },
+            "model": {"weight": torch.ones(2, 2, dtype=torch.float32)},
         }
         if self.dataloaders:
             state["dataloaders"] = self.dataloaders.state_dict()
@@ -117,7 +119,7 @@ class _CheckpointRunner:
 
     @property
     def checkpoint_interval(self) -> int:
-        interval = self.config.get("checkpoint.interval")
+        interval = self.config.get("ckpt.interval")
         return int(interval) if interval is not None else -1
 
 
@@ -174,8 +176,8 @@ def _retaining_dcp_manager(tmp_path: Path) -> tuple[_CheckpointRunner, TorchDist
     runner = _CheckpointRunner(
         tmp_path,
         config={
-            "checkpoint.interval": 2,
-            "checkpoint.keep_latest_k": 1,
+            "ckpt.interval": 2,
+            "ckpt.keep_latest_k": 1,
         },
     )
     return runner, TorchDistributedCheckpointManager(runner)
@@ -207,10 +209,10 @@ def _dcp_async_dedicated_process_group_failure_worker(rank: int, world_size: int
         runner = _CheckpointRunner(
             root,
             config={
-                "checkpoint.async_mode": "async",
-                "checkpoint.async_process_group_backend": "invalid-backend",
-                "checkpoint.dedicated_async_process_group": True,
-                "checkpoint.interval": 1,
+                "ckpt.async_mode": "async",
+                "ckpt.async_process_group_backend": "invalid-backend",
+                "ckpt.dedicated_async_process_group": True,
+                "ckpt.interval": 1,
             },
         )
         _configure_distributed_runner(runner, rank)
@@ -227,7 +229,7 @@ def _dcp_async_dedicated_process_group_failure_worker(rank: int, world_size: int
             assert _checkpoint_targets(root) == []
 
 
-def _dcp_async_ft_dataloader_requires_dedicated_process_group_worker(
+def _dcp_async_dataloader_checkpoint_requires_dedicated_process_group_worker(
     rank: int,
     world_size: int,
     checkpoint_dir: str,
@@ -237,11 +239,11 @@ def _dcp_async_ft_dataloader_requires_dedicated_process_group_worker(
         runner = _CheckpointRunner(
             root,
             config={
-                "checkpoint.async_mode": "async",
-                "checkpoint.dedicated_async_process_group": False,
-                "checkpoint.enable_ft_dataloader_checkpoints": True,
-                "checkpoint.ft_replica_id": "replica0",
-                "checkpoint.interval": 1,
+                "ckpt.async_mode": "async",
+                "ckpt.dedicated_async_process_group": False,
+                "ckpt.dataloader_checkpoint.enabled": True,
+                "ckpt.dataloader_checkpoint.replica_id": "replica0",
+                "ckpt.interval": 1,
             },
         )
         _configure_distributed_runner(runner, rank)
@@ -249,7 +251,7 @@ def _dcp_async_ft_dataloader_requires_dedicated_process_group_worker(
         manager = TorchFTCheckpointManager(runner)
 
         runner.train_state.global_step = 1
-        with pytest.warns(RuntimeWarning, match="async FT dataloader checkpoints require"):
+        with pytest.warns(RuntimeWarning, match="async dataloader checkpoints require"):
             manager.save_checkpoint(epochs=0)
 
         _assert_checkpoint_failure(manager, RuntimeError, "ckpt-e000001-g000000000001-q000001")
@@ -257,7 +259,7 @@ def _dcp_async_ft_dataloader_requires_dedicated_process_group_worker(
         if rank == 0:
             assert not (root / "latest.pointer").exists()
             assert _checkpoint_targets(root) == []
-            assert not (root / "ft-replica-replica0").exists()
+            assert not (root / "dataloader-replica-replica0").exists()
 
 
 def _save_best_dcp_checkpoint(tmp_path: Path) -> TorchDistributedCheckpointManager:
@@ -269,7 +271,7 @@ def _save_best_dcp_checkpoint(tmp_path: Path) -> TorchDistributedCheckpointManag
 
 
 def test_dcp_async_save_writes_checkpoint(tmp_path: Path) -> None:
-    runner = _CheckpointRunner(tmp_path, config={"checkpoint.async_mode": "async", "checkpoint.interval": 1})
+    runner = _CheckpointRunner(tmp_path, config={"ckpt.async_mode": "async", "ckpt.interval": 1})
     manager = TorchDistributedCheckpointManager(runner)
 
     runner.train_state.global_step = 1
@@ -285,7 +287,7 @@ def test_dcp_writes_runner_config_sidecar_for_read_config(tmp_path: Path) -> Non
         tmp_path,
         config={
             "name": "dcp-sidecar-test",
-            "checkpoint.interval": 1,
+            "ckpt.interval": 1,
         },
     )
     manager = TorchDistributedCheckpointManager(runner)
@@ -297,12 +299,12 @@ def test_dcp_writes_runner_config_sidecar_for_read_config(tmp_path: Path) -> Non
     assert (target / "runner.yaml").exists()
     config = TorchDistributedCheckpointManager.read_config(tmp_path / "latest")
     assert config.name == "dcp-sidecar-test"
-    assert config.get("checkpoint.backend") == "dcp"
+    assert config.get("ckpt.backend") == "dcp"
     assert manager.close(timeout=1.0) is True
 
 
 def test_dcp_sidecar_failure_does_not_publish_orphan_checkpoint(tmp_path: Path) -> None:
-    runner = _CheckpointRunner(tmp_path, config={"checkpoint.interval": 1})
+    runner = _CheckpointRunner(tmp_path, config={"ckpt.interval": 1})
     manager = TorchDistributedCheckpointManager(runner)
     (tmp_path / "ckpt-e000001-g000000000001-q000001" / "runner.yaml").mkdir(parents=True)
 
@@ -319,7 +321,7 @@ def test_dcp_sidecar_failure_does_not_publish_orphan_checkpoint(tmp_path: Path) 
 
 
 def test_dcp_async_sidecar_failure_does_not_publish_orphan_checkpoint(tmp_path: Path) -> None:
-    runner = _CheckpointRunner(tmp_path, config={"checkpoint.async_mode": "async", "checkpoint.interval": 1})
+    runner = _CheckpointRunner(tmp_path, config={"ckpt.async_mode": "async", "ckpt.interval": 1})
     manager = TorchDistributedCheckpointManager(runner)
     (tmp_path / "ckpt-e000001-g000000000001-q000001" / "runner.yaml").mkdir(parents=True)
 
@@ -335,7 +337,7 @@ def test_dcp_async_sidecar_failure_does_not_publish_orphan_checkpoint(tmp_path: 
 
 
 def test_dcp_pointer_failure_is_recorded_without_interrupting(tmp_path: Path) -> None:
-    runner = _CheckpointRunner(tmp_path, config={"checkpoint.interval": 1})
+    runner = _CheckpointRunner(tmp_path, config={"ckpt.interval": 1})
     manager = TorchDistributedCheckpointManager(runner)
     (tmp_path / "latest.pointer").mkdir()
 
@@ -351,7 +353,7 @@ def test_dcp_pointer_failure_is_recorded_without_interrupting(tmp_path: Path) ->
 
 
 def test_dcp_async_pointer_failure_is_recorded_without_interrupting(tmp_path: Path) -> None:
-    runner = _CheckpointRunner(tmp_path, config={"checkpoint.async_mode": "async", "checkpoint.interval": 1})
+    runner = _CheckpointRunner(tmp_path, config={"ckpt.async_mode": "async", "ckpt.interval": 1})
     manager = TorchDistributedCheckpointManager(runner)
     (tmp_path / "latest.pointer").mkdir()
 
@@ -367,7 +369,7 @@ def test_dcp_async_pointer_failure_is_recorded_without_interrupting(tmp_path: Pa
 
 
 def test_dcp_partial_pointer_failure_records_published_aliases(tmp_path: Path) -> None:
-    runner = _CheckpointRunner(tmp_path, config={"checkpoint.interval": 1})
+    runner = _CheckpointRunner(tmp_path, config={"ckpt.interval": 1})
     runner.is_best = True
     manager = TorchDistributedCheckpointManager(runner)
     (tmp_path / "best.pointer").mkdir()
@@ -390,8 +392,8 @@ def test_dcp_partial_pointer_failure_still_participates_in_retention(tmp_path: P
     runner = _CheckpointRunner(
         tmp_path,
         config={
-            "checkpoint.interval": 1,
-            "checkpoint.keep_latest_k": 1,
+            "ckpt.interval": 1,
+            "ckpt.keep_latest_k": 1,
         },
     )
     runner.is_best = True
@@ -417,13 +419,13 @@ def test_dcp_partial_pointer_failure_still_participates_in_retention(tmp_path: P
     assert _pointer_target(tmp_path, "latest") == second_target
 
 
-def test_dcp_ft_partial_pointer_failure_keeps_sidecar_for_published_checkpoint(tmp_path: Path) -> None:
+def test_dcp_fault_tolerance_partial_pointer_failure_keeps_sidecar_for_published_checkpoint(tmp_path: Path) -> None:
     runner = _CheckpointRunner(
         tmp_path,
         config={
-            "checkpoint.enable_ft_dataloader_checkpoints": True,
-            "checkpoint.ft_replica_id": "replica0",
-            "checkpoint.interval": 1,
+            "ckpt.dataloader_checkpoint.enabled": True,
+            "ckpt.dataloader_checkpoint.replica_id": "replica0",
+            "ckpt.interval": 1,
         },
     )
     runner.is_best = True
@@ -439,18 +441,20 @@ def test_dcp_ft_partial_pointer_failure_keeps_sidecar_for_published_checkpoint(t
     assert _pointer_target(tmp_path, "latest") == target
     assert _pointer_target(tmp_path, "ckpt-e000001") == target
     assert (tmp_path / target).is_dir()
-    assert (tmp_path / "ft-replica-replica0" / target / ".metadata").exists()
+    assert (tmp_path / "dataloader-replica-replica0" / target / ".metadata").exists()
     assert manager.close(timeout=1.0) is True
 
 
-def test_dcp_async_ft_partial_pointer_failure_keeps_sidecar_for_published_checkpoint(tmp_path: Path) -> None:
+def test_dcp_async_fault_tolerance_partial_pointer_failure_keeps_sidecar_for_published_checkpoint(
+    tmp_path: Path,
+) -> None:
     runner = _CheckpointRunner(
         tmp_path,
         config={
-            "checkpoint.async_mode": "async",
-            "checkpoint.enable_ft_dataloader_checkpoints": True,
-            "checkpoint.ft_replica_id": "replica0",
-            "checkpoint.interval": 1,
+            "ckpt.async_mode": "async",
+            "ckpt.dataloader_checkpoint.enabled": True,
+            "ckpt.dataloader_checkpoint.replica_id": "replica0",
+            "ckpt.interval": 1,
         },
     )
     runner.is_best = True
@@ -467,16 +471,16 @@ def test_dcp_async_ft_partial_pointer_failure_keeps_sidecar_for_published_checkp
     assert _pointer_target(tmp_path, "latest") == target
     assert _pointer_target(tmp_path, "ckpt-e000001") == target
     assert (tmp_path / target).is_dir()
-    assert (tmp_path / "ft-replica-replica0" / target / ".metadata").exists()
+    assert (tmp_path / "dataloader-replica-replica0" / target / ".metadata").exists()
 
 
-def test_dcp_async_ft_sidecar_waits_for_main_checkpoint_completion(tmp_path: Path) -> None:
+def test_dcp_async_fault_tolerance_sidecar_waits_for_main_checkpoint_completion(tmp_path: Path) -> None:
     runner = _CheckpointRunner(
         tmp_path,
         config={
-            "checkpoint.async_mode": "async",
-            "checkpoint.enable_ft_dataloader_checkpoints": True,
-            "checkpoint.ft_replica_id": "replica0",
+            "ckpt.async_mode": "async",
+            "ckpt.dataloader_checkpoint.enabled": True,
+            "ckpt.dataloader_checkpoint.replica_id": "replica0",
         },
     )
     runner.dataloaders["train"] = _StaticStateDataloader()
@@ -494,21 +498,21 @@ def test_dcp_async_ft_sidecar_waits_for_main_checkpoint_completion(tmp_path: Pat
         assert manager.started_main[0].startswith("latest-g000000000001")
         assert manager.close(timeout=0.0) is False
         assert not (tmp_path / "latest.pointer").exists()
-        assert not (tmp_path / "ft-replica-replica0").exists()
+        assert not (tmp_path / "dataloader-replica-replica0").exists()
     finally:
         if not manager.first_future.done():
             manager.first_future.set_result(None)
         manager.close(timeout=10.0)
 
 
-def test_dcp_async_empty_ft_state_does_not_block_pointer_publish(tmp_path: Path) -> None:
+def test_dcp_async_empty_dataloader_state_does_not_block_pointer_publish(tmp_path: Path) -> None:
     runner = _CheckpointRunner(
         tmp_path,
         config={
-            "checkpoint.async_mode": "async",
-            "checkpoint.enable_ft_dataloader_checkpoints": True,
-            "checkpoint.ft_replica_id": "replica0",
-            "checkpoint.interval": 1,
+            "ckpt.async_mode": "async",
+            "ckpt.dataloader_checkpoint.enabled": True,
+            "ckpt.dataloader_checkpoint.replica_id": "replica0",
+            "ckpt.interval": 1,
         },
     )
     runner.dataloaders["train"] = _NoStateDataloader()
@@ -523,14 +527,14 @@ def test_dcp_async_empty_ft_state_does_not_block_pointer_publish(tmp_path: Path)
     assert (target / "runner.yaml").exists()
 
 
-def test_dcp_async_ft_dataloader_checkpoint_publishes_main_pointer(tmp_path: Path) -> None:
+def test_dcp_async_dataloader_checkpoint_publishes_main_pointer(tmp_path: Path) -> None:
     runner = _CheckpointRunner(
         tmp_path,
         config={
-            "checkpoint.async_mode": "async",
-            "checkpoint.enable_ft_dataloader_checkpoints": True,
-            "checkpoint.ft_replica_id": "replica0",
-            "checkpoint.interval": 1,
+            "ckpt.async_mode": "async",
+            "ckpt.dataloader_checkpoint.enabled": True,
+            "ckpt.dataloader_checkpoint.replica_id": "replica0",
+            "ckpt.interval": 1,
         },
     )
     runner.dataloaders["train"] = _StaticStateDataloader()
@@ -543,18 +547,18 @@ def test_dcp_async_ft_dataloader_checkpoint_publishes_main_pointer(tmp_path: Pat
     target = _target_path(tmp_path, "latest")
     assert (target / ".metadata").exists()
     assert (target / "runner.yaml").exists()
-    ft_root = tmp_path / "ft-replica-replica0"
-    assert ft_root.exists()
-    assert any((path / ".metadata").exists() for path in ft_root.iterdir())
+    dataloader_root = tmp_path / "dataloader-replica-replica0"
+    assert dataloader_root.exists()
+    assert any((path / ".metadata").exists() for path in dataloader_root.iterdir())
     assert manager.checkpoint_health.error_count == 0
 
 
-def test_dcp_async_ft_dataloader_requires_dedicated_process_group(
+def test_dcp_async_dataloader_checkpoint_requires_dedicated_process_group(
     tmp_path: Path,
 ) -> None:
     require_gloo()
     run_distributed(
-        _dcp_async_ft_dataloader_requires_dedicated_process_group_worker,
+        _dcp_async_dataloader_checkpoint_requires_dedicated_process_group_worker,
         world_size=2,
         worker_args=(str(tmp_path),),
     )
@@ -574,8 +578,8 @@ def test_dcp_async_with_pinned_mem_publishes_checkpoint_without_staging(tmp_path
     runner = _CheckpointRunner(
         tmp_path,
         config={
-            "checkpoint.async_mode": "async_with_pinned_mem",
-            "checkpoint.interval": 1,
+            "ckpt.async_mode": "async_with_pinned_mem",
+            "ckpt.interval": 1,
         },
     )
     runner.train_state.global_step = 1
@@ -590,9 +594,9 @@ def test_dcp_async_with_pinned_mem_publishes_checkpoint_without_staging(tmp_path
     assert (target / "runner.yaml").exists()
 
 
-def test_dcp_skips_full_save_for_non_participating_ft_replica(tmp_path: Path) -> None:
-    runner = _CheckpointRunner(tmp_path, config={"checkpoint.interval": 1}, dataloaders=True)
-    runner.ft = _NonParticipatingFaultTolerance()
+def test_dcp_skips_full_save_for_non_participating_fault_tolerance_replica(tmp_path: Path) -> None:
+    runner = _CheckpointRunner(tmp_path, config={"ckpt.interval": 1}, dataloaders=True)
+    runner.fault_tolerance = _NonParticipatingFaultTolerance()
     manager = TorchFTCheckpointManager(runner)
 
     runner.train_state.global_step = 1
@@ -600,9 +604,9 @@ def test_dcp_skips_full_save_for_non_participating_ft_replica(tmp_path: Path) ->
 
     assert manager.close(timeout=1.0) is True
     assert not (tmp_path / "latest.pointer").exists()
-    ft_root = tmp_path / "ft-replica-3"
-    assert ft_root.exists()
-    assert any((path / ".metadata").exists() for path in ft_root.iterdir())
+    dataloader_root = tmp_path / "dataloader-replica-3"
+    assert dataloader_root.exists()
+    assert any((path / ".metadata").exists() for path in dataloader_root.iterdir())
 
 
 def test_dcp_force_checkpoint_bypasses_interval(tmp_path: Path) -> None:
@@ -631,7 +635,7 @@ def test_dcp_resolve_checkpoint_id_supports_pointer_aliases(tmp_path: Path) -> N
 
 
 def test_dcp_latest_rotation_keeps_retained_history_target(tmp_path: Path) -> None:
-    runner = _CheckpointRunner(tmp_path, config={"checkpoint.interval": 100})
+    runner = _CheckpointRunner(tmp_path, config={"ckpt.interval": 100})
     manager = TorchDistributedCheckpointManager(runner)
 
     runner.train_state.global_step = 1
@@ -652,8 +656,8 @@ def test_dcp_keep_latest_k_prunes_old_latest_only_targets(tmp_path: Path) -> Non
     runner = _CheckpointRunner(
         tmp_path,
         config={
-            "checkpoint.interval": 100,
-            "checkpoint.keep_latest_k": 1,
+            "ckpt.interval": 100,
+            "ckpt.keep_latest_k": 1,
         },
     )
     manager = TorchDistributedCheckpointManager(runner)
@@ -679,8 +683,8 @@ def test_dcp_keep_latest_k_prunes_old_history_checkpoints(tmp_path: Path) -> Non
     runner = _CheckpointRunner(
         tmp_path,
         config={
-            "checkpoint.interval": 1,
-            "checkpoint.keep_latest_k": 2,
+            "ckpt.interval": 1,
+            "ckpt.keep_latest_k": 2,
         },
     )
     manager = TorchDistributedCheckpointManager(runner)
@@ -767,8 +771,8 @@ def test_dcp_checkpoint_retention_prunes_forced_latest_target(tmp_path: Path) ->
     assert (tmp_path / final_latest_target).is_dir()
 
 
-def test_dcp_save_checkpoint_respects_load_only(tmp_path: Path) -> None:
-    runner = _CheckpointRunner(tmp_path, config={"checkpoint.interval": 1, "checkpoint.load_only": True})
+def test_dcp_save_checkpoint_respects_save_disabled(tmp_path: Path) -> None:
+    runner = _CheckpointRunner(tmp_path, config={"ckpt.interval": 1, "ckpt.enabled": False})
     manager = TorchDistributedCheckpointManager(runner)
 
     manager.save_checkpoint()
@@ -779,14 +783,14 @@ def test_dcp_save_checkpoint_respects_load_only(tmp_path: Path) -> None:
     assert manager.close(timeout=1.0) is True
 
 
-def test_dcp_load_only_disables_ft_dataloader_checkpoint_writes(tmp_path: Path) -> None:
+def test_dcp_save_disabled_disables_dataloader_checkpoint_writes(tmp_path: Path) -> None:
     runner = _CheckpointRunner(
         tmp_path,
         config={
-            "checkpoint.enable_ft_dataloader_checkpoints": True,
-            "checkpoint.ft_replica_id": "replica0",
-            "checkpoint.load_only": True,
-            "checkpoint.interval": 1,
+            "ckpt.dataloader_checkpoint.enabled": True,
+            "ckpt.dataloader_checkpoint.replica_id": "replica0",
+            "ckpt.enabled": False,
+            "ckpt.interval": 1,
         },
         dataloaders=True,
     )
@@ -795,7 +799,7 @@ def test_dcp_load_only_disables_ft_dataloader_checkpoint_writes(tmp_path: Path) 
     manager.save_checkpoint(epochs=0)
 
     assert _checkpoint_targets(tmp_path) == []
-    assert not (tmp_path / "ft-replica-replica0").exists()
+    assert not (tmp_path / "dataloader-replica-replica0").exists()
     assert manager.close(timeout=1.0) is True
 
 
@@ -812,7 +816,7 @@ def test_dcp_checkpoint_skips_periodic_writes_without_interval(tmp_path: Path) -
 
 
 def test_dcp_save_interval_does_not_force_first_step(tmp_path: Path) -> None:
-    runner = _CheckpointRunner(tmp_path, config={"checkpoint.interval": 5})
+    runner = _CheckpointRunner(tmp_path, config={"ckpt.interval": 5})
     manager = TorchDistributedCheckpointManager(runner)
 
     manager.save_checkpoint(epochs=0)
@@ -825,7 +829,7 @@ def test_dcp_save_interval_does_not_force_first_step(tmp_path: Path) -> None:
 
 
 def test_dcp_last_step_forces_checkpoint_outside_interval(tmp_path: Path) -> None:
-    runner = _CheckpointRunner(tmp_path, config={"checkpoint.interval": 100})
+    runner = _CheckpointRunner(tmp_path, config={"ckpt.interval": 100})
     manager = TorchDistributedCheckpointManager(runner)
 
     manager.save_checkpoint(epochs=0)
@@ -836,8 +840,31 @@ def test_dcp_last_step_forces_checkpoint_outside_interval(tmp_path: Path) -> Non
     assert manager.close(timeout=1.0) is True
 
 
+def test_dcp_model_checkpoint_does_not_update_latest_pointer(tmp_path: Path) -> None:
+    runner = _CheckpointRunner(tmp_path, config={"ckpt.export_dtype": "fp16"})
+    manager = TorchDistributedCheckpointManager(runner)
+
+    runner.train_state.global_step = 1
+    manager.save_checkpoint(last_step=True)
+    latest_target = _pointer_target(tmp_path, "latest")
+
+    runner.train_state.global_step = 2
+    manager.save_model_checkpoint()
+
+    model_target = _pointer_target(tmp_path, "model")
+    model_path = tmp_path / model_target
+
+    assert _pointer_target(tmp_path, "latest") == latest_target
+    assert model_path.exists()
+    assert not (model_path / "runner.yaml").exists()
+    model_payload = manager.load_model_checkpoint("model")
+    assert list(model_payload) == ["model"]
+    assert model_payload["model"]["weight"].dtype == torch.float16
+    assert manager.close(timeout=1.0) is True
+
+
 def test_dcp_step_mode_save_interval_aligns_with_global_step(tmp_path: Path) -> None:
-    runner = _CheckpointRunner(tmp_path, config={"checkpoint.interval": 2})
+    runner = _CheckpointRunner(tmp_path, config={"ckpt.interval": 2})
     runner.is_step_mode = True
     manager = TorchDistributedCheckpointManager(runner)
 
@@ -854,7 +881,7 @@ def test_dcp_step_mode_save_interval_aligns_with_global_step(tmp_path: Path) -> 
 
 
 def test_dcp_main_checkpoint_returns_dataloader_state_for_standard_resume(tmp_path: Path) -> None:
-    runner = _CheckpointRunner(tmp_path, config={"checkpoint.interval": 1}, dataloaders=True)
+    runner = _CheckpointRunner(tmp_path, config={"ckpt.interval": 1}, dataloaders=True)
     manager = TorchDistributedCheckpointManager(runner)
 
     manager.save_checkpoint(epochs=0)
@@ -866,13 +893,13 @@ def test_dcp_main_checkpoint_returns_dataloader_state_for_standard_resume(tmp_pa
     assert manager.close(timeout=1.0) is True
 
 
-def test_dcp_ft_dataloader_checkpoint_save_and_restore(tmp_path: Path) -> None:
+def test_dcp_dataloader_checkpoint_save_and_restore(tmp_path: Path) -> None:
     runner = _CheckpointRunner(
         tmp_path,
         config={
-            "checkpoint.enable_ft_dataloader_checkpoints": True,
-            "checkpoint.ft_replica_id": "replica0",
-            "checkpoint.interval": 1,
+            "ckpt.dataloader_checkpoint.enabled": True,
+            "ckpt.dataloader_checkpoint.replica_id": "replica0",
+            "ckpt.interval": 1,
         },
         dataloaders=True,
     )
@@ -883,19 +910,19 @@ def test_dcp_ft_dataloader_checkpoint_save_and_restore(tmp_path: Path) -> None:
     manager.load_checkpoint("latest")
 
     assert _stateful_dataloader_position(runner.dataloaders["train"]) == 7
-    ft_root = tmp_path / "ft-replica-replica0"
-    assert ft_root.exists()
-    assert any((path / ".metadata").exists() for path in ft_root.iterdir())
+    dataloader_root = tmp_path / "dataloader-replica-replica0"
+    assert dataloader_root.exists()
+    assert any((path / ".metadata").exists() for path in dataloader_root.iterdir())
     assert manager.close(timeout=1.0) is True
 
 
-def test_dcp_ft_dataloader_restore_tracks_requested_checkpoint_target(tmp_path: Path) -> None:
+def test_dcp_dataloader_checkpoint_restore_tracks_requested_checkpoint_target(tmp_path: Path) -> None:
     runner = _CheckpointRunner(
         tmp_path,
         config={
-            "checkpoint.enable_ft_dataloader_checkpoints": True,
-            "checkpoint.ft_replica_id": "replica0",
-            "checkpoint.interval": 1,
+            "ckpt.dataloader_checkpoint.enabled": True,
+            "ckpt.dataloader_checkpoint.replica_id": "replica0",
+            "ckpt.interval": 1,
         },
         dataloaders=True,
     )
@@ -917,13 +944,13 @@ def test_dcp_ft_dataloader_restore_tracks_requested_checkpoint_target(tmp_path: 
     assert manager.close(timeout=1.0) is True
 
 
-def test_dcp_ft_dataloader_restore_is_sequence_bounded(tmp_path: Path) -> None:
+def test_dcp_dataloader_checkpoint_restore_is_sequence_bounded(tmp_path: Path) -> None:
     runner = _CheckpointRunner(
         tmp_path,
         config={
-            "checkpoint.enable_ft_dataloader_checkpoints": True,
-            "checkpoint.ft_replica_id": "replica0",
-            "checkpoint.interval": 1,
+            "ckpt.dataloader_checkpoint.enabled": True,
+            "ckpt.dataloader_checkpoint.replica_id": "replica0",
+            "ckpt.interval": 1,
         },
         dataloaders=True,
     )

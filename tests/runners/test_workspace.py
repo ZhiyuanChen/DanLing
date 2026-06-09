@@ -47,10 +47,10 @@ class FailingPostInitRunner(BaseRunner):
 
 def _config(tmp_path: Path, **kwargs):
     config = {
-        "log": False,
-        "workspace_root": str(tmp_path),
-        "lineage": "lineage-a",
-        "experiment": "experiment-a",
+        "logging.enabled": False,
+        "workspace.root": str(tmp_path),
+        "workspace.lineage": "lineage-a",
+        "workspace.experiment": "experiment-a",
     }
     config.update(kwargs)
     return config
@@ -96,6 +96,24 @@ def test_runner_workspace_log_file_layout(tmp_path: Path) -> None:
         runner.close()
 
 
+def test_runner_workspace_uses_logging_file_override(tmp_path: Path) -> None:
+    log_file = tmp_path / "custom.log"
+    runner = MinimalRunner(_config(tmp_path, **{"logging.file": str(log_file)}))
+    try:
+        assert runner.workspace.log_file == str(log_file)
+    finally:
+        runner.close()
+
+
+def test_runner_workspace_checkpoint_dir_uses_ckpt_dir(tmp_path: Path) -> None:
+    runner = MinimalRunner(_config(tmp_path, **{"ckpt.dir": "states"}))
+    try:
+        expected_dir = _expected_base_dir(tmp_path, "lineage-a") / _expected_id(runner)
+        assert runner.workspace.checkpoint_dir == str(expected_dir / "states")
+    finally:
+        runner.close()
+
+
 def test_runner_workspace_writes_metadata_files(tmp_path: Path) -> None:
     runner = MinimalRunner(_config(tmp_path, epochs=1))
     try:
@@ -131,7 +149,7 @@ def test_color_formatter_emits_ansi_sequences() -> None:
 
 
 def test_runner_workspace_logging_keeps_file_output_plain(tmp_path: Path) -> None:
-    runner = MinimalRunner(_config(tmp_path, log=True))
+    runner = MinimalRunner(_config(tmp_path, **{"logging.enabled": True}))
     log_file = Path(runner.workspace.log_file)
     try:
         assert runner.logger is not None

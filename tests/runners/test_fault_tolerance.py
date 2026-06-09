@@ -23,12 +23,12 @@ class TinyFaultToleranceRunner(TorchRunner):
 
 
 def test_fault_tolerance_is_disabled_by_default() -> None:
-    runner = TinyFaultToleranceRunner({"log": False})
+    runner = TinyFaultToleranceRunner({"logging.enabled": False})
     try:
-        assert runner.ft is not None
-        assert runner.ft.enabled is False
-        assert runner.ft.replicate_process_group is None
-        assert runner.ft.data_parallel_info(4, 1) == (4, 1)
+        assert runner.fault_tolerance is not None
+        assert runner.fault_tolerance.enabled is False
+        assert runner.fault_tolerance.replicate_process_group is None
+        assert runner.fault_tolerance.data_parallel_info(4, 1) == (4, 1)
     finally:
         runner.close()
 
@@ -38,4 +38,4 @@ def test_fault_tolerance_requires_torchft_when_enabled() -> None:
         pytest.skip("torchft is installed")
 
     with pytest.raises(ImportError, match="torchft"):
-        TinyFaultToleranceRunner({"log": False, "ft": {"enabled": True}})
+        TinyFaultToleranceRunner({"logging.enabled": False, "ft": {"enabled": True}})

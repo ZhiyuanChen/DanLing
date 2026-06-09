@@ -96,7 +96,7 @@ def _launch_replica_group(
     visible_devices: str,
     master_port: int,
     steps: int,
-    auto_resume: bool,
+    resume: bool,
 ) -> subprocess.Popen[str]:
     env = dict(os.environ)
     env["CUDA_VISIBLE_DEVICES"] = visible_devices
@@ -117,8 +117,8 @@ def _launch_replica_group(
         "--steps",
         str(steps),
     ]
-    if auto_resume:
-        cmd.append("--auto-resume")
+    if resume:
+        cmd.append("--resume")
     return subprocess.Popen(
         cmd,
         cwd=repo_root,
@@ -129,7 +129,7 @@ def _launch_replica_group(
     )
 
 
-def _run_replica_groups(*, repo_root: Path, run_dir: Path, steps: int, auto_resume: bool) -> None:
+def _run_replica_groups(*, repo_root: Path, run_dir: Path, steps: int, resume: bool) -> None:
     procs = [
         _launch_replica_group(
             repo_root=repo_root,
@@ -138,7 +138,7 @@ def _run_replica_groups(*, repo_root: Path, run_dir: Path, steps: int, auto_resu
             visible_devices="0,1",
             master_port=find_free_port(),
             steps=steps,
-            auto_resume=auto_resume,
+            resume=resume,
         ),
         _launch_replica_group(
             repo_root=repo_root,
@@ -147,7 +147,7 @@ def _run_replica_groups(*, repo_root: Path, run_dir: Path, steps: int, auto_resu
             visible_devices="2,3",
             master_port=find_free_port(),
             steps=steps,
-            auto_resume=auto_resume,
+            resume=resume,
         ),
     ]
     outputs: list[str] = []
@@ -177,7 +177,7 @@ def _launch_torch_replica_group(
     replica_id: int,
     master_port: int,
     steps: int,
-    auto_resume: bool,
+    resume: bool,
 ) -> subprocess.Popen[str]:
     env = dict(os.environ)
     env["TORCHFT_LIGHTHOUSE"] = f"http://127.0.0.1:{LIGHTHOUSE_PORT}"
@@ -197,8 +197,8 @@ def _launch_torch_replica_group(
         "--steps",
         str(steps),
     ]
-    if auto_resume:
-        cmd.append("--auto-resume")
+    if resume:
+        cmd.append("--resume")
     return subprocess.Popen(
         cmd,
         cwd=repo_root,
@@ -209,7 +209,7 @@ def _launch_torch_replica_group(
     )
 
 
-def _run_torch_replica_groups(*, repo_root: Path, run_dir: Path, steps: int, auto_resume: bool) -> None:
+def _run_torch_replica_groups(*, repo_root: Path, run_dir: Path, steps: int, resume: bool) -> None:
     procs = [
         _launch_torch_replica_group(
             repo_root=repo_root,
@@ -217,7 +217,7 @@ def _run_torch_replica_groups(*, repo_root: Path, run_dir: Path, steps: int, aut
             replica_id=0,
             master_port=find_free_port(),
             steps=steps,
-            auto_resume=auto_resume,
+            resume=resume,
         ),
         _launch_torch_replica_group(
             repo_root=repo_root,
@@ -225,7 +225,7 @@ def _run_torch_replica_groups(*, repo_root: Path, run_dir: Path, steps: int, aut
             replica_id=1,
             master_port=find_free_port(),
             steps=steps,
-            auto_resume=auto_resume,
+            resume=resume,
         ),
     ]
     outputs: list[str] = []
@@ -255,8 +255,8 @@ def test_fault_tolerance_fsdp_save_and_resume_across_replica_groups(tmp_path: Pa
 
     lighthouse = _start_lighthouse(repo_root)
     try:
-        _run_replica_groups(repo_root=repo_root, run_dir=run_dir, steps=1, auto_resume=False)
-        _run_replica_groups(repo_root=repo_root, run_dir=run_dir, steps=2, auto_resume=True)
+        _run_replica_groups(repo_root=repo_root, run_dir=run_dir, steps=1, resume=False)
+        _run_replica_groups(repo_root=repo_root, run_dir=run_dir, steps=2, resume=True)
     finally:
         if lighthouse.poll() is None:
             lighthouse.terminate()
@@ -265,8 +265,8 @@ def test_fault_tolerance_fsdp_save_and_resume_across_replica_groups(tmp_path: Pa
     checkpoint_dir = run_dir / "checkpoints"
     latest_target = Path(TorchDistributedCheckpointManager.resolve_checkpoint_path(checkpoint_dir / "latest"))
     assert (latest_target / ".metadata").is_file()
-    assert any((checkpoint_dir / "ft-replica-0").iterdir())
-    assert any((checkpoint_dir / "ft-replica-1").iterdir())
+    assert any((checkpoint_dir / "dataloader-replica-0").iterdir())
+    assert any((checkpoint_dir / "dataloader-replica-1").iterdir())
 
     for replica_id in (0, 1):
         status_path = run_dir / f"ft-status-replica-{replica_id}.json"
@@ -283,8 +283,8 @@ def test_fault_tolerance_torch_runner_save_and_resume_across_replica_groups(tmp_
 
     lighthouse = _start_lighthouse(repo_root)
     try:
-        _run_torch_replica_groups(repo_root=repo_root, run_dir=run_dir, steps=1, auto_resume=False)
-        _run_torch_replica_groups(repo_root=repo_root, run_dir=run_dir, steps=2, auto_resume=True)
+        _run_torch_replica_groups(repo_root=repo_root, run_dir=run_dir, steps=1, resume=False)
+        _run_torch_replica_groups(repo_root=repo_root, run_dir=run_dir, steps=2, resume=True)
     finally:
         if lighthouse.poll() is None:
             lighthouse.terminate()
@@ -293,8 +293,8 @@ def test_fault_tolerance_torch_runner_save_and_resume_across_replica_groups(tmp_
     checkpoint_dir = run_dir / "checkpoints"
     latest_target = Path(TorchDistributedCheckpointManager.resolve_checkpoint_path(checkpoint_dir / "latest"))
     assert (latest_target / ".metadata").is_file()
-    assert any((checkpoint_dir / "ft-replica-0").iterdir())
-    assert any((checkpoint_dir / "ft-replica-1").iterdir())
+    assert any((checkpoint_dir / "dataloader-replica-0").iterdir())
+    assert any((checkpoint_dir / "dataloader-replica-1").iterdir())
 
     for replica_id in (0, 1):
         status_path = run_dir / f"ft-status-replica-{replica_id}.json"
@@ -311,9 +311,9 @@ def test_fault_tolerance_torch_runner_soaks_multiple_restarts(tmp_path: Path) ->
 
     lighthouse = _start_lighthouse(repo_root)
     try:
-        _run_torch_replica_groups(repo_root=repo_root, run_dir=run_dir, steps=1, auto_resume=False)
+        _run_torch_replica_groups(repo_root=repo_root, run_dir=run_dir, steps=1, resume=False)
         for steps in (2, 3, 4):
-            _run_torch_replica_groups(repo_root=repo_root, run_dir=run_dir, steps=steps, auto_resume=True)
+            _run_torch_replica_groups(repo_root=repo_root, run_dir=run_dir, steps=steps, resume=True)
     finally:
         if lighthouse.poll() is None:
             lighthouse.terminate()
@@ -322,8 +322,8 @@ def test_fault_tolerance_torch_runner_soaks_multiple_restarts(tmp_path: Path) ->
     checkpoint_dir = run_dir / "checkpoints"
     latest_target = Path(TorchDistributedCheckpointManager.resolve_checkpoint_path(checkpoint_dir / "latest"))
     assert (latest_target / ".metadata").is_file()
-    assert any((checkpoint_dir / "ft-replica-0").iterdir())
-    assert any((checkpoint_dir / "ft-replica-1").iterdir())
+    assert any((checkpoint_dir / "dataloader-replica-0").iterdir())
+    assert any((checkpoint_dir / "dataloader-replica-1").iterdir())
 
     for replica_id in (0, 1):
         status_path = run_dir / f"ft-status-replica-{replica_id}.json"

@@ -54,7 +54,7 @@ class RunnerSupervisor:
 
         self._heartbeat_enabled = False
         self._heartbeat_interval_seconds: float | None = None
-        self._heartbeat_dir_name = "heartbeats"
+        self._heartbeat_dir = "heartbeats"
         self._heartbeat_last_progress_time = time.time()
         self._heartbeat_thread: threading.Thread | None = None
         self._heartbeat_stop_event = threading.Event()
@@ -72,10 +72,10 @@ class RunnerSupervisor:
         if interval_seconds <= 0:
             raise ValueError(f"heartbeat.interval_seconds must be a positive number, got {interval_seconds}")
 
-        dir_name = os.fsdecode(config.get("dir_name", "heartbeats"))
+        heartbeat_dir = os.fsdecode(config.get("dir", "heartbeats"))
         self._heartbeat_enabled = True
         self._heartbeat_interval_seconds = interval_seconds
-        self._heartbeat_dir_name = dir_name
+        self._heartbeat_dir = heartbeat_dir
         self._heartbeat_last_progress_time = time.time()
         self._heartbeat_stop_event.clear()
         self.write_heartbeat(status="starting", event="startup")
@@ -124,7 +124,7 @@ class RunnerSupervisor:
         if not self._heartbeat_enabled:
             return
 
-        path = os.path.join(self.runner.workspace.dir, self._heartbeat_dir_name, f"rank-{self.runner.rank:05d}.json")
+        path = os.path.join(self.runner.workspace.dir, self._heartbeat_dir, f"rank-{self.runner.rank:05d}.json")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp_path = f"{path}.tmp-{os.getpid()}-{threading.get_ident()}"
         try:
@@ -172,7 +172,7 @@ class RunnerSupervisor:
         self.write_heartbeat(status=status, event=event)
         self._heartbeat_enabled = False
         self._heartbeat_interval_seconds = None
-        self._heartbeat_dir_name = "heartbeats"
+        self._heartbeat_dir = "heartbeats"
         self._heartbeat_stop_event.clear()
         self._heartbeat_warned = False
 
@@ -265,7 +265,7 @@ class RunnerSupervisor:
         self.runner.prepare_for_shutdown_checkpoint()
         self.runner.save_checkpoint(save_best=False, force=True)
 
-        drained = self.runner.close(timeout=self.runner.config.get("checkpoint.wait_timeout"))
+        drained = self.runner.close(timeout=self.runner.config.get("ckpt.wait_timeout_seconds"))
         if not drained:
             warn("runner shutdown: timed out while draining async checkpoints", RuntimeWarning, stacklevel=2)
 

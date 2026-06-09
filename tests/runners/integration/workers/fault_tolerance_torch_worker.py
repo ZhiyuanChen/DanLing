@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--replica-id", type=int, required=True)
     parser.add_argument("--group-size", type=int, required=True)
     parser.add_argument("--steps", type=int, required=True)
-    parser.add_argument("--auto-resume", action="store_true")
+    parser.add_argument("--resume", action="store_true")
     return parser.parse_args()
 
 
@@ -46,17 +46,17 @@ def main() -> None:
     run_dir = Path(args.run_dir)
     runner = TinyFaultToleranceTorchRunner(
         {
-            "log": False,
-            "dir": str(run_dir),
+            "logging.enabled": False,
+            "workspace.dir": str(run_dir),
             "stack": "ddp",
-            "backend": "gloo",
+            "dist.backend": "gloo",
             "steps": args.steps,
             "train_splits": ["train"],
             "evaluate_splits": [],
-            "auto_resume": args.auto_resume,
+            "resume": args.resume,
             "dataloader": {"batch_size": 1, "shuffle": False},
             "optim": {"type": "sgd", "lr": 0.1},
-            "checkpoint": {
+            "ckpt": {
                 "backend": "dcp",
                 "interval": 1,
                 "async_mode": "disabled",

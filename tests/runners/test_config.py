@@ -23,25 +23,25 @@ from danling.runners import RunnerConfig
 from danling.runners.config import DataloaderConfig
 
 
-def _checkpoint_ft_config() -> RunnerConfig:
+def _checkpoint_fault_tolerance_config() -> RunnerConfig:
     return RunnerConfig(
         {
-            "checkpoint": {
+            "ckpt": {
                 "backend": "DCP",
                 "async_mode": "async_with_pinned_mem",
                 "dedicated_async_process_group": False,
                 "async_process_group_backend": "gloo",
-                "enable_ft_dataloader_checkpoints": True,
-                "ft_replica_id": "replica-a",
-                "ft_dataloader_checkpoint_prefix": "ft-loader",
-                "exclude_from_loading": ["optimizer", "data_loader"],
-                "last_save_model_only": True,
+                "dataloader_checkpoint": {
+                    "enabled": True,
+                    "replica_id": "replica-a",
+                    "prefix": "ft-loader",
+                },
                 "export_dtype": "bf16",
             },
             "ft": {
                 "enabled": True,
                 "process_group": "gloo",
-                "process_group_timeout_ms": 1234,
+                "process_group_timeout_seconds": 1.234,
                 "replica_id": 1,
                 "group_size": 2,
                 "min_replica_size": 1,
@@ -66,12 +66,12 @@ def _fsdp_parallel_config() -> RunnerConfig:
                 "use_device_mesh": False,
                 "mesh_device_type": "cuda",
                 "pipeline_microbatch_size": 2,
-                "pipeline_n_microbatches": 4,
+                "pipeline_microbatches": 4,
             },
             "fsdp": {
                 "enabled": True,
                 "reshard_after_forward": False,
-                "mp_policy": {"param_dtype": "bf16"},
+                "mixed_precision_policy": {"param_dtype": "bf16"},
                 "offload_policy": {"pin_memory": True},
                 "ignored_params": ["weight"],
             },
@@ -82,7 +82,7 @@ def _fsdp_parallel_config() -> RunnerConfig:
 def test_runner_config_canonical_ignores_unused_parallelism_blocks_for_ddp() -> None:
     config_a = RunnerConfig(
         {
-            "log": False,
+            "logging.enabled": False,
             "stack": "ddp",
             "parallel.axes.tensor": 2,
             "parallel.axes.pipeline": 2,
@@ -92,7 +92,7 @@ def test_runner_config_canonical_ignores_unused_parallelism_blocks_for_ddp() -> 
     )
     config_b = RunnerConfig(
         {
-            "log": False,
+            "logging.enabled": False,
             "stack": "torch",
             "parallel.axes.tensor": 8,
             "parallel.axes.pipeline": 1,
@@ -104,10 +104,10 @@ def test_runner_config_canonical_ignores_unused_parallelism_blocks_for_ddp() -> 
     assert config_a.canonical() == config_b.canonical()
 
 
-def test_runner_config_canonical_ignores_ft_runtime_policy() -> None:
+def test_runner_config_canonical_ignores_fault_tolerance_runtime_policy() -> None:
     config_a = RunnerConfig(
         {
-            "log": False,
+            "logging.enabled": False,
             "stack": "parallel",
             "parallel.axes.replicate": 2,
             "parallel.axes.shard": 2,
@@ -123,7 +123,7 @@ def test_runner_config_canonical_ignores_ft_runtime_policy() -> None:
     )
     config_b = RunnerConfig(
         {
-            "log": False,
+            "logging.enabled": False,
             "stack": "parallel",
             "parallel.axes.replicate": 2,
             "parallel.axes.shard": 2,
@@ -146,7 +146,7 @@ def test_runner_config_compile_surface_matches_runtime_options() -> None:
     config = RunnerConfig(
         {
             "compile": {
-                "enable": True,
+                "enabled": True,
                 "backend": "inductor",
                 "mode": "max-autotune",
                 "options": {"trace.enabled": True},
@@ -156,12 +156,91 @@ def test_runner_config_compile_surface_matches_runtime_options() -> None:
         }
     )
 
-    assert config.compile.enable is True
+    assert config.compile.enabled is True
     assert config.compile.backend == "inductor"
     assert config.compile.mode == "max-autotune"
     assert dict(config.compile.options) == {"trace": {"enabled": True}}
     assert config.compile.precompile_artifact_dir == "/tmp/danling-compile"
     assert config.compile.memory_policy == "cpu_offload_all"
+
+
+def test_runner_config_common_runtime_surfaces_are_typed() -> None:
+    config = RunnerConfig(
+        {
+            "optim": {
+                "type": "adamw",
+                "lr": 1e-3,
+                "weight_decay": 1e-4,
+                "betas": [0.9, 0.95],
+                "eps": 1e-8,
+                "fused": True,
+            },
+            "sched": {
+                "type": "cosine",
+                "total_steps": 100,
+                "warmup_steps": 5,
+                "cooldown_steps": 10,
+                "final_lr_ratio": 1e-2,
+                "T_max": 100,
+                "eta_min": 1e-6,
+            },
+            "tensorboard": {
+                "enabled": True,
+                "comment": "debug",
+                "max_queue": 4,
+                "flush_secs": 30,
+                "filename_suffix": ".tb",
+            },
+            "wandb": {
+                "enabled": True,
+                "id": "run-a",
+                "notes": "smoke",
+                "resume": True,
+                "save_code": True,
+                "sync_tensorboard": True,
+            },
+            "profiling": {
+                "enabled": True,
+                "activities": ["cpu"],
+                "with_modules": True,
+                "acc_events": True,
+                "post_processing_timeout_seconds": 12.5,
+            },
+            "score": {
+                "patience": 3,
+            },
+            "logging": {
+                "file": "/tmp/danling.log",
+            },
+            "dataloader": {
+                "sampler": "sampler-a",
+                "batch_sampler": "batch-sampler-a",
+                "collate_fn": "collate-a",
+            },
+        }
+    )
+
+    assert config.optim.type == "adamw"
+    assert config.optim.lr == 1e-3
+    assert list(config.optim.betas) == [0.9, 0.95]
+    assert config.optim.fused is True
+    assert config.sched.type == "cosine"
+    assert config.sched.total_steps == 100
+    assert config.sched.T_max == 100
+    assert config.tensorboard.enabled is True
+    assert config.tensorboard.comment == "debug"
+    assert config.tensorboard.max_queue == 4
+    assert config.wandb.id == "run-a"
+    assert config.wandb.resume is True
+    assert config.wandb.sync_tensorboard is True
+    assert list(config.profiling.activities) == ["cpu"]
+    assert config.profiling.with_modules is True
+    assert config.profiling.post_processing_timeout_seconds == 12.5
+    assert config.score.patience == 3
+    assert config.logging.file == "/tmp/danling.log"
+    assert config.dataloader.sampler == "sampler-a"
+    assert config.dataloader.batch_sampler == "batch-sampler-a"
+    assert config.dataloader.collate_fn == "collate-a"
 
 
 def test_runner_config_dataloader_surface_matches_stateful_loader_options() -> None:
@@ -202,34 +281,32 @@ def test_runner_config_dataloader_keeps_explicit_surface() -> None:
 
 
 def test_runner_config_checkpoint_async_surface_matches_runtime_keys() -> None:
-    config = _checkpoint_ft_config()
+    config = _checkpoint_fault_tolerance_config()
 
-    assert config.checkpoint.async_mode == "async_with_pinned_mem"
-    assert config.checkpoint.dedicated_async_process_group is False
-    assert config.checkpoint.async_process_group_backend == "gloo"
+    assert config["ckpt"].async_mode == "async_with_pinned_mem"
+    assert config["ckpt"].dedicated_async_process_group is False
+    assert config["ckpt"].async_process_group_backend == "gloo"
 
 
-def test_runner_config_checkpoint_ft_dataloader_surface_matches_runtime_keys() -> None:
-    config = _checkpoint_ft_config()
+def test_runner_config_checkpoint_dataloader_checkpoint_surface_matches_runtime_keys() -> None:
+    config = _checkpoint_fault_tolerance_config()
 
-    assert config.checkpoint.enable_ft_dataloader_checkpoints is True
-    assert config.checkpoint.ft_replica_id == "replica-a"
-    assert config.checkpoint.ft_dataloader_checkpoint_prefix == "ft-loader"
-    assert list(config.checkpoint.exclude_from_loading) == ["optimizer", "data_loader"]
+    assert config["ckpt"].dataloader_checkpoint.enabled is True
+    assert config["ckpt"].dataloader_checkpoint.replica_id == "replica-a"
+    assert config["ckpt"].dataloader_checkpoint.prefix == "ft-loader"
 
 
 def test_runner_config_checkpoint_export_surface_matches_runtime_keys() -> None:
-    config = _checkpoint_ft_config()
+    config = _checkpoint_fault_tolerance_config()
 
-    assert config.checkpoint.last_save_model_only is True
-    assert config.checkpoint.export_dtype == "bf16"
-    assert config.canonical()["checkpoint"] == {"backend": "dcp"}
+    assert config["ckpt"].export_dtype == "bf16"
+    assert config.canonical()["ckpt"] == {"backend": "dcp"}
 
 
-def test_runner_config_ft_surface_matches_runtime_keys() -> None:
-    config = _checkpoint_ft_config()
+def test_runner_config_fault_tolerance_surface_matches_runtime_keys() -> None:
+    config = _checkpoint_fault_tolerance_config()
 
-    assert config.ft.process_group_timeout_ms == 1234
+    assert config.ft.process_group_timeout_seconds == 1.234
     assert config.ft.replica_id == 1
     assert config.ft.group_size == 2
 
@@ -252,7 +329,7 @@ def test_runner_config_parallel_options_match_runtime_keys() -> None:
     assert config.parallel.use_device_mesh is False
     assert config.parallel.mesh_device_type == "cuda"
     assert config.parallel.pipeline_microbatch_size == 2
-    assert config.parallel.pipeline_n_microbatches == 4
+    assert config.parallel.pipeline_microbatches == 4
 
 
 def test_runner_config_fsdp_surface_matches_runtime_keys() -> None:
@@ -260,6 +337,6 @@ def test_runner_config_fsdp_surface_matches_runtime_keys() -> None:
 
     assert config.fsdp.reshard_after_forward is False
     assert config.fsdp.enabled is True
-    assert dict(config.fsdp.mp_policy) == {"param_dtype": "bf16"}
+    assert dict(config.fsdp.mixed_precision_policy) == {"param_dtype": "bf16"}
     assert dict(config.fsdp.offload_policy) == {"pin_memory": True}
     assert list(config.fsdp.ignored_params) == ["weight"]

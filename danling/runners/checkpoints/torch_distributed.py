@@ -43,16 +43,26 @@ with try_import() as dcp_runtime:
     from torch.distributed.checkpoint.state_dict import set_model_state_dict as dcp_set_model_state_dict
     from torch.distributed.checkpoint.state_dict import set_optimizer_state_dict as dcp_set_optimizer_state_dict
 
-try:
-    from torch.distributed.checkpoint.state_dict_saver import AsyncCheckpointerType
-except ImportError:
-    AsyncCheckpointerType = None
+AsyncCheckpointerType: Any
+DefaultStager: Any
+StagingOptions: Any
 
 try:
-    from torch.distributed.checkpoint.staging import DefaultStager, StagingOptions
+    from torch.distributed.checkpoint.state_dict_saver import AsyncCheckpointerType as _AsyncCheckpointerType
+except ImportError:
+    AsyncCheckpointerType = None
+else:
+    AsyncCheckpointerType = _AsyncCheckpointerType
+
+try:
+    from torch.distributed.checkpoint.staging import DefaultStager as _DefaultStager
+    from torch.distributed.checkpoint.staging import StagingOptions as _StagingOptions
 except ImportError:
     DefaultStager = None
     StagingOptions = None
+else:
+    DefaultStager = _DefaultStager
+    StagingOptions = _StagingOptions
 
 DCP_PINNED_MEMORY_STAGING_AVAILABLE = (
     AsyncCheckpointerType is not None and DefaultStager is not None and StagingOptions is not None
@@ -76,6 +86,7 @@ class TorchDistributedCheckpointTask:
     no_dist: bool
     async_mode: str
     reliable: bool
+    write_runner_config: bool = True
 
 
 class _PointerUpdateError(RuntimeError):
@@ -210,7 +221,7 @@ class TorchDistributedCheckpointManager(CheckpointManager):
         self._pinned_memory_async_staging = DCP_PINNED_MEMORY_STAGING_AVAILABLE
         if self.checkpoint_async_mode() == "async_with_pinned_mem" and not self._pinned_memory_async_staging:
             warn(
-                "checkpoint.async_mode='async_with_pinned_mem' requested, but this PyTorch version does not expose "
+                "ckpt.async_mode='async_with_pinned_mem' requested, but this PyTorch version does not expose "
                 "pinned-memory async staging; falling back to DCP async save",
                 RuntimeWarning,
                 stacklevel=2,
@@ -296,7 +307,7 @@ class TorchDistributedCheckpointManager(CheckpointManager):
         """Load model state via DCP state-dict API."""
 
         options = cls.state_dict_options(options_cls, strict=strict)
-        dcp_set_model_state_dict(model, model_state_dict, options=options)
+        dcp_set_model_state_dict(model, dict(model_state_dict), options=options)
 
     @classmethod
     def load_optimizer_state(
@@ -314,7 +325,7 @@ class TorchDistributedCheckpointManager(CheckpointManager):
         dcp_set_optimizer_state_dict(
             model,
             optimizer,
-            optim_state_dict=optimizer_state_dict,
+            optim_state_dict=dict(optimizer_state_dict),
             options=options,
         )
 
@@ -327,7 +338,7 @@ class TorchDistributedCheckpointManager(CheckpointManager):
         force: bool = False,
     ) -> None:
         epochs = self.runner.train_state.epoch if epochs is None else epochs
-        if self.runner.config.get("checkpoint.load_only", False):
+        if not self.runner.config.get("ckpt.enabled", True):
             return
         should_persist = self.should_persist_checkpoint(epochs=epochs, last_step=last_step, force=force)
         should_update_best = bool(save_best and self.runner.is_best)
@@ -359,9 +370,53 @@ class TorchDistributedCheckpointManager(CheckpointManager):
                 self._on_checkpoint_task_failed(task, exc)
             self.raise_checkpoint_error_if_requested()
 
+    def save_model_checkpoint(self, name: str = "model") -> None:
+        if not self.runner.config.get("ckpt.enabled", True):
+            return
+
+        async_mode = self.checkpoint_async_mode()
+        normalized_name = self._normalize_name(name)
+        target_name = self._build_target_name(normalized_name)
+        pointers = _PendingPointers(
+            checkpoint_id=os.path.join(self.runner.workspace.checkpoint_dir, target_name),
+            target_name=target_name,
+            aliases=(normalized_name,),
+            update_best=False,
+            track_for_retention=False,
+        )
+        task = TorchDistributedCheckpointTask(
+            state=self.build_model_checkpoint_payload(),
+            checkpoint_id=pointers.checkpoint_id,
+            pointers=pointers,
+            no_dist=not (dist.is_available() and dist.is_initialized()),
+            async_mode=async_mode,
+            reliable=True,
+            write_runner_config=False,
+        )
+
+        if async_mode != "disabled":
+            self._enqueue_async_task(task)
+            return
+
+        try:
+            self._save_task(task)
+        except Exception as exc:
+            if isinstance(exc, _PointerUpdateError):
+                self._on_pointer_update_failed(task, exc)
+            else:
+                self._on_checkpoint_task_failed(task, exc)
+            self.raise_checkpoint_error_if_requested()
+
     def load_checkpoint(self, checkpoint: bytes | str | os.PathLike) -> dict[str, Any]:
         checkpoint_id = self._resolve_checkpoint_id(checkpoint)
         state = self.runner.state_dict()
+        no_dist = not (dist.is_available() and dist.is_initialized())
+        dcp.load(state, checkpoint_id=checkpoint_id, no_dist=no_dist)
+        return dict(state)
+
+    def load_model_checkpoint(self, checkpoint: bytes | str | os.PathLike) -> dict[str, Any]:
+        checkpoint_id = self._resolve_checkpoint_id(checkpoint)
+        state = dict(self.build_model_checkpoint_payload())
         no_dist = not (dist.is_available() and dist.is_initialized())
         dcp.load(state, checkpoint_id=checkpoint_id, no_dist=no_dist)
         return dict(state)
@@ -555,11 +610,12 @@ class TorchDistributedCheckpointManager(CheckpointManager):
         return task.reliable
 
     def _on_async_task_succeeded(self, task: TorchDistributedCheckpointTask) -> None:
-        try:
-            self._write_runner_config(task.checkpoint_id)
-        except Exception as exc:
-            self._on_checkpoint_task_failed(task, exc)
-            return
+        if task.write_runner_config:
+            try:
+                self._write_runner_config(task.checkpoint_id)
+            except Exception as exc:
+                self._on_checkpoint_task_failed(task, exc)
+                return
         if not self._is_io_rank():
             return
         try:
@@ -620,12 +676,12 @@ class TorchDistributedCheckpointManager(CheckpointManager):
         if self._async_process_group is not None:
             return self._async_process_group
 
-        if not self.runner.config.get("checkpoint.dedicated_async_process_group", True):
+        if not self.runner.config.get("ckpt.dedicated_async_process_group", True):
             return None
         if not (dist.is_available() and dist.is_initialized()):
             return None
 
-        backend = self.runner.config.get("checkpoint.async_process_group_backend", "gloo")
+        backend = self.runner.config.get("ckpt.async_process_group_backend", "gloo")
         try:
             process_group = dist.new_group(backend=backend)
         except Exception as exc:
@@ -686,11 +742,12 @@ class TorchDistributedCheckpointManager(CheckpointManager):
 
     def _save_task(self, task: TorchDistributedCheckpointTask, *, apply_pointers: bool = True) -> None:
         dcp.save(task.state, checkpoint_id=task.checkpoint_id, no_dist=task.no_dist)
-        try:
-            self._write_runner_config(task.checkpoint_id)
-        except Exception:
-            self.purge_unpublished_checkpoint(task)
-            raise
+        if task.write_runner_config:
+            try:
+                self._write_runner_config(task.checkpoint_id)
+            except Exception:
+                self.purge_unpublished_checkpoint(task)
+                raise
         if apply_pointers and self._is_io_rank():
             self.apply_pointer_updates(task.pointers)
 
@@ -710,11 +767,11 @@ class TorchDistributedCheckpointManager(CheckpointManager):
         }
         if not task.no_dist:
             process_group = self._ensure_async_process_group()
-            if process_group is None and self.runner.config.get("checkpoint.dedicated_async_process_group", True):
+            if process_group is None and self.runner.config.get("ckpt.dedicated_async_process_group", True):
                 raise RuntimeError(
                     "async DCP checkpoints require a dedicated async checkpoint process group; "
-                    "set checkpoint.dedicated_async_process_group=False to explicitly use the default process group "
-                    "or use checkpoint.async_mode='disabled'"
+                    "set ckpt.dedicated_async_process_group=False to explicitly use the default process group "
+                    "or use ckpt.async_mode='disabled'"
                 )
             if process_group is not None:
                 save_kwargs["process_group"] = process_group
@@ -723,7 +780,7 @@ class TorchDistributedCheckpointManager(CheckpointManager):
             if self._stager is None:
                 self._stager = DefaultStager(StagingOptions(True, True, True, True))
             save_kwargs["async_stager"] = self._stager
-        response = dcp.async_save(task.state, **save_kwargs)
+        response = dcp.async_save(dict(task.state), **save_kwargs)
         future = self._as_future(response)
         if future is None:
             raise RuntimeError("dcp.async_save did not return a Future-compatible handle")

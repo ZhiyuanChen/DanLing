@@ -47,7 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--steps", type=int, required=True)
     parser.add_argument("--signal-after-steps", type=int, default=0)
-    parser.add_argument("--auto-resume", action="store_true")
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--status-name", default="status")
     return parser.parse_args()
 
@@ -58,17 +58,17 @@ def main() -> None:
     exit_code = 0
     runner = SigtermTorchRunner(
         {
-            "log": False,
-            "dir": str(run_dir),
+            "logging.enabled": False,
+            "workspace.dir": str(run_dir),
             "stack": "ddp",
-            "backend": "gloo",
+            "dist.backend": "gloo",
             "steps": args.steps,
             "train_splits": ["train"],
             "evaluate_splits": [],
-            "auto_resume": args.auto_resume,
+            "resume": args.resume,
             "dataloader": {"batch_size": 1, "shuffle": False},
             "optim": {"type": "sgd", "lr": 0.1},
-            "checkpoint": {
+            "ckpt": {
                 "backend": "dcp",
                 "interval": 100,
                 "async_mode": "disabled",

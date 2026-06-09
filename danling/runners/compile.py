@@ -38,7 +38,7 @@ class Compiler:
 
     @property
     def enabled(self) -> bool:
-        return bool(self.config.get("enable", False))
+        return bool(self.config.get("enabled", False))
 
     @property
     def precompile_artifact_dir(self) -> str | None:

@@ -47,7 +47,7 @@ def test_build_fsdp2_kwargs_translates_supported_runtime_options() -> None:
         offload_policy="offload",
         config_name="fsdp",
         supported_keys={"enabled", "mode", "reshard_after_forward", "ignored_params"},
-        support_hint="mesh/reshard_after_forward/mp_policy/offload_policy",
+        support_hint="mesh/reshard_after_forward/mixed_precision_policy/offload_policy",
     )
 
     assert kwargs["mesh"] == "mesh"
@@ -66,5 +66,5 @@ def test_build_fsdp2_kwargs_rejects_unsupported_options() -> None:
             offload_policy=None,
             config_name="fsdp",
             supported_keys=set(),
-            support_hint="mesh/reshard_after_forward/mp_policy/offload_policy",
+            support_hint="mesh/reshard_after_forward/mixed_precision_policy/offload_policy",
         )
