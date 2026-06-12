@@ -1122,10 +1122,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#baserunner-contract" class="md-nav__link">
+  <a href="#common-workflows" class="md-nav__link">
     <span class="md-ellipsis">
       
-        BaseRunner contract
+        Common workflows
       
     </span>
   </a>
@@ -1133,10 +1133,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#launch-modes" class="md-nav__link">
+  <a href="#baserunner-contract" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Launch modes
+        BaseRunner contract
       
     </span>
   </a>
@@ -1210,6 +1210,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#parallel-topology" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parallel topology
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#pipeline-aware-hooks" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1267,50 +1278,70 @@
 <li><code>TorchRunner</code>: shared Torch training core with explicit epoch-mode and step-mode loops</li>
 <li><code>TorchRunner</code> / <code>ParallelRunner</code> / <code>DeepSpeedRunner</code>: class-based stack runners</li>
 </ul>
-<p>Parallel topology is configured through semantic axes:</p>
-<div class="language-yaml highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">YAML</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-1">1</a></span>
-<span class="normal"><a href="#__codelineno-0-2">2</a></span>
-<span class="normal"><a href="#__codelineno-0-3">3</a></span>
-<span class="normal"><a href="#__codelineno-0-4">4</a></span>
-<span class="normal"><a href="#__codelineno-0-5">5</a></span>
-<span class="normal"><a href="#__codelineno-0-6">6</a></span>
-<span class="normal"><a href="#__codelineno-0-7">7</a></span>
-<span class="normal"><a href="#__codelineno-0-8">8</a></span>
-<span class="normal"><a href="#__codelineno-0-9">9</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1"></a><span class="nt">parallel</span><span class="p">:</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2"></a><span class="w">  </span><span class="nt">axes</span><span class="p">:</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3"></a><span class="w">    </span><span class="nt">replicate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4"></a><span class="w">    </span><span class="nt">shard</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5"></a><span class="w">    </span><span class="nt">context</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6"></a><span class="w">    </span><span class="nt">pipeline</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7"></a><span class="w">    </span><span class="nt">tensor</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8"></a><span class="w">    </span><span class="nt">expert</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9"></a><span class="w">    </span><span class="nt">expert_tensor</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
-</span></code></pre></div></td></tr></table></div>
-<p>Data loading and metric reduction are scoped to the logical <code>data</code> domain.
-Middle pipeline stages automatically use step-only proxy loaders so pipeline schedules
-preserve step count and dataloader state without consuming real input batches locally.
-Optimizer control decisions, such as non-finite-gradient skip, are reduced over
-the <code>optimizer</code> domain covering all configured parallel axes so stages/shards do
-not diverge on step/skip boundaries.
-<code>TorchRunner</code>-based stacks build <code>torchdata.stateful_dataloader.StatefulDataLoader</code>
-by default so train dataloader progress is checkpointable across restart paths.
-Explicit user-provided dataloaders are not rewrapped.</p>
-<p><code>ParallelRunner</code> exposes topology-, pipeline-, and FSDP-aware extension points:</p>
+<h2 id="common-workflows">Common workflows<a class="headerlink" href="#common-workflows" title="Permanent link">&para;</a></h2>
+<p>The default entrypoint is direct:</p>
 <ul>
-<li><code>build_topology</code>: validate/construct ordered parallel axes from config + world state</li>
-<li><code>init_model_parallel_groups</code>: initialize model-parallel process groups/device mesh</li>
-<li><code>parallelize_model</code>: apply model-specific TP/CP/EP transforms before compile/FSDP wrapping</li>
-<li><code>build_pipeline_schedule</code>: build <code>torch.distributed.pipelining</code> schedule from config</li>
-<li><code>bind_pipeline_modules</code>: bind local model parts to pipeline stages</li>
-<li><code>apply_activation_checkpointing</code>: wrap local model parts before compile/FSDP wrapping</li>
-<li><code>fsdp_kwargs</code> / <code>build_mixed_precision_policy</code> / <code>build_offload_policy</code>: customize FSDP wrapping policy</li>
-<li><code>build_optimizer</code>: deduplicate parameters across local model parts before optimizer build</li>
+<li>Scratch: <code>runner = Runner(config)</code></li>
+<li>Resume full training state: <code>runner = Runner.from_checkpoint(checkpoint)</code> or <code>runner.load_checkpoint(checkpoint)</code></li>
+<li>Initialize model weights only: <code>runner = Runner.from_pretrained(config, checkpoint)</code> or <code>runner.load_pretrained(checkpoint)</code></li>
 </ul>
-<p>If any of <code>parallel.axes.tensor</code>, <code>parallel.axes.context</code>, <code>parallel.axes.expert</code>,
-or <code>parallel.axes.expert_tensor</code> is greater than <code>1</code>, the model must either expose
-<code>model.parallelize(parallel_context)</code> or the runner must override
-<code>parallelize_model</code>. DanLing intentionally does not silently no-op model-parallel
-axes, because TP/CP/EP transforms are model-architecture specific.</p>
+<p>The config keys follow the same split:</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>checkpoint</code></td>
+<td>Explicit full-state checkpoint source. Loads runner state, model/EMA, optimizer, scheduler, and dataloaders.</td>
+</tr>
+<tr>
+<td><code>resume</code></td>
+<td>Boolean auto-resume switch. When <code>True</code>, loads <code>latest</code> from the current run checkpoint directory.</td>
+</tr>
+<tr>
+<td><code>pretrained</code></td>
+<td>Model-only initialization source. Loads EMA/model weights and leaves optimizer, scheduler, runner state, and dataloaders untouched.</td>
+</tr>
+<tr>
+<td><code>ckpt</code></td>
+<td>Checkpoint write policy only: backend, directory, async mode, interval, retention, export dtype, and write enablement.</td>
+</tr>
+</tbody>
+</table>
+<p>Load-source precedence is <code>checkpoint</code> &gt; <code>resume</code> &gt; <code>pretrained</code>.</p>
+<p>Common config shapes:</p>
+<div class="language-yaml highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">YAML</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-1"> 1</a></span>
+<span class="normal"><a href="#__codelineno-0-2"> 2</a></span>
+<span class="normal"><a href="#__codelineno-0-3"> 3</a></span>
+<span class="normal"><a href="#__codelineno-0-4"> 4</a></span>
+<span class="normal"><a href="#__codelineno-0-5"> 5</a></span>
+<span class="normal"><a href="#__codelineno-0-6"> 6</a></span>
+<span class="normal"><a href="#__codelineno-0-7"> 7</a></span>
+<span class="normal"><a href="#__codelineno-0-8"> 8</a></span>
+<span class="normal"><a href="#__codelineno-0-9"> 9</a></span>
+<span class="normal"><a href="#__codelineno-0-10">10</a></span>
+<span class="normal"><a href="#__codelineno-0-11">11</a></span>
+<span class="normal"><a href="#__codelineno-0-12">12</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1"></a><span class="c1"># Resume from a known full-state checkpoint.</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2"></a><span class="nt">checkpoint</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">experiments/lin-&lt;code_id&gt;/&lt;id&gt;/checkpoints/latest.pth</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3"></a>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4"></a><span class="c1"># Or auto-resume from this run&#39;s own latest checkpoint.</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5"></a><span class="nt">resume</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6"></a>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7"></a><span class="c1"># Finetune from model weights only.</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8"></a><span class="nt">pretrained</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">experiments/lin-&lt;code_id&gt;/&lt;id&gt;/checkpoints/model.pth</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9"></a>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10"></a><span class="c1"># Disable all checkpoint writes while still allowing checkpoint/pretrained loading.</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11"></a><span class="nt">ckpt</span><span class="p">:</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12"></a><span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+</span></code></pre></div></td></tr></table></div>
+<p><code>ckpt.enabled=False</code> disables <code>latest</code>, <code>best</code>, history, and <code>model</code> writes. It does not disable reads from
+<code>checkpoint</code>, <code>resume</code>, or <code>pretrained</code>.
+CLI overrides use the same keys, for example <code>--checkpoint ...</code>, <code>--resume</code>, <code>--pretrained ...</code>, or
+<code>--ckpt.enabled false</code>.</p>
 <h2 id="baserunner-contract">BaseRunner contract<a class="headerlink" href="#baserunner-contract" title="Permanent link">&para;</a></h2>
 <p><code>BaseRunner</code> is inheritance-first and keeps only cross-backend functionality.
 There is no plugin/spec registry layer.</p>
@@ -1342,37 +1373,23 @@ metadata once user-owned attributes are present.</p>
 <li><code>scores</code></li>
 <li><code>best_index</code></li>
 </ul>
-<h2 id="launch-modes">Launch modes<a class="headerlink" href="#launch-modes" title="Permanent link">&para;</a></h2>
-<ul>
-<li>Scratch: <code>runner = Runner(config)</code></li>
-<li>Resume: <code>runner = Runner.from_checkpoint(checkpoint)</code> or <code>runner.load_checkpoint(checkpoint)</code></li>
-<li>Finetune: <code>runner = Runner.from_pretrained(config, checkpoint)</code> or <code>runner.load_pretrained(checkpoint)</code></li>
-</ul>
-<p>Config source hints:</p>
-<ul>
-<li><code>config.auto_resume</code>: when enabled, auto-resume from backend latest checkpoint source</li>
-<li><code>config.resume</code>: source used for full-state resume workflows</li>
-<li><code>config.pretrained</code>: source used for model-only initialization workflows</li>
-<li><code>config.checkpoint</code>: checkpoint policy only (backend/async/interval/retention), never a source path</li>
-</ul>
-<p>Source precedence:</p>
-<ul>
-<li><code>resume</code> &gt; <code>auto_resume</code> &gt; <code>pretrained</code></li>
-</ul>
 <h2 id="checkpoint-semantics">Checkpoint semantics<a class="headerlink" href="#checkpoint-semantics" title="Permanent link">&para;</a></h2>
 <p>The user-facing checkpoint contract is intentionally small:</p>
 <ul>
 <li><code>latest</code>: the most recent persisted full-state checkpoint.</li>
 <li><code>best</code>: the best persisted full-state checkpoint, updated only when <code>save_best=True</code> and the current score is best.</li>
+<li><code>model</code>: a model-only checkpoint written after normal training completion for publishing or <code>pretrained</code> loading.</li>
 <li>History checkpoints: periodic snapshots created by the training loop.</li>
 <li>epoch mode: <code>ckpt-e{completed_epoch:06d}</code></li>
 <li>step mode: <code>ckpt-s{global_step:012d}</code></li>
-<li><code>checkpoint.keep_latest_k</code>: number of framework-generated historical checkpoints to retain.
+<li><code>ckpt.keep_latest_k</code>: number of framework-generated historical checkpoints to retain.
   <code>0</code> disables automatic retention pruning. When enabled, current <code>latest</code> and <code>best</code> targets are protected.</li>
 </ul>
-<p>Periodic checkpoint attempts are controlled by <code>checkpoint_interval</code>.
-When <code>checkpoint_interval</code> is unset, runner defaults are used by mode (<code>epochs</code>: every epoch, <code>steps</code>: budget/20).
-Forced checkpoints, including final and graceful-shutdown checkpoints, bypass the interval and update <code>latest</code>.</p>
+<p>Periodic checkpoint attempts are controlled by <code>ckpt.interval</code>.
+When <code>ckpt.interval</code> is unset, runner defaults are used by mode (<code>epochs</code>: every epoch, <code>steps</code>: budget/20).
+Forced checkpoints, including final and graceful-shutdown checkpoints, bypass the interval and update <code>latest</code>.
+Normal training completion also writes <code>model</code> without changing <code>latest</code>, <code>best</code>, or history aliases.
+All checkpoint writes are gated by <code>ckpt.enabled</code>; loading paths are independent.</p>
 <p>Backend storage is an implementation detail:</p>
 <ul>
 <li>File backend stores <code>latest.pth</code>, <code>best.pth</code>, and <code>ckpt-*.pth</code>.
@@ -1381,14 +1398,17 @@ Forced checkpoints, including final and graceful-shutdown checkpoints, bypass th
   background writes; use DCP for distributed or large-model training.</li>
 <li>DCP backend exposes the same logical names (<code>latest</code>, <code>best</code>, <code>ckpt-*</code>) but stores immutable physical target directories plus pointer files.
   This avoids overwriting checkpoints while async writers or external readers may still hold references.</li>
-<li>DeepSpeed backend stores engine checkpoint tag directories plus pointer files for the same logical names.</li>
+<li>DeepSpeed full-state saves use engine checkpoint tag directories plus pointer files for <code>latest</code>, <code>best</code>, and history names.
+  DeepSpeed model-only export still writes a DanLing <code>model</code> payload for publication and <code>pretrained</code> loading.</li>
 <li>Retention policy is enforced by DanLing-managed file and DCP checkpoint managers.</li>
 </ul>
 <p>Rank participation contract:</p>
 <ul>
-<li><code>BaseRunner.save_checkpoint</code> is main-process only and backs file-style single-writer saves.</li>
-<li><code>TorchRunner.save_checkpoint</code> bypasses that main-process guard when <code>checkpoint.backend="dcp"</code>; all ranks must participate in DCP saves.</li>
-<li><code>DeepSpeedRunner.save_checkpoint</code> uses DeepSpeed engine checkpointing; all ranks participate in those saves.</li>
+<li><code>BaseRunner.save_checkpoint</code> and <code>save_model_checkpoint</code> delegate participation to the active checkpoint manager:
+  file-style managers write on the main process; collective managers require all participating ranks to enter the call.</li>
+<li><code>TorchRunner</code> uses the configured manager (<code>file</code>, <code>dcp</code>, or TorchFT-backed DCP) for full-state and model-only saves.</li>
+<li><code>DeepSpeedRunner.save_checkpoint</code> uses DeepSpeed engine checkpointing for full-state saves; all ranks participate in those saves.</li>
+<li><code>DeepSpeedRunner.save_model_checkpoint</code> exports the unwrapped engine module as a DanLing model-only checkpoint for publication or <code>pretrained</code>.</li>
 <li>When <code>config.ft.enabled=True</code> under <code>TorchRunner</code>/DDP or <code>ParallelRunner</code> FSDP, full DCP saves are gated to the TorchFT participating replica group.
   Other replica groups save only their per-replica dataloader state.</li>
 </ul>
@@ -1396,9 +1416,9 @@ Forced checkpoints, including final and graceful-shutdown checkpoints, bypass th
 <ul>
 <li><code>CheckpointManager</code>: base contract</li>
 <li><code>FileCheckpointManager</code>: default async filesystem manager with reliable history/best queueing plus latest-wins coalescing for non-critical saves</li>
-<li><code>TorchDistributedCheckpointManager</code>: Torch DCP backend used when <code>checkpoint.backend="dcp"</code> in <code>TorchRunner</code></li>
+<li><code>TorchDistributedCheckpointManager</code>: Torch DCP backend used when <code>ckpt.backend="dcp"</code> in <code>TorchRunner</code></li>
 </ul>
-<p><code>ParallelRunner</code> forces <code>checkpoint.backend="dcp"</code> by default.</p>
+<p><code>ParallelRunner</code> forces <code>ckpt.backend="dcp"</code> by default.</p>
 <h2 id="dataloader-state">Dataloader state<a class="headerlink" href="#dataloader-state" title="Permanent link">&para;</a></h2>
 <p>Full-state checkpoints include split-keyed dataloader progress under the top-level
 <code>dataloaders</code> payload.</p>
@@ -1420,7 +1440,7 @@ Forced checkpoints, including final and graceful-shutdown checkpoints, bypass th
 <li><code>ft.group_size</code></li>
 <li><code>ft.min_replica_size</code></li>
 <li><code>ft.process_group</code></li>
-<li><code>ft.process_group_timeout_ms</code></li>
+<li><code>ft.process_group_timeout_seconds</code></li>
 <li>requires the external <code>torchft</code> package and a TorchFT lighthouse setup</li>
 </ul>
 <p>Current scope:</p>
@@ -1436,7 +1456,8 @@ Forced checkpoints, including final and graceful-shutdown checkpoints, bypass th
 </ul>
 <p>When TorchFT is enabled:</p>
 <ul>
-<li>dataloader sharding and seed bias are expanded across replica groups using <code>ft.replica_id</code> and <code>ft.group_size</code></li>
+<li>dataloader sharding and seed bias are expanded across replica groups using
+  <code>ft.replica_id</code> and <code>ft.group_size</code></li>
 <li>FSDP2 replicated-dimension all-reduce hooks use TorchFT-managed process groups</li>
 <li>loss/normalizer logging reductions use the TorchFT managed replica group when available</li>
 <li>per-replica dataloader checkpoints are enabled automatically through the DCP checkpoint manager and win over main-checkpoint dataloader state on restore</li>
@@ -1447,31 +1468,29 @@ Forced checkpoints, including final and graceful-shutdown checkpoints, bypass th
 <li>Checkpoint restore order is model -&gt; EMA -&gt; optimizer -&gt; scheduler -&gt; dataloaders.</li>
 <li>File checkpoint fallback is only for non-distributed/basic flows.</li>
 </ul>
-<p>Async policy is configured by <code>checkpoint.async_mode</code>:</p>
+<p>Async policy is configured by <code>ckpt.async_mode</code>:</p>
 <ul>
 <li><code>disabled</code>: synchronous checkpoint writes</li>
 <li><code>async</code>: asynchronous uploads</li>
 <li><code>async_with_pinned_mem</code>: process-based async uploads with staging hook support (<code>maybe_wait_for_staging</code>)</li>
 </ul>
-<p>When <code>checkpoint.async_mode</code> is unset, DanLing falls back to legacy <code>checkpoint_async</code> (<code>True</code> -&gt; <code>async</code>, <code>False</code> -&gt; <code>disabled</code>).</p>
 <h2 id="directory-hierarchy">Directory hierarchy<a class="headerlink" href="#directory-hierarchy" title="Permanent link">&para;</a></h2>
 <p>DanLing now uses a stable run layout with per-attempt timestamps:</p>
-<p><code>workspace_root/lineage[-code_id]/id</code></p>
+<p><code>workspace.root/workspace.lineage[-code_id]/id</code></p>
 <ul>
-<li><code>lineage</code>: top-level lineage namespace</li>
-<li><code>code_id</code>: git code identity (<code>&lt;short_sha&gt;</code> for clean trees, <code>&lt;short_sha&gt;-d&lt;diff_sha10&gt;</code> when dirty) appended to lineage when available</li>
-<li><code>experiment</code>: experiment namespace</li>
+<li><code>workspace.lineage</code>: top-level lineage namespace</li>
+<li><code>code_id</code>: git code identity (<code>&lt;short_sha&gt;</code> for clean trees, <code>&lt;short_sha&gt;-d&lt;diff_sha10&gt;</code> when dirty) appended to <code>workspace.lineage</code> when available</li>
 <li><code>config_id</code>: deterministic hash of canonical config (<code>hash(config)</code> derived)</li>
 <li><code>id</code>: stable run identifier, defaults to <code>code_id-config_id</code> when git metadata is available and <code>config_id</code> otherwise</li>
-<li>
-<p><code>timestamp</code>: per-attempt runtime timestamp
-  By default:</p>
-</li>
-<li>
-<p><code>dir</code> points to <code>workspace_root/lineage[-code_id]/id</code></p>
-</li>
-<li>checkpoints and result snapshots are stored at <code>dir</code></li>
-<li>logs are stored as <code>dir/logs/{timestamp}.log</code></li>
+<li><code>timestamp</code>: per-attempt runtime timestamp</li>
+<li><code>workspace.experiment</code>: experiment label used in the default runner name and W&amp;B group; it is not a path segment unless user code includes it in <code>workspace.dir</code></li>
+</ul>
+<p>By default:</p>
+<ul>
+<li><code>dir</code> points to <code>workspace.root/workspace.lineage[-code_id]/id</code></li>
+<li>checkpoints are stored at <code>ckpt.dir</code> (default <code>dir/checkpoints</code>)</li>
+<li>result snapshots are stored at <code>dir</code></li>
+<li>logs are stored at <code>logging.file</code> (default <code>dir/logs/{timestamp}.log</code>)</li>
 <li>tensorboard logs are stored as <code>dir/tensorboard/{timestamp}</code></li>
 <li>W&amp;B local run files default to <code>dir/wandb/</code> when W&amp;B logging is enabled</li>
 <li>reproducibility artifacts are stored at <code>dir/metadata</code>:</li>
@@ -1551,6 +1570,51 @@ indirection in hot paths.</p>
 </span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12"></a><span class="n">cfg</span><span class="o">.</span><span class="n">stack</span> <span class="o">=</span> <span class="s2">&quot;parallel&quot;</span>
 </span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13"></a><span class="n">parallel_from_runner</span> <span class="o">=</span> <span class="n">dl</span><span class="o">.</span><span class="n">Runner</span><span class="p">(</span><span class="n">cfg</span><span class="p">)</span>
 </span></code></pre></div></td></tr></table></div>
+<h2 id="parallel-topology">Parallel topology<a class="headerlink" href="#parallel-topology" title="Permanent link">&para;</a></h2>
+<p>Parallel topology is configured through semantic axes:</p>
+<div class="language-yaml highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">YAML</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-3-1">1</a></span>
+<span class="normal"><a href="#__codelineno-3-2">2</a></span>
+<span class="normal"><a href="#__codelineno-3-3">3</a></span>
+<span class="normal"><a href="#__codelineno-3-4">4</a></span>
+<span class="normal"><a href="#__codelineno-3-5">5</a></span>
+<span class="normal"><a href="#__codelineno-3-6">6</a></span>
+<span class="normal"><a href="#__codelineno-3-7">7</a></span>
+<span class="normal"><a href="#__codelineno-3-8">8</a></span>
+<span class="normal"><a href="#__codelineno-3-9">9</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1"></a><span class="nt">parallel</span><span class="p">:</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2"></a><span class="w">  </span><span class="nt">axes</span><span class="p">:</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3"></a><span class="w">    </span><span class="nt">replicate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4"></a><span class="w">    </span><span class="nt">shard</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5"></a><span class="w">    </span><span class="nt">context</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6"></a><span class="w">    </span><span class="nt">pipeline</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7"></a><span class="w">    </span><span class="nt">tensor</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8"></a><span class="w">    </span><span class="nt">expert</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9"></a><span class="w">    </span><span class="nt">expert_tensor</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</span></code></pre></div></td></tr></table></div>
+<p>Data loading and metric reduction are scoped to the logical <code>data</code> domain.
+Middle pipeline stages automatically use step-only proxy loaders so pipeline schedules
+preserve step count and dataloader state without consuming real input batches locally.
+Optimizer control decisions, such as non-finite-gradient skip, are reduced over
+the <code>optimizer</code> domain covering all configured parallel axes so stages/shards do
+not diverge on step/skip boundaries.
+<code>TorchRunner</code>-based stacks build <code>torchdata.stateful_dataloader.StatefulDataLoader</code>
+by default so train dataloader progress is checkpointable across restart paths.
+Explicit user-provided dataloaders are not rewrapped.</p>
+<p><code>ParallelRunner</code> exposes topology-, pipeline-, and FSDP-aware extension points:</p>
+<ul>
+<li><code>build_topology</code>: validate/construct ordered parallel axes from config + world state</li>
+<li><code>init_model_parallel_groups</code>: initialize model-parallel process groups/device mesh</li>
+<li><code>parallelize_model</code>: apply model-specific TP/CP/EP transforms before compile/FSDP wrapping</li>
+<li><code>build_pipeline_schedule</code>: build <code>torch.distributed.pipelining</code> schedule from config</li>
+<li><code>bind_pipeline_modules</code>: bind local model parts to pipeline stages</li>
+<li><code>apply_activation_checkpointing</code>: wrap local model parts before compile/FSDP wrapping</li>
+<li><code>fsdp_kwargs</code> / <code>build_mixed_precision_policy</code> / <code>build_offload_policy</code>: customize FSDP wrapping policy</li>
+<li><code>build_optimizer</code>: deduplicate parameters across local model parts before optimizer build</li>
+</ul>
+<p>If any of <code>parallel.axes.tensor</code>, <code>parallel.axes.context</code>, <code>parallel.axes.expert</code>,
+or <code>parallel.axes.expert_tensor</code> is greater than <code>1</code>, the model must either expose
+<code>model.parallelize(parallel_context)</code> or the runner must override
+<code>parallelize_model</code>. DanLing intentionally does not silently no-op model-parallel
+axes, because TP/CP/EP transforms are model-architecture specific.</p>
 <h2 id="pipeline-aware-hooks">Pipeline-aware hooks<a class="headerlink" href="#pipeline-aware-hooks" title="Permanent link">&para;</a></h2>
 <p><code>TorchRunner</code> exposes core training hooks that can be overridden:</p>
 <ul>
@@ -1571,7 +1635,8 @@ non-interleaved for current pipeline+FSDP stability, with migration to
 <thead>
 <tr>
 <th>Stack</th>
-<th>Checkpoint path</th>
+<th>Full-state checkpoint path</th>
+<th>Model-only export</th>
 <th>Stateful dataloaders</th>
 <th>TorchFT runtime</th>
 </tr>
@@ -1580,18 +1645,21 @@ non-interleaved for current pipeline+FSDP stability, with migration to
 <tr>
 <td><code>torch</code> / <code>ddp</code></td>
 <td>file default, DCP opt-in</td>
+<td>DanLing payload</td>
 <td>default for built loaders</td>
 <td>supported</td>
 </tr>
 <tr>
 <td><code>parallel</code></td>
 <td>DCP default</td>
+<td>DCP/DanLing model payload</td>
 <td>default plus pipeline proxy state delegation</td>
 <td>FSDP-only supported</td>
 </tr>
 <tr>
 <td><code>deepspeed</code> / <code>ds</code></td>
-<td>DeepSpeed engine checkpoint, file-style aliases</td>
+<td>DeepSpeed engine tag directories plus DanLing pointer files</td>
+<td>DanLing payload</td>
 <td>default for built loaders via client state</td>
 <td>not supported</td>
 </tr>
