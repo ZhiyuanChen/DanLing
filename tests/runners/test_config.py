@@ -20,7 +20,26 @@
 from __future__ import annotations
 
 from danling.runners import RunnerConfig
-from danling.runners.config import DataloaderConfig
+from danling.runners.config import (
+    CheckpointConfig,
+    CompileConfig,
+    DataloaderCheckpointConfig,
+    DataloaderConfig,
+    DistributedConfig,
+    FaultToleranceConfig,
+    Fp8Config,
+    FsdpConfig,
+    GcConfig,
+    HeartbeatConfig,
+    LoggingConfig,
+    ParallelAxesConfig,
+    ParallelConfig,
+    ProfilingConfig,
+    ScoreConfig,
+    TensorboardConfig,
+    WandbConfig,
+    WorkspaceConfig,
+)
 
 
 def _checkpoint_fault_tolerance_config() -> RunnerConfig:
@@ -140,6 +159,103 @@ def test_runner_config_canonical_ignores_fault_tolerance_runtime_policy() -> Non
 
     assert config_a.canonical() == config_b.canonical()
     assert hash(config_a) == hash(config_b)
+
+
+def test_runner_config_materializes_runtime_sections() -> None:
+    config = RunnerConfig()
+
+    expected_sections = {
+        "compile": CompileConfig,
+        "ckpt": CheckpointConfig,
+        "workspace": WorkspaceConfig,
+        "logging": LoggingConfig,
+        "tensorboard": TensorboardConfig,
+        "wandb": WandbConfig,
+        "score": ScoreConfig,
+        "fp8": Fp8Config,
+        "ft": FaultToleranceConfig,
+        "dist": DistributedConfig,
+        "gc": GcConfig,
+        "profiling": ProfilingConfig,
+        "heartbeat": HeartbeatConfig,
+        "dataloader": DataloaderConfig,
+        "fsdp": FsdpConfig,
+        "parallel": ParallelConfig,
+    }
+    for name, section_cls in expected_sections.items():
+        assert isinstance(config.get(name), section_cls)
+        assert isinstance(getattr(config, name), section_cls)
+
+    assert config.get("ckpt.backend") == "auto"
+    assert isinstance(config.get("ckpt.dataloader_checkpoint"), DataloaderCheckpointConfig)
+    assert config.get("ckpt.dataloader_checkpoint.enabled") is False
+    assert config.get("compile.enabled") is False
+    assert isinstance(config.get("parallel.axes"), ParallelAxesConfig)
+    assert config.get("parallel.axes.shard") == 1
+    assert config.get("workspace.root") == "experiments"
+
+    config.workspace.experiment = "changed"
+    config.parallel.axes.shard = 2
+    assert RunnerConfig().workspace.experiment == "exp"
+    assert RunnerConfig().parallel.axes.shard == 1
+
+
+def test_runner_config_keeps_training_sections_optional() -> None:
+    config = RunnerConfig()
+
+    assert config.get("optim") is None
+    assert config.get("sched") is None
+    assert "optim" not in config
+    assert "sched" not in config
+
+    explicit_none = RunnerConfig({"optim": None, "sched": None})
+    assert explicit_none.get("optim") is None
+    assert explicit_none.get("sched") is None
+    assert "optim" not in explicit_none.canonical()
+    assert "sched" not in explicit_none.canonical()
+
+
+def test_runner_config_canonical_ignores_materialized_default_sections() -> None:
+    canonical = RunnerConfig().canonical()
+
+    assert "compile" not in canonical
+    assert "ckpt" not in canonical
+    assert "dataloader" not in canonical
+    assert "fp8" not in canonical
+
+
+def test_runner_config_canonical_drops_defaults_and_preserves_explicit_none_values() -> None:
+    config = RunnerConfig(
+        {
+            "optim": {
+                "type": None,
+                "lr": 1e-3,
+            },
+            "sched": {
+                "interval": None,
+                "monitor": "val.loss",
+            },
+            "compile": {
+                "enabled": False,
+                "backend": None,
+                "optimize_ddp": None,
+            },
+            "dataloader": {
+                "batch_size": 8,
+                "train": {
+                    "shuffle": None,
+                    "drop_last": False,
+                },
+            },
+        }
+    )
+
+    canonical = config.canonical()
+
+    assert canonical["optim"] == {"type": None, "lr": 1e-3}
+    assert canonical["sched"] == {"monitor": "val.loss"}
+    assert canonical["compile"] == {"optimize_ddp": None}
+    assert canonical["dataloader"] == {"batch_size": 8, "train": {"shuffle": None, "drop_last": False}}
 
 
 def test_runner_config_compile_surface_matches_runtime_options() -> None:
