@@ -1402,8 +1402,8 @@ class TestTorchRunnerEpochExecution:
             result = runner.train_epoch("train")
             assert result["time"] > 0
             assert result["samples_per_s"] > 0
-            assert "max_memory_allocated_mb" not in result
-            assert "max_memory_reserved_mb" not in result
+            assert "mem_alloc_mb" not in result
+            assert "mem_reserved_mb" not in result
             assert "flops_per_s" not in result
             assert "mfu" not in result
         finally:
@@ -1437,8 +1437,8 @@ class TestTorchRunnerEpochExecution:
             assert result["time"] > 0
             assert result["tokens_per_s"] > 0
             assert "samples_per_s" not in result
-            assert "max_memory_allocated_mb" not in result
-            assert "max_memory_reserved_mb" not in result
+            assert "mem_alloc_mb" not in result
+            assert "mem_reserved_mb" not in result
         finally:
             runner.close()
 

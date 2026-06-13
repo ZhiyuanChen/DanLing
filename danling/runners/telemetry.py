@@ -218,9 +218,9 @@ class LoopTelemetry:
         if token_known and elapsed > 0:
             result["tokens_per_s"] = token_count / elapsed
         if peak_allocated_mb is not None:
-            result["max_memory_allocated_mb"] = peak_allocated_mb
+            result["mem_alloc_mb"] = peak_allocated_mb
         if peak_reserved_mb is not None:
-            result["max_memory_reserved_mb"] = peak_reserved_mb
+            result["mem_reserved_mb"] = peak_reserved_mb
         return result
 
     def emit_log(

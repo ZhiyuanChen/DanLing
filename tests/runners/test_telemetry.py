@@ -165,8 +165,8 @@ class TestLoopTelemetryAggregation:
 
         assert result == {
             "time": pytest.approx(0.5),
-            "max_memory_allocated_mb": 7.0,
-            "max_memory_reserved_mb": 11.0,
+            "mem_alloc_mb": 7.0,
+            "mem_reserved_mb": 11.0,
         }
 
     def test_loop_telemetry_consumes_interval_without_resetting_total(self) -> None:
@@ -213,8 +213,8 @@ class TestLoopTelemetryAggregation:
         assert result["time"] == pytest.approx(3.0)
         assert "samples_per_s" not in result
         assert result["tokens_per_s"] == pytest.approx(3.0)
-        assert result["max_memory_allocated_mb"] == 4.0
-        assert result["max_memory_reserved_mb"] == 6.0
+        assert result["mem_alloc_mb"] == 4.0
+        assert result["mem_reserved_mb"] == 6.0
 
 
 class TestLoopTelemetryRuntime:
@@ -236,8 +236,8 @@ class TestLoopTelemetryRuntime:
         assert result["loss"] == pytest.approx(2.0)
         assert result["samples_per_s"] == pytest.approx(2.5)
         assert result["tokens_per_s"] == pytest.approx(12.5)
-        assert result["max_memory_allocated_mb"] == 9.0
-        assert result["max_memory_reserved_mb"] == 13.0
+        assert result["mem_alloc_mb"] == 9.0
+        assert result["mem_reserved_mb"] == 13.0
 
     def test_emit_log_resets_interval(self) -> None:
         runner, telemetry, _ = _emit_training_log()
