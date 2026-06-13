@@ -454,7 +454,6 @@ class TorchDistributedCheckpointManager(CheckpointManager):
                     return False
                 except Exception as exc:
                     self.record_checkpoint_failure(exc)
-                    warn(f"dcp checkpoint staging failed: {exc}", RuntimeWarning, stacklevel=2)
                     self.raise_checkpoint_error_if_requested()
                 with self._lock:
                     if self._staging_future is staging_future:
@@ -516,7 +515,6 @@ class TorchDistributedCheckpointManager(CheckpointManager):
             return False
         except Exception as exc:
             self.record_checkpoint_failure(exc)
-            warn(f"dcp checkpoint staging failed: {exc}", RuntimeWarning, stacklevel=2)
             self.raise_checkpoint_error_if_requested()
 
         with self._lock:
@@ -625,7 +623,6 @@ class TorchDistributedCheckpointManager(CheckpointManager):
 
     def _on_checkpoint_task_failed(self, task: TorchDistributedCheckpointTask, exc: Exception) -> None:
         self.record_checkpoint_failure(exc, target=task.pointers.target_name)
-        warn(f"dcp checkpoint save failed: {exc}", RuntimeWarning, stacklevel=2)
         self.purge_unpublished_checkpoint(task)
 
     def _on_pointer_update_failed(self, task: TorchDistributedCheckpointTask, exc: Exception) -> None:
@@ -637,9 +634,8 @@ class TorchDistributedCheckpointManager(CheckpointManager):
             published_aliases = exc.published_aliases
             failure = exc.cause
         if published_aliases:
-            self._record_published_pointer_target(task.pointers, published_aliases)
+            self._record_published_pointer_target(task.pointers, published_aliases, emit=False)
         self.record_checkpoint_failure(failure, target=task.pointers.target_name, alias=failed_alias)
-        warn(f"failed to update dcp checkpoint pointers: {failure}", RuntimeWarning, stacklevel=2)
         self.purge_unpublished_checkpoint(task)
 
     def _on_async_task_failed(self, task: TorchDistributedCheckpointTask, exc: Exception) -> None:
@@ -815,10 +811,16 @@ class TorchDistributedCheckpointManager(CheckpointManager):
 
         self._record_published_pointer_target(pointers, tuple(published_aliases))
 
-    def _record_published_pointer_target(self, pointers: _PendingPointers, aliases: tuple[str, ...]) -> None:
+    def _record_published_pointer_target(
+        self,
+        pointers: _PendingPointers,
+        aliases: tuple[str, ...],
+        *,
+        emit: bool = True,
+    ) -> None:
         if pointers.track_for_retention:
             self._record_retained_target(pointers.target_name)
-        self.record_checkpoint_success(target=pointers.target_name, aliases=aliases)
+        self.record_checkpoint_success(target=pointers.target_name, aliases=aliases, emit=emit)
 
     def _record_retained_target(self, target_name: str) -> None:
         to_delete = self._record_retention_entry(

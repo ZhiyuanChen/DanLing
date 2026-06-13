@@ -19,9 +19,11 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import queue
 import shutil
+import socket
 import threading
 from abc import ABC, abstractmethod
 from collections import deque
@@ -38,6 +40,17 @@ from warnings import warn
 from danling.utils import load
 
 from ..config import RunnerConfig
+
+
+_STORAGE_FAILURE_ERRNOS = {errno.EDQUOT, errno.EIO, errno.ENOSPC}
+
+
+def storage_failure_name(exc: Exception) -> str | None:
+    if isinstance(exc, PermissionError):
+        return "PermissionError"
+    if isinstance(exc, OSError) and exc.errno in _STORAGE_FAILURE_ERRNOS:
+        return errno.errorcode.get(exc.errno, f"errno={exc.errno}")
+    return None
 
 
 class _PurgeTerminate:
@@ -155,7 +168,6 @@ class CheckpointManager(ABC):
     def _on_async_task_failed(self, task: Any, exc: Exception) -> None:
         del task
         self.record_checkpoint_failure(exc)
-        warn(f"checkpoint save failed: {exc}", RuntimeWarning, stacklevel=2)
 
     def _on_async_task_start_failed(self, task: Any, exc: Exception) -> None:
         self._on_async_task_failed(task, exc)
@@ -287,11 +299,87 @@ class CheckpointManager(ABC):
             self.checkpoint_health.record_failure(exc, target=target, alias=alias)
             if self.runner.config.get("ckpt.fail_on_error", False) and self._checkpoint_error_to_raise is None:
                 self._checkpoint_error_to_raise = exc
+        self._emit_checkpoint_failure(exc, target=target, alias=alias)
 
-    def record_checkpoint_success(self, *, target: str | None = None, aliases: tuple[str, ...] = ()) -> None:
+    def record_checkpoint_success(
+        self,
+        *,
+        target: str | None = None,
+        aliases: tuple[str, ...] = (),
+        emit: bool = True,
+    ) -> None:
         """Record a successfully published checkpoint target and aliases."""
         with self._lock:
             self.checkpoint_health.record_success(target=target, aliases=aliases)
+        if not emit:
+            return
+        self._emit_checkpoint_success(target=target, aliases=aliases)
+
+    def _checkpoint_event_fields(
+        self,
+        *,
+        target: str | None = None,
+        aliases: tuple[str, ...] = (),
+        alias: str | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        train_state = getattr(self.runner, "train_state", None)
+        fields: dict[str, Any] = {
+            "step": getattr(train_state, "global_step", None),
+            "epoch": getattr(train_state, "epoch", None),
+            "target": target,
+            "aliases": ",".join(aliases) if aliases else None,
+            "alias": alias,
+            "error": error,
+        }
+        return {key: value for key, value in fields.items() if value is not None}
+
+    @staticmethod
+    def _format_event(prefix: str, fields: Mapping[str, Any]) -> str:
+        return f"{prefix}: " + " ".join(f"{key}={value}" for key, value in fields.items())
+
+    def _rank_context(self) -> str:
+        rank = getattr(self.runner, "rank", 0)
+        world_size = getattr(self.runner, "world_size", 1)
+        return f"rank={rank}/{world_size} host={socket.gethostname()}"
+
+    def _emit_info(self, message: str) -> None:
+        distributed = bool(getattr(self.runner, "distributed", False))
+        is_main_process = bool(getattr(self.runner, "is_main_process", True))
+        if distributed and not is_main_process:
+            return
+        logger = getattr(self.runner, "logger", None)
+        if logger is not None:
+            logger.info(message)
+            return
+        print(message)
+
+    def _emit_warning(self, message: str) -> None:
+        logger = getattr(self.runner, "logger", None)
+        if logger is not None:
+            logger.warning(message)
+        warn(f"{message} {self._rank_context()}", RuntimeWarning, stacklevel=3)
+
+    def _emit_checkpoint_success(self, *, target: str | None = None, aliases: tuple[str, ...] = ()) -> None:
+        fields = self._checkpoint_event_fields(target=target, aliases=aliases)
+        self._emit_info(self._format_event("checkpoint saved", fields))
+
+    def _emit_checkpoint_failure(
+        self,
+        exc: Exception,
+        *,
+        target: str | None = None,
+        alias: str | None = None,
+    ) -> None:
+        storage_failure = storage_failure_name(exc)
+        if storage_failure is None:
+            error = f"{type(exc).__name__}: {exc}"
+            prefix = "checkpoint failed"
+        else:
+            error = f"{storage_failure}: {exc}"
+            prefix = "storage failure"
+        fields = self._checkpoint_event_fields(target=target, alias=alias, error=error)
+        self._emit_warning(self._format_event(prefix, fields))
 
     def raise_checkpoint_error_if_requested(self) -> None:
         """Raise a deferred checkpoint error when fail-on-error is enabled."""

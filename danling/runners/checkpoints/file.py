@@ -240,7 +240,6 @@ class FileCheckpointManager(CheckpointManager):
 
     def _on_checkpoint_task_failed(self, task: CheckpointTask, exc: Exception) -> None:
         self.record_checkpoint_failure(exc, target=task.history_name or task.name)
-        warn(f"checkpoint save failed: {exc}", RuntimeWarning, stacklevel=2)
 
     def _on_async_task_failed(self, task: CheckpointTask, exc: Exception) -> None:
         self._on_checkpoint_task_failed(task, exc)
@@ -295,7 +294,6 @@ class FileCheckpointManager(CheckpointManager):
         if not os.path.exists(source_path):
             exc = FileNotFoundError(f"checkpoint source path does not exist: {source_path!r}")
             self.record_checkpoint_failure(exc, target=alias_path, alias=alias_name)
-            warn(str(exc), RuntimeWarning, stacklevel=2)
             return False
 
         alias_tmp_path = f"{alias_path}.tmp-{self.runner.id}"
@@ -314,10 +312,5 @@ class FileCheckpointManager(CheckpointManager):
             shutil.copy2(source_path, alias_path)
         except OSError as exc:
             self.record_checkpoint_failure(exc, target=alias_path, alias=alias_name)
-            warn(
-                f"failed to update checkpoint alias {alias_path!r} from {source_path!r}: {exc}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
             return False
         return True

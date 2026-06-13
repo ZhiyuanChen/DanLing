@@ -309,7 +309,7 @@ def test_dcp_sidecar_failure_does_not_publish_orphan_checkpoint(tmp_path: Path) 
     (tmp_path / "ckpt-e000001-g000000000001-q000001" / "runner.yaml").mkdir(parents=True)
 
     runner.train_state.global_step = 1
-    with pytest.warns(RuntimeWarning, match="dcp checkpoint save failed"):
+    with pytest.warns(RuntimeWarning, match="checkpoint failed"):
         manager.save_checkpoint(epochs=0)
 
     _assert_checkpoint_failure(manager, IsADirectoryError, "ckpt-e000001-g000000000001-q000001")
@@ -326,7 +326,7 @@ def test_dcp_async_sidecar_failure_does_not_publish_orphan_checkpoint(tmp_path: 
     (tmp_path / "ckpt-e000001-g000000000001-q000001" / "runner.yaml").mkdir(parents=True)
 
     runner.train_state.global_step = 1
-    with pytest.warns(RuntimeWarning, match="dcp checkpoint save failed"):
+    with pytest.warns(RuntimeWarning, match="checkpoint failed"):
         manager.save_checkpoint(epochs=0)
         assert manager.close(timeout=10.0) is True
     _assert_checkpoint_failure(manager, IsADirectoryError, "ckpt-e000001-g000000000001-q000001")
@@ -342,7 +342,7 @@ def test_dcp_pointer_failure_is_recorded_without_interrupting(tmp_path: Path) ->
     (tmp_path / "latest.pointer").mkdir()
 
     runner.train_state.global_step = 1
-    with pytest.warns(RuntimeWarning, match="failed to update dcp checkpoint pointers"):
+    with pytest.warns(RuntimeWarning, match="checkpoint failed"):
         manager.save_checkpoint(epochs=0)
 
     _assert_checkpoint_failure(manager, OSError, "ckpt-e000001-g000000000001-q000001", alias="latest")
@@ -358,7 +358,7 @@ def test_dcp_async_pointer_failure_is_recorded_without_interrupting(tmp_path: Pa
     (tmp_path / "latest.pointer").mkdir()
 
     runner.train_state.global_step = 1
-    with pytest.warns(RuntimeWarning, match="failed to update dcp checkpoint pointers"):
+    with pytest.warns(RuntimeWarning, match="checkpoint failed"):
         manager.save_checkpoint(epochs=0)
         assert manager.close(timeout=10.0) is True
 
@@ -368,14 +368,17 @@ def test_dcp_async_pointer_failure_is_recorded_without_interrupting(tmp_path: Pa
     assert _checkpoint_targets(tmp_path) == []
 
 
-def test_dcp_partial_pointer_failure_records_published_aliases(tmp_path: Path) -> None:
+def test_dcp_partial_pointer_failure_records_published_aliases(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     runner = _CheckpointRunner(tmp_path, config={"ckpt.interval": 1})
     runner.is_best = True
     manager = TorchDistributedCheckpointManager(runner)
     (tmp_path / "best.pointer").mkdir()
 
     runner.train_state.global_step = 1
-    with pytest.warns(RuntimeWarning, match="failed to update dcp checkpoint pointers"):
+    with pytest.warns(RuntimeWarning, match="checkpoint failed"):
         manager.save_checkpoint(epochs=0)
 
     target = "ckpt-e000001-g000000000001-q000001"
@@ -385,6 +388,7 @@ def test_dcp_partial_pointer_failure_records_published_aliases(tmp_path: Path) -
     assert _pointer_target(tmp_path, "latest") == target
     assert _pointer_target(tmp_path, "ckpt-e000001") == target
     assert (tmp_path / target).is_dir()
+    assert "checkpoint saved" not in capsys.readouterr().out
     assert manager.close(timeout=1.0) is True
 
 
@@ -401,7 +405,7 @@ def test_dcp_partial_pointer_failure_still_participates_in_retention(tmp_path: P
     (tmp_path / "best.pointer").mkdir()
 
     runner.train_state.global_step = 1
-    with pytest.warns(RuntimeWarning, match="failed to update dcp checkpoint pointers"):
+    with pytest.warns(RuntimeWarning, match="checkpoint failed"):
         manager.save_checkpoint(epochs=0)
     first_target = "ckpt-e000001-g000000000001-q000001"
     assert (tmp_path / first_target).is_dir()
@@ -434,7 +438,7 @@ def test_dcp_fault_tolerance_partial_pointer_failure_keeps_sidecar_for_published
     (tmp_path / "best.pointer").mkdir()
 
     runner.train_state.global_step = 1
-    with pytest.warns(RuntimeWarning, match="failed to update dcp checkpoint pointers"):
+    with pytest.warns(RuntimeWarning, match="checkpoint failed"):
         manager.save_checkpoint(epochs=0)
 
     target = "ckpt-e000001-g000000000001-q000001"
@@ -463,7 +467,7 @@ def test_dcp_async_fault_tolerance_partial_pointer_failure_keeps_sidecar_for_pub
     (tmp_path / "best.pointer").mkdir()
 
     runner.train_state.global_step = 1
-    with pytest.warns(RuntimeWarning, match="failed to update dcp checkpoint pointers"):
+    with pytest.warns(RuntimeWarning, match="checkpoint failed"):
         manager.save_checkpoint(epochs=0)
         assert manager.close(timeout=10.0) is True
 

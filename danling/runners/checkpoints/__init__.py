@@ -17,7 +17,7 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
-from .base import CheckpointHealth, CheckpointManager
+from .base import CheckpointHealth, CheckpointManager, storage_failure_name
 from .file import FileCheckpointManager
 from .torch_distributed import TorchDistributedCheckpointManager
 from .torch_ft import FTDataLoaderCheckpointer, TorchFTCheckpointManager
@@ -29,4 +29,5 @@ __all__ = [
     "FileCheckpointManager",
     "TorchDistributedCheckpointManager",
     "TorchFTCheckpointManager",
+    "storage_failure_name",
 ]

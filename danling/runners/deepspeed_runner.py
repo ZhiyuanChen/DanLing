@@ -274,7 +274,6 @@ class DeepSpeedRunner(TorchRunner):
         alias: str | None = None,
     ) -> None:
         self.checkpoint_manager.record_checkpoint_failure(exc, target=target, alias=alias)
-        warn(f"deepspeed checkpoint save failed: {exc}", RuntimeWarning, stacklevel=2)
         self.checkpoint_manager.raise_checkpoint_error_if_requested()
 
     @staticmethod
@@ -397,7 +396,11 @@ class DeepSpeedRunner(TorchRunner):
             try:
                 self._write_checkpoint_pointer(name, physical_tag)
             except Exception as exc:
-                self.checkpoint_manager.record_checkpoint_success(target=physical_tag, aliases=tuple(published_aliases))
+                self.checkpoint_manager.record_checkpoint_success(
+                    target=physical_tag,
+                    aliases=tuple(published_aliases),
+                    emit=False,
+                )
                 self._record_deepspeed_checkpoint_failure(exc, target=physical_tag, alias=name)
                 return
             published_aliases.append(name)
@@ -406,7 +409,11 @@ class DeepSpeedRunner(TorchRunner):
             try:
                 self._write_checkpoint_pointer("best", physical_tag)
             except Exception as exc:
-                self.checkpoint_manager.record_checkpoint_success(target=physical_tag, aliases=tuple(published_aliases))
+                self.checkpoint_manager.record_checkpoint_success(
+                    target=physical_tag,
+                    aliases=tuple(published_aliases),
+                    emit=False,
+                )
                 self._record_deepspeed_checkpoint_failure(exc, target=physical_tag, alias="best")
                 return
             published_aliases.append("best")

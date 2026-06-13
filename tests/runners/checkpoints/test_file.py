@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import errno
 from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,7 +73,7 @@ class _FailingSaveRunner(_CheckpointRunner):
     @staticmethod
     def save(obj, file):
         del obj, file
-        raise OSError("disk full")
+        raise OSError(errno.ENOSPC, "disk full")
 
 
 class _CoalescingFileCheckpointManager(FileCheckpointManager):
@@ -205,7 +206,7 @@ def test_file_alias_failure_records_only_published_aliases(tmp_path: Path) -> No
     best_dir.mkdir()
     (best_dir / "latest.pth").mkdir()
 
-    with pytest.warns(RuntimeWarning, match="failed to update checkpoint alias"):
+    with pytest.warns(RuntimeWarning, match="checkpoint failed"):
         manager.save_checkpoint(epochs=0)
 
     health = manager.checkpoint_health
@@ -291,7 +292,7 @@ def test_file_checkpoint_sync_save_failure_is_recorded(tmp_path: Path) -> None:
     runner = _FailingSaveRunner(tmp_path)
     manager = FileCheckpointManager(runner)
 
-    with pytest.warns(RuntimeWarning, match="checkpoint save failed"):
+    with pytest.warns(RuntimeWarning, match="storage failure: .*ENOSPC"):
         manager.save_checkpoint(force=True)
 
     _assert_checkpoint_failure(manager, OSError, "latest")
@@ -299,11 +300,27 @@ def test_file_checkpoint_sync_save_failure_is_recorded(tmp_path: Path) -> None:
     assert (tmp_path / "latest.pth").exists() is False
 
 
+def test_file_checkpoint_sync_save_success_reports_event(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    runner = _CheckpointRunner(tmp_path)
+    runner.train_state.epoch = 2
+    runner.train_state.global_step = 5
+    manager = FileCheckpointManager(runner)
+
+    manager.save_checkpoint(name="latest", force=True)
+
+    output = capsys.readouterr().out
+    assert "checkpoint saved:" in output
+    assert "step=5" in output
+    assert "epoch=2" in output
+    assert "target=latest.pth" in output
+    assert "aliases=latest.pth" in output
+
+
 def test_file_checkpoint_failure_is_not_raised_after_fail_on_error_is_enabled_later(tmp_path: Path) -> None:
     runner = _FailingSaveRunner(tmp_path)
     manager = FileCheckpointManager(runner)
 
-    with pytest.warns(RuntimeWarning, match="checkpoint save failed"):
+    with pytest.warns(RuntimeWarning, match="storage failure: .*ENOSPC"):
         manager.save_checkpoint(force=True)
 
     runner.config.update({"ckpt.fail_on_error": True})
@@ -315,7 +332,7 @@ def test_file_checkpoint_sync_save_failure_raises_when_configured(tmp_path: Path
     runner.config.update({"ckpt.fail_on_error": True})
     manager = FileCheckpointManager(runner)
 
-    with pytest.warns(RuntimeWarning, match="checkpoint save failed"), pytest.raises(OSError, match="disk full"):
+    with pytest.warns(RuntimeWarning, match="storage failure: .*ENOSPC"), pytest.raises(OSError, match="disk full"):
         manager.save_checkpoint(force=True)
 
     assert (tmp_path / "latest.pth").exists() is False
@@ -327,7 +344,7 @@ def test_file_checkpoint_async_save_failure_is_recorded_on_wait(tmp_path: Path) 
     manager = FileCheckpointManager(runner)
 
     try:
-        with pytest.warns(RuntimeWarning, match="checkpoint save failed"):
+        with pytest.warns(RuntimeWarning, match="storage failure: .*ENOSPC"):
             manager.save_checkpoint(force=True)
             assert manager.wait(timeout=1.0) is True
         _assert_checkpoint_failure(manager, OSError, "latest")

@@ -115,7 +115,7 @@ class TestDeepSpeedRunnerCheckpointPaths:
 
         runner = _bare_deepspeed_runner(tmp_path, model=FailingModel())
 
-        with pytest.warns(RuntimeWarning, match="deepspeed checkpoint save failed"):
+        with pytest.warns(RuntimeWarning, match="checkpoint failed"):
             runner.save_checkpoint(save_best=False, force=True)
 
         health = runner.checkpoint_manager.checkpoint_health
@@ -187,7 +187,7 @@ class TestDeepSpeedRunnerCheckpointPaths:
         runner = _bare_deepspeed_runner(tmp_path, model=FailingModel(), fail_on_error=True)
 
         with (
-            pytest.warns(RuntimeWarning, match="deepspeed checkpoint save failed"),
+            pytest.warns(RuntimeWarning, match="checkpoint failed"),
             pytest.raises(OSError, match="disk full"),
         ):
             runner.save_checkpoint(save_best=False, force=True)
