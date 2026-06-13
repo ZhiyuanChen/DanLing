@@ -615,7 +615,10 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         with self.compiler.ddp_optimizer() if should_wrap_ddp else nullcontext():
             model = self.compiler.compile(model)
         if should_wrap_ddp:
-            model = nn.parallel.DistributedDataParallel(model)
+            model = nn.parallel.DistributedDataParallel(
+                model,
+                find_unused_parameters=bool(self.config.ddp.find_unused_parameters),
+            )
         self.model = model
 
         if self.ema is not None:
@@ -1164,7 +1167,9 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                     return torch.device("cpu")
             else:
                 backend = str(dist.get_backend()).lower()
-            if "nccl" in backend and torch.cuda.is_available():
+            if "gloo" in backend or "mpi" in backend:
+                return torch.device("cpu")
+            if torch.cuda.is_available() and self.device.type == "cuda":
                 return self.device
         return torch.device("cpu")
 

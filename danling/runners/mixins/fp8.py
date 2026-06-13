@@ -77,7 +77,9 @@ class Fp8Mixin:
     def should_enable_fp8(self) -> bool:
         fp8_cfg = self.config.get("fp8")
         if isinstance(fp8_cfg, Mapping) and "enabled" in fp8_cfg:
-            return bool(fp8_cfg.get("enabled"))
+            enabled = fp8_cfg.get("enabled")
+            if enabled is not None:
+                return bool(enabled)
         return is_fp8_precision(self.config.get("precision"))
 
     def build_fp8_recipe(self) -> Any | None:

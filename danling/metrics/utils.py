@@ -46,13 +46,17 @@ def infer_device(device: torch.device | str | None = None) -> torch.device:
 
     if dist.is_available() and dist.is_initialized():
         backend = dist.get_backend()
-        if backend in {"nccl", "cuda"} and torch.cuda.is_available():
+        backend_name = str(backend).lower()
+        if torch.cuda.is_available() and (
+            any(name in backend_name for name in ("cuda", "nccl"))
+            or not any(name in backend_name for name in ("gloo", "mpi"))
+        ):
             try:
                 index = torch.cuda.current_device()
             except (AssertionError, RuntimeError):
                 index = 0
             inferred_device = torch.device("cuda", index)
-        elif backend in {"gloo", "mpi"}:
+        elif any(name in backend_name for name in ("gloo", "mpi")):
             inferred_device = torch.device("cpu")
     else:
         if torch.cuda.is_available():
