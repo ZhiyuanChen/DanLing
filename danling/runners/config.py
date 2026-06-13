@@ -57,7 +57,10 @@ class FsdpConfig(chanfig.Config):
     Attributes:
         enabled: Enable FSDP2 wrapping.
         mesh: Optional explicit FSDP mesh. Usually derived from `parallel.axes`.
-        reshard_after_forward: Optional FSDP2 reshard policy.
+        module_classes: Optional class-name or FQN list to shard before the root module.
+        reshard_after_forward: Optional FSDP2 reshard policy for matched modules and root.
+            Accepts booleans plus `"always"`, `"never"`, and `"default"`.
+        root_reshard_after_forward: Optional root-only override.
         shard_placement_fn: Optional FSDP2 shard placement callable.
         mixed_precision_policy: Optional FSDP2 mixed precision policy.
         offload_policy: Optional FSDP2 CPU offload policy.
@@ -66,11 +69,28 @@ class FsdpConfig(chanfig.Config):
 
     enabled: bool = False
     mesh: Optional[Any] = None
-    reshard_after_forward: Union[bool, int, None] = None
+    module_classes: Optional[Sequence[str]] = None
+    reshard_after_forward: Union[bool, int, str, None] = None
+    root_reshard_after_forward: Union[bool, int, str, None] = None
     shard_placement_fn: Optional[Any] = None
     mixed_precision_policy: Union[Any, Mapping[str, Any], None] = None
     offload_policy: Union[Any, Mapping[str, Any], None] = None
     ignored_params: Optional[Sequence[Any]] = None
+
+
+class ActivationCheckpointConfig(chanfig.Config):
+    r"""
+    Activation checkpoint wrapping policy for `ParallelRunner`.
+
+    `module_classes` entries match either the class name (for example
+    `"TransformerBlock"`) or fully qualified class name. DanLing requires an
+    explicit boundary list so users do not accidentally checkpoint arbitrary
+    containers.
+    """
+
+    enabled: bool = False
+    module_classes: Optional[Sequence[str]] = None
+    checkpoint_impl: str = "no_reentrant"
 
 
 class ParallelAxesConfig(chanfig.Config):
@@ -504,6 +524,7 @@ DEFAULT_FILTERED_CONFIG_SECTIONS: tuple[tuple[str, chanfig.Config], ...] = (
     ("dataloader", DataloaderConfig()),
     ("compile", CompileConfig()),
     ("performance", PerformanceConfig()),
+    ("activation_checkpoint", ActivationCheckpointConfig()),
 )
 
 
@@ -551,7 +572,8 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
     Nested sections:
         `optim`, `sched`, `score`, `workspace`, `logging`, `tensorboard`,
         `wandb`, `ft`, `compile`, `dist`, `gc`, `profiling`, `heartbeat`,
-        `ckpt`, `dataloader`, `fsdp`, and `parallel`.
+        `ckpt`, `dataloader`, `performance`, `activation_checkpoint`,
+        `fsdp`, and `parallel`.
 
     Examples:
         Basic usage:
@@ -644,6 +666,7 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
     ckpt: CheckpointConfig = CheckpointConfig()
     dataloader: DataloaderConfig = DataloaderConfig()
     performance: PerformanceConfig = PerformanceConfig()
+    activation_checkpoint: ActivationCheckpointConfig = ActivationCheckpointConfig()
     fsdp: FsdpConfig = FsdpConfig()
     parallel: ParallelConfig = ParallelConfig()
 

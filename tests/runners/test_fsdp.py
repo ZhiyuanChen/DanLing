@@ -22,7 +22,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from danling.runners.fsdp import build_fsdp2_kwargs, normalize_policy_dtype
+from danling.runners.fsdp import build_fsdp2_kwargs, normalize_policy_dtype, normalize_reshard_after_forward
 
 
 def test_normalize_policy_dtype_accepts_common_precision_aliases() -> None:
@@ -55,6 +55,23 @@ def test_build_fsdp2_kwargs_translates_supported_runtime_options() -> None:
     assert kwargs["mp_policy"] == "mp"
     assert kwargs["offload_policy"] == "offload"
     assert kwargs["ignored_params"] == {ignored_param}
+
+
+def test_build_fsdp2_kwargs_resolves_torchtitan_style_reshard_policy() -> None:
+    kwargs = build_fsdp2_kwargs(
+        config={"reshard_after_forward": "default"},
+        mesh="mesh",
+        mixed_precision_policy=None,
+        offload_policy=None,
+        config_name="fsdp",
+        supported_keys={"reshard_after_forward"},
+        support_hint="reshard_after_forward",
+        pipeline_enabled=True,
+    )
+
+    assert kwargs["reshard_after_forward"] is False
+    assert normalize_reshard_after_forward("always", pipeline_enabled=True) is True
+    assert normalize_reshard_after_forward("never", pipeline_enabled=False) is False
 
 
 def test_build_fsdp2_kwargs_rejects_unsupported_options() -> None:
