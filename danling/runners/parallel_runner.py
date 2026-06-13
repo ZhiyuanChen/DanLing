@@ -59,6 +59,9 @@ with try_import() as parallel_fsdp:
     from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, fully_shard
     from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 
+with try_import() as tensor_parallel_runtime:
+    from torch.distributed.tensor.parallel import loss_parallel as torch_loss_parallel
+
 with try_import() as activation_checkpoint:
     from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
         CheckpointImpl,
@@ -282,6 +285,8 @@ class ParallelRunner(TorchRunner):
             parallel_fsdp.check()
         if self.config.activation_checkpoint.enabled:
             activation_checkpoint.check()
+        if self.loss_parallel_enabled:
+            tensor_parallel_runtime.check()
         torchft_config_supported = (
             self.fsdp_enabled
             and int(self.config.parallel.axes.pipeline) == 1
@@ -843,6 +848,31 @@ class ParallelRunner(TorchRunner):
         if fsdp_parts:
             return tuple(fsdp_parts)
         return super()._train_no_sync_targets()
+
+    @property
+    def loss_parallel_enabled(self) -> bool:
+        configured = self.config.parallel.get("loss_parallel")
+        if configured is None:
+            return self.tensor_degree > 1
+        enabled = bool(configured)
+        if enabled and self.tensor_degree <= 1:
+            raise ValueError("parallel.loss_parallel=True requires parallel.axes.tensor > 1")
+        return enabled
+
+    @contextmanager
+    def loss_parallel_context(self):
+        if not self.loss_parallel_enabled:
+            yield
+            return
+
+        tensor_parallel_runtime.check()
+        with torch_loss_parallel():
+            yield
+
+    @contextmanager
+    def infer_context(self):
+        with super().infer_context(), self.loss_parallel_context():
+            yield
 
     def _resolve_pipeline_microbatches(self) -> int:
         configured = self.config.parallel.get("pipeline_microbatches")

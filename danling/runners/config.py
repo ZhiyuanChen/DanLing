@@ -123,6 +123,8 @@ class ParallelConfig(chanfig.Config):
             microbatch count as `dataloader.batch_size // pipeline_microbatch_size`.
         pipeline_microbatches: Explicit schedule microbatch count.
         pipeline_partitions: Optional module FQNs for simple pipeline extraction.
+        loss_parallel: Optional loss-parallel override. `None` enables loss
+            parallel automatically when tensor parallelism is active.
         use_device_mesh: Use PyTorch `DeviceMesh` APIs when available.
         mesh_device_type: Optional mesh device type override.
         allow_degree_change: Allow loading checkpoints with a different topology.
@@ -133,6 +135,7 @@ class ParallelConfig(chanfig.Config):
     pipeline_microbatch_size: int = 1
     pipeline_microbatches: Optional[int] = None
     pipeline_partitions: Optional[Sequence[Sequence[str]]] = None
+    loss_parallel: Optional[bool] = None
     use_device_mesh: bool = True
     mesh_device_type: Optional[str] = None
     allow_degree_change: bool = False
