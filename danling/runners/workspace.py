@@ -22,6 +22,8 @@ from __future__ import annotations
 import builtins
 import logging
 import os
+import socket
+import sys
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, cast
 
@@ -84,13 +86,30 @@ class ColorFormatter(logging.Formatter):
         timestamp = self._colorize(self.formatTime(record, self.datefmt), self.TIMESTAMP_COLOR, dim=True)
         level_code = self.LEVEL_COLORS.get(record.levelno)
         level = self._colorize(f"[{record.levelname}]", level_code)
-        formatted = f"{timestamp} {level} {message}"
+        rank_context = getattr(record, "rank_context", "")
+        if rank_context:
+            rank_context = self._colorize(rank_context, self.TIMESTAMP_COLOR, dim=True)
+        formatted = f"{timestamp} {level}{rank_context} {message}"
 
         if record.exc_info:
             formatted = f"{formatted}\n{self.formatException(record.exc_info)}"
         if record.stack_info:
             formatted = f"{formatted}\n{self.formatStack(record.stack_info)}"
         return formatted
+
+
+class _RunnerLogContextFilter(logging.Filter):
+    def __init__(self, runner: BaseRunner) -> None:
+        super().__init__()
+        self.runner = runner
+        self.host = socket.gethostname()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.WARNING:
+            record.rank_context = f" [rank={self.runner.rank}/{self.runner.world_size} host={self.host}]"
+        else:
+            record.rank_context = ""
+        return True
 
 
 def _delegate_print(
@@ -253,15 +272,27 @@ class RunnerWorkspace:
         logger.propagate = False
 
         if not logger.handlers:
-            plain_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+            rank_filter = _RunnerLogContextFilter(self.runner)
+            plain_formatter = logging.Formatter("%(asctime)s [%(levelname)s]%(rank_context)s %(message)s")
 
-            stream_handler = logging.StreamHandler()
-            stream_handler.setFormatter(
-                ColorFormatter("%(message)s") if _stream_supports_color(stream_handler.stream) else plain_formatter
+            stdout_handler = logging.StreamHandler(sys.stdout)
+            stdout_handler.addFilter(lambda record: record.levelno < logging.WARNING)
+            stdout_handler.addFilter(rank_filter)
+            stdout_handler.setFormatter(
+                ColorFormatter("%(message)s") if _stream_supports_color(stdout_handler.stream) else plain_formatter
             )
-            logger.addHandler(stream_handler)
+            logger.addHandler(stdout_handler)
+
+            stderr_handler = logging.StreamHandler(sys.stderr)
+            stderr_handler.setLevel(logging.WARNING)
+            stderr_handler.addFilter(rank_filter)
+            stderr_handler.setFormatter(
+                ColorFormatter("%(message)s") if _stream_supports_color(stderr_handler.stream) else plain_formatter
+            )
+            logger.addHandler(stderr_handler)
 
             file_handler = logging.FileHandler(self.log_file)
+            file_handler.addFilter(rank_filter)
             file_handler.setFormatter(plain_formatter)
             logger.addHandler(file_handler)
 
