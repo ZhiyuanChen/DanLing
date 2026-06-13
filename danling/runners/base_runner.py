@@ -1218,6 +1218,7 @@ class BaseRunner(metaclass=MetaRunner):
     def _require_checkpoint_component_state(component: str, state_dict: Any | None) -> Any:
         component_labels = {
             "ema": "EMA state",
+            "grad_scaler": "AMP grad scaler state",
             "optimizer": "optimizer state",
             "scheduler": "scheduler state",
         }

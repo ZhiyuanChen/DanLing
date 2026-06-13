@@ -217,11 +217,90 @@ class LoopTelemetry:
             result["samples_per_s"] = sample_count / elapsed
         if token_known and elapsed > 0:
             result["tokens_per_s"] = token_count / elapsed
+        self.merge_flop_metrics(
+            result,
+            elapsed_seconds=elapsed,
+            sample_count=sample_count,
+            sample_known=sample_known,
+            token_count=token_count,
+            token_known=token_known,
+        )
         if peak_allocated_mb is not None:
             result["mem_alloc_mb"] = peak_allocated_mb
         if peak_reserved_mb is not None:
             result["mem_reserved_mb"] = peak_reserved_mb
         return result
+
+    def _configured_flops(
+        self,
+        *,
+        sample_count: int,
+        sample_known: bool,
+        token_count: int,
+        token_known: bool,
+        sample_key: str,
+        token_key: str,
+    ) -> float | None:
+        performance = self.runner.config.get("performance")
+        if not isinstance(performance, Mapping):
+            return None
+
+        flops_per_token = performance.get(token_key)
+        if token_known and flops_per_token is not None:
+            return float(flops_per_token) * token_count
+
+        flops_per_sample = performance.get(sample_key)
+        if sample_known and flops_per_sample is not None:
+            return float(flops_per_sample) * sample_count
+        return None
+
+    def merge_flop_metrics(
+        self,
+        result,
+        *,
+        elapsed_seconds: float,
+        sample_count: int,
+        sample_known: bool,
+        token_count: int,
+        token_known: bool,
+    ) -> None:
+        if elapsed_seconds <= 0:
+            return
+
+        performance = self.runner.config.get("performance")
+        if not isinstance(performance, Mapping):
+            return
+
+        model_flops = self._configured_flops(
+            sample_count=sample_count,
+            sample_known=sample_known,
+            token_count=token_count,
+            token_known=token_known,
+            sample_key="model_flops_per_sample",
+            token_key="model_flops_per_token",
+        )
+        hardware_flops = self._configured_flops(
+            sample_count=sample_count,
+            sample_known=sample_known,
+            token_count=token_count,
+            token_known=token_known,
+            sample_key="hardware_flops_per_sample",
+            token_key="hardware_flops_per_token",
+        )
+        peak_flops = performance.get("peak_flops")
+        peak_flops = None if peak_flops is None else float(peak_flops)
+
+        if model_flops is not None:
+            flops_per_second = model_flops / elapsed_seconds
+            result["tflops"] = flops_per_second / 1e12
+            if peak_flops:
+                result["mfu_pct"] = 100 * flops_per_second / peak_flops
+
+        if hardware_flops is not None:
+            flops_per_second = hardware_flops / elapsed_seconds
+            result["hw_tflops"] = flops_per_second / 1e12
+            if peak_flops:
+                result["hfu_pct"] = 100 * flops_per_second / peak_flops
 
     def emit_log(
         self,

@@ -18,7 +18,7 @@
 # See the LICENSE file for more details.
 
 from .lr_scheduler import SCHEDULERS, LRScheduler
-from .optimizer import OptimizerContainer, OptimizerParameterCache
+from .optimizer import OptimizerContainer, OptimizerParameterCache, OptimizerStepResult
 from .registry import OPTIMIZERS
 
 __all__ = [
@@ -26,5 +26,6 @@ __all__ = [
     "OPTIMIZERS",
     "OptimizerContainer",
     "OptimizerParameterCache",
+    "OptimizerStepResult",
     "SCHEDULERS",
 ]

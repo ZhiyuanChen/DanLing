@@ -260,6 +260,22 @@ class DcpConfigTorchRunner(TorchRunner):
         self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
 
 
+class _FakeGradScaler:
+    def __init__(self) -> None:
+        self.unscale_calls: list[optim.Optimizer] = []
+        self.update_calls = 0
+        self.loaded_state: dict[str, object] | None = None
+
+    def unscale_(self, optimizer: optim.Optimizer) -> None:
+        self.unscale_calls.append(optimizer)
+
+    def update(self) -> None:
+        self.update_calls += 1
+
+    def load_state_dict(self, state_dict: dict[str, object]) -> None:
+        self.loaded_state = state_dict
+
+
 def _ddp_compile_wrap_worker(rank: int, world_size: int) -> None:
     configure_distributed_env(rank, world_size)
     runner = DistributedTinyTorchRunner(
@@ -607,6 +623,18 @@ class TestTorchRunnerBootstrap:
             runner.build_dataloaders()
 
             assert [batch.tolist() for batch in runner.dataloaders["train"]] == [[2, 0], [3, 1]]
+        finally:
+            runner.close()
+
+    def test_deterministic_dataloader_binds_seed_controls(self) -> None:
+        runner = TinyTorchRunner({"logging.enabled": False, "deterministic": True, "dataloader": {"batch_size": 2}})
+        try:
+            runner.datasets["train"] = list(range(4))
+            runner.build_dataloaders()
+
+            loader = runner.dataloaders["train"]
+            assert getattr(loader, "worker_init_fn") is not None
+            assert isinstance(getattr(loader, "generator"), torch.Generator)
         finally:
             runner.close()
 
@@ -1040,6 +1068,19 @@ class TestTorchRunnerOptimization:
         finally:
             runner.close()
 
+    def test_runner_owned_fp16_requires_cuda(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+        with pytest.raises(ValueError, match="fp16 precision requires a CUDA device"):
+            TinyTorchRunner({"logging.enabled": False, "precision": "fp16"})
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="fp16 grad scaler requires CUDA")
+    def test_runner_owned_fp16_binds_grad_scaler(self) -> None:
+        runner = TinyTorchRunner({"logging.enabled": False, "precision": "fp16"})
+        try:
+            assert runner.grad_scaler is not None
+        finally:
+            runner.close()
+
     def test_step_skips_optimizer_update_on_nonfinite_grad(self) -> None:
         runner = TinyTorchRunner({"logging.enabled": False, "skip_nonfinite_grad": True})
         assert runner.optimizer is not None
@@ -1056,6 +1097,125 @@ class TestTorchRunnerOptimization:
             for parameter, initial in zip(runner.model.parameters(), initial_parameters):
                 torch.testing.assert_close(parameter, initial)
             assert runner.train_state.global_step == 0
+        finally:
+            runner.close()
+
+    def test_optimizer_step_updates_ema_after_successful_step(self) -> None:
+        class UpdatingEma(nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.updated_model: nn.Module | None = None
+
+            def update(self, model: nn.Module) -> None:
+                self.updated_model = model
+
+        runner = TinyTorchRunner({"logging.enabled": False})
+        ema = UpdatingEma()
+        runner.ema = ema
+        try:
+            assert runner.model is not None
+            for parameter in runner.model.parameters():
+                parameter.grad = torch.ones_like(parameter)
+
+            assert runner.optimizer_step() is True
+            assert ema.updated_model is runner.unwrap(runner.model)
+        finally:
+            runner.close()
+
+    def test_optimizer_step_allows_eval_only_ema_without_update(self) -> None:
+        runner = TinyTorchRunner({"logging.enabled": False})
+        runner.ema = nn.Identity()
+        try:
+            assert runner.model is not None
+            for parameter in runner.model.parameters():
+                parameter.grad = torch.ones_like(parameter)
+
+            assert runner.optimizer_step() is True
+
+            assert runner.train_state.global_step == 1
+        finally:
+            runner.close()
+
+    def test_optimizer_step_rejects_noncallable_ema_update_before_mutation(self) -> None:
+        class BadEma(nn.Module):
+            update = "not callable"
+
+        runner = TinyTorchRunner({"logging.enabled": False})
+        runner.ema = BadEma()
+        try:
+            assert runner.model is not None
+            initial_parameters = [parameter.detach().clone() for parameter in runner.model.parameters()]
+            for parameter in runner.model.parameters():
+                parameter.grad = torch.ones_like(parameter)
+
+            with pytest.raises(TypeError, match="not callable"):
+                runner.optimizer_step()
+
+            assert runner.train_state.global_step == 0
+            for parameter, initial in zip(runner.model.parameters(), initial_parameters):
+                torch.testing.assert_close(parameter, initial)
+        finally:
+            runner.close()
+
+    def test_optimizer_step_updates_fake_grad_scaler_on_success(self) -> None:
+        runner = TinyTorchRunner({"logging.enabled": False})
+        scaler = _FakeGradScaler()
+        runner.grad_scaler = scaler
+        try:
+            assert runner.optimizer is not None
+            assert runner.model is not None
+            for parameter in runner.model.parameters():
+                parameter.grad = torch.ones_like(parameter)
+
+            assert runner.optimizer_step() is True
+
+            assert scaler.unscale_calls == [runner.optimizer]
+            assert scaler.update_calls == 1
+        finally:
+            runner.close()
+
+    def test_optimizer_step_updates_fake_grad_scaler_on_skip(self) -> None:
+        runner = TinyTorchRunner({"logging.enabled": False})
+        scaler = _FakeGradScaler()
+        runner.grad_scaler = scaler
+        try:
+            assert runner.optimizer is not None
+            assert runner.model is not None
+            for parameter in runner.model.parameters():
+                parameter.grad = torch.ones_like(parameter)
+            next(runner.model.parameters()).grad.fill_(float("inf"))
+
+            assert runner.optimizer_step() is False
+
+            assert scaler.unscale_calls == [runner.optimizer]
+            assert scaler.update_calls == 1
+            assert runner.train_state.global_step == 0
+        finally:
+            runner.close()
+
+    def test_load_state_dict_keeps_fresh_grad_scaler_when_checkpoint_omits_scaler(self) -> None:
+        runner = TinyTorchRunner({"logging.enabled": False})
+        state = runner.state_dict()["state"]
+        scaler = _FakeGradScaler()
+        runner.grad_scaler = scaler
+        try:
+            runner.load_state_dict({"state": state})
+
+            assert scaler.loaded_state is None
+        finally:
+            runner.close()
+
+    def test_optimizer_step_records_grad_norm_when_clipping(self) -> None:
+        runner = TinyTorchRunner({"logging.enabled": False, "max_grad_norm": 1.0})
+        try:
+            assert runner.model is not None
+            for parameter in runner.model.parameters():
+                parameter.grad = torch.ones_like(parameter)
+
+            assert runner.optimizer_step() is True
+            result = runner.get_step_result()
+            assert "grad_norm" in result
+            assert result["grad_norm"] > 0
         finally:
             runner.close()
 

@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any, Literal
 
 import torch
@@ -28,6 +29,12 @@ from torch.nn.utils import clip_grad_norm_, clip_grad_value_
 
 SCHEDULER_METRIC_UNSET = object()
 SchedulerInterval = Literal["step", "epoch"]
+
+
+@dataclass(slots=True)
+class OptimizerStepResult:
+    stepped: bool
+    grad_norm: float | None = None
 
 
 def scheduler_requires_metric(scheduler: object | None) -> bool:
@@ -154,8 +161,23 @@ class OptimizerContainer:
         self.scheduler = scheduler
         self.scheduler_interval = normalize_scheduler_interval(scheduler_interval, scheduler)
         self.parameter_cache = OptimizerParameterCache(optimizer)
-        if self.parameter_cache is None:
-            raise ValueError("optimizer is required")
+
+    def clip_gradients(
+        self,
+        *,
+        max_grad_value: float | None = None,
+        max_grad_norm: float | None = None,
+    ) -> float | None:
+        if max_grad_value is None and max_grad_norm is None:
+            return None
+
+        parameters = self.parameter_cache.get_parameters_for_clipping(self.optimizer)
+        if max_grad_value is not None:
+            clip_grad_value_(parameters, max_grad_value)
+        if max_grad_norm is not None:
+            grad_norm = clip_grad_norm_(parameters, max_grad_norm)
+            return float(grad_norm.detach().item() if isinstance(grad_norm, torch.Tensor) else grad_norm)
+        return None
 
     def step(
         self,
@@ -165,25 +187,20 @@ class OptimizerContainer:
         zero_grad: bool = True,
         skip_nonfinite_grad: bool = False,
         scheduler_metric: Any = SCHEDULER_METRIC_UNSET,
-    ) -> bool:
+    ) -> OptimizerStepResult:
         if skip_nonfinite_grad and self.has_nan_inf_grad():
             if zero_grad:
                 self.optimizer.zero_grad()
-            return False
+            return OptimizerStepResult(stepped=False)
 
-        if max_grad_value is not None or max_grad_norm is not None:
-            parameters = self.parameter_cache.get_parameters_for_clipping(self.optimizer)
-            if max_grad_value is not None:
-                clip_grad_value_(parameters, max_grad_value)
-            if max_grad_norm is not None:
-                clip_grad_norm_(parameters, max_grad_norm)
+        grad_norm = self.clip_gradients(max_grad_value=max_grad_value, max_grad_norm=max_grad_norm)
 
         self.optimizer.step()
         if self.scheduler_interval == "step":
             self.step_scheduler(scheduler_metric=scheduler_metric)
         if zero_grad:
             self.optimizer.zero_grad()
-        return True
+        return OptimizerStepResult(stepped=True, grad_norm=grad_norm)
 
     def step_scheduler(self, *, scheduler_metric: Any = SCHEDULER_METRIC_UNSET) -> bool:
         return step_scheduler(self.scheduler, scheduler_metric=scheduler_metric)

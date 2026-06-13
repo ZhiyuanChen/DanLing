@@ -297,7 +297,7 @@ class CheckpointManager(ABC):
         """
         with self._lock:
             self.checkpoint_health.record_failure(exc, target=target, alias=alias)
-            if self.runner.config.get("ckpt.fail_on_error", False) and self._checkpoint_error_to_raise is None:
+            if self.runner.config.get("ckpt.fail_on_error", True) and self._checkpoint_error_to_raise is None:
                 self._checkpoint_error_to_raise = exc
         self._emit_checkpoint_failure(exc, target=target, alias=alias)
 
@@ -384,7 +384,7 @@ class CheckpointManager(ABC):
     def raise_checkpoint_error_if_requested(self) -> None:
         """Raise a deferred checkpoint error when fail-on-error is enabled."""
         with self._lock:
-            if not self.runner.config.get("ckpt.fail_on_error", False):
+            if not self.runner.config.get("ckpt.fail_on_error", True):
                 self._checkpoint_error_to_raise = None
                 return
             failure = self._checkpoint_error_to_raise

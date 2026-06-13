@@ -215,6 +215,9 @@ class DeepSpeedRunner(TorchRunner):
     def _bind_optimizer_container(self) -> None:
         self.optimizer_container = None
 
+    def runner_owns_grad_scaling(self) -> bool:
+        return False
+
     def unwrap(self, model: Any) -> Any:
         return getattr(model, "module", super().unwrap(model))
 
@@ -238,6 +241,7 @@ class DeepSpeedRunner(TorchRunner):
         normalization, runner state, profiler, timeout, and supervisor state in sync.
         """
         self.checkpoint_manager.maybe_wait_for_staging()
+        self.validate_ema_update_contract()
         grad_scale = self._gradient_scale_for_step()
         if grad_scale is not None:
             self._scale_optimizer_gradients(grad_scale)
@@ -248,6 +252,7 @@ class DeepSpeedRunner(TorchRunner):
             self.train_state.global_step += 1
         else:
             self.train_state.global_step = int(global_steps)
+        self.update_ema()
         self._step_profiler()
         self._maybe_reduce_train_process_group_timeout()
         self.supervisor.maybe_collect_garbage(self.train_state.global_step, scope="train")

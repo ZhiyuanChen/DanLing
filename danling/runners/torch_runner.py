@@ -36,6 +36,7 @@ from chanfig import NestedDict
 from torch import distributed as dist
 from torch import nn, optim, utils
 from torch.backends import cudnn
+from torch.nn.utils import clip_grad_norm_, clip_grad_value_
 from torchdata.stateful_dataloader import StatefulDataLoader
 from tqdm import tqdm
 
@@ -63,6 +64,13 @@ from .config import RunnerConfig, normalize_stack_name
 from .mixins import Fp8Mixin
 from .telemetry import LoopTelemetry
 from .utils import RunnerMode, get_precision, on_main_process
+
+
+def _seed_dataloader_worker(_worker_id: int) -> None:
+    worker_seed = torch.initial_seed() % 2**32
+    random.seed(worker_seed)
+    if np_random is not None:
+        np_random.seed(worker_seed)
 
 
 class TorchRunner(Fp8Mixin, BaseRunner):
@@ -104,6 +112,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
     optimizer: optim.Optimizer | None = None
     scheduler: Any | None = None
     optimizer_container: OptimizerContainer | None = None
+    grad_scaler: torch.amp.GradScaler | None = None
     compiler: Compiler
     scheduler_interval: str = "step"
     scheduler_monitor: str | None = None
@@ -155,6 +164,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             )
         self.compiler = Compiler(self.config.compile)
         self.setup_fp8()
+        self.setup_grad_scaler()
         self.materialize_model()
         self.build_optimizer()
         self.build_scheduler()
@@ -571,7 +581,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
         torch.manual_seed(process_seed)
         if torch.cuda.is_available():
-            torch.cuda.manual_seed(process_seed)
+            torch.cuda.manual_seed_all(process_seed)
         if np_random is not None:
             np_random.seed(process_seed)
         random.seed(process_seed)
@@ -585,9 +595,68 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         return process_seed
 
     def set_deterministic(self) -> None:
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
         cudnn.benchmark = False
         cudnn.deterministic = True
+        if torch.cuda.is_available():
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
         torch.use_deterministic_algorithms(True)
+
+    @staticmethod
+    def _normalized_precision_name(precision: str | None) -> str:
+        if precision is None:
+            return ""
+        return str(precision).strip().lower().replace("-", "_")
+
+    def runner_owns_grad_scaling(self) -> bool:
+        """Whether this runner should own AMP gradient scaling."""
+
+        return True
+
+    def setup_grad_scaler(self) -> None:
+        """Bind the AMP grad scaler for runner-owned fp16 training."""
+
+        self.grad_scaler = None
+        precision = self._normalized_precision_name(self.precision)
+        if precision not in {"fp16", "float16", "half"}:
+            return
+        if not self.runner_owns_grad_scaling():
+            return
+        if self.fp8_enabled:
+            raise ValueError("precision='fp16' cannot be combined with FP8 autocast")
+        if self.device.type != "cuda":
+            raise ValueError("runner-owned fp16 precision requires a CUDA device; use bf16 or a backend-owned scaler")
+        self.grad_scaler = torch.amp.GradScaler(device=self.device.type)
+
+    def update_ema(self) -> None:
+        """Update EMA weights after a successful optimizer step."""
+
+        if self.ema is None:
+            return
+        if self.model is None:
+            raise ValueError("cannot update EMA: model is not initialized")
+        update = getattr(self.ema, "update", None)
+        if update is None:
+            return
+        if not callable(update):
+            raise TypeError(
+                "EMA module has an `update` attribute but it is not callable; "
+                "implement `ema.update(model)`, remove the attribute, or override `update_ema()`."
+            )
+        update(self.unwrap(self.model))
+
+    def validate_ema_update_contract(self) -> None:
+        update = None if self.ema is None else getattr(self.ema, "update", None)
+        if update is not None and not callable(update):
+            raise TypeError(
+                "EMA module has an `update` attribute but it is not callable; "
+                "implement `ema.update(model)`, remove the attribute, or override `update_ema()`."
+            )
+
+    def _record_grad_norm(self, grad_norm: float | None) -> None:
+        if grad_norm is not None:
+            self.meters.grad_norm.update(grad_norm)
 
     def materialize_model(self) -> None:
         """
@@ -995,6 +1064,12 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         dataloader_config = self.config.get("dataloader", NestedDict())
         default_kwargs = NestedDict({k: v for k, v in dataloader_config.items() if k not in self.datasets})
         split_kwargs = NestedDict({k: v for k, v in dataloader_config.items() if k in self.datasets})
+        if self.config.deterministic and default_kwargs.get("worker_init_fn") is None:
+            default_kwargs["worker_init_fn"] = _seed_dataloader_worker
+        if self.config.deterministic and default_kwargs.get("generator") is None and self.config.seed is not None:
+            generator = torch.Generator()
+            generator.manual_seed(int(self.config.seed) + int(self.rank))
+            default_kwargs["generator"] = generator
         for k, dataset in datasets.items():
             kwargs = NestedDict(default_kwargs)
             if k in split_kwargs:
@@ -1354,6 +1429,56 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                 continue
             grad.mul_(float(scale))
 
+    def _optimizer_has_nonfinite_grad(self) -> bool:
+        if self.optimizer_container is not None:
+            return self.optimizer_container.has_nan_inf_grad()
+
+        parameters = self._optimizer_parameters_for_scaling()
+        for parameter in parameters:
+            grad = parameter.grad
+            if grad is None:
+                continue
+            if not torch.isfinite(grad).all():
+                return True
+        return False
+
+    def _zero_optimizer_grad(self) -> None:
+        if self.optimizer_container is not None:
+            self.optimizer_container.zero_grad()
+        elif self.optimizer is not None:
+            self.optimizer.zero_grad()
+
+    def _clip_optimizer_gradients(
+        self,
+        *,
+        max_grad_value: float | None,
+        max_grad_norm: float | None,
+    ) -> float | None:
+        if self.optimizer_container is not None:
+            return self.optimizer_container.clip_gradients(
+                max_grad_value=max_grad_value,
+                max_grad_norm=max_grad_norm,
+            )
+
+        if self.optimizer is None or (max_grad_value is None and max_grad_norm is None):
+            return None
+
+        parameters = self._optimizer_parameters_for_scaling()
+        if max_grad_value is not None:
+            clip_grad_value_(parameters, max_grad_value)
+        if max_grad_norm is not None:
+            grad_norm = clip_grad_norm_(parameters, max_grad_norm)
+            return float(grad_norm.detach().item() if isinstance(grad_norm, torch.Tensor) else grad_norm)
+        return None
+
+    def _optimizer_step_and_zero_grad(self) -> None:
+        if self.optimizer is None:
+            raise ValueError("cannot step optimizer: optimizer is not configured")
+        self.optimizer.step()
+        if self.optimizer_container is not None and self.optimizer_container.scheduler_interval == "step":
+            self.optimizer_container.step_scheduler()
+        self._zero_optimizer_grad()
+
     @contextmanager
     def train_context(self):
         """Context for one training micro-step (autocast + optional DDP no_sync)."""
@@ -1508,8 +1633,11 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         - `DeepSpeedRunner` overrides this hook to call the DeepSpeed engine's
           backward method.
         """
-
-        self._scaled_loss_for_backward(loss).backward()
+        scaled_loss = self._scaled_loss_for_backward(loss)
+        if self.grad_scaler is not None:
+            self.grad_scaler.scale(scaled_loss).backward()
+            return
+        scaled_loss.backward()
 
     def step(self) -> None:
         """
@@ -1576,34 +1704,32 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                 "set `self.optimizer`, implement `build_optimizer()`, or override `optimizer_step()`"
             )
 
+        self.validate_ema_update_contract()
         self.checkpoint_manager.maybe_wait_for_staging()
+        if self.grad_scaler is not None and self.optimizer is not None:
+            self.grad_scaler.unscale_(self.optimizer)
         grad_scale = self._gradient_scale_for_step()
         if grad_scale is not None:
             self._scale_optimizer_gradients(grad_scale)
         max_grad_value = self.max_grad_value
         max_grad_norm = self.max_grad_norm
         skip_nonfinite_grad = self.skip_nonfinite_grad
-        if self.optimizer_container is not None:
-            if skip_nonfinite_grad:
-                has_nonfinite_grad = self.optimizer_container.has_nan_inf_grad()
-                has_nonfinite_grad = self._sync_optimizer_skip_decision(has_nonfinite_grad)
-                if has_nonfinite_grad:
-                    self.optimizer_container.zero_grad()
-                    self._reset_accumulation_normalization()
-                    return False
-
-            stepped = self.optimizer_container.step(
-                max_grad_value=max_grad_value,
-                max_grad_norm=max_grad_norm,
-                zero_grad=True,
-                skip_nonfinite_grad=False,
-            )
-            if not stepped:
+        if skip_nonfinite_grad or self.grad_scaler is not None:
+            has_nonfinite_grad = self._optimizer_has_nonfinite_grad()
+            has_nonfinite_grad = self._sync_optimizer_skip_decision(has_nonfinite_grad)
+            if has_nonfinite_grad:
+                self._zero_optimizer_grad()
+                if self.grad_scaler is not None:
+                    self.grad_scaler.update()
                 self._reset_accumulation_normalization()
                 return False
-        elif self.optimizer is not None:
-            self.optimizer.step()
-            self.optimizer.zero_grad()
+
+        grad_norm = self._clip_optimizer_gradients(max_grad_value=max_grad_value, max_grad_norm=max_grad_norm)
+        self._record_grad_norm(grad_norm)
+        self._optimizer_step_and_zero_grad()
+        if self.grad_scaler is not None:
+            self.grad_scaler.update()
+        self.update_ema()
 
         self._reset_accumulation_normalization()
         self.train_state.global_step += 1
@@ -2508,6 +2634,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             raise ValueError("cannot build checkpoint state: model is not initialized")
         state = cls()
         state["ema"] = self.ema.state_dict() if self.ema else None
+        state["grad_scaler"] = self.grad_scaler.state_dict() if self.grad_scaler is not None else None
         state["optimizer"] = self.optimizer.state_dict() if self.optimizer else None
         state["scheduler"] = self.scheduler.state_dict() if self.scheduler else None
         state["model"] = self.unwrap(self.model).state_dict()
@@ -2563,6 +2690,10 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         `load_checkpoint`; this method owns only runner/RNG state.
         """
         super().load_state_dict(checkpoint)
+        if self.grad_scaler is not None:
+            scaler_state = checkpoint.get("grad_scaler")
+            if scaler_state is not None:
+                self.grad_scaler.load_state_dict(self._require_checkpoint_component_state("grad_scaler", scaler_state))
         state_dict = checkpoint.get("state") or {}
         rng_state = state_dict.get("rng")
         if isinstance(rng_state, Mapping) and "torch_cpu" in rng_state and self.rng_state.torch_cpu is not None:

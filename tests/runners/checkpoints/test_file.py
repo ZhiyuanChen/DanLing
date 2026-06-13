@@ -199,7 +199,7 @@ def test_file_checkpoint_writes_history(tmp_path: Path) -> None:
 
 def test_file_alias_failure_records_only_published_aliases(tmp_path: Path) -> None:
     runner = _CheckpointRunner(tmp_path)
-    runner.config.update({"ckpt.interval": 1})
+    runner.config.update({"ckpt.interval": 1, "ckpt.fail_on_error": False})
     runner.is_best = True
     manager = FileCheckpointManager(runner)
     best_dir = tmp_path / "best.pth"
@@ -290,6 +290,7 @@ def test_file_force_checkpoint_bypasses_interval(tmp_path: Path) -> None:
 
 def test_file_checkpoint_sync_save_failure_is_recorded(tmp_path: Path) -> None:
     runner = _FailingSaveRunner(tmp_path)
+    runner.config.update({"ckpt.fail_on_error": False})
     manager = FileCheckpointManager(runner)
 
     with pytest.warns(RuntimeWarning, match="storage failure: .*ENOSPC"):
@@ -318,6 +319,7 @@ def test_file_checkpoint_sync_save_success_reports_event(tmp_path: Path, capsys:
 
 def test_file_checkpoint_failure_is_not_raised_after_fail_on_error_is_enabled_later(tmp_path: Path) -> None:
     runner = _FailingSaveRunner(tmp_path)
+    runner.config.update({"ckpt.fail_on_error": False})
     manager = FileCheckpointManager(runner)
 
     with pytest.warns(RuntimeWarning, match="storage failure: .*ENOSPC"):
@@ -340,7 +342,7 @@ def test_file_checkpoint_sync_save_failure_raises_when_configured(tmp_path: Path
 
 def test_file_checkpoint_async_save_failure_is_recorded_on_wait(tmp_path: Path) -> None:
     runner = _FailingSaveRunner(tmp_path)
-    runner.config.update({"ckpt.async_mode": "async"})
+    runner.config.update({"ckpt.async_mode": "async", "ckpt.fail_on_error": False})
     manager = FileCheckpointManager(runner)
 
     try:
