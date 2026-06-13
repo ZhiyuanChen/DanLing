@@ -44,7 +44,7 @@ from .fsdp import (
     normalize_reshard_after_forward,
 )
 from .topology import ParallelContext, ParallelTopology
-from .torch_runner import TorchRunner
+from .torch_runner import TorchRunner, _local_reduction_tensor
 from .utils import RunnerMode
 
 with try_import() as dcp:
@@ -1069,6 +1069,7 @@ class ParallelRunner(TorchRunner):
         return payload.item() > 0
 
     def reduce(self, tensor):
+        tensor = _local_reduction_tensor(tensor)
         degree = self._reduce_degree("data")
         if degree <= 1 or not (dist.is_available() and dist.is_initialized()):
             return tensor
@@ -1085,7 +1086,7 @@ class ParallelRunner(TorchRunner):
         if self.pipeline_schedule is None:
             if loss is None:
                 return None
-            loss_value = loss.detach().to(dtype=torch.float64)
+            loss_value = _local_reduction_tensor(loss.detach()).to(dtype=torch.float64)
             if loss_value.ndim > 0:
                 loss_value = loss_value.mean()
             normalizer = float(max(int(loss_n or 1), 1))
@@ -1107,7 +1108,7 @@ class ParallelRunner(TorchRunner):
         if is_reporter:
             if loss is not None:
                 normalizer = float(max(int(loss_n or 1), 1))
-                loss_value = loss.detach().to(dtype=torch.float64)
+                loss_value = _local_reduction_tensor(loss.detach()).to(dtype=torch.float64)
                 if loss_value.ndim > 0:
                     loss_value = loss_value.mean()
                 payload[0] = loss_value * normalizer

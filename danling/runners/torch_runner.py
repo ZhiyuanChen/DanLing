@@ -66,11 +66,32 @@ from .telemetry import LoopTelemetry
 from .utils import RunnerMode, get_precision, on_main_process
 
 
+TorchDTensor: Any
+try:
+    from torch.distributed.tensor import DTensor as TorchDTensor
+except ImportError:
+    TorchDTensor = None
+
+
 def _seed_dataloader_worker(_worker_id: int) -> None:
     worker_seed = torch.initial_seed() % 2**32
     random.seed(worker_seed)
     if np_random is not None:
         np_random.seed(worker_seed)
+
+
+def _local_reduction_tensor(tensor: torch.Tensor) -> torch.Tensor:
+    if TorchDTensor is None or not isinstance(tensor, TorchDTensor):
+        return tensor
+
+    unsupported = [
+        placement
+        for placement in tensor.placements
+        if not placement.is_replicate()
+    ]
+    if unsupported:
+        raise ValueError(f"Cannot reduce non-replicated DTensor placements: {tensor.placements}")
+    return tensor.to_local()
 
 
 class TorchRunner(Fp8Mixin, BaseRunner):
@@ -1300,6 +1321,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
     def reduce(self, tensor: torch.Tensor) -> torch.Tensor:
         """Average-reduce tensor over the runner's collective domain."""
+        tensor = _local_reduction_tensor(tensor)
         if not (dist.is_available() and dist.is_initialized()):
             return tensor
         group = self.all_reduce_group()
@@ -1320,7 +1342,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         """Detach and all-reduce weighted loss tensor for logging."""
         if loss is None:
             return None
-        loss_value = loss.detach().to(dtype=torch.float64)
+        loss_value = _local_reduction_tensor(loss.detach()).to(dtype=torch.float64)
         if loss_value.ndim > 0:
             loss_value = loss_value.mean()
         normalizer = float(max(int(loss_n or 1), 1))
