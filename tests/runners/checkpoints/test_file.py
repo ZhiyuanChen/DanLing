@@ -133,6 +133,11 @@ def _assert_checkpoint_failure(manager: FileCheckpointManager, exc_type: type[Ba
     assert health.last_failed_target == target
 
 
+@pytest.fixture
+def failing_file_checkpoint_manager(tmp_path: Path) -> FileCheckpointManager:
+    return FileCheckpointManager(_FailingSaveRunner(tmp_path))
+
+
 def test_file_final_checkpoint_and_model_export_are_separate(tmp_path: Path) -> None:
     runner = _CheckpointRunner(tmp_path)
     runner.config.update({"ckpt.export_dtype": "fp16"})
@@ -197,9 +202,9 @@ def test_file_checkpoint_writes_history(tmp_path: Path) -> None:
     assert (tmp_path / "ckpt-e000002.pth").exists() is True
 
 
-def test_file_alias_failure_records_only_published_aliases(tmp_path: Path) -> None:
+def test_file_checkpoint_keeps_published_aliases_when_one_alias_fails(tmp_path: Path) -> None:
     runner = _CheckpointRunner(tmp_path)
-    runner.config.update({"ckpt.interval": 1, "ckpt.fail_on_error": False})
+    runner.config.update({"ckpt.interval": 1})
     runner.is_best = True
     manager = FileCheckpointManager(runner)
     best_dir = tmp_path / "best.pth"
@@ -288,20 +293,21 @@ def test_file_force_checkpoint_bypasses_interval(tmp_path: Path) -> None:
     assert (tmp_path / "latest.pth").exists() is True
 
 
-def test_file_checkpoint_sync_save_failure_is_recorded(tmp_path: Path) -> None:
-    runner = _FailingSaveRunner(tmp_path)
-    runner.config.update({"ckpt.fail_on_error": False})
-    manager = FileCheckpointManager(runner)
-
+def test_file_checkpoint_save_failure_warns_and_keeps_running(
+    tmp_path: Path,
+    failing_file_checkpoint_manager: FileCheckpointManager,
+) -> None:
+    manager = failing_file_checkpoint_manager
     with pytest.warns(RuntimeWarning, match="storage failure: .*ENOSPC"):
         manager.save_checkpoint(force=True)
 
     _assert_checkpoint_failure(manager, OSError, "latest")
     assert manager.checkpoint_health.last_successful_target is None
     assert (tmp_path / "latest.pth").exists() is False
+    assert manager.close(timeout=1.0) is True
 
 
-def test_file_checkpoint_sync_save_success_reports_event(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_file_checkpoint_save_success_reports_event(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     runner = _CheckpointRunner(tmp_path)
     runner.train_state.epoch = 2
     runner.train_state.global_step = 5
@@ -317,33 +323,12 @@ def test_file_checkpoint_sync_save_success_reports_event(tmp_path: Path, capsys:
     assert "aliases=latest.pth" in output
 
 
-def test_file_checkpoint_failure_is_not_raised_after_fail_on_error_is_enabled_later(tmp_path: Path) -> None:
-    runner = _FailingSaveRunner(tmp_path)
-    runner.config.update({"ckpt.fail_on_error": False})
-    manager = FileCheckpointManager(runner)
-
-    with pytest.warns(RuntimeWarning, match="storage failure: .*ENOSPC"):
-        manager.save_checkpoint(force=True)
-
-    runner.config.update({"ckpt.fail_on_error": True})
-    assert manager.close(timeout=1.0) is True
-
-
-def test_file_checkpoint_sync_save_failure_raises_when_configured(tmp_path: Path) -> None:
-    runner = _FailingSaveRunner(tmp_path)
-    runner.config.update({"ckpt.fail_on_error": True})
-    manager = FileCheckpointManager(runner)
-
-    with pytest.warns(RuntimeWarning, match="storage failure: .*ENOSPC"), pytest.raises(OSError, match="disk full"):
-        manager.save_checkpoint(force=True)
-
-    assert (tmp_path / "latest.pth").exists() is False
-
-
-def test_file_checkpoint_async_save_failure_is_recorded_on_wait(tmp_path: Path) -> None:
-    runner = _FailingSaveRunner(tmp_path)
-    runner.config.update({"ckpt.async_mode": "async", "ckpt.fail_on_error": False})
-    manager = FileCheckpointManager(runner)
+def test_file_async_checkpoint_save_failure_warns_and_keeps_running(
+    tmp_path: Path,
+    failing_file_checkpoint_manager: FileCheckpointManager,
+) -> None:
+    manager = failing_file_checkpoint_manager
+    manager.runner.config.update({"ckpt.async_mode": "async"})
 
     try:
         with pytest.warns(RuntimeWarning, match="storage failure: .*ENOSPC"):
@@ -463,7 +448,7 @@ def test_file_async_final_latest_and_model_export_are_both_reliable(tmp_path: Pa
     assert model_payload["model"]["weight"].dtype == torch.float16
 
 
-def test_file_async_checkpoint_snapshots_tensor_payload(tmp_path: Path) -> None:
+def test_file_async_checkpoint_saves_tensor_state_snapshot(tmp_path: Path) -> None:
     runner = _CheckpointRunner(tmp_path)
     runner.config.update({"ckpt.async_mode": "async"})
     weight = torch.ones(2, 2)

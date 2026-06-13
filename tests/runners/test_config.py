@@ -86,6 +86,7 @@ def _fsdp_parallel_config() -> RunnerConfig:
                 "mesh_device_type": "cuda",
                 "pipeline_microbatch_size": 2,
                 "pipeline_microbatches": 4,
+                "loss_parallel": False,
             },
             "fsdp": {
                 "enabled": True,
@@ -100,7 +101,7 @@ def _fsdp_parallel_config() -> RunnerConfig:
     )
 
 
-def test_runner_config_canonical_ignores_unused_parallelism_blocks_for_ddp() -> None:
+def test_runner_config_identity_ignores_inactive_parallel_settings() -> None:
     config_a = RunnerConfig(
         {
             "logging.enabled": False,
@@ -125,7 +126,7 @@ def test_runner_config_canonical_ignores_unused_parallelism_blocks_for_ddp() -> 
     assert config_a.canonical() == config_b.canonical()
 
 
-def test_runner_config_canonical_ignores_fault_tolerance_runtime_policy() -> None:
+def test_runner_config_identity_ignores_fault_tolerance_runtime_policy() -> None:
     config_a = RunnerConfig(
         {
             "logging.enabled": False,
@@ -163,7 +164,7 @@ def test_runner_config_canonical_ignores_fault_tolerance_runtime_policy() -> Non
     assert hash(config_a) == hash(config_b)
 
 
-def test_runner_config_materializes_runtime_sections() -> None:
+def test_runner_config_exposes_runtime_sections() -> None:
     config = RunnerConfig()
 
     expected_sections = {
@@ -217,7 +218,7 @@ def test_runner_config_keeps_training_sections_optional() -> None:
     assert "sched" not in explicit_none.canonical()
 
 
-def test_runner_config_canonical_ignores_materialized_default_sections() -> None:
+def test_runner_config_identity_omits_default_runtime_sections() -> None:
     canonical = RunnerConfig().canonical()
 
     assert "compile" not in canonical
@@ -226,7 +227,7 @@ def test_runner_config_canonical_ignores_materialized_default_sections() -> None
     assert "fp8" not in canonical
 
 
-def test_runner_config_canonical_drops_defaults_and_preserves_explicit_none_values() -> None:
+def test_runner_config_identity_keeps_explicit_none_values() -> None:
     config = RunnerConfig(
         {
             "optim": {
@@ -260,7 +261,7 @@ def test_runner_config_canonical_drops_defaults_and_preserves_explicit_none_valu
     assert canonical["dataloader"] == {"batch_size": 8, "train": {"shuffle": None, "drop_last": False}}
 
 
-def test_runner_config_compile_surface_matches_runtime_options() -> None:
+def test_runner_config_accepts_compile_options() -> None:
     config = RunnerConfig(
         {
             "compile": {
@@ -282,7 +283,7 @@ def test_runner_config_compile_surface_matches_runtime_options() -> None:
     assert config.compile.memory_policy == "cpu_offload_all"
 
 
-def test_runner_config_common_runtime_surfaces_are_typed() -> None:
+def test_runner_config_accepts_common_training_options() -> None:
     config = RunnerConfig(
         {
             "optim": {
@@ -361,7 +362,7 @@ def test_runner_config_common_runtime_surfaces_are_typed() -> None:
     assert config.dataloader.collate_fn == "collate-a"
 
 
-def test_runner_config_dataloader_surface_matches_stateful_loader_options() -> None:
+def test_runner_config_accepts_dataloader_options() -> None:
     config = RunnerConfig(
         {
             "dataloader": {
@@ -390,7 +391,7 @@ def test_runner_config_dataloader_surface_matches_stateful_loader_options() -> N
     assert dict(config.dataloader.val) == {"drop_last": False}
 
 
-def test_runner_config_dataloader_keeps_explicit_surface() -> None:
+def test_runner_config_preserves_explicit_dataloader_options() -> None:
     config = RunnerConfig({"dataloader": {"batch_size": 8}})
 
     assert isinstance(config.dataloader, DataloaderConfig)
@@ -398,7 +399,7 @@ def test_runner_config_dataloader_keeps_explicit_surface() -> None:
     assert config.canonical()["dataloader"] == {"batch_size": 8}
 
 
-def test_runner_config_checkpoint_async_surface_matches_runtime_keys() -> None:
+def test_runner_config_accepts_async_checkpoint_options() -> None:
     config = _checkpoint_fault_tolerance_config()
 
     assert config["ckpt"].async_mode == "async_with_pinned_mem"
@@ -406,7 +407,7 @@ def test_runner_config_checkpoint_async_surface_matches_runtime_keys() -> None:
     assert config["ckpt"].async_process_group_backend == "gloo"
 
 
-def test_runner_config_checkpoint_dataloader_checkpoint_surface_matches_runtime_keys() -> None:
+def test_runner_config_accepts_dataloader_checkpoint_options() -> None:
     config = _checkpoint_fault_tolerance_config()
 
     assert config["ckpt"].dataloader_checkpoint.enabled is True
@@ -414,14 +415,14 @@ def test_runner_config_checkpoint_dataloader_checkpoint_surface_matches_runtime_
     assert config["ckpt"].dataloader_checkpoint.prefix == "ft-loader"
 
 
-def test_runner_config_checkpoint_export_surface_matches_runtime_keys() -> None:
+def test_runner_config_accepts_checkpoint_export_options() -> None:
     config = _checkpoint_fault_tolerance_config()
 
     assert config["ckpt"].export_dtype == "bf16"
     assert config.canonical()["ckpt"] == {"backend": "dcp"}
 
 
-def test_runner_config_fault_tolerance_surface_matches_runtime_keys() -> None:
+def test_runner_config_accepts_fault_tolerance_options() -> None:
     config = _checkpoint_fault_tolerance_config()
 
     assert config.ft.process_group_timeout_seconds == 1.234
@@ -429,7 +430,7 @@ def test_runner_config_fault_tolerance_surface_matches_runtime_keys() -> None:
     assert config.ft.group_size == 2
 
 
-def test_runner_config_parallel_axes_match_runtime_keys() -> None:
+def test_runner_config_accepts_parallel_axis_options() -> None:
     config = _fsdp_parallel_config()
 
     assert config.parallel.axes.replicate == 2
@@ -441,16 +442,17 @@ def test_runner_config_parallel_axes_match_runtime_keys() -> None:
     assert config.parallel.axes.expert_tensor == 1
 
 
-def test_runner_config_parallel_options_match_runtime_keys() -> None:
+def test_runner_config_accepts_parallel_runtime_options() -> None:
     config = _fsdp_parallel_config()
 
     assert config.parallel.use_device_mesh is False
     assert config.parallel.mesh_device_type == "cuda"
     assert config.parallel.pipeline_microbatch_size == 2
     assert config.parallel.pipeline_microbatches == 4
+    assert config.parallel.loss_parallel is False
 
 
-def test_runner_config_fsdp_surface_matches_runtime_keys() -> None:
+def test_runner_config_accepts_fsdp_options() -> None:
     config = _fsdp_parallel_config()
 
     assert list(config.fsdp.module_classes) == ["TransformerBlock"]

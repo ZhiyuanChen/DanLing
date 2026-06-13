@@ -98,7 +98,7 @@ def test_graph_runner_train_step_matches_eager_update() -> None:
         graph.close()
 
 
-def test_graph_runner_builds_step_key_from_single_parameter_iteration() -> None:
+def test_graph_runner_traces_optimizer_parameters_once() -> None:
     runner = CountingGraphRunner({"logging.enabled": False})
     try:
         runner.train_step(_batch())

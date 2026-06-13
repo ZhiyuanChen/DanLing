@@ -111,7 +111,7 @@ def find_free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def run_distributed(func, world_size: int = 2, *, seed: int = 0) -> None:
+def run_distributed(func, world_size: int = 2, *, seed: int = 1016) -> None:
     if not can_bind_localhost():
         pytest.skip("Local TCP sockets are unavailable in this environment.")
 

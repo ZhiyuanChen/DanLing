@@ -86,7 +86,7 @@ def test_runner_supervisor_writes_heartbeat_file_on_close(tmp_path: Path) -> Non
     assert shutdown_payload["event"] == "shutdown"
 
 
-def test_runner_supervisor_heartbeat_payload_tracks_progress(tmp_path: Path) -> None:
+def test_runner_supervisor_heartbeat_reports_progress(tmp_path: Path) -> None:
     runner = MinimalRunner(_config(tmp_path, heartbeat={"enabled": True, "interval_seconds": 30.0}, steps=8))
     try:
         runner.train_state.global_step = 3

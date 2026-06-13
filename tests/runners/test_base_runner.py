@@ -132,7 +132,7 @@ def test_base_runner_sorts_configured_splits(tmp_path: Path) -> None:
         runner.close()
 
 
-def test_base_runner_close_timeout_does_not_teardown_resources(tmp_path: Path) -> None:
+def test_base_runner_close_timeout_keeps_resources_available(tmp_path: Path) -> None:
     runner = MinimalRunner(_config(tmp_path))
     manager = _ToggleCloseCheckpointManager()
     writer_calls: list[str] = []
@@ -353,7 +353,7 @@ def test_base_runner_load_checkpoint_reports_restore_summary(capsys: pytest.Capt
         runner.close()
 
 
-def test_base_runner_log_crash_summary_reports_minimal_context(
+def test_base_runner_prints_concise_failure_summary(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -425,7 +425,7 @@ def test_base_runner_save_seed_checkpoint_forces_last_step_save() -> None:
 
 
 def test_base_runner_from_checkpoint_path_restores_full_state(tmp_path: Path) -> None:
-    source = MinimalRunner(_config(tmp_path, seed=123))
+    source = MinimalRunner(_config(tmp_path, seed=1016))
     checkpoint_path = tmp_path / "runner-checkpoint.pth"
     try:
         source.set_seed()
@@ -452,7 +452,7 @@ def test_base_runner_from_checkpoint_path_restores_full_state(tmp_path: Path) ->
         restored.close()
 
 
-def test_base_runner_load_state_dict_ignores_resume_and_pretrained_sources(tmp_path: Path) -> None:
+def test_base_runner_resume_keeps_current_checkpoint_sources(tmp_path: Path) -> None:
     runner = MinimalRunner(_config(tmp_path, checkpoint="latest-a", pretrained="model-a"))
     try:
         checkpoint_runner = runner.config.dict()
@@ -464,7 +464,7 @@ def test_base_runner_load_state_dict_ignores_resume_and_pretrained_sources(tmp_p
         runner.close()
 
 
-def test_base_runner_load_state_dict_ignores_heartbeat_policy(tmp_path: Path) -> None:
+def test_base_runner_resume_keeps_current_heartbeat_policy(tmp_path: Path) -> None:
     runner = MinimalRunner(_config(tmp_path, heartbeat={"enabled": False, "interval_seconds": 60.0}))
     try:
         checkpoint_runner = runner.config.dict()
@@ -477,7 +477,7 @@ def test_base_runner_load_state_dict_ignores_heartbeat_policy(tmp_path: Path) ->
         runner.close()
 
 
-def test_base_runner_load_state_dict_rejects_checkpoint_backend_change(tmp_path: Path) -> None:
+def test_base_runner_resume_rejects_checkpoint_backend_changes(tmp_path: Path) -> None:
     runner = MinimalRunner(_config(tmp_path, ckpt={"backend": "dcp"}))
     try:
         checkpoint_runner = runner.config.dict()

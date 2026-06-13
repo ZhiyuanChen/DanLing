@@ -91,8 +91,8 @@ class TestGlobalMetricsLocalBehavior:
             GlobalMetrics(preprocess=preprocess_binary, distributed=False, bad=1)  # type: ignore[arg-type]
 
     def test_binary_value(self):
-        random.seed(0)
-        torch.random.manual_seed(0)
+        random.seed(1016)
+        torch.random.manual_seed(1016)
         metrics = make_binary_metrics(distributed=False)
         function_map = build_function_map("binary")
 
@@ -105,8 +105,8 @@ class TestGlobalMetricsLocalBehavior:
             assert_metric_outputs(metrics.value(), function_map, pred, target)
 
     def test_binary_average(self):
-        random.seed(0)
-        torch.random.manual_seed(0)
+        random.seed(1016)
+        torch.random.manual_seed(1016)
         metrics = make_binary_metrics(distributed=False)
         function_map = build_function_map("binary")
         preds, targets = [], []
@@ -126,8 +126,8 @@ class TestGlobalMetricsLocalBehavior:
         assert_close(metrics.targets, torch.cat(targets), rtol=RTOL, atol=ATOL)
 
     def test_multiclass_value(self):
-        random.seed(0)
-        torch.random.manual_seed(0)
+        random.seed(1016)
+        torch.random.manual_seed(1016)
         num_classes = 10
         metrics = make_multiclass_metrics(num_classes=num_classes, distributed=False)
         function_map = build_function_map("multiclass", num_classes=num_classes)
@@ -141,8 +141,8 @@ class TestGlobalMetricsLocalBehavior:
             assert_metric_outputs(metrics.value(), function_map, pred, target)
 
     def test_multiclass_average(self):
-        random.seed(0)
-        torch.random.manual_seed(0)
+        random.seed(1016)
+        torch.random.manual_seed(1016)
         num_classes = 10
         metrics = make_multiclass_metrics(num_classes=num_classes, distributed=False)
         function_map = build_function_map("multiclass", num_classes=num_classes)
@@ -163,8 +163,8 @@ class TestGlobalMetricsLocalBehavior:
         assert_close(metrics.targets, torch.cat(targets), rtol=RTOL, atol=ATOL)
 
     def test_multiclass_topk_value(self):
-        random.seed(0)
-        torch.random.manual_seed(0)
+        random.seed(1016)
+        torch.random.manual_seed(1016)
         num_classes = 6
         k = 3
         metrics = GlobalMetrics(
@@ -195,8 +195,8 @@ class TestGlobalMetricsLocalBehavior:
             )
 
     def test_multiclass_topk_average(self):
-        random.seed(0)
-        torch.random.manual_seed(0)
+        random.seed(1016)
+        torch.random.manual_seed(1016)
         num_classes = 6
         k = 3
         metrics = GlobalMetrics(
@@ -230,8 +230,8 @@ class TestGlobalMetricsLocalBehavior:
         )
 
     def test_multilabel_value(self):
-        random.seed(0)
-        torch.random.manual_seed(0)
+        random.seed(1016)
+        torch.random.manual_seed(1016)
         num_labels = 10
         metrics = make_multilabel_metrics(num_labels=num_labels, distributed=False)
         function_map = build_function_map("multilabel", num_labels=num_labels)
@@ -245,8 +245,8 @@ class TestGlobalMetricsLocalBehavior:
             assert_metric_outputs(metrics.value(), function_map, pred, target)
 
     def test_multilabel_average(self):
-        random.seed(0)
-        torch.random.manual_seed(0)
+        random.seed(1016)
+        torch.random.manual_seed(1016)
         num_labels = 10
         metrics = make_multilabel_metrics(num_labels=num_labels, distributed=False)
         function_map = build_function_map("multilabel", num_labels=num_labels)
@@ -267,8 +267,8 @@ class TestGlobalMetricsLocalBehavior:
         assert_close(metrics.targets, torch.cat(targets), rtol=RTOL, atol=ATOL)
 
     def test_regression_value_with_nested_tensors(self):
-        random.seed(0)
-        torch.random.manual_seed(0)
+        random.seed(1016)
+        torch.random.manual_seed(1016)
         num_outputs = 2
         metrics = make_regression_metrics(num_outputs=num_outputs, distributed=False)
         function_map = build_function_map("regression", num_outputs=num_outputs)
@@ -285,8 +285,8 @@ class TestGlobalMetricsLocalBehavior:
             assert_metric_outputs(metrics.value(), function_map, torch.cat(pred_list), torch.cat(target_list))
 
     def test_regression_average_with_nested_tensors(self):
-        random.seed(0)
-        torch.random.manual_seed(0)
+        random.seed(1016)
+        torch.random.manual_seed(1016)
         num_outputs = 2
         metrics = make_regression_metrics(num_outputs=num_outputs, distributed=False)
         function_map = build_function_map("regression", num_outputs=num_outputs)
@@ -449,8 +449,8 @@ class TestGlobalMetricsLocalBehavior:
         assert {"auroc", "acc"} <= set(metrics.avg.keys())
 
     def test_multiclass_confmat_with_ignore_index(self):
-        random.seed(0)
-        torch.random.manual_seed(0)
+        random.seed(1016)
+        torch.random.manual_seed(1016)
         num_classes = 7
         ignore_index = -100
         average = "macro"
@@ -532,8 +532,8 @@ class TestGlobalMetricsLocalBehavior:
             assert_metric_outputs(metrics.average(), function_map, torch.cat(preds), torch.cat(targets))
 
     def test_multilabel_confmat_with_elementwise_ignore_index(self):
-        random.seed(0)
-        torch.random.manual_seed(0)
+        random.seed(1016)
+        torch.random.manual_seed(1016)
         num_labels = 6
         ignore_index = -100
         average = "macro"
@@ -633,7 +633,7 @@ class TestDistributedGlobalMetrics:
 
 def _distributed_binary_worker(rank: int, world_size: int):
     with process_group("gloo", rank, world_size):
-        torch.manual_seed(1234 + rank)
+        torch.manual_seed(1016 + rank)
         metrics = make_binary_metrics(distributed=True)
         function_map = build_function_map("binary")
 
@@ -652,7 +652,7 @@ def _distributed_binary_worker(rank: int, world_size: int):
 def _distributed_multiclass_worker(rank: int, world_size: int):
     with process_group("gloo", rank, world_size):
         num_classes = 5
-        torch.manual_seed(2234 + rank)
+        torch.manual_seed(1016 + rank)
         metrics = make_multiclass_metrics(num_classes=num_classes, distributed=True)
         function_map = build_function_map("multiclass", num_classes=num_classes)
 
@@ -671,7 +671,7 @@ def _distributed_multiclass_worker(rank: int, world_size: int):
 def _distributed_multilabel_worker(rank: int, world_size: int):
     with process_group("gloo", rank, world_size):
         num_labels = 5
-        torch.manual_seed(3234 + rank)
+        torch.manual_seed(1016 + rank)
         metrics = make_multilabel_metrics(num_labels=num_labels, distributed=True)
         function_map = build_function_map("multilabel", num_labels=num_labels)
 

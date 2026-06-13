@@ -126,7 +126,7 @@ def test_runner_workspace_writes_metadata_files(tmp_path: Path) -> None:
         runner.close()
 
 
-def test_runner_workspace_saves_metadata_after_post_init(tmp_path: Path) -> None:
+def test_runner_workspace_saves_metadata_after_setup(tmp_path: Path) -> None:
     runner = PostInitMetadataRunner(_config(tmp_path))
     try:
         metadata_dir = _expected_base_dir(tmp_path, "lineage-a") / _expected_id(runner) / "metadata"
@@ -188,7 +188,7 @@ def test_runner_workspace_nested_print_patch_restores_safely(tmp_path: Path, mon
     assert builtins.print is fake_print
 
 
-def test_runner_workspace_restores_print_after_post_init_failure(tmp_path: Path, monkeypatch) -> None:
+def test_runner_workspace_restores_print_after_setup_failure(tmp_path: Path, monkeypatch) -> None:
     calls: list[str] = []
 
     def fake_print(*args, sep=" ", end="\n", file=None, flush=False, **kwargs):

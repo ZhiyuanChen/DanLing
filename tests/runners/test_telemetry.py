@@ -278,7 +278,7 @@ class TestLoopTelemetryRuntime:
         assert telemetry.interval.sample_known is False
         assert runner.reset_calls == [runner.device]
 
-    def test_cpu_memory_helpers_are_noops_without_cuda_runtime(self) -> None:
+    def test_cpu_memory_metrics_are_zero_without_cuda(self) -> None:
         device = torch.device("cpu")
 
         LoopTelemetry.reset_device_peak_memory_stats(device)

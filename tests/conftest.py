@@ -28,6 +28,25 @@ collect_ignore = ["nn_overrides.py"]
 
 
 @pytest.fixture(autouse=True)
+def restore_builtin_print():
+    """Isolate tests from the runner's global ``builtins.print`` monkeypatch.
+
+    A runner installs a print router on ``builtins.print`` and only restores it on
+    ``close()``. A test that builds a runner without closing it would leak an active
+    router that swallows later tests' ``print`` output into a stale logger (this is
+    how ``test_profiler_close_reports_artifacts`` saw empty stdout in the full suite).
+    Snapshotting and restoring ``builtins.print`` around every test keeps them isolated.
+    """
+    import builtins
+
+    saved = builtins.print
+    try:
+        yield
+    finally:
+        builtins.print = saved
+
+
+@pytest.fixture(autouse=True)
 def seed_all():
     import random
 
