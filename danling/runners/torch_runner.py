@@ -1694,11 +1694,17 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
         evaluate_splits = self._resolve_requested_splits(evaluate_splits, self.evaluate_splits, kind="evaluation")
 
-        print(f"train: splits={train_splits}")
-        print(f"evaluate: splits={evaluate_splits}")
-        if self.is_step_mode:
-            return self.train_steps(train_splits=train_splits, evaluate_splits=evaluate_splits)
-        return self.train_epochs(train_splits=train_splits, evaluate_splits=evaluate_splits)
+        self.log_startup_summary(train_splits=train_splits, evaluate_splits=evaluate_splits)
+        try:
+            if self.is_step_mode:
+                result = self.train_steps(train_splits=train_splits, evaluate_splits=evaluate_splits)
+            else:
+                result = self.train_epochs(train_splits=train_splits, evaluate_splits=evaluate_splits)
+        except Exception as exc:
+            self.log_crash_summary(exc)
+            raise
+        self.log_final_summary()
+        return result
 
     def train_epochs(
         self,
@@ -2568,6 +2574,12 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                         "Use `load_checkpoint` for full checkpoint restore instead of `load_pretrained`"
                     )
                 self.config.pretrained = os.fsdecode(checkpoint)
+                self.log_restore_summary(
+                    kind="pretrained",
+                    source=checkpoint,
+                    optimizer="skipped",
+                    scheduler="skipped",
+                )
                 return
         super().load_pretrained(checkpoint, *args, **kwargs)
 

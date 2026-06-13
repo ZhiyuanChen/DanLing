@@ -491,6 +491,19 @@ class DeepSpeedRunner(TorchRunner):
 
         self.config.checkpoint = os.fsdecode(checkpoint)
         self.optimizer_container = None
+        scheduler_status = (
+            "restored"
+            if client_state is not None
+            and getattr(self, "_runner_owns_scheduler", False)
+            and client_state.get("scheduler") is not None
+            else "skipped"
+        )
+        self.log_restore_summary(
+            kind="checkpoint",
+            source=checkpoint,
+            optimizer="restored",
+            scheduler=scheduler_status,
+        )
 
     def load_pretrained(
         self,
@@ -530,6 +543,12 @@ class DeepSpeedRunner(TorchRunner):
             self.load_model(client_state["ema"], *args, **kwargs)
 
         self.config.pretrained = os.fsdecode(checkpoint)
+        self.log_restore_summary(
+            kind="pretrained",
+            source=checkpoint,
+            optimizer="skipped",
+            scheduler="skipped",
+        )
 
     @classmethod
     def read_config(

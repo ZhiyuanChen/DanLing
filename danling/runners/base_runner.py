@@ -22,10 +22,10 @@ from __future__ import annotations
 import logging
 import os
 import random
-import shutil
 from collections.abc import Callable, Mapping, Sequence
 from functools import cached_property
 from math import ceil
+from time import perf_counter
 from typing import Any, cast
 from warnings import warn
 
@@ -41,7 +41,7 @@ try:
 except ImportError:
     np_random = None  # type: ignore[assignment]
 
-from .checkpoints import CheckpointManager, FileCheckpointManager
+from .checkpoints import CheckpointManager, FileCheckpointManager, storage_failure_name
 from .config import RunnerConfig
 from .fault_tolerance import FaultTolerance
 from .state import RunnerElasticState, RunnerRNGState, RunnerState, RunnerTrainState
@@ -141,6 +141,7 @@ class BaseRunner(metaclass=MetaRunner):
 
     timestamp: str
     _print_process: int
+    _run_start_time: float | None
 
     def __init__(self, config: RunnerConfig | Mapping[str, Any]) -> None:
         if not isinstance(config, RunnerConfig):
@@ -161,6 +162,7 @@ class BaseRunner(metaclass=MetaRunner):
         self.results = RoundDict()
         self.meters = AverageMeters()
         self.mode = RunnerMode.train
+        self._run_start_time = None
         self.checkpoint_manager = FileCheckpointManager(self)
         self.supervisor = RunnerSupervisor(self)
         self.fault_tolerance = None
@@ -187,6 +189,18 @@ class BaseRunner(metaclass=MetaRunner):
         self.workspace.init_print()
         self.init_signal_handlers()
         self.init_heartbeat()
+
+    def __repr__(self) -> str:
+        boundary = f"steps={self.config.steps}" if self.config.steps is not None else f"epochs={self.config.epochs}"
+        return (
+            f"{type(self).__name__}("
+            f"name={self.name!r}, "
+            f"id={self.id!r}, "
+            f"rank={self.rank}/{self.world_size}, "
+            f"mode={self.mode}, "
+            f"{boundary}"
+            ")"
+        )
 
     @property
     def world_size(self) -> int:
@@ -456,6 +470,161 @@ class BaseRunner(metaclass=MetaRunner):
     def format_result(self, result: RoundDict[str, Any], format_spec: str = ".4f") -> str:
         return format_result(result, format_spec=format_spec)
 
+    @staticmethod
+    def _format_summary(prefix: str, fields: Mapping[str, Any]) -> str:
+        items = []
+        for key, value in fields.items():
+            if value is None:
+                continue
+            items.append(f"{key}={value}")
+        return f"{prefix}: {' '.join(items)}"
+
+    def _runtime_device_summary(self) -> str | None:
+        device = getattr(self, "device", None)
+        if device is None:
+            return None
+        try:
+            return str(device)
+        except Exception:
+            return None
+
+    def _safe_batch_size(self) -> int | None:
+        try:
+            return self.batch_size
+        except AttributeError:
+            return None
+
+    def _checkpoint_summary_fields(self) -> dict[str, Any]:
+        health = self.checkpoint_manager.checkpoint_health
+        fields: dict[str, Any] = {}
+        if health.last_successful_target is not None:
+            fields["ckpt"] = health.last_successful_target
+        if health.last_successful_aliases:
+            fields["ckpt_aliases"] = ",".join(health.last_successful_aliases)
+        if health.error_count:
+            fields["ckpt_errors"] = health.error_count
+            if health.last_failed_target is not None:
+                fields["ckpt_failed"] = health.last_failed_target
+        return fields
+
+    @staticmethod
+    def _format_exception(exc: BaseException) -> str:
+        if isinstance(exc, Exception):
+            storage_failure = storage_failure_name(exc)
+            if storage_failure is not None:
+                return f"storage failure: {storage_failure}: {exc}"
+        return f"{type(exc).__name__}: {exc}"
+
+    @staticmethod
+    def _restore_source_label(source: Mapping[Any, Any] | PathStr) -> str:
+        if isinstance(source, Mapping):
+            return "<mapping>"
+        return os.fsdecode(source)
+
+    def log_restore_summary(
+        self,
+        *,
+        kind: str,
+        source: Mapping[Any, Any] | PathStr,
+        optimizer: str,
+        scheduler: str,
+    ) -> None:
+        fields = {
+            "kind": kind,
+            "source": self._restore_source_label(source),
+            "step": self.train_state.global_step,
+            "epoch": self.train_state.epoch,
+            "optimizer": optimizer,
+            "scheduler": scheduler,
+        }
+        print(self._format_summary("restore", fields))
+
+    def log_startup_summary(
+        self,
+        *,
+        train_splits: Sequence[str] | None = None,
+        evaluate_splits: Sequence[str] | None = None,
+    ) -> None:
+        self._run_start_time = perf_counter()
+        boundary = f"steps={self.steps}" if self.is_step_mode else f"epochs={self.epochs}"
+        fields = {
+            "runner": type(self).__name__,
+            "name": self.name,
+            "id": self.id,
+            "stack": self.config.get("stack"),
+            "world": self.world_size,
+            "device": self._runtime_device_summary(),
+            "precision": self.precision,
+            "compile": self.config.get("compile.enabled"),
+            "boundary": boundary,
+            "batch_size": self._safe_batch_size(),
+            "accum": self.accum_steps,
+            "train": ",".join(train_splits) if train_splits else None,
+            "eval": ",".join(evaluate_splits) if evaluate_splits else None,
+            "workspace": self.workspace.dir,
+        }
+        print(self._format_summary("run start", fields))
+
+    def _current_result_summary(self) -> str | None:
+        latest = self.latest_result
+        if latest is None:
+            return None
+        result = RoundDict(latest)
+        result.pop("index", None)
+        return self.format_result(self.flatten_result(result))
+
+    def build_final_summary(self, *, status: str) -> dict[str, Any]:
+        duration = None
+        if self._run_start_time is not None:
+            duration = perf_counter() - self._run_start_time
+        latest = self.latest_result
+        best = self.best_result if self.scores else None
+        fields: dict[str, Any] = {
+            "status": status,
+            "duration": duration,
+            "global_step": self.train_state.global_step,
+            "epoch": self.train_state.epoch,
+            "latest_result": round(latest, 8) if latest is not None else None,
+            "best_result": round(best, 8) if best is not None else None,
+            "workspace": self.workspace.dir,
+        }
+        fields.update(self._checkpoint_summary_fields())
+        return fields
+
+    def log_final_summary(self, *, status: str = "success") -> dict[str, Any]:
+        fields = self.build_final_summary(status=status)
+        printable = dict(fields)
+        printable.pop("latest_result", None)
+        printable.pop("best_result", None)
+        printable["result"] = self._current_result_summary()
+        if isinstance(printable.get("duration"), float):
+            printable["duration"] = f"{printable['duration']:.1f}s"
+        print(self._format_summary("run finished", printable))
+        try:
+            self.save(fields, os.path.join(self.workspace.dir, "summary.json"), indent=4)
+        except Exception as exc:
+            warn(f"failed to write run summary: {exc}", RuntimeWarning, stacklevel=2)
+        return fields
+
+    def log_crash_summary(self, exc: BaseException) -> None:
+        fields = {
+            "status": "failed",
+            "error": self._format_exception(exc),
+            "rank": f"{self.rank}/{self.world_size}",
+            "device": self._runtime_device_summary(),
+            "mode": self.mode,
+            "split": self.split,
+            "global_step": self.train_state.global_step,
+            "epoch": self.train_state.epoch,
+            "workspace": self.workspace.dir,
+        }
+        fields.update(self._checkpoint_summary_fields())
+        message = self._format_summary("run failed", fields)
+        if self.logger is not None:
+            self.logger.error(message)
+        else:
+            print(message, force=True)
+
     def flatten_result(self, result: Mapping[str, Any]) -> FlatDict[str, Any]:
         flat_result = FlatDict()
 
@@ -524,7 +693,7 @@ class BaseRunner(metaclass=MetaRunner):
         self.save(latest_payload, latest_path, indent=4)
 
         if self.is_best:
-            shutil.copy(latest_path, os.path.join(self.workspace.dir, "best.json"))
+            self.save(latest_payload, os.path.join(self.workspace.dir, "best.json"), indent=4)
 
     def auto_restore(self) -> None:
         """Auto-load resume/pretrained sources declared in config.
@@ -1014,6 +1183,7 @@ class BaseRunner(metaclass=MetaRunner):
               `read_checkpoint`.
         """
 
+        restore_source = kwargs.pop("_restore_source", checkpoint)
         ckpt = self.read_checkpoint(checkpoint, *args, **kwargs)
         self.load_state_dict(ckpt)
         if "model" in ckpt:
@@ -1035,6 +1205,14 @@ class BaseRunner(metaclass=MetaRunner):
             self.load_dataloaders(ckpt.get("dataloaders"))
         if isinstance(checkpoint, (str, bytes, os.PathLike)):
             self.config.checkpoint = os.fsdecode(checkpoint)
+        optimizer_status = "restored" if self.optimizer is not None and "optimizer" in ckpt else "skipped"
+        scheduler_status = "restored" if self.scheduler is not None and "scheduler" in ckpt else "skipped"
+        self.log_restore_summary(
+            kind="checkpoint",
+            source=restore_source,
+            optimizer=optimizer_status,
+            scheduler=scheduler_status,
+        )
 
     @staticmethod
     def _require_checkpoint_component_state(component: str, state_dict: Any | None) -> Any:
@@ -1138,6 +1316,12 @@ class BaseRunner(metaclass=MetaRunner):
             self.config.pretrained = os.fsdecode(checkpoint)
         else:
             self.config.pretrained = None
+        self.log_restore_summary(
+            kind="pretrained",
+            source=checkpoint,
+            optimizer="skipped",
+            scheduler="skipped",
+        )
 
     @classmethod
     def from_checkpoint(cls, checkpoint: Mapping | bytes | str | os.PathLike, *args, **kwargs) -> BaseRunner:
@@ -1225,10 +1409,24 @@ class BaseRunner(metaclass=MetaRunner):
         )
 
     def save(self, obj: Any, file: PathStr, main_process_only: bool = True, *args, **kwargs) -> File:
-        """Save an object with optional main-process guard."""
+        """Save an object atomically with optional main-process guard."""
 
-        if (main_process_only and self.is_main_process) or not main_process_only:
-            return save(obj, file, *args, **kwargs)
+        if main_process_only and not self.is_main_process:
+            return file
+
+        path = os.fspath(file)
+        stem, extension = os.path.splitext(path)
+        tmp_path = f"{stem}.tmp-{self.id}-{os.getpid()}{extension}"
+        try:
+            save(obj, tmp_path, *args, **kwargs)
+            os.replace(tmp_path, path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            raise
         return file
 
     def close(self, timeout: float | None = None) -> bool:

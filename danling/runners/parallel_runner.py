@@ -1425,7 +1425,7 @@ class ParallelRunner(TorchRunner):
                     runner_payload["parallel"] = updated_parallel_config
                     ckpt["runner"] = runner_payload
 
-        super().load_checkpoint(ckpt, *args, **kwargs)
+        super().load_checkpoint(ckpt, *args, _restore_source=checkpoint, **kwargs)
         if isinstance(checkpoint, (str, bytes, os.PathLike)):
             self.config.checkpoint = os.fsdecode(checkpoint)
 

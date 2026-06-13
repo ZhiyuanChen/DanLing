@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+import errno
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -28,6 +30,7 @@ import pytest
 import torch
 
 from danling.metrics import AverageMeter
+from danling.runners import base_runner as base_runner_module
 from danling.runners.base_runner import BaseRunner
 
 
@@ -319,6 +322,84 @@ def test_base_runner_load_checkpoint_restores_in_expected_order() -> None:
             }
         )
         assert runner.calls == ["state", "model", "optimizer", "scheduler", "dataloaders"]
+    finally:
+        runner.close()
+
+
+def test_base_runner_load_checkpoint_reports_restore_summary(capsys: pytest.CaptureFixture[str]) -> None:
+    runner = SequencingRunner({"logging.enabled": False})
+    runner.optimizer = object()
+    runner.scheduler = object()
+    try:
+        runner.load_checkpoint(
+            {
+                "runner": {"logging.enabled": False},
+                "state": {"train": {"global_step": 13, "epoch": 4}},
+                "model": {"w": 1},
+                "optimizer": {"opt": 1},
+                "scheduler": {"sched": 1},
+            }
+        )
+
+        output = capsys.readouterr().out
+        assert "restore:" in output
+        assert "kind=checkpoint" in output
+        assert "source=<mapping>" in output
+        assert "step=13" in output
+        assert "epoch=4" in output
+        assert "optimizer=restored" in output
+        assert "scheduler=restored" in output
+    finally:
+        runner.close()
+
+
+def test_base_runner_log_crash_summary_reports_minimal_context(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = MinimalRunner(_config(tmp_path))
+    try:
+        runner.log_crash_summary(RuntimeError("boom"))
+
+        output = capsys.readouterr().out
+        assert "run failed:" in output
+        assert "error=RuntimeError: boom" in output
+        assert "rank=0/1" in output
+        assert f"workspace={runner.workspace.dir}" in output
+    finally:
+        runner.close()
+
+
+def test_base_runner_save_replaces_target_atomically(tmp_path: Path) -> None:
+    runner = MinimalRunner(_config(tmp_path))
+    target = tmp_path / "payload.json"
+    target.write_text('{"value": 0}', encoding="utf-8")
+
+    try:
+        runner.save({"value": 1}, target, indent=2)
+
+        assert json.loads(target.read_text(encoding="utf-8")) == {"value": 1}
+        assert list(tmp_path.glob("payload.tmp-*.json")) == []
+    finally:
+        runner.close()
+
+
+def test_base_runner_save_cleans_temporary_file_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = MinimalRunner(_config(tmp_path))
+    target = tmp_path / "payload.json"
+
+    def failing_save(obj, file, *args, **kwargs):
+        del obj, args, kwargs
+        Path(file).write_text("partial", encoding="utf-8")
+        raise OSError(errno.ENOSPC, "disk full")
+
+    monkeypatch.setattr(base_runner_module, "save", failing_save)
+    try:
+        with pytest.raises(OSError, match="disk full"):
+            runner.save({"value": 1}, target)
+
+        assert target.exists() is False
+        assert list(tmp_path.glob("payload.tmp-*.json")) == []
     finally:
         runner.close()
 
