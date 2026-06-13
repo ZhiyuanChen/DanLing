@@ -68,6 +68,8 @@ class GraphRunner(TorchRunner):
     def _validate_graph_runtime_config(self) -> None:
         if self.distributed:
             raise NotImplementedError("GraphRunner does not yet support distributed execution")
+        if self._normalized_precision_name(self.precision) in {"fp16", "float16", "half"}:
+            raise ValueError("GraphRunner does not support runner-owned fp16 gradient scaling; use bf16 or override")
         memory_policy = self.config.compile.get("memory_policy")
         if memory_policy is not None and str(memory_policy).strip().lower() != "default":
             raise NotImplementedError(

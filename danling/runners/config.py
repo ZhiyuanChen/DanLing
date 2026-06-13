@@ -164,7 +164,7 @@ class CheckpointConfig(chanfig.Config):
     dedicated_async_process_group: bool = True
     async_process_group_backend: str = "gloo"
     dataloader_checkpoint: DataloaderCheckpointConfig
-    fail_on_error: bool = False
+    fail_on_error: bool = True
     export_dtype: Optional[str] = None
 
     def __post_init__(self, *args, **kwargs) -> None:
@@ -449,6 +449,22 @@ class DataloaderConfig(chanfig.Config):
     snapshot_every_n_steps: Optional[int]
 
 
+class PerformanceConfig(chanfig.Config):
+    r"""
+    Optional model-throughput accounting.
+
+    FLOP fields are intentionally opt-in: generic runners cannot infer a
+    meaningful model-specific FLOP count. When supplied, loop telemetry emits
+    TFLOP/s and utilization fields alongside throughput.
+    """
+
+    model_flops_per_sample: Optional[float] = None
+    model_flops_per_token: Optional[float] = None
+    hardware_flops_per_sample: Optional[float] = None
+    hardware_flops_per_token: Optional[float] = None
+    peak_flops: Optional[float] = None
+
+
 def normalize_stack_name(stack: object) -> str:
     normalized = str(stack or "auto").strip().lower().replace("-", "_")
     aliases = {
@@ -487,6 +503,7 @@ DEFAULT_FILTERED_CONFIG_SECTIONS: tuple[tuple[str, chanfig.Config], ...] = (
     ("fp8", Fp8Config()),
     ("dataloader", DataloaderConfig()),
     ("compile", CompileConfig()),
+    ("performance", PerformanceConfig()),
 )
 
 
@@ -556,7 +573,7 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
             # Type annotations provide auto-completion and validation
             model: str = "resnet18"
             epochs: int = 100
-            precision: str = "fp16"
+            precision: str = "bf16"
 
             def __init__(self):
                 super().__init__()
@@ -589,7 +606,7 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
     stack: str = "auto"
     name: Optional[str] = None
 
-    seed: Optional[int] = None
+    seed: Optional[int] = 1016
     deterministic: bool = False
 
     steps: Optional[int] = None
@@ -626,6 +643,7 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
     heartbeat: HeartbeatConfig = HeartbeatConfig()
     ckpt: CheckpointConfig = CheckpointConfig()
     dataloader: DataloaderConfig = DataloaderConfig()
+    performance: PerformanceConfig = PerformanceConfig()
     fsdp: FsdpConfig = FsdpConfig()
     parallel: ParallelConfig = ParallelConfig()
 

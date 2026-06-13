@@ -55,8 +55,7 @@ def _bare_deepspeed_runner(
     if config is not None:
         config_payload.update(config)
     config = RunnerConfig(config_payload)
-    if fail_on_error:
-        config["ckpt"].fail_on_error = True
+    config["ckpt"].fail_on_error = fail_on_error
 
     runner = object.__new__(DeepSpeedRunner)
     state = RunnerState(config=config)

@@ -48,11 +48,13 @@ class _TelemetryRunner:
         *,
         log_interval: int = 0,
         loop_times: list[float] | None = None,
+        performance: dict[str, float] | None = None,
     ) -> None:
         self.distributed = False
         self.device = torch.device("cpu")
         self.log_interval = log_interval
         self.loop_times = list(loop_times or [])
+        self.config = {"performance": performance or {}}
         self.meters = _TelemetryMeters()
         self.reset_calls: list[torch.device] = []
         self.step_log_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
@@ -168,6 +170,36 @@ class TestLoopTelemetryAggregation:
             "mem_alloc_mb": 7.0,
             "mem_reserved_mb": 11.0,
         }
+
+    def test_merge_result_adds_configured_flop_metrics(self) -> None:
+        telemetry = LoopTelemetry(
+            _TelemetryRunner(
+                performance={
+                    "model_flops_per_sample": 5e12,
+                    "hardware_flops_per_sample": 1e13,
+                    "peak_flops": 4e13,
+                }
+            ),
+            start_time=0.0,
+        )
+        result: dict[str, float] = {}
+
+        telemetry.merge_result(
+            result,
+            elapsed_seconds=2.0,
+            steps=4,
+            snapshot=RuntimeTelemetrySnapshot(
+                sample_count=4,
+                sample_known=True,
+                token_count=0,
+                token_known=False,
+            ),
+        )
+
+        assert result["tflops"] == pytest.approx(10.0)
+        assert result["mfu_pct"] == pytest.approx(25.0)
+        assert result["hw_tflops"] == pytest.approx(20.0)
+        assert result["hfu_pct"] == pytest.approx(50.0)
 
     def test_loop_telemetry_consumes_interval_without_resetting_total(self) -> None:
         telemetry = LoopTelemetry(_TelemetryRunner(), start_time=0.0)

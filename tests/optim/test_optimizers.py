@@ -28,6 +28,7 @@ try:
 except ImportError:
     ds = None
 
+from danling.optim import OptimizerContainer
 from danling.optim.registry import OPTIMIZERS
 
 
@@ -41,6 +42,35 @@ def test_OPTIMIZERS():
     assert isinstance(OPTIMIZERS.build(model.parameters(), type="torch_adam", lr=0.001), optim.Adam)
     if version.parse(torch.__version__) >= version.parse("2.5.0"):
         assert isinstance(OPTIMIZERS.build(model.parameters(), type="adafactor", lr=0.001), optim.Adafactor)
+
+
+def test_optimizer_container_returns_step_result_with_grad_norm():
+    model = nn.Linear(2, 1, bias=False)
+    optimizer = optim.SGD(model.parameters(), lr=0.1)
+    container = OptimizerContainer(optimizer)
+
+    for parameter in model.parameters():
+        parameter.grad = torch.ones_like(parameter)
+
+    result = container.step(max_grad_norm=1.0)
+
+    assert result.stepped is True
+    assert result.grad_norm is not None
+    assert result.grad_norm > 0
+
+
+def test_optimizer_container_skip_nonfinite_returns_step_result_without_update():
+    model = nn.Linear(2, 1, bias=False)
+    optimizer = optim.SGD(model.parameters(), lr=0.1)
+    container = OptimizerContainer(optimizer)
+    initial = model.weight.detach().clone()
+    model.weight.grad = torch.full_like(model.weight, float("inf"))
+
+    result = container.step(skip_nonfinite_grad=True)
+
+    assert result.stepped is False
+    assert result.grad_norm is None
+    torch.testing.assert_close(model.weight, initial)
 
 
 @pytest.mark.skipif(ds is None, reason="deepspeed is not installed")

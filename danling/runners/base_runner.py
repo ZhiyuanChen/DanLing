@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import random
@@ -623,7 +624,7 @@ class BaseRunner(metaclass=MetaRunner):
         if self.logger is not None:
             self.logger.error(message)
         else:
-            print(message, force=True)
+            print(message, force=True)  # type: ignore[call-overload]
 
     def flatten_result(self, result: Mapping[str, Any]) -> FlatDict[str, Any]:
         flat_result = FlatDict()
@@ -1218,6 +1219,7 @@ class BaseRunner(metaclass=MetaRunner):
     def _require_checkpoint_component_state(component: str, state_dict: Any | None) -> Any:
         component_labels = {
             "ema": "EMA state",
+            "grad_scaler": "AMP grad scaler state",
             "optimizer": "optimizer state",
             "scheduler": "scheduler state",
         }
@@ -1414,7 +1416,7 @@ class BaseRunner(metaclass=MetaRunner):
         if main_process_only and not self.is_main_process:
             return file
 
-        path = os.fspath(file)
+        path = os.fsdecode(file)
         stem, extension = os.path.splitext(path)
         tmp_path = f"{stem}.tmp-{self.id}-{os.getpid()}{extension}"
         try:
@@ -1422,10 +1424,8 @@ class BaseRunner(metaclass=MetaRunner):
             os.replace(tmp_path, path)
         except Exception:
             if os.path.exists(tmp_path):
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(tmp_path)
-                except OSError:
-                    pass
             raise
         return file
 
