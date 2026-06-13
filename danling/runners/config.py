@@ -276,6 +276,7 @@ class ProfilingConfig(chanfig.Config):
     use_cuda: Optional[bool] = None
     post_processing_timeout_seconds: Optional[float] = None
     trace_dir: str = "profiles"
+    operator_table_rows: int = 100
 
 
 class HeartbeatConfig(chanfig.Config):

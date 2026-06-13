@@ -110,6 +110,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
     _train_pg_timeout_reduced: bool = False
     _profiler_context: Any | None = None
     _profiler: Any | None = None
+    _profiler_trace_dir: str | None = None
+    _profiler_operator_table_rows: int = 100
     _pending_loss_normalizer: int | None = None
     _accumulation_divisor_local: float = 0.0
     _accumulation_mode: str | None = None
@@ -444,6 +446,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             trace_dir = os.path.join(self.workspace.dir, trace_dir)
         trace_dir = os.path.join(trace_dir, self.timestamp, f"rank-{self.rank:05d}")
         os.makedirs(trace_dir, exist_ok=True)
+        self._profiler_trace_dir = trace_dir
+        self._profiler_operator_table_rows = int(profiling.get("operator_table_rows", 100))
         profile_kwargs: dict[str, Any] = {
             "activities": activities,
             "schedule": torch.profiler.schedule(**schedule_kwargs),
@@ -477,11 +481,39 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
     def _close_profiler(self) -> None:
         profiler_context = self._profiler_context
+        profiler = self._profiler
+        trace_dir = self._profiler_trace_dir
+        operator_table_rows = self._profiler_operator_table_rows
         self._profiler_context = None
         self._profiler = None
+        self._profiler_trace_dir = None
         if profiler_context is None:
             return
         profiler_context.__exit__(None, None, None)
+        operator_table_path = None
+        if profiler is not None and trace_dir is not None:
+            operator_table_path = os.path.join(trace_dir, "operator_table.txt")
+            try:
+                try:
+                    table = profiler.key_averages().table(
+                        sort_by="self_cuda_time_total",
+                        row_limit=operator_table_rows,
+                    )
+                except Exception:
+                    table = profiler.key_averages().table(
+                        sort_by="self_cpu_time_total",
+                        row_limit=operator_table_rows,
+                    )
+                with open(operator_table_path, "w", encoding="utf-8") as fp:
+                    fp.write(table)
+                    fp.write("\n")
+            except Exception as exc:
+                operator_table_path = None
+                if "Profiler must be initialized" not in str(exc):
+                    warn(f"failed to write profiler operator table: {exc}", RuntimeWarning, stacklevel=2)
+        if trace_dir is not None and (not self.distributed or self.is_main_process):
+            fields = {"trace_dir": trace_dir, "operator_table": operator_table_path}
+            print(self._format_summary("profiler artifacts", fields))
 
     @on_main_process
     def init_tensorboard(self, *args, **kwargs) -> None:
@@ -2663,6 +2695,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
     def close(self, timeout: float | None = None) -> bool:
         """Close runner resources."""
         try:
+            self._close_profiler()
             drained = super().close(timeout=timeout)
         except Exception:
             self._close_profiler()
@@ -2670,6 +2703,5 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             raise
         if not drained:
             return False
-        self._close_profiler()
         self.destroy_process_group()
         return drained

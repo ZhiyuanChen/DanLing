@@ -983,6 +983,30 @@ class TestTorchRunnerProfiling:
         assert runner._profiler is None
         assert runner._profiler_context is None
 
+    def test_profiler_close_reports_artifacts(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        runner = TinyTorchRunner(
+            {
+                "logging.enabled": False,
+                "workspace.root": str(tmp_path),
+                "profiling": {"enabled": True, "wait": 0, "warmup": 0, "active": 1, "trace_dir": "trace-output"},
+            }
+        )
+        trace_dir = Path(runner.workspace.dir) / "trace-output" / runner.timestamp / f"rank-{runner.rank:05d}"
+        try:
+            runner.model(torch.ones(1, 4, device=runner.device))
+            runner._step_profiler()
+        finally:
+            runner.close()
+
+        output = capsys.readouterr().out
+        assert "profiler artifacts:" in output
+        assert f"trace_dir={trace_dir}" in output
+        assert "operator_table=" in output
+
 
 class TestTorchRunnerDistributedRuntime:
 
