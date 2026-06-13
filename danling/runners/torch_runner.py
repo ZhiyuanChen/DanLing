@@ -1945,7 +1945,6 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                     break
                 start_global_step = self.train_state.global_step
                 target_global_step = start_global_step + split_steps
-                length = max(target_global_step - self.train_state.global_step - 1, 0)
                 self.meters.reset()
                 self.metrics = self.train_metrics
                 if self.metrics is not None:
@@ -2009,21 +2008,26 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                     if checkpoint_cadence > 0 and step_after != step_before and step_after % checkpoint_cadence == 0:
                         self.save_checkpoint()
 
-                    step_iteration = step_after - start_global_step - 1 if step_after != step_before else None
+                    global_step = step_after if step_after != step_before else None
+                    is_log_step = (
+                        self.log_interval > 0
+                        and global_step is not None
+                        and global_step > 0
+                        and global_step % self.log_interval == 0
+                    )
+                    is_boundary_step = global_step in (target_global_step, total_steps)
                     if (
                         self.log_interval > 0
-                        and step_iteration is not None
-                        and (
-                            (step_iteration > 0 and step_iteration % self.log_interval == 0) or step_iteration == length
-                        )
+                        and global_step is not None
+                        and (is_log_step or is_boundary_step)
                     ):
                         telemetry.emit_log(
                             split=split,
                             iteration=batch_iteration,
-                            length=length,
+                            length=total_steps,
                             loss=loss,
                             loss_n=loss_n,
-                            display_iteration=step_iteration,
+                            display_iteration=global_step,
                         )
 
                 round_result[split] = self.get_epoch_result()
@@ -2055,7 +2059,6 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         for split in evaluate_splits:
             result[split] = self.evaluate_steps(split=split)
         self.append_result(result, index=self.train_state.global_step)
-        print(f"train: step mode result={result}")
         self.save_result()
         self.save_checkpoint(last_step=True)
         self.save_model_checkpoint()

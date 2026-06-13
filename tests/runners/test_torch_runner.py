@@ -1539,7 +1539,7 @@ class TestTorchRunnerStepExecution:
 
         try:
             runner.train_steps(train_splits=["train"], evaluate_splits=[])
-            assert [(iteration, length) for _, iteration, length, _ in runner.step_log_calls] == [(1, 1)]
+            assert [(iteration, length) for _, iteration, length, _ in runner.step_log_calls] == [(2, 2)]
         finally:
             runner.close()
 
@@ -1603,7 +1603,11 @@ class TestTorchRunnerStepExecution:
 
         try:
             runner.train_steps(train_splits=["train"], evaluate_splits=[])
-            assert [iteration for _, iteration, _, _ in runner.step_log_calls] == [1, 2]
+            assert [(iteration, length) for _, iteration, length, _ in runner.step_log_calls] == [
+                (1, 3),
+                (2, 3),
+                (3, 3),
+            ]
         finally:
             runner.close()
 
