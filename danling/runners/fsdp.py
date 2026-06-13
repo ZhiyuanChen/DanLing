@@ -75,6 +75,25 @@ def build_offload_policy(
     return cpu_offload_policy_cls(**dict(policy))
 
 
+def normalize_reshard_after_forward(policy: object, *, pipeline_enabled: bool) -> object:
+    if policy is None:
+        return True
+    if not isinstance(policy, str):
+        return policy
+
+    normalized = policy.strip().lower().replace("-", "_")
+    if normalized == "always":
+        return True
+    if normalized == "never":
+        return False
+    if normalized == "default":
+        return not pipeline_enabled
+    raise ValueError(
+        "invalid fsdp.reshard_after_forward policy: "
+        f"{policy!r}. Expected a boolean, 'always', 'never', or 'default'."
+    )
+
+
 def build_fsdp2_kwargs(
     *,
     config: Mapping[str, Any],
@@ -84,6 +103,7 @@ def build_fsdp2_kwargs(
     config_name: str,
     supported_keys: set[str],
     support_hint: str,
+    pipeline_enabled: bool = False,
 ) -> dict[str, Any]:
     unsupported = sorted(key for key in config.keys() if key not in supported_keys)
     if unsupported:
@@ -93,9 +113,10 @@ def build_fsdp2_kwargs(
             f"{unsupported_text}. Use FSDP2 keys such as {support_hint}."
         )
 
-    reshard_after_forward = config.get("reshard_after_forward")
-    if reshard_after_forward is None:
-        reshard_after_forward = True
+    reshard_after_forward = normalize_reshard_after_forward(
+        config.get("reshard_after_forward"),
+        pipeline_enabled=pipeline_enabled,
+    )
 
     fsdp_kwargs: dict[str, Any] = {
         "mesh": mesh,

@@ -89,7 +89,9 @@ def _fsdp_parallel_config() -> RunnerConfig:
             },
             "fsdp": {
                 "enabled": True,
-                "reshard_after_forward": False,
+                "module_classes": ["TransformerBlock"],
+                "reshard_after_forward": "default",
+                "root_reshard_after_forward": False,
                 "mixed_precision_policy": {"param_dtype": "bf16"},
                 "offload_policy": {"pin_memory": True},
                 "ignored_params": ["weight"],
@@ -451,7 +453,9 @@ def test_runner_config_parallel_options_match_runtime_keys() -> None:
 def test_runner_config_fsdp_surface_matches_runtime_keys() -> None:
     config = _fsdp_parallel_config()
 
-    assert config.fsdp.reshard_after_forward is False
+    assert list(config.fsdp.module_classes) == ["TransformerBlock"]
+    assert config.fsdp.reshard_after_forward == "default"
+    assert config.fsdp.root_reshard_after_forward is False
     assert config.fsdp.enabled is True
     assert dict(config.fsdp.mixed_precision_policy) == {"param_dtype": "bf16"}
     assert dict(config.fsdp.offload_policy) == {"pin_memory": True}

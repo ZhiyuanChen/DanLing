@@ -28,8 +28,10 @@ from torch import distributed as dist
 from torch import nn, optim
 from torchdata.stateful_dataloader import StatefulDataLoader
 
+import danling.runners.parallel_runner as parallel_runner_module
 from danling.data import StepProxyLoader
 from danling.runners import ParallelRunner
+from danling.runners.config import RunnerConfig
 from danling.runners.telemetry import LoopTelemetry
 from danling.runners.topology import ParallelContext
 from danling.tensors import NestedTensor
@@ -73,6 +75,12 @@ class CpuParallelRunner(ParallelRunner):
         return torch.device("cpu")
 
 
+class CudaParallelRunner(ParallelRunner):
+    @property
+    def device(self):
+        return torch.device("cuda")
+
+
 class TinyParallelRunner(CpuParallelRunner):
     def init_distributed(self) -> None:
         _init_parallel_topology(self)
@@ -90,6 +98,10 @@ class TinyParallelRunner(CpuParallelRunner):
         self.model = nn.Linear(4, 2)
         self.criterion = nn.MSELoss()
         self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
+
+
+class FakeShardedGradScaler:
+    pass
 
 
 class RecordingPipelineSchedule:
@@ -419,6 +431,122 @@ class TestParallelRunnerParallelization:
     def test_requires_model_parallelization_for_model_axes(self) -> None:
         with pytest.raises(NotImplementedError, match="model-specific parallelization"):
             TinyParallelRunner({"logging.enabled": False, **_parallel_config(context=2, pipeline=4, tensor=2)})
+
+    def test_fsdp_fp16_uses_sharded_grad_scaler(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        runner = object.__new__(CudaParallelRunner)
+        runner.config = RunnerConfig(
+            {
+                "logging.enabled": False,
+                "precision": "fp16",
+                "fsdp": {"enabled": True},
+                **_parallel_config(shard=2),
+            }
+        )
+        runner._fp8_enabled = False
+        monkeypatch.setattr(parallel_runner_module.parallel_fsdp, "check", lambda: None)
+        monkeypatch.setattr(parallel_runner_module, "ShardedGradScaler", FakeShardedGradScaler)
+
+        runner.setup_grad_scaler()
+
+        assert isinstance(runner.grad_scaler, FakeShardedGradScaler)
+
+    def test_activation_checkpointing_requires_explicit_module_classes(self) -> None:
+        with pytest.raises(ValueError, match="activation_checkpoint.module_classes"):
+            TinyParallelRunner(
+                {
+                    "logging.enabled": False,
+                    "activation_checkpoint": {"enabled": True},
+                    **_parallel_config(shard=2, pipeline=8, tensor=1),
+                }
+            )
+
+    def test_fsdp_module_classes_wrap_children_before_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class Block(nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.proj = nn.Linear(4, 4)
+
+            def forward(self, x):
+                return self.proj(x)
+
+        class BlockModel(nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.blocks = nn.ModuleList([Block(), Block()])
+                self.head = nn.Linear(4, 2)
+
+            def forward(self, x):
+                for block in self.blocks:
+                    x = block(x)
+                return self.head(x)
+
+        class FsdpPolicyRunner(CpuParallelRunner):
+            def init_distributed(self) -> None:
+                _init_parallel_topology(self)
+
+            @property
+            def world_size(self) -> int:
+                return 2
+
+            @property
+            def rank(self) -> int:
+                return 0
+
+            def _check_fsdp_prerequisites(self) -> None:
+                return
+
+            def __init__(self, config):
+                super().__init__(config)
+                self.model = BlockModel()
+                self.criterion = nn.MSELoss()
+                self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
+
+        calls: list[tuple[nn.Module, dict[str, object]]] = []
+
+        def fake_fully_shard(module, **kwargs):
+            calls.append((module, dict(kwargs)))
+            return module
+
+        monkeypatch.setattr(parallel_runner_module, "fully_shard", fake_fully_shard)
+        runner = FsdpPolicyRunner(
+            {
+                "logging.enabled": False,
+                "fsdp": {
+                    "enabled": True,
+                    "mesh": "mesh",
+                    "module_classes": ["Block"],
+                    "reshard_after_forward": "default",
+                    "root_reshard_after_forward": False,
+                },
+                **_parallel_config(shard=2, pipeline=1, tensor=1),
+            }
+        )
+        try:
+            assert [module for module, _kwargs in calls] == [
+                runner.model.blocks[0],
+                runner.model.blocks[1],
+                runner.model,
+            ]
+            assert calls[0][1]["reshard_after_forward"] is True
+            assert calls[1][1]["reshard_after_forward"] is True
+            assert calls[2][1]["reshard_after_forward"] is False
+        finally:
+            runner.close()
+
+    def test_fsdp_module_classes_fail_when_nothing_matches(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class FsdpPolicyRunner(TinyParallelRunner):
+            def _check_fsdp_prerequisites(self) -> None:
+                return
+
+        monkeypatch.setattr(parallel_runner_module, "fully_shard", lambda module, **kwargs: module)
+        with pytest.raises(ValueError, match="fsdp.module_classes matched no modules"):
+            FsdpPolicyRunner(
+                {
+                    "logging.enabled": False,
+                    "fsdp": {"enabled": True, "mesh": "mesh", "module_classes": ["MissingBlock"]},
+                    **_parallel_config(shard=2, pipeline=8, tensor=1),
+                }
+            )
 
 
 # ---------------------------------------------------------------------------

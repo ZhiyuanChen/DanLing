@@ -23,6 +23,7 @@ import os
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
+from functools import partial
 from typing import Any, Iterator
 from warnings import warn
 
@@ -36,7 +37,12 @@ from danling.data import DataLoaderDict, StepProxyLoader
 
 from .checkpoints import TorchDistributedCheckpointManager
 from .config import RunnerConfig
-from .fsdp import build_fsdp2_kwargs, build_mixed_precision_policy, build_offload_policy
+from .fsdp import (
+    build_fsdp2_kwargs,
+    build_mixed_precision_policy,
+    build_offload_policy,
+    normalize_reshard_after_forward,
+)
 from .topology import ParallelContext, ParallelTopology
 from .torch_runner import TorchRunner
 from .utils import RunnerMode
@@ -51,6 +57,14 @@ with try_import() as pipeline:
 
 with try_import() as parallel_fsdp:
     from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, fully_shard
+    from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
+
+with try_import() as activation_checkpoint:
+    from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+        CheckpointImpl,
+        apply_activation_checkpointing as apply_torch_activation_checkpointing,
+        checkpoint_wrapper,
+    )
 
 
 class _ParallelDataLoaderDict(DataLoaderDict):
@@ -266,6 +280,8 @@ class ParallelRunner(TorchRunner):
         self._pipeline_loss_weighting = None
         if self.fsdp_enabled:
             parallel_fsdp.check()
+        if self.config.activation_checkpoint.enabled:
+            activation_checkpoint.check()
         torchft_config_supported = (
             self.fsdp_enabled
             and int(self.config.parallel.axes.pipeline) == 1
@@ -303,10 +319,10 @@ class ParallelRunner(TorchRunner):
                 auto-pipeline shape is requested.
 
         **Side effects:** moves local parts to `self.device`, calls
-        `parallelize_model`, applies FP8 policy, compiles each part, optionally
-        wraps parts with FSDP2 after `apply_activation_checkpointing`, binds
-        pipeline schedule modules, installs TorchFT all-reduce hooks for FSDP,
-        and moves EMA to device.
+        `parallelize_model`, applies FP8 policy and optional activation
+        checkpointing, compiles each part, optionally wraps parts with FSDP2,
+        binds pipeline schedule modules, installs TorchFT all-reduce hooks for
+        FSDP, and moves EMA to device.
 
         !!! danger "Do not"
             - Build the optimizer before this hook; optimizer parameters must
@@ -322,15 +338,14 @@ class ParallelRunner(TorchRunner):
         if self.fp8_enabled:
             self.apply_fp8_module_policy_to_model_parts()
             parts = list(self.model_parts)
+        parts = [self.apply_activation_checkpointing(part) for part in parts]
 
+        compiled = [self.compiler.compile(part) for part in parts]
         if self.fsdp_enabled:
             fsdp_kwargs = self.fsdp_kwargs()
-            wrapped = [
-                fully_shard(self.compiler.compile(self.apply_activation_checkpointing(part)), **fsdp_kwargs)
-                for part in parts
-            ]
+            wrapped = [self.apply_fsdp(part, fsdp_kwargs) for part in compiled]
         else:
-            wrapped = [self.compiler.compile(part) for part in parts]
+            wrapped = compiled
 
         self.model_parts = wrapped
         self.model = wrapped[0]
@@ -346,6 +361,25 @@ class ParallelRunner(TorchRunner):
             raise RuntimeError("cannot initialize ParallelRunner FSDP: torch.distributed.fsdp.fully_shard is required")
         if not torch.cuda.is_available():
             raise RuntimeError("ParallelRunner FSDP requires CUDA when WORLD_SIZE > 1")
+
+    def setup_grad_scaler(self) -> None:
+        self.grad_scaler = None
+        precision = self._normalized_precision_name(self.precision)
+        if precision not in {"fp16", "float16", "half"}:
+            return
+        if not self.runner_owns_grad_scaling():
+            return
+        if self.fp8_enabled:
+            raise ValueError("precision='fp16' cannot be combined with FP8 autocast")
+        if self.device.type != "cuda":
+            raise ValueError("runner-owned fp16 precision requires a CUDA device; use bf16 or a backend-owned scaler")
+        if self.fsdp_enabled:
+            parallel_fsdp.check()
+            if ShardedGradScaler is None:
+                raise RuntimeError("ParallelRunner FSDP fp16 requires torch.distributed.fsdp.ShardedGradScaler")
+            self.grad_scaler = ShardedGradScaler()
+            return
+        self.grad_scaler = torch.amp.GradScaler(device=self.device.type)
 
     def _maybe_init_pipeline_schedule_from_single_part(self) -> None:
         if self.pipeline_schedule is not None or self.pipeline_degree <= 1 or self.pipeline_group is None:
@@ -639,21 +673,75 @@ class ParallelRunner(TorchRunner):
             config_name="fsdp",
             supported_keys={
                 "enabled",
+                "module_classes",
                 "mesh",
                 "reshard_after_forward",
+                "root_reshard_after_forward",
                 "shard_placement_fn",
                 "mixed_precision_policy",
                 "offload_policy",
                 "ignored_params",
             },
-            support_hint="mesh/reshard_after_forward/shard_placement_fn/mixed_precision_policy/offload_policy",
+            support_hint=(
+                "mesh/module_classes/reshard_after_forward/"
+                "root_reshard_after_forward/shard_placement_fn/mixed_precision_policy/offload_policy"
+            ),
+            pipeline_enabled=self.pipeline_degree > 1,
         )
+
+    def apply_fsdp(self, model: nn.Module, fsdp_kwargs: Mapping[str, Any]) -> nn.Module:
+        """Apply configured FSDP2 wrapping to one local model part."""
+
+        self.apply_fsdp_to_modules(model, fsdp_kwargs)
+        root_kwargs = dict(fsdp_kwargs)
+        root_reshard_after_forward = self.config.fsdp.get("root_reshard_after_forward")
+        if root_reshard_after_forward is not None:
+            root_kwargs["reshard_after_forward"] = normalize_reshard_after_forward(
+                root_reshard_after_forward,
+                pipeline_enabled=self.pipeline_degree > 1,
+            )
+        root = fully_shard(model, **root_kwargs)
+        return root
+
+    def apply_fsdp_to_modules(self, model: nn.Module, fsdp_kwargs: Mapping[str, Any]) -> tuple[nn.Module, ...]:
+        """Shard explicitly configured submodules before sharding the root."""
+
+        module_classes = self.config.fsdp.get("module_classes")
+        if not module_classes:
+            return ()
+
+        matches = self.fsdp_modules(model, module_classes)
+        if not matches:
+            classes = ", ".join(str(module_class) for module_class in module_classes)
+            raise ValueError(f"fsdp.module_classes matched no modules in {type(model).__qualname__}: {classes}")
+
+        kwargs = dict(fsdp_kwargs)
+        wrapped: list[nn.Module] = []
+        for module in matches:
+            wrapped.append(fully_shard(module, **kwargs))
+        return tuple(wrapped)
+
+    @staticmethod
+    def fsdp_modules(model: nn.Module, module_classes: Sequence[str]) -> tuple[nn.Module, ...]:
+        """Return matching child modules in child-before-parent FSDP order."""
+
+        class_names = {str(module_class) for module_class in module_classes}
+        matches: list[tuple[int, int, nn.Module]] = []
+        for index, (name, module) in enumerate(model.named_modules()):
+            if not name:
+                continue
+            module_type = type(module)
+            qualified_name = f"{module_type.__module__}.{module_type.__qualname__}"
+            if module_type.__name__ in class_names or qualified_name in class_names:
+                matches.append((name.count("."), index, module))
+        matches.sort(key=lambda item: (-item[0], item[1]))
+        return tuple(module for _depth, _index, module in matches)
 
     def apply_activation_checkpointing(self, model: nn.Module) -> nn.Module:
         """
         Apply activation checkpointing to one local model part.
 
-        **Called when:** `materialize_model` wraps FSDP-enabled parts, before
+        **Called when:** `materialize_model` prepares each local part before
         compile/FSDP wrapping.
 
         Args:
@@ -662,15 +750,49 @@ class ParallelRunner(TorchRunner):
         Returns:
             Model part with activation checkpointing wrappers applied.
 
-        **Side effects:** default is a no-op. Overrides may mutate the module
-        in place or return a wrapped module.
+        **Side effects:** default wraps modules matching
+        `config.activation_checkpoint.module_classes` when activation
+        checkpointing is enabled. Overrides may mutate the module in place or
+        return a wrapped module.
 
         !!! danger "Do not"
             - Change parameter ownership or shard layout here; FSDP has not
               wrapped the model yet.
             - Return a non-module value.
         """
+        if not self.config.activation_checkpoint.enabled:
+            return model
+
+        module_classes = self.config.activation_checkpoint.module_classes
+        if not module_classes:
+            raise ValueError(
+                "activation_checkpoint.enabled=True requires "
+                "activation_checkpoint.module_classes or an overridden apply_activation_checkpointing()."
+            )
+        class_names = {str(name) for name in module_classes}
+
+        def check_fn(module: nn.Module) -> bool:
+            module_type = type(module)
+            qualified_name = f"{module_type.__module__}.{module_type.__qualname__}"
+            return module_type.__name__ in class_names or qualified_name in class_names
+
+        wrapper = partial(checkpoint_wrapper, checkpoint_impl=self._activation_checkpoint_impl())
+        apply_torch_activation_checkpointing(model, checkpoint_wrapper_fn=wrapper, check_fn=check_fn)
         return model
+
+    def _activation_checkpoint_impl(self):
+        impl = str(self.config.activation_checkpoint.checkpoint_impl).strip().lower().replace("-", "_")
+        aliases = {
+            "no_reentrant": CheckpointImpl.NO_REENTRANT,
+            "non_reentrant": CheckpointImpl.NO_REENTRANT,
+            "reentrant": CheckpointImpl.REENTRANT,
+        }
+        if impl not in aliases:
+            raise ValueError(
+                "invalid activation_checkpoint.checkpoint_impl: "
+                f"{self.config.activation_checkpoint.checkpoint_impl!r}. Expected 'no_reentrant' or 'reentrant'."
+            )
+        return aliases[impl]
 
     def bind_pipeline_modules(self, modules: Sequence[nn.Module]) -> None:
         if self.pipeline_schedule is None:
