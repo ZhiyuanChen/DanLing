@@ -276,6 +276,20 @@ class ProfilingConfig(chanfig.Config):
     use_cuda: Optional[bool] = None
     post_processing_timeout_seconds: Optional[float] = None
     trace_dir: str = "profiles"
+    key_averages_file: str = "key_averages.txt"
+
+
+class BenchmarkConfig(chanfig.Config):
+    r"""
+    Fixed-step runner benchmark settings.
+    """
+
+    enabled: bool = False
+    mode: str = "infer"
+    split: Optional[str] = None
+    warmup_steps: int = 5
+    measure_steps: int = 20
+    output: Optional[str] = None
 
 
 class HeartbeatConfig(chanfig.Config):
@@ -622,6 +636,7 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
     ddp: DdpConfig = DdpConfig()
     gc: GcConfig = GcConfig()
     profiling: ProfilingConfig = ProfilingConfig()
+    benchmark: BenchmarkConfig = BenchmarkConfig()
     heartbeat: HeartbeatConfig = HeartbeatConfig()
     ckpt: CheckpointConfig = CheckpointConfig()
     dataloader: DataloaderConfig = DataloaderConfig()

@@ -23,6 +23,7 @@ import logging
 import os
 import random
 import shutil
+import socket
 from collections.abc import Callable, Mapping, Sequence
 from functools import cached_property
 from math import ceil
@@ -164,6 +165,8 @@ class BaseRunner(metaclass=MetaRunner):
         self.checkpoint_manager = FileCheckpointManager(self)
         self.supervisor = RunnerSupervisor(self)
         self.fault_tolerance = None
+        self._last_batch_metadata: dict[str, Any] | None = None
+        self._crash_summary_printed = False
 
         self.init_distributed()
         self.init_checkpoint_manager()
@@ -247,6 +250,98 @@ class BaseRunner(metaclass=MetaRunner):
     def __post_init__(self) -> None:
         """Hook called after `__init__` by `MetaRunner`."""
         self.workspace.save_metadata()
+
+    def _runtime_context(self) -> str:
+        return f"rank={self.rank}/{self.world_size} host={socket.gethostname()}"
+
+    def emit_runner_event(self, message: str, *, level: str = "info") -> None:
+        """Emit a compact runner event with rank context for warning/error events."""
+
+        normalized = level.lower()
+        if normalized not in {"debug", "info", "warning", "error", "critical"}:
+            normalized = "info"
+
+        if normalized in {"warning", "error", "critical"}:
+            message = f"{message} {self._runtime_context()}"
+        elif self.distributed and not self.is_main_process:
+            return
+
+        logger = self.logger
+        if logger is not None:
+            getattr(logger, normalized)(message)
+            return
+        try:
+            print(message, force=normalized != "info")
+        except TypeError:
+            print(message)
+
+    @staticmethod
+    def _compact_metadata_value(value: Any) -> Any:
+        item = getattr(value, "item", None)
+        if callable(item):
+            try:
+                return item()
+            except Exception:
+                pass
+        if isinstance(value, os.PathLike):
+            return os.fspath(value)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)) and len(value) <= 8:
+            return [BaseRunner._compact_metadata_value(item) for item in value]
+        return repr(value)
+
+    def extract_batch_metadata(self, data: Any) -> dict[str, Any]:
+        """Extract lightweight source metadata from a batch without retaining tensors."""
+
+        metadata: dict[str, Any] = {}
+        if isinstance(data, Mapping):
+            for key in ("source_id", "path", "index", "sample_id", "id"):
+                if key in data:
+                    metadata[key] = self._compact_metadata_value(data[key])
+            for key in ("metadata", "_metadata", "__metadata__"):
+                nested = data.get(key)
+                if isinstance(nested, Mapping):
+                    for nested_key in ("source_id", "path", "index", "sample_id", "id"):
+                        if nested_key in nested:
+                            metadata[nested_key] = self._compact_metadata_value(nested[nested_key])
+                    break
+        for attr in ("source_id", "path", "index", "sample_id", "id"):
+            if attr not in metadata and hasattr(data, attr):
+                metadata[attr] = self._compact_metadata_value(getattr(data, attr))
+        return metadata
+
+    def record_last_batch_metadata(self, data: Any, *, iteration: int | None = None) -> None:
+        metadata = self.extract_batch_metadata(data)
+        metadata.update(
+            {
+                "mode": self.mode.value,
+                "split": getattr(self, "split", None),
+                "iteration": iteration,
+                "epoch": self.train_state.epoch,
+                "global_step": self.train_state.global_step,
+                "micro_step": self.train_state.micro_step,
+            }
+        )
+        self._last_batch_metadata = metadata
+
+    def report_crash(self, exc: BaseException) -> None:
+        if self._crash_summary_printed:
+            return
+        self._crash_summary_printed = True
+        parts = [
+            f"runner crash: type={type(exc).__name__}",
+            f"message={exc}",
+            f"mode={self.mode.value}",
+            f"split={getattr(self, 'split', None)}",
+            f"epoch={self.train_state.epoch}",
+            f"global_step={self.train_state.global_step}",
+        ]
+        if self._last_batch_metadata:
+            compact = " ".join(f"{key}={value}" for key, value in self._last_batch_metadata.items() if value is not None)
+            if compact:
+                parts.append(f"last_batch={compact}")
+        self.emit_runner_event(" ".join(parts), level="error")
 
     @cached_property
     def score_split(self) -> str | None:
@@ -1035,6 +1130,29 @@ class BaseRunner(metaclass=MetaRunner):
             self.load_dataloaders(ckpt.get("dataloaders"))
         if isinstance(checkpoint, (str, bytes, os.PathLike)):
             self.config.checkpoint = os.fsdecode(checkpoint)
+        self._emit_resume_summary(checkpoint, ckpt)
+
+    def _emit_resume_summary(self, checkpoint: Mapping | bytes | str | os.PathLike, ckpt: Mapping[str, Any]) -> None:
+        state = ckpt.get("state")
+        train_state = state.get("train") if isinstance(state, Mapping) else None
+        if isinstance(train_state, Mapping):
+            restored_step = train_state.get("global_step")
+            restored_epoch = train_state.get("epoch")
+        else:
+            restored_step = self.train_state.global_step
+            restored_epoch = self.train_state.epoch
+        if isinstance(checkpoint, (str, bytes, os.PathLike)):
+            checkpoint_path = os.fsdecode(checkpoint)
+        else:
+            checkpoint_path = "<mapping>"
+        optimizer_restored = ckpt.get("optimizer") is not None
+        scheduler_restored = ckpt.get("scheduler") is not None
+        self.emit_runner_event(
+            "checkpoint restored: "
+            f"path={checkpoint_path} step={restored_step} epoch={restored_epoch} "
+            f"optimizer={optimizer_restored} scheduler={scheduler_restored}",
+            level="info",
+        )
 
     @staticmethod
     def _require_checkpoint_component_state(component: str, state_dict: Any | None) -> Any:

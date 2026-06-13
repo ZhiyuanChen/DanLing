@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import queue
 import shutil
@@ -51,16 +52,24 @@ class CheckpointHealth:
     error_count: int = 0
     first_error: Exception | None = None
     last_error: Exception | None = None
+    last_failure_class: str | None = None
     last_failed_target: str | None = None
     last_successful_target: str | None = None
     last_failed_alias: str | None = None
     last_successful_aliases: tuple[str, ...] = ()
 
-    def record_failure(self, exc: Exception, target: str | None = None, alias: str | None = None) -> None:
+    def record_failure(
+        self,
+        exc: Exception,
+        target: str | None = None,
+        alias: str | None = None,
+        failure_class: str | None = None,
+    ) -> None:
         self.error_count += 1
         if self.first_error is None:
             self.first_error = exc
         self.last_error = exc
+        self.last_failure_class = failure_class
         self.last_failed_target = target
         self.last_failed_alias = alias
 
@@ -155,7 +164,7 @@ class CheckpointManager(ABC):
     def _on_async_task_failed(self, task: Any, exc: Exception) -> None:
         del task
         self.record_checkpoint_failure(exc)
-        warn(f"checkpoint save failed: {exc}", RuntimeWarning, stacklevel=2)
+        warn(self.format_checkpoint_failure(exc), RuntimeWarning, stacklevel=2)
 
     def _on_async_task_start_failed(self, task: Any, exc: Exception) -> None:
         self._on_async_task_failed(task, exc)
@@ -277,21 +286,84 @@ class CheckpointManager(ABC):
 
             sleep(min(max(remaining, 0.0), 0.01) if remaining is not None else 0.01)
 
+    @staticmethod
+    def classify_storage_failure(exc: BaseException) -> str | None:
+        """Return a storage-failure label for common filesystem failures."""
+
+        if isinstance(exc, PermissionError):
+            return "PermissionError"
+        if not isinstance(exc, OSError):
+            return None
+
+        errno_value = getattr(exc, "errno", None)
+        errno_names = {
+            errno.ENOSPC: "ENOSPC",
+            errno.EIO: "EIO",
+            errno.EACCES: "PermissionError",
+            errno.EPERM: "PermissionError",
+        }
+        edquot = getattr(errno, "EDQUOT", None)
+        if edquot is not None:
+            errno_names[edquot] = "EDQUOT"
+        if errno_value in errno_names:
+            return errno_names[errno_value]
+
+        message = str(exc).lower()
+        if "no space left" in message or "disk full" in message:
+            return "ENOSPC"
+        if "quota" in message:
+            return "EDQUOT"
+        if "input/output error" in message or "i/o error" in message:
+            return "EIO"
+        if "permission denied" in message or "operation not permitted" in message:
+            return "PermissionError"
+        return None
+
+    def format_checkpoint_failure(
+        self,
+        exc: BaseException,
+        *,
+        target: str | None = None,
+        alias: str | None = None,
+    ) -> str:
+        failure_class = self.classify_storage_failure(exc)
+        parts = ["failed to update checkpoint alias" if alias is not None else "checkpoint save failed"]
+        if failure_class is not None:
+            parts.append(f"storage_failure={failure_class}")
+        if target is not None:
+            parts.append(f"target={target}")
+        if alias is not None:
+            parts.append(f"alias={alias}")
+        parts.append(f"error={exc}")
+        return " ".join(parts)
+
     def record_checkpoint_failure(self, exc: Exception, *, target: str | None = None, alias: str | None = None) -> None:
         """Record a checkpoint persistence failure for health reporting.
 
         Backend runners that delegate storage to another engine should use this
         public manager boundary instead of reaching into protected internals.
         """
+        failure_class = self.classify_storage_failure(exc)
         with self._lock:
-            self.checkpoint_health.record_failure(exc, target=target, alias=alias)
+            self.checkpoint_health.record_failure(exc, target=target, alias=alias, failure_class=failure_class)
             if self.runner.config.get("ckpt.fail_on_error", False) and self._checkpoint_error_to_raise is None:
                 self._checkpoint_error_to_raise = exc
+        event = self.format_checkpoint_failure(exc, target=target, alias=alias)
+        emit = getattr(self.runner, "emit_runner_event", None)
+        if callable(emit):
+            emit(event, level="warning")
 
     def record_checkpoint_success(self, *, target: str | None = None, aliases: tuple[str, ...] = ()) -> None:
         """Record a successfully published checkpoint target and aliases."""
         with self._lock:
             self.checkpoint_health.record_success(target=target, aliases=aliases)
+        alias_text = ",".join(aliases) if aliases else "-"
+        step = getattr(self.runner.train_state, "global_step", None)
+        epoch = getattr(self.runner.train_state, "epoch", None)
+        event = f"checkpoint saved: step={step} epoch={epoch} aliases={alias_text} target={target or '-'}"
+        emit = getattr(self.runner, "emit_runner_event", None)
+        if callable(emit):
+            emit(event, level="info")
 
     def raise_checkpoint_error_if_requested(self) -> None:
         """Raise a deferred checkpoint error when fail-on-error is enabled."""

@@ -323,6 +323,57 @@ def test_base_runner_load_checkpoint_restores_in_expected_order() -> None:
         runner.close()
 
 
+def test_base_runner_load_checkpoint_emits_resume_summary(capsys: pytest.CaptureFixture[str]) -> None:
+    runner = SequencingRunner({"logging.enabled": False})
+    try:
+        runner.load_checkpoint(
+            {
+                "runner": {"logging.enabled": False},
+                "state": {"train": {"global_step": 13, "epoch": 4}},
+                "model": {"w": 1},
+                "optimizer": {"opt": 1},
+                "scheduler": {"sched": 1},
+            }
+        )
+
+        out = capsys.readouterr().out
+        assert "checkpoint restored: path=<mapping> step=13 epoch=4 optimizer=True scheduler=True" in out
+    finally:
+        runner.close()
+
+
+def test_base_runner_crash_summary_includes_last_batch_metadata(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner = MinimalRunner(_config(tmp_path))
+    try:
+        runner.record_last_batch_metadata(
+            {
+                "metadata": {
+                    "source_id": "rfam:RF00005",
+                    "path": tmp_path / "sample.fa",
+                    "index": torch.tensor(3),
+                }
+            },
+            iteration=7,
+        )
+
+        runner.report_crash(RuntimeError("boom"))
+        runner.report_crash(RuntimeError("second"))
+
+        out = capsys.readouterr().out
+        assert out.count("runner crash:") == 1
+        assert "type=RuntimeError" in out
+        assert "message=boom" in out
+        assert "source_id=rfam:RF00005" in out
+        assert f"path={tmp_path / 'sample.fa'}" in out
+        assert "index=3" in out
+        assert "iteration=7" in out
+        assert "rank=0/1 host=" in out
+    finally:
+        runner.close()
+
+
 def test_base_runner_save_seed_checkpoint_forces_last_step_save() -> None:
     runner = MinimalRunner({"logging.enabled": False})
     manager = _RecordingCheckpointManager()

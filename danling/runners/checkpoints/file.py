@@ -240,7 +240,7 @@ class FileCheckpointManager(CheckpointManager):
 
     def _on_checkpoint_task_failed(self, task: CheckpointTask, exc: Exception) -> None:
         self.record_checkpoint_failure(exc, target=task.history_name or task.name)
-        warn(f"checkpoint save failed: {exc}", RuntimeWarning, stacklevel=2)
+        warn(self.format_checkpoint_failure(exc, target=task.history_name or task.name), RuntimeWarning, stacklevel=2)
 
     def _on_async_task_failed(self, task: CheckpointTask, exc: Exception) -> None:
         self._on_checkpoint_task_failed(task, exc)
@@ -315,7 +315,7 @@ class FileCheckpointManager(CheckpointManager):
         except OSError as exc:
             self.record_checkpoint_failure(exc, target=alias_path, alias=alias_name)
             warn(
-                f"failed to update checkpoint alias {alias_path!r} from {source_path!r}: {exc}",
+                self.format_checkpoint_failure(exc, target=alias_path, alias=alias_name),
                 RuntimeWarning,
                 stacklevel=2,
             )

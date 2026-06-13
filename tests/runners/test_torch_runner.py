@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import math
 import os
 import signal
@@ -982,6 +983,34 @@ class TestTorchRunnerProfiling:
 
         assert runner._profiler is None
         assert runner._profiler_context is None
+
+
+class TestTorchRunnerBenchmark:
+
+    def test_benchmark_steps_writes_json_summary(self, tmp_path: Path) -> None:
+        runner = TinyTorchRunner({"logging.enabled": False, "workspace.root": str(tmp_path)})
+        try:
+            runner.dataloaders["infer"] = [
+                {"input": torch.ones((2, 4))},
+                {"input": torch.full((2, 4), 2.0)},
+            ]
+
+            summary = runner.benchmark_steps(mode="infer", warmup_steps=1, measure_steps=2, output="bench/summary.json")
+
+            output_path = Path(summary["output"])
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            assert output_path == Path(runner.workspace.dir) / "bench" / "summary.json"
+            assert payload["mode"] == "infer"
+            assert payload["split"] == "infer"
+            assert payload["warmup_steps"] == 1
+            assert payload["measure_steps"] == 2
+            assert payload["measured_steps"] == 2
+            assert payload["batch_restarts"] == 1
+            assert payload["timing_ms_per_step"]["steps"] == 2
+            assert len(payload["timing_ms_per_step"]["samples"]) == 2
+            assert payload["device"] == str(runner.device)
+        finally:
+            runner.close()
 
 
 class TestTorchRunnerDistributedRuntime:

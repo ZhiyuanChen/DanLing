@@ -110,6 +110,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
     _train_pg_timeout_reduced: bool = False
     _profiler_context: Any | None = None
     _profiler: Any | None = None
+    _profiler_trace_dir: str | None = None
+    _profiler_key_averages_path: str | None = None
     _pending_loss_normalizer: int | None = None
     _accumulation_divisor_local: float = 0.0
     _accumulation_mode: str | None = None
@@ -444,6 +446,11 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             trace_dir = os.path.join(self.workspace.dir, trace_dir)
         trace_dir = os.path.join(trace_dir, self.timestamp, f"rank-{self.rank:05d}")
         os.makedirs(trace_dir, exist_ok=True)
+        self._profiler_trace_dir = trace_dir
+        key_averages_file = os.fsdecode(str(profiling.get("key_averages_file", "key_averages.txt")))
+        if not os.path.isabs(key_averages_file):
+            key_averages_file = os.path.join(trace_dir, key_averages_file)
+        self._profiler_key_averages_path = key_averages_file
         profile_kwargs: dict[str, Any] = {
             "activities": activities,
             "schedule": torch.profiler.schedule(**schedule_kwargs),
@@ -477,11 +484,31 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
     def _close_profiler(self) -> None:
         profiler_context = self._profiler_context
+        profiler = self._profiler
+        trace_dir = self._profiler_trace_dir
+        key_averages_path = self._profiler_key_averages_path
         self._profiler_context = None
         self._profiler = None
+        self._profiler_trace_dir = None
+        self._profiler_key_averages_path = None
         if profiler_context is None:
             return
         profiler_context.__exit__(None, None, None)
+        if profiler is not None and key_averages_path is not None:
+            try:
+                os.makedirs(os.path.dirname(key_averages_path), exist_ok=True)
+                table = profiler.key_averages().table(sort_by="self_cpu_time_total", row_limit=200)
+                with open(key_averages_path, "w", encoding="utf-8") as fp:
+                    fp.write(table)
+                    fp.write("\n")
+            except Exception as exc:
+                if "Profiler must be initialized" not in str(exc):
+                    warn(f"profiler key-averages export failed: {exc}", RuntimeWarning, stacklevel=2)
+                key_averages_path = None
+        self.emit_runner_event(
+            f"profiler artifacts: trace_dir={trace_dir or '-'} key_averages={key_averages_path or '-'}",
+            level="info",
+        )
 
     @on_main_process
     def init_tensorboard(self, *args, **kwargs) -> None:
@@ -1821,6 +1848,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
         for iteration, data, will_flush in self._iter_train_batches(loader):
             self.supervisor.maybe_handle_termination_signal()
+            self.record_last_batch_metadata(data, iteration=iteration)
             # Positive int = weighted-loss signal; None = no signal (uniform window).
             # 0 or missing collapses to None so the accumulation state machine
             # picks "uniform" cleanly instead of being silently coerced to 1.
@@ -1831,6 +1859,9 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             self._train_window_will_flush = will_flush
             try:
                 _, loss = self.train_step(data)
+            except Exception as exc:
+                self.report_crash(exc)
+                raise
             finally:
                 self._train_window_will_flush = False
                 self._pending_loss_normalizer = None
@@ -1983,6 +2014,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                     _, data, will_flush = batch
                     batch_iteration += 1
                     self.supervisor.maybe_handle_termination_signal()
+                    self.record_last_batch_metadata(data, iteration=batch_iteration)
                     step_before = self.train_state.global_step
                     # See `train_epoch` for normalizer semantics.
                     loss_n = self._get_loss_normalizer(data)
@@ -1992,6 +2024,9 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                     self._train_window_will_flush = will_flush
                     try:
                         _, loss = self.train_step(data)
+                    except Exception as exc:
+                        self.report_crash(exc)
+                        raise
                     finally:
                         self._train_window_will_flush = False
                         self._pending_loss_normalizer = None
@@ -2200,10 +2235,15 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         for iteration, data in enumerate(loader):
             consumed = iteration + 1
             self.supervisor.maybe_handle_termination_signal()
+            self.record_last_batch_metadata(data, iteration=iteration)
             loss_n = self._get_loss_normalizer(data)
             if loss_n is not None and loss_n <= 0:
                 loss_n = None
-            _, loss = self.evaluate_step(data)
+            try:
+                _, loss = self.evaluate_step(data)
+            except Exception as exc:
+                self.report_crash(exc)
+                raise
             self.supervisor.mark_heartbeat_progress()
             self.supervisor.maybe_handle_termination_signal()
             current_time = self.loop_time()
@@ -2301,10 +2341,15 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                 break
             consumed = iteration + 1
             self.supervisor.maybe_handle_termination_signal()
+            self.record_last_batch_metadata(data, iteration=iteration)
             loss_n = self._get_loss_normalizer(data)
             if loss_n is not None and loss_n <= 0:
                 loss_n = None
-            _, loss = self.evaluate_step(data)
+            try:
+                _, loss = self.evaluate_step(data)
+            except Exception as exc:
+                self.report_crash(exc)
+                raise
             self.supervisor.mark_heartbeat_progress()
             self.supervisor.maybe_handle_termination_signal()
             current_time = self.loop_time()
@@ -2394,6 +2439,165 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             return values
         return [float(values)]
 
+    @staticmethod
+    def _summarize_durations_ms(durations: list[float]) -> dict[str, Any]:
+        ordered = sorted(durations)
+        count = len(ordered)
+
+        def percentile(q: float) -> float:
+            if count == 1:
+                return ordered[0]
+            position = (count - 1) * q
+            lower = int(position)
+            upper = min(lower + 1, count - 1)
+            weight = position - lower
+            return ordered[lower] * (1 - weight) + ordered[upper] * weight
+
+        return {
+            "steps": count,
+            "mean": sum(ordered) / count,
+            "median": percentile(0.5),
+            "p90": percentile(0.9),
+            "min": ordered[0],
+            "max": ordered[-1],
+            "samples": durations,
+        }
+
+    def _default_benchmark_split(self, mode: RunnerMode) -> str:
+        default = {RunnerMode.train: "train", RunnerMode.evaluate: "val", RunnerMode.infer: "infer"}[mode]
+        if default in self.dataloaders:
+            return default
+        if len(self.dataloaders) == 1:
+            return next(iter(self.dataloaders))
+        return default
+
+    def _run_benchmark_step(self, mode: RunnerMode, data: Any) -> None:
+        if mode == RunnerMode.train:
+            loss_n = self._get_loss_normalizer(data)
+            if loss_n is not None and loss_n <= 0:
+                loss_n = None
+            self._pending_loss_normalizer = loss_n
+            self._train_window_will_flush = True
+            try:
+                self.train_step(data)
+            finally:
+                self._train_window_will_flush = False
+                self._pending_loss_normalizer = None
+            return
+        if mode == RunnerMode.evaluate:
+            self.evaluate_step(data)
+            return
+        self.infer_step(data)
+
+    def benchmark_steps(
+        self,
+        *,
+        mode: str | RunnerMode | None = None,
+        split: str | None = None,
+        warmup_steps: int | None = None,
+        measure_steps: int | None = None,
+        output: str | os.PathLike | None = None,
+    ) -> Mapping[str, Any]:
+        """
+        Benchmark fixed warmup and measured Runner steps, then write a JSON summary.
+
+        The benchmark uses the same `train_step`, `evaluate_step`, or
+        `infer_step` implementation as normal Runner execution. It is intended
+        for runtime profiling and mutates model/optimizer state in train mode.
+        """
+
+        benchmark_config = self.config.benchmark
+        mode_value = mode if mode is not None else benchmark_config.mode
+        runner_mode = mode_value if isinstance(mode_value, RunnerMode) else RunnerMode(str(mode_value))
+        split = split or benchmark_config.split or self._default_benchmark_split(runner_mode)
+        warmup_steps = int(warmup_steps if warmup_steps is not None else benchmark_config.warmup_steps)
+        measure_steps = int(measure_steps if measure_steps is not None else benchmark_config.measure_steps)
+        if warmup_steps < 0:
+            raise ValueError(f"benchmark warmup_steps must be non-negative, got {warmup_steps}")
+        if measure_steps <= 0:
+            raise ValueError(f"benchmark measure_steps must be positive, got {measure_steps}")
+        if split not in self.dataloaders:
+            raise ValueError(f"benchmark split {split!r} is not available; known splits: {list(self.dataloaders)}")
+
+        self.mode = runner_mode
+        self.split = split
+        loader = self.dataloaders[split]
+        iterator = iter(loader)
+        restarts = 0
+
+        def next_batch() -> Any:
+            nonlocal iterator, restarts
+            try:
+                return next(iterator)
+            except StopIteration:
+                iterator = iter(loader)
+                restarts += 1
+                try:
+                    return next(iterator)
+                except StopIteration as exc:
+                    raise ValueError(f"benchmark split {split!r} produced no batches") from exc
+
+        cuda_enabled = torch.cuda.is_available() and self.device.type == "cuda"
+        if cuda_enabled:
+            torch.cuda.reset_peak_memory_stats(self.device)
+
+        for iteration in range(warmup_steps):
+            data = next_batch()
+            self.record_last_batch_metadata(data, iteration=iteration)
+            self._run_benchmark_step(runner_mode, data)
+        if cuda_enabled:
+            torch.cuda.synchronize(self.device)
+            torch.cuda.reset_peak_memory_stats(self.device)
+
+        durations_ms: list[float] = []
+        start_global_step = self.train_state.global_step
+        for iteration in range(measure_steps):
+            data = next_batch()
+            self.record_last_batch_metadata(data, iteration=iteration)
+            if cuda_enabled:
+                torch.cuda.synchronize(self.device)
+            start = perf_counter()
+            self._run_benchmark_step(runner_mode, data)
+            if cuda_enabled:
+                torch.cuda.synchronize(self.device)
+            durations_ms.append((perf_counter() - start) * 1e3)
+            self.supervisor.mark_heartbeat_progress()
+
+        summary: dict[str, Any] = {
+            "mode": runner_mode.value,
+            "split": split,
+            "warmup_steps": warmup_steps,
+            "measure_steps": measure_steps,
+            "measured_steps": len(durations_ms),
+            "batch_restarts": restarts,
+            "rank": self.rank,
+            "world_size": self.world_size,
+            "device": str(self.device),
+            "start_global_step": start_global_step,
+            "end_global_step": self.train_state.global_step,
+            "timing_ms_per_step": self._summarize_durations_ms(durations_ms),
+        }
+        if cuda_enabled:
+            summary["cuda_memory"] = {
+                "max_allocated_mb": torch.cuda.max_memory_allocated(self.device) / 1024**2,
+                "max_reserved_mb": torch.cuda.max_memory_reserved(self.device) / 1024**2,
+            }
+
+        output_path = output if output is not None else benchmark_config.output
+        if output_path is None:
+            output_path = f"benchmark-{runner_mode.value}-{split}.json"
+        output_path = os.fsdecode(output_path)
+        if not os.path.isabs(output_path):
+            output_path = os.path.join(self.workspace.dir, output_path)
+        summary["output"] = output_path
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        self.save(summary, output_path, indent=2)
+        self.emit_runner_event(
+            f"benchmark summary: mode={runner_mode.value} split={split} steps={measure_steps} output={output_path}",
+            level="info",
+        )
+        return summary
+
     def infer(
         self,
         split: str = "infer",
@@ -2454,7 +2658,12 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         for iteration, data in enumerate(loader):
             if steps is not None and iteration >= steps:
                 break
-            values = self.infer_step(data)
+            self.record_last_batch_metadata(data, iteration=iteration)
+            try:
+                values = self.infer_step(data)
+            except Exception as exc:
+                self.report_crash(exc)
+                raise
             self.supervisor.mark_heartbeat_progress()
             yield values
             self.supervisor.maybe_collect_garbage(iteration + 1, scope=f"infer:{split}")

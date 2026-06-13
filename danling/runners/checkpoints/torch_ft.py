@@ -262,7 +262,7 @@ class TorchFTCheckpointManager(TorchDistributedCheckpointManager):
             "set ckpt.dedicated_async_process_group=True or use ckpt.async_mode='disabled'"
         )
         self.record_checkpoint_failure(exc, target=task.checkpoint_name)
-        warn(str(exc), RuntimeWarning, stacklevel=2)
+        warn(self.format_checkpoint_failure(exc, target=task.checkpoint_name), RuntimeWarning, stacklevel=2)
         self.raise_checkpoint_error_if_requested()
         return None, False
 
@@ -271,7 +271,7 @@ class TorchFTCheckpointManager(TorchDistributedCheckpointManager):
             self._dataloader_checkpointer.save(task)
         except Exception as exc:
             self.record_checkpoint_failure(exc, target=task.checkpoint_name)
-            warn(f"dataloader checkpoint save failed: {exc}", RuntimeWarning, stacklevel=2)
+            warn(self.format_checkpoint_failure(exc, target=task.checkpoint_name), RuntimeWarning, stacklevel=2)
             self._purge_dataloader_checkpoint_task(task)
             return False
         return True

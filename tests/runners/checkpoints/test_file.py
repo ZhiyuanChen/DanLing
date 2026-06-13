@@ -49,6 +49,7 @@ class _CheckpointRunner:
         self.workspace = _CheckpointWorkspace(id=self.id, checkpoint_dir=str(checkpoint_dir))
         self.is_best = False
         self.is_step_mode = False
+        self.events: list[tuple[str, str]] = []
 
     def state_dict(self):
         return {
@@ -66,6 +67,9 @@ class _CheckpointRunner:
     def save(obj, file):
         torch.save(obj, file)
         return file
+
+    def emit_runner_event(self, message: str, *, level: str = "info") -> None:
+        self.events.append((level, message))
 
 
 class _FailingSaveRunner(_CheckpointRunner):
@@ -291,12 +295,25 @@ def test_file_checkpoint_sync_save_failure_is_recorded(tmp_path: Path) -> None:
     runner = _FailingSaveRunner(tmp_path)
     manager = FileCheckpointManager(runner)
 
-    with pytest.warns(RuntimeWarning, match="checkpoint save failed"):
+    with pytest.warns(RuntimeWarning, match="checkpoint save failed.*storage_failure=ENOSPC"):
         manager.save_checkpoint(force=True)
 
     _assert_checkpoint_failure(manager, OSError, "latest")
+    assert manager.checkpoint_health.last_failure_class == "ENOSPC"
     assert manager.checkpoint_health.last_successful_target is None
     assert (tmp_path / "latest.pth").exists() is False
+    assert runner.events[-1] == ("warning", "checkpoint save failed storage_failure=ENOSPC target=latest error=disk full")
+
+
+def test_file_checkpoint_sync_save_success_emits_event(tmp_path: Path) -> None:
+    runner = _CheckpointRunner(tmp_path)
+    runner.train_state.epoch = 2
+    runner.train_state.global_step = 5
+    manager = FileCheckpointManager(runner)
+
+    manager.save_checkpoint(name="latest", force=True)
+
+    assert runner.events[-1] == ("info", "checkpoint saved: step=5 epoch=2 aliases=latest.pth target=latest.pth")
 
 
 def test_file_checkpoint_failure_is_not_raised_after_fail_on_error_is_enabled_later(tmp_path: Path) -> None:
