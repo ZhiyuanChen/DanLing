@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 from collections import OrderedDict
+from contextlib import contextmanager
 
 import pytest
 import torch
@@ -101,7 +102,48 @@ class TinyParallelRunner(CpuParallelRunner):
 
 
 class FakeShardedGradScaler:
-    pass
+    def __init__(self) -> None:
+        self.unscale_calls: list[optim.Optimizer] = []
+        self.step_calls: list[optim.Optimizer] = []
+        self.update_calls = 0
+
+    def unscale_(self, optimizer: optim.Optimizer) -> None:
+        self.unscale_calls.append(optimizer)
+
+    def step(self, optimizer: optim.Optimizer) -> None:
+        self.step_calls.append(optimizer)
+        optimizer.step()
+
+    def update(self) -> None:
+        self.update_calls += 1
+
+
+class ParallelizableLinear(nn.Linear):
+    def __init__(self) -> None:
+        super().__init__(4, 2)
+        self.parallel_context = None
+
+    def parallelize(self, parallel):
+        self.parallel_context = parallel
+
+
+class TensorParallelRunner(CpuParallelRunner):
+    def init_distributed(self) -> None:
+        _init_parallel_topology(self)
+
+    @property
+    def world_size(self) -> int:
+        return 2
+
+    @property
+    def rank(self) -> int:
+        return 0
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.model = ParallelizableLinear()
+        self.criterion = nn.MSELoss()
+        self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
 
 
 class RecordingPipelineSchedule:
@@ -395,7 +437,7 @@ class TestParallelRunnerTopology:
         finally:
             runner.close()
 
-    def test_build_topology_auto_fills_shard_axis(self) -> None:
+    def test_parallel_topology_fills_auto_shard_axis(self) -> None:
         runner = TinyParallelRunner({"logging.enabled": False, **_parallel_config(replicate=2, shard=-1, pipeline=4)})
         try:
             assert runner.topology.axis_degree("shard") == 2
@@ -404,19 +446,19 @@ class TestParallelRunnerTopology:
         finally:
             runner.close()
 
-    def test_gloo_groups(self, tmp_path) -> None:
+    def test_parallel_runner_initializes_gloo_groups(self, tmp_path) -> None:
         require_gloo()
         run_distributed(_parallel_gloo_smoke_worker, world_size=2, worker_args=(str(tmp_path),))
 
-    def test_gloo_middle_stage_loader_state(self, tmp_path) -> None:
+    def test_parallel_runner_restores_middle_stage_loader_state(self, tmp_path) -> None:
         require_gloo()
         run_distributed(_parallel_gloo_middle_stage_loader_state_worker, world_size=3, worker_args=(str(tmp_path),))
 
-    def test_gloo_all_reduce_uses_data_domain(self, tmp_path) -> None:
+    def test_parallel_runner_reduces_metrics_across_data_domain(self, tmp_path) -> None:
         require_gloo()
         run_distributed(_parallel_gloo_all_reduce_worker, world_size=4, worker_args=(str(tmp_path),))
 
-    def test_gloo_optimizer_skip_uses_optimizer_domain(self, tmp_path) -> None:
+    def test_parallel_runner_skips_optimizer_step_across_optimizer_domain(self, tmp_path) -> None:
         require_gloo()
         run_distributed(_parallel_gloo_optimizer_skip_worker, world_size=4, worker_args=(str(tmp_path),))
 
@@ -450,7 +492,69 @@ class TestParallelRunnerParallelization:
 
         assert isinstance(runner.grad_scaler, FakeShardedGradScaler)
 
-    def test_activation_checkpointing_requires_explicit_module_classes(self) -> None:
+    def test_fp16_training_uses_bound_sharded_grad_scaler(self) -> None:
+        runner = TinyParallelRunner({"logging.enabled": False, **_parallel_config(shard=2, pipeline=8)})
+        grad_scaler = FakeShardedGradScaler()
+        runner.grad_scaler = grad_scaler
+        try:
+            assert runner.model is not None
+            assert runner.optimizer is not None
+            initial_parameters = [parameter.detach().clone() for parameter in runner.model.parameters()]
+            for parameter in runner.model.parameters():
+                parameter.grad = torch.ones_like(parameter)
+
+            assert runner.optimizer_step() is True
+
+            assert grad_scaler.unscale_calls == [runner.optimizer]
+            assert grad_scaler.step_calls == [runner.optimizer]
+            assert grad_scaler.update_calls == 1
+            for parameter, initial in zip(runner.model.parameters(), initial_parameters):
+                assert not torch.equal(parameter, initial)
+        finally:
+            runner.close()
+
+    def test_loss_parallel_auto_follows_tensor_parallel_axis(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        events: list[str] = []
+
+        @contextmanager
+        def fake_loss_parallel():
+            events.append("enter")
+            try:
+                yield
+            finally:
+                events.append("exit")
+
+        monkeypatch.setattr(parallel_runner_module, "torch_loss_parallel", fake_loss_parallel)
+        runner = TensorParallelRunner({"logging.enabled": False, **_parallel_config(tensor=2)})
+        try:
+            assert runner.loss_parallel_enabled is True
+            with runner.infer_context():
+                events.append("body")
+            assert events == ["enter", "body", "exit"]
+        finally:
+            runner.close()
+
+    def test_loss_parallel_can_be_disabled_for_tensor_parallel(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            parallel_runner_module,
+            "torch_loss_parallel",
+            lambda: pytest.fail("loss_parallel should not be entered"),
+        )
+        runner = TensorParallelRunner(
+            {"logging.enabled": False, **_parallel_config(tensor=2, loss_parallel=False)}
+        )
+        try:
+            assert runner.loss_parallel_enabled is False
+            with runner.infer_context():
+                pass
+        finally:
+            runner.close()
+
+    def test_loss_parallel_true_requires_tensor_parallel_axis(self) -> None:
+        with pytest.raises(ValueError, match="parallel.loss_parallel=True requires parallel.axes.tensor > 1"):
+            TinyParallelRunner({"logging.enabled": False, **_parallel_config(shard=16, loss_parallel=True)})
+
+    def test_activation_checkpointing_requires_target_modules(self) -> None:
         with pytest.raises(ValueError, match="activation_checkpoint.module_classes"):
             TinyParallelRunner(
                 {
@@ -460,7 +564,7 @@ class TestParallelRunnerParallelization:
                 }
             )
 
-    def test_fsdp_module_classes_wrap_children_before_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_fsdp_wraps_target_modules_before_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
         class Block(nn.Module):
             def __init__(self) -> None:
                 super().__init__()
@@ -533,7 +637,7 @@ class TestParallelRunnerParallelization:
         finally:
             runner.close()
 
-    def test_fsdp_module_classes_fail_when_nothing_matches(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_fsdp_rejects_unmatched_target_modules(self, monkeypatch: pytest.MonkeyPatch) -> None:
         class FsdpPolicyRunner(TinyParallelRunner):
             def _check_fsdp_prerequisites(self) -> None:
                 return
@@ -594,7 +698,7 @@ class TestParallelRunnerPipelineBinding:
         finally:
             runner.close()
 
-    def test_parallelize_model_rebinds_pipeline_schedule(self) -> None:
+    def test_model_parallelization_keeps_pipeline_schedule_current(self) -> None:
         class ParallelizedModule(nn.Module):
             def __init__(self, module: nn.Module) -> None:
                 super().__init__()
@@ -640,7 +744,7 @@ class TestParallelRunnerPipelineBinding:
         finally:
             runner.close()
 
-    def test_compile_rebinds_pipeline_schedule(self) -> None:
+    def test_compile_keeps_pipeline_schedule_current(self) -> None:
         if not hasattr(torch, "compile"):
             pytest.skip("torch.compile is not available in this PyTorch build.")
 
@@ -681,7 +785,7 @@ class TestParallelRunnerPipelineBinding:
         finally:
             runner.close()
 
-    def test_fp8_policy_rebinds_pipeline_schedule(self) -> None:
+    def test_fp8_policy_keeps_pipeline_schedule_current(self) -> None:
         class Fp8WrappedModule(nn.Module):
             def __init__(self, module: nn.Module) -> None:
                 super().__init__()
@@ -775,7 +879,7 @@ class TestParallelRunnerPipelineBinding:
         finally:
             runner.close()
 
-    def test_materialize_model_builds_default_schedule(self) -> None:
+    def test_pipeline_builds_schedule_for_local_stage(self) -> None:
         captured = {}
         sentinel_schedule = object()
 
@@ -811,7 +915,7 @@ class TestParallelRunnerPipelineBinding:
         finally:
             runner.close()
 
-    def test_materialize_model_extracts_configured_pipeline_stage(self) -> None:
+    def test_pipeline_uses_configured_local_stage(self) -> None:
         captured = {}
 
         class PartitionRunner(CpuParallelRunner):
@@ -865,7 +969,7 @@ class TestParallelRunnerPipelineBinding:
         finally:
             runner.close()
 
-    def test_materialize_model_uses_model_owned_pipeline_partition(self) -> None:
+    def test_pipeline_uses_model_owned_partition(self) -> None:
         captured = {}
 
         class PartitionableModel(nn.Module):
@@ -944,7 +1048,7 @@ class TestParallelRunnerPipelineBinding:
         finally:
             runner.close()
 
-    def test_materialize_model_extracts_configured_virtual_pipeline_stages(self) -> None:
+    def test_pipeline_uses_configured_virtual_stages(self) -> None:
         captured = {}
 
         class PartitionRunner(CpuParallelRunner):
@@ -1001,7 +1105,7 @@ class TestParallelRunnerPipelineBinding:
         finally:
             runner.close()
 
-    def test_materialize_model_rejects_multiple_local_parts(self) -> None:
+    def test_pipeline_rejects_multiple_local_parts_without_schedule(self) -> None:
         class PartitionRunner(CpuParallelRunner):
             def init_distributed(self) -> None:
                 _init_parallel_topology(self)
@@ -1025,7 +1129,7 @@ class TestParallelRunnerPipelineBinding:
         with pytest.raises(ValueError, match="multiple local model_parts"):
             PartitionRunner({"logging.enabled": False, **_parallel_config(shard=1, pipeline=2, tensor=1)})
 
-    def test_auto_pipeline_compiles_and_rebinds(self) -> None:
+    def test_pipeline_compile_keeps_schedule_current(self) -> None:
         if not hasattr(torch, "compile"):
             pytest.skip("torch.compile is not available in this PyTorch build.")
 
@@ -1073,7 +1177,7 @@ class TestParallelRunnerPipelineBinding:
 
 class TestParallelRunnerRuntimeBehavior:
 
-    def test_mode_toggles_all_local_model_parts(self) -> None:
+    def test_runner_mode_updates_all_local_model_parts(self) -> None:
         class OpaqueSchedule:
             def step(self, *args, **kwargs):
                 del args, kwargs
@@ -1122,7 +1226,7 @@ class TestParallelRunnerRuntimeBehavior:
         finally:
             runner.close()
 
-    def test_step_proxy_loader_restores_underlying_state(self) -> None:
+    def test_middle_pipeline_stage_restores_loader_progress(self) -> None:
         class RestoreRunner(TinyParallelRunner):
             def __init__(self, config):
                 super().__init__(config)
@@ -1167,7 +1271,7 @@ class TestParallelRunnerRuntimeBehavior:
         finally:
             runner.close()
 
-    def test_middle_stage_train_epoch_skips_loader_payload(self) -> None:
+    def test_middle_pipeline_stage_trains_without_loading_batches(self) -> None:
         class NoIterLoader:
             batch_sampler = None
             sampler = None
@@ -1213,7 +1317,7 @@ class TestParallelRunnerRuntimeBehavior:
         with pytest.raises(ValueError, match="checkpoint has no optimizer state"):
             runner.load_optimizer(None)
 
-    def test_iter_optimizer_parameters_deduplicates_shared_parts(self) -> None:
+    def test_optimizer_parameters_include_shared_parameter_once(self) -> None:
         class SharedPart(nn.Module):
             def __init__(self, parameter: nn.Parameter) -> None:
                 super().__init__()

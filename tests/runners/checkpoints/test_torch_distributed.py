@@ -270,7 +270,7 @@ def _save_best_dcp_checkpoint(tmp_path: Path) -> TorchDistributedCheckpointManag
     return manager
 
 
-def test_dcp_async_save_writes_checkpoint(tmp_path: Path) -> None:
+def test_dcp_async_checkpoint_writes_latest(tmp_path: Path) -> None:
     runner = _CheckpointRunner(tmp_path, config={"ckpt.async_mode": "async", "ckpt.interval": 1})
     manager = TorchDistributedCheckpointManager(runner)
 
@@ -336,7 +336,7 @@ def test_dcp_async_sidecar_failure_does_not_publish_orphan_checkpoint(tmp_path: 
     assert [path for path in tmp_path.iterdir() if path.is_dir()] == []
 
 
-def test_dcp_pointer_failure_is_recorded_without_interrupting(tmp_path: Path) -> None:
+def test_dcp_checkpoint_save_warns_and_keeps_running_when_latest_alias_fails(tmp_path: Path) -> None:
     runner = _CheckpointRunner(tmp_path, config={"ckpt.interval": 1})
     manager = TorchDistributedCheckpointManager(runner)
     (tmp_path / "latest.pointer").mkdir()
@@ -352,7 +352,7 @@ def test_dcp_pointer_failure_is_recorded_without_interrupting(tmp_path: Path) ->
     assert manager.close(timeout=1.0) is True
 
 
-def test_dcp_async_pointer_failure_is_recorded_without_interrupting(tmp_path: Path) -> None:
+def test_dcp_async_checkpoint_save_warns_and_keeps_running_when_latest_alias_fails(tmp_path: Path) -> None:
     runner = _CheckpointRunner(tmp_path, config={"ckpt.async_mode": "async", "ckpt.interval": 1})
     manager = TorchDistributedCheckpointManager(runner)
     (tmp_path / "latest.pointer").mkdir()
@@ -368,7 +368,7 @@ def test_dcp_async_pointer_failure_is_recorded_without_interrupting(tmp_path: Pa
     assert _checkpoint_targets(tmp_path) == []
 
 
-def test_dcp_partial_pointer_failure_records_published_aliases(
+def test_dcp_checkpoint_keeps_published_aliases_when_one_alias_fails(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -392,7 +392,7 @@ def test_dcp_partial_pointer_failure_records_published_aliases(
     assert manager.close(timeout=1.0) is True
 
 
-def test_dcp_partial_pointer_failure_still_participates_in_retention(tmp_path: Path) -> None:
+def test_dcp_checkpoint_retention_prunes_history_after_one_alias_fails(tmp_path: Path) -> None:
     runner = _CheckpointRunner(
         tmp_path,
         config={
@@ -423,7 +423,7 @@ def test_dcp_partial_pointer_failure_still_participates_in_retention(tmp_path: P
     assert _pointer_target(tmp_path, "latest") == second_target
 
 
-def test_dcp_fault_tolerance_partial_pointer_failure_keeps_sidecar_for_published_checkpoint(tmp_path: Path) -> None:
+def test_dcp_dataloader_checkpoint_stays_with_published_checkpoint_when_one_alias_fails(tmp_path: Path) -> None:
     runner = _CheckpointRunner(
         tmp_path,
         config={
@@ -449,7 +449,7 @@ def test_dcp_fault_tolerance_partial_pointer_failure_keeps_sidecar_for_published
     assert manager.close(timeout=1.0) is True
 
 
-def test_dcp_async_fault_tolerance_partial_pointer_failure_keeps_sidecar_for_published_checkpoint(
+def test_dcp_async_dataloader_checkpoint_stays_with_published_checkpoint_when_one_alias_fails(
     tmp_path: Path,
 ) -> None:
     runner = _CheckpointRunner(

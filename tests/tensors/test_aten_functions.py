@@ -260,7 +260,7 @@ class TestElementwiseOps:
 
 class TestIndexingOps:
 
-    @pytest.mark.parametrize("seed", [5, 17, 31])
+    @pytest.mark.parametrize("seed", [0, 1, 2])
     def test_index_put_matches_dense(self, seed, device):
         dtype = torch.float32
         shapes = ragged_shapes(seed, batch_size=3, min_len=3, max_len=6, trailing_shape=(4,))
@@ -909,7 +909,7 @@ class TestTernaryOps:
         with pytest.raises(RuntimeError, match="size of tensor"):
             torch.ops.aten.addcmul.default(nt, bad, bad, value=2)
 
-    @pytest.mark.parametrize("seed", [3, 11, 29])
+    @pytest.mark.parametrize("seed", [0, 1, 2])
     def test_ternary_matches_dense(self, seed, device):
         dtype = torch.float32
         shapes = ragged_shapes(seed, batch_size=3, min_len=2, max_len=5, trailing_shape=(4,))

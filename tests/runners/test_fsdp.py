@@ -25,14 +25,14 @@ import torch
 from danling.runners.fsdp import build_fsdp2_kwargs, normalize_policy_dtype, normalize_reshard_after_forward
 
 
-def test_normalize_policy_dtype_accepts_common_precision_aliases() -> None:
+def test_fsdp_policy_accepts_common_precision_aliases() -> None:
     assert normalize_policy_dtype(None) is None
     assert normalize_policy_dtype(torch.float16) is torch.float16
     assert normalize_policy_dtype("fp32") is torch.float32
     assert normalize_policy_dtype("bf16") is torch.bfloat16
 
 
-def test_build_fsdp2_kwargs_translates_supported_runtime_options() -> None:
+def test_fsdp_policy_translates_supported_options() -> None:
     ignored_param = torch.nn.Parameter(torch.ones(1))
 
     kwargs = build_fsdp2_kwargs(
@@ -57,7 +57,7 @@ def test_build_fsdp2_kwargs_translates_supported_runtime_options() -> None:
     assert kwargs["ignored_params"] == {ignored_param}
 
 
-def test_build_fsdp2_kwargs_resolves_torchtitan_style_reshard_policy() -> None:
+def test_fsdp_policy_accepts_torchtitan_reshard_names() -> None:
     kwargs = build_fsdp2_kwargs(
         config={"reshard_after_forward": "default"},
         mesh="mesh",
@@ -74,7 +74,7 @@ def test_build_fsdp2_kwargs_resolves_torchtitan_style_reshard_policy() -> None:
     assert normalize_reshard_after_forward("never", pipeline_enabled=False) is False
 
 
-def test_build_fsdp2_kwargs_rejects_unsupported_options() -> None:
+def test_fsdp_policy_rejects_unsupported_options() -> None:
     with pytest.raises(ValueError, match="unsupported fsdp configuration"):
         build_fsdp2_kwargs(
             config={"process_group": object()},

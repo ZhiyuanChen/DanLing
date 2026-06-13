@@ -37,7 +37,7 @@ class TestCompileConfig:
         assert Compiler(CompileConfig()).enabled is False
         assert Compiler(CompileConfig({"enabled": False})).enabled is False
 
-    def test_kwargs_forward_runtime_options(self) -> None:
+    def test_compile_config_passes_torch_compile_options(self) -> None:
         compiler = Compiler(
             CompileConfig(
                 {
@@ -58,11 +58,11 @@ class TestCompileConfig:
             "options": {"trace": {"enabled": True}},
         }
 
-    def test_kwargs_reject_non_mapping_options(self) -> None:
+    def test_compile_config_rejects_invalid_options(self) -> None:
         with pytest.raises(TypeError, match="options"):
             CompileConfig({"options": ["trace"]})
 
-    def test_precompile_scaffold_exposes_artifact_policy_and_fingerprint(self) -> None:
+    def test_compile_config_tracks_cache_artifacts_and_fingerprint(self) -> None:
         compiler = Compiler(
             CompileConfig(
                 {
@@ -85,7 +85,7 @@ class TestCompileConfig:
 
 class TestDdpOptimizerContext:
 
-    def test_restores_dynamo_config(self) -> None:
+    def test_compile_context_restores_ddp_optimizer_setting(self) -> None:
         dynamo_config = getattr(getattr(torch, "_dynamo", None), "config", None)
         if dynamo_config is None or not hasattr(dynamo_config, "optimize_ddp"):
             pytest.skip("torch._dynamo.config.optimize_ddp is not available")
@@ -98,7 +98,7 @@ class TestDdpOptimizerContext:
 
         assert dynamo_config.optimize_ddp == previous
 
-    def test_noops_when_compile_is_disabled(self) -> None:
+    def test_compile_context_leaves_ddp_optimizer_setting_disabled(self) -> None:
         dynamo_config = getattr(getattr(torch, "_dynamo", None), "config", None)
         if dynamo_config is None or not hasattr(dynamo_config, "optimize_ddp"):
             pytest.skip("torch._dynamo.config.optimize_ddp is not available")

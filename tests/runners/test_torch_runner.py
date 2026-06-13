@@ -33,6 +33,7 @@ import torch.distributed as dist
 from torch import nn, optim
 from torchdata.stateful_dataloader import StatefulDataLoader
 
+import danling.runners.torch_runner as torch_runner_module
 from danling.runners import TorchRunner
 from danling.runners.checkpoints import TorchDistributedCheckpointManager, TorchFTCheckpointManager
 from danling.runners.compile import Compiler
@@ -207,6 +208,24 @@ class WeightedLossRunner(TorchRunner):
         self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
 
 
+class MaskWeightedLossRunner(WeightedLossRunner):
+    def __init__(self, config):
+        super().__init__(config)
+
+        class TokenMeanModel(nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.weight = nn.Parameter(torch.tensor(1.0))
+
+            def forward(self, tokens: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+                del attention_mask
+                return self.weight * tokens.float().mean()
+
+        self.model = TokenMeanModel()
+        self.criterion = lambda pred, target: pred.square()
+        self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
+
+
 class ContextRecordingRunner(TorchRunner):
     def init_distributed(self) -> None:
         return
@@ -263,17 +282,60 @@ class DcpConfigTorchRunner(TorchRunner):
 class _FakeGradScaler:
     def __init__(self) -> None:
         self.unscale_calls: list[optim.Optimizer] = []
+        self.step_calls: list[optim.Optimizer] = []
         self.update_calls = 0
         self.loaded_state: dict[str, object] | None = None
 
     def unscale_(self, optimizer: optim.Optimizer) -> None:
         self.unscale_calls.append(optimizer)
 
+    def step(self, optimizer: optim.Optimizer) -> None:
+        self.step_calls.append(optimizer)
+        optimizer.step()
+
     def update(self) -> None:
         self.update_calls += 1
 
     def load_state_dict(self, state_dict: dict[str, object]) -> None:
         self.loaded_state = state_dict
+
+
+class _FakePlacement:
+    def __init__(self, *, replicate: bool = False, partial: bool = False) -> None:
+        self._replicate = replicate
+        self._partial = partial
+
+    def is_replicate(self) -> bool:
+        return self._replicate
+
+    def is_partial(self) -> bool:
+        return self._partial
+
+
+class _FakeReplicate:
+    def is_replicate(self) -> bool:
+        return True
+
+    def is_partial(self) -> bool:
+        return False
+
+
+class _FakeDTensor:
+    def __init__(self, local: torch.Tensor, placements: list[_FakePlacement]) -> None:
+        self._local = local
+        self.placements = placements
+        self.redistributed_to: list[object] | None = None
+
+    def to_local(self) -> torch.Tensor:
+        return self._local
+
+    def detach(self) -> "_FakeDTensor":
+        return self
+
+    def redistribute(self, *, placements: list[object]) -> "_FakeDTensor":
+        output = _FakeDTensor(self._local, self.placements)
+        output.redistributed_to = placements
+        return output
 
 
 def _ddp_compile_wrap_worker(rank: int, world_size: int) -> None:
@@ -397,7 +459,7 @@ def _torch_runner_preinitialized_pg_worker(rank: int, world_size: int) -> None:
 
 class TestTorchRunnerBootstrap:
 
-    def test_supports_explicit_components_without_build_hooks(self) -> None:
+    def test_runner_accepts_explicit_training_components(self) -> None:
         runner = TinyTorchRunner({"logging.enabled": False})
         assert runner.model is not None
         assert runner.criterion is not None
@@ -413,7 +475,7 @@ class TestTorchRunnerBootstrap:
     def test_declares_torchft_runtime_supported(self) -> None:
         assert TorchRunner._supports_torchft_runtime is True
 
-    def test_train_dispatch_sorts_requested_splits(self) -> None:
+    def test_train_uses_stable_split_order(self) -> None:
         runner = TrainDispatchRunner(
             {
                 "logging.enabled": False,
@@ -430,7 +492,7 @@ class TestTorchRunnerBootstrap:
         finally:
             runner.close()
 
-    def test_train_dispatch_rejects_unknown_requested_splits(self) -> None:
+    def test_train_rejects_unknown_splits(self) -> None:
         runner = TrainDispatchRunner(
             {
                 "logging.enabled": False,
@@ -493,7 +555,7 @@ class TestTorchRunnerBootstrap:
                 manager.drained = True
                 runner.close(timeout=1.0)
 
-    def test_builds_optimizer_from_iter_optimizer_parameters(self) -> None:
+    def test_runner_builds_optimizer_from_model_parameters(self) -> None:
         class AutoOptimRunner(TorchRunner):
             def init_distributed(self) -> None:
                 return
@@ -506,7 +568,7 @@ class TestTorchRunnerBootstrap:
         finally:
             runner.close()
 
-    def test_builds_optimizer_param_groups_from_regex_config(self) -> None:
+    def test_optimizer_config_applies_parameter_groups(self) -> None:
         class AutoOptimRunner(TorchRunner):
             def init_distributed(self) -> None:
                 return
@@ -550,7 +612,7 @@ class TestTorchRunnerBootstrap:
         finally:
             runner.close()
 
-    def test_build_optimizer_param_groups_warns_on_empty_regex(self) -> None:
+    def test_optimizer_config_warns_when_parameter_group_matches_nothing(self) -> None:
         class AutoOptimRunner(TorchRunner):
             def init_distributed(self) -> None:
                 return
@@ -638,7 +700,7 @@ class TestTorchRunnerBootstrap:
         finally:
             runner.close()
 
-    def test_surfaces_stateful_dataloader_argument_errors(self) -> None:
+    def test_dataloader_reports_invalid_worker_options(self) -> None:
         runner = TinyTorchRunner(
             {
                 "logging.enabled": False,
@@ -656,12 +718,12 @@ class TestTorchRunnerBootstrap:
         finally:
             runner.close()
 
-    def test_auto_restore_uses_checkpoint_source(self) -> None:
+    def test_runner_restores_from_configured_checkpoint(self) -> None:
         runner = RecordingRestoreRunner({"logging.enabled": False, "checkpoint": "checkpoint-latest"})
         assert runner.restore_calls == [("checkpoint", "checkpoint-latest")]
         runner.close()
 
-    def test_auto_pretrained_uses_config_source(self) -> None:
+    def test_runner_loads_configured_pretrained_weights(self) -> None:
         runner = RecordingRestoreRunner({"logging.enabled": False, "pretrained": "checkpoint-best"})
         assert runner.restore_calls == [("pretrained", "checkpoint-best")]
         runner.close()
@@ -685,7 +747,7 @@ class TestTorchRunnerBootstrap:
             runner.fault_tolerance = None
             runner.close()
 
-    def test_evaluate_uses_infer_context(self) -> None:
+    def test_evaluate_runs_under_inference_context(self) -> None:
         runner = ContextRecordingRunner({"logging.enabled": False})
         try:
             runner.evaluate_step((torch.ones(2, 4), torch.zeros(2, 1)))
@@ -693,7 +755,7 @@ class TestTorchRunnerBootstrap:
         finally:
             runner.close()
 
-    def test_infer_uses_infer_context(self) -> None:
+    def test_infer_runs_under_inference_context(self) -> None:
         runner = ContextRecordingRunner({"logging.enabled": False})
         try:
             runner.infer_step(torch.ones(2, 4))
@@ -713,7 +775,7 @@ class TestTorchRunnerBootstrap:
         assert runner.restore_calls == [("checkpoint", os.path.join(runner.workspace.checkpoint_dir, "latest.pth"))]
         runner.close()
 
-    def test_auto_restore_warns_when_all_sources_are_set(self) -> None:
+    def test_runner_warns_when_restore_sources_compete(self) -> None:
         with pytest.warns(
             RuntimeWarning,
             match="precedence is `checkpoint` > `resume` > `pretrained`",
@@ -729,7 +791,7 @@ class TestTorchRunnerBootstrap:
         assert runner.restore_calls == [("checkpoint", os.path.join(runner.workspace.checkpoint_dir, "latest.pth"))]
         runner.close()
 
-    def test_manual_load_checkpoint_tracks_checkpoint_source(self, tmp_path: Path) -> None:
+    def test_load_checkpoint_updates_config_source(self, tmp_path: Path) -> None:
         source = TinyTorchRunner({"logging.enabled": False})
         checkpoint_path = tmp_path / "checkpoint-latest.pth"
         try:
@@ -744,7 +806,7 @@ class TestTorchRunnerBootstrap:
         finally:
             runner.close()
 
-    def test_manual_load_pretrained_tracks_source(self, tmp_path: Path) -> None:
+    def test_load_pretrained_updates_config_source(self, tmp_path: Path) -> None:
         source = TinyTorchRunner({"logging.enabled": False})
         checkpoint_path = tmp_path / "checkpoint-best.pth"
         try:
@@ -774,20 +836,20 @@ class TestTorchRunnerBootstrap:
         finally:
             runner.close()
 
-    def test_compile_happens_before_ddp_wrap(self) -> None:
+    def test_ddp_training_uses_compiled_model(self) -> None:
         require_gloo()
         if not hasattr(torch, "compile"):
             pytest.skip("torch.compile is not available in this PyTorch build.")
         run_distributed(_ddp_compile_wrap_worker, world_size=2)
 
-    def test_train_context_uses_ddp_no_sync_during_accumulation(self) -> None:
+    def test_gradient_accumulation_uses_ddp_no_sync(self) -> None:
         require_gloo()
         run_distributed(_ddp_no_sync_worker, world_size=2)
 
 
 class TestTorchRunnerCheckpointInterop:
 
-    def test_tensorboard_config_passes_summary_writer_kwargs(self, tmp_path: Path, monkeypatch) -> None:
+    def test_tensorboard_uses_configured_writer_options(self, tmp_path: Path, monkeypatch) -> None:
         writer_calls: list[dict[str, object]] = []
 
         class RecordingSummaryWriter:
@@ -881,7 +943,7 @@ class TestTorchRunnerCheckpointInterop:
         assert config["name"] == "dcp-config-test"
         assert config.get("ckpt.backend") == "dcp"
 
-    def test_from_checkpoint_accepts_mapping_payload(self) -> None:
+    def test_from_checkpoint_accepts_in_memory_checkpoint(self) -> None:
         runner = TinyTorchRunner({"logging.enabled": False})
         checkpoint = runner.state_dict()
         runner.close()
@@ -892,7 +954,7 @@ class TestTorchRunnerCheckpointInterop:
         finally:
             restored.close()
 
-    def test_from_checkpoint_path_bypasses_auto_restore_sources(self, tmp_path: Path) -> None:
+    def test_from_checkpoint_uses_requested_path_over_auto_restore(self, tmp_path: Path) -> None:
         source = TinyTorchRunner({"logging.enabled": False})
         checkpoint_path = tmp_path / "torch-runner.pth"
         try:
@@ -1157,20 +1219,24 @@ class TestTorchRunnerOptimization:
         finally:
             runner.close()
 
-    def test_optimizer_step_updates_fake_grad_scaler_on_success(self) -> None:
+    def test_fp16_optimizer_step_uses_grad_scaler(self) -> None:
         runner = TinyTorchRunner({"logging.enabled": False})
         scaler = _FakeGradScaler()
         runner.grad_scaler = scaler
         try:
             assert runner.optimizer is not None
             assert runner.model is not None
+            initial_parameters = [parameter.detach().clone() for parameter in runner.model.parameters()]
             for parameter in runner.model.parameters():
                 parameter.grad = torch.ones_like(parameter)
 
             assert runner.optimizer_step() is True
 
             assert scaler.unscale_calls == [runner.optimizer]
+            assert scaler.step_calls == [runner.optimizer]
             assert scaler.update_calls == 1
+            for parameter, initial in zip(runner.model.parameters(), initial_parameters):
+                assert not torch.equal(parameter, initial)
         finally:
             runner.close()
 
@@ -1188,12 +1254,13 @@ class TestTorchRunnerOptimization:
             assert runner.optimizer_step() is False
 
             assert scaler.unscale_calls == [runner.optimizer]
+            assert scaler.step_calls == []
             assert scaler.update_calls == 1
             assert runner.train_state.global_step == 0
         finally:
             runner.close()
 
-    def test_load_state_dict_keeps_fresh_grad_scaler_when_checkpoint_omits_scaler(self) -> None:
+    def test_resume_without_grad_scaler_keeps_current_scaler(self) -> None:
         runner = TinyTorchRunner({"logging.enabled": False})
         state = runner.state_dict()["state"]
         scaler = _FakeGradScaler()
@@ -1416,11 +1483,52 @@ class TestTorchRunnerScheduling:
         finally:
             runner.close()
 
+    def test_replicated_dtensor_loss_can_be_logged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(torch_runner_module, "TorchDTensor", _FakeDTensor)
+        runner = TinyTorchRunner({"logging.enabled": False})
+        local = torch.tensor(3.0)
+        tensor = _FakeDTensor(
+            local,
+            [_FakePlacement(replicate=True)],
+        )
+
+        try:
+            loss = runner.reduce_loss_for_logging(tensor, loss_n=1)
+            assert loss is not None
+            torch.testing.assert_close(loss, local.to(dtype=torch.float64))
+        finally:
+            runner.close()
+
+    def test_partial_dtensor_loss_can_be_logged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(torch_runner_module, "TorchDTensor", _FakeDTensor)
+        monkeypatch.setattr(torch_runner_module, "TorchReplicate", _FakeReplicate)
+        runner = TinyTorchRunner({"logging.enabled": False})
+        local = torch.tensor(3.0)
+        tensor = _FakeDTensor(local, [_FakePlacement(partial=True)])
+
+        try:
+            loss = runner.reduce_loss_for_logging(tensor, loss_n=1)
+            assert loss is not None
+            torch.testing.assert_close(loss, local.to(dtype=torch.float64))
+        finally:
+            runner.close()
+
+    def test_sharded_dtensor_loss_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(torch_runner_module, "TorchDTensor", _FakeDTensor)
+        runner = TinyTorchRunner({"logging.enabled": False})
+        tensor = _FakeDTensor(torch.tensor(3.0), [_FakePlacement()])
+
+        try:
+            with pytest.raises(ValueError, match="Cannot reduce DTensor"):
+                runner.reduce_loss_for_logging(tensor, loss_n=1)
+        finally:
+            runner.close()
+
     def test_reduce_returns_world_mean(self) -> None:
         require_gloo()
         run_distributed(_torch_runner_reduce_worker, world_size=2)
 
-    def test_reduce_loss_for_logging_uses_weighted_normalizer(self) -> None:
+    def test_loss_logging_reports_weighted_mean(self) -> None:
         require_gloo()
         run_distributed(_torch_runner_weighted_loss_logging_worker, world_size=2)
 
@@ -1442,7 +1550,7 @@ class TestTorchRunnerEpochExecution:
         finally:
             runner.close()
 
-    def test_variable_length_loss_uses_weighted_normalizer(self) -> None:
+    def test_variable_length_batches_use_token_weighted_loss(self) -> None:
         runner = WeightedLossRunner({"logging.enabled": False, "accum_steps": 2, "logging.interval": 0})
         runner.dataloaders["train"] = [
             (torch.ones((1, 1)), torch.zeros((1, 1))),
@@ -1474,7 +1582,7 @@ class TestTorchRunnerEpochExecution:
         finally:
             runner.close()
 
-    def test_gradient_scale_for_step_uses_sync_divisor(self) -> None:
+    def test_loss_weighting_uses_distributed_normalizer(self) -> None:
         class GradientScaleRunner(WeightedLossRunner):
             def _loss_normalizer_sync_divisor(self) -> int:
                 return 4
@@ -1484,58 +1592,76 @@ class TestTorchRunnerEpochExecution:
                 return 10.0
 
         runner = GradientScaleRunner({"logging.enabled": False, "accum_steps": 2})
-        runner._accumulation_divisor_local = 4.0
+        runner.dataloaders["train"] = [
+            (torch.ones((1, 1)), torch.zeros((1, 1))),
+            (torch.full((3, 1), 3.0), torch.zeros((3, 1))),
+        ]
 
         try:
-            assert runner._gradient_scale_for_step() == pytest.approx(0.4)
+            runner.train_epoch("train")
+            assert runner.model is not None
+            assert runner.unwrap(runner.model).weight.detach().item() == pytest.approx(-1.24)
         finally:
             runner.close()
 
-    def test_get_loss_normalizer_prefers_explicit_batch_value(self) -> None:
-        runner = WeightedLossRunner({"logging.enabled": False})
-        batch = {
-            "input": torch.ones((3, 1)),
-            "target": torch.zeros((3, 1)),
-            "loss_normalizer": 5,
-        }
+    def test_explicit_loss_normalizer_controls_loss_weighting(self) -> None:
+        runner = WeightedLossRunner({"logging.enabled": False, "accum_steps": 2})
+        runner.dataloaders["train"] = [
+            {"input": torch.ones((1, 1)), "target": torch.zeros((1, 1)), "loss_normalizer": 9},
+            {"input": torch.full((1, 1), 3.0), "target": torch.zeros((1, 1)), "loss_normalizer": 1},
+        ]
 
         try:
-            assert runner._get_loss_normalizer(batch) == 5
+            result = runner.train_epoch("train")
+            assert result["loss"] == pytest.approx(1.8)
+            assert runner.model is not None
+            assert runner.unwrap(runner.model).weight.detach().item() == pytest.approx(0.64)
         finally:
             runner.close()
 
-    def test_get_loss_normalizer_uses_target_shape_for_mean_loss(self) -> None:
-        runner = WeightedLossRunner({"logging.enabled": False})
-        batch = (torch.ones((3, 1)), torch.zeros((3, 1)))
+    def test_mean_loss_uses_target_size_as_normalizer(self) -> None:
+        runner = WeightedLossRunner({"logging.enabled": False, "accum_steps": 2})
+        runner.dataloaders["train"] = [
+            (torch.ones((1, 1)), torch.zeros((1, 1))),
+            (torch.full((3, 1), 3.0), torch.zeros((3, 1))),
+        ]
 
         try:
-            assert runner._get_loss_normalizer(batch) == 3
+            result = runner.train_epoch("train")
+            assert result["loss"] == pytest.approx(7.0)
         finally:
             runner.close()
 
-    def test_get_loss_normalizer_uses_attention_mask_without_target(self) -> None:
-        runner = WeightedLossRunner({"logging.enabled": False})
-        batch = {
-            "input": {
-                "tokens": torch.ones((2, 3), dtype=torch.long),
-                "attention_mask": torch.tensor([[1, 1, 0], [1, 0, 0]], dtype=torch.long),
-            }
-        }
+    def test_attention_mask_controls_loss_weighting_without_targets(self) -> None:
+        runner = MaskWeightedLossRunner({"logging.enabled": False, "accum_steps": 2})
+        runner.dataloaders["train"] = [
+            {
+                "input": {
+                    "tokens": torch.ones((1, 3), dtype=torch.long),
+                    "attention_mask": torch.tensor([[1, 1, 1]], dtype=torch.long),
+                }
+            },
+            {
+                "input": {
+                    "tokens": torch.full((1, 3), 3, dtype=torch.long),
+                    "attention_mask": torch.tensor([[1, 0, 0]], dtype=torch.long),
+                }
+            },
+        ]
 
         try:
-            assert runner._get_loss_normalizer(batch) == 3
+            result = runner.train_epoch("train")
+            assert result["loss"] == pytest.approx(3.0)
         finally:
             runner.close()
 
-    def test_get_loss_normalizer_allows_custom_mapping_batch_schema(self) -> None:
-        runner = WeightedLossRunner({"logging.enabled": False})
-        batch = {
-            "sequence": torch.ones((2, 3), dtype=torch.long),
-            "labels": torch.zeros((2,), dtype=torch.long),
-        }
+    def test_custom_batch_schema_uses_unweighted_loss(self) -> None:
+        runner = StreamingEpochRunner({"logging.enabled": False})
+        runner.dataloaders["train"] = [1.0, 9.0]
 
         try:
-            assert runner._get_loss_normalizer(batch) is None
+            result = runner.train_epoch("train")
+            assert result["loss"] == pytest.approx(5.0)
         finally:
             runner.close()
 
@@ -1602,7 +1728,7 @@ class TestTorchRunnerEpochExecution:
         finally:
             runner.close()
 
-    def test_mode_setter_skips_redundant_model_train_toggle(self) -> None:
+    def test_repeated_mode_assignment_does_not_retoggle_models(self) -> None:
         class TrackingModule(nn.Module):
             def __init__(self) -> None:
                 super().__init__()
@@ -1798,7 +1924,7 @@ class TestTorchRunnerStepExecution:
 
 class TestTorchRunnerCompileRuntime:
 
-    def test_compile_guard_restores_dynamo_optimize_ddp(self) -> None:
+    def test_train_compile_context_restores_ddp_optimizer_setting(self) -> None:
         dynamo = getattr(torch, "_dynamo", None)
         dynamo_config = getattr(dynamo, "config", None)
         if dynamo_config is None or not hasattr(dynamo_config, "optimize_ddp"):

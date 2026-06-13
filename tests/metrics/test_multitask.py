@@ -131,8 +131,8 @@ def _distributed_multitask_micro_worker(rank: int, world_size: int):
 
 class TestMultiTaskMetrics:
     def test_accepts_sequence_payloads(self):
-        random.seed(0)
-        torch.random.manual_seed(0)
+        random.seed(1016)
+        torch.random.manual_seed(1016)
         metrics = MultiTaskMetrics()
         metrics.a = binary_metrics(mode="stream")
         metrics.b = binary_metrics(mode="stream")

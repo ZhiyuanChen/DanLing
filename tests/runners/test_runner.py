@@ -83,7 +83,7 @@ def test_runner_entrypoint_does_not_mutate_input_config() -> None:
         runner.close()
 
 
-def test_runner_direct_construction_post_init_runs_once(tmp_path) -> None:
+def test_runner_direct_construction_initializes_once(tmp_path) -> None:
     events: list[tuple[str, str]] = []
 
     class ImplRunner(BaseRunner):

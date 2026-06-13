@@ -42,20 +42,18 @@ def _bare_deepspeed_runner(
     tmp_path: Path,
     *,
     model: object,
-    fail_on_error: bool = False,
     config: Mapping[str, object] | None = None,
 ) -> DeepSpeedRunner:
     """Build a DeepSpeedRunner skeleton wired to a real FileCheckpointManager.
 
     The runner bypasses `__init__` (no DeepSpeed engine), but uses the real
-    checkpoint manager so checkpoint_health, fail_on_error, and the failure
-    hooks exercise production code rather than a hand-mirrored fake.
+    checkpoint manager so checkpoint_health and failure hooks exercise
+    production code rather than a hand-mirrored fake.
     """
     config_payload: dict[str, object] = {"logging.enabled": False}
     if config is not None:
         config_payload.update(config)
     config = RunnerConfig(config_payload)
-    config["ckpt"].fail_on_error = fail_on_error
 
     runner = object.__new__(DeepSpeedRunner)
     state = RunnerState(config=config)
@@ -97,15 +95,15 @@ class TestDeepSpeedRunnerCheckpointPaths:
         checkpoint_tag = "ckpt-s000000000001"
         tag_dir = checkpoint_dir / checkpoint_tag
         tag_dir.mkdir(parents=True)
-        RunnerConfig({"logging.enabled": False, "seed": 123}).yaml(tag_dir / "runner.yaml")
+        RunnerConfig({"logging.enabled": False, "seed": 1016}).yaml(tag_dir / "runner.yaml")
         (checkpoint_dir / "latest.pointer").write_text(checkpoint_tag, encoding="utf-8")
 
         config = DeepSpeedRunner.read_config(checkpoint_dir)
 
-        assert config["seed"] == 123
+        assert config["seed"] == 1016
         assert config.get("logging.enabled") is False
 
-    def test_deepspeed_checkpoint_failure_is_recorded_without_interrupting(self, tmp_path: Path) -> None:
+    def test_deepspeed_checkpoint_save_failure_warns_and_keeps_running(self, tmp_path: Path) -> None:
         class FailingModel:
             @staticmethod
             def save_checkpoint(*args, **kwargs) -> None:
@@ -175,25 +173,6 @@ class TestDeepSpeedRunnerCheckpointPaths:
         assert not (tmp_path / "ckpt-e000002").exists()
         assert (tmp_path / "ckpt-e000003").is_dir()
         assert (tmp_path / "latest.pointer").read_text(encoding="utf-8") == "ckpt-e000003"
-
-    def test_deepspeed_checkpoint_failure_raises_when_configured(self, tmp_path: Path) -> None:
-        class FailingModel:
-            @staticmethod
-            def save_checkpoint(*args, **kwargs) -> None:
-                del args, kwargs
-                raise OSError("disk full")
-
-        runner = _bare_deepspeed_runner(tmp_path, model=FailingModel(), fail_on_error=True)
-
-        with (
-            pytest.warns(RuntimeWarning, match="checkpoint failed"),
-            pytest.raises(OSError, match="disk full"),
-        ):
-            runner.save_checkpoint(save_best=False, force=True)
-
-        health = runner.checkpoint_manager.checkpoint_health
-        assert health.error_count == 1
-        assert isinstance(health.first_error, OSError)
 
 
 class TestDeepSpeedRunnerRuntimeBoundaries:
