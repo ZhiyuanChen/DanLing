@@ -173,7 +173,6 @@ class CheckpointConfig(chanfig.Config):
         dedicated_async_process_group: Use a dedicated process group for async DCP I/O.
         async_process_group_backend: Backend for that process group.
         dataloader_checkpoint: Per-replica dataloader checkpoint policy.
-        fail_on_error: Raise deferred async checkpoint errors when `True`.
         export_dtype: Optional dtype cast for model-only checkpoint export.
     """
 
@@ -187,7 +186,6 @@ class CheckpointConfig(chanfig.Config):
     dedicated_async_process_group: bool = True
     async_process_group_backend: str = "gloo"
     dataloader_checkpoint: DataloaderCheckpointConfig
-    fail_on_error: bool = True
     export_dtype: Optional[str] = None
 
     def __post_init__(self, *args, **kwargs) -> None:
