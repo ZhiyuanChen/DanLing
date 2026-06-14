@@ -67,10 +67,13 @@ from .utils import RunnerMode, get_precision, on_main_process
 
 
 TorchDTensor: Any
+TorchReplicate: Any
 try:
     from torch.distributed.tensor import DTensor as TorchDTensor
+    from torch.distributed.tensor import Replicate as TorchReplicate
 except ImportError:
     TorchDTensor = None
+    TorchReplicate = None
 
 
 def _seed_dataloader_worker(_worker_id: int) -> None:
@@ -84,14 +87,32 @@ def _local_reduction_tensor(tensor: torch.Tensor) -> torch.Tensor:
     if TorchDTensor is None or not isinstance(tensor, TorchDTensor):
         return tensor
 
+    def is_replicate(placement: Any) -> bool:
+        check = getattr(placement, "is_replicate", None)
+        return bool(callable(check) and check())
+
+    def is_partial(placement: Any) -> bool:
+        check = getattr(placement, "is_partial", None)
+        return bool(callable(check) and check())
+
+    if all(is_replicate(placement) for placement in tensor.placements):
+        return tensor.to_local()
+
     unsupported = [
         placement
         for placement in tensor.placements
-        if not placement.is_replicate()
+        if not is_replicate(placement) and not is_partial(placement)
     ]
     if unsupported:
-        raise ValueError(f"Cannot reduce non-replicated DTensor placements: {tensor.placements}")
-    return tensor.to_local()
+        raise ValueError(f"Cannot reduce DTensor placements: {tensor.placements}")
+
+    if TorchReplicate is None:
+        raise ValueError("Cannot reduce partial DTensor placements without torch.distributed.tensor.Replicate")
+    redistribute = getattr(tensor, "redistribute", None)
+    if not callable(redistribute):
+        raise ValueError(f"Cannot reduce partial DTensor placements: {tensor.placements}")
+    replicated = redistribute(placements=[TorchReplicate() for _ in tensor.placements])
+    return replicated.to_local()
 
 
 class TorchRunner(Fp8Mixin, BaseRunner):
@@ -1496,7 +1517,10 @@ class TorchRunner(Fp8Mixin, BaseRunner):
     def _optimizer_step_and_zero_grad(self) -> None:
         if self.optimizer is None:
             raise ValueError("cannot step optimizer: optimizer is not configured")
-        self.optimizer.step()
+        if self.grad_scaler is not None:
+            self.grad_scaler.step(self.optimizer)
+        else:
+            self.optimizer.step()
         if self.optimizer_container is not None and self.optimizer_container.scheduler_interval == "step":
             self.optimizer_container.step_scheduler()
         self._zero_optimizer_grad()
