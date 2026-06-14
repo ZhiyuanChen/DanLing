@@ -41,7 +41,6 @@ from danling.utils import load
 
 from ..config import RunnerConfig
 
-
 _STORAGE_FAILURE_ERRNOS = {errno.EDQUOT, errno.EIO, errno.ENOSPC}
 
 
@@ -106,7 +105,6 @@ class CheckpointManager(ABC):
         self._lock = RLock()
         self._closing = False
         self.checkpoint_health = CheckpointHealth()
-        self._checkpoint_error_to_raise: Exception | None = None
         self._keep_latest_k = int(self.runner.config.get("ckpt.keep_latest_k", 0) or 0)
         self._retention_history: deque[str] = deque()
         if self._keep_latest_k < 0:
@@ -297,8 +295,6 @@ class CheckpointManager(ABC):
         """
         with self._lock:
             self.checkpoint_health.record_failure(exc, target=target, alias=alias)
-            if self.runner.config.get("ckpt.fail_on_error", True) and self._checkpoint_error_to_raise is None:
-                self._checkpoint_error_to_raise = exc
         self._emit_checkpoint_failure(exc, target=target, alias=alias)
 
     def record_checkpoint_success(
@@ -381,17 +377,8 @@ class CheckpointManager(ABC):
         fields = self._checkpoint_event_fields(target=target, alias=alias, error=error)
         self._emit_warning(self._format_event(prefix, fields))
 
-    def raise_checkpoint_error_if_requested(self) -> None:
-        """Raise a deferred checkpoint error when fail-on-error is enabled."""
-        with self._lock:
-            if not self.runner.config.get("ckpt.fail_on_error", True):
-                self._checkpoint_error_to_raise = None
-                return
-            failure = self._checkpoint_error_to_raise
-            self._checkpoint_error_to_raise = None
-        if failure is None:
-            return
-        raise failure
+    def raise_checkpoint_error_if_requested(self) -> None:  # noqa: B027
+        """Compatibility hook; checkpoint failures are reported through health and logs."""
 
     def _record_retention_entry(
         self,

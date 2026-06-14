@@ -115,7 +115,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
     Attributes:
         model: Local model module after materialization (possibly DDP-wrapped).
-        ema: Optional EMA/evaluation model.
+        ema: Optional EMA model, or an eval-only shadow model without `update()`.
         criterion: Loss callable used by default train/evaluate steps.
         optimizer: Optimizer used by the runner or backend engine.
         scheduler: Optional LR scheduler.
