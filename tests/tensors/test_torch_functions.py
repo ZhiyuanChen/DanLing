@@ -4029,6 +4029,124 @@ class TestSoftmaxVariants:
         reference = NT([torch.softmax(t, dim=-1) for t in nt], **nt._meta())
         assert_close(output, reference)
 
+    @pytest.mark.parametrize("name", ["softmax", "log_softmax"])
+    @pytest.mark.parametrize("route", ["torch", "functional", "method"])
+    def test_softmax_dtype_routes_preserve_grad(self, device, float_dtype, name, route):
+        leaves = [
+            torch.randn(2, 3, device=device, dtype=float_dtype, requires_grad=True),
+            torch.randn(4, 3, device=device, dtype=float_dtype, requires_grad=True),
+        ]
+        references = [leaf.detach().clone().requires_grad_() for leaf in leaves]
+        nt = NT(leaves)
+        if route == "torch":
+            output = getattr(torch, name)(nt, dim=-1, dtype=torch.float64)
+        elif route == "functional":
+            output = getattr(F, name)(nt, dim=-1, dtype=torch.float64)
+        else:
+            output = getattr(nt, name)(dim=-1, dtype=torch.float64)
+
+        reference = [getattr(torch, name)(tensor, dim=-1, dtype=torch.float64) for tensor in references]
+        assert output.dtype == torch.float64
+        assert output._values.grad_fn is not None
+        assert_close(output, NT(reference, **nt._meta()), atol=1e-6, rtol=1e-6)
+
+        weights = [torch.randn_like(tensor) for tensor in reference]
+        loss = sum((tensor * weight).sum() for tensor, weight in zip(output._unpack(), weights))
+        ref_loss = sum((tensor * weight).sum() for tensor, weight in zip(reference, weights))
+        grads = torch.autograd.grad(loss, leaves)
+        ref_grads = torch.autograd.grad(ref_loss, references)
+        for grad, ref_grad in zip(grads, ref_grads):
+            assert_close(grad, ref_grad, atol=1e-5, rtol=1e-4)
+
+    @pytest.mark.parametrize("name", ["softmax", "log_softmax"])
+    def test_multi_ragged_softmax_all_varying_dims_preserves_grad(self, device, float_dtype, name):
+        for dim in (1, 2):
+            leaves = [
+                torch.randn(2, 3, 4, device=device, dtype=float_dtype, requires_grad=True),
+                torch.randn(4, 2, 4, device=device, dtype=float_dtype, requires_grad=True),
+            ]
+            references = [leaf.detach().clone().requires_grad_() for leaf in leaves]
+            nt = NT(leaves)
+            output = getattr(torch, name)(nt, dim=dim)
+            reference = [getattr(torch, name)(tensor, dim=dim - 1) for tensor in references]
+            output._validate_metadata()
+            value_atol, value_rtol = low_precision_cuda_tolerances(
+                device,
+                float_dtype,
+                default=(1e-5, 1e-5),
+                fp16=(1e-3, 1e-3),
+                bf16=(1e-2, 1e-2),
+            )
+            assert_close(output, NT(reference, **nt._meta()), atol=value_atol, rtol=value_rtol)
+
+            weights = [torch.randn_like(tensor) for tensor in reference]
+            loss = sum((tensor * weight).sum() for tensor, weight in zip(output._unpack(), weights))
+            ref_loss = sum((tensor * weight).sum() for tensor, weight in zip(reference, weights))
+            grads = torch.autograd.grad(loss, leaves)
+            ref_grads = torch.autograd.grad(ref_loss, references)
+            atol, rtol = low_precision_cuda_tolerances(
+                device,
+                float_dtype,
+                default=(1e-4, 1e-4),
+                fp16=(1e-3, 1e-3),
+                bf16=(1e-2, 1e-2),
+            )
+            for grad, ref_grad in zip(grads, ref_grads):
+                assert_close(grad, ref_grad, atol=atol, rtol=rtol)
+
+    def test_ragged_softmax_uses_opmath_accumulation(self):
+        parts = [
+            torch.zeros(70_000, 1, dtype=torch.float16),
+            torch.zeros(2, 1, dtype=torch.float16),
+        ]
+        nt = NT(parts)
+        output = torch.softmax(nt, dim=1)
+        reference = NT([torch.softmax(t, dim=0) for t in parts], **nt._meta())
+        assert_close(output, reference)
+        assert bool((output[0] > 0).all())
+        assert_close(output[0].sum(), torch.tensor(1.0, dtype=torch.float16), atol=2e-3, rtol=2e-3)
+
+    def test_multi_ragged_softmax_compacts_sparse_group_ids(self):
+        from danling.tensors.aten_functions import _packed_varying_softmax_group_indices
+
+        parts = [
+            torch.randn(2, 1),
+            torch.randn(0, 257),
+            *(torch.randn(1, 1) for _ in range(30)),
+        ]
+        nt = NT(parts)
+        batch_idx, local_idx = nt._packed_batch_local_indices(device=nt.device, dtype=torch.long)
+        varying_coords = nt._packed_varying_coords(
+            batch_idx,
+            local_idx,
+            device=nt.device,
+            dtype=torch.long,
+        )
+        groups = _packed_varying_softmax_group_indices(nt, 0, batch_idx, varying_coords)
+        assert groups is not None
+        group_idx, group_count = groups
+
+        expected_group_count = sum(shape[1] for shape in (part.shape for part in parts) if shape[0] > 0)
+        global_cartesian_group_count = len(parts) * max(part.shape[1] for part in parts)
+        assert group_count == expected_group_count
+        assert group_count < global_cartesian_group_count
+        assert torch.unique(group_idx).numel() == group_count
+
+        output = torch.softmax(nt, dim=1)
+        reference = NT([torch.softmax(part, dim=0) for part in parts], **nt._meta())
+        assert_close(output, reference)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_multi_ragged_softmax_compile_fullgraph(self):
+        nt = NT([torch.randn(2, 3, 4), torch.randn(4, 2, 4)])
+        for dim in (1, 2):
+            compiled = torch.compile(
+                lambda tensor, target=dim: torch.softmax(tensor, dim=target),
+                backend="inductor",
+                fullgraph=True,
+            )
+            assert_close(compiled(nt), torch.softmax(nt, dim=dim))
+
 
 class TestSplitChunkUnbind:
 

@@ -4029,8 +4029,13 @@ def log_softmax(input: NestedTensor, dim: int, dtype: torch.dtype | None = None)
         >>> torch.allclose(out, ref)
         True
     """
-    source = input if dtype is None else torch.ops.aten._to_copy.default(input, dtype=dtype)
-    return torch.ops.aten._log_softmax.default(source, dim, False)
+    from .aten_functions import _packed_like, _softmax_handler
+
+    source = input if dtype is None else _packed_like(input, input._values.to(dtype=dtype))
+    # Run the packed handler HERE (func level), where ``source._values`` still carry autograd, rather than
+    # delegating to the aten op on the NestedTensor -- that re-enters ``__torch_dispatch__``, where autograd
+    # has already detached ``_values``, so the result would drop grad (breaking a training loss's log_softmax).
+    return _softmax_handler(torch.ops.aten._log_softmax.default, (source, dim, False), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.softmax)
@@ -4055,8 +4060,12 @@ def softmax(input: NestedTensor, dim: int, dtype: torch.dtype | None = None) -> 
         >>> torch.allclose(out, ref)
         True
     """
-    source = input if dtype is None else torch.ops.aten._to_copy.default(input, dtype=dtype)
-    return torch.ops.aten._softmax.default(source, dim, False)
+    from .aten_functions import _packed_like, _softmax_handler
+
+    source = input if dtype is None else _packed_like(input, input._values.to(dtype=dtype))
+    # See ``log_softmax``: run the packed handler at func level so autograd on ``_values`` is preserved
+    # instead of being detached by a re-entry into ``__torch_dispatch__``.
+    return _softmax_handler(torch.ops.aten._softmax.default, (source, dim, False), {})
 
 
 # Sorting & Selection
@@ -4627,6 +4636,8 @@ for _alias_method, _alias_func in (
     (torch.Tensor.split, torch.split),
     (torch.Tensor.chunk, torch.chunk),
     (torch.Tensor.matmul, torch.matmul),
+    (torch.Tensor.softmax, torch.softmax),
+    (torch.Tensor.log_softmax, torch.log_softmax),
     (torch.Tensor.amax, torch.amax),
     (torch.Tensor.amin, torch.amin),
     (torch.Tensor.topk, torch.topk),

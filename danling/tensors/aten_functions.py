@@ -1964,7 +1964,13 @@ def _packed_jagged_matmul(lhs: NestedTensor, rhs: NestedTensor) -> NestedTensor 
     return _packed_jagged_contract_matmul(lhs, rhs)
 
 
-def _packed_square_softmax(source: NestedTensor, dim_adj: int, *, log: bool) -> NestedTensor | None:
+def _packed_square_softmax(
+    source: NestedTensor,
+    dim_adj: int,
+    *,
+    log: bool,
+    half_to_float: bool = False,
+) -> NestedTensor | None:
     rank = int(source._physical_shape.size(1))
     if rank < 2:
         return None
@@ -1983,7 +1989,12 @@ def _packed_square_softmax(source: NestedTensor, dim_adj: int, *, log: bool) -> 
         return None
     query, _, _ = _packed_pair_indices_from_sizes(source, sizes_tuple)
     total = sum(sizes_tuple)
-    values = source._values
+    source_values = source._values
+    values = (
+        source_values.float()
+        if half_to_float or source_values.dtype in (torch.float16, torch.bfloat16)
+        else source_values
+    )
     tail = tuple(values.shape[1:])
     segment = query.reshape((-1, *([1] * len(tail)))).expand((-1, *tail))
     max_values = values.new_full((total, *tail), float("-inf"))
@@ -1992,6 +2003,8 @@ def _packed_square_softmax(source: NestedTensor, dim_adj: int, *, log: bool) -> 
     exp_values = torch.exp(shifted)
     sums = values.new_zeros((total, *tail)).index_add(0, query, exp_values)
     out_values = shifted - torch.log(sums.index_select(0, query)) if log else exp_values / sums.index_select(0, query)
+    if not half_to_float and out_values.dtype != source_values.dtype:
+        out_values = out_values.to(dtype=source_values.dtype)
     return _packed_like(source, out_values)
 
 
@@ -3917,22 +3930,123 @@ def _binary_unwrap_handler(func, args, kwargs):
     return _packed_like(ref, func(va, vb, *args[2:], **kwargs))
 
 
+def _packed_varying_softmax_group_indices(
+    source: NestedTensor,
+    target_dim: int,
+    batch_idx: Tensor,
+    varying_coords: tuple[Tensor, ...],
+) -> tuple[Tensor, int] | None:
+    r"""Build compact group indices for a softmax over one varying dimension.
+
+    Groups are laid out independently for each element using that element's
+    actual non-target varying sizes.  This avoids allocating the batch-wide
+    Cartesian product of global maxima for sparse or anti-correlated shapes.
+    """
+    element_shapes = source._element_shapes
+    if element_shapes is None:
+        if _is_fake_tensor(source._physical_shape):
+            return None
+        element_shapes = tuple(tuple(int(size) for size in shape) for shape in source._physical_shape.tolist())
+
+    excluded = tuple(
+        (physical_dim, coord)
+        for physical_dim, coord in zip(source._varying_dims, varying_coords)
+        if physical_dim != target_dim
+    )
+    group_offsets = [0]
+    for shape in element_shapes:
+        target_size = int(shape[target_dim])
+        group_count = math.prod(int(shape[physical_dim]) for physical_dim, _ in excluded)
+        group_offsets.append(group_offsets[-1] + (group_count if target_size > 0 else 0))
+
+    offsets = torch.tensor(group_offsets[:-1], dtype=batch_idx.dtype, device=batch_idx.device)
+    local_group_idx = torch.zeros_like(batch_idx)
+    if excluded:
+        per_element_radices = torch.tensor(
+            [[int(shape[physical_dim]) for physical_dim, _ in excluded] for shape in element_shapes],
+            dtype=batch_idx.dtype,
+            device=batch_idx.device,
+        )
+        for index, (_, coord) in enumerate(excluded):
+            radix = per_element_radices[:, index].index_select(0, batch_idx)
+            local_group_idx = local_group_idx * radix + coord
+
+    return offsets.index_select(0, batch_idx) + local_group_idx, group_offsets[-1]
+
+
+def _packed_varying_softmax(
+    source: NestedTensor,
+    target_dim: int,
+    *,
+    log: bool,
+    half_to_float: bool,
+) -> NestedTensor | None:
+    r"""Apply softmax over one varying dimension without padding or unpacking."""
+    varying_dims = source._varying_dims
+    if target_dim not in varying_dims:
+        return None
+
+    source_values = source._values
+    values = (
+        source_values.float()
+        if half_to_float or source_values.dtype in (torch.float16, torch.bfloat16)
+        else source_values
+    )
+    if values.shape[0] == 0:
+        return _packed_like(source, values if half_to_float else source_values)
+
+    batch_idx, local_idx = source._packed_batch_local_indices(device=values.device, dtype=torch.long)
+    varying_coords = source._packed_varying_coords(
+        batch_idx,
+        local_idx,
+        device=values.device,
+        dtype=torch.long,
+    )
+    groups = _packed_varying_softmax_group_indices(source, target_dim, batch_idx, varying_coords)
+    if groups is None:
+        return None
+    group_idx, group_count = groups
+
+    tail_rank = values.dim() - 1
+    scatter_idx = group_idx.reshape(-1, *([1] * tail_rank)).expand_as(values)
+    group_shape = (group_count, *values.shape[1:])
+    maxima = values.new_full(group_shape, float("-inf"))
+    maxima = maxima.scatter_reduce(0, scatter_idx, values, "amax", include_self=False)
+    shifted = values - maxima.index_select(0, group_idx)
+    exponentials = shifted.exp()
+    sums = values.new_zeros(group_shape).index_add(0, group_idx, exponentials)
+    gathered_sums = sums.index_select(0, group_idx)
+    out_values = shifted - gathered_sums.log() if log else exponentials / gathered_sums
+    if not half_to_float and out_values.dtype != source_values.dtype:
+        out_values = out_values.to(dtype=source_values.dtype)
+    return _packed_like(source, out_values)
+
+
 def _softmax_handler(func, args, kwargs):
     r"""Dispatch handler for softmax/log_softmax that translates the dim argument."""
     source = args[0]
     dim_adj = _translate_dim(source, args[1])
-    if dim_adj in source._varying_dims:
-        square = _packed_square_softmax(source, dim_adj, log=func is aten._log_softmax.default)
+    half_to_float = bool(args[2]) if len(args) > 2 else bool(kwargs.get("half_to_float", False))
+    values_dim = _physical_to_values_dim(source, dim_adj)
+    if values_dim is None:
+        square = _packed_square_softmax(
+            source,
+            dim_adj,
+            log=func is aten._log_softmax.default,
+            half_to_float=half_to_float,
+        )
         if square is not None:
             return square
-        if dim_adj == 0 and _is_packed_identity(source):
-            padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(source, fill_value=float("-inf"))
-            out_padded = func(padded, 1, *args[2:], **kwargs)
-            return _packed_like(source, out_padded[batch_idx, local_idx])
+        varying = _packed_varying_softmax(
+            source,
+            dim_adj,
+            log=func is aten._log_softmax.default,
+            half_to_float=half_to_float,
+        )
+        if varying is not None:
+            return varying
         return _apply_per_element_nested(source, lambda t: func(t, dim_adj, *args[2:], **kwargs))
-    if dim_adj >= source._values.dim() or not _is_packed_identity(source):
-        return _apply_per_element_nested(source, lambda t: func(t, dim_adj, *args[2:], **kwargs))
-    return _packed_like(source, func(source._values, dim_adj, *args[2:], **kwargs))
+    return _packed_like(source, func(source._values, values_dim, *args[2:], **kwargs))
 
 
 # ---------------------------------------------------------------------------
