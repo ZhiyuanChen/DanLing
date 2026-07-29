@@ -758,6 +758,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             model = nn.parallel.DistributedDataParallel(
                 model,
                 find_unused_parameters=bool(self.config.ddp.find_unused_parameters),
+                static_graph=bool(self.config.ddp.static_graph),
             )
         self.model = model
 

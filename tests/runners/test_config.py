@@ -195,6 +195,8 @@ def test_runner_config_exposes_runtime_sections() -> None:
     assert isinstance(config.get("ckpt.dataloader_checkpoint"), DataloaderCheckpointConfig)
     assert config.get("ckpt.dataloader_checkpoint.enabled") is False
     assert config.get("compile.enabled") is False
+    assert config.get("ddp.find_unused_parameters") is False
+    assert config.get("ddp.static_graph") is False
     assert isinstance(config.get("parallel.axes"), ParallelAxesConfig)
     assert config.get("parallel.axes.shard") == 1
     assert config.get("workspace.root") == "experiments"
@@ -203,6 +205,10 @@ def test_runner_config_exposes_runtime_sections() -> None:
     config.parallel.axes.shard = 2
     assert RunnerConfig().workspace.experiment == "exp"
     assert RunnerConfig().parallel.axes.shard == 1
+
+    configured = RunnerConfig({"ddp": {"find_unused_parameters": True, "static_graph": True}})
+    assert configured.ddp.find_unused_parameters is True
+    assert configured.ddp.static_graph is True
 
 
 def test_runner_config_keeps_training_sections_optional() -> None:

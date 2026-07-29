@@ -466,6 +466,33 @@ class TestTorchRunnerBootstrap:
         assert runner.optimizer is not None
         assert runner.optimizer_container is not None
 
+    def test_materialize_model_forwards_ddp_options(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, bool] = {}
+
+        class RecordingDDP(nn.Module):
+            def __init__(self, module: nn.Module, **kwargs) -> None:
+                super().__init__()
+                self.module = module
+                captured.update(kwargs)
+
+            def forward(self, *args, **kwargs):
+                return self.module(*args, **kwargs)
+
+        runner = TinyTorchRunner(
+            {
+                "logging.enabled": False,
+                "ddp": {"find_unused_parameters": True, "static_graph": True},
+            }
+        )
+        try:
+            monkeypatch.setattr(nn.parallel, "DistributedDataParallel", RecordingDDP)
+            monkeypatch.setenv("WORLD_SIZE", "2")
+            runner.materialize_model()
+            assert captured == {"find_unused_parameters": True, "static_graph": True}
+        finally:
+            monkeypatch.setenv("WORLD_SIZE", "1")
+            runner.close()
+
     def test_fault_tolerance_requires_torchft_package(self) -> None:
         if importlib.util.find_spec("torchft") is not None:
             pytest.skip("torchft is installed")

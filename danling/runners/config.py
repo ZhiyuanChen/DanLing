@@ -262,9 +262,14 @@ class DistributedConfig(chanfig.Config):
 class DdpConfig(chanfig.Config):
     r"""
     ``torch.nn.parallel.DistributedDataParallel`` wrapping settings.
+
+    Attributes:
+        find_unused_parameters: Passed to ``DistributedDataParallel``.
+        static_graph: Passed to ``DistributedDataParallel``.
     """
 
     find_unused_parameters: bool = False
+    static_graph: bool = False
 
 
 class GcConfig(chanfig.Config):
