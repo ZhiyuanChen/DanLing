@@ -161,6 +161,51 @@ class TestArithmeticFunctions:
         reference = NT([elem + bias for elem in nt], **nt._meta())
         assert_close(output, reference)
 
+    @pytest.mark.parametrize(
+        ("lhs_shapes", "rhs_shapes", "permutation"),
+        [
+            (((2, 2, 1), (3, 3, 1)), ((2, 2, 4), (3, 3, 4)), (0, 1, 2)),
+            (((2, 2, 1), (2, 3, 1)), ((2, 2, 4), (2, 3, 4)), (1, 0, 2)),
+        ],
+        ids=("multi-ragged", "permuted-ragged"),
+    )
+    def test_nested_static_broadcast_preserves_ragged_metadata(
+        self,
+        device,
+        float_dtype,
+        lhs_shapes,
+        rhs_shapes,
+        permutation,
+    ):
+        lhs_parts = [torch.randn(shape, device=device, dtype=float_dtype) for shape in lhs_shapes]
+        rhs_parts = [torch.randn(shape, device=device, dtype=float_dtype) for shape in rhs_shapes]
+        lhs = NT(lhs_parts)
+        rhs = NT(rhs_parts)
+        bias = torch.randn(4, device=device, dtype=float_dtype)
+
+        for output, reference_parts in (
+            (torch.add(lhs, rhs), [x + y for x, y in zip(lhs_parts, rhs_parts)]),
+            (torch.add(lhs, bias), [x + bias for x in lhs_parts]),
+        ):
+            output._validate_metadata()
+            assert_close(output, NT(reference_parts, **lhs._meta()))
+            assert output._element_shapes == tuple(rhs_shapes)
+            assert output._physical_shape.tolist() == [list(shape) for shape in rhs_shapes]
+            assert output._permutation == permutation
+            assert output._packed_sizes == lhs._packed_sizes
+            assert output._values.shape[0] == sum(output._packed_sizes)
+
+    def test_dense_vector_broadcast_rejects_ragged_final_physical_dim(self, device, float_dtype):
+        parts = [
+            torch.arange(4, device=device, dtype=float_dtype).reshape(4, 1),
+            torch.arange(16, device=device, dtype=float_dtype).reshape(4, 4),
+        ]
+        nt = NT(parts)
+        bias = torch.arange(10, 50, 10, device=device, dtype=float_dtype)
+        for lhs, rhs in ((nt, bias), (bias, nt)):
+            with pytest.raises(NotImplementedError, match="broadcast-compatible"):
+                torch.add(lhs, rhs)
+
     def test_mul_dense_channel_broadcast(self, device, float_dtype):
         nt = NT(
             [

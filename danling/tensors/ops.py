@@ -309,6 +309,22 @@ def _resolve_dense_for_values(nt: NestedTensor, other) -> Tensor | None:
         return None
 
     if not _is_packed_identity(nt):
+        # A one-dimensional operand can only address the final packed/static
+        # dimension, so its meaning is unambiguous even when ragged dimensions
+        # precede the static suffix in a non-identity permutation.
+        rank = int(nt._physical_shape.size(1))
+        if (
+            other.dim() == 1
+            and nt._values.dim() >= 1
+            and nt._static_dims
+            and nt._static_dims[-1] == rank - 1
+            and _broadcasts_per_element(nt, other)
+        ):
+            try:
+                torch.broadcast_shapes(nt._values.shape, other.shape)
+            except RuntimeError:
+                return None
+            return other
         return None
 
     values = nt._values  # [sum_lengths, *tail]
@@ -357,7 +373,14 @@ def _resolve_dense_for_values(nt: NestedTensor, other) -> Tensor | None:
     return None
 
 
-def _binary_per_element_dense(input, other, op, reverse, extra_args, extra_kwargs):
+def _binary_per_element_dense(
+    input,
+    other,
+    op,
+    reverse,
+    extra_args,
+    extra_kwargs,
+):
     r"""Apply a dense binary op per logical element (layout-correct for permuted NTs).
 
     Aligns ``other`` to each element by slicing its batch dim (or broadcasting when it has
@@ -493,11 +516,13 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
       ``_maybe_exact_shape_nested_like`` internally, which has O(B * max_len) cost
       from repacking the dense tensor to match the packed layout. Avoid in hot paths.
     """
-    from .aten_functions import _packed_like, _packed_with_tail_from_values
+    from .aten_functions import _packed_like, _packed_with_static_tail_from_values, _packed_with_tail_from_values
     from .nested_tensor import NestedTensor
 
     def _rebuild(values):
         if tuple(values.shape[1:]) != tuple(input._values.shape[1:]):
+            if values.dim() == input._values.dim():
+                return _packed_with_static_tail_from_values(input, values)
             return _packed_with_tail_from_values(input, values)
         return _packed_like(input, values)
 
@@ -565,7 +590,14 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
             )
         lhs_v, rhs_v = (other._values, input._values) if reverse else (input._values, other._values)
         if input._has_same_structure(other):
-            return _packed_like(input, op(lhs_v, rhs_v, *extra_args, **extra_kwargs))
+            new_values = op(lhs_v, rhs_v, *extra_args, **extra_kwargs)
+            # Fast path (the common elementwise case): the op preserved the static tail, so the ragged
+            # metadata is reused as-is -- a single ``torch.Size`` comparison, no rebuild. Only when the
+            # trailing (non-ragged) dims actually broadcast -- e.g. (N,1,5,1,3) - (N,K,1,5,3) -> (N,K,5,5,3)
+            # -- is the tail re-derived, rather than silently copying the left operand's element shape.
+            if new_values.shape[1:] == input._values.shape[1:]:
+                return _packed_like(input, new_values)
+            return _packed_with_static_tail_from_values(input, new_values)
         lhs_s, rhs_s = (other._storage, input._storage) if reverse else (input._storage, other._storage)
         return cls(
             (op(x, y, *extra_args, **extra_kwargs) for x, y in zip(lhs_s, rhs_s)),

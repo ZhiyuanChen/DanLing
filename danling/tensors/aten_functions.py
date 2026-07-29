@@ -1687,6 +1687,31 @@ def _packed_like(source: NestedTensor, new_values: Tensor) -> NestedTensor:
     return result
 
 
+def _packed_with_static_tail_from_values(source: NestedTensor, new_values: Tensor) -> NestedTensor:
+    r"""Rebuild after an elementwise broadcast that only resized packed static dimensions."""
+    static_tail = tuple(int(size) for size in new_values.shape[1:])
+    static_dims = source._static_dims
+    if len(static_tail) != len(static_dims):
+        raise RuntimeError(
+            "NestedTensor packed broadcast changed the number of static dimensions: "
+            f"expected {len(static_dims)}, got {len(static_tail)}"
+        )
+    replacements = {int(dim): size for dim, size in zip(static_dims, static_tail)}
+    new_physical_shape, _, element_shapes = source._shape_meta_from_components(replace_dims=replacements)
+    result = _packed_with_shape(
+        source,
+        new_values,
+        new_physical_shape,
+        source._logical_shape_from_components(replace_dims=replacements),
+        permutation=source._permutation,
+        packed_sizes=source._packed_sizes,
+        element_shapes=element_shapes,
+    )
+    if source._cached_hierarchical_offsets is not None:
+        result._cached_hierarchical_offsets = source._cached_hierarchical_offsets
+    return result
+
+
 def _packed_with_shape(
     source: NestedTensor,
     new_values: Tensor,
