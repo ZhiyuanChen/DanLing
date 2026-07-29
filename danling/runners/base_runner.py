@@ -1381,11 +1381,10 @@ class BaseRunner(metaclass=MetaRunner):
         **kwargs,
     ) -> RunnerConfig:
         """
-        Read runner config from checkpoint mapping or file path.
+        Read runner config from a checkpoint mapping, file, or DCP directory.
 
-        Note:
-            BaseRunner only accepts file checkpoints for path input.
-            Backend-specific directory checkpoints must be handled in subclasses.
+        Directory checkpoints expose their config through the adjacent
+        ``runner.yaml`` without requiring a distributed process group.
         """
 
         if isinstance(checkpoint, Mapping):
@@ -1397,10 +1396,19 @@ class BaseRunner(metaclass=MetaRunner):
                 kwargs["map_location"] = "cpu"
                 kwargs["weights_only"] = False
                 ckpt = load(checkpoint, *args, **kwargs)
+            elif os.path.isdir(checkpoint_id):
+                # A directory checkpoint is a DCP checkpoint (the DDP/distributed default). Its runner config
+                # is written alongside the sharded state as ``runner.yaml`` -- readable without a process
+                # group -- so read it directly instead of requiring the caller to pre-select the backend
+                # runner class before the stack is even known.
+                runner_yaml = os.path.join(os.fsdecode(checkpoint_id), "runner.yaml")
+                if not os.path.isfile(runner_yaml):
+                    raise ValueError(f"cannot read config from DCP checkpoint {checkpoint_id!r}: missing 'runner.yaml'")
+                return RunnerConfig.from_yaml(runner_yaml)
             else:
                 raise ValueError(
-                    f"cannot read config from checkpoint path for {cls.__name__}: path must be a file; "
-                    "use a backend-specific runner for directory-style checkpoints"
+                    f"cannot read config from checkpoint path for {cls.__name__}: path must be a file or a "
+                    "DCP checkpoint directory"
                 )
         else:
             raise ValueError(

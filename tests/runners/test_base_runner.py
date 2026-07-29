@@ -32,6 +32,7 @@ import torch
 from danling.metrics import AverageMeter
 from danling.runners import base_runner as base_runner_module
 from danling.runners.base_runner import BaseRunner
+from danling.runners.config import RunnerConfig
 
 
 class MinimalRunner(BaseRunner):
@@ -363,6 +364,21 @@ def test_base_runner_mlflow_logs_flattened_result_once(tmp_path: Path) -> None:
         "train/metrics/topk/0": 0.8,
         "train/metrics/topk/1": 0.9,
     }
+
+
+@pytest.mark.parametrize("use_bytes", [False, True])
+def test_base_runner_reads_config_from_dcp_directory(tmp_path: Path, use_bytes: bool) -> None:
+    RunnerConfig({"logging.enabled": False, "seed": 123}).yaml(tmp_path / "runner.yaml")
+    checkpoint = bytes(tmp_path) if use_bytes else tmp_path
+
+    config = BaseRunner.read_config(checkpoint)
+
+    assert config.seed == 123
+
+
+def test_base_runner_rejects_dcp_directory_without_config(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="missing 'runner.yaml'"):
+        BaseRunner.read_config(tmp_path)
 
 
 def test_base_runner_load_checkpoint_restores_in_expected_order() -> None:
