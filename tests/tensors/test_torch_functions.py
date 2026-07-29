@@ -3341,6 +3341,30 @@ class TestReductionOps:
         reference = NT([torch.sum(t, dim=(0, 2)) for t in nt], **nt._meta())
         assert_close(output, reference)
 
+    @pytest.mark.parametrize("route", ["torch", "method"])
+    @pytest.mark.parametrize(
+        ("dim", "element_dim"),
+        [(1, 0), (-1, -1), ((1, 2), (0, 1))],
+        ids=("ragged", "static", "multi-dim"),
+    )
+    def test_sum_public_routes_preserve_autograd(self, device, float_dtype, route, dim, element_dim):
+        leaves = [
+            torch.randn(2, 3, device=device, dtype=float_dtype, requires_grad=True),
+            torch.randn(4, 3, device=device, dtype=float_dtype, requires_grad=True),
+        ]
+        references = [leaf.detach().clone().requires_grad_() for leaf in leaves]
+        nt = NT(leaves)
+        output = torch.sum(nt, dim=dim) if route == "torch" else nt.sum(dim=dim)
+        reference_parts = [torch.sum(tensor, dim=element_dim) for tensor in references]
+        reference = NT(reference_parts, **nt._meta()) if dim == -1 else torch.stack(reference_parts)
+        assert_close(output, reference)
+
+        output_values = output._values if isinstance(output, NestedTensor) else output
+        grads = torch.autograd.grad(output_values.square().sum(), leaves)
+        ref_grads = torch.autograd.grad(sum(tensor.square().sum() for tensor in reference_parts), references)
+        for grad, ref_grad in zip(grads, ref_grads):
+            assert_close(grad, ref_grad)
+
     def test_any_ignores_padding(self, device, float_dtype):
         nt = NestedTensor(
             [torch.zeros(3, device=device, dtype=float_dtype), torch.zeros(1, device=device, dtype=float_dtype)],
@@ -3459,6 +3483,50 @@ class TestReductionOps:
         assert_close(mean, mean_reference)
         for output in (argmax, count, norm, linalg_norm, variance, mean):
             output._validate_metadata()
+
+    def test_multi_ragged_var_mean_and_vector_norm_preserve_grad(self, device, float_dtype):
+        leaves = [
+            torch.randn(2, 3, 4, device=device, dtype=float_dtype, requires_grad=True),
+            torch.randn(4, 2, 4, device=device, dtype=float_dtype, requires_grad=True),
+        ]
+        references = [leaf.detach().clone().requires_grad_() for leaf in leaves]
+        nt = NT(leaves)
+
+        variance, mean = torch.var_mean(nt, dim=-1, correction=0)
+        norm = torch.linalg.vector_norm(nt, dim=-1)
+        ref_pairs = [torch.var_mean(t, dim=-1, correction=0) for t in references]
+        ref_norms = [torch.linalg.vector_norm(t, dim=-1) for t in references]
+        assert_close(variance, NT([pair[0] for pair in ref_pairs], **nt._meta()))
+        assert_close(mean, NT([pair[1] for pair in ref_pairs], **nt._meta()))
+        assert_close(norm, NT(ref_norms, **nt._meta()))
+
+        weights = [torch.randn_like(t) for t in variance._unpack()]
+        loss = sum((value * weight).sum() for value, weight in zip(variance._unpack(), weights))
+        loss = loss + mean._values.square().sum() + norm._values.square().sum()
+        ref_loss = sum((pair[0] * weight).sum() for pair, weight in zip(ref_pairs, weights))
+        ref_loss = ref_loss + sum(pair[1].square().sum() for pair in ref_pairs)
+        ref_loss = ref_loss + sum(value.square().sum() for value in ref_norms)
+        grads = torch.autograd.grad(loss, leaves)
+        ref_grads = torch.autograd.grad(ref_loss, references)
+        for grad, ref_grad in zip(grads, ref_grads):
+            assert_close(grad, ref_grad)
+
+    def test_vector_norm_negative_ord_without_dim_falls_back_per_element(self, device, float_dtype):
+        leaves = [
+            (torch.rand(2, 3, device=device, dtype=float_dtype) + 0.5).requires_grad_(),
+            (torch.rand(4, 2, device=device, dtype=float_dtype) + 0.5).requires_grad_(),
+        ]
+        references = [leaf.detach().clone().requires_grad_() for leaf in leaves]
+        nt = NT(leaves)
+
+        output = torch.linalg.vector_norm(nt, ord=-1)
+        reference = [torch.linalg.vector_norm(tensor, ord=-1) for tensor in references]
+        assert_close(output, NT(reference, **nt._meta()))
+
+        grads = torch.autograd.grad(output._values.square().sum(), leaves)
+        ref_grads = torch.autograd.grad(sum(tensor.square() for tensor in reference), references)
+        for grad, ref_grad in zip(grads, ref_grads):
+            assert_close(grad, ref_grad)
 
     def test_multi_ragged_all_static_multi_dim_reductions(self, device, float_dtype):
         parts = [
@@ -3803,6 +3871,69 @@ class TestSelectionOps:
         assert_close(min_ragged.values, min_ragged_ref_vals)
         assert_close(min_ragged.indices, min_ragged_ref_idxs)
 
+    def test_extrema_public_routes_preserve_autograd(self, device, float_dtype):
+        for name in ("amax", "amin"):
+            for use_method in (False, True):
+                leaves = [
+                    torch.randn(2, 4, device=device, dtype=float_dtype, requires_grad=True),
+                    torch.randn(3, 4, device=device, dtype=float_dtype, requires_grad=True),
+                ]
+                nt = NT(leaves)
+                output = getattr(nt, name)(dim=-1) if use_method else getattr(torch, name)(nt, dim=-1)
+                assert output._values.grad_fn is not None
+                torch.autograd.grad(output._values.sum(), leaves)
+
+        for name in ("max", "min"):
+            leaves = [
+                torch.randn(2, 4, device=device, dtype=float_dtype, requires_grad=True),
+                torch.randn(3, 4, device=device, dtype=float_dtype, requires_grad=True),
+            ]
+            nt = NT(leaves)
+            output = getattr(torch, name)(nt, dim=-1)
+            assert isinstance(output, getattr(torch.return_types, name))
+            assert output.values._values.grad_fn is not None
+            torch.autograd.grad(output.values._values.sum(), leaves)
+
+            leaves = [leaf.detach().clone().requires_grad_() for leaf in leaves]
+            nt = NT(leaves)
+            global_output = getattr(torch, name)(nt)
+            assert global_output.grad_fn is not None
+            torch.autograd.grad(global_output, leaves)
+
+        for use_method in (False, True):
+            leaves = [
+                torch.randn(2, 4, device=device, dtype=float_dtype, requires_grad=True),
+                torch.randn(3, 4, device=device, dtype=float_dtype, requires_grad=True),
+            ]
+            nt = NT(leaves)
+            output = nt.topk(2, dim=-1) if use_method else torch.topk(nt, 2, dim=-1)
+            assert isinstance(output, torch.return_types.topk)
+            assert output.values._values.grad_fn is not None
+            torch.autograd.grad(output.values._values.sum(), leaves)
+
+    def test_non_leading_ragged_topk_and_max_min(self, device, float_dtype):
+        leaves = [
+            torch.randn(2, 3, device=device, dtype=float_dtype, requires_grad=True),
+            torch.randn(2, 5, device=device, dtype=float_dtype, requires_grad=True),
+        ]
+        nt = NT(leaves)
+        for logical_dim, element_dim, k in ((1, 0, 1), (2, 1, 2)):
+            output = torch.topk(nt, k, dim=logical_dim)
+            references = [torch.topk(t, k, dim=element_dim) for t in leaves]
+            assert_close(output.values, NT([reference.values for reference in references], **nt._meta()))
+            assert_close(output.indices, NT([reference.indices for reference in references], **nt._meta()))
+            output.values._validate_metadata()
+            torch.autograd.grad(output.values._values.sum(), leaves, retain_graph=True)
+
+        for op in (torch.max, torch.min):
+            output = op(nt, dim=1)
+            references = [op(t, dim=0) for t in leaves]
+            assert_close(output.values, NT([reference.values for reference in references], **nt._meta()))
+            assert_close(output.indices, NT([reference.indices for reference in references], **nt._meta()))
+            output.values._validate_metadata()
+            assert torch.isfinite(output.values._values).all()
+            torch.autograd.grad(output.values._values.sum(), leaves, retain_graph=True)
+
     @pytest.mark.parametrize("name", ["argmax", "argmin", "max", "min"])
     def test_empty_ragged_extrema_axis_raises(self, device, float_dtype, name):
         nt = NT(
@@ -3813,6 +3944,22 @@ class TestSelectionOps:
         )
         with pytest.raises(IndexError, match="non-zero size"):
             getattr(torch, name)(nt, dim=1)
+
+    @pytest.mark.parametrize("name", ["max", "min"])
+    @pytest.mark.parametrize("dim", [0, 1])
+    def test_max_min_ties_route_gradient_to_returned_index(self, device, float_dtype, name, dim):
+        high = 2.0 if name == "max" else -2.0
+        leaves = [
+            torch.tensor([high, high, 0.0], device=device, dtype=float_dtype, requires_grad=True),
+            torch.tensor([high, high], device=device, dtype=float_dtype, requires_grad=True),
+        ]
+        nt = NT(leaves)
+        output = getattr(torch, name)(nt, dim=dim)
+        assert_close(output.indices, torch.zeros(2, device=device, dtype=torch.long))
+        loss = output.values._values.sum() if isinstance(output.values, NestedTensor) else output.values.sum()
+        grads = torch.autograd.grad(loss, leaves)
+        assert_close(grads[0], torch.tensor([1.0, 0.0, 0.0], device=device, dtype=float_dtype))
+        assert_close(grads[1], torch.tensor([1.0, 0.0], device=device, dtype=float_dtype))
 
     def test_sort(self, device, float_dtype):
         nt = NestedTensor(

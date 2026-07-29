@@ -2512,13 +2512,25 @@ def linalg_norm(input, ord=None, dim=None, keepdim=False, *, dtype=None):
     padding_safe = not isinstance(vector_ord, bool) and isinstance(vector_ord, (int, float)) and float(vector_ord) >= 0
     if not flattened and dim is None:
         if padding_safe:
-            return torch.ops.aten.linalg_vector_norm.default(input, vector_ord, None, keepdim, dtype=dtype)
+            vector_norm_op = torch.ops.aten.linalg_vector_norm.default
+            vector_norm_handler = NestedTensorAtenRegistry[vector_norm_op]
+            return vector_norm_handler(
+                vector_norm_op,
+                (input, vector_ord, None, keepdim),
+                {"dtype": dtype},
+            )
     elif not flattened and isinstance(dim, int):
         dim_adj = _translate_non_batch_dim(input, dim, name="linalg.norm")
         if (dim_adj == 0 and padding_safe) or (
             dim_adj != 0 and isinstance(vector_ord, (int, float)) and not isinstance(vector_ord, bool)
         ):
-            return torch.ops.aten.linalg_vector_norm.default(input, vector_ord, [dim], keepdim, dtype=dtype)
+            vector_norm_op = torch.ops.aten.linalg_vector_norm.default
+            vector_norm_handler = NestedTensorAtenRegistry[vector_norm_op]
+            return vector_norm_handler(
+                vector_norm_op,
+                (input, vector_ord, [dim], keepdim),
+                {"dtype": dtype},
+            )
     elif not flattened:
         dims = tuple(dim)
         if len(dims) == 1:
@@ -2526,7 +2538,13 @@ def linalg_norm(input, ord=None, dim=None, keepdim=False, *, dtype=None):
             if (dim_adj == 0 and padding_safe) or (
                 dim_adj != 0 and isinstance(vector_ord, (int, float)) and not isinstance(vector_ord, bool)
             ):
-                return torch.ops.aten.linalg_vector_norm.default(input, vector_ord, list(dims), keepdim, dtype=dtype)
+                vector_norm_op = torch.ops.aten.linalg_vector_norm.default
+                vector_norm_handler = NestedTensorAtenRegistry[vector_norm_op]
+                return vector_norm_handler(
+                    vector_norm_op,
+                    (input, vector_ord, list(dims), keepdim),
+                    {"dtype": dtype},
+                )
         elif len(dims) == 2:
             dims_norm = tuple(_normalize_dim(d, input.dim()) for d in dims)
             batch_dim = _get_batch_dim(input)
@@ -2559,6 +2577,28 @@ def linalg_norm(input, ord=None, dim=None, keepdim=False, *, dtype=None):
         else:
             dim = tuple(_translate_non_batch_dim(input, d, name="linalg.norm") for d in dim)
     return _map_storage_serial(input, lambda t: torch.linalg.norm(t, ord=ord, dim=dim, keepdim=keepdim, dtype=dtype))
+
+
+@NestedTensorFuncRegistry.implement(torch.linalg.vector_norm)
+def linalg_vector_norm(
+    input,
+    ord=2,
+    dim=None,
+    keepdim=False,
+    *,
+    dtype=None,
+    out=None,
+):
+    r"""Apply [torch.linalg.vector_norm][] while keeping autograd on packed values."""
+    if out is not None:
+        raise NotImplementedError("torch.linalg.vector_norm(..., out=...) is not supported for NestedTensor.")
+    vector_norm_op = torch.ops.aten.linalg_vector_norm.default
+    vector_norm_handler = NestedTensorAtenRegistry[vector_norm_op]
+    return vector_norm_handler(
+        vector_norm_op,
+        (input, ord, dim, keepdim),
+        {"dtype": dtype},
+    )
 
 
 @NestedTensorFuncRegistry.implement(torch.linalg.qr)
@@ -2945,7 +2985,8 @@ def amax(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: b
             dim = dim[0]
         else:
             return _reduce(input, torch.amax, dim, keepdim)
-    return torch.ops.aten.amax.default(input, [dim], keepdim)
+    amax_op = torch.ops.aten.amax.default
+    return NestedTensorAtenRegistry[amax_op](amax_op, (input, [dim], keepdim), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.amin)
@@ -2976,7 +3017,8 @@ def amin(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: b
             dim = dim[0]
         else:
             return _reduce(input, torch.amin, dim, keepdim)
-    return torch.ops.aten.amin.default(input, [dim], keepdim)
+    amin_op = torch.ops.aten.amin.default
+    return NestedTensorAtenRegistry[amin_op](amin_op, (input, [dim], keepdim), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.aminmax)
@@ -3131,8 +3173,10 @@ def max(input: NestedTensor, dim: int | None = None, keepdim: bool = False):
         True
     """
     if dim is None:
-        return torch.ops.aten.max.default(input)
-    values, indices = torch.ops.aten.max.dim(input, dim, keepdim)
+        max_op = torch.ops.aten.max.default
+        return NestedTensorAtenRegistry[max_op](max_op, (input,), {})
+    max_op = torch.ops.aten.max.dim
+    values, indices = NestedTensorAtenRegistry[max_op](max_op, (input, dim, keepdim), {})
     return torch.return_types.max((values, indices))
 
 
@@ -3199,8 +3243,10 @@ def min(input: NestedTensor, dim: int | None = None, keepdim: bool = False):
         True
     """
     if dim is None:
-        return torch.ops.aten.min.default(input)
-    values, indices = torch.ops.aten.min.dim(input, dim, keepdim)
+        min_op = torch.ops.aten.min.default
+        return NestedTensorAtenRegistry[min_op](min_op, (input,), {})
+    min_op = torch.ops.aten.min.dim
+    values, indices = NestedTensorAtenRegistry[min_op](min_op, (input, dim, keepdim), {})
     return torch.return_types.min((values, indices))
 
 
@@ -3333,6 +3379,10 @@ def sum(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: bo
     r"""Compute sums via aten fastpaths for global and single-dim reductions."""
     if dim is None:
         return _reduce_none(input, torch.sum, dtype=dtype, keepdim=keepdim)
+    # Call the aten handler at func level (like ``mean``), where ``input._values`` still carry autograd;
+    # delegating to ``torch.ops.aten.sum`` on the NestedTensor re-enters ``__torch_dispatch__``, where
+    # autograd has detached ``_values``, so the result would drop grad (breaking a training loss's reduction).
+    sum_dim = NestedTensorAtenRegistry[torch.ops.aten.sum.dim_IntList]
     if isinstance(dim, (list, tuple)):
         if len(dim) == 1:
             dim = dim[0]
@@ -3341,8 +3391,8 @@ def sum(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: bo
             # Preserve the previous masked path when reducing batch with other dims.
             if _get_batch_dim(input) in dims:
                 return _reduce(input, torch.sum, dim, keepdim, dtype=dtype, fill_value=0)
-            return torch.ops.aten.sum.dim_IntList(input, list(dim), keepdim, dtype=dtype)
-    return torch.ops.aten.sum.dim_IntList(input, [dim], keepdim, dtype=dtype)
+            return sum_dim(torch.ops.aten.sum.dim_IntList, (input, list(dim), keepdim), {"dtype": dtype})
+    return sum_dim(torch.ops.aten.sum.dim_IntList, (input, [dim], keepdim), {"dtype": dtype})
 
 
 @NestedTensorFuncRegistry.implement(torch.var)
@@ -3413,7 +3463,12 @@ def var_mean(
     if dim is None:
         return _reduce_none_pair(input, torch.var_mean, keepdim=keepdim, correction=correction)
     dims = [dim] if isinstance(dim, int) else list(dim)
-    return torch.ops.aten.var_mean.correction(input, dims, correction=correction, keepdim=keepdim)
+    var_mean_op = torch.ops.aten.var_mean.correction
+    return NestedTensorAtenRegistry[var_mean_op](
+        var_mean_op,
+        (input, dims),
+        {"correction": correction, "keepdim": keepdim},
+    )
 
 
 # Shape Manipulation
@@ -4387,7 +4442,13 @@ def topk(input: NestedTensor, k, dim: int | None = None, largest: bool = True, s
         True
     """
     dim = -1 if dim is None else dim
-    return torch.ops.aten.topk.default(input, k, dim, largest, sorted)
+    topk_op = torch.ops.aten.topk.default
+    values, indices = NestedTensorAtenRegistry[topk_op](
+        topk_op,
+        (input, k, dim, largest, sorted),
+        {},
+    )
+    return torch.return_types.topk((values, indices))
 
 
 # ---------------------------------------------------------------------------
@@ -4509,6 +4570,7 @@ TORCH_TIER1_COMPILE_SAFE_OPS: tuple = (
     torch.linalg.eigh,
     torch.linalg.inv,
     torch.linalg.norm,
+    torch.linalg.vector_norm,
     torch.linalg.qr,
     torch.linalg.solve,
     torch.linalg.svd,
@@ -4561,16 +4623,19 @@ for _method, _func in TORCH_DUNDER_WRAPPER_TO_FUNC.items():
             compile_guard=NestedTensorFuncRegistry.get_compile_guard(_func),
         )
 # Tensor.method → torch.func aliases, plus torch.movedim → torch.moveaxis alias
-for _method, _func in (
+for _alias_method, _alias_func in (
     (torch.Tensor.split, torch.split),
     (torch.Tensor.chunk, torch.chunk),
     (torch.Tensor.matmul, torch.matmul),
+    (torch.Tensor.amax, torch.amax),
+    (torch.Tensor.amin, torch.amin),
+    (torch.Tensor.topk, torch.topk),
     (torch.movedim, torch.moveaxis),
 ):
-    if _func in NestedTensorFuncRegistry:
+    if _alias_func in NestedTensorFuncRegistry:
         NestedTensorFuncRegistry.register(
-            _method,
-            NestedTensorFuncRegistry[_func],
-            compile_safe=NestedTensorFuncRegistry.is_compile_safe(_func),
-            compile_guard=NestedTensorFuncRegistry.get_compile_guard(_func),
+            _alias_method,
+            NestedTensorFuncRegistry[_alias_func],
+            compile_safe=NestedTensorFuncRegistry.is_compile_safe(_alias_func),
+            compile_guard=NestedTensorFuncRegistry.get_compile_guard(_alias_func),
         )
