@@ -27,6 +27,8 @@ IGNORED_NAMES_IN_HASH = {
     "score",
     "logging",
     "tensorboard",
+    "wandb",
+    "mlflow",
     "checkpoint",
     "resume",
     "pretrained",

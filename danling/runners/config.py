@@ -331,6 +331,23 @@ class WandbConfig(chanfig.Config):
     sync_tensorboard: Optional[bool] = None
 
 
+class MlflowConfig(chanfig.Config):
+    r"""
+    MLflow tracking settings forwarded to `mlflow.start_run`.
+    """
+
+    enabled: bool = False
+    tracking_uri: Optional[str] = None
+    registry_uri: Optional[str] = None
+    experiment_name: Optional[str] = None
+    run_id: Optional[str] = None
+    run_name: Optional[str] = None
+    nested: Optional[bool] = None
+    tags: Optional[Mapping[str, Any]] = None
+    description: Optional[str] = None
+    log_system_metrics: Optional[bool] = None
+
+
 class OptimizerConfig(chanfig.Config):
     r"""
     Optimizer registry options.
@@ -507,6 +524,7 @@ NON_SEMANTIC_CONFIG_KEYS: tuple[str, ...] = (
     "logging",
     "tensorboard",
     "wandb",
+    "mlflow",
     "ft",
     "workspace",
     "checkpoint",
@@ -572,7 +590,7 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
 
     Nested sections:
         `optim`, `sched`, `score`, `workspace`, `logging`, `tensorboard`,
-        `wandb`, `ft`, `compile`, `dist`, `gc`, `profiling`, `heartbeat`,
+        `wandb`, `mlflow`, `ft`, `compile`, `dist`, `gc`, `profiling`, `heartbeat`,
         `ckpt`, `dataloader`, `performance`, `activation_checkpoint`,
         `fsdp`, and `parallel`.
 
@@ -656,6 +674,7 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
     logging: LoggingConfig = LoggingConfig()
     tensorboard: TensorboardConfig = TensorboardConfig()
     wandb: WandbConfig = WandbConfig()
+    mlflow: MlflowConfig = MlflowConfig()
     ft: FaultToleranceConfig = FaultToleranceConfig()
 
     compile: CompileConfig = CompileConfig()

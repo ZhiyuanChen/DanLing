@@ -32,6 +32,7 @@ from danling.runners.config import (
     GcConfig,
     HeartbeatConfig,
     LoggingConfig,
+    MlflowConfig,
     ParallelAxesConfig,
     ParallelConfig,
     ProfilingConfig,
@@ -174,6 +175,7 @@ def test_runner_config_exposes_runtime_sections() -> None:
         "logging": LoggingConfig,
         "tensorboard": TensorboardConfig,
         "wandb": WandbConfig,
+        "mlflow": MlflowConfig,
         "score": ScoreConfig,
         "fp8": Fp8Config,
         "ft": FaultToleranceConfig,
@@ -318,6 +320,18 @@ def test_runner_config_accepts_common_training_options() -> None:
                 "save_code": True,
                 "sync_tensorboard": True,
             },
+            "mlflow": {
+                "enabled": True,
+                "tracking_uri": "file:/tmp/mlruns",
+                "registry_uri": "sqlite:////tmp/mlflow.db",
+                "experiment_name": "exp-a",
+                "run_id": "run-a",
+                "run_name": "debug-run",
+                "nested": True,
+                "tags": {"stage": "debug"},
+                "description": "smoke",
+                "log_system_metrics": True,
+            },
             "profiling": {
                 "enabled": True,
                 "activities": ["cpu"],
@@ -352,6 +366,15 @@ def test_runner_config_accepts_common_training_options() -> None:
     assert config.wandb.id == "run-a"
     assert config.wandb.resume is True
     assert config.wandb.sync_tensorboard is True
+    assert config.mlflow.tracking_uri == "file:/tmp/mlruns"
+    assert config.mlflow.registry_uri == "sqlite:////tmp/mlflow.db"
+    assert config.mlflow.experiment_name == "exp-a"
+    assert config.mlflow.run_id == "run-a"
+    assert config.mlflow.run_name == "debug-run"
+    assert config.mlflow.nested is True
+    assert dict(config.mlflow.tags) == {"stage": "debug"}
+    assert config.mlflow.description == "smoke"
+    assert config.mlflow.log_system_metrics is True
     assert list(config.profiling.activities) == ["cpu"]
     assert config.profiling.with_modules is True
     assert config.profiling.post_processing_timeout_seconds == 12.5

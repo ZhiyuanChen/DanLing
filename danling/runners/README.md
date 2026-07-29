@@ -218,6 +218,7 @@ By default:
 - logs are stored at `logging.file` (default `dir/logs/{timestamp}.log`)
 - tensorboard logs are stored as `dir/tensorboard/{timestamp}`
 - W&B local run files default to `dir/wandb/` when W&B logging is enabled
+- MLflow tracking uses `mlflow.experiment_name` or defaults to `workspace.lineage`
 - reproducibility artifacts are stored at `dir/metadata`:
   - `config.full.yaml`
   - `config.canonical.yaml`

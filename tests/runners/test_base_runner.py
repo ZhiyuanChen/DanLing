@@ -308,6 +308,63 @@ def test_base_runner_wandb_logs_flattened_result_once(tmp_path: Path) -> None:
     assert finish_calls == ["finish"]
 
 
+def test_base_runner_mlflow_logs_flattened_result_once(tmp_path: Path) -> None:
+    mlflow = pytest.importorskip("mlflow")
+    tracking_uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
+    previous_tracking_uri = mlflow.get_tracking_uri()
+    runner: MinimalRunner | None = None
+    try:
+        runner = MinimalRunner(
+            _config(
+                tmp_path,
+                mlflow={
+                    "enabled": True,
+                    "tracking_uri": tracking_uri,
+                    "experiment_name": "experiment-mlflow",
+                    "run_name": "debug-run",
+                    "tags": {"stage": "debug"},
+                    "description": "smoke run",
+                },
+            )
+        )
+        writes: list[tuple[str, Any, str, int]] = []
+
+        def capture(name: str, score: float, split: str, steps: int) -> None:
+            writes.append((name, score, split, steps))
+
+        runner.train_state.global_step = 5
+        runner.write_score = capture  # type: ignore[method-assign]
+        runner.write_result({"loss": 1.0, "metrics": {"acc": 0.75, "topk": [0.8, 0.9]}}, "train")
+        assert writes == [
+            ("loss", 1.0, "train", 5),
+            ("metrics/acc", 0.75, "train", 5),
+            ("metrics/topk/0", 0.8, "train", 5),
+            ("metrics/topk/1", 0.9, "train", 5),
+        ]
+    finally:
+        if runner is not None:
+            runner.close()
+        if mlflow.active_run() is not None:
+            mlflow.end_run()
+        mlflow.set_tracking_uri(previous_tracking_uri)
+
+    client = mlflow.tracking.MlflowClient(tracking_uri=tracking_uri)
+    experiment = client.get_experiment_by_name("experiment-mlflow")
+    assert experiment is not None
+    runs = client.search_runs([experiment.experiment_id])
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.data.tags["mlflow.runName"] == "debug-run"
+    assert run.data.tags["stage"] == "debug"
+    assert run.data.tags["mlflow.note.content"] == "smoke run"
+    assert run.data.metrics == {
+        "train/loss": 1.0,
+        "train/metrics/acc": 0.75,
+        "train/metrics/topk/0": 0.8,
+        "train/metrics/topk/1": 0.9,
+    }
+
+
 def test_base_runner_load_checkpoint_restores_in_expected_order() -> None:
     runner = SequencingRunner({"logging.enabled": False})
     try:

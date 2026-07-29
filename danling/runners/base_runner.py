@@ -134,6 +134,7 @@ class BaseRunner(metaclass=MetaRunner):
     logger: logging.Logger | None = None
     writer: Any | None = None
     wandb: Any | None = None
+    mlflow: Any | None = None
 
     checkpoint_manager: CheckpointManager
     workspace: RunnerWorkspace
@@ -186,6 +187,8 @@ class BaseRunner(metaclass=MetaRunner):
             self.init_tensorboard()
         if self.config.get("wandb.enabled", False):
             self.init_wandb()
+        if self.config.get("mlflow.enabled", False):
+            self.init_mlflow()
 
         self.workspace.init_print()
         self.init_signal_handlers()
@@ -655,7 +658,7 @@ class BaseRunner(metaclass=MetaRunner):
         return flat_result
 
     def write_result(self, result: RoundDict[str, Any], split: str, steps: int | None = None) -> None:
-        if self.writer is None and self.wandb is None:
+        if self.writer is None and self.wandb is None and self.mlflow is None:
             return
 
         steps = self.train_state.global_step if steps is None else steps
@@ -668,6 +671,9 @@ class BaseRunner(metaclass=MetaRunner):
         if self.wandb is not None:
             payload = {f"{split}/{name}": score for name, score in flat_result.items()}
             self.wandb.log(payload, step=steps)
+        if self.mlflow is not None:
+            payload = {f"{split}/{name}": score for name, score in flat_result.items()}
+            self.mlflow.log_metrics(payload, step=steps)
 
     def write_score(self, name: str, score: float, split: str, steps: int) -> None:
         if self.writer is not None:
@@ -849,6 +855,36 @@ class BaseRunner(metaclass=MetaRunner):
             kwargs["config"] = self.config.dict()
 
         self.wandb = cast(Any, wandb).init(*args, **kwargs)
+
+    @on_main_process
+    def init_mlflow(self, *args, **kwargs) -> None:
+        """Initialize MLflow run for scalar logging."""
+
+        try:
+            import mlflow
+        except ImportError as exc:
+            raise RuntimeError("mlflow is enabled, but the `mlflow` package is not installed") from exc
+
+        mlflow_config = self.config.mlflow
+        if mlflow_config.get("tracking_uri") is not None:
+            mlflow.set_tracking_uri(mlflow_config.tracking_uri)
+        if mlflow_config.get("registry_uri") is not None:
+            mlflow.set_registry_uri(mlflow_config.registry_uri)
+
+        experiment_name = mlflow_config.get("experiment_name") or self.workspace.lineage
+        mlflow.set_experiment(experiment_name)
+
+        tags = mlflow_config.get("tags")
+        if "tags" not in kwargs and tags is not None:
+            kwargs["tags"] = dict(tags)
+        for key in ("run_id", "run_name", "nested", "description", "log_system_metrics"):
+            if key not in kwargs and mlflow_config.get(key) is not None:
+                kwargs[key] = mlflow_config[key]
+        if "run_name" not in kwargs:
+            kwargs["run_name"] = self.id
+
+        self.mlflow = cast(Any, mlflow)
+        self.mlflow.start_run(*args, **kwargs)
 
     def set_seed(self, seed: int | None = None, bias: int | bool | None = None) -> int:
         """Set python/numpy RNG seeds and snapshot RNG state.
@@ -1455,6 +1491,11 @@ class BaseRunner(metaclass=MetaRunner):
 
         if self.wandb is not None:
             self.wandb.finish()
+            self.wandb = None
+
+        if self.mlflow is not None:
+            self.mlflow.end_run()
+            self.mlflow = None
 
         self.workspace.close()
         self.supervisor.close()
