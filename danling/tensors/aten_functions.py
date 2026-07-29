@@ -43,6 +43,7 @@ from .ops import (
     ATEN_BINARY_ELEMENTWISE_OPS,
     ATEN_UNARY_ELEMENTWISE_OPS,
     NestedTensorAtenRegistry,
+    _binary_op_maybe_tensor,
     _check_execution_guard,
     _compile_unsupported,
     _ExecutionGuardKind,
@@ -268,6 +269,10 @@ def _resolve_other(source, other, func):
     return other
 
 
+def _is_scalar_binary_overload(func) -> bool:
+    return "Scalar" in str(getattr(func, "_overloadname", ""))
+
+
 def _broadcasts_per_element(source, candidate: Tensor) -> bool:
     r"""
     Return whether a dense tensor is safe for a packed fast path.
@@ -337,21 +342,17 @@ def _resolve_ternary_other(source, other, func):
 
 def _elementwise_binary_handler(func, args, kwargs):
     r"""Dispatch handler for elementwise binary ops on packed _values."""
+    if not _is_scalar_binary_overload(func):
+        return _binary_op_maybe_tensor(args[0], args[1], func, *args[2:], **kwargs)
+
     from .nested_tensor import NestedTensor
 
     lhs, rhs = args[0], args[1]
     extra = args[2:]
     if isinstance(lhs, NestedTensor):
-        try:
-            resolved = _resolve_other(lhs, rhs, func)
-        except NotImplementedError:
-            return per_element_fallback(func, args, kwargs)
+        resolved = _resolve_other(lhs, rhs, func)
         return _packed_like(lhs, func(lhs._values, resolved, *extra, **kwargs))
-    # lhs is scalar/tensor, rhs is NestedTensor
-    try:
-        resolved = _resolve_other(rhs, lhs, func)
-    except NotImplementedError:
-        return per_element_fallback(func, args, kwargs)
+    resolved = _resolve_other(rhs, lhs, func)
     return _packed_like(rhs, func(resolved, rhs._values, *extra, **kwargs))
 
 

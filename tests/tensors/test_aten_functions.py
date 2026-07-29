@@ -249,6 +249,19 @@ class TestElementwiseOps:
         reference = NT([tensor * operand[index] for index, tensor in enumerate(nt)], **nt._meta())
         assert_close(result, reference)
 
+    @pytest.mark.parametrize("reverse", [False, True])
+    def test_binary_op_dense_padded_shape_trailing_broadcast(self, reverse):
+        # A mask-like NT with a singleton channel dim against a dense operand carrying the
+        # full channel dim: padded shapes are broadcast-compatible ([B, S, 1] vs [B, S, H])
+        # and must align on the ragged sequence dim while broadcasting the trailing dim.
+        nt = NT([torch.tensor([[1.0], [0.0]]), torch.tensor([[1.0], [1.0], [0.0]])], batch_first=True)  # [2, S, 1]
+        dense = torch.arange(2 * 3 * 4, dtype=torch.float32).reshape(2, 3, 4)  # [2, Smax=3, H=4]
+        result = torch.ops.aten.mul.Tensor(dense, nt) if reverse else torch.ops.aten.mul.Tensor(nt, dense)
+        reference = NT([dense[i][: len(elem)] * elem for i, elem in enumerate(nt)], **nt._meta())
+        assert isinstance(result, NestedTensor)
+        assert tuple(result[0].shape) == (2, 4)
+        assert_close(result, reference)
+
     @pytest.mark.parametrize("op", [torch.abs, torch.neg, torch.exp, torch.sign])
     def test_unary_op_roundtrip(self, op):
         nt = NT([torch.tensor([1.0, -2.0, 3.0]), torch.tensor([-4.0, 5.0])])

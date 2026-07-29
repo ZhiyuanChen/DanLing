@@ -410,6 +410,74 @@ def _binary_per_element_dense(input, other, op, reverse, extra_args, extra_kwarg
     )
 
 
+def _binary_dense_padded_broadcast(input, other, op, reverse, extra_args, extra_kwargs):
+    r"""Apply a binary op when ``input`` broadcasts its singleton dims up to a dense ``other``.
+
+    This is the symmetric counterpart of the exact-shape dense path: there a dense tensor whose
+    logical shape *equals* ``input.shape`` is nested via ``nested_like``; here ``input`` carries
+    size-1 dims (e.g. a ``[B, L, 1]`` mask) and ``other`` is the full padded shape it broadcasts
+    up to (e.g. ``[B, L, H]``), so the result element shape is the broadcast ``[L, H]``.
+
+    The gate ``broadcast_shapes(input.shape, other.shape) == other.shape`` is what keeps this from
+    re-enabling *positional* dense broadcast (e.g. ``nt[B, ragged, H] + dense[1, L, H]``, which
+    danling deliberately rejects): there ``other`` broadcasts on the batch dim, so it is not the
+    full shape and the gate fails. Used only as a last resort, so the hot paths are unaffected.
+    Returns ``None`` when ``other`` is not unambiguously alignable.
+    """
+    cls = type(input)
+    if not isinstance(other, Tensor) or other.dim() == 0:
+        return None
+    if input.dim() == 0 or other.dim() != input.dim():
+        return None
+    # Only the NestedTensor may broadcast up: `other` must be the full broadcast shape.
+    try:
+        broadcast_shape = torch.broadcast_shapes(tuple(input.shape), tuple(other.shape))
+    except RuntimeError:
+        return None
+    if tuple(broadcast_shape) != tuple(other.shape):
+        return None
+    batch_dim = _get_batch_dim(input)
+    if other.shape[batch_dim] != len(input):
+        return None
+    varying_dims = input._varying_dims
+    results = []
+    for i, elem in enumerate(input._unpack()):
+        other_i = other.select(batch_dim, i)
+        if other_i.dim() != elem.dim():
+            return None
+        slices = []
+        for dim, (size, elem_size) in enumerate(zip(other_i.shape, elem.shape)):
+            if dim in varying_dims:
+                if size == elem_size:
+                    slices.append(slice(None))
+                elif size > elem_size:
+                    slices.append(slice(0, int(elem_size)))  # trim the ragged dim to this element
+                else:
+                    return None
+            elif size == elem_size or elem_size == 1:
+                slices.append(slice(None))  # static dim: equal, or element broadcasts up
+            else:
+                return None
+        other_i = other_i[tuple(slices)]
+        try:
+            result = (
+                op(other_i, elem, *extra_args, **extra_kwargs)
+                if reverse
+                else op(elem, other_i, *extra_args, **extra_kwargs)
+            )
+        except RuntimeError:
+            return None
+        if not isinstance(result, Tensor):
+            return None
+        results.append(result)
+    return cls(
+        results,
+        batch_first=input.batch_first,
+        padding_value=input.padding_value,
+        mask_value=input.mask_value,
+    )
+
+
 def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
     r"""
     Apply a binary op between a NestedTensor and a tensor/scalar/NestedTensor.
@@ -508,6 +576,9 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
 
     resolved = _resolve_dense_for_values(input, other)
     if resolved is None:
+        broadcast_up = _binary_dense_padded_broadcast(input, other, op, reverse, extra_args, extra_kwargs)
+        if broadcast_up is not None:
+            return broadcast_up
         raise NotImplementedError(
             "NestedTensor binary op with non-scalar Tensor operand that is neither shape-aligned nor "
             f"broadcast-compatible with packed values: values shape {input._values.shape}, tensor shape {other.shape}"
