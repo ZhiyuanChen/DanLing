@@ -52,6 +52,7 @@ from .ops import (
     _is_packed_identity,
     _maybe_align_dense_to_nested,
     _normalize_dim,
+    _physical_to_values_dim,
     _resolve_dense_for_values,
     _stack_or_nest,
     _translate_dim,
@@ -446,7 +447,7 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
             dims_adj = _translate_dims(source, dims)
         except ValueError as exc:
             raise NotImplementedError(f"NestedTensor: {func} with dim={dims} is not supported") from exc
-        if not _is_packed_identity(source):
+        if not _is_packed_identity(source) or source._ragged_rank > 1:
             return _fallback(list(dims_adj), keepdim)
         if source._values.dim() > 1 and all(dim_i > 0 for dim_i in dims_adj):
             return _reduce_non_ragged_packed_dims(
@@ -456,7 +457,8 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
             padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=ragged_fill)
             # Padded has shape [B, max_len, ...], so element dim d maps to padded dim d+1
             padded_dims = [dim_i + 1 for dim_i in dims_adj]
-            return _call(padded, padded_dims, keepdim)
+            output = _call(padded, padded_dims, keepdim)
+            return _restore_multi_dim_batch_dim(source, output, dims_adj, keepdim)
         return _fallback(list(dims_adj), keepdim)
 
     dim = _normalize_dim(dims[0], source.dim())
@@ -468,7 +470,11 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
         return reduced
 
     dim_adj = _translate_dim(source, dim)
-    segment_reduced = _segment_reduce_ragged_dim(func, source, dim_adj, dim, keepdim, kwargs)
+    if source._ragged_rank > 1:
+        # Multiple ragged levels collapse into one packed dim in ``_values``, so a per-element dim index no
+        # longer maps onto the packed layout; reduce per element, where each item still carries its full rank.
+        return _fallback([dim_adj], keepdim)
+    segment_reduced = _segment_reduce_ragged_dim(func, source, dim_adj, keepdim, kwargs)
     if segment_reduced is not None:
         return segment_reduced
 
@@ -488,7 +494,8 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
                 reduced = reduced.unsqueeze(dim)
             return reduced
         padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=ragged_fill)
-        return _call(padded, [1], keepdim)
+        output = _call(padded, [1], keepdim)
+        return _restore_segment_batch_dim(source, output, dim_adj, keepdim)
 
     return _reduce_non_ragged_packed(source, _call(source._values, [dim_adj], keepdim), dim_adj, keepdim)
 
@@ -519,12 +526,16 @@ def arg_extrema_reduction(func, args, kwargs):
     if segment_indices is not None:
         return segment_indices
 
-    if dim_adj == 0:
+    values_dim = _physical_to_values_dim(source, dim_adj)
+    if values_dim is None:
+        if not _has_single_packed_ragged_dim(source, dim_adj):
+            return per_element_fallback(func, (source, dim_adj, keepdim), kwargs)
         fill_value = _topk_fill_value(source._values.dtype, largest=largest)
         padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=fill_value)
-        return func(padded, 1, keepdim, **kwargs)
+        output = func(padded, 1 + dim_adj, keepdim, **kwargs)
+        return _restore_segment_batch_dim(source, output, dim_adj, keepdim)
 
-    out_values = func(source._values, dim_adj, keepdim, **kwargs)
+    out_values = func(source._values, values_dim, keepdim, **kwargs)
     return _reduce_non_ragged_packed(source, out_values, dim_adj, keepdim)
 
 
@@ -537,13 +548,15 @@ def count_nonzero_dim_reduction(func, args, kwargs):
 
     if len(dims) > 1:
         dims_adj = _translate_dims(source, dims)
-        if source._values.dim() > 1 and all(dim_i > 0 for dim_i in dims_adj):
-            out_values = func(source._values, list(dims_adj), **kwargs)
+        values_dims = tuple(_physical_to_values_dim(source, dim_i) for dim_i in dims_adj)
+        if all(dim_i is not None for dim_i in values_dims):
+            out_values = func(source._values, list(cast(tuple[int, ...], values_dims)), **kwargs)
             return _reduce_non_ragged_packed_dims(source, out_values, dims_adj, keepdim=False)
-        if 0 in dims_adj:
+        if source._ragged_rank <= 1 and 0 in dims_adj and _is_packed_identity(source):
             padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=0)
-            padded_dims = [1 if dim_i == 0 else dim_i for dim_i in dims_adj]
-            return func(padded, padded_dims, **kwargs)
+            padded_dims = [1 + dim_i for dim_i in dims_adj]
+            output = func(padded, padded_dims, **kwargs)
+            return _restore_multi_dim_batch_dim(source, output, dims_adj, keepdim=False)
         return per_element_fallback(func, (source, list(dims_adj)), kwargs)
 
     dim = _normalize_dim(dims[0], source.dim())
@@ -556,11 +569,15 @@ def count_nonzero_dim_reduction(func, args, kwargs):
     if segment_counts is not None:
         return segment_counts
 
-    if dim_adj == 0:
+    values_dim = _physical_to_values_dim(source, dim_adj)
+    if values_dim is None:
+        if not _has_single_packed_ragged_dim(source, dim_adj):
+            return per_element_fallback(func, (source, [dim_adj]), kwargs)
         padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=0)
-        return func(padded, [1], **kwargs)
+        output = func(padded, [1 + dim_adj], **kwargs)
+        return _restore_segment_batch_dim(source, output, dim_adj, keepdim=False)
 
-    out_values = func(source._values, [dim_adj], **kwargs)
+    out_values = func(source._values, [values_dim], **kwargs)
     return _reduce_non_ragged_packed(source, out_values, dim_adj, keepdim=False)
 
 
@@ -669,13 +686,14 @@ def linalg_vector_norm(func, args, kwargs):
 
     if source._physical_shape.size(1) == 0:
         raise NotImplementedError(f"NestedTensor: {func} falls back for scalar elements")
-    if source._physical_shape.size(1) > 1 and source._values.dim() == 1:
-        raise NotImplementedError(f"NestedTensor: {func} requires non-flattened packed storage")
-
     dims = _parse_dims_arg(dim_arg)
     if len(dims) == 0:
         if not _vector_norm_zero_padding_safe(ord_value):
-            raise NotImplementedError(f"NestedTensor: {func} requires zero-padding-safe ord for ragged reductions")
+            return per_element_fallback(
+                func,
+                (source, ord_value, None, keepdim),
+                {"dtype": dtype, **kwargs},
+            )
         segment_norm = _segment_vector_norm_ragged_dim(source, ord_value, None, keepdim, dtype=dtype)
         if segment_norm is not None:
             return segment_norm
@@ -693,17 +711,23 @@ def linalg_vector_norm(func, args, kwargs):
         raise ValueError("linalg.norm along the batch dimension is not supported for NestedTensor.")
 
     dim_adj = _translate_dim(source, dim)
-    if dim_adj == 0:
-        if not _vector_norm_zero_padding_safe(ord_value):
-            raise NotImplementedError(f"NestedTensor: {func} requires zero-padding-safe ord for ragged reductions")
-        segment_norm = _segment_vector_norm_ragged_dim(source, ord_value, dim_adj, keepdim, dtype=dtype)
-        if segment_norm is not None:
-            return segment_norm
-        padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=0)
-        out_values = func(padded, ord_value, [1], keepdim, dtype=dtype, **kwargs)
-        return _from_uniform_batched_output(source, out_values)
+    values_dim = _physical_to_values_dim(source, dim_adj)
+    if values_dim is None:
+        if _vector_norm_zero_padding_safe(ord_value):
+            segment_norm = _segment_vector_norm_ragged_dim(source, ord_value, dim_adj, keepdim, dtype=dtype)
+            if segment_norm is not None:
+                return segment_norm
+            if _has_single_packed_ragged_dim(source, dim_adj):
+                padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=0)
+                out_values = func(padded, ord_value, [1 + dim_adj], keepdim, dtype=dtype, **kwargs)
+                return _from_uniform_batched_output(source, out_values)
+        return per_element_fallback(
+            func,
+            (source, ord_value, [dim_adj], keepdim),
+            {"dtype": dtype, **kwargs},
+        )
 
-    out_values = func(source._values, ord_value, [dim_adj], keepdim, dtype=dtype, **kwargs)
+    out_values = func(source._values, ord_value, [values_dim], keepdim, dtype=dtype, **kwargs)
     return _reduce_non_ragged_packed(source, out_values, dim_adj, keepdim)
 
 
@@ -739,12 +763,9 @@ def max_min_dim_reduction(func, args, kwargs):
     largest = func is aten.max.dim
 
     if dim == batch_dim:
-        values = torch.stack(
-            [torch.ops.aten.max.default(t) if largest else torch.ops.aten.min.default(t) for t in source._storage]
-        )
-        indices = torch.stack(
-            [torch.ops.aten.argmax.default(t) if largest else torch.ops.aten.argmin.default(t) for t in source._storage]
-        )
+        pairs = [func(t.reshape(-1), 0, False, **kwargs) for t in source._unpack()]
+        values = torch.stack([pair[0] for pair in pairs])
+        indices = torch.stack([pair[1] for pair in pairs])
         if keepdim:
             values = values.unsqueeze(batch_dim)
             indices = indices.unsqueeze(batch_dim)
@@ -755,12 +776,19 @@ def max_min_dim_reduction(func, args, kwargs):
     if segment_pair is not None:
         return segment_pair
 
-    if dim_adj == 0:
+    values_dim = _physical_to_values_dim(source, dim_adj)
+    if values_dim is None:
+        if not _has_single_packed_ragged_dim(source, dim_adj):
+            return per_element_fallback(func, (source, dim_adj, keepdim), kwargs)
         fill_value = _topk_fill_value(source._values.dtype, largest=largest)
         padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=fill_value)
-        return func(padded, 1, keepdim, **kwargs)
+        values, indices = func(padded, 1 + dim_adj, keepdim, **kwargs)
+        return (
+            _restore_segment_batch_dim(source, values, dim_adj, keepdim),
+            _restore_segment_batch_dim(source, indices, dim_adj, keepdim),
+        )
 
-    values, indices = func(source._values, dim_adj, keepdim, **kwargs)
+    values, indices = func(source._values, values_dim, keepdim, **kwargs)
     return (
         _reduce_non_ragged_packed(source, values, dim_adj, keepdim),
         _reduce_non_ragged_packed(source, indices, dim_adj, keepdim),
@@ -777,8 +805,14 @@ def var_mean_dim_reduction(func, args, kwargs):
 
     if len(dims) > 1:
         dims_adj = _translate_dims(source, dims)
-        if source._values.dim() > 1 and all(dim_i > 0 for dim_i in dims_adj):
-            out_var, out_mean = func(source._values, list(dims_adj), keepdim=keepdim, **kwargs)
+        values_dims = tuple(_physical_to_values_dim(source, dim_i) for dim_i in dims_adj)
+        if all(dim_i is not None for dim_i in values_dims):
+            out_var, out_mean = func(
+                source._values,
+                list(cast(tuple[int, ...], values_dims)),
+                keepdim=keepdim,
+                **kwargs,
+            )
             return (
                 _reduce_non_ragged_packed_dims(source, out_var, dims_adj, keepdim),
                 _reduce_non_ragged_packed_dims(source, out_mean, dims_adj, keepdim),
@@ -802,11 +836,12 @@ def var_mean_dim_reduction(func, args, kwargs):
         return out_var, out_mean
 
     dim_adj = _translate_dim(source, dim)
-    if dim_adj == 0:
+    values_dim = _physical_to_values_dim(source, dim_adj)
+    if values_dim is None:
         kwargs["keepdim"] = keepdim
         return per_element_fallback(func, (source, [dim_adj]), kwargs)
 
-    out_var, out_mean = func(source._values, [dim_adj], keepdim=keepdim, **kwargs)
+    out_var, out_mean = func(source._values, [values_dim], keepdim=keepdim, **kwargs)
     return (
         _reduce_non_ragged_packed(source, out_var, dim_adj, keepdim),
         _reduce_non_ragged_packed(source, out_mean, dim_adj, keepdim),
@@ -2016,7 +2051,7 @@ def _from_uniform_batched_output(source: NestedTensor, batched_values: Tensor) -
         source,
         out_values,
         out_shape,
-        batched_values.shape,
+        source._logical_shape_from_physical_dims(elem_shape),
         offsets=out_offsets,
         permutation=permutation,
         packed_sizes=packed_sizes,
@@ -2083,6 +2118,51 @@ def _has_single_packed_ragged_dim(source: NestedTensor, dim_adj: int) -> bool:
     )
 
 
+def _restore_segment_batch_dim(
+    source: NestedTensor,
+    output: Tensor,
+    dim_adj: int,
+    keepdim: bool,
+) -> Tensor:
+    r"""Move a batch-major segment result to the logical batch position."""
+    return _restore_multi_dim_batch_dim(source, output, (dim_adj,), keepdim)
+
+
+def _restore_multi_dim_batch_dim(
+    source: NestedTensor,
+    output: Tensor,
+    dims_adj,
+    keepdim: bool,
+) -> Tensor:
+    r"""Restore the configured batch position after reducing physical dimensions."""
+    physical_rank = int(source._physical_shape.size(1))
+    output_physical_rank = physical_rank if keepdim else physical_rank - len({int(dim) for dim in dims_adj})
+    if not source.batch_first and output_physical_rank > 0:
+        return output.movedim(0, 1)
+    return output
+
+
+def _format_segment_reduction(
+    source: NestedTensor,
+    output: Tensor,
+    dim_adj: int,
+    keepdim: bool,
+) -> Tensor:
+    r"""Insert a kept physical dimension and restore the logical batch position."""
+    if keepdim:
+        output = output.unsqueeze(1 + dim_adj)
+    return _restore_segment_batch_dim(source, output, dim_adj, keepdim)
+
+
+def _check_nonempty_extrema_segments(source: NestedTensor, func) -> None:
+    r"""Match dense extrema errors when any ragged reduction segment is empty."""
+    if source._packed_sizes is not None and any(int(size) == 0 for size in source._packed_sizes):
+        op_name = "argmax" if func is aten.argmax.default else "argmin"
+        if func in (aten.max.dim, aten.min.dim):
+            op_name = "max" if func is aten.max.dim else "min"
+        raise IndexError(f"{op_name}(): Expected reduction dim to have non-zero size.")
+
+
 def _segment_sum(source: NestedTensor, values: Tensor, lengths: Tensor) -> Tensor:
     segment_reduce = getattr(torch, "segment_reduce", None)
     if segment_reduce is not None and values.dtype.is_floating_point and not values.dtype.is_complex:
@@ -2134,13 +2214,14 @@ def _segment_arg_extrema_ragged_dim(
 ) -> Tensor | None:
     if not _has_single_packed_ragged_dim(source, dim_adj):
         return None
+    _check_nonempty_extrema_segments(source, aten.argmax.default if largest else aten.argmin.default)
     values = source._values
     offsets = source.ragged_level_offsets(0, device=values.device, dtype=torch.long)
     extrema = _segment_extrema_values(source, values, offsets[1:] - offsets[:-1], largest=largest)
     if extrema is None:
         return None
     indices = _segment_extrema_indices(source, values, extrema)
-    return indices.unsqueeze(1) if keepdim else indices
+    return _format_segment_reduction(source, indices, dim_adj, keepdim)
 
 
 def _segment_max_min_ragged_dim(
@@ -2152,16 +2233,19 @@ def _segment_max_min_ragged_dim(
 ) -> tuple[Tensor, Tensor] | None:
     if not _has_single_packed_ragged_dim(source, dim_adj):
         return None
+    _check_nonempty_extrema_segments(source, aten.max.dim if largest else aten.min.dim)
     values = source._values
     offsets = source.ragged_level_offsets(0, device=values.device, dtype=torch.long)
     extrema = _segment_extrema_values(source, values, offsets[1:] - offsets[:-1], largest=largest)
     if extrema is None:
         return None
     indices = _segment_extrema_indices(source, values, extrema)
-    if keepdim:
-        extrema = extrema.unsqueeze(1)
-        indices = indices.unsqueeze(1)
-    return extrema, indices
+    starts = offsets[:-1].reshape(-1, *([1] * (indices.dim() - 1)))
+    extrema = torch.gather(values, 0, indices + starts)
+    return (
+        _format_segment_reduction(source, extrema, dim_adj, keepdim),
+        _format_segment_reduction(source, indices, dim_adj, keepdim),
+    )
 
 
 def _segment_count_nonzero_ragged_dim(source: NestedTensor, dim_adj: int) -> Tensor | None:
@@ -2169,7 +2253,8 @@ def _segment_count_nonzero_ragged_dim(source: NestedTensor, dim_adj: int) -> Ten
         return None
     values = source._values.ne(0).to(dtype=torch.long)
     offsets = source.ragged_level_offsets(0, device=values.device, dtype=torch.long)
-    return _segment_sum(source, values, offsets[1:] - offsets[:-1])
+    output = _segment_sum(source, values, offsets[1:] - offsets[:-1])
+    return _restore_segment_batch_dim(source, output, dim_adj, keepdim=False)
 
 
 def _resolve_vector_norm_ord(ord_value) -> float | None:
@@ -2219,7 +2304,7 @@ def _segment_vector_norm_ragged_dim(
     if dim_adj is None and keepdim:
         out = out.reshape(len(source), *([1] * int(source._physical_shape.size(1))))
     elif dim_adj is not None and keepdim:
-        out = out.unsqueeze(1)
+        out = out.unsqueeze(1 + dim_adj)
     return _from_uniform_batched_output(source, out)
 
 
@@ -2227,7 +2312,6 @@ def _segment_reduce_ragged_dim(
     func,
     source: NestedTensor,
     dim_adj: int,
-    logical_dim: int,
     keepdim: bool,
     kwargs,
 ) -> Tensor | None:
@@ -2249,7 +2333,7 @@ def _segment_reduce_ragged_dim(
             and not segment_values.dtype.is_complex
         ):
             out = segment_reduce(segment_values, reduce="sum", lengths=lengths)
-            return out.unsqueeze(logical_dim) if keepdim else out
+            return _format_segment_reduction(source, out, dim_adj, keepdim)
         sample = func(values[:0], [0], False, **kwargs)
         out = sample.new_zeros((batch_size, *sample.shape))
         batch_idx = source.packed_batch_indices(device=values.device)
@@ -2264,7 +2348,7 @@ def _segment_reduce_ragged_dim(
             and not segment_values.dtype.is_complex
         ):
             out = segment_reduce(segment_values, reduce="mean", lengths=lengths)
-            return out.unsqueeze(logical_dim) if keepdim else out
+            return _format_segment_reduction(source, out, dim_adj, keepdim)
         sample = func(values[:0], [0], False, **kwargs)
         out = sample.new_zeros((batch_size, *sample.shape))
         batch_idx = source.packed_batch_indices(device=values.device)
@@ -2278,7 +2362,7 @@ def _segment_reduce_ragged_dim(
         largest = func is aten.amax.default
         if segment_reduce is not None and values.dtype.is_floating_point:
             out = segment_reduce(values, reduce="max" if largest else "min", lengths=lengths)
-            return out.unsqueeze(logical_dim) if keepdim else out
+            return _format_segment_reduction(source, out, dim_adj, keepdim)
         fill_value = _topk_fill_value(values.dtype, largest=largest)
         out = values.new_full((batch_size, *values.shape[1:]), fill_value)
         batch_idx = source.packed_batch_indices(device=values.device)
@@ -2287,7 +2371,7 @@ def _segment_reduce_ragged_dim(
     else:
         return None
 
-    return out.unsqueeze(logical_dim) if keepdim else out
+    return _format_segment_reduction(source, out, dim_adj, keepdim)
 
 
 def _packed_new_ragged_size(source: NestedTensor, new_values: Tensor, new_ragged_size) -> NestedTensor:
@@ -3977,9 +4061,10 @@ def _topk_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
         dim = -1 if kw_dim is _MISSING else kw_dim
     try:
         dim_adj = _translate_dim(source, dim)
+        values_dim = _physical_to_values_dim(source, dim_adj)
     except (TypeError, ValueError, IndexError):
         return False
-    return source._values.dim() > 1 and dim_adj > 0
+    return source._ragged_rank <= 1 and values_dim is not None
 
 
 @NestedTensorAtenRegistry.implement(
@@ -4547,8 +4632,12 @@ def topk(func, args, kwargs):
     else:
         sorted_output = True if kw_sorted is _MISSING else kw_sorted
     dim_adj = _translate_dim(source, dim)
-    if source._values.dim() > 1 and dim_adj > 0:
-        vals, idxs = func(source._values, k, dim_adj, largest, sorted_output, **kwargs)
+    if source._ragged_rank > 1:
+        # Multiple ragged levels collapse into one packed dim in ``_values``; take top-k per element instead.
+        return per_element_fallback(func, (source, k, dim_adj, largest, sorted_output), kwargs)
+    values_dim = _physical_to_values_dim(source, dim_adj)
+    if values_dim is not None:
+        vals, idxs = func(source._values, k, values_dim, largest, sorted_output, **kwargs)
         return (
             _packed_new_dim_size(source, vals, dim_adj, k),
             _packed_new_dim_size(source, idxs, dim_adj, k),

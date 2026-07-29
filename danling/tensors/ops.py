@@ -815,6 +815,27 @@ def _translate_dim(input: NestedTensor, dim: int) -> int:
     return dim if dim < batch_dim else dim - 1
 
 
+def _physical_to_values_dim(input: NestedTensor, physical_dim: int) -> int | None:
+    r"""Map a per-element physical dimension to its packed ``_values`` axis.
+
+    Every varying dimension is collapsed into packed axis 0, so no individual
+    varying dimension has a generic one-to-one packed axis. Static dimensions
+    follow axis 0 in ``_static_dims`` (packed permutation) order.
+    """
+    physical_dim = int(physical_dim)
+    rank = int(input._physical_shape.size(1))
+    if physical_dim < 0 or physical_dim >= rank:
+        raise IndexError(f"Physical dimension out of range for rank {rank}: {physical_dim}")
+    if physical_dim in input._varying_dims:
+        return None
+    try:
+        return 1 + input._static_dims.index(physical_dim)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"NestedTensor physical dimension {physical_dim} is absent from packed layout " f"{input._permutation}"
+        ) from exc
+
+
 def _translate_dims(input: NestedTensor, dims: Sequence[int]) -> tuple[int, ...]:
     r"""Translate multiple NestedTensor dimensions to per-element dimensions."""
     ndim = input.dim()

@@ -3431,6 +3431,128 @@ class TestReductionOps:
         assert_close(output[0], torch.tensor(2.5, device=device, dtype=float_dtype))
         assert_close(output[1], torch.tensor(3.0, device=device, dtype=float_dtype))
 
+    def test_multi_ragged_static_reductions_use_packed_axis(self, device, float_dtype):
+        parts = [
+            torch.randn(2, 2, 4, device=device, dtype=float_dtype),
+            torch.randn(3, 3, 4, device=device, dtype=float_dtype),
+        ]
+        nt = NT(parts)
+
+        argmax = torch.argmax(nt, dim=-1)
+        count = torch.count_nonzero(nt, dim=-1)
+        assert_close(argmax, NT([torch.argmax(t, dim=-1) for t in parts], **nt._meta()))
+        assert_close(count, NT([torch.count_nonzero(t, dim=-1) for t in parts], **nt._meta()))
+
+        norm = torch.linalg.vector_norm(nt, dim=-1, keepdim=True)
+        linalg_norm = torch.linalg.norm(nt, dim=-1, keepdim=True)
+        norm_reference = NT([torch.linalg.vector_norm(t, dim=-1, keepdim=True) for t in parts], **nt._meta())
+        assert_close(norm, norm_reference)
+        assert_close(linalg_norm, norm_reference)
+
+        variance, mean = torch.var_mean(nt, dim=-1, correction=0, keepdim=True)
+        variance_reference = NT(
+            [torch.var(t, dim=-1, correction=0, keepdim=True) for t in parts],
+            **nt._meta(),
+        )
+        mean_reference = NT([torch.mean(t, dim=-1, keepdim=True) for t in parts], **nt._meta())
+        assert_close(variance, variance_reference)
+        assert_close(mean, mean_reference)
+        for output in (argmax, count, norm, linalg_norm, variance, mean):
+            output._validate_metadata()
+
+    def test_multi_ragged_all_static_multi_dim_reductions(self, device, float_dtype):
+        parts = [
+            torch.randn(2, 2, 3, 4, device=device, dtype=float_dtype),
+            torch.randn(3, 3, 3, 4, device=device, dtype=float_dtype),
+        ]
+        nt = NT(parts)
+        count = torch.count_nonzero(nt, dim=(-2, -1))
+        variance, mean = torch.var_mean(nt, dim=(-2, -1), correction=0)
+        assert_close(count, NT([torch.count_nonzero(t, dim=(-2, -1)) for t in parts], **nt._meta()))
+        assert_close(
+            variance,
+            NT([torch.var(t, dim=(-2, -1), correction=0) for t in parts], **nt._meta()),
+        )
+        assert_close(mean, NT([torch.mean(t, dim=(-2, -1)) for t in parts], **nt._meta()))
+
+    def test_count_nonzero_mixed_dims_maps_padded_axes(self, device, float_dtype):
+        parts = [
+            torch.randn(2, 3, 4, device=device, dtype=float_dtype),
+            torch.randn(5, 3, 4, device=device, dtype=float_dtype),
+        ]
+        nt = NT(parts)
+        for dims in ((1, 2), (1, 3)):
+            output = torch.count_nonzero(nt, dim=dims)
+            element_dims = tuple(dim - 1 for dim in dims)
+            reference = torch.stack([torch.count_nonzero(t, dim=element_dims) for t in parts])
+            assert_close(output, reference)
+
+        nt = NT(parts, batch_first=False)
+        count = torch.count_nonzero(nt, dim=(0, 3))
+        count_reference = torch.stack([torch.count_nonzero(t, dim=(0, 2)) for t in parts]).movedim(0, 1)
+        assert_close(count, count_reference)
+
+        summed = torch.sum(nt, dim=(0, 3))
+        sum_reference = torch.stack([torch.sum(t, dim=(0, 2)) for t in parts]).movedim(0, 1)
+        assert_close(summed, sum_reference)
+
+    def test_linalg_matrix_norm_after_multi_ragged_dims(self, device, float_dtype):
+        parts = [
+            torch.randn(2, 2, 3, 4, device=device, dtype=float_dtype),
+            torch.randn(3, 3, 3, 4, device=device, dtype=float_dtype),
+        ]
+        nt = NT(parts)
+        for keepdim in (False, True):
+            output = torch.linalg.norm(nt, dim=(-2, -1), keepdim=keepdim)
+            reference = NT(
+                [torch.linalg.norm(t, dim=(-2, -1), keepdim=keepdim) for t in parts],
+                **nt._meta(),
+            )
+            assert_close(output, reference)
+            output._validate_metadata()
+
+    @pytest.mark.parametrize(
+        ("shapes", "logical_dim", "element_dim"),
+        [
+            (((4, 3), (2, 3)), 0, 0),
+            (((3, 4), (3, 2)), 2, 1),
+        ],
+        ids=("leading-ragged", "non-leading-ragged"),
+    )
+    def test_segment_reductions_respect_batch_first_false(
+        self,
+        device,
+        float_dtype,
+        shapes,
+        logical_dim,
+        element_dim,
+    ):
+        parts = [torch.randn(shape, device=device, dtype=float_dtype) for shape in shapes]
+        nt = NT(parts, batch_first=False)
+
+        for keepdim in (False, True):
+            for op in (torch.argmax, torch.argmin):
+                output = op(nt, dim=logical_dim, keepdim=keepdim)
+                reference = torch.stack([op(t, dim=element_dim, keepdim=keepdim) for t in parts])
+                if parts[0].dim() - (0 if keepdim else 1) > 0:
+                    reference = reference.movedim(0, 1)
+                assert_close(output, reference)
+
+            norm = torch.linalg.vector_norm(nt, dim=logical_dim, keepdim=keepdim)
+            norm_reference = NT(
+                [torch.linalg.vector_norm(t, dim=element_dim, keepdim=keepdim) for t in parts],
+                **nt._meta(),
+            )
+            assert norm.shape == norm_reference.shape
+            assert_close(norm, norm_reference)
+            norm._validate_metadata()
+
+        count = torch.count_nonzero(nt, dim=logical_dim)
+        count_reference = torch.stack([torch.count_nonzero(t, dim=element_dim) for t in parts])
+        if parts[0].dim() - 1 > 0:
+            count_reference = count_reference.movedim(0, 1)
+        assert_close(count, count_reference)
+
 
 class TestRot90:
 
@@ -3680,6 +3802,17 @@ class TestSelectionOps:
         min_ragged_ref_idxs = torch.stack([torch.min(a, dim=0).indices, torch.min(b, dim=0).indices])
         assert_close(min_ragged.values, min_ragged_ref_vals)
         assert_close(min_ragged.indices, min_ragged_ref_idxs)
+
+    @pytest.mark.parametrize("name", ["argmax", "argmin", "max", "min"])
+    def test_empty_ragged_extrema_axis_raises(self, device, float_dtype, name):
+        nt = NT(
+            [
+                torch.empty(0, 3, device=device, dtype=float_dtype),
+                torch.randn(2, 3, device=device, dtype=float_dtype),
+            ]
+        )
+        with pytest.raises(IndexError, match="non-zero size"):
+            getattr(torch, name)(nt, dim=1)
 
     def test_sort(self, device, float_dtype):
         nt = NestedTensor(

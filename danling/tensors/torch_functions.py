@@ -65,6 +65,7 @@ from .ops import (
     _is_compiling,
     _map_storage_serial,
     _normalize_dim,
+    _physical_to_values_dim,
     _reduce,
     _reduce_dim,
     _reduce_dim_pair,
@@ -2532,14 +2533,15 @@ def linalg_norm(input, ord=None, dim=None, keepdim=False, *, dtype=None):
             if batch_dim in dims_norm:
                 raise ValueError("linalg.norm along the batch dimension is not supported for NestedTensor.")
             dims_adj = tuple(_translate_dim(input, d) for d in dims_norm)
-            if all(dim_adj > 0 for dim_adj in dims_adj):
+            values_dims = tuple(_physical_to_values_dim(input, dim_adj) for dim_adj in dims_adj)
+            if all(values_dim is not None for values_dim in values_dims):
                 from .aten_functions import _reduce_non_ragged_packed_dims
 
                 matrix_ord = "fro" if ord is None else ord
                 out_values = torch.linalg.matrix_norm(
                     input._values,
                     ord=matrix_ord,
-                    dim=dims_adj,
+                    dim=tuple(int(values_dim) for values_dim in values_dims if values_dim is not None),
                     keepdim=keepdim,
                     dtype=dtype,
                 )
