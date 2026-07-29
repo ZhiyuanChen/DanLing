@@ -2652,10 +2652,42 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             return iterator
 
         total = steps if steps is not None else loader_length
-        output: list[float] = []
+        output: list = []
         for values in tqdm(iterator, total=total, disable=self.distributed and not self.is_main_process):
             output.extend(values)
+        if self.distributed:
+            output = self._gather_infer_predictions(loader, output)
         return output
+
+    def _gather_infer_predictions(self, loader: Any, output: list) -> list:
+        """
+        Gather sharded inference outputs to every rank and restore dataset order.
+
+        Under DDP the loader's `DistributedSampler` shards the split, so each rank's default `infer_step`
+        produces one prediction per sampled item. Pair each local output with its global sample index,
+        all-gather the `(index, output)` pairs across ranks, drop the sampler's duplicate padding (same
+        index seen twice -> identical output), and return the outputs in dataset order so every rank sees
+        the whole split.
+        """
+        import torch.distributed as dist
+
+        sampler = getattr(loader, "sampler", None)
+        if sampler is None or not dist.is_available() or not dist.is_initialized():
+            return output
+        indices = list(sampler)
+        if len(output) > len(indices):
+            raise ValueError(
+                "cannot gather distributed inference output: infer_step produced more predictions "
+                f"({len(output)}) than the local sampler has indices ({len(indices)})"
+            )
+        paired = list(zip(indices[: len(output)], output))
+        gathered: list = [None] * self.world_size
+        dist.all_gather_object(gathered, paired)
+        merged: dict = {}
+        for rank_pairs in gathered:
+            for index, value in rank_pairs:
+                merged[index] = value
+        return [merged[index] for index in sorted(merged)]
 
     def _iter_infer_batches(self, loader: Any, *, steps: int | None, split: str) -> Iterator[list[float]]:
         for iteration, data in enumerate(loader):

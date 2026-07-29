@@ -792,6 +792,44 @@ class TestTorchRunnerBootstrap:
         finally:
             runner.close()
 
+    def test_gather_infer_predictions_restores_order_and_deduplicates_padding(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class Loader:
+            sampler = [0, 2, 4]
+
+        class Runner:
+            world_size = 2
+
+        def gather(gathered, local):
+            assert local == [(0, "a"), (2, "c"), (4, "e")]
+            gathered[:] = [local, [(1, "b"), (3, "d"), (4, "e")]]
+
+        monkeypatch.setattr(dist, "is_available", lambda: True)
+        monkeypatch.setattr(dist, "is_initialized", lambda: True)
+        monkeypatch.setattr(dist, "all_gather_object", gather)
+        assert TorchRunner._gather_infer_predictions(Runner(), Loader(), ["a", "c", "e"]) == [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+        ]
+
+    def test_gather_infer_predictions_rejects_output_without_sampler_indices(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class Loader:
+            sampler = [0]
+
+        class Runner:
+            world_size = 2
+
+        monkeypatch.setattr(dist, "is_available", lambda: True)
+        monkeypatch.setattr(dist, "is_initialized", lambda: True)
+        with pytest.raises(ValueError, match="more predictions"):
+            TorchRunner._gather_infer_predictions(Runner(), Loader(), ["a", "b"])
+
     def test_auto_restore_prefers_checkpoint_over_pretrained(self) -> None:
         runner = RecordingRestoreRunner(
             {"logging.enabled": False, "checkpoint": "ckpt-latest", "pretrained": "ckpt-best"}
