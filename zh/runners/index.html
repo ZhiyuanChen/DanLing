@@ -1493,6 +1493,7 @@ All checkpoint writes are gated by <code>ckpt.enabled</code>; loading paths are 
 <li>logs are stored at <code>logging.file</code> (default <code>dir/logs/{timestamp}.log</code>)</li>
 <li>tensorboard logs are stored as <code>dir/tensorboard/{timestamp}</code></li>
 <li>W&amp;B local run files default to <code>dir/wandb/</code> when W&amp;B logging is enabled</li>
+<li>MLflow tracking uses <code>mlflow.experiment_name</code> or defaults to <code>workspace.lineage</code></li>
 <li>reproducibility artifacts are stored at <code>dir/metadata</code>:</li>
 <li><code>config.full.yaml</code></li>
 <li><code>config.canonical.yaml</code></li>
@@ -1915,8 +1916,6 @@ non-interleaved for current pipeline+FSDP stability, with migration to
       <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
       
         <script src="../../javascripts/mathjax.js"></script>
-      
-        <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
       
         <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
       
