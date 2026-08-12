@@ -19,9 +19,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import torch
 
-from danling.runners.utils import format_result
+from danling.runners.utils import format_result, get_time_str
+from danling.utils import base60
 
 
 def test_format_result_formats_nested_scalar_like_values() -> None:
@@ -52,3 +55,12 @@ def test_format_result_formats_nested_scalar_like_values() -> None:
     assert "0.8909" in formatted
     assert "0.6459" in formatted
     assert "0.9849324226379395" not in formatted
+
+
+def test_time_string() -> None:
+    before = datetime.now().isocalendar().year
+    encoded = get_time_str()
+    after = datetime.now().isocalendar().year
+
+    assert len(encoded) >= 8
+    assert base60.decode(encoded[:2]) in {before, after}

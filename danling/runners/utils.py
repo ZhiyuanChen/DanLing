@@ -29,7 +29,7 @@ from typing import Any
 
 import torch
 
-from danling.utils import RoundDict, base62
+from danling.utils import RoundDict, base60
 
 try:
     from enum import StrEnum  # type: ignore[attr-defined]
@@ -82,13 +82,17 @@ def get_precision(precision: str) -> torch.dtype:
 
 def get_time_str() -> str:
     time = datetime.now()
-    time_tuple = time.isocalendar()[1:] + (
+    calendar = time.isocalendar()
+    time_tuple = (
+        calendar.year,
+        calendar.week,
+        calendar.weekday,
         time.hour,
         time.minute,
         time.second,
         time.microsecond,
     )
-    return "".join(base62.encode(i) for i in time_tuple)
+    return "".join(base60.encode(i) for i in time_tuple)
 
 
 def get_git_hash() -> str | None:

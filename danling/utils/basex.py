@@ -49,6 +49,10 @@ class Base58(BaseX):
     alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 
+class Base60(BaseX):
+    alphabet = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+
 class Base62(BaseX):
     alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
@@ -58,5 +62,6 @@ class Base64(BaseX):
 
 
 base58 = Base58()
+base60 = Base60()
 base62 = Base62()
 base64 = Base64()

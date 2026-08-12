@@ -22,7 +22,7 @@ try:
 except ImportError:
     from cached_property import cached_property  # type: ignore
 
-from .basex import Base58, Base62, Base64, BaseX, base58, base62, base64
+from .basex import Base58, Base60, Base62, Base64, BaseX, base58, base60, base62, base64
 from .context_managers import debug
 from .decorators import catch, flexible_decorator, method_cache
 from .descriptors import cached_ensure_dir, cached_ensure_parent_dir, ensure_dir, ensure_parent_dir
@@ -51,9 +51,11 @@ __all__ = [
     "debug",
     "BaseX",
     "Base58",
+    "Base60",
     "Base62",
     "Base64",
     "base58",
+    "base60",
     "base62",
     "base64",
 ]
