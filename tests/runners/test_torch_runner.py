@@ -186,9 +186,9 @@ class TelemetryRunner(TorchRunner):
     def train_step(self, data):
         del data
         loss = self.param.square()
-        self.backward(loss)
+        skipped = self.backward(loss)
         self.step()
-        return None, loss.detach()
+        return None, loss.detach().new_zeros(()) if skipped else loss.detach()
 
     def evaluate_step(self, data):
         del data
@@ -426,6 +426,42 @@ def _torch_runner_nonfinite_skip_sync_worker(rank: int, world_size: int) -> None
         assert runner.train_state.global_step == 0
         for parameter, initial in zip(parameters, initial_parameters):
             torch.testing.assert_close(parameter, initial)
+    finally:
+        runner.close()
+
+
+def _torch_runner_nonfinite_loss_accumulation_worker(rank: int, world_size: int) -> None:
+    configure_distributed_env(rank, world_size)
+    runner = DistributedTinyTorchRunner(
+        {
+            "logging.enabled": False,
+            "dist.backend": "gloo",
+            "ckpt": {"backend": "file"},
+            "accum_steps": 2,
+            "skip_nonfinite_loss": True,
+        }
+    )
+    try:
+        assert runner.model is not None
+        runner.optimizer.zero_grad(set_to_none=True)
+        target = torch.zeros(2, 2)
+
+        runner.train_step((torch.full((2, 4), float(rank + 1)), target))
+        first_grad = next(runner.model.parameters()).grad.detach().clone()
+        first_gathered = [torch.zeros_like(first_grad) for _ in range(world_size)]
+        dist.all_gather(first_gathered, first_grad)
+        assert not torch.allclose(first_gathered[0], first_gathered[1])
+
+        invalid_input = torch.full((2, 4), float("inf")) if rank else torch.ones(2, 4)
+        _prediction, loss = runner.train_step((invalid_input, target))
+        assert loss is not None and loss.item() == 0
+        assert runner.train_state.global_step == 1
+
+        for parameter in runner.model.parameters():
+            gathered = [torch.zeros_like(parameter) for _ in range(world_size)]
+            dist.all_gather(gathered, parameter)
+            torch.testing.assert_close(gathered[0], gathered[1])
+            assert torch.isfinite(parameter).all()
     finally:
         runner.close()
 
@@ -1021,6 +1057,21 @@ class TestTorchRunnerCheckpointInterop:
         finally:
             restored.close()
 
+    def test_state_dict_restores_the_next_torch_random_draw(self) -> None:
+        runner = TinyTorchRunner({"logging.enabled": False})
+        try:
+            torch.manual_seed(1016)
+            torch.rand(3)
+            checkpoint = runner.state_dict()
+            expected = torch.rand(3)
+            torch.rand(3)
+
+            runner.load_state_dict(checkpoint)
+
+            torch.testing.assert_close(torch.rand(3), expected, rtol=0, atol=0)
+        finally:
+            runner.close()
+
     def test_from_checkpoint_uses_requested_path_over_auto_restore(self, tmp_path: Path) -> None:
         source = TinyTorchRunner({"logging.enabled": False})
         checkpoint_path = tmp_path / "torch-runner.pth"
@@ -1179,6 +1230,10 @@ class TestTorchRunnerDistributedRuntime:
         require_gloo()
         run_distributed(_torch_runner_nonfinite_skip_sync_worker, world_size=2)
 
+    def test_nonfinite_loss_preserves_and_synchronizes_accumulated_gradients(self) -> None:
+        require_gloo()
+        run_distributed(_torch_runner_nonfinite_loss_accumulation_worker, world_size=2)
+
 
 # ---------------------------------------------------------------------------
 # Runtime Mechanics
@@ -1186,6 +1241,31 @@ class TestTorchRunnerDistributedRuntime:
 
 
 class TestTorchRunnerOptimization:
+
+    def test_backward_skips_nonfinite(self) -> None:
+        runner = TinyTorchRunner({"logging.enabled": False, "skip_nonfinite_loss": True})
+        try:
+            assert runner.model is not None
+            loss = runner.model.weight.sum() * torch.tensor(float("nan"))
+
+            assert runner.backward(loss) is True
+            assert all(parameter.grad is None for parameter in runner.model.parameters())
+        finally:
+            runner.close()
+
+    def test_nonfinite_loss_is_replaced_with_zero_before_backward(self) -> None:
+        runner = TinyTorchRunner({"logging.enabled": False, "skip_nonfinite_loss": True})
+        assert runner.model is not None
+        initial_parameters = [parameter.detach().clone() for parameter in runner.model.parameters()]
+        try:
+            _prediction, loss = runner.train_step((torch.full((2, 4), float("inf")), torch.zeros(2, 2)))
+
+            assert loss is not None and loss.item() == 0
+            assert runner.train_state.global_step == 1
+            for parameter, initial in zip(runner.model.parameters(), initial_parameters):
+                torch.testing.assert_close(parameter, initial)
+        finally:
+            runner.close()
 
     def test_optimizer_step_requires_optimizer(self) -> None:
         runner = NoOptimizerTorchRunner({"logging.enabled": False})
@@ -1858,6 +1938,22 @@ class TestTorchRunnerLoopResultStability:
             runner.dataloaders["val"] = [1.0, 2.0, 3.0]
             result = runner.evaluate_epoch("val")
             assert result["loss"] == pytest.approx(2.0)
+        finally:
+            runner.close()
+
+    def test_evaluate_epoch_allows_zero_weight_padding(self) -> None:
+        class ZeroWeightedEvaluationRunner(StreamingEpochRunner):
+            def _get_loss_normalizer(self, data):
+                return int(data[1])
+
+            def evaluate_step(self, data):
+                return None, torch.tensor(float(data[0]))
+
+        runner = ZeroWeightedEvaluationRunner({"logging.enabled": False, "logging.interval": 0})
+        try:
+            runner.dataloaders["val"] = [(1.0, 1), (100.0, 0)]
+            result = runner.evaluate_epoch("val")
+            assert result["loss"] == pytest.approx(1.0)
         finally:
             runner.close()
 

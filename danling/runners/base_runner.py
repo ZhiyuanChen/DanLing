@@ -952,8 +952,8 @@ class BaseRunner(metaclass=MetaRunner):
 
         raise NotImplementedError
 
-    def backward(self, loss, *args, **kwargs) -> None:
-        """Run backward pass for one micro-step loss."""
+    def backward(self, loss, *args, **kwargs) -> bool:
+        """Backpropagate one micro-step loss and return whether it was replaced with zero."""
 
         raise NotImplementedError
 
@@ -1609,6 +1609,11 @@ class BaseRunner(metaclass=MetaRunner):
     def skip_nonfinite_grad(self) -> bool:
         """Whether to skip optimizer updates when gradients are non-finite."""
         return self.config.get("skip_nonfinite_grad", False)
+
+    @cached_property
+    def skip_nonfinite_loss(self) -> bool:
+        """Whether to replace a globally non-finite micro-batch loss with zero."""
+        return self.config.get("skip_nonfinite_loss", False)
 
     @cached_property
     def patience(self) -> int | float:

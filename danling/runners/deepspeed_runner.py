@@ -65,6 +65,8 @@ class DeepSpeedRunner(TorchRunner):
         if not isinstance(config, RunnerConfig):
             config = RunnerConfig(config)
         config.stack = "deepspeed"
+        if config.get("skip_nonfinite_loss", False):
+            raise NotImplementedError("skip_nonfinite_loss is not supported by DeepSpeedRunner")
         requested_backend = str(config.get("ckpt.backend")).strip().lower()
         if requested_backend == "dcp":
             warn(
@@ -221,7 +223,7 @@ class DeepSpeedRunner(TorchRunner):
     def unwrap(self, model: Any) -> Any:
         return getattr(model, "module", super().unwrap(model))
 
-    def backward(self, loss: torch.Tensor) -> None:
+    def _backward(self, loss: torch.Tensor) -> None:
         """
         Route one micro-step backward pass through the DeepSpeed engine.
 

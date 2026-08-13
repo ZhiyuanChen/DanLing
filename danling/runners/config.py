@@ -588,7 +588,8 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
         accum_steps: Number of micro-batches per optimizer step.
         train_splits, evaluate_splits: Optional split selection overrides.
         precision: Optional autocast precision.
-        max_grad_value, max_grad_norm, skip_nonfinite_grad: Gradient safety controls.
+        max_grad_value, max_grad_norm, skip_nonfinite_loss, skip_nonfinite_grad:
+            Gradient safety controls.
         checkpoint, resume, pretrained: Restore sources. Source priority is
             `checkpoint` > `resume` > `pretrained`.
         deepspeed: Optional raw DeepSpeed config mapping.
@@ -663,6 +664,7 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
     precision: Optional[str] = None
     max_grad_value: Optional[float] = None
     max_grad_norm: Optional[float] = None
+    skip_nonfinite_loss: bool = False
     skip_nonfinite_grad: bool = False
 
     checkpoint: Optional[str] = None

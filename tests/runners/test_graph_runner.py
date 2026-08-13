@@ -98,6 +98,26 @@ def test_graph_runner_train_step_matches_eager_update() -> None:
         graph.close()
 
 
+def test_graph_runner_replaces_nonfinite_loss_without_accumulating_gradients() -> None:
+    runner = TinyGraphRunner({"logging.enabled": False, "skip_nonfinite_loss": True})
+    try:
+        assert runner.model is not None
+        initial = runner.model.weight.detach().clone()
+
+        _prediction, loss = runner.train_step(
+            {
+                "input": torch.full((2, 2), float("inf")),
+                "target": torch.zeros(2, 1),
+            }
+        )
+
+        assert loss is not None and loss.item() == 0
+        torch.testing.assert_close(runner.model.weight, initial)
+        assert runner.train_state.global_step == 1
+    finally:
+        runner.close()
+
+
 def test_graph_runner_traces_optimizer_parameters_once() -> None:
     runner = CountingGraphRunner({"logging.enabled": False})
     try:

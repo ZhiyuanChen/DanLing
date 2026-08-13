@@ -109,10 +109,11 @@ class IMDBRunner(dl.TorchRunner):
         with self.train_context():
             pred = self.model(**data)
             loss = pred["loss"]
-            self.backward(loss)
+            skipped = self.backward(loss)
             self.step()
-            self.metrics.update(pred["logits"][:, 0], data["labels"])
-        return pred, loss
+            if not skipped:
+                self.metrics.update(pred["logits"][:, 0], data["labels"])
+        return pred, loss.detach().new_zeros(()) if skipped else loss
 
     def evaluate_step(self, data):
         data = dl.to_device(data, self.device)

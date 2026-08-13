@@ -317,9 +317,11 @@ class GraphRunner(TorchRunner):
             inputs, target = self._split_train_batch(data)
             loss_scale = torch.tensor(float(self._loss_scale_for_backward()), device=self.device)
             pred, loss, grads = self.graph_train_step(inputs, target, loss_scale)
-            self._accumulate_graph_gradients(self.graph_train_step_params, grads)
+            skipped = self.skip_nonfinite_loss and not bool(torch.isfinite(loss.detach()).all().item())
+            if not skipped:
+                self._accumulate_graph_gradients(self.graph_train_step_params, grads)
             self._save_graph_cache_artifacts()
-            if self.metrics is not None and pred is not None and target is not None:
+            if not skipped and self.metrics is not None and pred is not None and target is not None:
                 self.metrics.update(pred, target)
             self.step()
-        return pred, loss
+        return pred, loss.detach().new_zeros(()) if skipped else loss

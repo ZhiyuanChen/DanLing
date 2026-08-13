@@ -1249,6 +1249,8 @@ class ParallelRunner(TorchRunner):
         """
         if self.pipeline_schedule is None:
             return super().train_step(data)
+        if self.skip_nonfinite_loss:
+            raise NotImplementedError("skip_nonfinite_loss is not supported by pipeline schedules")
 
         with self.train_context():
             self._pipeline_loss_divisor_local = 0.0

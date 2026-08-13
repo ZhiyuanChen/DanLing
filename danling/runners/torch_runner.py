@@ -1365,7 +1365,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         loss_value = _local_reduction_tensor(loss.detach()).to(dtype=torch.float64)
         if loss_value.ndim > 0:
             loss_value = loss_value.mean()
-        normalizer = float(max(int(loss_n or 1), 1))
+        normalizer = float(max(int(loss_n), 0) if loss_n is not None else 1)
         payload_device = self.all_reduce_device()
         payload = torch.stack(
             (
@@ -1621,12 +1621,12 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             - Zero gradients (`optimizer_step` does this on flush).
             - Call `self.optimizer.step()` directly (use `self.step()`).
             - Mutate `train_state.global_step` or `train_state.micro_step`.
-            - Implement gradient scaling here (override `backward()` instead).
+            - Implement gradient scaling here (override `_backward()` instead).
             - Call `save_checkpoint()` (cadence is owned by the loop method).
 
         **Backend notes:**
 
-        - `DeepSpeedRunner` inherits the default; `backward`/`step` route
+        - `DeepSpeedRunner` inherits the default; `_backward`/`step` route
           through the DeepSpeed engine.
         - `ParallelRunner` overrides this method when a pipeline schedule is
           set; the schedule owns micro-batching and loss reduction.
@@ -1649,15 +1649,65 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             loss = self.criterion(pred, target) if self.criterion is not None else None
             if loss is None:
                 raise ValueError("cannot run train_step: criterion did not produce a loss")
-            if self.metrics is not None and pred is not None and target is not None:
+            skipped = self.backward(loss)
+            if not skipped and self.metrics is not None and pred is not None and target is not None:
                 self.metrics.update(pred, target)
-            self.backward(loss)
             self.step()
-        return pred, loss
+        return pred, loss.detach().new_zeros(()) if skipped else loss
 
-    def backward(self, loss: torch.Tensor) -> None:
+    def backward(self, loss: torch.Tensor) -> bool:
+        """Backpropagate one loss, or a synchronized zero when any replica is non-finite.
+
+        Returns:
+            Whether this micro-batch was replaced with zero.
         """
-        Run backward pass on one micro-step loss.
+
+        if not self.skip_nonfinite_loss:
+            self._backward(loss)
+            return False
+        nonfinite = not bool(torch.isfinite(loss.detach()).all().item())
+        if not self._sync_optimizer_skip_decision(nonfinite):
+            self._backward(loss)
+            return False
+
+        gradients = [
+            (parameter, None if parameter.grad is None else parameter.grad.detach().clone())
+            for parameter in self.iter_optimizer_parameters()
+        ]
+        independent_zero = loss.detach().new_zeros((), requires_grad=True)
+        zero_loss = independent_zero
+        if loss.requires_grad:
+            finite_loss = torch.where(torch.isfinite(loss), loss, torch.zeros_like(loss))
+            zero_loss = zero_loss + finite_loss.sum() * 0.0
+        try:
+            self._backward(zero_loss)
+        finally:
+            for parameter, gradient in gradients:
+                parameter.grad = gradient
+
+        if self.accum_steps > 1 and self._train_no_sync_targets() and not self._should_train_no_sync():
+            self._sync_preserved_gradients(gradients)
+        return True
+
+    def _sync_preserved_gradients(
+        self,
+        gradients: list[tuple[nn.Parameter, torch.Tensor | None]],
+    ) -> None:
+        divisor = self._loss_normalizer_sync_divisor()
+        for parameter, gradient in gradients:
+            present = torch.tensor(float(gradient is not None), device=self.all_reduce_device())
+            self.all_reduce(present, op=dist.ReduceOp.MAX)
+            if not bool(present.item()):
+                parameter.grad = None
+                continue
+            synchronized = torch.zeros_like(parameter) if gradient is None else gradient
+            self.all_reduce(synchronized, op=dist.ReduceOp.SUM)
+            synchronized.div_(divisor)
+            parameter.grad = synchronized
+
+    def _backward(self, loss: torch.Tensor) -> None:
+        """
+        Execute the backend backward pass on one micro-step loss.
 
         **Called when:** the default `train_step` has produced a loss tensor.
         The method receives the raw micro-step loss; accumulation scaling and
@@ -2409,14 +2459,14 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             consumed = iteration + 1
             self.supervisor.maybe_handle_termination_signal()
             loss_n = self._get_loss_normalizer(data)
-            if loss_n is not None and loss_n <= 0:
+            if loss_n is not None and loss_n < 0:
                 loss_n = None
             _, loss = self.evaluate_step(data)
             self.supervisor.mark_heartbeat_progress()
             self.supervisor.maybe_handle_termination_signal()
             current_time = self.loop_time()
             if loss is not None:
-                self.meters.loss.update(loss.detach(), n=loss_n or 1)
+                self.meters.loss.update(loss.detach(), n=1 if loss_n is None else loss_n)
             telemetry.observe(
                 iteration=iteration,
                 data=data,
@@ -2510,14 +2560,14 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             consumed = iteration + 1
             self.supervisor.maybe_handle_termination_signal()
             loss_n = self._get_loss_normalizer(data)
-            if loss_n is not None and loss_n <= 0:
+            if loss_n is not None and loss_n < 0:
                 loss_n = None
             _, loss = self.evaluate_step(data)
             self.supervisor.mark_heartbeat_progress()
             self.supervisor.maybe_handle_termination_signal()
             current_time = self.loop_time()
             if loss is not None:
-                self.meters.loss.update(loss.detach(), n=loss_n or 1)
+                self.meters.loss.update(loss.detach(), n=1 if loss_n is None else loss_n)
             telemetry.observe(iteration=iteration, data=data, current_time=current_time)
             self.supervisor.maybe_collect_garbage(iteration + 1, scope=f"evaluate:{split}")
 
@@ -2731,6 +2781,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         **Side effects:** snapshots Python/NumPy/Torch RNG state before
         exporting.
         """
+        self.rng_state.torch_cpu = torch.get_rng_state()
+        self.rng_state.torch_cuda = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
         state = cls(super().state_dict(cls))
         state.update(self._export_checkpoint_metadata(cls))
         state.update(self._export_checkpoint_components(cls))

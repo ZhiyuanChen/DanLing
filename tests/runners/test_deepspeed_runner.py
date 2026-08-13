@@ -211,7 +211,7 @@ class TestDeepSpeedRunnerRealBackend:
             inputs = torch.randn(2, 4, device=runner.device)
             targets = torch.randn(2, 2, device=runner.device)
             loss = F.mse_loss(runner.model(inputs), targets)
-            runner.backward(loss)
+            assert runner.backward(loss) is False
             assert runner.optimizer_step() is True
             assert runner.train_state.global_step == 1
         finally:
