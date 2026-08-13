@@ -704,9 +704,10 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
         The default is a single-module DDP-style materialization: it moves
         `self.model` to `self.device`, applies any FP8 module policy when
-        FP8 is enabled, runs `torch.compile` via `self.compiler` (under the
-        DDP-optimizer context when wrapping is needed), and wraps the result
-        with `nn.parallel.DistributedDataParallel` when world size > 1.
+        FP8 is enabled, runs `torch.compile` via `self.compiler`, and wraps the
+        result with `nn.parallel.DistributedDataParallel` when world size > 1.
+        The configured DDP-optimizer context covers both DDP construction and
+        the compiled callable's lazy compilation and recompilation.
 
         **Called when:** once during `__post_init__`, after `setup_fp8()`
         and before `build_optimizer()`. The order matters — the optimizer
@@ -721,9 +722,9 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
         **Side effects:** moves `self.model` to `self.device`; applies FP8
         module policy when `self.fp8_enabled`; compiles via
-        `self.compiler.compile(...)` under the DDP-optimizer context when
-        wrapping is needed; wraps with `DistributedDataParallel` for world
-        size > 1. Moves `self.ema` to device when EMA is bound.
+        `self.compiler.compile(...)`; wraps with `DistributedDataParallel` for
+        world size > 1 under the same configured DDP-optimizer context. Moves
+        `self.ema` to device when EMA is bound.
 
         !!! danger "Do not"
             - Build the optimizer or scheduler here; they run after this
@@ -752,14 +753,14 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         should_wrap_ddp = self.distributed and not isinstance(
             model, (nn.parallel.DistributedDataParallel, nn.parallel.DataParallel)
         )
-        with self.compiler.ddp_optimizer() if should_wrap_ddp else nullcontext():
-            model = self.compiler.compile(model)
+        model = self.compiler.compile(model)
         if should_wrap_ddp:
-            model = nn.parallel.DistributedDataParallel(
-                model,
-                find_unused_parameters=bool(self.config.ddp.find_unused_parameters),
-                static_graph=bool(self.config.ddp.static_graph),
-            )
+            with self.compiler.ddp_optimizer():
+                model = nn.parallel.DistributedDataParallel(
+                    model,
+                    find_unused_parameters=bool(self.config.ddp.find_unused_parameters),
+                    static_graph=bool(self.config.ddp.static_graph),
+                )
         self.model = model
 
         if self.ema is not None:

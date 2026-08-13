@@ -45,7 +45,7 @@ class CompileConfig(chanfig.Config):
     fullgraph: Optional[bool] = None
     dynamic: Optional[bool] = None
     options: Optional[Mapping[str, Any]] = None
-    optimize_ddp: Optional[str] = "ddp_optimizer"
+    optimize_ddp: Union[bool, str, None] = "ddp_optimizer"
     precompile_artifact_dir: Optional[str] = None
     memory_policy: Optional[str] = None
 

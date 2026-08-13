@@ -21,13 +21,31 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
+from functools import partial
+from types import FunctionType
 from typing import Any
 
 import torch
 
 from .config import CompileConfig
+
+
+def _call_module(module: torch.nn.Module, *args: Any, **kwargs: Any) -> Any:
+    return module._call_impl(*args, **kwargs)
+
+
+def _independent_module_group_call() -> Any:
+    r"""Return one code-object-local module call while preserving ``nn.Module`` semantics."""
+
+    return FunctionType(
+        _call_module.__code__.replace(),
+        _call_module.__globals__,
+        _call_module.__name__,
+        _call_module.__defaults__,
+        _call_module.__closure__,
+    )
 
 
 class Compiler:
@@ -69,7 +87,39 @@ class Compiler:
             return obj
         if not hasattr(torch, "compile"):
             raise RuntimeError("torch.compile is not available in this PyTorch build")
-        return torch.compile(obj, **self.kwargs)
+        compiled = torch.compile(obj, **self.kwargs)
+        if isinstance(compiled, torch.nn.Module):
+            compiled.forward = self.ddp_optimizer()(compiled.forward)  # type: ignore[method-assign]
+            return compiled
+        return self.ddp_optimizer()(compiled)
+
+    def compile_modules(
+        self,
+        modules: Sequence[torch.nn.Module],
+    ) -> tuple[torch.nn.Module, ...]:
+        r"""Compile caller-grouped submodules through one shared graph cache."""
+
+        modules = tuple(modules)
+        if not self.enabled or not modules:
+            return modules
+        if not hasattr(torch, "compile"):
+            raise RuntimeError("torch.compile is not available in this PyTorch build")
+        if len({id(module) for module in modules}) != len(modules):
+            raise ValueError("a compile group cannot contain the same module twice")
+        if any(module._compiled_call_impl is not None for module in modules):
+            raise ValueError("a compile group cannot contain an already compiled module")
+        forward = type(modules[0]).forward
+        if any(type(module).forward is not forward for module in modules[1:]):
+            raise ValueError("a compile group must share one forward implementation")
+
+        # Dynamo caches by Python code object. Give each caller-defined group one
+        # independent frame without relying on version-specific compile kwargs.
+        # Calling ``_call_impl`` (rather than ``forward``) preserves hooks and the
+        # rest of ``nn.Module.__call__`` semantics.
+        compiled_call = self.ddp_optimizer()(torch.compile(_independent_module_group_call(), **self.kwargs))
+        for module in modules:
+            module._compiled_call_impl = partial(compiled_call, module)
+        return modules
 
     @contextmanager
     def ddp_optimizer(self):

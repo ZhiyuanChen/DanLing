@@ -27,7 +27,6 @@ from danling.runners.config import CompileConfig
 
 
 class TestCompileConfig:
-
     def test_compiler_uses_single_enable_flag(self) -> None:
         compiler = Compiler(CompileConfig({"enabled": True}))
 
@@ -84,7 +83,6 @@ class TestCompileConfig:
 
 
 class TestDdpOptimizerContext:
-
     def test_compile_context_restores_ddp_optimizer_setting(self) -> None:
         dynamo_config = getattr(getattr(torch, "_dynamo", None), "config", None)
         if dynamo_config is None or not hasattr(dynamo_config, "optimize_ddp"):
@@ -109,4 +107,50 @@ class TestDdpOptimizerContext:
         with compiler.ddp_optimizer():
             assert dynamo_config.optimize_ddp == previous
 
+        assert dynamo_config.optimize_ddp == previous
+
+    def test_lazy_context(self, monkeypatch) -> None:
+        dynamo_config = getattr(getattr(torch, "_dynamo", None), "config", None)
+        if dynamo_config is None or not hasattr(dynamo_config, "optimize_ddp"):
+            pytest.skip("torch._dynamo.config.optimize_ddp is not available")
+
+        observed = []
+        compile_options = []
+
+        class LazyCompiledModule(torch.nn.Module):
+            def forward(self, input):
+                observed.append(dynamo_config.optimize_ddp)
+                return input
+
+        def compile_stub(obj, **kwargs):
+            compile_options.append(kwargs)
+            if isinstance(obj, torch.nn.Module):
+                return LazyCompiledModule()
+
+            def compiled_call(*args, **kwargs):
+                observed.append(dynamo_config.optimize_ddp)
+                return obj(*args, **kwargs)
+
+            return compiled_call
+
+        monkeypatch.setattr(torch, "compile", compile_stub)
+        previous = dynamo_config.optimize_ddp
+        target = "python_reducer" if previous != "python_reducer" else False
+        compiler = Compiler(CompileConfig({"enabled": True, "optimize_ddp": target}))
+
+        compiled = compiler.compile(torch.nn.Identity())
+        assert dynamo_config.optimize_ddp == previous
+        input = torch.ones(2)
+        torch.testing.assert_close(compiled(input), input)
+        assert observed == [target]
+
+        modules = (torch.nn.Identity(), torch.nn.Identity())
+        hooks = []
+        modules[0].register_forward_pre_hook(lambda *_: hooks.append("pre"))
+        modules[0].register_forward_hook(lambda *_: hooks.append("post"))
+        assert compiler.compile_modules(modules) == modules
+        for module in modules:
+            torch.testing.assert_close(module(input), input)
+        assert observed == [target, target, target]
+        assert hooks == ["pre", "post"]
         assert dynamo_config.optimize_ddp == previous
