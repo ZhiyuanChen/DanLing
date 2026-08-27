@@ -286,15 +286,19 @@ leading logical prefix and `packed_dim_order` is the identity. The packed
 leading dimension is unchanged, while `atom_values.shape[1:]` becomes the new
 static tail.
 
-Explicit canonical multi-ragged layouts also retain one tensor-backed
-row-splits child per ragged level. These children are available through
-`ragged_level_offsets(level)` and travel with `packed_like`, static-tail
-reconstruction, autograd transforms, and serialization. Because per-sample
-lengths are tensor inputs rather than Python flatten metadata, fixed-rank
-layouts such as `(N_i, N_i, C)` can reuse one `torch.compile(dynamic=True)`
-graph across different `N_i`. This does not expose the private child names or
-add a general packed constructor; inferred and noncanonical layouts keep their
-existing contracts.
+Explicit multi-ragged layouts retain one tensor-backed row-splits child per
+ragged level whenever `packed_dim_order` begins with `ragged_dims`. The ragged
+dimensions need not be a leading logical prefix: for example, elements shaped
+`(1, H, N_i, N_i)` with `ragged_dims=(2, 3)` pack in `(2, 3, 0, 1)` order and
+remain tensor-backed. These children are available through
+`ragged_level_offsets(level)` and travel with `packed_like`, shape-preserving
+static-tail operations, autograd transforms, and serialization. Because
+per-sample lengths are tensor inputs rather than Python flatten metadata,
+fixed-rank layouts such as `(N_i, N_i, C)` can reuse one
+`torch.compile(dynamic=True)` graph across different `N_i`. This does not
+expose the private child names or add a general packed constructor; inferred
+layouts keep their existing Python-metadata contract, and
+`packed_with_static_tail` still requires canonical leading ragged dimensions.
 
 When an operator produces a new one-dimensional ragged topology, use a concrete
 CPU integer lengths tensor:

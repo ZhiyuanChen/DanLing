@@ -429,11 +429,11 @@ class NestedTensor(torch.Tensor):
         permutation: tuple[int, ...] | None,
         ragged_dims: tuple[int, ...] | None,
     ) -> bool:
-        r"""Return whether tensor metadata can fully encode this canonical layout."""
+        r"""Return whether tensor metadata fully encodes an explicit packed-prefix layout."""
         if not ragged_dims or permutation is None:
             return False
-        canonical_ragged_dims = tuple(range(len(ragged_dims)))
-        return ragged_dims == canonical_ragged_dims and tuple(permutation) == tuple(range(len(permutation)))
+        ragged_rank = len(ragged_dims)
+        return tuple(permutation[:ragged_rank]) == tuple(ragged_dims)
 
     @classmethod
     def _ragged_offset_names(cls, ragged_rank: int) -> tuple[str, ...]:
@@ -443,16 +443,16 @@ class NestedTensor(torch.Tensor):
         return tuple(f"{cls._RAGGED_OFFSETS_PREFIX}{level}" for level in range(ragged_rank))
 
     @classmethod
-    def _build_canonical_ragged_offsets(
+    def _build_explicit_ragged_offsets(
         cls,
         shape_tensor: Tensor,
         ragged_dims: tuple[int, ...],
         *,
         dtype: torch.dtype,
     ) -> tuple[Tensor, ...]:
-        r"""Build CSR row splits for a rectangular-per-element ragged hierarchy."""
+        r"""Build CSR row splits for an explicit packed-prefix ragged hierarchy."""
         if _is_fake_tensor(shape_tensor):
-            raise RuntimeError("Cannot derive multi-ragged offsets from data-less FakeTensor shape metadata.")
+            raise RuntimeError("Cannot derive explicit multi-ragged offsets from data-less FakeTensor shape metadata.")
         batch_size = int(shape_tensor.size(0))
         parent_counts = torch.ones(batch_size, dtype=torch.long, device=shape_tensor.device)
         offsets: list[Tensor] = []
@@ -473,10 +473,10 @@ class NestedTensor(torch.Tensor):
         ragged_offsets: tuple[Tensor, ...] | None = None,
         element_shapes: tuple[tuple[int, ...], ...] | None = None,
     ) -> tuple[Tensor, ...] | None:
-        r"""Resolve persistent row splits for an explicit canonical ragged layout."""
+        r"""Resolve persistent row splits for an explicit packed-prefix ragged layout."""
         if not cls._is_tensor_backed_layout(permutation, ragged_dims):
             if ragged_offsets is not None:
-                raise ValueError("ragged_offsets are only valid for an explicit canonical ragged layout")
+                raise ValueError("ragged_offsets require an explicit layout whose packed order begins with ragged_dims")
             return None
         assert ragged_dims is not None
         ragged_rank = len(ragged_dims)
@@ -496,7 +496,7 @@ class NestedTensor(torch.Tensor):
             if element_shapes is None:
                 _compile_unsupported(
                     "NestedTensor._from_packed",
-                    "canonical multi-ragged FakeTensor rebuilds require concrete element shapes or persistent offsets",
+                    "explicit multi-ragged FakeTensor rebuilds require concrete element shapes or persistent offsets",
                 )
             assert element_shapes is not None
             level_sizes = cls._hierarchical_level_sizes_from_element_shapes(element_shapes, ragged_dims)
@@ -504,9 +504,9 @@ class NestedTensor(torch.Tensor):
         if _is_compiling():
             _compile_unsupported(
                 "NestedTensor._from_packed",
-                "canonical multi-ragged rebuilds require persistent ragged offset tensors",
+                "explicit multi-ragged rebuilds require persistent ragged offset tensors",
             )
-        return cls._build_canonical_ragged_offsets(shape_tensor, ragged_dims, dtype=offsets.dtype)
+        return cls._build_explicit_ragged_offsets(shape_tensor, ragged_dims, dtype=offsets.dtype)
 
     @classmethod
     def _install_persistent_ragged_offsets(
@@ -941,7 +941,7 @@ class NestedTensor(torch.Tensor):
         tensor_backed_layout = cls._is_tensor_backed_layout(permutation, normalized_ragged_dims)
         if ragged_offsets is not None:
             if not tensor_backed_layout:
-                raise ValueError("ragged_offsets are only valid for an explicit canonical ragged layout")
+                raise ValueError("ragged_offsets require an explicit layout whose packed order begins with ragged_dims")
             if len(ragged_offsets) != len(normalized_ragged_dims):
                 raise ValueError(
                     f"Expected {len(normalized_ragged_dims)} ragged offset tensors, got {len(ragged_offsets)}"
@@ -1031,7 +1031,7 @@ class NestedTensor(torch.Tensor):
                 f"and values.shape[0]={int(values.shape[0])}"
             )
         if ragged_offsets is not None:
-            expected_ragged_offsets = cls._build_canonical_ragged_offsets(
+            expected_ragged_offsets = cls._build_explicit_ragged_offsets(
                 shape_tensor,
                 normalized_ragged_dims,
                 dtype=offsets.dtype,
@@ -1474,7 +1474,7 @@ class NestedTensor(torch.Tensor):
                 missing = tuple(name for name in names if name not in inner_tensors)
                 if missing:
                     raise RuntimeError(
-                        "NestedTensor canonical multi-ragged unflatten is missing row-split children: "
+                        "NestedTensor tensor-backed multi-ragged unflatten is missing row-split children: "
                         + ", ".join(missing)
                     )
                 ragged_offsets = tuple(inner_tensors[name] for name in names)

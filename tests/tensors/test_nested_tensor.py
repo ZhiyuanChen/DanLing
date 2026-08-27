@@ -512,17 +512,163 @@ class TestDeclaredRaggedDims:
         assert ctx["packed_sizes"] is None
         assert ctx["element_shapes"] is None
 
-    def test_only_explicit_canonical_multiragged_layouts_use_persistent_offsets(self):
+    def test_only_explicit_packed_prefix_multiragged_layouts_use_persistent_offsets(self):
         inferred = NestedTensor([torch.empty(2, 3, 5), torch.empty(1, 4, 5)])
-        noncanonical = NestedTensor(
+        explicit_permuted = NestedTensor(
             [torch.empty(2, 3, 5), torch.empty(2, 3, 5)],
             ragged_dims=(1, 0),
         )
+        inferred_permuted = inferred.permute(0, 3, 1, 2)
 
         assert inferred._persistent_ragged_offsets() is None
-        assert noncanonical._persistent_ragged_offsets() is None
+        assert inferred_permuted._persistent_ragged_offsets() is None
+        assert explicit_permuted._persistent_ragged_offsets() is not None
         assert inferred.__tensor_flatten__()[1]["element_shapes"] is not None
-        assert noncanonical.__tensor_flatten__()[1]["element_shapes"] is not None
+        assert inferred_permuted.__tensor_flatten__()[1]["element_shapes"] is not None
+        assert explicit_permuted.__tensor_flatten__()[1]["element_shapes"] is None
+
+    @pytest.mark.parametrize(
+        ("kind", "ragged_dims", "packed_order", "packed_shape", "dynamic_dims"),
+        [
+            ("shared", (2, 3), (2, 3, 0, 1), (13, 1, 4), {3, 4}),
+            ("full", (0, 2, 3), (0, 2, 3, 1), (35, 4), {1, 3, 4}),
+        ],
+    )
+    def test_permuted_triangle_bias_layouts_are_tensor_backed(
+        self,
+        kind,
+        ragged_dims,
+        packed_order,
+        packed_shape,
+        dynamic_dims,
+    ):
+        lengths = (2, 3)
+        heads = 4
+        if kind == "shared":
+            elements = [torch.randn(1, heads, length, length) for length in lengths]
+        else:
+            elements = [torch.randn(length, heads, length, length) for length in lengths]
+
+        nested = NestedTensor(elements, ragged_dims=ragged_dims)
+        offsets = nested._persistent_ragged_offsets()
+        attrs, context = nested.__tensor_flatten__()
+
+        assert nested.ragged_dims == ragged_dims
+        assert nested.packed_dim_order == packed_order
+        assert nested.concat.shape == packed_shape
+        assert offsets is not None
+        assert offsets[0].tolist() == [0, 2, 5]
+        assert offsets[1].tolist() == [0, 2, 4, 7, 10, 13]
+        assert offsets[-1][-1].item() == packed_shape[0]
+        assert len(offsets) == len(ragged_dims)
+        assert all(f"_ragged_offsets_{level}" in attrs for level in range(len(ragged_dims)))
+        assert context["packed_sizes"] is None
+        assert context["element_shapes"] is None
+        assert nested._dynamo_propagated_dynamic_indices == dynamic_dims
+        assert nested.concat._dynamo_propagated_dynamic_indices == {0}
+        assert all(offset._dynamo_propagated_dynamic_indices == {0} for offset in offsets)
+        for actual, expected in zip(nested, elements):
+            assert_close(actual, expected)
+
+    def test_permuted_triangle_bias_dynamic_dims_respect_nonleading_batch(self):
+        lengths = (2, 3)
+        shared = NestedTensor(
+            [torch.empty(1, 4, length, length) for length in lengths],
+            ragged_dims=(2, 3),
+            batch_first=False,
+        )
+        full = NestedTensor(
+            [torch.empty(length, 4, length, length) for length in lengths],
+            ragged_dims=(0, 2, 3),
+            batch_first=False,
+        )
+
+        assert shared._dynamo_propagated_dynamic_indices == {3, 4}
+        assert full._dynamo_propagated_dynamic_indices == {0, 3, 4}
+
+    @pytest.mark.parametrize("kind", ["shared", "full"])
+    def test_permuted_triangle_bias_fake_copy_pickle_and_rebuild(self, kind):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        lengths = (2, 3)
+        heads = 4
+        if kind == "shared":
+            reference = NestedTensor(
+                [torch.randn(1, heads, length, length) for length in lengths],
+                ragged_dims=(2, 3),
+            )
+        else:
+            reference = NestedTensor(
+                [torch.randn(length, heads, length, length) for length in lengths],
+                ragged_dims=(0, 2, 3),
+            )
+        expected_offsets = tuple(offset.tolist() for offset in reference._hierarchical_offsets)
+
+        rebuilt = reference.packed_like(torch.randn_like(reference.concat))
+        outputs = (
+            rebuilt,
+            copy.copy(reference),
+            copy.deepcopy(reference),
+            reference.clone(),
+            reference.detach(),
+            pickle.loads(pickle.dumps(reference)),
+        )
+        for output in outputs:
+            assert output.ragged_dims == reference.ragged_dims
+            assert output.packed_dim_order == reference.packed_dim_order
+            assert tuple(offset.tolist() for offset in output._hierarchical_offsets) == expected_offsets
+            assert output.__tensor_flatten__()[1]["element_shapes"] is None
+
+        with fake_tensor_mod.FakeTensorMode() as mode:
+            fake_reference = mode.from_tensor(reference)
+            fake_output = fake_reference.packed_like(torch.empty_like(fake_reference.concat))
+
+        assert fake_tensor_mod.is_fake(fake_output.concat)
+        assert all(fake_tensor_mod.is_fake(offset) for offset in fake_output._hierarchical_offsets)
+        assert fake_output.ragged_dims == reference.ragged_dims
+        assert fake_output.packed_dim_order == reference.packed_dim_order
+        assert fake_output.__tensor_flatten__()[1]["element_shapes"] is None
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize("kind", ["shared", "full"])
+    def test_permuted_triangle_bias_reuses_dynamic_layout_and_static_tail_backward(self, kind):
+        from torch._dynamo.testing import CompileCounter
+
+        counter = CompileCounter()
+
+        def consume(nested):
+            reduced = nested.sum(2, keepdim=True)
+            rebuilt = reduced.packed_like(reduced.concat.square())
+            return (rebuilt.concat.sum(),) + tuple(
+                rebuilt.ragged_level_offsets(level) for level in range(len(rebuilt.ragged_dims))
+            )
+
+        compiled = torch.compile(consume, backend=counter, fullgraph=True, dynamic=True)
+        for lengths in ((2, 3), (3, 5)):
+            heads = 4
+            if kind == "shared":
+                template = NestedTensor(
+                    [torch.empty(1, heads, length, length) for length in lengths],
+                    ragged_dims=(2, 3),
+                )
+            else:
+                template = NestedTensor(
+                    [torch.empty(length, heads, length, length) for length in lengths],
+                    ragged_dims=(0, 2, 3),
+                )
+            values = torch.randn_like(template.concat, requires_grad=True)
+            nested = template.packed_like(values)
+
+            loss, *offsets = compiled(nested)
+            loss.backward()
+
+            expected_sum = values.sum(-1, keepdim=True)
+            assert_close(values.grad, 2 * expected_sum.expand_as(values))
+            assert len(offsets) == len(template.ragged_dims)
+            assert all(
+                torch.equal(actual, expected) for actual, expected in zip(offsets, template._hierarchical_offsets)
+            )
+
+        assert counter.frame_count == 1
 
     def test_default_pair_topology_keeps_existing_inference(self):
         nested = NestedTensor([torch.randn(4, 4, 3), torch.randn(4, 4, 3)])
@@ -1172,10 +1318,16 @@ class TestPackedWithStaticTail:
 
     def test_rejects_noncanonical_or_missing_ragged_topology(self):
         reference = NestedTensor([torch.empty(2, 3), torch.empty(4, 3)]).permute(0, 2, 1)
+        permuted_explicit = NestedTensor(
+            [torch.empty(1, 4, 2, 2), torch.empty(1, 4, 3, 3)],
+            ragged_dims=(2, 3),
+        )
         scalar_reference = NestedTensor([torch.tensor(1.0), torch.tensor(2.0)])
 
         with pytest.raises(ValueError, match="canonical packed order"):
             reference.packed_with_static_tail(torch.empty(reference.concat.shape[0], 5))
+        with pytest.raises(ValueError, match="canonical packed order"):
+            permuted_explicit.packed_with_static_tail(torch.empty(permuted_explicit.concat.shape[0], 5))
         with pytest.raises(ValueError, match="at least one ragged dimension"):
             scalar_reference.packed_with_static_tail(torch.empty(2, 5))
 
