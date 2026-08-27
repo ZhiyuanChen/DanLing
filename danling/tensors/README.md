@@ -275,6 +275,10 @@ def _my_handler(func, args, kwargs):
 `packed_like` requires the packed output shape to remain unchanged. Operations
 that change element shapes must rebuild the corresponding shape metadata instead.
 
+Critical packed paths can use `nested_execution_guard` from `danling.tensors` in
+tests or diagnostics to reject iteration, per-element fallback, padded
+materialization, or dense repacking instead of silently accepting a slow path.
+
 ## Benchmarks
 
 Benchmarked on a single NVIDIA B200 180GB GPU with PyTorch 2.11, bfloat16.

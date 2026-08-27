@@ -23,7 +23,7 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from danling.tensors import NestedTensor, aten_functions, nn_functions
+from danling.tensors import NestedTensor, aten_functions, nested_execution_guard, nn_functions
 from danling.tensors.ops import (
     NestedTensorAtenRegistry,
     NestedTensorFuncRegistry,
@@ -33,7 +33,6 @@ from danling.tensors.ops import (
     _stack_or_nest,
     _translate_dim,
     _translate_dims,
-    nested_execution_guard,
 )
 
 NT = NestedTensor
