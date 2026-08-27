@@ -83,8 +83,8 @@ def test_channel_shuffle_packed_chw_backward(device):
     reference = NT([F.channel_shuffle(t, groups=2) for t in reference_input], **input._meta())
 
     assert_close(output, reference)
-    output._values.square().sum().backward()
-    reference._values.square().sum().backward()
+    output.concat.square().sum().backward()
+    reference.concat.square().sum().backward()
     for tensor, reference_tensor in zip(tensors, reference_tensors):
         assert_close(tensor.grad, reference_tensor.grad)
 
@@ -115,8 +115,8 @@ def test_pixel_shuffle_backward(device):
     reference = NT([F.pixel_shuffle(t, upscale_factor=2) for t in reference_input], **input._meta())
 
     assert_close(output, reference)
-    output._values.square().sum().backward()
-    reference._values.square().sum().backward()
+    output.concat.square().sum().backward()
+    reference.concat.square().sum().backward()
     for tensor, reference_tensor in zip(tensors, reference_tensors):
         assert_close(tensor.grad, reference_tensor.grad)
 
@@ -147,8 +147,8 @@ def test_pixel_unshuffle_backward(device):
     reference = NT([F.pixel_unshuffle(t, downscale_factor=2) for t in reference_input], **input._meta())
 
     assert_close(output, reference)
-    output._values.square().sum().backward()
-    reference._values.square().sum().backward()
+    output.concat.square().sum().backward()
+    reference.concat.square().sum().backward()
     for tensor, reference_tensor in zip(tensors, reference_tensors):
         assert_close(tensor.grad, reference_tensor.grad)
 

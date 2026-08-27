@@ -26,6 +26,7 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
+from ..ops import _static_channels_match
 from ._pooling import (
     _from_pool_values,
     _per_element,
@@ -106,19 +107,21 @@ def max_pool2d(
 
 
 def _can_use_packed_pool2d(input: NestedTensor) -> bool:
-    if len(input) == 0 or triton is None or not input._values.is_cuda:
+    if len(input) == 0 or triton is None or not input.concat.is_cuda:
+        return False
+    # These kernels accumulate in float32; other dtypes retain native semantics.
+    if input.concat.dtype not in (torch.float16, torch.bfloat16, torch.float32):
         return False
     if input._physical_shape.size(1) != 3:
         return False
     if input._element_shapes is not None and any(len(shape) != 3 for shape in input._element_shapes):
         return False
-    if tuple(int(dim) for dim in input._permutation) != (1, 2, 0) or input._values.dim() != 2:
+    if tuple(int(dim) for dim in input._permutation) != (1, 2, 0) or input.concat.dim() != 2:
         return False
 
-    channels = int(input._physical_shape[0, 0])
-    if int(input._values.shape[1]) != channels:
-        return False
-    return bool(torch.equal(input._physical_shape[:, 0], torch.full_like(input._physical_shape[:, 0], channels)))
+    # Read the channel count from the packed values (a static dim) rather than the
+    # metadata tensor, whose entries are data-dependent under tracing.
+    return _static_channels_match(input._physical_shape, int(input.concat.shape[1]))
 
 
 def _pool2d_output_meta(
@@ -159,7 +162,7 @@ def _make_pool2d_metadata(
     output_offsets: Tensor,
     tile_counts: tuple[int, ...],
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    device = input._values.device
+    device = input.concat.device
     input_shapes = _resolve_element_shapes(input)
     shape_meta = torch.tensor(
         [
@@ -192,6 +195,8 @@ if triton is not None:
         tile_to_batch_ptr,
         batch_count: tl.constexpr,
         channels: tl.constexpr,
+        input_stride_l,
+        input_stride_c,
         kernel_h: tl.constexpr,
         kernel_w: tl.constexpr,
         stride_h: tl.constexpr,
@@ -232,8 +237,8 @@ if triton is not None:
                 safe_in_x = tl.where(valid, in_x, 0)
                 values = tl.load(
                     input_ptr
-                    + (input_base + safe_in_y[:, None] * in_w + safe_in_x[:, None]) * channels
-                    + offsets_c[None, :],
+                    + (input_base + safe_in_y[:, None] * in_w + safe_in_x[:, None]) * input_stride_l
+                    + offsets_c[None, :] * input_stride_c,
                     mask=valid[:, None] & (offsets_c[None, :] < channels),
                     other=0.0,
                 )
@@ -349,6 +354,8 @@ if triton is not None:
         tile_to_batch_ptr,
         batch_count: tl.constexpr,
         channels: tl.constexpr,
+        input_stride_l,
+        input_stride_c,
         kernel_h: tl.constexpr,
         kernel_w: tl.constexpr,
         stride_h: tl.constexpr,
@@ -390,8 +397,8 @@ if triton is not None:
                 safe_in_x = tl.where(valid, in_x, 0)
                 values = tl.load(
                     input_ptr
-                    + (input_base + safe_in_y[:, None] * in_w + safe_in_x[:, None]) * channels
-                    + offsets_c[None, :],
+                    + (input_base + safe_in_y[:, None] * in_w + safe_in_x[:, None]) * input_stride_l
+                    + offsets_c[None, :] * input_stride_c,
                     mask=valid[:, None] & (offsets_c[None, :] < channels),
                     other=-float("inf"),
                 )
@@ -425,6 +432,8 @@ if triton is not None:
         tile_to_batch_ptr,
         batch_count: tl.constexpr,
         channels: tl.constexpr,
+        input_stride_l,
+        input_stride_c,
         kernel_h: tl.constexpr,
         kernel_w: tl.constexpr,
         stride_h: tl.constexpr,
@@ -465,7 +474,9 @@ if triton is not None:
                 safe_in_x = tl.where(valid, in_x, 0)
                 input_index = safe_in_y * in_w + safe_in_x
                 values = tl.load(
-                    input_ptr + (input_base + input_index[:, None]) * channels + offsets_c[None, :],
+                    input_ptr
+                    + (input_base + input_index[:, None]) * input_stride_l
+                    + offsets_c[None, :] * input_stride_c,
                     mask=valid[:, None] & (offsets_c[None, :] < channels),
                     other=-float("inf"),
                 )
@@ -567,6 +578,8 @@ class _PackedAvgPool2dFunction(torch.autograd.Function):
             tile_to_batch,
             batch_count,
             channels,
+            input_values.stride(0),
+            input_values.stride(1),
             kernel_h,
             kernel_w,
             stride_h,
@@ -670,6 +683,8 @@ class _PackedMaxPool2dFunction(torch.autograd.Function):
             tile_to_batch,
             batch_count,
             channels,
+            input_values.stride(0),
+            input_values.stride(1),
             kernel_h,
             kernel_w,
             stride_h,
@@ -726,7 +741,9 @@ class _PackedMaxPool2dFunction(torch.autograd.Function):
             return (grad_input, *([None] * 17))
 
         input_values, input_offsets, output_offsets, shape_meta, tile_offsets, tile_to_batch = ctx.saved_tensors
-        grad_input = torch.zeros_like(input_values)
+        # Gradients address logical packed coordinates even when input storage
+        # is transposed, sliced, or expanded. Autograd applies the view's VJP.
+        grad_input = input_values.new_zeros(ctx.input_shape)
         _max_pool2d_backward_kernel[grid](
             input_values,
             grad_output,
@@ -738,6 +755,8 @@ class _PackedMaxPool2dFunction(torch.autograd.Function):
             tile_to_batch,
             ctx.batch_count,
             ctx.channels,
+            input_values.stride(0),
+            input_values.stride(1),
             ctx.kernel_h,
             ctx.kernel_w,
             ctx.stride_h,
@@ -784,7 +803,7 @@ def _packed_avg_pool2d(
     output_shapes, output_packed_sizes, output_shape_tensor = output_meta
     output_offsets = type(input)._offsets_from_sizes(output_packed_sizes, dtype=torch.long)
     total_out = int(output_offsets[-1].item())
-    channels = int(input._values.shape[1])
+    channels = int(input.concat.shape[1])
     tile_counts = _pool2d_tile_counts(output_shapes, _pool_block_size()[0])
     input_offsets, output_offsets_device, shape_meta, tile_offsets, tile_to_batch = _make_pool2d_metadata(
         input,
@@ -793,7 +812,7 @@ def _packed_avg_pool2d(
         tile_counts,
     )
     output_values = _PackedAvgPool2dFunction.apply(
-        input._values,
+        input.concat,
         input_offsets,
         output_offsets_device,
         shape_meta,
@@ -846,7 +865,7 @@ def _packed_max_pool2d(
     output_shapes, output_packed_sizes, output_shape_tensor = output_meta
     output_offsets = type(input)._offsets_from_sizes(output_packed_sizes, dtype=torch.long)
     total_out = int(output_offsets[-1].item())
-    channels = int(input._values.shape[1])
+    channels = int(input.concat.shape[1])
     tile_counts = _pool2d_tile_counts(output_shapes, _pool_block_size()[0])
     input_offsets, output_offsets_device, shape_meta, tile_offsets, tile_to_batch = _make_pool2d_metadata(
         input,
@@ -855,7 +874,7 @@ def _packed_max_pool2d(
         tile_counts,
     )
     output_values = _PackedMaxPool2dFunction.apply(
-        input._values,
+        input.concat,
         input_offsets,
         output_offsets_device,
         shape_meta,

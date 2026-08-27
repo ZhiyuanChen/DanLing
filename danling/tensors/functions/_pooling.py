@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Callable
 import torch
 from torch import Tensor
 
-from ..ops import _check_execution_guard, _ExecutionGuardKind
+from ..ops import _check_execution_guard, _ExecutionGuardKind, _per_element_unsupported
 
 if TYPE_CHECKING:
     from ..nested_tensor import NestedTensor
@@ -40,6 +40,7 @@ except Exception:  # pragma: no cover - optional dependency/runtime
 
 def _per_element(input: NestedTensor, fn: Callable, *args, **kwargs) -> NestedTensor:
     _check_execution_guard(_ExecutionGuardKind.STORAGE_MAP, f"{fn.__name__}_per_element")
+    _per_element_unsupported(input, fn.__name__)
     cls = type(input)
     if len(input) == 0:
         return cls([], **input._meta(include_dtype=True))
@@ -49,6 +50,7 @@ def _per_element(input: NestedTensor, fn: Callable, *args, **kwargs) -> NestedTe
 
 def _per_element_pair(input: NestedTensor, fn: Callable, *args, **kwargs) -> tuple[NestedTensor, NestedTensor]:
     _check_execution_guard(_ExecutionGuardKind.STORAGE_MAP, f"{fn.__name__}_per_element")
+    _per_element_unsupported(input, fn.__name__)
     cls = type(input)
     if len(input) == 0:
         empty = cls([], **input._meta(include_dtype=True))
@@ -85,6 +87,7 @@ def _tile_to_batch(tile_counts: tuple[int, ...], *, device: torch.device) -> Ten
     return torch.repeat_interleave(
         torch.arange(len(tile_counts), dtype=torch.long, device=device),
         torch.tensor(tile_counts, dtype=torch.long, device=device),
+        output_size=tile_count,
     )
 
 
@@ -105,6 +108,7 @@ def _from_pool_values(
         output_offsets,
         output_shape_tensor,
         permutation=input._permutation,
+        ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
         batch_first=input.batch_first,
         padding_value=input.padding_value,
         mask_value=input.mask_value,
