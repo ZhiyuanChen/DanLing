@@ -40,6 +40,7 @@ Tier A set of transformer-hot packed handlers stays compile-safe.
 from __future__ import annotations
 
 import functools
+import inspect
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
@@ -77,6 +78,7 @@ from .ops import (
     _is_compiling,
     _map_storage_pair,
     _map_storage_serial,
+    _physical_to_values_dim,
     _run_layer_norm,
     _run_rms_norm,
     _translate_non_batch_dim,
@@ -84,6 +86,8 @@ from .ops import (
 )
 
 if TYPE_CHECKING:
+    from torch.nn.attention.flex_attention import FlexKernelOptions
+
     from .nested_tensor import NestedTensor
 
 _LOW_PRECISION_CUDA_DTYPES = {torch.float16, torch.bfloat16}
@@ -95,11 +99,18 @@ try:
     from torch.nn.attention.flex_attention import create_block_mask as _torch_create_block_mask
     from torch.nn.attention.flex_attention import flex_attention as _torch_flex_attention
 except Exception:
-    _torch_flex_attention_module = None
-    _torch_flex_attention = None
-    _torch_create_block_mask = None
-    _FlexAuxOutput = None
-    _TorchBlockMask = None
+    _flex_attention_available = False
+else:
+    _flex_attention_available = True
+
+# Read the runtime exports omitted by Torch's functional stub.
+_torch_in_projection: Callable[
+    [Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor | None, Tensor | None, Tensor | None],
+    tuple[Tensor, Tensor, Tensor],
+] = vars(F)["_in_projection"]
+_torch_in_projection_packed: Callable[
+    [Tensor, Tensor, Tensor, Tensor, Tensor | None], tuple[Tensor, Tensor, Tensor]
+] = vars(F)["_in_projection_packed"]
 
 
 # Helpers
@@ -138,15 +149,14 @@ def _concat_tensors(*values: NestedTensor | Tensor) -> tuple[Tensor, ...]:
     result = []
     for v in values:
         if isinstance(v, NestedTensor):
-            result.append(v.concat)  # type: ignore[union-attr]
-        elif v.dim() < ref.dim():  # type: ignore[union-attr]
+            result.append(v.concat)
+        elif v.dim() < ref.dim():
             # Per-sample tensor (e.g. labels [B]) — pass through unchanged
             result.append(v)
         else:
-            if v.shape != ref.shape:  # type: ignore[union-attr]
+            if v.shape != ref.shape:
                 raise ValueError(
-                    f"Cannot apply NestedTensor mask (shape {tuple(ref.shape)}) "  # type: ignore[union-attr]
-                    f"to tensor of shape {tuple(v.shape)}"
+                    f"Cannot apply NestedTensor mask (shape {tuple(ref.shape)}) " f"to tensor of shape {tuple(v.shape)}"
                 )
             packed = ref._dense_to_packed_values(v)
             if packed is None:
@@ -322,16 +332,16 @@ def _apply_pair(input: NestedTensor | Tensor, other: NestedTensor | Tensor, op: 
     from .nested_tensor import NestedTensor
 
     cls = type(input) if isinstance(input, NestedTensor) else type(other)
-    input = _ensure_nested_input(input, other, cls)
-    if len(input) == 0:
-        return cls([], **input._meta(include_dtype=True))
-    if isinstance(other, NestedTensor) and len(input) != len(other):
+    nested: NestedTensor = _ensure_nested_input(input, other, cls)
+    if len(nested) == 0:
+        return cls([], **nested._meta(include_dtype=True))
+    if isinstance(other, NestedTensor) and len(nested) != len(other):
         raise ValueError(
-            "NestedTensor batch length mismatch between input and other: " f"input={len(input)}, other={len(other)}"
+            "NestedTensor batch length mismatch between input and other: " f"input={len(nested)}, other={len(other)}"
         )
     if isinstance(other, NestedTensor):
-        return cls((op(x, y, *args, **kwargs) for x, y in zip(input._storage, other._storage)), **input._meta())
-    return _map_storage_serial(input, lambda x: op(x, other, *args, **kwargs))
+        return cls((op(x, y, *args, **kwargs) for x, y in zip(nested._storage, other._storage)), **nested._meta())
+    return _map_storage_serial(nested, lambda x: op(x, other, *args, **kwargs))
 
 
 def _apply_packed(input: NestedTensor, op: Callable, *args, **kwargs) -> NestedTensor:
@@ -351,19 +361,18 @@ def _apply_packed(input: NestedTensor, op: Callable, *args, **kwargs) -> NestedT
     return _concat_apply_same_shape(input, lambda t: op(t, *args, **kwargs))
 
 
-# Activations — registered so they run on packed _values with autograd preserved.
+# Activations — registered so they run on packed concat with autograd preserved.
 # The inplace flag is stripped since the wrapper subclass is always an autograd leaf.
 
 
 def _activation_handler(input: NestedTensor, *args, _fn=None, inplace=False, **kwargs):
-    r"""Run an activation function on packed _values, ignoring the inplace flag."""
-    from .aten_functions import _packed_like
+    r"""Run an activation function on packed concat, ignoring the inplace flag."""
 
-    new_values = _fn(input._values, *args, **kwargs)
-    return _packed_like(input, new_values)
+    new_values = _fn(input.concat, *args, **kwargs)
+    return input._packed_like_unchecked(new_values)
 
 
-NN_ACTIVATION_OPS = [
+NN_ACTIVATION_OPS: list[Callable[..., Tensor]] = [
     F.relu,
     F.relu6,
     F.elu,
@@ -492,12 +501,12 @@ def _sdpa_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
         _is_native_attention_layout(query)
         and _is_native_attention_layout(key)
         and _is_native_attention_layout(value)
-        and query._values.is_cuda
+        and query.concat.is_cuda
     ):
         return False
     if query.dtype in _LOW_PRECISION_CUDA_DTYPES and torch.backends.cuda.flash_sdp_enabled():
         return True
-    return dropout_p == 0.0 and _torch_flex_attention is not None
+    return dropout_p == 0.0 and _flex_attention_available
 
 
 def _mha_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
@@ -540,12 +549,12 @@ def _mha_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
         or query._physical_shape.size(1) != 2
         or key._physical_shape.size(1) != 2
         or value._physical_shape.size(1) != 2
-        or query._values.dim() != 2
-        or key._values.dim() != 2
-        or value._values.dim() != 2
-        or not query._values.is_cuda
-        or not key._values.is_cuda
-        or not value._values.is_cuda
+        or query.concat.dim() != 2
+        or key.concat.dim() != 2
+        or value.concat.dim() != 2
+        or not query.concat.is_cuda
+        or not key.concat.is_cuda
+        or not value.concat.is_cuda
     ):
         return False
     head_dim = embed_dim_to_check // num_heads
@@ -554,23 +563,42 @@ def _mha_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
     effective_dropout_p = dropout_p if training else 0.0
     if query.dtype in _LOW_PRECISION_CUDA_DTYPES and torch.backends.cuda.flash_sdp_enabled():
         return True
-    return effective_dropout_p == 0.0 and _torch_flex_attention is not None
+    return effective_dropout_p == 0.0 and _flex_attention_available
 
 
-def _dropout_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
-    r"""Return whether a dropout call is a no-op under compile."""
-    training = bool(args[2] if len(args) > 2 else kwargs.get("training", True))
-    p = float(cast(Any, args[1] if len(args) > 1 else kwargs.get("p", 0.5)))
-    return (not training) or p == 0.0
+@functools.lru_cache(maxsize=None)
+def _training_default(fn: Callable) -> bool:
+    r"""Return an op's own ``training`` default.
+
+    The dropout variants do not agree on it -- ``alpha_dropout`` and
+    ``feature_alpha_dropout`` default to ``False`` while the rest default to ``True`` --
+    so a shared handler must read the default off the op rather than assume one.
+    """
+    parameter = inspect.signature(fn).parameters.get("training")
+    if parameter is None or parameter.default is inspect.Parameter.empty:
+        return True
+    return bool(parameter.default)
+
+
+def _make_dropout_compile_guard(fn: Callable) -> Callable[[tuple, dict[str, object]], bool]:
+    r"""Build the compile guard for one dropout variant, bound to that op's own defaults."""
+
+    def _dropout_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
+        r"""Return whether a dropout call is a no-op under compile."""
+        training = bool(args[2] if len(args) > 2 else kwargs.get("training", _training_default(fn)))
+        p = float(cast(Any, args[1] if len(args) > 1 else kwargs.get("p", 0.5)))
+        return (not training) or p == 0.0
+
+    return _dropout_compile_safe_inputs
 
 
 def _as_flex_packed_dense(nt: NestedTensor) -> Tensor:
     r"""Build a dense packed FlexAttention view shaped ``(1, heads, total_seq, dim)``."""
-    if _torch_flex_attention is None:
+    if not _flex_attention_available:
         raise RuntimeError("FlexAttention is unavailable in this PyTorch build.")
     if not _is_native_attention_layout(nt):
         raise ValueError("DanLing FlexAttention expects elements shaped like (heads, seq, dim).")
-    return nt._values.contiguous().movedim(1, 0).unsqueeze(0).contiguous()
+    return nt.concat.contiguous().movedim(1, 0).unsqueeze(0).contiguous()
 
 
 def _restore_flex_dense_tensor(output: Tensor, query: NestedTensor) -> NestedTensor:
@@ -600,7 +628,7 @@ def _restore_flex_output(output, query: NestedTensor):
     r"""Recursively convert dense packed FlexAttention outputs back into DanLing outputs."""
     if isinstance(output, Tensor) and output.dim() >= 3 and output.size(0) == 1:
         return _restore_flex_dense_tensor(output, query)
-    if _FlexAuxOutput is not None and isinstance(output, _FlexAuxOutput):
+    if _flex_attention_available and isinstance(output, _FlexAuxOutput):
         return type(output)(
             lse=_restore_flex_output(output.lse, query) if output.lse is not None else None,
             max_scores=_restore_flex_output(output.max_scores, query) if output.max_scores is not None else None,
@@ -613,6 +641,15 @@ def _restore_flex_output(output, query: NestedTensor):
 def _flex_allow_all(_batch, _head, q_idx, _kv_idx):
     r"""Default FlexAttention mask that allows every position inside each sequence."""
     return torch.ones_like(q_idx, dtype=torch.bool)
+
+
+def _flex_causal(_batch, _head, q_idx, kv_idx):
+    r"""FlexAttention mask that forbids attending to future positions inside each sequence.
+
+    ``_flex_wrap_mask_mod`` supplies per-sequence local indices and conjoins the
+    same-sequence guard, so this reproduces ``is_causal=True`` per ragged element.
+    """
+    return q_idx >= kv_idx
 
 
 def _flex_wrap_mask_mod(mask_mod: Callable, query: NestedTensor, key: NestedTensor) -> Callable:
@@ -670,16 +707,21 @@ def _flex_eager_ragged(
     value: NestedTensor,
     score_mod: Callable | None,
     scale: float | None,
+    is_causal: bool = False,
 ) -> NestedTensor:
     r"""Eager default FlexAttention per ragged element, so no dense ``total_seq**2`` densification."""
     outputs = []
     for index, (q, k, v) in enumerate(zip(query, key, value)):
         if score_mod is None:
-            outputs.append(F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, scale=scale))
+            outputs.append(F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=is_causal, scale=scale))
             continue
         softmax_scale = scale if scale is not None else q.shape[-1] ** -0.5
         scores = (q @ k.transpose(-1, -2)) * softmax_scale
         scores = _apply_score_mod_block(score_mod, scores, index)
+        if is_causal:
+            # Upper-left aligned, matching the dense is_causal contract for q_len != kv_len.
+            allowed = torch.ones(scores.shape[-2:], dtype=torch.bool, device=scores.device).tril()
+            scores = scores.masked_fill(~allowed, float("-inf"))
         outputs.append(torch.softmax(scores, dim=-1) @ v)
     return type(query)(outputs, **query._meta())
 
@@ -802,7 +844,7 @@ def create_flex_block_mask(
     compile_mask: bool = False,
 ):
     r"""Create a FlexAttention block mask directly from DanLing ragged attention storage."""
-    if _torch_create_block_mask is None:
+    if not _flex_attention_available:
         raise RuntimeError("FlexAttention is unavailable in this PyTorch build.")
     if key is None:
         key = query
@@ -835,7 +877,7 @@ def create_flex_block_mask(
     )
 
 
-if _torch_flex_attention is not None:
+if _flex_attention_available:
 
     @NestedTensorFuncRegistry.implement(_torch_flex_attention)
     def flex_attention(
@@ -847,12 +889,19 @@ if _torch_flex_attention is not None:
         scale: float | None = None,
         enable_gqa: bool = False,
         return_lse: bool = False,
-        kernel_options: dict | None = None,
+        kernel_options: FlexKernelOptions | None = None,
         *,
         return_aux=None,
+        is_causal: bool = False,
     ):
         r"""Run FlexAttention on DanLing ragged attention tensors via zero-copy jagged views."""
         from .nested_tensor import NestedTensor
+
+        if is_causal and block_mask is not None:
+            raise ValueError(
+                "FlexAttention cannot combine is_causal with an explicit block_mask. "
+                "Fold the causal condition into the block_mask's mask_mod instead."
+            )
 
         if not isinstance(query, NestedTensor):
             raise TypeError("query must be a NestedTensor")
@@ -889,7 +938,7 @@ if _torch_flex_attention is not None:
             and _is_native_attention_layout(key)
             and _is_native_attention_layout(value)
         ):
-            return _flex_eager_ragged(query, key, value, score_mod, scale)
+            return _flex_eager_ragged(query, key, value, score_mod, scale, is_causal)
 
         q_view = _as_flex_packed_dense(query)
         k_view = _as_flex_packed_dense(key)
@@ -898,13 +947,14 @@ if _torch_flex_attention is not None:
         # packed ragged sequence. Build the same-sequence block mask by default
         # so DanLing semantics match per-element dense attention.
         if block_mask is None:
+            default_mask_mod = _flex_causal if is_causal else _flex_allow_all
             if torch.compiler.is_compiling():
                 from torch._subclasses.fake_tensor import unset_fake_temporarily
 
                 with unset_fake_temporarily():
-                    block_mask = create_flex_block_mask(_flex_allow_all, query, key, compile_mask=True)
+                    block_mask = create_flex_block_mask(default_mask_mod, query, key, compile_mask=True)
             else:
-                block_mask = create_flex_block_mask(_flex_allow_all, query, key)
+                block_mask = create_flex_block_mask(default_mask_mod, query, key)
         wrapped_score_mod = _flex_wrap_score_mod(score_mod, query, key) if score_mod is not None else None
 
         if torch.compiler.is_compiling():
@@ -944,37 +994,23 @@ if _torch_flex_attention is not None:
 
     _danling_flex_attention = flex_attention
 
-    if _torch_flex_attention_module is not None:
+    def _public_flex_attention(
+        query,
+        key,
+        value,
+        score_mod=None,
+        block_mask=None,
+        scale=None,
+        enable_gqa: bool = False,
+        return_lse: bool = False,
+        kernel_options=None,
+        *,
+        return_aux=None,
+    ):
+        from .nested_tensor import NestedTensor
 
-        def _public_flex_attention(
-            query,
-            key,
-            value,
-            score_mod=None,
-            block_mask=None,
-            scale=None,
-            enable_gqa: bool = False,
-            return_lse: bool = False,
-            kernel_options=None,
-            *,
-            return_aux=None,
-        ):
-            from .nested_tensor import NestedTensor
-
-            if isinstance(query, NestedTensor) or isinstance(key, NestedTensor) or isinstance(value, NestedTensor):
-                return _danling_flex_attention(
-                    query,
-                    key,
-                    value,
-                    score_mod=score_mod,
-                    block_mask=block_mask,
-                    scale=scale,
-                    enable_gqa=enable_gqa,
-                    return_lse=return_lse,
-                    kernel_options=kernel_options,
-                    return_aux=return_aux,
-                )
-            return _torch_flex_attention(
+        if isinstance(query, NestedTensor) or isinstance(key, NestedTensor) or isinstance(value, NestedTensor):
+            return _danling_flex_attention(
                 query,
                 key,
                 value,
@@ -986,11 +1022,23 @@ if _torch_flex_attention is not None:
                 kernel_options=kernel_options,
                 return_aux=return_aux,
             )
+        return _torch_flex_attention(
+            query,
+            key,
+            value,
+            score_mod=score_mod,
+            block_mask=block_mask,
+            scale=scale,
+            enable_gqa=enable_gqa,
+            return_lse=return_lse,
+            kernel_options=kernel_options,
+            return_aux=return_aux,
+        )
 
-        _public_flex_attention.__name__ = _torch_flex_attention.__name__
-        _public_flex_attention.__qualname__ = _torch_flex_attention.__qualname__
-        _public_flex_attention.__doc__ = _torch_flex_attention.__doc__
-        _torch_flex_attention_module.flex_attention = _public_flex_attention
+    _public_flex_attention.__name__ = _torch_flex_attention.__name__
+    _public_flex_attention.__qualname__ = _torch_flex_attention.__qualname__
+    _public_flex_attention.__doc__ = _torch_flex_attention.__doc__
+    _torch_flex_attention_module.flex_attention = _public_flex_attention
 
 
 @NestedTensorFuncRegistry.implement(
@@ -1004,7 +1052,7 @@ def multi_head_attention_forward(
     value: NestedTensor | Tensor,
     embed_dim_to_check: int,
     num_heads: int,
-    in_proj_weight: Tensor,
+    in_proj_weight: Tensor | None,
     in_proj_bias: Tensor | None,
     bias_k: Tensor | None,
     bias_v: Tensor | None,
@@ -1153,9 +1201,9 @@ def multi_head_attention_forward(
         and query._physical_shape.size(1) == 2
         and key._physical_shape.size(1) == 2
         and value._physical_shape.size(1) == 2
-        and query._values.dim() == 2
-        and key._values.dim() == 2
-        and value._values.dim() == 2
+        and query.concat.dim() == 2
+        and key.concat.dim() == 2
+        and value.concat.dim() == 2
     ):
         head_dim = embed_dim_to_check // num_heads
         if head_dim * num_heads != embed_dim_to_check:
@@ -1173,10 +1221,10 @@ def multi_head_attention_forward(
                 b_q = b_k = b_v = None
             else:
                 b_q, b_k, b_v = in_proj_bias.chunk(3)
-            q_values, k_values, v_values = F._in_projection(
-                query._values,
-                key._values,
-                value._values,
+            q_values, k_values, v_values = _torch_in_projection(
+                query.concat,
+                key.concat,
+                value.concat,
                 q_proj_weight,
                 k_proj_weight,
                 v_proj_weight,
@@ -1185,10 +1233,12 @@ def multi_head_attention_forward(
                 b_v,
             )
         else:
-            q_values, k_values, v_values = F._in_projection_packed(
-                query._values,
-                key._values,
-                value._values,
+            if in_proj_weight is None:
+                raise ValueError("in_proj_weight is required when use_separate_proj_weight=False")
+            q_values, k_values, v_values = _torch_in_projection_packed(
+                query.concat,
+                key.concat,
+                value.concat,
                 in_proj_weight,
                 in_proj_bias,
             )
@@ -1197,13 +1247,11 @@ def multi_head_attention_forward(
         k_heads = k_values.unflatten(-1, (num_heads, head_dim)).contiguous()
         v_heads = v_values.unflatten(-1, (num_heads, head_dim)).contiguous()
 
-        from .aten_functions import _packed_like
-
         q_attn = _project_attention_values(query, q_heads, num_heads, head_dim)
         k_attn = _project_attention_values(key, k_heads, num_heads, head_dim)
         v_attn = _project_attention_values(value, v_heads, num_heads, head_dim)
 
-        attn_output = F.scaled_dot_product_attention(
+        attn_output: NestedTensor = scaled_dot_product_attention(
             q_attn,
             k_attn,
             v_attn,
@@ -1212,9 +1260,9 @@ def multi_head_attention_forward(
             is_causal=is_causal,
         )
         out_values = F.linear(
-            attn_output._values.reshape(attn_output._values.size(0), -1), out_proj_weight, out_proj_bias
+            attn_output.concat.reshape(attn_output.concat.size(0), -1), out_proj_weight, out_proj_bias
         )
-        result = _packed_like(query, out_values)
+        result = query._packed_like_unchecked(out_values)
         if _was_seq_first:
             result = result.transpose(0, 1)
         return result, None
@@ -1244,7 +1292,7 @@ def multi_head_attention_forward(
         key_padding_mask = ~_nested_sequence_valid_mask(key)
 
     # Single batched MHA call (replaces per-sample Python loop)
-    output, weights = F.multi_head_attention_forward(  # type: ignore[call-arg]
+    output, weights = F.multi_head_attention_forward(
         q_padded,
         k_padded,
         v_padded,
@@ -1372,14 +1420,16 @@ def scaled_dot_product_attention(
     if len(query) == 0:
         return NestedTensor([], **query._meta(include_dtype=True))
 
-    native_attention_inputs = (
+    if (
         isinstance(key, NestedTensor)
         and isinstance(value, NestedTensor)
         and _is_native_attention_layout(query)
         and _is_native_attention_layout(key)
         and _is_native_attention_layout(value)
-    )
-    if native_attention_inputs and attn_mask is None and not enable_gqa and query._values.is_cuda:
+        and attn_mask is None
+        and not enable_gqa
+        and query.concat.is_cuda
+    ):
         if query.dtype in _LOW_PRECISION_CUDA_DTYPES and torch.backends.cuda.flash_sdp_enabled():
             return _sdpa_via_native_flash(
                 query,
@@ -1389,8 +1439,8 @@ def scaled_dot_product_attention(
                 is_causal=is_causal,
                 scale=scale,
             )
-        if dropout_p == 0.0 and _torch_flex_attention is not None:
-            return flex_attention(query, key, value, scale=scale, enable_gqa=enable_gqa)
+        if dropout_p == 0.0 and _flex_attention_available:
+            return flex_attention(query, key, value, scale=scale, enable_gqa=enable_gqa, is_causal=is_causal)
 
     if _is_compiling():
         _compile_unsupported(
@@ -1516,7 +1566,6 @@ def ctc_loss(
 NN_LOSS_OPS_2 = [
     F.binary_cross_entropy,
     F.binary_cross_entropy_with_logits,
-    F.cross_entropy,
     F.gaussian_nll_loss,
     F.hinge_embedding_loss,
     F.huber_loss,
@@ -1537,6 +1586,71 @@ NN_LOSS_OPS_3 = [
     F.triplet_margin_loss,
     F.triplet_margin_with_distance_loss,
 ]
+
+
+@NestedTensorFuncRegistry.implement(F.cross_entropy)
+def cross_entropy(
+    input: NestedTensor,
+    target,
+    weight=None,
+    size_average=None,
+    ignore_index: int = -100,
+    reduce=None,
+    reduction: str = "mean",
+    label_smoothing: float = 0.0,
+):
+    r"""
+    Cross entropy with the class axis LAST. See also [torch.nn.functional.cross_entropy][].
+
+    Computed as ``-log_softmax(input, -1)[target]``, so it touches only the static class dim and is
+    structure-agnostic for any ragged layout: a doubly-ragged ``[.., N, N, C]`` pair, a sample axis
+    before the ragged dim ``[.., S, N, C]``, and so on. The generic loss path concatenates everything
+    into one ``(rows, C)`` matrix, which loses that structure for ``reduction='none'``.
+
+    The class axis is the last dim, the convention for logit NestedTensors, rather than dim 1 as in
+    the dense operator; for a 2-D ``(rows, C)`` input the two coincide. ``target`` holds class indices
+    and its shape is ``input``'s without the class dim. ``reduction='none'`` returns a NestedTensor
+    carrying ``input``'s structure minus the class dim; the other reductions return a scalar.
+    """
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(input, NestedTensor):
+        return F.cross_entropy(input, target, weight, size_average, ignore_index, reduce, reduction, label_smoothing)
+    # The deprecated size_average/reduce aliases override ``reduction`` exactly as the dense op does.
+    if size_average is not None or reduce is not None:
+        averaged = True if size_average is None else bool(size_average)
+        reduced = True if reduce is None else bool(reduce)
+        reduction = "mean" if averaged and reduced else ("sum" if reduced else "none")
+    if reduction not in ("none", "mean", "sum"):
+        raise ValueError(f"{reduction} is not a valid value for reduction")
+    if label_smoothing != 0.0:
+        raise NotImplementedError("NestedTensor cross_entropy does not support label_smoothing")
+
+    indices = target.long()
+    log_probs = torch.log_softmax(input, dim=-1)
+    # Ignored positions may carry any sentinel class, negative or past the class count, so replace
+    # exactly those before gathering. Everything else is passed through untouched: an out-of-range
+    # label that is not the ignore index must raise, the way the dense operator does, rather than
+    # being clamped into a valid class and scored silently.
+    valid = indices != ignore_index
+    gather_index = torch.where(valid, indices, torch.zeros_like(indices))
+    nll = -log_probs.gather(-1, gather_index.unsqueeze(-1)).squeeze(-1)
+    # Per-position weight is the class weight times the ignore_index validity mask, which reproduces
+    # the dense weighted result: 'sum' is sum_i w_i * nll_i and 'mean' divides that by sum_i w_i.
+    if weight is not None:
+        weight = weight.to(device=log_probs.device, dtype=log_probs.dtype)
+        per_position = F.embedding(gather_index, weight.unsqueeze(-1)).squeeze(-1)
+    else:
+        per_position = torch.ones_like(nll)
+    per_position = per_position * valid.to(nll.dtype)
+    nll = nll * per_position
+    if reduction == "sum":
+        return nll.sum()
+    if reduction == "mean":
+        # Not clamped: when every position is ignored the weight total is zero and the result is
+        # NaN, which is what the dense operator returns for an entirely ignored batch.
+        return nll.sum() / per_position.sum()
+    return nll
 
 
 # Linear & Embeddings
@@ -1582,7 +1696,7 @@ def embedding(
     from .aten_functions import _packed_with_shape
 
     out_values = F.embedding(
-        input._values,
+        input.concat,
         weight,
         padding_idx,
         max_norm,
@@ -1602,6 +1716,7 @@ def embedding(
         permutation=input._permutation_after_replacing_trailing_dims(0, 1),
         packed_sizes=packed_sizes,
         element_shapes=element_shapes,
+        preserve_ragged_offsets=True,
     )
 
 
@@ -1656,9 +1771,16 @@ def embedding_bag(
         >>> torch.allclose(out, ref)
         True
     """
+    from .aten_functions import _is_fake_tensor
+
+    if input._packed_sizes is None and (_is_compiling() or _is_fake_tensor(input._offsets)):
+        _compile_unsupported(
+            "torch.nn.functional.embedding_bag",
+            "tensor-backed bag output metadata is not implemented",
+        )
     if (
         len(input) > 0
-        and input._values.dim() == 1
+        and input.concat.dim() == 1
         and input._physical_shape.size(1) == 1
         and per_sample_weights is None
         and not include_last_offset
@@ -1671,12 +1793,12 @@ def embedding_bag(
             from .aten_functions import _packed_with_shape
 
             num_bags = 1 if offsets is None else int(offsets.numel())
-            packed_offsets = input._offsets[:-1].to(device=input._values.device)
+            packed_offsets = input._offsets[:-1].to(device=input.concat.device)
             if offsets is not None:
-                local_offsets = offsets.detach().to(device=input._values.device, dtype=torch.long)
+                local_offsets = offsets.detach().to(device=input.concat.device, dtype=torch.long)
                 packed_offsets = (packed_offsets.unsqueeze(1) + local_offsets.unsqueeze(0)).reshape(-1)
             out_values = F.embedding_bag(
-                input._values,
+                input.concat,
                 weight,
                 offsets=packed_offsets,
                 max_norm=max_norm,
@@ -1815,17 +1937,47 @@ def linear(input: NestedTensor, weight: Tensor, bias: Tensor | None = None) -> N
         if input._element_shapes is not None:
             is_static_vector = all(shape == (in_features,) for shape in input._element_shapes)
         else:
-            is_static_vector = bool(input._physical_shape[:, 0].eq(in_features).all())
+            static_vector = input._physical_shape[:, 0].eq(in_features).all()
+            torch._assert_async(
+                static_vector,
+                "tensor-backed NestedTensor linear requires every vector length to equal in_features",
+            )
+            is_static_vector = True
         if is_static_vector:
             from .aten_functions import _from_uniform_batched_output
 
-            new_values = F.linear(input._values.reshape(len(input), in_features), weight, bias)
+            new_values = F.linear(input.concat.reshape(len(input), in_features), weight, bias)
             return _from_uniform_batched_output(input, new_values)
-    if input._values.dim() >= 2:
-        from .aten_functions import _packed_new_last_dim
+    if input.concat.dim() >= 2:
+        from .aten_functions import _packed_new_last_dim, _packed_with_shape
 
-        new_values = F.linear(input._values, weight, bias)
-        return _packed_new_last_dim(input, new_values, weight.shape[0])
+        last_dim = int(input._physical_shape.size(1)) - 1
+        values_dim = _physical_to_values_dim(input, last_dim)
+        if values_dim is not None:
+            packed_values = input.concat
+            values = packed_values.movedim(values_dim, -1)
+            new_values = F.linear(values, weight, bias)
+            if values_dim == packed_values.dim() - 1:
+                return _packed_new_last_dim(input, new_values, weight.shape[0])
+            output_size = int(weight.shape[0])
+            shape, packed_sizes, element_shapes = input._shape_meta_from_components(
+                replace_dims={last_dim: output_size}
+            )
+            permutation = (
+                *input._ragged_dims,
+                *(dim for dim in input._static_dims if dim != last_dim),
+                last_dim,
+            )
+            return _packed_with_shape(
+                input,
+                new_values,
+                shape,
+                input._logical_shape_from_components(replace_dims={last_dim: output_size}),
+                permutation=permutation,
+                packed_sizes=packed_sizes,
+                element_shapes=element_shapes,
+                preserve_ragged_offsets=True,
+            )
     if _is_compiling():
         _compile_unsupported("torch.nn.functional.linear", "only packed rank >= 2 inputs are compile-safe")
     return _apply_per_element(input, F.linear, weight, bias)
@@ -1850,8 +2002,9 @@ def _scaled_mm(mat_a: NestedTensor, mat_b, fn, **kwargs) -> NestedTensor:
 
 
 if hasattr(F, "scaled_grouped_mm"):
+    _torch_scaled_grouped_mm: Callable[..., Tensor] = vars(F)["scaled_grouped_mm"]
 
-    @NestedTensorFuncRegistry.implement(F.scaled_grouped_mm)
+    @NestedTensorFuncRegistry.implement(_torch_scaled_grouped_mm)
     def scaled_grouped_mm(
         mat_a: NestedTensor,
         mat_b: Tensor | NestedTensor,
@@ -1897,7 +2050,7 @@ if hasattr(F, "scaled_grouped_mm"):
         return _scaled_mm(
             mat_a,
             mat_b,
-            F.scaled_grouped_mm,
+            _torch_scaled_grouped_mm,
             scale_a=scale_a,
             scale_recipe_a=scale_recipe_a,
             scale_b=scale_b,
@@ -2031,7 +2184,7 @@ def _batch_norm_eval_packed_affine(
     if not bool(torch.equal(input._physical_shape[:, 0], expected)):
         return None
 
-    values = input._values
+    values = input.concat
     running_mean = running_mean.to(device=values.device, dtype=values.dtype)
     running_var = running_var.to(device=values.device, dtype=values.dtype)
     if weight is not None:
@@ -2060,6 +2213,7 @@ def _batch_norm_eval_packed_affine(
         input._offsets,
         input._physical_shape,
         permutation=input._permutation,
+        ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
         batch_first=input.batch_first,
         padding_value=input.padding_value,
         mask_value=input.mask_value,
@@ -2118,8 +2272,8 @@ def batch_norm(
         output = _batch_norm_eval_packed_affine(input, running_mean, running_var, weight, bias, eps)
         if output is not None:
             return output
-        output = F.batch_norm(input.tensor, running_mean, running_var, weight, bias, False, momentum, eps)
-        return input.nested_like(output, strict=False)
+        dense_output = F.batch_norm(input.tensor, running_mean, running_var, weight, bias, False, momentum, eps)
+        return input.nested_like(dense_output, strict=False)
 
     # Training mode: concatenate to compute batch statistics without padding contamination
     from .nested_tensor import NestedTensor
@@ -2302,17 +2456,48 @@ def local_response_norm(
     return _nested_from_batch_leading_tensor(input, torch.where(valid, output, padding))
 
 
-@NestedTensorFuncRegistry.implement(F.normalize, compile_safe=False)
+def _normalize_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
+    r"""Return whether ``F.normalize`` can stay entirely on packed storage."""
+    if not args:
+        return False
+    input = args[0]
+    dim = kwargs.get("dim", args[2] if len(args) > 2 else 1)
+    out = kwargs.get("out", args[4] if len(args) > 4 else None)
+    if out is not None or not isinstance(dim, int):
+        return False
+    try:
+        physical_dim = _translate_non_batch_dim(input, dim)
+    except (IndexError, TypeError, ValueError):
+        return False
+    return _physical_to_values_dim(input, physical_dim) is not None
+
+
+@NestedTensorFuncRegistry.implement(
+    F.normalize,
+    compile_safe=True,
+    compile_guard=_normalize_compile_safe_inputs,
+)
 def normalize(input, p=2.0, dim=1, eps=1e-12, out=None):
-    r"""Apply ``F.normalize`` through one padded, mask-aware path that ignores NestedTensor padding."""
-    dim = dim if dim >= 0 else dim + input.dim()
-    _translate_non_batch_dim(input, dim)
+    r"""Normalize static dimensions on packed values, with a mask-aware eager ragged fallback."""
     if out is not None:
         raise NotImplementedError("F.normalize(..., out=...) is not supported on NestedTensor.")
+
+    logical_dim = dim if dim >= 0 else dim + input.dim()
+    physical_dim = _translate_non_batch_dim(input, logical_dim)
+    values_dim = _physical_to_values_dim(input, physical_dim)
+    if values_dim is not None:
+        normalized = F.normalize(input.concat, p=p, dim=values_dim, eps=eps, out=None)
+        return input.packed_like(normalized)
+
+    if _is_compiling():
+        _compile_unsupported(
+            "torch.nn.functional.normalize",
+            "only static dimensions that stay on packed storage are compile-safe",
+        )
     tensor = input.tensor
     valid = _nested_full_valid_mask(input, tensor)
     masked = torch.where(valid, tensor, torch.zeros((), dtype=tensor.dtype, device=tensor.device))
-    normalized = F.normalize(masked, p=p, dim=dim, eps=eps, out=None)
+    normalized = F.normalize(masked, p=p, dim=logical_dim, eps=eps, out=None)
     padding = torch.full_like(normalized, input.padding_value)
     return _nested_from_padded_tensor(input, torch.where(valid, normalized, padding))
 
@@ -2365,16 +2550,15 @@ def affine_grid(input, *args, **kwargs):
 
 @NestedTensorFuncRegistry.implement(F.alpha_dropout)
 def alpha_dropout(input, p=0.5, training=False, inplace=False):
-    from .aten_functions import _packed_like
 
     _validate_probability(float(p), error_type=ValueError)
     if (not training) or p == 0:
         return input
     if inplace:
-        F.alpha_dropout(input._values, p=p, training=training, inplace=True)
+        F.alpha_dropout(input.concat, p=p, training=training, inplace=True)
         input._invalidate_transient_caches()
         return input
-    return _packed_like(input, torch.ops.aten.alpha_dropout.default(input._values, p, training))
+    return input._packed_like_unchecked(torch.ops.aten.alpha_dropout.default(input.concat, p, training))
 
 
 @NestedTensorFuncRegistry.implement(F.bilinear)
@@ -2393,16 +2577,15 @@ def bilinear(input1, input2, weight, bias=None):
 
 @NestedTensorFuncRegistry.implement(F.dropout)
 def dropout(input, p=0.5, training=True, inplace=False):
-    from .aten_functions import _packed_like
 
     _validate_probability(float(p), error_type=ValueError)
     if (not training) or p == 0:
         return input
     if inplace:
-        F.dropout(input._values, p=p, training=training, inplace=True)
+        F.dropout(input.concat, p=p, training=training, inplace=True)
         input._invalidate_transient_caches()
         return input
-    return _packed_like(input, torch.ops.aten.dropout.default(input._values, p, training))
+    return input._packed_like_unchecked(torch.ops.aten.dropout.default(input.concat, p, training))
 
 
 @NestedTensorFuncRegistry.implement(F.grid_sample)
@@ -2420,7 +2603,7 @@ def grid_sample(input, grid, *args, **kwargs):
 
 @NestedTensorFuncRegistry.implement(F.one_hot, compile_safe=False)
 def one_hot(input, num_classes: int = -1):
-    output_values = F.one_hot(input._values, num_classes=num_classes)
+    output_values = F.one_hot(input.concat, num_classes=num_classes)
     num_classes = int(output_values.shape[-1])
     shape_tensor = torch.cat(
         [
@@ -2437,6 +2620,7 @@ def one_hot(input, num_classes: int = -1):
         input._offsets,
         shape_tensor,
         permutation=(*input._permutation, input._physical_shape.size(1)),
+        ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
         batch_first=input.batch_first,
         padding_value=input.padding_value,
         mask_value=input.mask_value,
@@ -2477,13 +2661,13 @@ def _pad_packed_variable_last_dim(input: NestedTensor, pad: tuple[int, ...], val
     batch_steps = torch.arange(len(input) + 1, dtype=input._offsets.dtype, device=input._offsets.device)
     new_offsets = input._offsets + batch_steps * pad_width
 
-    old_total = input._values.size(0)
+    old_total = input.concat.size(0)
     new_total = old_total + len(input) * pad_width
-    output_values = input._values.new_full((new_total, *input._values.shape[1:]), fill_value)
-    batch_indices = input.packed_batch_indices(device=input._values.device)
-    source_indices = torch.arange(old_total, device=input._values.device)
+    output_values = input.concat.new_full((new_total, *input.concat.shape[1:]), fill_value)
+    batch_indices = input.packed_batch_indices(device=input.concat.device)
+    source_indices = torch.arange(old_total, device=input.concat.device)
     destination_indices = source_indices + batch_indices * pad_width + left
-    output_values.index_copy_(0, destination_indices, input._values)
+    output_values.index_copy_(0, destination_indices, input.concat)
 
     shape_tensor = input._physical_shape.clone()
     shape_tensor[:, target_dim] += pad_width
@@ -2497,6 +2681,13 @@ def _pad_packed_variable_last_dim(input: NestedTensor, pad: tuple[int, ...], val
     if input._packed_sizes is not None:
         packed_sizes = tuple(int(size) + pad_width for size in input._packed_sizes)
     else:
+        from .aten_functions import _is_fake_tensor
+
+        if _is_compiling() or _is_fake_tensor(input._offsets):
+            _compile_unsupported(
+                "torch.nn.functional.pad",
+                "tensor-backed ragged padding metadata is not implemented",
+            )
         packed_sizes = tuple(int(size) for size in new_sizes.tolist())
 
     return type(input)._from_packed(
@@ -2504,6 +2695,7 @@ def _pad_packed_variable_last_dim(input: NestedTensor, pad: tuple[int, ...], val
         new_offsets,
         shape_tensor,
         permutation=input._permutation,
+        ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
         batch_first=input.batch_first,
         padding_value=input.padding_value,
         mask_value=input.mask_value,
@@ -2612,13 +2804,13 @@ def f_softmin(input, dim=-1, _stacklevel=3, dtype=None):
 
 @NestedTensorFuncRegistry.implement(F.gumbel_softmax, compile_safe=False)
 def gumbel_softmax(logits, *args, dim=-1, **kwargs):
-    from .aten_functions import _packed_like, _packed_to_padded
+    from .aten_functions import _packed_to_padded
 
     dim_adj = _translate_non_batch_dim(logits, dim)
     if dim_adj == 0:
         padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(logits, fill_value=float("-inf"))
         out_padded = F.gumbel_softmax(padded, *args, dim=1, **kwargs)
-        return _packed_like(logits, out_padded[batch_idx, local_idx])
+        return logits._packed_like_unchecked(out_padded[batch_idx, local_idx])
     concat_dim = _concat_dim_for_tensor_dim(logits, dim_adj)
     if concat_dim is not None:
         return _apply_packed(logits, F.gumbel_softmax, *args, dim=concat_dim, **kwargs)
@@ -2672,11 +2864,11 @@ def _per_element_handler(input, *args, _fn=None, **kwargs):
 def _interpolate_packed_static_spatial(input, *args, _fn=None, **kwargs):
     r"""Packed interpolate for channel-first elements with static spatial dims."""
     rank = int(input._physical_shape.size(1))
-    if rank < 2 or input._varying_dims != (0,) or input._values.dim() != rank:
+    if rank < 2 or input._varying_dims != (0,) or input.concat.dim() != rank:
         return None
 
     with torch._C.DisableTorchFunctionSubclass():
-        output_values = _fn(input._values.unsqueeze(1), *args, **kwargs).squeeze(1)
+        output_values = _fn(input.concat.unsqueeze(1), *args, **kwargs).squeeze(1)
 
     output_spatial = tuple(int(size) for size in output_values.shape[1:])
     if len(output_spatial) != rank - 1:
@@ -2694,6 +2886,7 @@ def _interpolate_packed_static_spatial(input, *args, _fn=None, **kwargs):
         input._offsets,
         output_shape,
         permutation=input._permutation,
+        ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
         batch_first=input.batch_first,
         padding_value=input.padding_value,
         mask_value=input.mask_value,
@@ -2720,7 +2913,7 @@ def _interpolate_handler(input, *args, _fn=None, **kwargs):
 
 def _dropout_handler(input, *args, _fn=None, **kwargs):
     r"""Apply a dropout variant to each NestedTensor element."""
-    training = args[1] if len(args) > 1 else kwargs.get("training", True)
+    training = args[1] if len(args) > 1 else kwargs.get("training", _training_default(_fn))
     p = args[0] if len(args) > 0 else kwargs.get("p", 0.5)
     _validate_probability(float(p), error_type=ValueError)
     if (not training) or p == 0:
@@ -2791,6 +2984,7 @@ NN_TIER_A_PACKED_COMPILE_SAFE_OPS: tuple = (
     F.embedding_bag,
     F.linear,
     F.layer_norm,
+    F.normalize,
     F.rms_norm,
 )
 
@@ -2820,7 +3014,6 @@ NN_TIER_B_EAGER_ONLY_OPS: tuple = (
     F.gumbel_softmax,
     F.grid_sample,
     F.local_response_norm,
-    F.normalize,
     F.one_hot,
     F.pairwise_distance,
     F.pdist,
@@ -2849,9 +3042,9 @@ for _op in NN_TIER_B_EAGER_ONLY_OPS:
 for _op in NN_NOOP_DROPOUT_OPS:
     if _op in NestedTensorFuncRegistry:
         NestedTensorFuncRegistry.set_compile_safe(_op, True)
-        NestedTensorFuncRegistry.set_compile_guard(_op, _dropout_compile_safe_inputs)
+        NestedTensorFuncRegistry.set_compile_guard(_op, _make_dropout_compile_guard(_op))
 
-# Activations — elementwise on packed _values, compile-safe (aten handles the real work).
+# Activations — elementwise on packed concat, compile-safe (aten handles the real work).
 for _op in NN_ACTIVATION_OPS:
     NestedTensorFuncRegistry.register(_op, _bind_fn(_activation_handler, _op), compile_safe=True)
 

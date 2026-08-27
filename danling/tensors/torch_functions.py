@@ -28,7 +28,7 @@ registered handler.
 Handlers here use several strategies depending on the op's needs:
 
 * **Packed fast-path** — ops that work directly on the concatenated
-  ``_values`` tensor via ``NestedTensor._from_packed`` without knowing element
+  ``concat`` tensor via ``NestedTensor._from_packed`` without knowing element
   boundaries.
 * **Per-element dispatch** — ops that must be applied to each element
   individually via ``_map_storage_serial``, e.g. when dimension indices need
@@ -44,7 +44,7 @@ import builtins
 import contextlib
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import torch
 from torch import Tensor
@@ -60,9 +60,11 @@ from .ops import (
     _bind_fn,
     _check_execution_guard,
     _compile_unsupported,
+    _dense_operand_for_element,
     _ExecutionGuardKind,
     _get_batch_dim,
     _is_compiling,
+    _logical_dim_for_element_dim,
     _map_storage_serial,
     _normalize_dim,
     _physical_to_values_dim,
@@ -85,7 +87,7 @@ if TYPE_CHECKING:
 
 # clamp and nan_to_num are NOT registered here.
 # They fall through to aten decomposition → __torch_dispatch__ where
-# _elementwise_unary_handler operates directly on _values (no per-element loop).
+# _elementwise_unary_handler operates directly on concat (no per-element loop).
 
 
 # Attention
@@ -192,7 +194,7 @@ def _transformer_encoder_layer_fwd(
     def _ff_block(x):
         return F.linear(activation(F.linear(x, linear1_weight, linear1_bias)), linear2_weight, linear2_bias)
 
-    x = src
+    x: Tensor = src
     if norm_first:
         x = x + _sa_block(F.layer_norm(x, (embed_dim,), norm1_weight, norm1_bias, eps))
         x = x + _ff_block(F.layer_norm(x, (embed_dim,), norm2_weight, norm2_bias, eps))
@@ -205,7 +207,7 @@ def _transformer_encoder_layer_fwd(
 # Arithmetic
 
 
-@NestedTensorFuncRegistry.implement(torch.addcdiv)
+@NestedTensorFuncRegistry.implement(torch.addcdiv, compile_safe=True)
 def addcdiv(input, tensor1, tensor2, *, value=1):
     r"""
     Performs the element-wise division of `tensor1` by `tensor2`, multiplies the result by the scalar
@@ -230,12 +232,20 @@ def addcdiv(input, tensor1, tensor2, *, value=1):
     ref = next((t for t in (input, tensor1, tensor2) if isinstance(t, NestedTensor)), None)
     if ref is None:
         return torch.addcdiv(input, tensor1, tensor2, value=value)
+    from .aten_functions import _ternary_handler
+
     with suppress(NotImplementedError):
-        return torch.ops.aten.addcdiv.default(input, tensor1, tensor2, value=value)
+        return _ternary_handler(
+            torch.ops.aten.addcdiv.default,
+            (input, tensor1, tensor2),
+            {"value": value},
+        )
+    if _is_compiling():
+        _compile_unsupported("torch.addcdiv", "operands are not compatible with the packed layout")
     return _ternary_op(ref, input, tensor1, tensor2, torch.addcdiv, value=value)
 
 
-@NestedTensorFuncRegistry.implement(torch.addcmul)
+@NestedTensorFuncRegistry.implement(torch.addcmul, compile_safe=True)
 def addcmul(input, tensor1, tensor2, *, value=1):
     r"""
     Performs the element-wise multiplication of `tensor1` by `tensor2`, multiplies the result by the scalar
@@ -259,9 +269,35 @@ def addcmul(input, tensor1, tensor2, *, value=1):
     ref = next((t for t in (input, tensor1, tensor2) if isinstance(t, NestedTensor)), None)
     if ref is None:
         return torch.addcmul(input, tensor1, tensor2, value=value)
+    from .aten_functions import _ternary_handler
+
     with suppress(NotImplementedError):
-        return torch.ops.aten.addcmul.default(input, tensor1, tensor2, value=value)
+        return _ternary_handler(
+            torch.ops.aten.addcmul.default,
+            (input, tensor1, tensor2),
+            {"value": value},
+        )
+    if _is_compiling():
+        _compile_unsupported("torch.addcmul", "operands are not compatible with the packed layout")
     return _ternary_op(ref, input, tensor1, tensor2, torch.addcmul, value=value)
+
+
+@NestedTensorFuncRegistry.implement(torch.lerp, compile_safe=True)
+def lerp(input, end, weight):
+    r"""Linearly interpolate packed values while preserving public autograd semantics."""
+    from .aten_functions import _ternary_handler
+    from .nested_tensor import NestedTensor
+    from .ops import _ternary_op
+
+    ref = next((tensor for tensor in (input, end, weight) if isinstance(tensor, NestedTensor)), None)
+    if ref is None:
+        return torch.lerp(input, end, weight)
+    with suppress(NotImplementedError):
+        aten_lerp = torch.ops.aten.lerp.Tensor if isinstance(weight, Tensor) else torch.ops.aten.lerp.Scalar
+        return _ternary_handler(aten_lerp, (input, end, weight), {})
+    if _is_compiling():
+        _compile_unsupported("torch.lerp", "operands are not compatible with the packed layout")
+    return _ternary_op(ref, input, end, weight, torch.lerp)
 
 
 # Comparison
@@ -319,7 +355,7 @@ def _compare(input, other, op, **kwargs) -> bool:
     if len(input) != len(other):
         return False
     if input._has_same_layout(other):
-        return op(input._values, other._values, **kwargs)
+        return op(input.concat, other.concat, **kwargs)
     return all(op(x, y, **kwargs) for x, y in zip(input._storage, other._storage))
 
 
@@ -398,10 +434,35 @@ def equal(input: NestedTensor, other: NestedTensor | Tensor) -> bool:
 
 # Creation ops (zeros_like, ones_like, etc.) are NOT registered here.
 # They fall through to aten decomposition → __torch_dispatch__ →
-# _elementwise_unary_handler on _values, which is faster than per-element _map_storage_serial.
+# _elementwise_unary_handler on concat, which is faster than per-element _map_storage_serial.
 
 
 # Concatenation & Splitting
+
+
+def _reject_batch_cat_that_ragged_a_shared_static_dim(operands: Sequence) -> None:
+    r"""Refuse a batch concatenation that would vary a dimension none of its operands varies.
+
+    Every other layout disagreement survives the rebuild: the elements are what concatenate,
+    and a ragged dim is re-derived from all of them together. A dimension that is static in
+    each operand at a different extent is the exception -- no batch holds both widths, so the
+    merged shape would be one no operand has and no dense ``torch.cat`` would produce.
+    """
+    ranks = {int(operand._physical_shape.size(1)) for operand in operands}
+    if len(ranks) != 1:
+        # Elements of different rank have no common concatenation either; the rebuild says so
+        # in the constructor's own words rather than guessing which dimension was meant.
+        return
+    for element_dim in range(ranks.pop()):
+        if any(element_dim in operand._ragged_dims for operand in operands):
+            continue
+        extents = {int(operand.shape[_logical_dim_for_element_dim(operand, element_dim)]) for operand in operands}
+        if len(extents) > 1:
+            raise ValueError(
+                "torch.cat along the batch dimension cannot make element dimension "
+                f"{element_dim} ragged when no operand varies it, but the operands hold it at "
+                f"{sorted(extents)}; got shapes {[tuple(operand.shape) for operand in operands]}."
+            )
 
 
 @NestedTensorFuncRegistry.implement(torch.cat)
@@ -466,29 +527,35 @@ def cat(tensors: tuple[Tensor | NestedTensor, ...], dim: int = 0):
         return tensors[0]
 
     if dim == batch_dim:
-        # Check if all inputs are NestedTensor (common case — enables packed fast path)
-        all_nt = all(isinstance(t, NestedTensor) for t in tensors)
-        if all_nt:
-            nt_tensors = tensors  # type: ignore[assignment]
-            merged = NestedTensor._cat_batch_packed(nt_tensors)
-            if merged is None:
-                # Incompatible packed layouts (e.g., one flattened, one N-D packed):
-                # fall back to unpack→repack.
-                fallback_storage: list[Tensor] = []
-                fallback_state: Mapping = ref._meta()
-                for tensor in nt_tensors:
-                    fallback_storage.extend(tensor._storage)
-                return NestedTensor(fallback_storage, **fallback_state)
-            return merged
-        # Fallback: mix of NT and plain tensors
-        storage: list = []
+        # A dense operand joins the batch as one more element, and an empty NestedTensor
+        # contributes nothing, so both become NestedTensor operands the packed merge can take.
         state: Mapping = ref._meta()
-        for tensor in tensors:
-            if isinstance(tensor, NestedTensor):
-                storage.extend(tensor._storage)
-            else:
-                storage.append(tensor)
-        return NestedTensor(storage, **state)
+        operands = [
+            tensor if isinstance(tensor, NestedTensor) else NestedTensor([tensor], **state)
+            for tensor in tensors
+            if not (isinstance(tensor, NestedTensor) and len(tensor) == 0)
+        ]
+        if not operands:
+            return tensors[0]
+        if len(operands) == 1:
+            return operands[0]
+        merged = NestedTensor._cat_batch_packed(operands)
+        if merged is not None:
+            return merged
+        # The packed merge needs one shared layout; concatenation itself does not. A batch of
+        # one, or one whose lengths happen to be equal, infers a ragged dim from nothing, so
+        # layouts that disagree only by inference still describe samples that belong in one
+        # batch. Rebuild those from the elements. What has no concatenation at all is a
+        # dimension every operand holds fixed at conflicting extents -- the result would report
+        # a ragged dim no operand has, which is the shape dense torch rejects outright.
+        _reject_batch_cat_that_ragged_a_shared_static_dim(operands)
+        _check_execution_guard(_ExecutionGuardKind.EAGER_FALLBACK, "torch_functions.cat")
+        if _is_compiling():
+            _compile_unsupported("torch.cat along the batch dimension", "the operand layouts differ and are rebuilt")
+        rebuilt: list = []
+        for operand in operands:
+            rebuilt.extend(operand._storage)
+        return NestedTensor(rebuilt, **ref._meta())
 
     first: NestedTensor = ref  # the first NestedTensor input (tensors[0] may be dense)
     nt_lengths = [len(t) for t in tensors if isinstance(t, NestedTensor)]
@@ -518,6 +585,13 @@ def cat(tensors: tuple[Tensor | NestedTensor, ...], dim: int = 0):
                 )
 
     dim_adj = _translate_dim(first, dim)
+    packed = _cat_packed_non_batch(tensors, first, dim_adj)
+    if packed is not None:
+        return packed
+
+    _check_execution_guard(_ExecutionGuardKind.EAGER_FALLBACK, "torch_functions.cat")
+    if _is_compiling():
+        _compile_unsupported("torch.cat", "a dense operand is replayed once per sample")
     varying = set(first._varying_dims)  # element-dim indices that carry ragged padding
 
     def _element(tensor, i):
@@ -535,12 +609,162 @@ def cat(tensors: tuple[Tensor | NestedTensor, ...], dim: int = 0):
     return NestedTensor(storage, **first._meta())
 
 
+def _cat_packed_non_batch(tensors, first: NestedTensor, dim_adj: int):
+    r"""
+    Concatenate along a per-element dim on the packed buffers, or return ``None``.
+
+    A static dim owns one packed axis, so the dense kernel runs on ``concat`` unchanged. The
+    sole ragged dim is packed dim 0, where concatenation interleaves the operands: every
+    sample's rows from operand 0 come first, then its rows from operand 1, and so on. That
+    reordering is one scatter of positions rather than one ``cat`` per sample.
+    """
+    from .aten_functions import _outer_size, _packed_sole_ragged_dim, _packed_static_dim, _packed_with_shape
+    from .nested_tensor import NestedTensor
+
+    if not all(isinstance(tensor, NestedTensor) for tensor in tensors):
+        return None
+    if any(tensor.batch_first != first.batch_first or tensor.device != first.device for tensor in tensors):
+        return None
+    if any(tensor.concat.dim() != first.concat.dim() for tensor in tensors):
+        return None
+
+    aligned_tensors = []
+    target_static = first._static_dims
+    for tensor in tensors:
+        if tensor._permutation == first._permutation:
+            aligned_tensors.append(tensor)
+            continue
+        if tensor._ragged_dims != first._ragged_dims or set(tensor._static_dims) != set(target_static):
+            return None
+        values_order = (0, *(1 + tensor._static_dims.index(dim) for dim in target_static))
+        aligned_tensors.append(
+            _packed_with_shape(
+                tensor,
+                tensor.concat.permute(values_order),
+                tensor._physical_shape,
+                tensor._logical_shape,
+                permutation=first._permutation,
+                packed_sizes=tensor._packed_sizes,
+                element_shapes=tensor._element_shapes,
+                preserve_ragged_offsets=True,
+            )
+        )
+    tensors = tuple(aligned_tensors)
+
+    values_dim = _packed_static_dim(first, dim_adj)
+    if values_dim is not None:
+        if any(not first._has_same_structure(tensor) for tensor in tensors):
+            return None
+        replacement = {dim_adj: builtins.sum(int(tensor.concat.shape[values_dim]) for tensor in tensors)}
+        shape, packed_sizes, element_shapes = first._shape_meta_from_components(replace_dims=replacement)
+        return _packed_with_shape(
+            first,
+            torch.cat([tensor.concat for tensor in tensors], dim=values_dim),
+            shape,
+            first._logical_shape_from_components(replace_dims=replacement),
+            permutation=first._permutation,
+            packed_sizes=packed_sizes,
+            element_shapes=element_shapes,
+            preserve_ragged_offsets=True,
+        )
+
+    if not _packed_sole_ragged_dim(first, dim_adj) or any(tensor._ragged_rank != 1 for tensor in tensors):
+        return None
+    if any(tensor._ragged_dims != first._ragged_dims for tensor in tensors):
+        return None
+
+    device = first.concat.device
+    # Offsets are the running sums of the segment lengths, so the output's offsets are the
+    # operands' offsets added position by position -- no length has to be read back to Python.
+    new_offsets = first._offsets.clone()
+    for tensor in tensors[1:]:
+        new_offsets = new_offsets + tensor._offsets
+    # The row count is the sum of the operands' buffers, which is a shape, not a value.
+    total = builtins.sum(int(tensor.concat.shape[0]) for tensor in tensors)
+    destinations = []
+    prefix = torch.zeros_like(first._offsets[:-1], device=device, dtype=torch.long)
+    new_offsets_dev = new_offsets.to(device=device, dtype=torch.long)
+    for tensor in tensors:
+        offsets = tensor._offsets.to(device=device, dtype=torch.long)
+        lengths = offsets[1:] - offsets[:-1]
+        rows = int(tensor.concat.shape[0])
+        batch_index = torch.repeat_interleave(
+            torch.arange(len(tensor), device=device, dtype=torch.long), lengths, output_size=rows
+        )
+        local = torch.arange(rows, device=device, dtype=torch.long) - offsets[:-1][batch_index]
+        destinations.append(new_offsets_dev[:-1][batch_index] + prefix[batch_index] + local)
+        prefix = prefix + lengths
+    destination = torch.cat(destinations, dim=0)
+    source = torch.empty((total,), device=device, dtype=torch.long).scatter_(
+        0, destination, torch.arange(total, device=device, dtype=torch.long)
+    )
+    values = torch.cat([tensor.concat for tensor in tensors], dim=0).index_select(0, source)
+
+    physical_shape = first._physical_shape.clone()
+    for tensor in tensors[1:]:
+        physical_shape[:, dim_adj] += tensor._physical_shape[:, dim_adj]
+    element_shapes = None
+    if all(tensor._element_shapes is not None for tensor in tensors):
+        element_shapes = tuple(
+            (*shape[:dim_adj], builtins.sum(t._element_shapes[index][dim_adj] for t in tensors), *shape[dim_adj + 1 :])
+            for index, shape in enumerate(cast(tuple[tuple[int, ...], ...], first._element_shapes))
+        )
+    packed_sizes = None
+    if all(tensor._packed_sizes is not None for tensor in tensors):
+        packed_sizes = tuple(builtins.sum(sizes) for sizes in zip(*(t._packed_sizes for t in tensors)))
+    return NestedTensor._from_packed(
+        values,
+        new_offsets,
+        physical_shape,
+        permutation=first._permutation,
+        ragged_dims=first._ragged_dims if first._ragged_dims_explicit else None,
+        batch_first=first.batch_first,
+        padding_value=first.padding_value,
+        mask_value=first.mask_value,
+        pin_memory=first._pin_memory,
+        outer_size=_outer_size(first, physical_shape, new_offsets, element_shapes),
+        packed_sizes=packed_sizes,
+        element_shapes=element_shapes,
+        validate=False,
+    )
+
+
 # Aliases for torch.cat
 for _alias in (torch.concat, torch.concatenate):
 
     @NestedTensorFuncRegistry.implement(_alias)
     def _cat_alias(tensors, dim: int = 0, _fn=_alias):  # noqa: B023 — default binds loop var
         return torch.cat(tuple(tensors), dim=dim)
+
+
+# ``vstack``/``hstack``/``dstack`` are ``cat`` on a fixed axis of the *logical* shape. Left
+# unregistered they decompose per element, where that axis is a different dimension: on a
+# ``(B, L, C)`` NestedTensor ``vstack`` would concatenate the ragged dim instead of the batch.
+
+
+@NestedTensorFuncRegistry.implement(torch.vstack)
+@NestedTensorFuncRegistry.implement(torch.row_stack)
+def vstack(tensors):
+    r"""Concatenate along logical dimension 0. See also [torch.vstack][]."""
+    return torch.cat(tuple(tensors), dim=0)
+
+
+@NestedTensorFuncRegistry.implement(torch.hstack)
+@NestedTensorFuncRegistry.implement(torch.column_stack)
+def hstack(tensors):
+    r"""Concatenate along logical dimension 1. See also [torch.hstack][]."""
+    tensors = tuple(tensors)
+    return torch.cat(tensors, dim=0 if tensors[0].dim() == 1 else 1)
+
+
+@NestedTensorFuncRegistry.implement(torch.dstack)
+def dstack(tensors):
+    r"""Concatenate along logical dimension 2. See also [torch.dstack][]."""
+    tensors = tuple(tensors)
+    if tensors[0].dim() >= 3:
+        return torch.cat(tensors, dim=2)
+    # ``atleast_3d`` appends the missing axis, so a 2-D logical operand contributes one column.
+    return torch.cat(tuple(tensor.unsqueeze(-1) for tensor in tensors), dim=2)
 
 
 def _broadcast_nested_tensors_packed(tensors):
@@ -559,6 +783,13 @@ def _broadcast_nested_tensors_packed(tensors):
     source_shapes = []
     for tensor in tensors:
         if tensor._element_shapes is None:
+            from .aten_functions import _is_fake_tensor
+
+            if _is_compiling() or _is_fake_tensor(tensor._physical_shape):
+                _compile_unsupported(
+                    "torch.broadcast_tensors",
+                    "tensor-backed per-element broadcast shape synthesis is not implemented",
+                )
             source_shapes.append(tuple(type(tensor)._trim_shape(shape) for shape in tensor._physical_shape.tolist()))
         else:
             source_shapes.append(tensor._element_shapes)
@@ -574,7 +805,52 @@ def _broadcast_nested_tensors_packed(tensors):
     if output_rank == 0:
         return None
 
-    output_varying, output_static = type(ref)._pack_layout_from_element_shapes(output_shapes)
+    inferred_output_varying, _ = type(ref)._pack_layout_from_element_shapes(output_shapes)
+    declared_orders = []
+    for tensor, shapes in zip(tensors, source_shapes):
+        if not tensor._ragged_dims_explicit:
+            continue
+        align = output_rank - len(shapes[0])
+        if align < 0:
+            return None
+        mapped = tuple(align + int(dim) for dim in tensor._ragged_dims)
+        if any(dim < 0 or dim >= output_rank for dim in mapped):
+            return None
+        declared_orders.append(mapped)
+
+    output_ragged_dims = None
+    if declared_orders:
+        reference_shape = output_shapes[0]
+        topology_dims = {
+            dim for dim in range(output_rank) if any(shape[dim] != reference_shape[dim] for shape in output_shapes[1:])
+        }
+        topology_dims.update(dim for order in declared_orders for dim in order)
+        successors = {dim: set() for dim in topology_dims}
+        indegree = dict.fromkeys(topology_dims, 0)
+        for order in declared_orders:
+            for before, after in zip(order, order[1:]):
+                if after not in successors[before]:
+                    successors[before].add(after)
+                    indegree[after] += 1
+
+        ordered = []
+        remaining = set(topology_dims)
+        while remaining:
+            candidate = next(
+                (dim for dim in range(output_rank) if dim in remaining and indegree[dim] == 0),
+                None,
+            )
+            if candidate is None:
+                return None
+            remaining.remove(candidate)
+            ordered.append(candidate)
+            for successor in successors[candidate]:
+                indegree[successor] -= 1
+        output_varying = tuple(ordered)
+        output_ragged_dims = output_varying
+    else:
+        output_varying = inferred_output_varying
+    output_static = tuple(dim for dim in range(output_rank) if dim not in output_varying)
     output_permutation = output_varying + output_static
     packed_sizes = tuple(type(ref)._packed_size_from_shape(shape, output_varying) for shape in output_shapes)
     output_offsets = type(ref)._offsets_from_sizes(packed_sizes, dtype=ref._offsets.dtype)
@@ -629,20 +905,23 @@ def _broadcast_nested_tensors_packed(tensors):
                 coord = torch.where(sizes[:, position] == 1, torch.zeros_like(coord), coord)
                 source_local = source_local + coord * strides[:, position]
         source_flat = source_offsets[batch_idx.to(device=tensor.device)] + source_local
-        selected = tensor._values[source_flat]
+        selected = tensor.concat[source_flat]
 
-        tail_index: list[object] = [slice(None)]
-        kept_static_dims: list[int] = []
-        for source_dim in source_static:
+        kept_static_dims = list(source_static)
+        for source_dim in tuple(source_static):
             output_dim = align + int(source_dim)
             if output_dim in output_static:
-                tail_index.append(slice(None))
-                kept_static_dims.append(int(source_dim))
-            else:
-                if any(shape[int(source_dim)] != 1 for shape in shapes):
-                    return None
-                tail_index.append(0)
-        selected = selected[tuple(tail_index)]
+                continue
+            coord = output_coords[output_dim].to(device=tensor.device)
+            source_sizes = source_shape_device[:, int(source_dim)][batch_idx]
+            coord = torch.where(source_sizes == 1, torch.zeros_like(coord), coord)
+            tail_dim = 1 + kept_static_dims.index(int(source_dim))
+            index_shape = [selected.shape[0], *([1] * (selected.dim() - 1))]
+            gather_shape = list(selected.shape)
+            gather_shape[tail_dim] = 1
+            gather = coord.reshape(index_shape).expand(gather_shape)
+            selected = selected.gather(tail_dim, gather).squeeze(tail_dim)
+            kept_static_dims.remove(int(source_dim))
 
         ordered_existing = [
             output_dim - align
@@ -675,6 +954,7 @@ def _broadcast_nested_tensors_packed(tensors):
                 output_offsets,
                 output_shape,
                 permutation=output_permutation,
+                ragged_dims=output_ragged_dims,
                 batch_first=tensor.batch_first,
                 padding_value=tensor.padding_value,
                 mask_value=tensor.mask_value,
@@ -727,29 +1007,14 @@ def broadcast_tensors(*tensors):
     if packed is not None:
         return packed
 
-    batch_dim = _get_batch_dim(ref)
-    varying = set(ref._varying_dims)
-
-    def _dense_element(tensor: Tensor, index: int) -> Tensor:
-        elem = ref._storage[index]
-        if tensor.dim() == ref.dim() and tensor.shape[batch_dim] in (1, n):
-            tensor = tensor.select(batch_dim, 0 if tensor.shape[batch_dim] == 1 else index)
-        elif tensor.dim() > 1 and tensor.shape[0] in (1, n):
-            tensor = tensor[0 if tensor.shape[0] == 1 else index]
-        if tensor.dim() == elem.dim():
-            slices = []
-            for dim, (size, elem_size) in enumerate(zip(tensor.shape, elem.shape)):
-                if dim in varying and size > elem_size:
-                    slices.append(slice(0, int(elem_size)))
-                else:
-                    slices.append(slice(None))
-            tensor = tensor[tuple(slices)]
-        return tensor
-
     def _element(tensor, index: int):
         if isinstance(tensor, NestedTensor):
             return tensor._storage[index]
-        return _dense_element(tensor, index)
+        # One reading of a dense operand, shared with the binary and ternary handlers: the batch
+        # dimension participates only when the operand carries an axis there, so a shorter
+        # operand whose leading extent happens to equal the batch size stays a tail broadcast.
+        aligned = _dense_operand_for_element(ref, tensor, index, ref._storage[index])
+        return tensor if aligned is None else aligned
 
     _check_execution_guard(_ExecutionGuardKind.STORAGE_MAP, "broadcast_tensors")
     with torch._C.DisableTorchFunctionSubclass():
@@ -759,6 +1024,219 @@ def broadcast_tensors(*tensors):
         meta_source = tensor if isinstance(tensor, NestedTensor) else ref
         outputs.append(type(meta_source)([per_element[i][output_index] for i in range(n)], **meta_source._meta()))
     return tuple(outputs)
+
+
+@NestedTensorFuncRegistry.implement(torch.narrow)
+def narrow(input: NestedTensor, dim: int, start, length: int):
+    r"""
+    Returns a narrowed view of the input along one dimension.
+    See also [torch.narrow][].
+
+    ``dim`` numbers the logical shape, so the batch dimension selects samples and every other
+    dimension selects positions inside each element.
+
+    Args:
+        input: The input NestedTensor.
+        dim: The logical dimension to narrow.
+        start: First position to keep. Negative counts back from the end of ``dim``.
+        length: How many positions to keep.
+
+    Returns:
+        NestedTensor: The narrowed result.
+
+    Examples:
+        >>> import torch
+        >>> from danling.tensors import NestedTensor
+        >>> nt = NestedTensor(torch.arange(6.0).reshape(3, 2), torch.arange(10.0).reshape(5, 2))
+
+        The batch dimension selects whole samples:
+        >>> [tuple(part.shape) for part in torch.narrow(nt, 0, 0, 1)]
+        [(3, 2)]
+
+        A per-element dimension narrows every sample:
+        >>> [tuple(part.shape) for part in torch.narrow(nt, 2, 0, 1)]
+        [(3, 1), (5, 1)]
+    """
+    from .aten_functions import narrow_nested
+
+    return narrow_nested(input, dim, start, length)
+
+
+def _split_spans(extent: int, split_size_or_sections, op_name: str) -> tuple[tuple[int, int], ...]:
+    r"""Return the ``(start, length)`` spans ``torch.split`` cuts an axis of ``extent`` into."""
+    if isinstance(split_size_or_sections, int):
+        if split_size_or_sections <= 0:
+            raise ValueError("split_size must be a positive integer.")
+        if extent == 0:
+            return ((0, 0),)
+        return tuple(
+            (start, builtins.min(split_size_or_sections, extent - start))
+            for start in range(0, extent, split_size_or_sections)
+        )
+    if not isinstance(split_size_or_sections, (list, tuple)):
+        raise TypeError(f"split_size_or_sections must be int or a sequence of ints, got {type(split_size_or_sections)}")
+    spans = []
+    start = 0
+    for section in split_size_or_sections:
+        section = int(section)
+        if section < 0:
+            raise ValueError("split sections must be non-negative.")
+        spans.append((start, section))
+        start += section
+    if start != extent:
+        raise ValueError(f"{op_name} sections do not sum to the dimension size {extent}.")
+    return tuple(spans)
+
+
+def _chunk_spans(extent: int, chunks: int) -> tuple[tuple[int, int], ...]:
+    r"""Return the ``(start, length)`` spans ``torch.chunk`` cuts an axis of ``extent`` into."""
+    if chunks <= 0:
+        raise ValueError("chunks must be a positive integer.")
+    if extent == 0:
+        # An empty axis still yields the requested number of empty chunks, unlike ``split``.
+        return ((0, 0),) * chunks
+    size = -(-extent // chunks)
+    return tuple((start, builtins.min(size, extent - start)) for start in range(0, extent, size))
+
+
+def _tensor_split_spans(extent: int, indices_or_sections, op_name: str, even: bool) -> tuple[tuple[int, int], ...]:
+    r"""Return the ``(start, length)`` spans ``torch.tensor_split`` cuts an axis of ``extent`` into."""
+    if isinstance(indices_or_sections, Tensor):
+        if indices_or_sections.dim() == 0:
+            indices_or_sections = int(indices_or_sections.item())
+        else:
+            indices_or_sections = [int(index) for index in indices_or_sections.tolist()]
+    if isinstance(indices_or_sections, int):
+        sections = indices_or_sections
+        if sections <= 0:
+            raise ValueError(f"{op_name} expects a positive number of sections, but got {sections}.")
+        if even and extent % sections:
+            raise RuntimeError(
+                f"{op_name} attempted to split along dimension of size {extent}, "
+                f"which is not divisible by {sections}."
+            )
+        base, remainder = divmod(extent, sections)
+        spans = []
+        start = 0
+        for index in range(sections):
+            length = base + (1 if index < remainder else 0)
+            spans.append((start, length))
+            start += length
+        return tuple(spans)
+    cuts = [int(index) for index in indices_or_sections]
+    bounds = [0]
+    for cut in cuts:
+        if cut < 0:
+            cut += extent
+        bounds.append(builtins.min(builtins.max(cut, 0), extent))
+    bounds.append(extent)
+    return tuple(
+        (bounds[index], builtins.max(bounds[index + 1] - bounds[index], 0)) for index in range(len(bounds) - 1)
+    )
+
+
+def _split_like(input: NestedTensor, dim: int, spans_for, op_name: str):
+    r"""
+    Cut ``input`` along one logical dim into the spans ``spans_for`` reports for an extent.
+
+    ``split``, ``chunk`` and ``tensor_split`` differ only in where they cut, and the packed
+    layout is what decides how a cut is executed. A ragged dim has a different extent in every
+    sample, so the spans are recomputed per sample and the parts line up only when every sample
+    yields the same number of them -- which is why the uniform-count check lives here rather
+    than in any one operator.
+    """
+    from .aten_functions import (
+        _is_fake_tensor,
+        _packed_batch_slice,
+        _packed_ragged_slice,
+        _packed_sole_ragged_dim,
+        _packed_static_dim,
+        _packed_static_slice,
+        _resolved_packed_sizes,
+    )
+    from .nested_tensor import NestedTensor
+
+    dim = _normalize_dim(dim, input.dim())
+    batch_dim = _get_batch_dim(input)
+    if dim == batch_dim:
+        spans = spans_for(len(input))
+        return tuple(_packed_batch_slice(input, start, length, op_name) for start, length in spans)
+
+    dim_adj = _translate_dim(input, dim)
+    values_dim = _packed_static_dim(input, dim_adj)
+    if values_dim is not None:
+        spans = spans_for(int(input.concat.shape[values_dim]))
+        return tuple(_packed_static_slice(input, dim_adj, start, length) for start, length in spans)
+
+    if len(input) == 0 and input._ragged_dims_explicit:
+        extent = int(input._max_physical_dims()[dim_adj])
+        sole_ragged = _packed_sole_ragged_dim(input, dim_adj)
+        outputs = []
+        for start, length in spans_for(extent):
+            if sole_ragged:
+                outputs.append(
+                    type(input)._from_packed(
+                        input.concat,
+                        input._offsets,
+                        input._physical_shape,
+                        permutation=input._permutation,
+                        ragged_dims=input._ragged_dims,
+                        batch_first=input.batch_first,
+                        padding_value=input.padding_value,
+                        mask_value=input.mask_value,
+                        pin_memory=input._pin_memory,
+                        outer_size=input._logical_shape_from_components(replace_dims={dim_adj: length}),
+                        packed_sizes=(),
+                        element_shapes=(),
+                        ragged_offsets=(input._offsets,),
+                        validate=False,
+                    )
+                )
+                continue
+            selectors = [slice(None)] * int(input._physical_shape.size(1))
+            selectors[dim_adj] = slice(start, start + length)
+            output = input._empty_batch_basic_index(tuple(selectors))
+            assert output is not None
+            outputs.append(output)
+        return tuple(outputs)
+
+    if _packed_sole_ragged_dim(input, dim_adj):
+        # Where the cuts fall depends on each sample's own extent, so this is the one axis whose
+        # spans have to be recomputed per sample -- and the one a layout without Python metadata
+        # cannot answer for at all, which _resolved_packed_sizes says in the operator's name.
+        per_sample = [spans_for(extent) for extent in _resolved_packed_sizes(input, op_name)]
+        counts = [len(spans) for spans in per_sample]
+        if len(set(counts)) > 1:
+            raise ValueError(
+                f"{op_name} along a ragged dim requires uniform per-element {op_name} counts, "
+                f"but got counts {counts}."
+            )
+        return tuple(
+            _packed_ragged_slice(
+                input,
+                dim_adj,
+                [spans[index][0] for spans in per_sample],
+                [spans[index][1] for spans in per_sample],
+            )
+            for index in range(counts[0])
+        )
+
+    _check_execution_guard(_ExecutionGuardKind.EAGER_FALLBACK, f"torch_functions.{op_name}")
+    if _is_compiling() or _is_fake_tensor(input._offsets):
+        _compile_unsupported(op_name, "an outer ragged dim has no packed span")
+    storage = input._storage
+    if not storage:
+        return (NestedTensor([], **input._meta(include_dtype=True)),)
+    per_element = [
+        [element.narrow(dim_adj, start, length) for start, length in spans_for(int(element.shape[dim_adj]))]
+        for element in storage
+    ]
+    counts = [len(parts) for parts in per_element]
+    if len(set(counts)) > 1:
+        raise ValueError(
+            f"{op_name} along a ragged dim requires uniform per-element {op_name} counts, but got counts {counts}."
+        )
+    return tuple(NestedTensor([parts[index] for parts in per_element], **input._meta()) for index in range(counts[0]))
 
 
 @NestedTensorFuncRegistry.implement(torch.chunk)
@@ -796,42 +1274,70 @@ def chunk(input: NestedTensor, chunks: int, dim: int = 0):
         >>> parts[0][0].shape
         torch.Size([3, 2])
     """
-    from .nested_tensor import NestedTensor
-
-    dim = _normalize_dim(dim, input.dim())
-    batch_dim = _get_batch_dim(input)
-
     if chunks <= 0:
         raise ValueError("chunks must be a positive integer.")
+    return _split_like(input, dim, lambda extent: _chunk_spans(extent, chunks), "chunk")
 
-    # ── Batch dim chunk ──
-    if dim == batch_dim:
-        storage = input._storage
-        if not storage:
-            return ()
-        chunk_size = (len(storage) + chunks - 1) // chunks
-        return tuple(
-            NestedTensor(storage[i : i + chunk_size], **input._meta())  # noqa: E203
-            for i in range(0, len(storage), chunk_size)
-        )
 
-    # ── Non-batch dim chunk ──
-    storage = input._storage
-    if not storage:
-        return ()
+@NestedTensorFuncRegistry.implement(torch.tensor_split)
+def tensor_split(input: NestedTensor, indices_or_sections, dim: int = 0):
+    r"""
+    Splits a tensor into multiple sub-tensors, allowing uneven sections.
+    See also [torch.tensor_split][].
 
-    elem_dim = _translate_dim(input, dim)
-    chunk_results = [torch.chunk(t, chunks, dim=elem_dim) for t in storage]
-    chunk_counts = [len(parts) for parts in chunk_results]
-    num_chunks = chunk_counts[0]
-    if any(count != num_chunks for count in chunk_counts[1:]):
-        raise ValueError(
-            "torch.chunk along non-batch dim requires uniform per-element chunk counts, "
-            f"but got counts {chunk_counts}."
-        )
-    return tuple(
-        NestedTensor([chunk_results[i][k] for i in range(len(storage))], **input._meta()) for k in range(num_chunks)
+    Args:
+        input: The input NestedTensor.
+        indices_or_sections: Number of sections, or the indices to cut at.
+        dim: Logical dimension along which to split.
+
+    Returns:
+        tuple[NestedTensor, ...]: Tuple of NestedTensor parts.
+
+    Examples:
+        >>> import torch
+        >>> from danling.tensors import NestedTensor
+        >>> nt = NestedTensor(torch.arange(6.0).reshape(3, 2), torch.arange(10.0).reshape(5, 2))
+        >>> [len(part) for part in torch.tensor_split(nt, 2, dim=0)]
+        [1, 1]
+        >>> [tuple(part.shape) for part in torch.tensor_split(nt, 2, dim=2)[0]]
+        [(3, 1), (5, 1)]
+    """
+    return _split_like(
+        input,
+        dim,
+        lambda extent: _tensor_split_spans(extent, indices_or_sections, "tensor_split", even=False),
+        "tensor_split",
     )
+
+
+def _axis_split(input: NestedTensor, indices_or_sections, dim: int, op_name: str, min_dim: int):
+    r"""Shared body of ``vsplit``/``hsplit``/``dsplit``, which are ``tensor_split`` on a fixed axis."""
+    if input.dim() < min_dim:
+        raise RuntimeError(f"torch.{op_name} requires a tensor with at least {min_dim} dimension(s)")
+    return _split_like(
+        input,
+        dim,
+        lambda extent: _tensor_split_spans(extent, indices_or_sections, op_name, even=True),
+        op_name,
+    )
+
+
+@NestedTensorFuncRegistry.implement(torch.vsplit)
+def vsplit(input: NestedTensor, indices_or_sections):
+    r"""Split along logical dimension 0. See also [torch.vsplit][]."""
+    return _axis_split(input, indices_or_sections, 0, "vsplit", 2)
+
+
+@NestedTensorFuncRegistry.implement(torch.hsplit)
+def hsplit(input: NestedTensor, indices_or_sections):
+    r"""Split along logical dimension 1. See also [torch.hsplit][]."""
+    return _axis_split(input, indices_or_sections, 0 if input.dim() == 1 else 1, "hsplit", 1)
+
+
+@NestedTensorFuncRegistry.implement(torch.dsplit)
+def dsplit(input: NestedTensor, indices_or_sections):
+    r"""Split along logical dimension 2. See also [torch.dsplit][]."""
+    return _axis_split(input, indices_or_sections, 2, "dsplit", 3)
 
 
 @NestedTensorFuncRegistry.implement(torch.split)
@@ -878,58 +1384,7 @@ def split(input: NestedTensor, split_size_or_sections, dim: int = 0):
         >>> torch.equal(parts[0][0], a[:, :3]) and torch.equal(parts[0][1], b[:, :3])
         True
     """
-    from .nested_tensor import NestedTensor
-
-    dim = _normalize_dim(dim, input.dim())
-    batch_dim = _get_batch_dim(input)
-
-    # ── Batch dim split ──
-    if dim == batch_dim:
-        if isinstance(split_size_or_sections, int):
-            split_size = split_size_or_sections
-            if split_size <= 0:
-                raise ValueError("split_size must be a positive integer.")
-            storage = input._storage
-            return tuple(
-                NestedTensor(storage[i : i + split_size], **input._meta())  # noqa: E203
-                for i in range(0, len(storage), split_size)
-            )
-
-        if not isinstance(split_size_or_sections, (list, tuple)):
-            raise TypeError(
-                f"split_size_or_sections must be int or a sequence of ints, got {type(split_size_or_sections)}"
-            )
-
-        storage = input._storage
-        chunks = []
-        start = 0
-        for section in split_size_or_sections:
-            if section < 0:
-                raise ValueError("split sections must be non-negative.")
-            end = start + int(section)
-            chunks.append(NestedTensor(storage[start:end], **input._meta()))
-            start = end
-        if start != len(storage):
-            raise ValueError("split sections do not sum to the NestedTensor batch size.")
-        return tuple(chunks)
-
-    # ── Non-batch dim split ──
-    storage = input._storage
-    if not storage:
-        return (NestedTensor([], **input._meta(include_dtype=True)),)
-
-    elem_dim = _translate_dim(input, dim)
-    split_results = [torch.split(t, split_size_or_sections, dim=elem_dim) for t in storage]
-    split_counts = [len(parts) for parts in split_results]
-    num_chunks = split_counts[0]
-    if any(count != num_chunks for count in split_counts[1:]):
-        raise ValueError(
-            "torch.split along non-batch dim requires uniform per-element split counts, "
-            f"but got counts {split_counts}."
-        )
-    return tuple(
-        NestedTensor([split_results[i][k] for i in range(len(storage))], **input._meta()) for k in range(num_chunks)
-    )
+    return _split_like(input, dim, lambda extent: _split_spans(extent, split_size_or_sections, "split"), "split")
 
 
 @NestedTensorFuncRegistry.implement(torch.stack, compile_safe=True)
@@ -949,15 +1404,20 @@ def stack(*args, **kwargs):
         >>> import torch
         >>> from danling.tensors import NestedTensor
         >>> nt = NestedTensor(torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0, 5.0]))
-        >>> out = torch.stack((nt, nt), dim=0)
+        >>> out = torch.stack((nt, nt), dim=1)
         >>> ref = NestedTensor(
         ...     torch.stack((nt[0], nt[0]), dim=0),
         ...     torch.stack((nt[1], nt[1]), dim=0),
         ... )
         >>> torch.equal(out, ref)
         True
+
+        A new dimension at or before the batch dimension has nowhere to live:
+        >>> torch.stack((nt, nt), dim=0)
+        Traceback (most recent call last):
+        NotImplementedError: torch.stack dim 0 must be after the NestedTensor batch dimension (0).
     """
-    tensors = args[0] if args else ()
+    tensors = args[0] if args else kwargs.get("tensors", ())
     if len(args) > 1:
         if "dim" in kwargs:
             raise TypeError("stack() got multiple values for argument 'dim'")
@@ -984,10 +1444,14 @@ def stack(*args, **kwargs):
         raise NotImplementedError("torch.stack for NestedTensor requires all inputs to share the same packed layout.")
     dim = _normalize_dim(int(dim), first.dim() + 1)
     batch_dim = _get_batch_dim(first)
-    if first.batch_first:
-        storage_dim = dim - 1 if dim > batch_dim else dim
-    else:
-        storage_dim = dim if dim < batch_dim else dim - 1
+    if dim <= batch_dim:
+        # Stacking here would put a new outermost axis in front of the batch, i.e. a batch of
+        # batches. A NestedTensor holds exactly one batch dimension, so there is nowhere to put
+        # it; silently stacking a per-element dim instead answers a different question.
+        raise NotImplementedError(
+            f"torch.stack dim {dim} must be after the NestedTensor batch dimension ({batch_dim})."
+        )
+    storage_dim = dim - 1
     element_rank = int(first._physical_shape.size(1))
     if storage_dim < 0 or storage_dim > element_rank:
         raise IndexError(
@@ -1006,7 +1470,7 @@ def stack(*args, **kwargs):
                 insert_at = index + 1
         static_dims = (*shifted_static[:insert_at], storage_dim, *shifted_static[insert_at:])
         packed_dim = 1 + insert_at
-        new_values = torch.stack([t._values for t in tensors], dim=packed_dim)
+        new_values = torch.stack([t.concat for t in tensors], dim=packed_dim)
         if first._element_shapes is not None:
             element_shapes = tuple(
                 (*shape[:storage_dim], stack_size, *shape[storage_dim:]) for shape in first._element_shapes
@@ -1066,10 +1530,11 @@ def unbind(input: NestedTensor, dim: int = 0):
 
     Args:
         input: The input NestedTensor.
-        dim: Dimension to remove (only batch dimension is supported).
+        dim: Dimension to remove. Must be the batch dimension or a static (non-ragged) one.
 
     Returns:
-        list[Tensor]: List of tensors from the storage.
+        list[Tensor]: Elements of the storage, when unbinding the batch dimension.
+        list[NestedTensor]: Slices sharing the original raggedness, for a static dimension.
 
     Examples:
         >>> import torch
@@ -1078,12 +1543,31 @@ def unbind(input: NestedTensor, dim: int = 0):
         >>> out = torch.unbind(nt, dim=0)
         >>> torch.equal(out[0], nt[0]) and torch.equal(out[1], nt[1])
         True
+        >>> wide = NestedTensor(torch.ones(2, 3), torch.ones(4, 3))
+        >>> [tuple(part.shape) for part in torch.unbind(wide, dim=2)]
+        [(2, 4), (2, 4), (2, 4)]
     """
     dim = _normalize_dim(dim, input.dim())
     batch_dim = _get_batch_dim(input)
-    if dim != batch_dim:
-        raise NotImplementedError("torch.unbind for NestedTensor only supports unbinding along the batch dimension.")
-    return input._storage
+    if dim == batch_dim:
+        return input._storage
+    # A static dim has the same extent in every element, so it splits into uniform slices that each
+    # keep the original raggedness. A ragged dim varies per element and has no such uniform split.
+    element_dim = _translate_dim(input, dim)
+    if element_dim in input._varying_dims:
+        raise NotImplementedError(
+            "torch.unbind for NestedTensor supports the batch dimension or a static (non-ragged) dimension, "
+            "not a ragged dimension."
+        )
+    from .aten_functions import _packed_static_dim, _packed_without_dim
+
+    # The dim is static, so it owns one packed axis and unbinding it hands back one packed
+    # buffer per position. Each keeps the source's raggedness with that axis removed, which
+    # renumbers every declared or inferred dim above it.
+    values_dim = _packed_static_dim(input, element_dim)
+    if values_dim is None:
+        raise RuntimeError("A static element dimension must have a packed axis")
+    return [_packed_without_dim(input, element_dim, values) for values in input.concat.unbind(values_dim)]
 
 
 # Dropout & Sampling
@@ -1095,9 +1579,8 @@ def alpha_dropout(input: NestedTensor, p: float = 0.5, train: bool = False):
     _validate_probability(float(p), error_type=RuntimeError)
     if (not train) or p == 0:
         return input
-    from .aten_functions import _packed_like
 
-    return _packed_like(input, torch.ops.aten.alpha_dropout.default(input._values, p, train))
+    return input._packed_like_unchecked(torch.ops.aten.alpha_dropout.default(input.concat, p, train))
 
 
 @NestedTensorFuncRegistry.implement(torch.bernoulli)
@@ -1121,9 +1604,8 @@ def bernoulli(input: NestedTensor, *, generator=None):
         >>> out[0].shape == nt[0].shape and out[1].shape == nt[1].shape
         True
     """
-    from .aten_functions import _packed_like
 
-    return _packed_like(input, torch.ops.aten.bernoulli.default(input._values, generator=generator))
+    return input._packed_like_unchecked(torch.ops.aten.bernoulli.default(input.concat, generator=generator))
 
 
 @NestedTensorFuncRegistry.implement(torch.dropout)
@@ -1150,9 +1632,8 @@ def dropout(input: NestedTensor, p: float = 0.5, train: bool = True):
     _validate_probability(float(p), error_type=RuntimeError)
     if (not train) or p == 0:
         return input
-    from .aten_functions import _packed_like
 
-    return _packed_like(input, torch.ops.aten.dropout.default(input._values, p, train))
+    return input._packed_like_unchecked(torch.ops.aten.dropout.default(input.concat, p, train))
 
 
 @NestedTensorFuncRegistry.implement(torch.feature_alpha_dropout)
@@ -1161,15 +1642,34 @@ def feature_alpha_dropout(input: NestedTensor, p: float = 0.5, train: bool = Fal
     _validate_probability(float(p), error_type=RuntimeError)
     if (not train) or p == 0:
         return input
-    from .aten_functions import _packed_like
 
-    return _packed_like(input, torch.ops.aten.feature_alpha_dropout.default(input._values, p, train))
+    return input._packed_like_unchecked(torch.ops.aten.feature_alpha_dropout.default(input.concat, p, train))
 
 
 # Indexing & Masking
 
 
+@NestedTensorFuncRegistry.implement(torch.Tensor.__getitem__, compile_safe=True)
+def getitem(input: Tensor, index):
+    r"""Index a one-dimensional dense lookup table with packed long indices."""
+    from .aten_functions import per_element_fallback
+    from .nested_tensor import NestedTensor
+
+    nested_index = index[0] if isinstance(index, tuple) and len(index) == 1 else index
+    if (
+        isinstance(input, Tensor)
+        and not isinstance(input, NestedTensor)
+        and input.dim() == 1
+        and isinstance(nested_index, NestedTensor)
+        and nested_index.dtype not in (torch.bool, torch.uint8)
+    ):
+        return nested_index._packed_like_unchecked(input[nested_index.concat])
+    indices = list(index) if isinstance(index, tuple) else [index]
+    return per_element_fallback(torch.ops.aten.index.Tensor, (input, indices), {})
+
+
 @NestedTensorFuncRegistry.implement(torch.gather)
+@NestedTensorFuncRegistry.implement(torch.Tensor.gather)
 def gather(input: NestedTensor, dim: int, index, *, sparse_grad: bool = False):
     r"""
     Gathers values along an axis specified by `dim`.
@@ -1193,22 +1693,154 @@ def gather(input: NestedTensor, dim: int, index, *, sparse_grad: bool = False):
         >>> torch.equal(out, ref)
         True
     """
-    if input._values.dim() > 1:
-        return torch.ops.aten.gather.default(input, dim, index, sparse_grad=sparse_grad)
+    # Run the packed handler HERE (func level), where ``input.concat`` still carry autograd, rather
+    # than delegating to the aten op on the NestedTensor -- that re-enters ``__torch_dispatch__``,
+    # where autograd has already detached ``concat``, so the result would drop grad. Mirrors the
+    # same treatment in ``log_softmax``/``softmax``. One-dimensional packed values go the same way:
+    # a 1-D element is a ragged dim like any other, and splitting it off here only bought a Python
+    # loop over ``_storage``.
+    from .aten_functions import gather as _aten_gather
 
-    from .nested_tensor import NestedTensor
+    return _aten_gather(torch.ops.aten.gather.default, (input, dim, index), {"sparse_grad": sparse_grad})
 
-    dim_adj = _translate_non_batch_dim(input, dim, name="gather")
-    aligned_index = input._maybe_exact_shape_nested_like(index)
-    if aligned_index is not None:
-        index = aligned_index
-    if isinstance(index, NestedTensor):
-        if len(input) != len(index):
-            raise ValueError(
-                "NestedTensor batch length mismatch between input and index: " f"input={len(input)}, index={len(index)}"
-            )
-        return NestedTensor(torch.gather(t, dim_adj, idx) for t, idx in zip(input._storage, index._storage))
-    return NestedTensor(torch.gather(t, dim_adj, index) for t in input._storage)
+
+def _require_packed_ragged_dim(input: NestedTensor, dim: int | None, name: str) -> None:
+    r"""Refuse anything but the ragged dimension of a layout the packed path can serve.
+
+    ``dim`` is optional because the ragged dimension is the only one these operators accept,
+    and no fixed default finds it: ``-1`` is the batch dimension under ``batch_first=False``
+    and a static dimension under a declared ``ragged_dims=(1,)``.
+    """
+    from .aten_functions import _has_single_packed_ragged_dim
+
+    ragged_dims = input._ragged_dims
+    if len(ragged_dims) != 1:
+        raise ValueError(f"{name} applies to the ragged dimension, but {ragged_dims} of them vary")
+    ragged_dim = ragged_dims[0]
+    if dim is not None and _translate_dim(input, dim) != ragged_dim:
+        raise ValueError(f"{name} applies to the ragged dimension")
+    if not _has_single_packed_ragged_dim(input, ragged_dim):
+        raise ValueError(f"{name} requires the ragged dimension to lead the packed layout")
+
+
+def inverse_permutation(input: NestedTensor, dim: int | None = None) -> NestedTensor:
+    r"""
+    Invert a per-sample permutation.
+
+    Given a NestedTensor whose every element is a permutation of ``range(n_i)``, return the
+    permutation that undoes it, so ``values[perm][inverse]`` is ``values`` again.
+
+    This is one scatter. Writing it as ``argsort(argsort(x))`` costs two sorts for the same
+    result, which is why it is worth its own operator.
+
+    Every element must actually be a permutation of ``range(n_i)``; a repeated, missing or
+    negative index is detected and raises ``RuntimeError`` rather than silently returning
+    uninitialized memory. An element rank above one is inverted per column, matching how
+    ``sort`` and ``argsort`` treat a static tail.
+
+    Args:
+        input: Per-sample permutations, one per element. Must have an integer dtype: coercing
+            a float index would defeat the bijection check rather than report it.
+        dim: The ragged dimension, or None for whichever dimension that is.
+
+    Returns:
+        NestedTensor: The inverse permutations, in the input's dtype and structure.
+
+    Examples:
+        >>> import torch
+        >>> from danling.tensors import NestedTensor, inverse_permutation
+        >>> perm = NestedTensor(torch.tensor([2, 0, 1]), torch.tensor([1, 0]))
+        >>> [element.tolist() for element in inverse_permutation(perm, dim=1)]
+        [[1, 2, 0], [1, 0]]
+    """
+    from .aten_functions import _is_fake_tensor
+    from .segmented import align_rows
+
+    _require_packed_ragged_dim(input, dim, "inverse_permutation")
+    values = input.concat
+    if values.dtype.is_floating_point or values.dtype.is_complex or values.dtype is torch.bool:
+        raise TypeError(f"inverse_permutation requires an integer index dtype, got {values.dtype}")
+    offsets = input._offsets.to(device=values.device, dtype=torch.long)
+    base = align_rows(offsets[input.packed_batch_indices(device=values.device)], values)
+    positions = align_rows(input.packed_local_indices(device=values.device), values)
+    # A sentinel of -1 turns a repeated (and therefore also a missing) index into a slot that
+    # is never written -- an out-of-range index is already caught by scatter_'s own bounds
+    # check. A negative index is not: it lands in the segment before its own, where it can
+    # fill exactly the slot some other segment overshot, so it is rejected up front.
+    inverse = torch.full_like(base, -1)
+    inverse.scatter_(0, values.long() + base, positions)
+    checkable = inverse.numel() > 0 and not (_is_compiling() or _is_fake_tensor(values))
+    if checkable and bool(((inverse < 0) | (values < 0)).any().item()):
+        raise RuntimeError("inverse_permutation: input must be a permutation of range(n_i) per sample")
+    return input._packed_like_unchecked(inverse.to(values.dtype))
+
+
+def rank(input: NestedTensor, dim: int | None = None, *, descending: bool = False) -> NestedTensor:
+    r"""
+    Position of each element within its own sample.
+
+    The inverse of the sample-local argsort: where ``argsort`` answers "which element belongs
+    at position i", ``rank`` answers "at which position does element i belong". Rank validation
+    asks the second question directly, which is why it gets its own operator.
+
+    Args:
+        input: The values to rank.
+        dim: The ragged dimension, or None for whichever dimension that is.
+        descending: Rank largest first.
+
+    Returns:
+        NestedTensor: Per-sample int64 ranks, a permutation of ``range(n_i)`` for every element,
+        ranked per column when the elements carry a static tail.
+
+    Examples:
+        >>> import torch
+        >>> from danling.tensors import NestedTensor, rank
+        >>> nested = NestedTensor(torch.tensor([3.0, 1.0, 2.0]), torch.tensor([5.0, 4.0]))
+        >>> [element.tolist() for element in rank(nested, dim=1)]
+        [[2, 0, 1], [1, 0]]
+    """
+    from .segmented import segmented_sort_perm
+
+    _require_packed_ragged_dim(input, dim, "rank")
+    values = input.concat
+    _, local = segmented_sort_perm(
+        values,
+        input._offsets,
+        input.packed_batch_indices(device=values.device),
+        descending=descending,
+    )
+    return inverse_permutation(input._packed_like_unchecked(local), dim=dim)
+
+
+def cumcount(input: NestedTensor, dim: int | None = None) -> NestedTensor:
+    r"""
+    Ordinal of each element within its own sample.
+
+    A per-sample ``arange``: the position every packed handler derives internally from the
+    offsets. There is no torch spelling for it, so callers would otherwise re-derive the
+    offsets by hand.
+
+    Args:
+        input: Any NestedTensor; only its layout is read.
+        dim: The ragged dimension, or None for whichever dimension that is.
+
+    Returns:
+        NestedTensor: Per-sample int64 positions, with the input's structure. A static tail
+        repeats the row's position across every column, so the result matches the input's rank.
+
+    Examples:
+        >>> import torch
+        >>> from danling.tensors import NestedTensor, cumcount
+        >>> nested = NestedTensor(torch.tensor([9.0, 8.0, 7.0]), torch.tensor([6.0, 5.0]))
+        >>> [element.tolist() for element in cumcount(nested, dim=1)]
+        [[0, 1, 2], [0, 1]]
+    """
+    from .segmented import align_rows
+
+    _require_packed_ragged_dim(input, dim, "cumcount")
+    values = input.concat
+    positions = align_rows(input.packed_local_indices(device=values.device), values)
+    return input._packed_like_unchecked(positions.clone())
 
 
 @NestedTensorFuncRegistry.implement(torch.index_add)
@@ -1358,6 +1990,7 @@ def index_put(input: NestedTensor, indices, values, accumulate: bool = False):
 
 
 @NestedTensorFuncRegistry.implement(torch.index_select)
+@NestedTensorFuncRegistry.implement(torch.Tensor.index_select)
 def index_select(input: NestedTensor, dim: int, index: Tensor):
     r"""
     Returns a new tensor which indexes the `input` tensor along dimension `dim` using the entries in
@@ -1382,19 +2015,12 @@ def index_select(input: NestedTensor, dim: int, index: Tensor):
         >>> torch.equal(out, ref)
         True
     """
-    dim = _normalize_dim(dim, input.dim())
-    batch_dim = _get_batch_dim(input)
-    if dim == batch_dim:
-        return torch.ops.aten.index_select.default(input, dim, index)
+    # Run the packed handler here, where ``input.concat`` still carry autograd, rather than
+    # re-dispatching the aten op on the NestedTensor. The handler resolves the packed axis for
+    # every dimension, so there is nothing left for this level to decide.
+    from .aten_functions import index_select as _aten_index_select
 
-    dim_adj = _translate_dim(input, dim)
-    if dim_adj > 0 and input._values.dim() > dim_adj:
-        return torch.ops.aten.index_select.default(input, dim, index)
-
-    from .nested_tensor import NestedTensor
-
-    index_device = index.to(dtype=torch.long, device=input.device)
-    return NestedTensor(torch.index_select(t, dim_adj, index_device) for t in input._storage)
+    return _aten_index_select(torch.ops.aten.index_select.default, (input, dim, index), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.masked_fill)
@@ -1421,8 +2047,11 @@ def masked_fill(input: NestedTensor, mask, value):
         >>> torch.equal(out, ref)
         True
     """
+    from .aten_functions import _packed_masked_fill_supported, _plain_filled_by_nested_mask
     from .nested_tensor import NestedTensor
 
+    if not isinstance(input, NestedTensor) and isinstance(mask, NestedTensor):
+        return _plain_filled_by_nested_mask(input, mask, value, torch.masked_fill, {})
     aligned_mask = input._maybe_exact_shape_nested_like(mask)
     if aligned_mask is not None:
         mask = aligned_mask
@@ -1431,16 +2060,16 @@ def masked_fill(input: NestedTensor, mask, value):
             raise ValueError(
                 "NestedTensor batch length mismatch between input and mask: " f"input={len(input)}, mask={len(mask)}"
             )
-        # The aten handler is valid whenever the mask shares the packed layout.
-        # Broader broadcasted mask cases intentionally stay per-element.
+        # A mask with the same ragged rows may still broadcast a singleton
+        # static tail directly over the packed values.
         masked_fill_op = (
             torch.ops.aten.masked_fill.Tensor if isinstance(value, Tensor) else torch.ops.aten.masked_fill.Scalar
         )
-        if input._has_same_layout(mask):
+        if _packed_masked_fill_supported(input, mask):
             return masked_fill_op(input, mask, value)
         return NestedTensor(torch.masked_fill(t, m, value) for t, m in zip(input._storage, mask._storage))
     if not isinstance(mask, Tensor):
-        mask = torch.as_tensor(mask, dtype=torch.bool, device=input._values.device)
+        mask = torch.as_tensor(mask, dtype=torch.bool, device=input.concat.device)
     padded = input.tensor
     return input.nested_like(torch.masked_fill(padded, mask.to(device=padded.device), value))
 
@@ -1475,7 +2104,7 @@ def masked_scatter(input: NestedTensor, mask, source):
         >>> torch.equal(out, ref)
         True
     """
-    from .aten_functions import _masked_scatter_source_consumption_matches
+    from .aten_functions import _masked_scatter_handler, _masked_scatter_packed_supported
     from .nested_tensor import NestedTensor
 
     aligned_mask = input._maybe_exact_shape_nested_like(mask)
@@ -1496,15 +2125,18 @@ def masked_scatter(input: NestedTensor, mask, source):
     if (
         isinstance(mask, NestedTensor)
         and isinstance(source, NestedTensor)
-        and input._has_same_layout(mask)
-        and _masked_scatter_source_consumption_matches(mask, source)
+        and _masked_scatter_packed_supported(input, mask, source)
     ):
-        # Packed masked_scatter is only correct when the source stream is partitioned by the
-        # same per-element boundaries as the mask's True-count consumption. Dense Tensor
-        # sources intentionally stay on the fallback path because eager semantics reuse them
-        # independently for each element rather than consuming one global packed stream.
-        return torch.ops.aten.masked_scatter.default(input, mask, source)
+        # Dense Tensor mask or source stay on the fallback path: eager semantics replay them
+        # independently for each element rather than consuming one packed stream.
+        #
+        # Run the packed handler HERE (func level), where ``input.concat`` still carry autograd,
+        # rather than delegating to the aten op on the NestedTensor -- that re-enters
+        # ``__torch_dispatch__``, where autograd has already detached ``concat``, so the result
+        # would drop grad. Mirrors the same treatment in ``gather``.
+        return _masked_scatter_handler(torch.ops.aten.masked_scatter.default, (input, mask, source), {})
 
+    _check_execution_guard(_ExecutionGuardKind.EAGER_FALLBACK, "torch_functions.masked_scatter")
     storage = []
     for i, t in enumerate(input._storage):
         m = mask._storage[i] if isinstance(mask, NestedTensor) else mask
@@ -1556,7 +2188,7 @@ def masked_select(input: NestedTensor, mask):
             )
         # Packed masked_select is only valid when the mask is exact-shape, has matching
         # packed layout, and we have concrete mask values.
-        if input._has_same_layout(mask) and not (_is_fake_tensor(input._values) or _is_fake_tensor(mask._values)):
+        if input._has_same_layout(mask) and not (_is_fake_tensor(input.concat) or _is_fake_tensor(mask.concat)):
             return torch.ops.aten.masked_select.default(input, mask)
         return NestedTensor(torch.masked_select(t, m) for t, m in zip(input._storage, mask._storage))
     storage = []
@@ -1610,7 +2242,7 @@ def nonzero(input: NestedTensor, *, out=None, as_tuple: bool = False):
         # The aten fast path matches dense nonzero dtype/shape behavior for the
         # supported packed layouts. Flattened storage and fake-tensor values stay on
         # the explicit per-element fallback path.
-        if not _is_fake_tensor(input._values) and not (input._physical_shape.size(1) > 1 and input._values.dim() == 1):
+        if not _is_fake_tensor(input.concat) and not (input._physical_shape.size(1) > 1 and input.concat.dim() == 1):
             return torch.ops.aten.nonzero.default(input)
         return NestedTensor((torch.nonzero(t, as_tuple=False) for t in input._storage), **input._meta())
 
@@ -1762,6 +2394,7 @@ def take(input: NestedTensor, index, *, out=None):
 if hasattr(torch, "take_along_dim"):
 
     @NestedTensorFuncRegistry.implement(torch.take_along_dim)
+    @NestedTensorFuncRegistry.implement(torch.Tensor.take_along_dim)
     def take_along_dim(input: NestedTensor, indices, dim=None):
         r"""
         Selects values from `input` at the 1-dimensional indices from `indices` along the given `dim`.
@@ -1785,34 +2418,32 @@ if hasattr(torch, "take_along_dim"):
             >>> torch.equal(out, ref)
             True
         """
+        from .aten_functions import _gather_equivalent_index
+        from .aten_functions import gather as _aten_gather
         from .nested_tensor import NestedTensor
 
-        if dim is None:
-            aligned_indices = input._maybe_exact_shape_nested_like(indices)
-            if aligned_indices is not None:
-                indices = aligned_indices
-            if isinstance(indices, NestedTensor):
-                if len(input) != len(indices):
-                    raise ValueError(
-                        "NestedTensor batch length mismatch between input and indices: "
-                        f"input={len(input)}, indices={len(indices)}"
-                    )
-                return NestedTensor(
-                    torch.take_along_dim(t, i, dim=None) for t, i in zip(input._storage, indices._storage)
-                )
-            indices_device = indices if indices.device == input.device else indices.to(device=input.device)
-            return NestedTensor(torch.take_along_dim(t, indices_device, dim=None) for t in input._storage)
-
-        dim_adj = _translate_non_batch_dim(input, dim, name="take_along_dim")
+        dim_adj = None if dim is None else _translate_non_batch_dim(input, dim, name="take_along_dim")
         aligned_indices = input._maybe_exact_shape_nested_like(indices)
         if aligned_indices is not None:
             indices = aligned_indices
+        if isinstance(indices, NestedTensor) and len(input) != len(indices):
+            raise ValueError(
+                "NestedTensor batch length mismatch between input and indices: "
+                f"input={len(input)}, indices={len(indices)}"
+            )
+
+        # Reading along a dim is gathering along it once the two operands agree everywhere else,
+        # so hand the whole packed repertoire of ``gather`` to ``take_along_dim`` instead of
+        # keeping a second, loop-only implementation of the same operator.
+        if (
+            dim_adj is not None
+            and isinstance(indices, NestedTensor)
+            and _gather_equivalent_index(input, indices, dim_adj)
+        ):
+            return _aten_gather(torch.ops.aten.gather.default, (input, dim, indices), {})
+
+        _check_execution_guard(_ExecutionGuardKind.EAGER_FALLBACK, "torch_functions.take_along_dim")
         if isinstance(indices, NestedTensor):
-            if len(input) != len(indices):
-                raise ValueError(
-                    "NestedTensor batch length mismatch between input and indices: "
-                    f"input={len(input)}, indices={len(indices)}"
-                )
             return NestedTensor(
                 torch.take_along_dim(t, i, dim=dim_adj) for t, i in zip(input._storage, indices._storage)
             )
@@ -1820,7 +2451,7 @@ if hasattr(torch, "take_along_dim"):
         return NestedTensor(torch.take_along_dim(t, indices_device, dim=dim_adj) for t in input._storage)
 
 
-@NestedTensorFuncRegistry.implement(torch.where)
+@NestedTensorFuncRegistry.implement(torch.where, compile_safe=True)
 def where(condition, input, other):
     r"""
     Return a tensor of elements selected from either `input` or `other`, depending on `condition`.
@@ -1861,10 +2492,10 @@ def where(condition, input, other):
 
     def to_nested(value, ref: NestedTensor, *, dtype=None) -> NestedTensor:
         if isinstance(value, NestedTensor):
-            return value.to(dtype=dtype) if dtype is not None else value
+            return cast(NestedTensor, value.to(dtype=dtype)) if dtype is not None else value
         aligned = ref._maybe_exact_shape_nested_like(value)
         if aligned is not None:
-            return aligned.to(dtype=dtype) if dtype is not None else aligned
+            return cast(NestedTensor, aligned.to(dtype=dtype)) if dtype is not None else aligned
         storage = []
         for t in ref._storage:
             if isinstance(value, Tensor):
@@ -1884,8 +2515,38 @@ def where(condition, input, other):
     ref = next((v for v in (input, other, condition) if isinstance(v, NestedTensor)), None)
     if ref is None:
         return torch.where(condition, input, other)
+
+    if _needs_outer_autograd(condition, input, other):
+        # Enter aten through the outer wrappers so AOT owns the differentiable
+        # edges. Normalize weak Python scalars to 0-D tensors first: the
+        # ScalarOther/ScalarSelf overloads do not preserve that wrapper edge in
+        # compiled backward, while ``where.self`` does and has the same promoted
+        # result dtype.
+        value_tensors = [value for value in (input, other) if isinstance(value, Tensor)]
+        if len(value_tensors) == 1:
+            anchor = value_tensors[0]
+            anchor_values = anchor.concat if isinstance(anchor, NestedTensor) else anchor
+            scalar = other if anchor is input else input
+            scalar_dtype = torch.result_type(anchor_values, scalar)
+            scalar_tensor = torch.scalar_tensor(scalar, dtype=scalar_dtype, device=ref.device)
+            if anchor is input:
+                other = scalar_tensor
+            else:
+                input = scalar_tensor
+        elif not value_tensors:
+            scalar_dtype = torch.result_type(input, other)
+            input = torch.scalar_tensor(input, dtype=scalar_dtype, device=ref.device)
+            other = torch.scalar_tensor(other, dtype=scalar_dtype, device=ref.device)
+        with torch._C.DisableTorchFunctionSubclass():
+            return torch.where(condition, input, other)
+
+    from .aten_functions import _ternary_handler
+
     with suppress(NotImplementedError):
-        return select_aten_where(input, other)(condition, input, other)
+        return _ternary_handler(select_aten_where(input, other), (condition, input, other), {})
+
+    if _is_compiling():
+        _compile_unsupported("torch.where", "operands are not compatible with the packed layout")
 
     cond_nt = to_nested(condition, ref, dtype=torch.bool)
     input_nt = to_nested(input, ref)
@@ -1904,7 +2565,7 @@ def where(condition, input, other):
 # Linear Algebra
 # NOTE: The common aten-level cases (NT * plain Tensor, matching packed structure) are
 # handled by aten_functions.py (aten.mm, aten.bmm, aten.addmm) operating directly on
-# _values. These torch-level handlers cover mixed-type cases and mismatched structures.
+# concat. These torch-level handlers cover mixed-type cases and mismatched structures.
 
 
 @NestedTensorFuncRegistry.implement(torch.addmm)
@@ -1953,14 +2614,14 @@ def addr(input, vec1, vec2, *, beta=1, alpha=1, out=None):
     if isinstance(vec1, NestedTensor) and not isinstance(vec2, NestedTensor):
         if (
             isinstance(vec2, Tensor)
-            and vec1._values.dim() == 1
+            and vec1.concat.dim() == 1
             and vec2.dim() == 1
             and isinstance(input, Tensor)
             and (
                 input.dim() == 0 or (input.dim() == 2 and input.shape[0] == 1 and input.shape[1] in (1, vec2.shape[0]))
             )
         ):
-            values = torch.addr(input, vec1._values, vec2, beta=beta, alpha=alpha)
+            values = torch.addr(input, vec1.concat, vec2, beta=beta, alpha=alpha)
             return _packed_with_tail_from_values(vec1, values)
         if _is_compiling():
             _compile_unsupported("torch.addr", "only packed NestedTensor-vector outer-product cases are compile-safe")
@@ -1969,14 +2630,14 @@ def addr(input, vec1, vec2, *, beta=1, alpha=1, out=None):
         if (
             isinstance(vec1, Tensor)
             and vec1.dim() == 1
-            and vec2._values.dim() == 1
+            and vec2.concat.dim() == 1
             and isinstance(input, Tensor)
             and (
                 input.dim() == 0 or (input.dim() == 2 and input.shape[1] == 1 and input.shape[0] in (1, vec1.shape[0]))
             )
         ):
             bias_values = input if input.dim() == 0 else input.transpose(0, 1)
-            values = torch.addr(bias_values, vec2._values, vec1, beta=beta, alpha=alpha)
+            values = torch.addr(bias_values, vec2.concat, vec1, beta=beta, alpha=alpha)
             shape, packed_sizes, element_shapes = vec2._shape_meta_from_components(
                 prefix=(int(vec1.shape[0]),),
                 keep_dims=(0,),
@@ -2063,17 +2724,12 @@ def bmm(input, mat2, *, out=None):
             raise ValueError(
                 "NestedTensor batch length mismatch between input and mat2: " f"input={len(input)}, mat2={len(mat2)}"
             )
-        if input._has_same_structure(mat2) and input._values.dim() > 2 and mat2._values.dim() > 2:
+        if input._has_same_structure(mat2) and input.concat.dim() > 2 and mat2.concat.dim() > 2:
             return _aten_bmm(torch.ops.aten.bmm.default, (input, mat2), {})
         return torch.matmul(input, mat2)
 
     if isinstance(input, NestedTensor) or isinstance(mat2, NestedTensor):
-        if (
-            isinstance(input, Tensor)
-            and isinstance(mat2, NestedTensor)
-            and input.dim() == 3
-            and mat2._values.dim() == 3
-        ):
+        if isinstance(input, Tensor) and isinstance(mat2, NestedTensor) and input.dim() == 3 and mat2.concat.dim() == 3:
             with contextlib.suppress(NotImplementedError):
                 return _aten_bmm(torch.ops.aten.bmm.default, (input, mat2), {})
         return torch.matmul(input, mat2)
@@ -2082,7 +2738,7 @@ def bmm(input, mat2, *, out=None):
 
 
 def _matrix_last2_to_scalar_public(input, op):
-    if input._values.dim() > 2 or input._physical_shape.size(1) != 2:
+    if input.concat.dim() > 2 or input._physical_shape.size(1) != 2:
         return None
 
     device = input.device
@@ -2091,9 +2747,9 @@ def _matrix_last2_to_scalar_public(input, op):
     cols = input._physical_shape[:, 1].to(device=device, dtype=torch.long)
     max_rows, max_cols = input._max_physical_dims()
 
-    padded = input._values.new_zeros((batch, max_rows, max_cols))
-    if input._values.numel() > 0:
-        padded[input._packed_dense_index(device=device)] = input._values
+    padded = input.concat.new_zeros((batch, max_rows, max_cols))
+    if input.concat.numel() > 0:
+        padded[input._packed_dense_index(device=device)] = input.concat
 
     row_coords = torch.arange(max_rows, device=device, dtype=torch.long).view(1, max_rows, 1)
     col_coords = torch.arange(max_cols, device=device, dtype=torch.long).view(1, 1, max_cols)
@@ -2147,6 +2803,30 @@ def diagonal(input, offset=0, dim1=0, dim2=1):
     return torch.ops.aten.diagonal.default(input, offset, dim1, dim2)
 
 
+def _has_uniform_packed_vector_lengths(source) -> bool:
+    r"""Return whether a packed vector batch can reshape to ``[B, -1]`` safely."""
+    if len(source) == 0:
+        return False
+    if source._packed_sizes is not None:
+        return len(set(source._packed_sizes)) == 1
+
+    lengths = source._offsets[1:] - source._offsets[:-1]
+    uniform = torch.all(lengths == lengths[:1])
+    from .aten_functions import _is_fake_tensor
+
+    if _is_compiling() or _is_fake_tensor(source._offsets):
+        torch._assert_async(uniform, "NestedTensor dot requires uniform vector lengths")
+        return True
+    return bool(uniform)
+
+
+def _from_per_element_scalar_results(source, results) -> NestedTensor:
+    r"""Stack per-element scalar results without forwarding ragged dimensions."""
+    values = tuple(results)
+    stacked = torch.stack(values) if values else source.concat.new_empty((0,))
+    return source._from_scalar_result_values(stacked)
+
+
 @NestedTensorFuncRegistry.implement(torch.dot)
 def dot(input, other, *, out=None):
     r"""Compute vector dot products for NestedTensor operands, using packed scalar fast paths for uniform vectors."""
@@ -2159,26 +2839,26 @@ def dot(input, other, *, out=None):
         if isinstance(other, NestedTensor):
             _validate_pairwise_batch_length(input, other, op_name="dot", lhs_name="input", rhs_name="other")
             if (
-                input._values.dim() == 1
-                and other._values.dim() == 1
+                input.concat.dim() == 1
+                and other.concat.dim() == 1
                 and input._has_same_structure(other)
-                and input._packed_sizes is not None
-                and len(set(input._packed_sizes)) == 1
+                and _has_uniform_packed_vector_lengths(input)
             ):
-                values = (input._values * other._values).view(len(input), -1).sum(dim=1)
+                values = (input.concat * other.concat).view(len(input), -1).sum(dim=1)
                 return input._from_scalar_result_values(values)
             if _is_compiling():
                 _compile_unsupported("torch.dot", "only uniform packed NestedTensor vector pairs are compile-safe")
-            return NestedTensor(
-                (torch.dot(lhs, rhs) for lhs, rhs in zip(input._storage, other._storage)), **input._meta()
+            return _from_per_element_scalar_results(
+                input,
+                (torch.dot(lhs, rhs) for lhs, rhs in zip(input._storage, other._storage)),
             )
         if _is_compiling():
             _compile_unsupported("torch.dot", "only uniform packed NestedTensor vector pairs are compile-safe")
-        return NestedTensor((torch.dot(lhs, other) for lhs in input._storage), **input._meta())
+        return _from_per_element_scalar_results(input, (torch.dot(lhs, other) for lhs in input._storage))
     if isinstance(other, NestedTensor):
         if _is_compiling():
             _compile_unsupported("torch.dot", "only uniform packed NestedTensor vector pairs are compile-safe")
-        return NestedTensor((torch.dot(input, rhs) for rhs in other._storage), **other._meta())
+        return _from_per_element_scalar_results(other, (torch.dot(input, rhs) for rhs in other._storage))
     return torch.dot(input, other)
 
 
@@ -2256,6 +2936,10 @@ def einsum(equation, *operands):
 
 def _einsum_packed_fastpath(equation: str, operands: tuple):
     r"""Handle common batch-aware NestedTensor einsum projections without per-element unpacking."""
+    if equation == "bli,bli->bl":
+        return _einsum_bli_bli_to_bl(*operands)
+    if equation == "blqp,blyq->blyp":
+        return _einsum_blqp_blyq_to_blyp(*operands)
     if equation in {"bls,hsk->bhlk", "bls,hsv->bhlv"}:
         return _einsum_bls_hso_to_bhlo(*operands)
     if equation == "bhk,bhlk->bhl":
@@ -2265,9 +2949,57 @@ def _einsum_packed_fastpath(equation: str, operands: tuple):
     return None
 
 
+def _is_standard_rowwise_einsum_pair(lhs, rhs, *, rank: int) -> bool:
+    r"""Whether two operands share one canonical leading-ragged packed row topology."""
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(lhs, NestedTensor) or not isinstance(rhs, NestedTensor):
+        return False
+    if not lhs.batch_first or not rhs.batch_first:
+        return False
+    if lhs.ragged_dims != (0,) or rhs.ragged_dims != (0,):
+        return False
+    expected_order = tuple(range(rank))
+    if lhs.packed_dim_order != expected_order or rhs.packed_dim_order != expected_order:
+        return False
+    if lhs.concat.dim() != rank or rhs.concat.dim() != rank:
+        return False
+    # Structure equality compares only the ragged hierarchy/offsets.  Static
+    # tails deliberately differ for ``blqp,blyq->blyp`` and are checked by the
+    # equation-specific handler below.
+    return lhs._has_same_structure(rhs)
+
+
+def _einsum_bli_bli_to_bl(lhs, rhs):
+    r"""Packed fast path for the LigandMPNN rowwise inner product."""
+    if not _is_standard_rowwise_einsum_pair(lhs, rhs, rank=2):
+        return None
+    if lhs.concat.shape != rhs.concat.shape:
+        return None
+    values = torch.einsum("xi,xi->x", lhs.concat, rhs.concat)
+    return lhs.packed_with_static_tail(values)
+
+
+def _einsum_blqp_blyq_to_blyp(lhs, rhs):
+    r"""Packed fast path for the LigandMPNN rowwise query contraction."""
+    if not _is_standard_rowwise_einsum_pair(lhs, rhs, rank=3):
+        return None
+    if lhs.concat.shape[0] != rhs.concat.shape[0] or lhs.concat.shape[1] != rhs.concat.shape[2]:
+        return None
+    values = torch.einsum("xqp,xyq->xyp", lhs.concat, rhs.concat)
+    return lhs.packed_with_static_tail(values)
+
+
 def _source_packed_sizes(source) -> tuple:
     if source._packed_sizes is not None:
         return source._packed_sizes
+    from .aten_functions import _is_fake_tensor
+
+    if _is_compiling() or _is_fake_tensor(source._offsets):
+        _compile_unsupported(
+            "NestedTensor global-query einsum",
+            "tensor-backed projected output metadata is not implemented",
+        )
     offsets = source._offsets
     return tuple(int(x) for x in (offsets[1:] - offsets[:-1]).tolist())
 
@@ -2283,14 +3015,14 @@ def _einsum_bls_hso_to_bhlo(hidden_states, weight):
         return None
     if hidden_states._varying_dims != (0,):
         return None
-    if hidden_states._values.shape[-1] != weight.shape[1]:
+    if hidden_states.concat.shape[-1] != weight.shape[1]:
         return None
 
     heads = int(weight.shape[0])
     output_dim = int(weight.shape[2])
     projection_weight = weight.permute(0, 2, 1).reshape(heads * output_dim, weight.shape[1])
-    projected = torch.matmul(hidden_states._values, projection_weight.transpose(0, 1))
-    new_values = projected.reshape(hidden_states._values.shape[0], heads, output_dim)
+    projected = torch.matmul(hidden_states.concat, projection_weight.transpose(0, 1))
+    new_values = projected.reshape(hidden_states.concat.shape[0], heads, output_dim)
     new_shape, _, element_shapes = hidden_states._shape_meta_from_components(
         prefix=(heads,), keep_dims=(0,), suffix=(output_dim,)
     )
@@ -2314,18 +3046,18 @@ def _einsum_bhk_bhlk_to_bhl(query_states, key_states):
         return None
     if not isinstance(key_states, NestedTensor):
         return None
-    if query_states.dim() != 3 or key_states._values.dim() != 3 or key_states._physical_shape.size(1) != 3:
+    if query_states.dim() != 3 or key_states.concat.dim() != 3 or key_states._physical_shape.size(1) != 3:
         return None
     if key_states._varying_dims != (1,):
         return None
     if query_states.shape[0] != len(key_states):
         return None
-    if query_states.shape[1] != key_states._values.shape[1] or query_states.shape[2] != key_states._values.shape[2]:
+    if query_states.shape[1] != key_states.concat.shape[1] or query_states.shape[2] != key_states.concat.shape[2]:
         return None
 
-    batch_idx = key_states.packed_batch_indices(device=key_states._values.device)
+    batch_idx = key_states.packed_batch_indices(device=key_states.concat.device)
     query_values = query_states.index_select(0, batch_idx)
-    new_values = (query_values * key_states._values).sum(dim=-1)
+    new_values = (query_values * key_states.concat).sum(dim=-1)
     new_shape, _, element_shapes = key_states._shape_meta_from_components(keep_dims=(0, 1))
     return _packed_with_shape(
         key_states,
@@ -2349,13 +3081,13 @@ def _einsum_bhl_bhlv_to_bhv(attention_probs, value_states):
         return None
     if not _offsets_match_identity_if_fake(attention_probs._offsets, value_states._offsets):
         return None
-    if attention_probs._values.dim() != 2 or value_states._values.dim() != 3:
+    if attention_probs.concat.dim() != 2 or value_states.concat.dim() != 3:
         return None
     if attention_probs._physical_shape.size(1) != 2 or value_states._physical_shape.size(1) != 3:
         return None
     if attention_probs._varying_dims != (1,) or value_states._varying_dims != (1,):
         return None
-    if attention_probs._values.shape[1] != value_states._values.shape[1]:
+    if attention_probs.concat.shape[1] != value_states.concat.shape[1]:
         return None
     if (
         attention_probs._packed_sizes is not None
@@ -2364,8 +3096,8 @@ def _einsum_bhl_bhlv_to_bhv(attention_probs, value_states):
     ):
         return None
 
-    batch_idx = attention_probs.packed_batch_indices(device=attention_probs._values.device)
-    weighted_values = attention_probs._values.unsqueeze(-1) * value_states._values
+    batch_idx = attention_probs.packed_batch_indices(device=attention_probs.concat.device)
+    weighted_values = attention_probs.concat.unsqueeze(-1) * value_states.concat
     heads = int(weighted_values.shape[1])
     value_dim = int(weighted_values.shape[2])
     context = weighted_values.new_zeros((len(attention_probs), heads, value_dim))
@@ -2468,6 +3200,54 @@ def inverse(input):
     return torch.ops.aten.inverse.default(input)
 
 
+def _packed_cross(input: NestedTensor, other: NestedTensor, dim: int) -> NestedTensor:
+    r"""Apply a cross product on one static packed axis for matching layouts."""
+    from .aten_functions import per_element_fallback
+
+    dim = _normalize_dim(dim, input.dim())
+    if not isinstance(other, type(input)) or not input._has_same_layout(other) or dim == _get_batch_dim(input):
+        dim_adj = _translate_dim(input, dim)
+        return per_element_fallback(
+            torch.ops.aten.linalg_cross.default,
+            (input, other),
+            {"dim": dim_adj},
+        )
+    dim_adj = _translate_dim(input, dim)
+    values_dim = _physical_to_values_dim(input, dim_adj)
+    if values_dim is None:
+        return per_element_fallback(
+            torch.ops.aten.linalg_cross.default,
+            (input, other),
+            {"dim": dim_adj},
+        )
+    return input._packed_like_unchecked(torch.linalg.cross(input.concat, other.concat, dim=values_dim))
+
+
+@NestedTensorFuncRegistry.implement(torch.cross, compile_safe=True)
+def cross(input: NestedTensor, other: NestedTensor, dim: int | None = None, *, out=None) -> NestedTensor:
+    r"""Apply :func:`torch.cross` directly to matching packed values."""
+    if out is not None:
+        raise NotImplementedError("NestedTensor torch.cross does not support out=")
+    if dim is None:
+        candidates = []
+        for physical_dim in input._static_dims:
+            values_dim = _physical_to_values_dim(input, physical_dim)
+            if values_dim is not None and input.concat.shape[values_dim] == 3:
+                candidates.append(physical_dim)
+        if not candidates:
+            raise RuntimeError("no dimension of size 3 in input")
+        dim = _logical_dim_for_element_dim(input, candidates[0])
+    return _packed_cross(input, other, dim)
+
+
+@NestedTensorFuncRegistry.implement(torch.linalg.cross, compile_safe=True)
+def linalg_cross(input: NestedTensor, other: NestedTensor, *, dim: int = -1, out=None) -> NestedTensor:
+    r"""Apply :func:`torch.linalg.cross` directly to matching packed values."""
+    if out is not None:
+        raise NotImplementedError("NestedTensor torch.linalg.cross does not support out=")
+    return _packed_cross(input, other, dim)
+
+
 @NestedTensorFuncRegistry.implement(torch.linalg.cholesky)
 def linalg_cholesky(input, *, upper=False):
     r"""Apply [torch.linalg.cholesky][] to each element of a NestedTensor."""
@@ -2506,7 +3286,7 @@ def linalg_norm(input, ord=None, dim=None, keepdim=False, *, dtype=None):
 
     ``dim`` is translated to skip the batch dimension when specified.
     """
-    flattened = input._physical_shape.size(1) > 1 and input._values.dim() == 1
+    flattened = input._physical_shape.size(1) > 1 and input.concat.dim() == 1
     vector_ord = 2 if ord is None else ord
     # Zero-padding preserves vector-norm semantics for non-negative real ord values
     padding_safe = not isinstance(vector_ord, bool) and isinstance(vector_ord, (int, float)) and float(vector_ord) >= 0
@@ -2557,7 +3337,7 @@ def linalg_norm(input, ord=None, dim=None, keepdim=False, *, dtype=None):
 
                 matrix_ord = "fro" if ord is None else ord
                 out_values = torch.linalg.matrix_norm(
-                    input._values,
+                    input.concat,
                     ord=matrix_ord,
                     dim=tuple(int(values_dim) for values_dim in values_dims if values_dim is not None),
                     keepdim=keepdim,
@@ -2718,7 +3498,7 @@ def matrix_exp(input):
 @NestedTensorFuncRegistry.implement(torch.matrix_power)
 def matrix_power(input, n):
     r"""Apply [torch.matrix_power][] to each element of a NestedTensor."""
-    if input._values.dim() > 2:
+    if input.concat.dim() > 2:
         from .aten_functions import matrix_power as _aten_matrix_power
 
         return _aten_matrix_power(torch.ops.aten.matrix_power.default, (input, n), {})
@@ -2802,14 +3582,14 @@ def outer(input, vec2, *, out=None):
         raise NotImplementedError("torch.outer(..., out=...) is not supported for NestedTensor.")
 
     if isinstance(input, NestedTensor):
-        if isinstance(vec2, Tensor) and input._values.dim() == 1 and vec2.dim() == 1:
-            return _packed_with_tail_from_values(input, torch.outer(input._values, vec2))
+        if isinstance(vec2, Tensor) and input.concat.dim() == 1 and vec2.dim() == 1:
+            return _packed_with_tail_from_values(input, torch.outer(input.concat, vec2))
         if _is_compiling():
             _compile_unsupported("torch.outer", "only packed vector outer-product cases are compile-safe")
         return NestedTensor((torch.outer(t, vec2) for t in input), **input._meta())
     if isinstance(vec2, NestedTensor):
-        if isinstance(input, Tensor) and input.dim() == 1 and vec2._values.dim() == 1:
-            values = torch.outer(vec2._values, input)
+        if isinstance(input, Tensor) and input.dim() == 1 and vec2.concat.dim() == 1:
+            values = torch.outer(vec2.concat, input)
             shape, packed_sizes, element_shapes = vec2._shape_meta_from_components(
                 prefix=(int(input.shape[0]),),
                 keep_dims=(0,),
@@ -2865,26 +3645,26 @@ if hasattr(torch, "vdot"):
             if isinstance(other, NestedTensor):
                 _validate_pairwise_batch_length(input, other, op_name="vdot", lhs_name="input", rhs_name="other")
                 if (
-                    input._values.dim() == 1
-                    and other._values.dim() == 1
+                    input.concat.dim() == 1
+                    and other.concat.dim() == 1
                     and input._has_same_structure(other)
-                    and input._packed_sizes is not None
-                    and len(set(input._packed_sizes)) == 1
+                    and _has_uniform_packed_vector_lengths(input)
                 ):
-                    values = (torch.conj(input._values) * other._values).view(len(input), -1).sum(dim=1)
+                    values = (torch.conj(input.concat) * other.concat).view(len(input), -1).sum(dim=1)
                     return input._from_scalar_result_values(values)
                 if _is_compiling():
                     _compile_unsupported("torch.vdot", "only uniform packed NestedTensor vector pairs are compile-safe")
-                return NestedTensor(
-                    (torch.vdot(lhs, rhs) for lhs, rhs in zip(input._storage, other._storage)), **input._meta()
+                return _from_per_element_scalar_results(
+                    input,
+                    (torch.vdot(lhs, rhs) for lhs, rhs in zip(input._storage, other._storage)),
                 )
             if _is_compiling():
                 _compile_unsupported("torch.vdot", "only uniform packed NestedTensor vector pairs are compile-safe")
-            return NestedTensor((torch.vdot(lhs, other) for lhs in input._storage), **input._meta())
+            return _from_per_element_scalar_results(input, (torch.vdot(lhs, other) for lhs in input._storage))
         if isinstance(other, NestedTensor):
             if _is_compiling():
                 _compile_unsupported("torch.vdot", "only uniform packed NestedTensor vector pairs are compile-safe")
-            return NestedTensor((torch.vdot(input, rhs) for rhs in other._storage), **other._meta())
+            return _from_per_element_scalar_results(other, (torch.vdot(input, rhs) for rhs in other._storage))
         return torch.vdot(input, other)
 
 
@@ -2948,10 +3728,10 @@ if hasattr(torch, "rms_norm"):
 # Reductions
 
 
-# Table-driven: simple reductions that delegate entirely to _reduce
+# Table-driven reductions
+TORCH_BOOLEAN_REDUCE_OPS = [torch.all, torch.any]
+
 TORCH_SIMPLE_REDUCE_OPS = [
-    (torch.all, {"fill_value": True}),
-    (torch.any, {"fill_value": False}),
     (torch.prod, {}),
     (torch.sum, {"fill_value": 0}),
 ]
@@ -3045,8 +3825,10 @@ def aminmax(input: NestedTensor, *, dim: int | None = None, keepdim: bool = Fals
         True
     """
     if dim is None:
-        return _reduce_none(input, torch.amin, keepdim=keepdim), _reduce_none(input, torch.amax, keepdim=keepdim)
-    return _reduce_dim_pair(input, torch.aminmax, dim, keepdim)
+        return torch.return_types.aminmax(
+            (_reduce_none(input, torch.amin, keepdim=keepdim), _reduce_none(input, torch.amax, keepdim=keepdim))
+        )
+    return torch.return_types.aminmax(_reduce_dim_pair(input, torch.aminmax, dim, keepdim))
 
 
 @NestedTensorFuncRegistry.implement(torch.count_nonzero)
@@ -3070,7 +3852,7 @@ def count_nonzero(input: NestedTensor, dim: int | Sequence[int] | None = None):
         True
     """
     if dim is None:
-        return torch.count_nonzero(input._values)
+        return torch.count_nonzero(input.concat)
     if isinstance(dim, int):
         dims = [dim]
     else:
@@ -3175,12 +3957,15 @@ def max(input: NestedTensor, dim: int | None = None, keepdim: bool = False):
     if dim is None:
         max_op = torch.ops.aten.max.default
         return NestedTensorAtenRegistry[max_op](max_op, (input,), {})
+    if isinstance(dim, torch.SymInt):
+        dim = int(dim)
     max_op = torch.ops.aten.max.dim
     values, indices = NestedTensorAtenRegistry[max_op](max_op, (input, dim, keepdim), {})
     return torch.return_types.max((values, indices))
 
 
 @NestedTensorFuncRegistry.implement(torch.mean)
+@NestedTensorFuncRegistry.implement(torch.Tensor.mean)
 def mean(
     input,
     dim: int | None = None,
@@ -3245,6 +4030,8 @@ def min(input: NestedTensor, dim: int | None = None, keepdim: bool = False):
     if dim is None:
         min_op = torch.ops.aten.min.default
         return NestedTensorAtenRegistry[min_op](min_op, (input,), {})
+    if isinstance(dim, torch.SymInt):
+        dim = int(dim)
     min_op = torch.ops.aten.min.dim
     values, indices = NestedTensorAtenRegistry[min_op](min_op, (input, dim, keepdim), {})
     return torch.return_types.min((values, indices))
@@ -3375,13 +4162,14 @@ def std(
 
 
 @NestedTensorFuncRegistry.implement(torch.sum)
+@NestedTensorFuncRegistry.implement(torch.Tensor.sum)
 def sum(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: bool = False, *, dtype=None):
     r"""Compute sums via aten fastpaths for global and single-dim reductions."""
     if dim is None:
         return _reduce_none(input, torch.sum, dtype=dtype, keepdim=keepdim)
-    # Call the aten handler at func level (like ``mean``), where ``input._values`` still carry autograd;
+    # Call the aten handler at func level (like ``mean``), where ``input.concat`` still carry autograd;
     # delegating to ``torch.ops.aten.sum`` on the NestedTensor re-enters ``__torch_dispatch__``, where
-    # autograd has detached ``_values``, so the result would drop grad (breaking a training loss's reduction).
+    # autograd has detached ``concat``, so the result would drop grad (breaking a training loss's reduction).
     sum_dim = NestedTensorAtenRegistry[torch.ops.aten.sum.dim_IntList]
     if isinstance(dim, (list, tuple)):
         if len(dim) == 1:
@@ -3541,7 +4329,8 @@ def flip(input: NestedTensor, dims: Sequence[int]) -> NestedTensor:
     """
     from .aten_functions import flip as _aten_flip
 
-    return _aten_flip(torch.ops.aten.flip.default, (input, list(dims)), {})
+    dims = [int(dim) if isinstance(dim, torch.SymInt) else dim for dim in dims]
+    return _aten_flip(torch.ops.aten.flip.default, (input, dims), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.moveaxis)
@@ -3627,14 +4416,164 @@ def permute(input: NestedTensor, dims: Sequence[int]) -> NestedTensor:
     return _aten_permute(torch.ops.aten.permute.default, (input, list(normalized_dims)), {})
 
 
+def _offsets_from_packed_lengths(lengths: Tensor) -> Tensor:
+    r"""Build zero-prefixed packed offsets without reading length values in Python."""
+    return F.pad(lengths.cumsum(0), (1, 0))
+
+
+def _repeat_packed_sample_segments(values: Tensor, sample_offsets: Tensor, repeats: int | Tensor) -> Tensor:
+    r"""Repeat complete variable-length sample segments with one packed gather.
+
+    ``repeats`` is either an int applied to every segment or a 1-D tensor of per-segment
+    counts. The int form keeps the output size symbolic so the gather stays compile-safe.
+    """
+    if isinstance(repeats, int) and repeats == 0:
+        return values[:0]
+    sample_lengths = sample_offsets[1:] - sample_offsets[:-1]
+    output_lengths = sample_lengths.repeat_interleave(repeats)
+    output_offsets = _offsets_from_packed_lengths(output_lengths)
+    source_starts = sample_offsets[:-1].repeat_interleave(repeats)
+    adjustments = source_starts - output_offsets[:-1]
+    output_size = values.shape[0] * repeats if isinstance(repeats, int) else int(output_offsets[-1])
+    if output_size == 0:
+        return values[:0]
+    gather = torch.arange(output_size, dtype=torch.long, device=values.device)
+    gather = gather + torch.repeat_interleave(
+        adjustments.to(device=values.device),
+        output_lengths.to(device=values.device),
+        output_size=output_size,
+    )
+    return values.index_select(0, gather)
+
+
+def _repeat_packed_ragged_offsets(
+    source_offsets: tuple[Tensor, ...],
+    repeats: int | Tensor,
+) -> tuple[Tensor, ...]:
+    r"""Repeat every sample subtree in a tensor-backed ragged hierarchy."""
+    sample_parent_offsets = torch.arange(
+        source_offsets[0].numel(),
+        dtype=source_offsets[0].dtype,
+        device=source_offsets[0].device,
+    )
+    output_offsets = []
+    for level_offsets in source_offsets:
+        level_sizes = level_offsets[1:] - level_offsets[:-1]
+        output_sizes = _repeat_packed_sample_segments(level_sizes, sample_parent_offsets, repeats)
+        output_offsets.append(_offsets_from_packed_lengths(output_sizes))
+        sample_parent_offsets = level_offsets.index_select(0, sample_parent_offsets.to(torch.long))
+    return tuple(output_offsets)
+
+
+def _normalize_batch_repeats(input: NestedTensor, repeats) -> tuple[int | Tensor, int]:
+    r"""
+    Validate batch repeats and report the resulting batch size.
+
+    ``repeats`` is either a non-negative int applied to every element, or a 1-D tensor of
+    per-element counts, one per element of the batch. A 0-d tensor is treated as an int.
+    """
+    if isinstance(repeats, Tensor) and repeats.dim() > 0:
+        if _is_compiling():
+            # The output batch size is the sum of the counts, so it cannot be known symbolically.
+            _compile_unsupported("torch.repeat_interleave", "per-element batch repeats are eager-only")
+        # Casting a float or bool tensor to long would round counts away silently, so refuse the
+        # dtype the way the dense operator does rather than repeating a truncated number of times.
+        if repeats.dtype == torch.bool or repeats.is_floating_point() or repeats.is_complex():
+            raise NotImplementedError(f"repeat_interleave is not implemented for repeats of dtype {repeats.dtype}")
+        if repeats.numel() != len(input):
+            raise RuntimeError(
+                "repeat_interleave: repeats must have the same size as input along dim 0, "
+                f"but got {repeats.numel()} and {len(input)}"
+            )
+        if bool((repeats < 0).any()):
+            raise RuntimeError("Repeats must be non-negative")
+        # The packed helpers index offsets and physical shapes that live on the tensor's device,
+        # so a repeats vector supplied on another device must be moved before it is used.
+        repeats = repeats.to(device=input.concat.device, dtype=torch.long)
+        return repeats, int(repeats.sum())
+    if isinstance(repeats, Tensor):
+        if repeats.dtype == torch.bool or repeats.is_floating_point() or repeats.is_complex():
+            raise NotImplementedError(f"repeat_interleave is not implemented for repeats of dtype {repeats.dtype}")
+        repeats = int(repeats)
+    if not isinstance(repeats, int) or isinstance(repeats, bool):
+        raise TypeError("NestedTensor batch repeat_interleave requires repeats to be an int or a 1-D tensor")
+    if repeats < 0:
+        raise RuntimeError("Repeats must be non-negative")
+    return repeats, len(input) * repeats
+
+
+def _repeat_interleave_packed_batch(
+    input: NestedTensor,
+    repeats: int | Tensor,
+    *,
+    output_size: int | None,
+) -> NestedTensor:
+    r"""Repeat the logical batch axis while keeping every element padding-free."""
+    repeats, expected_output_size = _normalize_batch_repeats(input, repeats)
+    if output_size is not None and output_size != expected_output_size:
+        raise RuntimeError(
+            f"repeat_interleave: Invalid output_size, expected {expected_output_size} but got {output_size}"
+        )
+
+    source_offsets = input._offsets
+    output_values = _repeat_packed_sample_segments(input.concat, source_offsets, repeats)
+    packed_lengths = source_offsets[1:] - source_offsets[:-1]
+    output_offsets = _offsets_from_packed_lengths(packed_lengths.repeat_interleave(repeats))
+    output_shape = input._physical_shape.repeat_interleave(repeats, dim=0)
+
+    source_ragged_offsets = input._persistent_ragged_offsets()
+    if source_ragged_offsets is None and input._ragged_rank == 1:
+        source_ragged_offsets = (source_offsets,)
+    elif source_ragged_offsets is None and input._ragged_rank > 1:
+        if _is_compiling():
+            _compile_unsupported(
+                "torch.repeat_interleave",
+                "compiled multi-ragged batch repeats require an explicit tensor-backed layout",
+            )
+        source_ragged_offsets = input._hierarchical_offsets
+
+    output_ragged_offsets = None
+    declared_ragged_dims = None
+    if source_ragged_offsets:
+        declared_ragged_dims = tuple(int(dim) for dim in input._ragged_dims)
+        output_ragged_offsets = _repeat_packed_ragged_offsets(source_ragged_offsets, repeats)
+        if len(output_ragged_offsets) == 1:
+            output_ragged_offsets = (output_offsets,)
+    elif _is_compiling():
+        _compile_unsupported(
+            "torch.repeat_interleave",
+            "compiled batch repeats require at least one ragged dimension",
+        )
+
+    logical_shape = list(input._logical_shape)
+    logical_shape[_get_batch_dim(input)] = expected_output_size
+    return type(input)._from_packed(
+        output_values,
+        output_offsets,
+        output_shape,
+        permutation=input._permutation,
+        ragged_dims=declared_ragged_dims,
+        batch_first=input.batch_first,
+        padding_value=input.padding_value,
+        mask_value=input.mask_value,
+        pin_memory=input._pin_memory,
+        outer_size=torch.Size(logical_shape),
+        ragged_offsets=output_ragged_offsets,
+        validate=False,
+        materialize_python_metadata=False,
+    )
+
+
 @NestedTensorFuncRegistry.implement(torch.repeat_interleave, compile_safe=True)
 @NestedTensorFuncRegistry.implement(torch.Tensor.repeat_interleave, compile_safe=True)
 def repeat_interleave(input, repeats, dim=None, *, output_size=None):
     r"""
     Apply [torch.repeat_interleave][] to each element of a NestedTensor.
 
-    ``dim=None`` flattens each element before repeating. Other dims are
-    translated to skip the batch dimension.
+    ``dim=None`` flattens each element before repeating. On the logical batch dimension a
+    scalar integer duplicates every packed sample, while a 1-D tensor gives a per-element
+    count, so ``repeats=torch.tensor([2, 1])`` keeps the first element twice and the second
+    once. Other dimensions are translated to skip the batch dimension.
     """
     from .aten_functions import _packed_new_dim_size
 
@@ -3645,9 +4584,11 @@ def repeat_interleave(input, repeats, dim=None, *, output_size=None):
             input, lambda t: torch.repeat_interleave(t, repeats, dim=None, output_size=output_size)
         )
     dim_norm = _normalize_dim(dim, input.dim())
+    if dim_norm == _get_batch_dim(input):
+        return _repeat_interleave_packed_batch(input, repeats, output_size=output_size)
     dim_adj = _translate_non_batch_dim(input, dim, name="repeat_interleave")
     if dim_adj in input._static_dims and isinstance(repeats, int):
-        new_values = torch.repeat_interleave(input._values, repeats, dim=dim_adj, output_size=output_size)
+        new_values = torch.repeat_interleave(input.concat, repeats, dim=dim_adj, output_size=output_size)
         base_dim_size = int(input._logical_shape[dim_norm])
         return _packed_new_dim_size(input, new_values, dim_adj, base_dim_size * repeats)
     if _is_compiling():
@@ -3771,6 +4712,7 @@ def rot90(input: NestedTensor, k: int = 1, dims: Sequence[int] = (0, 1)) -> Nest
 
 
 @NestedTensorFuncRegistry.implement(torch.squeeze)
+@NestedTensorFuncRegistry.implement(torch.Tensor.squeeze)
 def squeeze(input: NestedTensor, dim: int | None = None):
     r"""
     Returns a tensor with all specified dimensions of `input` of size `1` removed.
@@ -3846,32 +4788,378 @@ NestedTensorFuncRegistry.register(
 )
 
 
-@NestedTensorFuncRegistry.implement(torch.Tensor.expand)
+@NestedTensorFuncRegistry.implement(torch.Tensor.expand, compile_safe=True)
 def expand(input: NestedTensor, *sizes) -> NestedTensor:
     r"""
-    Expand a NestedTensor per element. See also [torch.Tensor.expand][].
+    Expand singleton static element axes directly on packed storage.
 
-    The batch-size argument is dropped and the remaining target sizes are applied to each
-    element with standard broadcasting (use ``-1`` to keep ragged/unchanged dims). Adding
-    new leading dimensions is not supported for NestedTensor.
+    The batch and ragged axes retain the existing topology (use ``-1`` or their
+    current logical extent). Static axes follow ordinary dense ``expand`` rules,
+    so only singleton axes may grow. Adding new leading dimensions is not
+    supported for NestedTensor.
     """
-    from .nested_tensor import NestedTensor
+    from .aten_functions import _packed_with_shape
 
     if len(sizes) == 1 and isinstance(sizes[0], (list, tuple, torch.Size)):
-        sizes = tuple(int(s) for s in sizes[0])
+        sizes = tuple(sizes[0])
     if len(sizes) != input.dim():
         raise NotImplementedError(
             f"NestedTensor.expand expects {input.dim()} sizes (matching ndim) but got {len(sizes)}; "
             "adding new leading dimensions is not supported."
         )
     batch_dim = _get_batch_dim(input)
-    if sizes[batch_dim] not in (-1, len(input)):
+    if sizes[batch_dim] != -1 and sizes[batch_dim] != len(input):
         raise RuntimeError(
             f"NestedTensor.expand cannot change the batch dimension (size {len(input)}) "
             f"to {sizes[batch_dim]}; pass -1 or {len(input)} for the batch dim."
         )
     elem_sizes = tuple(size for index, size in enumerate(sizes) if index != batch_dim)
-    return NestedTensor((t.expand(*elem_sizes) for t in input._storage), **input._meta())
+    ragged_dims = set(input._varying_dims)
+    for dim in ragged_dims:
+        target = elem_sizes[dim]
+        # A ragged dimension has no single extent to name, matching torch.nested, which accepts
+        # only -1 there. The padded logical extent is not "the current size": accepting it would
+        # silently leave every shorter element unexpanded.
+        if target != -1:
+            raise RuntimeError(
+                "NestedTensor.expand cannot change a ragged dimension; "
+                f"dim {dim} is ragged, got target {target}. Pass -1."
+            )
+
+    packed_targets = [-1]
+    for dim in input._static_dims:
+        packed_targets.append(elem_sizes[dim])
+    output_values = input.concat.expand(*packed_targets)
+    replacements = {
+        int(dim): output_values.shape[1 + packed_axis] for packed_axis, dim in enumerate(input._static_dims)
+    }
+
+    # Explicit layouts already carry every row split needed by a graph-safe
+    # rebuild. An inferred single-ragged layout can be promoted because its
+    # sample offsets are the complete topology. Keep arbitrary inferred
+    # multi-ragged eager layouts on their existing Python metadata contract.
+    tensor_backed = input._ragged_dims_explicit or len(input._ragged_dims) == 1
+    if tensor_backed:
+        output_shape = input._physical_shape.clone()
+        for dim, size in replacements.items():
+            output_shape[:, dim] = size
+        output_packed_sizes = None
+        output_element_shapes = None
+        explicit_ragged_dims = input._ragged_dims
+    else:
+        output_shape, output_packed_sizes, output_element_shapes = input._shape_meta_from_components(
+            replace_dims=replacements
+        )
+        explicit_ragged_dims = None
+
+    return _packed_with_shape(
+        input,
+        output_values,
+        output_shape,
+        input._logical_shape_from_components(replace_dims=replacements),
+        permutation=input._permutation,
+        packed_sizes=output_packed_sizes,
+        element_shapes=output_element_shapes,
+        preserve_ragged_offsets=True,
+        force_explicit_ragged_dims=explicit_ragged_dims,
+    )
+
+
+def _normalize_new_size(shape: tuple, kwargs: dict | None = None) -> tuple:
+    r"""
+    Normalize ``new_*`` size arguments.
+
+    The dense methods accept the shape as varargs ints, as a single sequence, or by the
+    ``size=`` keyword, so all three have to resolve to the same tuple here. ``kwargs`` is
+    consumed in place when the shape arrived by keyword.
+    """
+    if not shape and kwargs is not None and "size" in kwargs:
+        shape = (kwargs.pop("size"),)
+    if len(shape) == 1 and isinstance(shape[0], (list, tuple, torch.Size)):
+        return tuple(int(dim) for dim in shape[0])
+    return tuple(int(dim) for dim in shape)
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.new_zeros)
+def new_zeros(input: NestedTensor, *shape, **kwargs) -> Tensor:
+    r"""
+    Create a plain tensor of the given size with this NestedTensor's dtype and device.
+    See also [torch.Tensor.new_zeros][].
+
+    The ``new_*`` family takes a fully specified shape of plain ints, which can never express
+    raggedness, so the result is an ordinary tensor and never a NestedTensor. Without this the
+    default path returns a degenerate subclass instance -- ``nt.new_zeros(())`` came back as a
+    NestedTensor of the batch length rather than a scalar, quietly turning scalar accumulators
+    into ragged tensors that drop grad.
+    """
+    return input.concat.new_zeros(_normalize_new_size(shape, kwargs), **kwargs)
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.new_ones)
+def new_ones(input: NestedTensor, *shape, **kwargs) -> Tensor:
+    r"""Plain-tensor counterpart of [torch.Tensor.new_ones][]. See [new_zeros][] for why."""
+    return input.concat.new_ones(_normalize_new_size(shape, kwargs), **kwargs)
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.new_empty)
+def new_empty(input: NestedTensor, *shape, **kwargs) -> Tensor:
+    r"""Plain-tensor counterpart of [torch.Tensor.new_empty][]. See [new_zeros][] for why."""
+    return input.concat.new_empty(_normalize_new_size(shape, kwargs), **kwargs)
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.new_full)
+def new_full(input: NestedTensor, size=None, fill_value=None, **kwargs) -> Tensor:
+    r"""Plain-tensor counterpart of [torch.Tensor.new_full][]. See [new_zeros][] for why."""
+    if fill_value is None:
+        fill_value = kwargs.pop("fill_value")
+    resolved = _normalize_new_size(() if size is None else (size,), kwargs)
+    return input.concat.new_full(resolved, fill_value, **kwargs)
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.new_empty_strided)
+def new_empty_strided(input: NestedTensor, size=None, stride=None, **kwargs) -> Tensor:
+    r"""Plain-tensor counterpart of [torch.Tensor.new_empty_strided][]. See [new_zeros][] for why."""
+    if stride is None:
+        stride = kwargs.pop("stride")
+    resolved = _normalize_new_size(() if size is None else (size,), kwargs)
+    return input.concat.new_empty_strided(resolved, tuple(int(s) for s in stride), **kwargs)
+
+
+def _has_packed_cdist_layout(value) -> bool:
+    r"""Return whether cdist can stay on canonical tensor-backed packed storage."""
+    from .nested_tensor import NestedTensor
+
+    return (
+        isinstance(value, NestedTensor)
+        and value._ragged_dims_explicit
+        and value.ragged_dims == (0,)
+        and value.packed_dim_order == (0, 1)
+        and value.concat.dim() == 2
+    )
+
+
+_CDIST_COMPUTE_MODES = (
+    "use_mm_for_euclid_dist_if_necessary",
+    "use_mm_for_euclid_dist",
+    "donot_use_mm_for_euclid_dist",
+)
+
+
+def _validate_packed_cdist_operands(
+    x1: NestedTensor,
+    x2: NestedTensor,
+    p: float,
+    compute_mode: str,
+) -> float:
+    r"""Validate the static part of dense cdist's runtime contract."""
+    if compute_mode not in _CDIST_COMPUTE_MODES:
+        raise ValueError(f"{compute_mode} is not a valid value for compute_mode")
+    p_value = float(p)
+    if not p_value >= 0:
+        raise RuntimeError("cdist only supports non-negative p values")
+    if x1.concat.device != x2.concat.device:
+        raise RuntimeError(
+            "X1 and X2 must be on the same device, " f"but got {x1.concat.device} and {x2.concat.device}"
+        )
+    left_dtype = x1.concat.dtype
+    right_dtype = x2.concat.dtype
+    if not left_dtype.is_floating_point:
+        raise RuntimeError(f"cdist only supports floating-point dtypes, X1 got: {left_dtype}")
+    if not right_dtype.is_floating_point:
+        raise RuntimeError(f"cdist only supports floating-point dtypes, X2 got: {right_dtype}")
+    autocast_to_fp32 = (
+        torch.is_autocast_enabled(x1.concat.device.type)
+        and left_dtype != torch.float64
+        and right_dtype != torch.float64
+    )
+    if left_dtype != right_dtype and not autocast_to_fp32:
+        raise RuntimeError("X1 and X2 must have the same dtype, " f"but got {left_dtype} and {right_dtype}")
+    if x1.concat.shape[-1] != x2.concat.shape[-1]:
+        raise RuntimeError(
+            "X1 and X2 must have the same number of columns, "
+            f"but got {x1.concat.shape[-1]} and {x2.concat.shape[-1]}"
+        )
+    return p_value
+
+
+def _eager_segmented_cdist(
+    left: Tensor,
+    right: Tensor,
+    row_lengths: Tensor,
+    column_lengths: Tensor,
+    p: float,
+    compute_mode: str,
+) -> Tensor:
+    r"""Use native differentiable cdist calls without custom-op dispatch overhead."""
+    rows = [int(length) for length in row_lengths.tolist()]
+    columns = [int(length) for length in column_lengths.tolist()]
+    parts = []
+    left_start = right_start = 0
+    for row_count, column_count in zip(rows, columns):
+        parts.append(
+            torch.cdist(
+                left[left_start : left_start + row_count],
+                right[right_start : right_start + column_count],
+                p=p,
+                compute_mode=compute_mode,
+            ).reshape(-1)
+        )
+        left_start += row_count
+        right_start += column_count
+    return torch.cat(parts)
+
+
+def _packed_cdist_nested(x1: NestedTensor, x2: NestedTensor, p: float, compute_mode: str) -> NestedTensor:
+    r"""Compute canonical per-sample cdist without iteration, padding, or cross-sample pairs."""
+    left_batch = x1.element_sizes().shape[0]
+    right_batch = x2.element_sizes().shape[0]
+    if left_batch != right_batch:
+        raise ValueError(f"NestedTensor batch length mismatch in cdist: {left_batch} vs {right_batch}")
+    p_value = _validate_packed_cdist_operands(x1, x2, p, compute_mode)
+
+    from .aten_functions import _is_fake_tensor
+    from .segmented import segmented_cdist
+
+    row_lengths = x1.element_sizes()[:, 0]
+    column_lengths = x2.element_sizes()[:, 0]
+    left = x1.concat
+    right = x2.concat
+    # Cdist is an FP32 autocast op. Keep this policy dtype-generic so new
+    # low-precision floating formats do not require an allowlist update.
+    if torch.is_autocast_enabled(left.device.type) and left.dtype != torch.float64:
+        left = left.float()
+        right = right.float()
+    if left_batch == 1:
+        distances = torch.cdist(left, right, p=p_value, compute_mode=compute_mode).reshape(-1)
+    elif not _is_compiling() and not _is_fake_tensor(left) and left_batch > 0:
+        distances = _eager_segmented_cdist(
+            left,
+            right,
+            row_lengths,
+            column_lengths,
+            p_value,
+            compute_mode,
+        )
+    else:
+        mode = _CDIST_COMPUTE_MODES.index(compute_mode)
+        distances = segmented_cdist(left, right, row_lengths, column_lengths, p_value, mode)
+    return x1.packed_with_rectangular_lengths(distances, row_lengths, column_lengths)
+
+
+@NestedTensorFuncRegistry.implement(torch.cdist)
+def cdist(x1, x2, p: float = 2.0, compute_mode: str = "use_mm_for_euclid_dist_if_necessary"):
+    r"""
+    Pairwise p-distances computed per element. See also [torch.cdist][].
+
+    Each element ``x1_i [.., P_i, M]`` against ``x2_i [.., R_i, M]`` gives ``[.., P_i, R_i]``, so when
+    both P and R are ragged the result is doubly ragged, as in an ``[N_token, N_token]`` distance map.
+    Two explicit canonical ``(P_i, M)`` / ``(R_i, M)`` operands use native cdist directly for a single
+    sample and one registered segmented operation for larger compiled batches, followed by rectangular packed
+    reconstruction: no graph-unrolled sample loop, padding, dense repack, cross-sample matrix, or
+    feature-expanded Cartesian gather is created, and one dynamic fullgraph serves different P/R distributions.
+    Eager execution uses the same per-sample native calls without custom-op dispatch overhead; other eager layouts
+    retain the per-element compatibility path.
+    Runtime dtype support follows dense ``torch.cdist``;
+    low-precision support therefore depends on device, shape, and ``compute_mode``, while autocast
+    follows the dense operator's FP32 execution policy rather than adding an implicit eager promotion.
+    ``NestedTensor.cdist`` is the traceable training entry point; ``torch.cdist`` remains the eager
+    compatibility spelling because Dynamo treats the built-in function itself as an opaque graph leaf.
+    """
+    from .nested_tensor import NestedTensor
+
+    x1_nested = isinstance(x1, NestedTensor)
+    x2_nested = isinstance(x2, NestedTensor)
+    reference = x1 if x1_nested else x2
+    if x1_nested and x2_nested and _has_packed_cdist_layout(x1) and _has_packed_cdist_layout(x2):
+        return _packed_cdist_nested(x1, x2, p, compute_mode)
+    if _is_compiling():
+        _compile_unsupported(
+            "torch.cdist",
+            "fullgraph requires two explicit canonical NestedTensor operands with (P_i, M) elements",
+        )
+    if x1_nested and x2_nested:
+        if len(x1) != len(x2):
+            raise ValueError(f"NestedTensor batch length mismatch in cdist: {len(x1)} vs {len(x2)}")
+        parts = [torch.cdist(a, b, p, compute_mode) for a, b in zip(x1._unpack(), x2._unpack())]
+    elif x1_nested:
+        parts = [torch.cdist(a, x2, p, compute_mode) for a in x1._unpack()]
+    else:
+        parts = [torch.cdist(x1, b, p, compute_mode) for b in x2._unpack()]
+    if not parts:
+        return _empty_cdist_fallback(x1, x2, p, compute_mode, reference)
+    meta = dict(reference._meta())
+    meta["ragged_dims"] = _cdist_ragged_dims(x1, x2, parts)
+    return NestedTensor(parts, **meta)
+
+
+@NestedTensorFuncRegistry.implement(torch.cumprod)
+def cumprod(input: NestedTensor, dim: int, *, dtype: torch.dtype | None = None):
+    r"""Compute cumulative products, dispatching ragged dimensions without padding.
+
+    ``NestedTensor.cumprod`` is the traceable training spelling; this built-in spelling keeps
+    eager behavior and autograd aligned with it.
+    """
+    return input.cumprod(dim, dtype=dtype)
+
+
+def _empty_cdist_element(value: NestedTensor) -> Tensor:
+    r"""Build one graph-connected representative element for an empty logical batch."""
+    batch_dim = _get_batch_dim(value)
+    element_shape = list(value.shape)
+    element_shape.pop(batch_dim)
+    for dim in value.ragged_dims:
+        element_shape[dim] = 0
+    if 0 in element_shape:
+        return value.concat.reshape(element_shape)
+    return value.concat.new_zeros(element_shape) + value.concat.sum()
+
+
+def _empty_cdist_fallback(x1, x2, p: float, compute_mode: str, reference: NestedTensor) -> NestedTensor:
+    r"""Project an eager outer-empty batch through one dense shape prototype."""
+    from .nested_tensor import NestedTensor
+
+    left = _empty_cdist_element(x1) if isinstance(x1, NestedTensor) else x1
+    right = _empty_cdist_element(x2) if isinstance(x2, NestedTensor) else x2
+    prototype = torch.cdist(left, right, p=p, compute_mode=compute_mode)
+    meta = dict(reference._meta())
+    meta["dtype"] = prototype.dtype
+    meta["device"] = prototype.device
+    meta["ragged_dims"] = _cdist_ragged_dims(x1, x2, (prototype,))
+    return cast(NestedTensor, NestedTensor([prototype], **meta)[:0])
+
+
+def _cdist_ragged_dims(x1, x2, parts) -> tuple[int, ...] | None:
+    r"""
+    Project a declared topology through ``cdist``.
+
+    Each element ``(.., P_i, M)`` against ``(.., R_i, M)`` becomes ``(.., P_i, R_i)``: the rank
+    is unchanged, ``P`` keeps its position, and ``R`` lands where ``M`` was. Dimensions before
+    ``P`` are untouched. Returning ``None`` lets the topology be inferred, which is what an
+    operand without a declared one already implies.
+    """
+    from .nested_tensor import NestedTensor
+
+    nested_1 = isinstance(x1, NestedTensor)
+    nested_2 = isinstance(x2, NestedTensor)
+    declared_1 = tuple(x1._ragged_dims) if nested_1 and x1._ragged_dims_explicit else None
+    declared_2 = tuple(x2._ragged_dims) if nested_2 and x2._ragged_dims_explicit else None
+    if declared_1 is None and declared_2 is None:
+        return None
+    rank = parts[0].dim()
+    rank_1 = int(x1.element_sizes().shape[1]) if nested_1 else x1.dim()
+    rank_2 = int(x2.element_sizes().shape[1]) if nested_2 else x2.dim()
+    ragged: set[int] = set()
+    if declared_1 is not None:
+        left_shift = rank - rank_1
+        ragged.update(dim + left_shift for dim in declared_1 if dim < rank_1 - 2)
+        if rank_1 - 2 in declared_1:
+            ragged.add(rank - 2)
+    if declared_2 is not None:
+        right_shift = rank - rank_2
+        ragged.update(dim + right_shift for dim in declared_2 if dim < rank_2 - 2)
+        if rank_2 - 2 in declared_2:
+            ragged.add(rank - 1)
+    return tuple(sorted(ragged)) or None
 
 
 @NestedTensorFuncRegistry.implement(torch.transpose)
@@ -3918,7 +5206,7 @@ def transpose(input: NestedTensor, dim0: int, dim1: int) -> NestedTensor:
         new_shape = list(input._logical_shape)
         new_shape[0], new_shape[1] = new_shape[1], new_shape[0]
         return type(input)._from_packed(
-            input._values,
+            input.concat,
             input._offsets,
             input._physical_shape,
             batch_first=not input.batch_first,
@@ -3929,6 +5217,8 @@ def transpose(input: NestedTensor, dim0: int, dim1: int) -> NestedTensor:
             packed_sizes=input._packed_sizes,
             element_shapes=input._element_shapes,
             permutation=input._permutation,
+            ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
+            ragged_offsets=input._persistent_ragged_offsets(),
             validate=False,
         )
     from .aten_functions import transpose as _aten_transpose
@@ -3999,6 +5289,9 @@ def unsqueeze(input: NestedTensor, dim: int):
     batch_dim = _get_batch_dim(input)
     if dim <= batch_dim:
         raise ValueError("Cannot unsqueeze at or before the batch dimension for NestedTensor.")
+    if _needs_outer_autograd(input):
+        with torch._C.DisableTorchFunctionSubclass():
+            return torch.unsqueeze(input, dim)
     from .aten_functions import unsqueeze as _aten_unsqueeze
 
     return _aten_unsqueeze(torch.ops.aten.unsqueeze.default, (input, dim), {})
@@ -4029,12 +5322,12 @@ def log_softmax(input: NestedTensor, dim: int, dtype: torch.dtype | None = None)
         >>> torch.allclose(out, ref)
         True
     """
-    from .aten_functions import _packed_like, _softmax_handler
+    from .aten_functions import _softmax_handler
 
-    source = input if dtype is None else _packed_like(input, input._values.to(dtype=dtype))
-    # Run the packed handler HERE (func level), where ``source._values`` still carry autograd, rather than
+    source = input if dtype is None else input._packed_like_unchecked(input.concat.to(dtype=dtype))
+    # Run the packed handler HERE (func level), where ``source.concat`` still carry autograd, rather than
     # delegating to the aten op on the NestedTensor -- that re-enters ``__torch_dispatch__``, where autograd
-    # has already detached ``_values``, so the result would drop grad (breaking a training loss's log_softmax).
+    # has already detached ``concat``, so the result would drop grad (breaking a training loss's log_softmax).
     return _softmax_handler(torch.ops.aten._log_softmax.default, (source, dim, False), {})
 
 
@@ -4060,10 +5353,10 @@ def softmax(input: NestedTensor, dim: int, dtype: torch.dtype | None = None) -> 
         >>> torch.allclose(out, ref)
         True
     """
-    from .aten_functions import _packed_like, _softmax_handler
+    from .aten_functions import _softmax_handler
 
-    source = input if dtype is None else _packed_like(input, input._values.to(dtype=dtype))
-    # See ``log_softmax``: run the packed handler at func level so autograd on ``_values`` is preserved
+    source = input if dtype is None else input._packed_like_unchecked(input.concat.to(dtype=dtype))
+    # See ``log_softmax``: run the packed handler at func level so autograd on ``concat`` is preserved
     # instead of being detached by a re-entry into ``__torch_dispatch__``.
     return _softmax_handler(torch.ops.aten._softmax.default, (source, dim, False), {})
 
@@ -4173,7 +5466,7 @@ def kthvalue(input: NestedTensor, k: int, dim: int = -1, keepdim: bool = False):
         >>> torch.equal(out_vals, ref.values) and torch.equal(out_idx, ref.indices)
         True
     """
-    return torch.ops.aten.kthvalue.default(input, k, dim, keepdim)
+    return torch.return_types.kthvalue(torch.ops.aten.kthvalue.default(input, k, dim, keepdim))
 
 
 @NestedTensorFuncRegistry.implement(torch.median)
@@ -4201,7 +5494,7 @@ def median(input: NestedTensor, dim: int | None = None, keepdim: bool = False):
     """
     if dim is None:
         return torch.ops.aten.median.default(input)
-    return torch.ops.aten.median.dim(input, dim, keepdim)
+    return torch.return_types.median(torch.ops.aten.median.dim(input, dim, keepdim))
 
 
 @NestedTensorFuncRegistry.implement(torch.mode)
@@ -4229,7 +5522,7 @@ def mode(input: NestedTensor, dim: int = -1, keepdim: bool = False):
         >>> torch.equal(out_vals, ref.values) and torch.equal(out_idx, ref.indices)
         True
     """
-    return torch.ops.aten.mode.default(input, dim, keepdim)
+    return torch.return_types.mode(torch.ops.aten.mode.default(input, dim, keepdim))
 
 
 @NestedTensorFuncRegistry.implement(torch.nanmedian)
@@ -4257,7 +5550,7 @@ def nanmedian(input: NestedTensor, dim: int | None = None, keepdim: bool = False
     """
     if dim is None:
         return torch.ops.aten.nanmedian.default(input)
-    return torch.ops.aten.nanmedian.dim(input, dim, keepdim)
+    return torch.return_types.nanmedian(torch.ops.aten.nanmedian.dim(input, dim, keepdim))
 
 
 def _quantile(input: NestedTensor, op, q, dim, keepdim, interpolation):
@@ -4409,7 +5702,7 @@ def sort(input: NestedTensor, dim: int = -1, descending: bool = False, stable: b
         stable: If True, preserves the relative order of equal elements.
 
     Returns:
-        tuple[NestedTensor, NestedTensor]: A tuple of (sorted values, indices).
+        namedtuple: A (values, indices) namedtuple.
 
     Examples:
         >>> import torch
@@ -4421,8 +5714,10 @@ def sort(input: NestedTensor, dim: int = -1, descending: bool = False, stable: b
         True
     """
     if stable is None:
-        return torch.ops.aten.sort.default(input, dim, descending)
-    return torch.ops.aten.sort.stable(input, stable=stable, dim=dim, descending=descending)
+        values, indices = torch.ops.aten.sort.default(input, dim, descending)
+    else:
+        values, indices = torch.ops.aten.sort.stable(input, stable=stable, dim=dim, descending=descending)
+    return torch.return_types.sort((values, indices))
 
 
 @NestedTensorFuncRegistry.implement(torch.topk)
@@ -4466,15 +5761,62 @@ def topk(input: NestedTensor, k, dim: int | None = None, largest: bool = True, s
 
 
 def _elementwise_unary_handler(input, *args, _fn=None, **kwargs):
-    r"""Apply a unary elementwise op directly to packed _values, bypassing aten decomposition."""
-    from .aten_functions import _packed_like
+    r"""Apply a unary op while preserving wrapper-owned compiled autograd edges."""
 
-    return _packed_like(input, _fn(input._values, *args, **kwargs))
+    if _needs_outer_autograd(input):
+        with torch._C.DisableTorchFunctionSubclass():
+            return _fn(input, *args, **kwargs)
+    return input._packed_like_unchecked(_fn(input.concat, *args, **kwargs))
 
 
 def _elementwise_binary_handler(input, other, *args, _fn=None, **kwargs):
     r"""Apply a binary elementwise op handling NT+NT, NT+scalar, and NT+dense conversions."""
+    if _needs_outer_autograd(input, other):
+        with torch._C.DisableTorchFunctionSubclass():
+            return _fn(input, other, *args, **kwargs)
     return _binary_op_maybe_tensor(input, other, _fn, *args, **kwargs)
+
+
+def _needs_outer_autograd(*operands) -> bool:
+    r"""Whether a wrapper owns an autograd edge that its raw child does not."""
+    from .nested_tensor import NestedTensor
+
+    return (_is_compiling() or torch.is_grad_enabled()) and any(
+        isinstance(operand, NestedTensor) and operand.requires_grad and not operand.concat.requires_grad
+        for operand in operands
+    )
+
+
+def _commutative_mul_handler(input, other, *args, **kwargs):
+    r"""Canonicalize the wrapper operand, then redispatch below torch-function.
+
+    The aten redispatch lets Autograd attach the multiplication edge to the
+    wrapper itself.  Calling the packed helper directly is numerically correct
+    in eager mode, but leaves a wrapper-only AOT output disconnected from its
+    packed values.
+    """
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(input, NestedTensor) and isinstance(other, NestedTensor):
+        input, other = other, input
+    if _needs_outer_autograd(input, other):
+        with torch._C.DisableTorchFunctionSubclass():
+            return torch.mul(input, other, *args, **kwargs)
+    return _binary_op_maybe_tensor(input, other, torch.mul, *args, **kwargs)
+
+
+for _mul_entrypoint in (
+    torch.mul,
+    torch.Tensor.mul,
+    torch.Tensor.__mul__,
+    torch.Tensor.__rmul__,
+):
+    NestedTensorFuncRegistry.register(
+        _mul_entrypoint,
+        _commutative_mul_handler,
+        compile_safe=True,
+        compile_guard=_binary_op_compile_safe,
+    )
 
 
 def _make_simple_reduce_handler(extra_kwargs):
@@ -4484,6 +5826,38 @@ def _make_simple_reduce_handler(extra_kwargs):
         return _reduce(input, _fn, dim, keepdim, **kwargs, **extra_kwargs)
 
     return _handler
+
+
+def _boolean_reduce_handler(input, dim=None, keepdim=False, *, _fn=None, **kwargs):
+    r"""Route public boolean reductions through the packed aten dispatcher."""
+    out = kwargs.pop("out", None)
+    if out is not None:
+        raise NotImplementedError(f"NestedTensor: {_fn.__name__} with out= is not supported")
+    if kwargs:
+        names = ", ".join(sorted(kwargs))
+        raise TypeError(f"NestedTensor: {_fn.__name__} got unexpected keyword argument(s): {names}")
+    if dim is None:
+        return _reduce_none(input, _fn, keepdim=keepdim)
+    if isinstance(dim, torch.SymInt):
+        dim = int(dim)
+    if not isinstance(dim, int) and len(dim) == 0:
+        truth = input.concat.ne(0)
+        values = truth.to(input.concat.dtype) if input.concat.dtype == torch.uint8 else truth
+        return input._packed_like_unchecked(values)
+    dims = [dim] if isinstance(dim, int) else list(dim)
+    normalized_dims = [_normalize_dim(item, input.dim()) for item in dims]
+    if len(set(normalized_dims)) != len(normalized_dims):
+        raise RuntimeError("dim appears multiple times in the list of dims")
+    if len(normalized_dims) > 1 and _get_batch_dim(input) in normalized_dims:
+        fill_value = _fn is not torch.any
+        return _reduce(input, _fn, normalized_dims, keepdim, fill_value=fill_value)
+    op = torch.ops.aten.any.dims if _fn is torch.any else torch.ops.aten.all.dims
+    if len(normalized_dims) == 1:
+        return op(input, normalized_dims, keepdim)
+    result = input
+    for item in sorted(normalized_dims, reverse=True):
+        result = op(result, [item], keepdim)
+    return result
 
 
 _INPLACE_TO_VALUES_OP = {
@@ -4502,7 +5876,7 @@ def _inplace_binary_torch_handler(self, other, *args, _fn=None, **kwargs):
     r"""Torch-level handler for in-place binary ops.
 
     Converts tensor operands and applies the inplace op directly on packed
-    ``_values`` to avoid autograd errors on wrapper-subclass leaf tensors.
+    ``concat`` to avoid autograd errors on wrapper-subclass leaf tensors.
     """
     from .nested_tensor import NestedTensor
 
@@ -4510,9 +5884,9 @@ def _inplace_binary_torch_handler(self, other, *args, _fn=None, **kwargs):
         aligned = self._maybe_exact_shape_nested_like(other)
         if aligned is not None:
             other = aligned
-    # Same-structure: apply inplace on packed _values directly.
+    # Same-structure: apply inplace on packed concat directly.
     if isinstance(other, NestedTensor) and self._has_same_structure(other):
-        _INPLACE_TO_VALUES_OP[_fn](self._values, other._values, *args, **kwargs)
+        _INPLACE_TO_VALUES_OP[_fn](self.concat, other.concat, *args, **kwargs)
         self._invalidate_transient_caches()
         return self
     with torch._C.DisableTorchFunctionSubclass():
@@ -4525,7 +5899,7 @@ def _inplace_binary_torch_handler(self, other, *args, _fn=None, **kwargs):
 
 # Python dunder wrappers → torch.func (e.g. __floordiv__ doesn't go through C++ method)
 # NOTE: Do NOT register __rsub__, __rtruediv__, __rmod__, __rfloordiv__ here —
-# they have reversed semantics that _binary_op_maybe_tensor can't distinguish.
+# their reversed semantics require their dedicated registrations.
 TORCH_DUNDER_WRAPPER_TO_FUNC = {
     torch.Tensor.__floordiv__: torch.floor_divide,
 }
@@ -4548,14 +5922,26 @@ TORCH_INPLACE_METHOD_MAP = {
 # @NestedTensorFuncRegistry.implement(...) decorators above handle 1:1 ops.
 # ---------------------------------------------------------------------------
 
+_TENSOR_UNARY_ELEMENTWISE_METHODS = tuple(
+    dict.fromkeys(
+        method for op in TORCH_UNARY_ELEMENTWISE_OPS if (method := getattr(torch.Tensor, op.__name__, None)) is not None
+    )
+)
+
 _TORCH_HANDLER_TABLE: list[tuple] = [
     # _elementwise_binary_handler — bypasses aten decomposition for direct packed operation
     *((op, _elementwise_binary_handler) for op in TORCH_BINARY_ELEMENTWISE_OPS if op not in NestedTensorFuncRegistry),
     # _elementwise_unary_handler — bypasses aten decomposition for direct packed operation
     *((op, _elementwise_unary_handler) for op in TORCH_UNARY_ELEMENTWISE_OPS if op not in NestedTensorFuncRegistry),
+    *(
+        (op, _elementwise_unary_handler)
+        for op in _TENSOR_UNARY_ELEMENTWISE_METHODS
+        if op not in NestedTensorFuncRegistry
+    ),
     # _inplace_binary_torch_handler — converts operands before aten in-place dispatch
     *((op, _inplace_binary_torch_handler) for op, _ in TORCH_INPLACE_METHOD_MAP.items()),
     # _make_simple_reduce_handler — simple reductions delegating to _reduce
+    *((op, _boolean_reduce_handler) for op in TORCH_BOOLEAN_REDUCE_OPS if op not in NestedTensorFuncRegistry),
     *(
         (op, _make_simple_reduce_handler(extra))
         for op, extra in TORCH_SIMPLE_REDUCE_OPS
@@ -4633,13 +6019,24 @@ for _method, _func in TORCH_DUNDER_WRAPPER_TO_FUNC.items():
         )
 # Tensor.method → torch.func aliases, plus torch.movedim → torch.moveaxis alias
 for _alias_method, _alias_func in (
+    (torch.Tensor.addcdiv, torch.addcdiv),
+    (torch.Tensor.addcmul, torch.addcmul),
     (torch.Tensor.split, torch.split),
     (torch.Tensor.chunk, torch.chunk),
+    (torch.Tensor.narrow, torch.narrow),
+    (torch.Tensor.tensor_split, torch.tensor_split),
+    (torch.Tensor.vsplit, torch.vsplit),
+    (torch.Tensor.hsplit, torch.hsplit),
+    (torch.Tensor.dsplit, torch.dsplit),
+    (torch.Tensor.unbind, torch.unbind),
+    (torch.Tensor.lerp, torch.lerp),
     (torch.Tensor.matmul, torch.matmul),
     (torch.Tensor.softmax, torch.softmax),
     (torch.Tensor.log_softmax, torch.log_softmax),
     (torch.Tensor.amax, torch.amax),
     (torch.Tensor.amin, torch.amin),
+    (torch.Tensor.max, torch.max),
+    (torch.Tensor.min, torch.min),
     (torch.Tensor.topk, torch.topk),
     (torch.movedim, torch.moveaxis),
 ):

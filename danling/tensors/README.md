@@ -254,9 +254,9 @@ from danling.tensors.ops import NestedTensorFuncRegistry
 
 @NestedTensorFuncRegistry.implement(torch.my_custom_op)
 def my_custom_op(input, *args, **kwargs):
-    from danling.tensors.aten_functions import _packed_like
-    # For elementwise ops, apply on packed _values:
-    return _packed_like(input, torch.my_custom_op(input._values, *args, **kwargs))
+    # Shape-preserving elementwise ops can reuse the reference structure.
+    values = torch.my_custom_op(input.concat, *args, **kwargs)
+    return input.packed_like(values)
 ```
 
 For ops that are purely elementwise on the packed data, register at the aten level instead:
@@ -265,18 +265,165 @@ For ops that are purely elementwise on the packed data, register at the aten lev
 from danling.tensors.ops import NestedTensorAtenRegistry
 aten = torch.ops.aten
 
+@NestedTensorAtenRegistry.implement(aten.my_op.default, compile_safe=True)
 def _my_handler(func, args, kwargs):
     source = args[0]
-    return type(source)._from_packed(
-        func(source._values, *args[1:], **kwargs),
-        source._offsets, source._physical_shape,
-        batch_first=source.batch_first, padding_value=source.padding_value,
-        mask_value=source.mask_value, pin_memory=source._pin_memory,
-        outer_size=source._logical_shape,
-    )
-
-NestedTensorAtenRegistry[aten.my_op.default] = _my_handler
+    values = func(source.concat, *args[1:], **kwargs)
+    return source.packed_like(values)
 ```
+
+`packed_like` requires the packed output shape to remain unchanged. Operations
+that retain the ragged lengths but replace or add a static feature tail can use
+`packed_with_static_tail`:
+
+```python
+atom_values = token_values.index_select(0, packed_atom_to_token)
+atoms = atom_mapping.packed_with_static_tail(atom_values)
+```
+
+For a canonical reference, the ragged dimensions are a leading logical prefix,
+`packed_dim_order` is the identity, and the packed-value tail may have any
+rank. The packed leading dimension is unchanged, while
+`atom_values.shape[1:]` becomes the new static tail.
+
+An explicit tensor-backed layout with one non-leading logical ragged dimension
+may also replace its static dimensions, provided their packed rank does not
+change. Tail sizes follow `packed_dim_order` and return to their original
+logical positions. For example, sampled single representations remain
+sample-major logically while token-major in packed storage:
+
+```python
+single = NestedTensor(single_elements, ragged_dims=(1,))  # each (S, N_i, C)
+output = single.packed_with_static_tail(output_values)    # (sum N_i, S, C_out)
+# each output element is (S, N_i, C_out), with packed_dim_order == (1, 0, 2)
+```
+
+Explicit ragged layouts retain tensor-backed row splits whenever
+`packed_dim_order` begins with `ragged_dims`. This includes an explicit leading
+single-ragged layout such as `ragged_dims=(0,)`; the ragged dimensions also need
+not be a leading logical prefix. For example, elements shaped `(1, H, N_i, N_i)`
+with `ragged_dims=(2, 3)` pack in `(2, 3, 0, 1)` order and remain tensor-backed.
+These row splits are available through
+`ragged_level_offsets(level)` and travel with `packed_like`, shape-preserving
+static-tail operations, autograd transforms, and serialization. Because
+per-sample lengths are tensor inputs rather than Python flatten metadata,
+fixed-rank layouts such as `(N_i, N_i, C)` and `(S, N_i, C)` can reuse one
+`torch.compile(dynamic=True)` graph across different `N_i`. This does not
+expose the private child names or add a general packed constructor. Inferred
+list construction without an explicit `ragged_dims` declaration keeps its
+existing Python-metadata contract.
+
+When an operator produces a new one-dimensional ragged topology, use a concrete
+CPU integer lengths tensor:
+
+```python
+token_values = segmented_mean(atom_values, packed_atom_to_token)
+tokens = atoms.packed_with_lengths(token_values, token_lengths)
+```
+
+`packed_with_lengths` requires one non-negative length per batch element and
+`token_lengths.sum() == token_values.shape[0]`. It constructs a canonical
+leading ragged dimension and uses the remaining packed-value dimensions as the
+static tail.
+
+Square pair operators can rebuild two canonical ragged dimensions from the
+same lengths without materializing Python element shapes:
+
+```python
+pair = reference.packed_with_square_lengths(pair_values, token_lengths)
+# element i has shape (token_lengths[i], token_lengths[i], *pair_values.shape[1:])
+```
+
+Here `pair_values.shape[0]` must equal `token_lengths.square().sum()`. The
+result persistently carries both CSR row-split levels as tensor metadata, so a
+fixed batch size can reuse one dynamic compiled graph across different square
+layouts. Rectangular pair operators use two independent length vectors:
+
+```python
+distances = reference.packed_with_rectangular_lengths(distance_values, query_lengths, key_lengths)
+# element i has shape (query_lengths[i], key_lengths[i], *distance_values.shape[1:])
+```
+
+Here the packed leading length is `(query_lengths * key_lengths).sum()` and
+both ragged maxima remain tensor-backed graph inputs. All three length-based
+reconstruction methods are zero-copy with respect
+to their packed values and preserve dtype, device, strides, pinning, subclass,
+runtime configuration, and autograd history. Reconstruction stores dynamic
+lengths in tensor-backed offsets and shape metadata rather than Python tuples,
+so its tracing cost does not grow with metadata rank. The current compiled
+contract covers structural index consumers, runtime-validated same-layout
+elementwise operations, static-tail broadcasting, and static-tail
+normalization. Tensor-backed view/index remapping, padding,
+`broadcast_tensors`, global-query `einsum`, and ragged-dimension softmax remain
+staged; these paths raise an explicit compile error instead of materializing
+Python metadata or silently assuming a layout.
+
+For pairwise distances between explicit canonical `(P_i, M)` and `(R_i, M)`
+elements, use `left.cdist(right)` in compiled code. A single-sample batch calls
+native `cdist` directly; larger compiled batches use a registered segmented
+operation that runs native `cdist` independently over the packed samples.
+Eager mode issues the same native calls directly to avoid custom-op dispatcher
+overhead. The result is
+reconstructed as `(P_i, R_i)` through the rectangular metadata above. It does not
+materialize padding, a cross-sample matrix, pair index tensors, or
+`sum(P_i * R_i) x M` gathered operands. Eager `torch.cdist(left, right)` remains
+supported, but the method form is the AOT/Inductor entry point because PyTorch
+treats the built-in function as an opaque graph leaf.
+
+For cumulative products along a canonical ragged dimension, use
+`input.cumprod(dim)` in compiled training code. The segmented operator invokes
+the current device's native `cumprod` and backward kernel independently for
+each packed sample. It therefore preserves native rounding, underflow, zero,
+and non-finite behavior without padding or reassociating the product. Eager
+`torch.cumprod(input, dim)` remains supported.
+
+The result can remain a `NestedTensor` throughout a compiled model or cross a
+compiled/eager training boundary as a wrapper-only output. DanLing preserves
+the outer wrapper's AOTAutograd edge and projects it back to `result.concat`
+without padding or copying, so both wrapper outputs and direct packed outputs
+remain differentiable.
+They intentionally do not expose the general private packed constructor.
+
+`packed_offsets()` returns the boundaries of complete logical batch elements
+in the flattened leading dimension of `concat`. It is the public operator
+metadata interface for segmented kernels: for `(N_i, N_i, C)` elements it
+returns cumulative `N_i * N_i` cell counts, whereas
+`ragged_level_offsets(level)` returns row splits within the ragged hierarchy.
+The same contract applies to single-ragged and non-leading-ragged layouts.
+The canonical CPU integer tensor is returned without a copy; optional `device`
+and `dtype` conversions are cached on the `NestedTensor` instance. An explicit
+accelerator index is required for device caching; index-less device requests
+retain PyTorch's current-device semantics and are converted on every call.
+
+`element_sizes()` returns the exact logical shape of every batch element as a
+CPU `torch.int64` tensor with shape `(batch_size, element_rank)`. Columns remain
+in logical element-dimension order regardless of `batch_first` or
+`packed_dim_order`, so zero-volume shapes such as `(0, 3)` and `(0, 7)` remain
+distinguishable even when their packed offsets coincide. The method returns the
+canonical tensor-backed metadata without a copy. It intentionally has no
+device or dtype conversion arguments; consumers that need another placement or
+integer width can apply `.to(...)` explicitly.
+
+`torch.repeat_interleave(input, repeats, dim=batch_dim)` and
+`input.repeat_interleave(repeats, dim=batch_dim)` accept a non-negative integer
+`repeats` and duplicate complete logical batch elements in their original
+order. They repeat packed sample segments and every tensor-backed ragged
+row-split level directly, without padding or per-element Python dispatch.
+`input.repeat_batch(repeats)` is the equivalent explicit batch operation and
+the canonical AOTAutograd-safe entry for compiled model code. Explicit single-
+and multi-ragged layouts can reuse one
+`torch.compile(fullgraph=True, dynamic=True)` graph across different ragged
+lengths, and gradients from repeated samples accumulate into the original
+packed values. Tensor-valued batch repeat counts are intentionally unsupported;
+non-batch dimensions retain ordinary per-element `torch.repeat_interleave`
+semantics.
+
+`packed_dim_order` exposes the read-only mapping from logical element dimensions
+to physical packed-storage order when an operator needs to validate its layout.
+
+Critical packed paths can use `nested_execution_guard` from `danling.tensors` in
+tests or diagnostics to reject iteration, per-element fallback, padded
+materialization, or dense repacking instead of silently accepting a slow path.
 
 ## Benchmarks
 
@@ -286,7 +433,7 @@ Run with: `python scripts/benchmark_nested_tensor.py`
 
 ### IMDB Training
 
-Real workload benchmark from [`examples/tensors/imdb.py`](../../examples/tensors/imdb.py), using a BERT-large-shaped `torch.nn.TransformerEncoder` on IMDB with long variable-length sequences.
+Real workload benchmark from [`examples/tensors/imdb.py`](https://github.com/ZhiyuanChen/DanLing/blob/f67c0f258da2d3ff42c6e850a250c1212f2ea5a9/examples/tensors/imdb.py), using a BERT-large-shaped `torch.nn.TransformerEncoder` on IMDB with long variable-length sequences.
 
 Config: `bert-large-uncased`, 2 epochs, batch size `32`, max length `8192`, `d_model=1024`, `nhead=16`, `num_layers=24`
 

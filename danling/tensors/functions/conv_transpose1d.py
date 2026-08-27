@@ -1290,7 +1290,7 @@ def _spatial_tile_conv_transpose1d(
     kernel_size = (int(weight.shape[2]),)
     if kernel_size[0] <= 0:
         return None
-    if not _valid_conv_bias(bias, out_channels=out_channels, device=input._values.device, dtype=input._values.dtype):
+    if not _valid_conv_bias(bias, out_channels=out_channels, device=input.concat.device, dtype=input.concat.dtype):
         return None
 
     output_meta = _conv_transpose1d_output_meta(
@@ -1308,12 +1308,13 @@ def _spatial_tile_conv_transpose1d(
     output_offsets = type(input)._offsets_from_sizes(output_packed_sizes, dtype=torch.long)
     total_out = int(output_offsets[-1].item())
     if total_out == 0:
-        output_values = input._values.new_empty((total_out, out_channels))
+        output_values = input.concat.new_empty((total_out, out_channels))
         return type(input)._from_packed(
             output_values,
             output_offsets,
             output_shape_tensor,
             permutation=input._permutation,
+            ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
             batch_first=input.batch_first,
             padding_value=input.padding_value,
             mask_value=input.mask_value,
@@ -1378,7 +1379,7 @@ def _spatial_tile_conv_transpose1d(
     if resolved_weight_max_tiles is None:
         return None
 
-    device = input._values.device
+    device = input.concat.device
     tile_geometry_rows = _conv_transpose1d_tile_geometry_rows(
         input_shapes,
         tiles,
@@ -1392,13 +1393,13 @@ def _spatial_tile_conv_transpose1d(
     input_offsets_device = input._offsets.to(device=device, non_blocking=True)
     output_offsets_device = output_offsets.to(device=device, non_blocking=True)
     requires_grad = torch.is_grad_enabled() and (
-        input._values.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
+        input.concat.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
     )
-    use_channels_last = bool(channels_last and input._values.is_cuda)
+    use_channels_last = bool(channels_last and input.concat.is_cuda)
 
     if requires_grad:
         output_values = _SpatialTileConvTranspose1dCudnnFunction.apply(
-            input._values,
+            input.concat,
             weight,
             bias,
             input_offsets_device,
@@ -1421,7 +1422,7 @@ def _spatial_tile_conv_transpose1d(
         )
     else:
         output_values = _spatial_tile_conv_transpose1d_forward_values(
-            input._values,
+            input.concat,
             weight.contiguous(),
             bias,
             output_size=total_out,
@@ -1446,6 +1447,7 @@ def _spatial_tile_conv_transpose1d(
         output_offsets,
         output_shape_tensor,
         permutation=input._permutation,
+        ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
         batch_first=input.batch_first,
         padding_value=input.padding_value,
         mask_value=input.mask_value,

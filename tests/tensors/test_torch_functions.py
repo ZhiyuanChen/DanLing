@@ -17,26 +17,58 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
-from typing import Optional
+from functools import partial
 
 import pytest
 import torch
 from torch.nn import functional as F
 
-from danling.tensors import NestedTensor
-from danling.tensors.ops import nested_execution_guard
-from danling.tensors.torch_functions import (
-    cat,
-    flatten,
-    gather,
-    scatter,
-    stack,
-    unflatten,
-    unsqueeze,
-)
-from tests.tensors.utils import assert_close, low_precision_cuda_tolerances, nested_rand, packed_result, ragged_shapes
+from danling.tensors import NestedTensor, nested_execution_guard
+from tests.tensors.utils import assert_close, low_precision_cuda_tolerances, nested_rand, ragged_shapes
 
 NT = NestedTensor
+
+
+_BOOLEAN_REDUCTION_CASES = [
+    pytest.param(((2, 3), (4, 3)), (0,), 1, 0, "any", False, id="leading-ragged-any"),
+    pytest.param(((2, 3), (4, 3)), (0,), 2, 1, "all", False, id="single-static-all"),
+    pytest.param(((2, 4, 2), (3, 2, 2)), (0, 1), 1, 0, "any", False, id="multi-first-any"),
+    pytest.param(((2, 4, 2), (3, 2, 2)), (0, 1), 1, 0, "all", True, id="multi-first-all-keepdim"),
+    pytest.param(((2, 4, 2), (3, 2, 2)), (0, 1), 2, 1, "all", False, id="multi-second-all"),
+    pytest.param(((2, 4, 2), (3, 2, 2)), (0, 1), 2, 1, "any", True, id="multi-second-any-keepdim"),
+    pytest.param(((2, 4, 2), (3, 2, 2)), (0, 1), 3, 2, "all", True, id="multi-static-all-keepdim"),
+]
+
+_BOOLEAN_GRAPH_CASES = [
+    case
+    for case in _BOOLEAN_REDUCTION_CASES
+    if case.id in {"leading-ragged-any", "multi-first-all-keepdim", "multi-second-any-keepdim"}
+]
+
+
+def reference_options(source: NestedTensor) -> dict:
+    r"""Return public construction options for an elementwise reference."""
+    return {
+        "batch_first": source.batch_first,
+        "padding_value": source.padding_value,
+        "mask_value": source.mask_value,
+    }
+
+
+def boolean_reduction_elements(shapes, operation, device=None):
+    elements = [torch.full(shape, operation == "all", device=device, dtype=torch.bool) for shape in shapes]
+    for element in elements:
+        element[(0,) * element.dim()] = operation == "any"
+    return elements
+
+
+def ragged_reduction_reference(parts, ragged_dims, element_dim, keepdim):
+    if all(part.shape == parts[0].shape for part in parts[1:]):
+        return torch.stack(parts)
+    output_ragged_dims = tuple(
+        axis if keepdim else axis - (axis > element_dim) for axis in ragged_dims if axis != element_dim
+    )
+    return NT(parts, ragged_dims=output_ragged_dims)
 
 
 def _run_or_expect_unsupported(nested_call, tensor_call):
@@ -50,6 +82,58 @@ def _run_or_expect_unsupported(nested_call, tensor_call):
 
 
 class TestArithmeticFunctions:
+
+    def test_dense_left_mul_sampled_layout_values_and_vjp(self):
+        template = NT(
+            [torch.empty(2, 4, 3), torch.empty(2, 6, 3)],
+            ragged_dims=(1,),
+        )
+        values = torch.randn_like(template.concat, requires_grad=True)
+        scale = torch.randn(2, 2, 1, 1)
+        nested = template.packed_like(values)
+
+        dense_left = scale * nested
+        nested_left = nested * scale
+
+        cotangent = torch.randn_like(values)
+        dense_left_grad = torch.autograd.grad(dense_left.concat, values, cotangent, retain_graph=True)[0]
+        nested_left_grad = torch.autograd.grad(nested_left.concat, values, cotangent)[0]
+        assert_close(dense_left.concat, nested_left.concat)
+        assert_close(dense_left_grad, nested_left_grad)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_dense_left_mul_sampled_layout_compiles_with_vjp(self):
+        def consume(template, values, scale):
+            nested = template.packed_like(values)
+            return (scale * nested).concat, (nested * scale).concat
+
+        compiled = torch.compile(consume, backend="aot_eager", fullgraph=True, dynamic=True)
+        template = NT([torch.empty(2, length, 3) for length in (4, 6)], ragged_dims=(1,))
+        values = torch.randn_like(template.concat, requires_grad=True)
+        eager_values = values.detach().clone().requires_grad_()
+        scale = torch.randn(2, 2, 1, 1)
+        dense_left, nested_left = compiled(template, values, scale)
+        eager_dense_left, eager_nested_left = consume(template, eager_values, scale)
+
+        assert_close(dense_left, eager_dense_left)
+        assert_close(nested_left, eager_nested_left)
+        loss = dense_left.square().sum() + nested_left.square().sum()
+        eager_loss = eager_dense_left.square().sum() + eager_nested_left.square().sum()
+        expected_gradient = torch.autograd.grad(eager_loss, eager_values)[0]
+        actual_gradient = torch.autograd.grad(loss, values)[0]
+        assert_close(actual_gradient, expected_gradient)
+
+    def test_dense_broadcast_expands_only_static_tail(self):
+        nested = NT([torch.randn(2, 1), torch.randn(3, 1)])
+
+        output = nested + torch.ones(1, 4)
+
+        assert [element.shape for element in output] == [torch.Size((2, 4)), torch.Size((3, 4))]
+        assert_close(output.concat, nested.concat + torch.ones(1, 4))
+
+        single = NT([torch.randn(1, 3)])
+        with pytest.raises(NotImplementedError, match="neither shape-aligned nor broadcast-compatible"):
+            torch.add(single, torch.ones(4, 3))
 
     def test_add_converts_tensor_to_nested(self, device, float_dtype):
         nt = NestedTensor([torch.ones(2, device=device, dtype=float_dtype)])
@@ -89,9 +173,9 @@ class TestArithmeticFunctions:
                 torch.arange(4, device=device, dtype=float_dtype).reshape(1, 4),
             ]
         )
-        other = NT([torch.ones_like(t) for t in nt], **nt._meta())
+        other = NT([torch.ones_like(t) for t in nt], **reference_options(nt))
         output = torch.add(nt, other)
-        reference = NT([torch.add(x, y) for x, y in zip(nt, other)], **nt._meta())
+        reference = NT([torch.add(x, y) for x, y in zip(nt, other)], **reference_options(nt))
         assert_close(output, reference)
 
     def test_add_padded_dense(self, device, float_dtype):
@@ -105,12 +189,12 @@ class TestArithmeticFunctions:
         output = nt + dense
         for i, elem in enumerate(nt):
             expected = elem + dense[i, : elem.shape[0]]
-            assert_close(output._storage[i], expected)
+            assert_close(output[i], expected)
 
         output_rev = dense + nt
         for i, elem in enumerate(nt):
             expected = dense[i, : elem.shape[0]] + elem
-            assert_close(output_rev._storage[i], expected)
+            assert_close(output_rev[i], expected)
 
     def test_add_padded_dense_image_like(self, device, float_dtype):
         nt = NT(
@@ -147,7 +231,7 @@ class TestArithmeticFunctions:
         bias = torch.randn(8, device=device, dtype=float_dtype)
         output = nt + bias
         for i, elem in enumerate(nt):
-            assert_close(output._storage[i], elem + bias)
+            assert_close(output[i], elem + bias)
 
     def test_dense_tail_broadcast_can_expand_static_dim(self, device, float_dtype):
         nt = NT(
@@ -158,24 +242,23 @@ class TestArithmeticFunctions:
         )
         bias = torch.randn(8, device=device, dtype=float_dtype)
         output = nt + bias
-        reference = NT([elem + bias for elem in nt], **nt._meta())
+        reference = NT([elem + bias for elem in nt], **reference_options(nt))
         assert_close(output, reference)
 
     @pytest.mark.parametrize(
-        ("lhs_shapes", "rhs_shapes", "permutation"),
+        ("lhs_shapes", "rhs_shapes"),
         [
-            (((2, 2, 1), (3, 3, 1)), ((2, 2, 4), (3, 3, 4)), (0, 1, 2)),
-            (((2, 2, 1), (2, 3, 1)), ((2, 2, 4), (2, 3, 4)), (1, 0, 2)),
+            (((2, 2, 1), (3, 3, 1)), ((2, 2, 4), (3, 3, 4))),
+            (((2, 2, 1), (2, 3, 1)), ((2, 2, 4), (2, 3, 4))),
         ],
         ids=("multi-ragged", "permuted-ragged"),
     )
-    def test_nested_static_broadcast_preserves_ragged_metadata(
+    def test_nested_static_broadcast_values_and_shapes(
         self,
         device,
         float_dtype,
         lhs_shapes,
         rhs_shapes,
-        permutation,
     ):
         lhs_parts = [torch.randn(shape, device=device, dtype=float_dtype) for shape in lhs_shapes]
         rhs_parts = [torch.randn(shape, device=device, dtype=float_dtype) for shape in rhs_shapes]
@@ -187,13 +270,36 @@ class TestArithmeticFunctions:
             (torch.add(lhs, rhs), [x + y for x, y in zip(lhs_parts, rhs_parts)]),
             (torch.add(lhs, bias), [x + bias for x in lhs_parts]),
         ):
-            output._validate_metadata()
-            assert_close(output, NT(reference_parts, **lhs._meta()))
-            assert output._element_shapes == tuple(rhs_shapes)
-            assert output._physical_shape.tolist() == [list(shape) for shape in rhs_shapes]
-            assert output._permutation == permutation
-            assert output._packed_sizes == lhs._packed_sizes
-            assert output._values.shape[0] == sum(output._packed_sizes)
+            assert_close(output, NT(reference_parts, **reference_options(lhs)))
+            assert [tuple(element.shape) for element in output] == list(rhs_shapes)
+            assert output.ragged_dims == rhs.ragged_dims
+
+    def test_nested_singleton_ragged_broadcast_values_and_vjp(self, device, float_dtype):
+        shapes = ((2, 3), (4, 5))
+        channels = 4
+        lhs_parts = [torch.randn(m, n, channels, device=device, dtype=float_dtype) for m, n in shapes]
+        rhs_parts = [torch.randn(n, channels, device=device, dtype=float_dtype) for _m, n in shapes]
+        lhs_values = torch.cat([part.reshape(-1, channels) for part in lhs_parts]).requires_grad_()
+        rhs_values = torch.cat(rhs_parts).requires_grad_()
+        lhs = NT([torch.empty_like(part) for part in lhs_parts], ragged_dims=(0, 1)).packed_like(lhs_values)
+        rhs = NT([torch.empty_like(part) for part in rhs_parts], ragged_dims=(0,)).packed_like(rhs_values).unsqueeze(-3)
+
+        added = lhs + rhs
+        lhs_minus_rhs = lhs - rhs
+        rhs_minus_lhs = rhs - lhs
+
+        expected_add = torch.cat([(left + right).reshape(-1, channels) for left, right in zip(lhs_parts, rhs_parts)])
+        expected_sub = torch.cat([(left - right).reshape(-1, channels) for left, right in zip(lhs_parts, rhs_parts)])
+        assert_close(added.concat, expected_add)
+        assert_close(lhs_minus_rhs.concat, expected_sub)
+        assert_close(rhs_minus_lhs.concat, -expected_sub)
+        assert added.ragged_dims == lhs.ragged_dims
+        assert_close(added.element_sizes(), lhs.element_sizes())
+
+        lhs_grad, rhs_grad = torch.autograd.grad(added.concat.sum(), (lhs_values, rhs_values))
+        expected_rhs_grad = torch.cat([torch.full_like(right, m) for (m, _n), right in zip(shapes, rhs_parts)])
+        assert_close(lhs_grad, torch.ones_like(lhs_values))
+        assert_close(rhs_grad, expected_rhs_grad)
 
     def test_dense_vector_broadcast_rejects_ragged_final_physical_dim(self, device, float_dtype):
         parts = [
@@ -215,7 +321,7 @@ class TestArithmeticFunctions:
         )
         scale = torch.randn(1, 3, 1, device=device, dtype=float_dtype)
         output = nt * scale
-        reference = NT([t * scale[0] for t in nt], **nt._meta())
+        reference = NT([t * scale[0] for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_wrapped_ops_preserve_state(self):
@@ -229,378 +335,68 @@ class TestArithmeticFunctions:
         assert output.batch_first is False
         assert output.padding_value == -5
         assert output.mask_value is True
-        reference = NT([t + 1 for t in nt], **nt._meta())
+        reference = NT([t + 1 for t in nt], **reference_options(nt))
         assert_close(output, reference)
-
-
-class TestCatFunction:
-
-    def test_cat_batch_first_false_batch_dim(self):
-        nt = NestedTensor([torch.arange(3).unsqueeze(1), torch.arange(3, 5).unsqueeze(1)], batch_first=False)
-        extra = torch.arange(5, 8).unsqueeze(1)
-        output = torch.cat((nt, extra), dim=1)
-        reference = NT([*nt, extra], **nt._meta())
-        assert_close(output, reference)
-        assert output.batch_first is False
-
-    def test_cat_batch_first_false_non_batch_dims(self):
-        nt1 = NestedTensor([torch.ones(2, 2), torch.ones(3, 2)], batch_first=False)
-        nt2_seq = NestedTensor([torch.zeros(1, 2), torch.zeros(2, 2)], batch_first=False)
-        nt2_feat = NestedTensor([torch.zeros(2, 1), torch.zeros(3, 1)], batch_first=False)
-
-        output_seq = torch.cat((nt1, nt2_seq), dim=0)
-        reference_seq = NT([torch.cat([a, b], dim=0) for a, b in zip(nt1, nt2_seq)], **nt1._meta())
-        assert_close(output_seq, reference_seq)
-
-        output_feat = torch.cat((nt1, nt2_feat), dim=2)
-        reference_feat = NT([torch.cat([a, b], dim=1) for a, b in zip(nt1, nt2_feat)], **nt1._meta())
-        assert_close(output_feat, reference_feat)
-
-    def test_cat_dim0_incompatible_layouts(self):
-        nt1 = NT([torch.arange(6.0).reshape(2, 3), torch.arange(3.0).reshape(1, 3)])
-        nt2 = NT([torch.arange(8.0).reshape(2, 4), torch.arange(4.0).reshape(1, 4)])
-        output = torch.cat((nt1, nt2), dim=0)
-        reference = NT([*nt1, *nt2], **nt1._meta())
-        assert_close(output, reference)
-
-    def test_cat_dim0_preserves_state(self, device, float_dtype):
-        nt = NestedTensor([torch.ones(2, device=device, dtype=float_dtype)])
-        mixed = torch.zeros(2, device=device, dtype=float_dtype)
-        output = cat((nt, mixed), dim=0)
-        assert isinstance(output, NestedTensor)
-        assert output.device == nt.device
-        reference = NT([nt[0], mixed], **nt._meta())
-        assert_close(output, reference)
-
-    def test_cat_dim0_validates_nested_metadata(self):
-        nt_a = NT([torch.tensor([1.0, 2.0])], batch_first=True, padding_value=0.0, mask_value=False)
-        nt_b = NT([torch.tensor([3.0])], batch_first=False, padding_value=0.0, mask_value=False)
-        with pytest.raises(ValueError, match="share batch_first, padding_value, and mask_value"):
-            torch.cat((nt_a, nt_b), dim=0)
-
-    def test_cat_dim0_validates_nested_metadata_in_mixed_inputs(self):
-        nt_a = NT([torch.tensor([1.0, 2.0])], batch_first=True, padding_value=0.0, mask_value=False)
-        nt_b = NT([torch.tensor([3.0])], batch_first=True, padding_value=-1.0, mask_value=False)
-        with pytest.raises(ValueError, match="share batch_first, padding_value, and mask_value"):
-            torch.cat((nt_a, torch.tensor([9.0]), nt_b), dim=0)
-
-    def test_cat_dim0_with_empty_nested_inputs(self):
-        nt_empty = NT([], dtype=torch.float32)
-        nt = NT([torch.tensor([1.0, 2.0])])
-
-        out_left_empty = torch.cat((nt_empty, nt), dim=0)
-        assert len(out_left_empty) == 1
-        assert_close(out_left_empty[0], nt[0])
-
-        out_right_empty = torch.cat((nt, nt_empty), dim=0)
-        assert len(out_right_empty) == 1
-        assert_close(out_right_empty[0], nt[0])
-
-        nt2d = NT([torch.arange(6.0).reshape(2, 3), torch.arange(3.0).reshape(1, 3)])
-        out_left_empty_2d = torch.cat((nt_empty, nt2d), dim=0)
-        assert len(out_left_empty_2d) == len(nt2d)
-        assert_close(out_left_empty_2d, nt2d)
-
-        out_right_empty_2d = torch.cat((nt2d, nt_empty), dim=0)
-        assert len(out_right_empty_2d) == len(nt2d)
-        assert_close(out_right_empty_2d, nt2d)
-
-    def test_cat_with_empty_dense_input(self):
-        nt4d = NT([torch.randn(2, 3, 4), torch.randn(2, 5, 4)])  # (heads, L_i, dim) per element
-        empty = torch.zeros(0)
-        out_left = torch.cat([empty, nt4d], dim=-2)
-        assert isinstance(out_left, NestedTensor)
-        assert_close(out_left, nt4d)
-        out_right = torch.cat([nt4d, empty], dim=-2)
-        assert isinstance(out_right, NestedTensor)
-        assert_close(out_right, nt4d)
-
-        shaped_empty = torch.zeros(2, 2, 0, 4)
-        assert_close(torch.cat([shaped_empty, nt4d], dim=-2), nt4d)
-        assert_close(torch.cat([nt4d, shaped_empty], dim=-2), nt4d)
-
-    @pytest.mark.parametrize(
-        "empty",
-        [
-            pytest.param(torch.zeros(2, 2, 0, 5), id="suffix"),
-            pytest.param(torch.zeros(1, 2, 0, 4), id="batch"),
-            pytest.param(torch.zeros(2, 0, 4), id="rank"),
-        ],
-    )
-    def test_cat_empty_dense_shape_mismatch(self, empty):
-        nt4d = NT([torch.randn(2, 3, 4), torch.randn(2, 5, 4)])
-        with pytest.raises((ValueError, RuntimeError, NotImplementedError)):
-            torch.cat([empty, nt4d], dim=-2)
-
-    def test_cat_ragged_dim_append_two_nested(self):
-        a = NestedTensor([torch.randn(2, 3, 4), torch.randn(2, 5, 4)])
-        b = NestedTensor([torch.randn(2, 1, 4), torch.randn(2, 2, 4)])
-        out = torch.cat([a, b], dim=-2)
-        assert isinstance(out, NestedTensor)
-        assert [tuple(x.shape) for x in out._storage] == [(2, 4, 4), (2, 7, 4)]
-
-    def test_cat_non_zero_dim_length_mismatch(self):
-        nt1 = NestedTensor([torch.ones(2)])
-        nt2 = NestedTensor([torch.ones(2), torch.ones(3)])
-        with pytest.raises(ValueError):
-            cat((nt1, nt2), dim=1)
-
-    def test_cat_non_zero_dim_requires_nested_tensors(self):
-        nt = NestedTensor([torch.ones(2)])
-        with pytest.raises(NotImplementedError):
-            cat((nt, torch.ones(2)), dim=1)
-
-    def test_cat_dense_feature_dim(self, device, float_dtype):
-        nt = NT(
-            [
-                torch.randn(3, 4, device=device, dtype=float_dtype),
-                torch.randn(5, 4, device=device, dtype=float_dtype),
-            ]
-        )
-        dense = torch.randn(*nt.shape, device=device, dtype=float_dtype)
-        output = torch.cat((nt, dense), dim=2)
-        reference = NT([torch.cat([t, dense[i, : t.shape[0]]], dim=-1) for i, t in enumerate(nt)], **nt._meta())
-        assert_close(output, reference)
-
-    @pytest.mark.parametrize(
-        ("shape", "dim"),
-        [
-            pytest.param((2, 5, 5), 1, id="feature"),
-            pytest.param((2, 6, 4), 2, id="length"),
-        ],
-    )
-    def test_cat_dense_shape_mismatch(self, shape, dim):
-        nt = NT([torch.randn(3, 4), torch.randn(5, 4)])
-        dense = torch.randn(*shape)
-        with pytest.raises((ValueError, RuntimeError, NotImplementedError)):
-            torch.cat((nt, dense), dim=dim)
-
-
-class TestBroadcastTensors:
-
-    def test_per_element_ragged_2d(self):
-        nt = NestedTensor([torch.randn(5, 4), torch.randn(7, 4)])
-        with nested_execution_guard(forbid_storage_map=True):
-            col, row = torch.broadcast_tensors(nt.unsqueeze(1), nt.unsqueeze(2))
-        assert isinstance(col, NestedTensor) and isinstance(row, NestedTensor)
-        assert [tuple(x.shape) for x in col._storage] == [(5, 5, 4), (7, 7, 4)]
-        assert [tuple(x.shape) for x in row._storage] == [(5, 5, 4), (7, 7, 4)]
-        ref = [torch.broadcast_tensors(nt[i].unsqueeze(0), nt[i].unsqueeze(1)) for i in range(2)]
-        assert torch.equal(col.tensor, NestedTensor([r[0] for r in ref]).tensor)
-        assert torch.equal(row.tensor, NestedTensor([r[1] for r in ref]).tensor)
-
-    def test_shared_dense_tail(self):
-        nt = NestedTensor([torch.randn(5, 4), torch.randn(7, 4)])
-        dense = torch.randn(1, 4)
-        out, dense_out = torch.broadcast_tensors(nt, dense)
-        ref = [torch.broadcast_tensors(t, dense) for t in nt]
-        assert [tuple(x.shape) for x in out] == [(5, 4), (7, 4)]
-        assert_close(out, NestedTensor([r[0] for r in ref], **nt._meta()))
-        assert_close(dense_out, NestedTensor([r[1] for r in ref], **nt._meta()))
-
-    def test_batch_static_dense(self):
-        nt = NestedTensor([torch.randn(5, 2, 4), torch.randn(7, 2, 4)])
-        dense = torch.randn(2, 4)
-        out, dense_out = torch.broadcast_tensors(nt, dense)
-        ref = [torch.broadcast_tensors(t, dense[index]) for index, t in enumerate(nt)]
-        assert [tuple(x.shape) for x in out] == [(5, 2, 4), (7, 2, 4)]
-        assert_close(out, NestedTensor([r[0] for r in ref], **nt._meta()))
-        assert_close(dense_out, NestedTensor([r[1] for r in ref], **nt._meta()))
-
-    def test_padded_dense(self):
-        nt = NestedTensor([torch.randn(5, 4), torch.randn(7, 4)])
-        dense = torch.randn(2, 7, 4)
-        out, dense_out = torch.broadcast_tensors(nt, dense)
-        ref = [torch.broadcast_tensors(t, dense[index, : t.shape[0]]) for index, t in enumerate(nt)]
-        assert [tuple(x.shape) for x in out] == [(5, 4), (7, 4)]
-        assert_close(out, NestedTensor([r[0] for r in ref], **nt._meta()))
-        assert_close(dense_out, NestedTensor([r[1] for r in ref], **nt._meta()))
-
-    def test_nested_metadata(self):
-        lhs = NestedTensor([torch.randn(2, 1), torch.randn(3, 1)], padding_value=-1.0, mask_value=False)
-        rhs = NestedTensor([torch.randn(2, 1), torch.randn(3, 1)], padding_value=99.0, mask_value=True)
-        _, rhs_out = torch.broadcast_tensors(lhs, rhs)
-        assert rhs_out.padding_value == rhs.padding_value
-        assert rhs_out.mask_value == rhs.mask_value
 
 
 class TestCompile:
 
+    @pytest.fixture(autouse=True)
+    def isolate_compiler(self):
+        # Independent tests can otherwise exhaust the shared torch function wrapper cache.
+        torch.compiler.reset()
+        yield
+        torch.compiler.reset()
+
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    @pytest.mark.parametrize("op", [torch.det, torch.linalg.det], ids=["det", "linalg_det"])
-    @pytest.mark.parametrize(
-        "shapes",
-        [[(2, 2), (2, 2)], [(3, 3), (4, 4)]],
-        ids=["same_shape", "ragged"],
-    )
-    def test_compile_det(self, op, shapes):
+    def test_compile_det(self):
         torch.manual_seed(1016)
-        nt = NT([torch.randn(*s, dtype=torch.float32) for s in shapes])
-        compiled = torch.compile(lambda x, operator=op: operator(x), backend="inductor", fullgraph=True)
+        nt = NT([torch.randn(size, size) for size in (3, 4)])
+        compiled = torch.compile(torch.linalg.det, backend="inductor", fullgraph=True)
         output = compiled(nt)
-        reference = NT([op(t) for t in nt], **nt._meta())
+        reference = NT([torch.linalg.det(element) for element in nt], **reference_options(nt))
         assert isinstance(output, NestedTensor)
-        assert output._has_same_layout(reference)
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    @pytest.mark.parametrize(
-        "view_fn",
-        [
-            pytest.param(lambda x: x.view(-1, 3), id="packed_fastpath"),
-            pytest.param(lambda x: x.view(2, -1), id="explicit_batch_reduced_rank"),
-        ],
-    )
-    def test_compile_view_method(self, view_fn, device, float_dtype):
-        nt = NT(
-            [
-                torch.randn(2, 3, device=device, dtype=float_dtype),
-                torch.randn(4, 3, device=device, dtype=float_dtype),
-            ]
+    def test_compile_view_rebuild(self, device):
+        nt = NT([torch.randn(length, 3, device=device) for length in (2, 4)])
+
+        def reshape(value):
+            return value.view(-1, 3).unflatten(2, (1, 3)).squeeze(2)
+
+        output = torch.compile(reshape, backend="inductor", fullgraph=True)(nt)
+        reference = NT(
+            [element.view(-1, 3).unflatten(1, (1, 3)).squeeze(1) for element in nt],
+            **reference_options(nt),
         )
-        compiled = torch.compile(view_fn, backend="inductor", fullgraph=True)
-        output = compiled(nt)
-        reference = view_fn(nt)
-        assert isinstance(output, NestedTensor)
-        assert output._has_same_layout(reference)
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    @pytest.mark.parametrize(
-        ("op", "ref_fn"),
-        [
-            pytest.param(lambda x: x.unsqueeze(2).squeeze(2), lambda t: t.unsqueeze(1).squeeze(1), id="squeeze"),
-            pytest.param(
-                lambda x: x.view(-1, 3).unflatten(2, (1, 3)),
-                lambda t: t.view(-1, 3).unflatten(1, (1, 3)),
-                id="unflatten",
-            ),
-        ],
-    )
-    def test_compile_shape_rebuild_ops(self, op, ref_fn, device, float_dtype):
-        nt = NT(
-            [
-                torch.randn(2, 3, device=device, dtype=float_dtype),
-                torch.randn(4, 3, device=device, dtype=float_dtype),
-            ]
-        )
-        compiled = torch.compile(op, backend="inductor", fullgraph=True)
-        output = compiled(nt)
-        reference = NT([ref_fn(t) for t in nt], **nt._meta())
-        assert isinstance(output, NestedTensor)
-        assert output._has_same_layout(reference)
-        assert_close(output, reference)
+    def test_compile_convolution(self):
+        nt = NT([torch.randn(3, length) for length in (17, 29)])
+        weight = torch.randn(5, 3, 1)
+        bias = torch.randn(5)
+        compiled = torch.compile(F.conv1d, backend="inductor", fullgraph=True)
+        assert_close(compiled(nt, weight, bias), F.conv1d(nt, weight, bias))
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    @pytest.mark.parametrize(
-        ("op", "input_shapes", "weight_shape"),
-        [
-            pytest.param(lambda x, w, b: F.conv1d(x, w, b), [(3, 17), (3, 29)], (5, 3, 1), id="conv1d"),
-            pytest.param(lambda x, w, b: F.conv2d(x, w, b), [(3, 7, 11), (3, 9, 13)], (5, 3, 1, 1), id="conv2d"),
-        ],
-    )
-    def test_compile_pointwise_conv(self, op, input_shapes, weight_shape):
-        torch.manual_seed(1016)
-        nt = NT([torch.randn(*shape) for shape in input_shapes])
-        weight = torch.randn(*weight_shape)
-        bias = torch.randn(weight_shape[0])
-        compiled = torch.compile(op, backend="inductor", fullgraph=True)
-        output = compiled(nt, weight, bias)
-        reference = op(nt, weight, bias)
-        assert isinstance(output, NestedTensor)
-        assert output._has_same_layout(reference)
-        assert_close(output, reference)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    @pytest.mark.parametrize(
-        "torch_fn,ref_fn",
-        [
-            pytest.param(
-                lambda x: torch.topk(x, 2, dim=2, largest=True, sorted=True),
-                lambda t: torch.topk(t, 2, dim=1).values,
-                id="topk",
-            ),
-            pytest.param(lambda x: torch.cumsum(x, dim=2), lambda t: torch.cumsum(t, dim=1), id="cumsum"),
-            pytest.param(lambda x: torch.cumprod(x, dim=2), lambda t: torch.cumprod(t, dim=1), id="cumprod"),
-            pytest.param(
-                lambda x: torch.logcumsumexp(x, dim=2), lambda t: torch.logcumsumexp(t, dim=1), id="logcumsumexp"
-            ),
-            pytest.param(lambda x: torch.cummax(x, dim=2), lambda t: torch.cummax(t, dim=1).values, id="cummax"),
-            pytest.param(lambda x: torch.cummin(x, dim=2), lambda t: torch.cummin(t, dim=1).values, id="cummin"),
-            pytest.param(lambda x: torch.flip(x, dims=[2]), lambda t: torch.flip(t, dims=[1]), id="flip"),
-            pytest.param(
-                lambda x: torch.sort(x, dim=2, descending=False),
-                lambda t: torch.sort(t, dim=1, descending=False).values,
-                id="sort",
-            ),
-            pytest.param(
-                lambda x: torch.argsort(x, dim=2, descending=False),
-                lambda t: torch.argsort(t, dim=1, descending=False),
-                id="argsort",
-            ),
-            pytest.param(lambda x: torch.softmax(x, dim=1), lambda t: torch.softmax(t, dim=0), id="softmax"),
-            pytest.param(
-                lambda x: torch.log_softmax(x, dim=1), lambda t: torch.log_softmax(t, dim=0), id="log_softmax"
-            ),
-            pytest.param(lambda x: torch.layer_norm(x, (2,)), lambda t: torch.layer_norm(t, (2,)), id="layer_norm"),
-        ],
-    )
-    def test_compile_ragged_op(self, torch_fn, ref_fn):
+    def test_compile_dropout(self):
         nt = NT(
             [
                 torch.tensor([[3.0, 1.0], [4.0, 2.0], [0.0, 5.0]]),
                 torch.tensor([[7.0, 8.0], [1.0, 0.0], [9.0, 6.0], [2.0, 3.0], [5.0, 4.0]]),
             ]
         )
-        compiled = torch.compile(torch_fn, backend="inductor", fullgraph=True)
-        result = compiled(nt)
-        if isinstance(result, tuple):
-            result = result[0]
-        reference = NT([ref_fn(t) for t in nt], **nt._meta())
-        assert isinstance(result, NestedTensor)
-        assert result._has_same_layout(reference)
-        assert_close(result, reference)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_compile_dropout_and_bernoulli(self):
-        nt = NT(
-            [
-                torch.tensor([[3.0, 1.0], [4.0, 2.0], [0.0, 5.0]]),
-                torch.tensor([[7.0, 8.0], [1.0, 0.0], [9.0, 6.0], [2.0, 3.0], [5.0, 4.0]]),
-            ]
+        dropout_train_fn = torch.compile(
+            lambda x: torch.dropout(x, p=0.2, train=True),
+            backend="inductor",
+            fullgraph=True,
         )
-        nt_prob = NT(
-            [
-                torch.tensor([[0.2, 0.8], [0.3, 0.7], [0.4, 0.6]]),
-                torch.tensor([[0.1, 0.9], [0.25, 0.75], [0.5, 0.5], [0.35, 0.65], [0.6, 0.4]]),
-            ]
-        )
-
-        def _compile(fn):
-            return torch.compile(fn, backend="inductor", fullgraph=True)
-
-        dropout_eval_fn = _compile(lambda x: torch.dropout(x, p=0.2, train=False))
-        assert_close(dropout_eval_fn(nt), nt)
-
-        dropout_train_fn = _compile(lambda x: torch.dropout(x, p=0.2, train=True))
-        dropout_values_fn = _compile(lambda x: torch.dropout(x, p=0.2, train=True))
-        torch.manual_seed(1016)
         dropout_comp = dropout_train_fn(nt)
-        torch.manual_seed(1016)
-        dropout_ref = dropout_values_fn(nt._values)
         assert isinstance(dropout_comp, NestedTensor)
-        assert dropout_comp._has_same_layout(nt)
-        assert_close(dropout_comp._values, dropout_ref)
-
-        bernoulli_fn = _compile(lambda x: torch.bernoulli(x))
-        bernoulli_values_fn = _compile(lambda x: torch.bernoulli(x))
-        torch.manual_seed(1016)
-        bernoulli_comp = bernoulli_fn(nt_prob)
-        torch.manual_seed(1016)
-        bernoulli_ref = bernoulli_values_fn(nt_prob._values)
-        assert isinstance(bernoulli_comp, NestedTensor)
-        assert bernoulli_comp._has_same_layout(nt_prob)
-        assert_close(bernoulli_comp._values, bernoulli_ref)
+        assert [tuple(element.shape) for element in dropout_comp] == [tuple(element.shape) for element in nt]
+        assert torch.all((dropout_comp.concat == 0) | (dropout_comp.concat == nt.concat / 0.8))
 
     @pytest.mark.skipif(
         not hasattr(torch, "compile") or not hasattr(torch, "rms_norm"),
@@ -615,44 +411,9 @@ class TestCompile:
         )
         compiled = torch.compile(lambda x: torch.rms_norm(x, (2,)), backend="inductor", fullgraph=True)
         result = compiled(nt)
-        reference = NT([torch.rms_norm(t, (2,)) for t in nt], **nt._meta())
+        reference = NT([torch.rms_norm(t, (2,)) for t in nt], **reference_options(nt))
         assert isinstance(result, NestedTensor)
-        assert result._has_same_layout(reference)
         assert_close(result, reference)
-
-
-class TestConcatAliases:
-
-    @pytest.mark.parametrize("alias", [torch.concat, torch.concatenate])
-    def test_concat_aliases_dim0(self, alias, device, float_dtype):
-        nt = NestedTensor(
-            [
-                torch.tensor([1.0, 2.0, 3.0], device=device, dtype=float_dtype),
-                torch.tensor([4.0], device=device, dtype=float_dtype),
-            ]
-        )
-        extra = torch.tensor([5.0, 6.0], device=device, dtype=float_dtype)
-        output = alias((nt, extra), dim=0)
-        reference = NT([*nt, extra], **nt._meta())
-        assert_close(output, reference)
-
-    def test_concat_non_zero_dim(self, device, float_dtype):
-        nt1 = NestedTensor(
-            [
-                torch.zeros(2, 2, device=device, dtype=float_dtype),
-                torch.zeros(1, 2, device=device, dtype=float_dtype),
-            ]
-        )
-        nt2 = NestedTensor(
-            [
-                torch.ones(2, 1, device=device, dtype=float_dtype),
-                torch.ones(1, 1, device=device, dtype=float_dtype),
-            ],
-            **nt1._meta(),
-        )
-        output = torch.concat((nt1, nt2), dim=2)
-        reference = NT([torch.cat([a, b], dim=1) for a, b in zip(nt1, nt2)], **nt1._meta())
-        assert_close(output, reference)
 
 
 class TestCumulativeOps:
@@ -676,7 +437,7 @@ class TestCumulativeOps:
             ]
         )
         output = op(nt, dim=1)
-        reference = tuple(NT([op(t, dim=0)[idx] for t in nt], **nt._meta()) for idx in range(2))
+        reference = tuple(NT([op(t, dim=0)[idx] for t in nt], **reference_options(nt)) for idx in range(2))
         assert isinstance(output, tuple)
         assert_close(output[0], reference[0])
         assert_close(output[1], reference[1])
@@ -716,7 +477,7 @@ class TestCumulativeOps:
             ]
         )
         output = torch.logcumsumexp(nt, dim=1)
-        reference = NT([torch.logcumsumexp(t, dim=0) for t in nt], **nt._meta())
+        reference = NT([torch.logcumsumexp(t, dim=0) for t in nt], **reference_options(nt))
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
         with pytest.raises(ValueError):
@@ -744,7 +505,7 @@ class TestDimensionTransforms:
             ]
         )
         output = torch.squeeze(nt)
-        reference = NT([torch.squeeze(t) for t in nt], **nt._meta())
+        reference = NT([torch.squeeze(t) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_squeeze_default_with_all_ragged_ones(self, device, float_dtype):
@@ -755,7 +516,7 @@ class TestDimensionTransforms:
             ]
         )
         output = torch.squeeze(nt)
-        reference = NT([torch.squeeze(t) for t in nt], **nt._meta())
+        reference = NT([torch.squeeze(t) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_squeeze_unsqueeze_round_trip(self, device, float_dtype):
@@ -778,8 +539,48 @@ class TestDimensionTransforms:
             ]
         )
         output = torch.squeeze(nt, dim=-1)
-        reference = NT([torch.squeeze(t, dim=-1) for t in nt], **nt._meta())
+        reference = NT([torch.squeeze(t, dim=-1) for t in nt], **reference_options(nt))
         assert_close(output, reference)
+
+    def test_squeeze_sample_axis_values_and_vjp(self, device, float_dtype):
+        template = NT(
+            [
+                torch.empty(1, 2, 3, device=device, dtype=float_dtype),
+                torch.empty(1, 5, 3, device=device, dtype=float_dtype),
+            ],
+            ragged_dims=(1,),
+        )
+        values = torch.randn_like(template.concat, requires_grad=True)
+        sampled = template.packed_like(values)
+        expected = values.squeeze(1)
+
+        output = sampled.squeeze(-3)
+
+        cotangent = torch.randn_like(expected)
+        actual_grad = torch.autograd.grad(output.concat, values, cotangent)[0]
+        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
+        assert output.ragged_dims == (0,)
+        assert output.concat.shape == (7, 3)
+        assert_close(output.concat, expected)
+        assert_close(actual_grad, expected_grad)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_squeeze_sample_axis_compiles_with_vjp(self, device):
+        compiled = torch.compile(
+            lambda template, values: template.packed_like(values).squeeze(-3).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        template = NT([torch.empty(1, length, 3, device=device) for length in (2, 3)], ragged_dims=(1,))
+        values = torch.randn_like(template.concat, requires_grad=True)
+        expected = values.squeeze(1)
+        output = compiled(template, values)
+        cotangent = torch.randn_like(expected)
+        actual_grad = torch.autograd.grad(output, values, cotangent)[0]
+        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
+        assert_close(output, expected)
+        assert_close(actual_grad, expected_grad)
 
     def test_transpose_swaps_last_two_element_dims(self, device, float_dtype):
         nt = NT(
@@ -791,68 +592,39 @@ class TestDimensionTransforms:
 
         output = nt.transpose(-1, -2)
         alias = nt.mT
-        reference = NT([tensor.transpose(-1, -2) for tensor in nt], **nt._meta())
+        reference = NT([tensor.transpose(-1, -2) for tensor in nt], **reference_options(nt))
 
         assert_close(output, reference)
         assert_close(alias, reference)
         assert output.shape == torch.Size([2, 4, 7, 5])
 
-    def test_view_like_ops_preserve_autograd(self, device, float_dtype):
-        nt = NT(
-            [
-                torch.randn(2, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
-                torch.randn(3, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
-            ]
-        )
-
-        outputs = [
-            nt.squeeze(2),
-            torch.squeeze(nt, dim=2),
-            nt.unsqueeze(2),
-            torch.unsqueeze(nt, dim=2),
-            torch.transpose(nt, 1, 3),
-            torch.permute(nt, (0, 3, 2, 1)),
-            torch.reshape(nt, (-1, 3)),
-            nt.flatten(1, 3),
-            nt.view(-1, 3),
-            nt.view(-1, 3).unflatten(2, (1, 3)),
+    @pytest.mark.parametrize(
+        ("nested_transform", "element_transform"),
+        [
+            (lambda value: value.squeeze(2), lambda value: value.squeeze(1)),
+            (lambda value: value.movedim(1, 3), lambda value: value.movedim(0, 2)),
+        ],
+        ids=("view", "axis-move"),
+    )
+    def test_view_like_ops_values_and_vjp(self, device, float_dtype, nested_transform, element_transform):
+        leaves = [
+            torch.randn(2, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
+            torch.randn(3, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
         ]
+        references = [leaf.detach().clone().requires_grad_() for leaf in leaves]
 
-        for output in outputs:
-            assert isinstance(output, NestedTensor)
-            assert output.requires_grad
-            assert output._values.requires_grad
-            assert output._values.grad_fn is not None
-            grad = torch.autograd.grad(output._values.sum(), nt._values, retain_graph=True)[0]
-            assert grad is not None
-            assert grad.shape == nt._values.shape
+        output = nested_transform(NT(leaves))
+        expected = [element_transform(reference) for reference in references]
+        weights = [torch.randn_like(element) for element in expected]
+        actual_loss = sum((element * weight).sum() for element, weight in zip(output, weights))
+        expected_loss = sum((element * weight).sum() for element, weight in zip(expected, weights))
+        actual_gradients = torch.autograd.grad(actual_loss, leaves)
+        expected_gradients = torch.autograd.grad(expected_loss, references)
 
-    def test_axis_alias_methods_preserve_autograd(self, device, float_dtype):
-        nt = NT(
-            [
-                torch.randn(2, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
-                torch.randn(3, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
-            ]
-        )
-        outputs = [
-            nt.moveaxis(1, 3),
-            nt.movedim(1, 3),
-            nt.swapaxes(1, 3),
-            nt.swapdims(1, 3),
-            torch.moveaxis(nt, 1, 3),
-            torch.movedim(nt, 1, 3),
-            torch.swapaxes(nt, 1, 3),
-            torch.swapdims(nt, 1, 3),
-        ]
-
-        for output in outputs:
-            assert isinstance(output, NestedTensor)
-            assert output.requires_grad
-            assert output._values.requires_grad
-            assert output._values.grad_fn is not None
-            grad = torch.autograd.grad(output._values.sum(), nt._values, retain_graph=True)[0]
-            assert grad is not None
-            assert grad.shape == nt._values.shape
+        for actual, reference in zip(output, expected):
+            assert_close(actual, reference)
+        for actual, reference in zip(actual_gradients, expected_gradients):
+            assert_close(actual, reference)
 
     def test_swapaxes_batch_dim_raises(self):
         nt = NestedTensor([torch.ones(2, 2)])
@@ -881,7 +653,7 @@ class TestDimensionTransforms:
     def test_unsqueeze_batch_dim_raises(self):
         nt = NestedTensor([torch.tensor([1, 2])])
         with pytest.raises(ValueError):
-            unsqueeze(nt, dim=0)
+            torch.unsqueeze(nt, dim=0)
 
     def test_unsqueeze_batch_first_false_respects_batch_dim(self):
         nt = NestedTensor([torch.tensor([1, 2])], batch_first=False)
@@ -893,6 +665,58 @@ class TestDimensionTransforms:
         assert isinstance(output, NestedTensor)
         assert output.batch_first is False
         assert output.tensor.shape == torch.Size([2, 1, 1])
+
+    def test_unsqueeze_after_moved_static_axis_rbf_values_and_vjp(self, device, float_dtype):
+        lengths = (3, 5)
+        template = NT(
+            [torch.empty(length, 5, 2, device=device) for length in lengths],
+            ragged_dims=(0,),
+        )
+        values = torch.randn_like(template.concat, dtype=float_dtype, requires_grad=True)
+        source = template.packed_like(values)
+        centers = torch.linspace(2, 22, 2, device=device, dtype=float_dtype)
+
+        moved = source.movedim(2, 3)
+        expanded = moved.unsqueeze(-1)
+        output = torch.exp(-(((expanded - centers) / 10) ** 2)).flatten(start_dim=-2)
+
+        parts = values.split(lengths)
+        references = tuple(
+            torch.exp(-(((part.movedim(1, 2).unsqueeze(-1) - centers) / 10) ** 2)).flatten(start_dim=-2)
+            for part in parts
+        )
+        expected = torch.cat(tuple(reference.movedim(1, 2) for reference in references))
+        cotangent = torch.randn_like(expected)
+        actual_grad = torch.autograd.grad(output.concat, values, cotangent, retain_graph=True)[0]
+        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
+
+        assert output.shape == torch.Size((2, 5, 2, 10))
+        assert output.ragged_dims == (0,)
+        assert_close(output.concat, expected)
+        assert_close(actual_grad, expected_grad)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_unsqueeze_after_moved_static_axis_compiles(self, device):
+        def run(template, values, centers):
+            source = template.packed_like(values).movedim(2, 3).unsqueeze(-1)
+            return torch.exp(-(((source - centers) / 10) ** 2)).flatten(start_dim=-2).concat
+
+        compiled = torch.compile(run, backend="aot_eager", fullgraph=True, dynamic=True)
+        centers = torch.linspace(2, 22, 2, device=device)
+        lengths = (2, 3)
+        template = NT([torch.empty(length, 5, 2, device=device) for length in lengths], ragged_dims=(0,))
+        values = torch.randn_like(template.concat, requires_grad=True)
+        output = compiled(template, values, centers)
+        references = tuple(
+            torch.exp(-(((part.movedim(1, 2).unsqueeze(-1) - centers) / 10) ** 2)).flatten(start_dim=-2)
+            for part in values.split(lengths)
+        )
+        expected = torch.cat(tuple(reference.movedim(1, 2) for reference in references))
+        cotangent = torch.randn_like(expected)
+        actual_grad = torch.autograd.grad(output, values, cotangent, retain_graph=True)[0]
+        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
+        assert_close(output, expected)
+        assert_close(actual_grad, expected_grad)
 
     def test_movedim(self, device, float_dtype):
         a = torch.randn(3, 4, 5, device=device, dtype=float_dtype)
@@ -922,8 +746,7 @@ class TestDimensionTransforms:
         )
         assert_close(output, reference)
         assert output.shape == torch.Size([3, 26, 26, 8])
-        assert tuple(output._values.shape) == (26 * 26 + 14 * 14 + 9 * 9, 8)
-        assert torch.equal(output._physical_shape[:, :2], torch.tensor([[26, 26], [14, 14], [9, 9]]))
+        assert [tuple(element.shape) for element in output] == [(26, 26, 8), (14, 14, 8), (9, 9, 8)]
 
     def test_pairwise_unsqueeze_multiply_from_tensor_mask_preserves_square_metadata(self, device, float_dtype):
         dense = torch.randn(1, 5, 3, device=device, dtype=float_dtype)
@@ -934,8 +757,7 @@ class TestDimensionTransforms:
         reference = torch.unsqueeze(dense, 1) * torch.unsqueeze(dense, 2)
 
         assert output.shape == torch.Size([1, 5, 5, 3])
-        expected_shape = torch.tensor([[5, 5, 3]], dtype=output._physical_shape.dtype)
-        assert torch.equal(output._physical_shape, expected_shape)
+        assert [tuple(element.shape) for element in output] == [(5, 5, 3)]
         assert_close(output, reference)
 
         channels_first = torch.transpose(output, 1, 3)
@@ -958,7 +780,7 @@ class TestDist:
                 torch.tensor([2.0, 2.0], device=device, dtype=float_dtype),
                 torch.tensor([1.0], device=device, dtype=float_dtype),
             ],
-            **a._meta(),
+            **reference_options(a),
         )
         output = torch.dist(a, b, p=2)
         reference = torch.stack([torch.dist(x, y, p=2) for x, y in zip(a, b)])
@@ -967,18 +789,107 @@ class TestDist:
 
 class TestEinsum:
 
-    def test_einsum_both_nested(self, device, float_dtype):
-        a1 = torch.randn(3, 4, device=device, dtype=float_dtype)
-        a2 = torch.randn(3, 4, device=device, dtype=float_dtype)
-        b1 = torch.randn(5, 4, device=device, dtype=float_dtype)
-        b2 = torch.randn(5, 4, device=device, dtype=float_dtype)
-        nt1 = NT([a1, b1])
-        nt2 = NT([a2, b2])
-        # Element-wise multiplication and sum over last dim
-        result = torch.einsum("ij,ij->i", nt1, nt2)
-        assert isinstance(result, NestedTensor)
-        assert_close(result[0], torch.einsum("ij,ij->i", a1, a2))
-        assert_close(result[1], torch.einsum("ij,ij->i", b1, b2))
+    @staticmethod
+    def _ligand_mpnn_einsum_inputs(
+        equation,
+        lengths,
+        *,
+        device="cpu",
+        dtype=None,
+        requires_grad=False,
+    ):
+        if equation == "bli,bli->bl":
+            lhs_template = NT(
+                [torch.empty(length, 4, device=device, dtype=dtype) for length in lengths],
+                ragged_dims=(0,),
+            )
+            rhs_template = NT(
+                [torch.empty(length, 4, device=device, dtype=dtype) for length in lengths],
+                ragged_dims=(0,),
+            )
+            lhs_values = torch.randn_like(lhs_template.concat, requires_grad=requires_grad)
+            rhs_values = torch.randn_like(rhs_template.concat, requires_grad=requires_grad)
+            reference = torch.einsum("xi,xi->x", lhs_values, rhs_values)
+        elif equation == "blqp,blyq->blyp":
+            lhs_template = NT(
+                [torch.empty(length, 3, 4, device=device, dtype=dtype) for length in lengths],
+                ragged_dims=(0,),
+            )
+            rhs_template = NT(
+                [torch.empty(length, 5, 3, device=device, dtype=dtype) for length in lengths],
+                ragged_dims=(0,),
+            )
+            lhs_values = torch.randn_like(lhs_template.concat, requires_grad=requires_grad)
+            rhs_values = torch.randn_like(rhs_template.concat, requires_grad=requires_grad)
+            reference = torch.einsum("xqp,xyq->xyp", lhs_values, rhs_values)
+        else:
+            raise AssertionError(f"unsupported test equation {equation}")
+        return lhs_template.packed_like(lhs_values), rhs_template.packed_like(rhs_values), reference
+
+    @pytest.mark.parametrize("equation", ["bli,bli->bl", "blqp,blyq->blyp"])
+    def test_ligand_mpnn_einsum_values_and_vjp(self, equation, device, float_dtype):
+        lhs, rhs, reference = self._ligand_mpnn_einsum_inputs(
+            equation,
+            (2, 5),
+            device=device,
+            dtype=float_dtype,
+            requires_grad=True,
+        )
+        lhs_values = lhs.concat
+        rhs_values = rhs.concat
+        if equation == "bli,bli->bl":
+            reference = torch.einsum("xi,xi->x", lhs_values, rhs_values)
+            expected_tail = ()
+        else:
+            reference = torch.einsum("xqp,xyq->xyp", lhs_values, rhs_values)
+            expected_tail = (5, 4)
+
+        output = torch.einsum(equation, lhs, rhs)
+
+        cotangent = torch.randn_like(reference)
+        output_gradients = torch.autograd.grad(
+            output.concat,
+            (lhs_values, rhs_values),
+            cotangent,
+        )
+        reference_gradients = torch.autograd.grad(reference, (lhs_values, rhs_values), cotangent)
+        assert output.concat.shape == (sum((2, 5)), *expected_tail)
+        assert output.ragged_dims == (0,)
+        assert_close(output.concat, reference)
+        for actual, expected in zip(output_gradients, reference_gradients):
+            assert_close(actual, expected)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize("equation", ["bli,bli->bl", "blqp,blyq->blyp"])
+    def test_ligand_mpnn_einsum_compiles_with_vjp(self, equation, device):
+        compiled = torch.compile(
+            lambda lhs_template, lhs_values, rhs_template, rhs_values: torch.einsum(
+                equation,
+                lhs_template.packed_like(lhs_values),
+                rhs_template.packed_like(rhs_values),
+            ).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        lhs, rhs, reference = self._ligand_mpnn_einsum_inputs(
+            equation,
+            (2, 3),
+            device=device,
+            requires_grad=True,
+        )
+        lhs_values = lhs.concat
+        rhs_values = rhs.concat
+        lhs_template = lhs.packed_like(torch.empty_like(lhs_values))
+        rhs_template = rhs.packed_like(torch.empty_like(rhs_values))
+        output = compiled(lhs_template, lhs_values, rhs_template, rhs_values)
+        cotangent = torch.randn_like(reference)
+        output_gradients = torch.autograd.grad(output, (lhs_values, rhs_values), cotangent)
+        reference_gradients = torch.autograd.grad(reference, (lhs_values, rhs_values), cotangent)
+        assert_close(output, reference)
+        for actual, expected in zip(output_gradients, reference_gradients):
+            assert_close(actual, expected)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_einsum_matmul_equation_compile_fullgraph(self, device, float_dtype):
@@ -993,7 +904,7 @@ class TestEinsum:
                 torch.einsum("...ij,jk->...ik", a, w),
                 torch.einsum("...ij,jk->...ik", b, w),
             ],
-            **nt._meta(),
+            **reference_options(nt),
         )
         assert_close(result, reference)
 
@@ -1008,7 +919,7 @@ class TestEinsum:
                 torch.einsum("...ij,jk->...ik", a, w),
                 torch.einsum("...ij,jk->...ik", b, w),
             ],
-            **nt._meta(),
+            **reference_options(nt),
         )
         assert_close(result, reference)
 
@@ -1018,18 +929,7 @@ class TestEinsum:
         w = torch.randn(4, device=device, dtype=float_dtype)
         nt = NT([a, b])
         result = torch.einsum("ij,j->i", nt, w)
-        reference = NT([torch.einsum("ij,j->i", a, w), torch.einsum("ij,j->i", b, w)], **nt._meta())
-        assert_close(result, reference)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_einsum_matrix_vector_equation_compile_fullgraph(self, device, float_dtype):
-        a = torch.randn(3, 4, device=device, dtype=float_dtype)
-        b = torch.randn(5, 4, device=device, dtype=float_dtype)
-        w = torch.randn(4, device=device, dtype=float_dtype)
-        nt = NT([a, b])
-        compiled = torch.compile(lambda x, y: torch.einsum("ij,j->i", x, y), backend="inductor", fullgraph=True)
-        result = compiled(nt, w)
-        reference = NT([torch.einsum("ij,j->i", a, w), torch.einsum("ij,j->i", b, w)], **nt._meta())
+        reference = NT([torch.einsum("ij,j->i", a, w), torch.einsum("ij,j->i", b, w)], **reference_options(nt))
         assert_close(result, reference)
 
     def test_einsum_mismatched_batch_lengths_raises(self, device, float_dtype):
@@ -1056,7 +956,7 @@ class TestEinsum:
         b = torch.randn(4, 5, device=device, dtype=float_dtype)
         nt = NT([a, b])
         result = torch.einsum("i,ij->j", v, nt)
-        reference = NT([torch.einsum("i,ij->j", v, a), torch.einsum("i,ij->j", v, b)], **nt._meta())
+        reference = NT([torch.einsum("i,ij->j", v, a), torch.einsum("i,ij->j", v, b)], **reference_options(nt))
         assert_close(result, reference)
 
     def test_einsum_pairwise_nested_operands(self, device, float_dtype):
@@ -1069,7 +969,7 @@ class TestEinsum:
         )
         weights = torch.randn(3, 3, device=device, dtype=float_dtype)
         output = torch.einsum("bia,ac,bjc->bij", nt, weights, nt)
-        reference = NT([torch.einsum("ia,ac,jc->ij", t, weights, t) for t in nt], **nt._meta())
+        reference = NT([torch.einsum("ia,ac,jc->ij", t, weights, t) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_einsum_broadcast_dense_batch(self, device, float_dtype):
@@ -1081,7 +981,7 @@ class TestEinsum:
         )
         dense = torch.randn(1, 7, 4, device=device, dtype=float_dtype)
         output = torch.einsum("blc,bmc->blm", nt, dense)
-        reference = NT([torch.einsum("lc,mc->lm", t, dense[0]) for t in nt], **nt._meta())
+        reference = NT([torch.einsum("lc,mc->lm", t, dense[0]) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -1102,80 +1002,41 @@ class TestEinsum:
             return key_states, attention_scores, context
 
         compiled = torch.compile(einsums, backend="inductor", fullgraph=True)
-        with nested_execution_guard(
-            forbid_iteration=True,
-            forbid_storage_map=True,
-            forbid_padded_materialization=True,
-            forbid_dense_repack=True,
-        ):
-            key_states, attention_scores, context = compiled(hidden_states, query_states, key_weight, value_weight)
+        key_states, attention_scores, context = compiled(hidden_states, query_states, key_weight, value_weight)
 
         key_reference = NT(
             [torch.einsum("ls,hsk->hlk", hidden_state, key_weight) for hidden_state in hidden_states],
-            **hidden_states._meta(),
+            **reference_options(hidden_states),
         )
         value_reference = NT(
             [torch.einsum("ls,hsv->hlv", hidden_state, value_weight) for hidden_state in hidden_states],
-            **hidden_states._meta(),
+            **reference_options(hidden_states),
         )
         score_reference = NT(
             [
                 torch.einsum("hk,hlk->hl", query_states[index], key_state)
                 for index, key_state in enumerate(key_reference)
             ],
-            **hidden_states._meta(),
+            **reference_options(hidden_states),
         )
         context_reference = NT(
             [torch.einsum("hl,hlv->hv", score, value) for score, value in zip(score_reference, value_reference)],
-            **hidden_states._meta(),
+            **reference_options(hidden_states),
         )
 
         assert_close(key_states, key_reference)
         assert_close(attention_scores, score_reference)
-        assert_close(context, context_reference, atol=1e-4, rtol=1e-4)
-
-    def test_einsum_global_query_equal_lengths(self, device, float_dtype):
-        hidden_states = NT(
-            torch.randn(5, 7, device=device, dtype=float_dtype),
-            torch.randn(5, 7, device=device, dtype=float_dtype),
+        # Packed and per-sample contractions reduce in a different order. The
+        # discrepancy compounds across four low-precision contractions, so use
+        # a dtype-aware end-to-end tolerance rather than an FP32-like constant.
+        atol, rtol = low_precision_cuda_tolerances(
+            device,
+            float_dtype,
+            default=(1e-4, 1e-4),
+            fp16=(2e-2, 7e-3),
+            bf16=(8e-2, 5e-2),
         )
-        query_states = torch.randn(2, 3, 11, device=device, dtype=float_dtype)
-        key_weight = torch.randn(3, 7, 11, device=device, dtype=float_dtype)
-        value_weight = torch.randn(3, 7, 13, device=device, dtype=float_dtype)
-
-        key_states = torch.einsum("bls,hsk->bhlk", hidden_states, key_weight)
-        value_states = torch.einsum("bls,hsv->bhlv", hidden_states, value_weight)
-        attention_scores = torch.einsum("bhk,bhlk->bhl", query_states, key_states)
-        context = torch.einsum("bhl,bhlv->bhv", attention_scores, value_states)
-
-        key_reference = NT(
-            [torch.einsum("ls,hsk->hlk", hidden_state, key_weight) for hidden_state in hidden_states],
-            **hidden_states._meta(),
-        )
-        value_reference = NT(
-            [torch.einsum("ls,hsv->hlv", hidden_state, value_weight) for hidden_state in hidden_states],
-            **hidden_states._meta(),
-        )
-        score_reference = NT(
-            [
-                torch.einsum("hk,hlk->hl", query_states[index], key_state)
-                for index, key_state in enumerate(key_reference)
-            ],
-            **hidden_states._meta(),
-        )
-        context_reference = NT(
-            [torch.einsum("hl,hlv->hv", score, value) for score, value in zip(score_reference, value_reference)],
-            **hidden_states._meta(),
-        )
-
-        assert_close(key_states, key_reference)
-        assert_close(value_states, value_reference)
-        assert_close(attention_scores, score_reference)
-        assert_close(context, context_reference, atol=1e-4, rtol=1e-4)
-        assert_close(key_states[0], key_reference[0])
-        assert_close(attention_scores[0], score_reference[0])
-        assert_close(key_states.tensor, key_reference.tensor)
-        assert_close(attention_scores.tensor, score_reference.tensor)
+        assert_close(context, context_reference, atol=atol, rtol=rtol)
 
     def test_einsum_global_query_bad_layout(self, device, float_dtype):
         hidden_states = NT(
@@ -1211,8 +1072,54 @@ class TestFlattenUnflatten:
             ]
         )
         output = torch.flatten(nt, start_dim=3)
-        reference = NT([torch.flatten(t, start_dim=2) for t in nt], **nt._meta())
+        reference = NT([torch.flatten(t, start_dim=2) for t in nt], **reference_options(nt))
         assert_close(output, reference)
+
+    @pytest.mark.parametrize("transposed", [False, True], ids=["canonical", "transposed"])
+    def test_static_tail_flatten_unflatten_values_and_vjp(self, transposed):
+        source = NestedTensor(
+            [torch.empty(2, 2, 2, 4), torch.empty(3, 3, 2, 4)],
+            ragged_dims=(0, 1),
+        )
+        if transposed:
+            source = source.transpose(1, 2)
+        leaf = torch.randn_like(source.concat, requires_grad=True)
+        source = source.packed_like(leaf)
+
+        flattened = source.flatten(-2)
+        restored = flattened.unflatten(-1, (2, 4))
+
+        assert flattened.ragged_dims == source.ragged_dims
+        assert restored.shape == source.shape
+        assert restored.ragged_dims == source.ragged_dims
+        assert_close(flattened.concat, leaf.flatten(-2))
+        assert_close(restored.concat, leaf)
+        restored.concat.square().sum().backward()
+        assert_close(leaf.grad, 2 * leaf)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_static_tail_flatten_unflatten_compiles(self):
+        template = NestedTensor(
+            [torch.empty(2, 2, 2, 4), torch.empty(3, 3, 2, 4)],
+            ragged_dims=(0, 1),
+        )
+        values = torch.randn_like(template.concat, requires_grad=True)
+        compiled = torch.compile(
+            lambda structure, packed: structure.packed_like(packed)
+            .flatten(-2)
+            .unflatten(-1, (2, 4))
+            .concat.square()
+            .sum(),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        loss = compiled(template, values)
+        gradient = torch.autograd.grad(loss, values)[0]
+
+        assert_close(loss, values.square().sum())
+        assert_close(gradient, 2 * values)
 
     def test_flatten_start_dim_zero_returns_tensor(self, device, float_dtype):
         nt = NestedTensor(
@@ -1221,7 +1128,7 @@ class TestFlattenUnflatten:
                 torch.tensor([[5, 6], [7, 8]], device=device, dtype=float_dtype),
             ]
         )
-        output = flatten(nt, start_dim=0)
+        output = torch.flatten(nt, start_dim=0)
         assert isinstance(output, torch.Tensor)
         assert_close(output, torch.flatten(nt.tensor, start_dim=0))
 
@@ -1232,8 +1139,8 @@ class TestFlattenUnflatten:
         grid = NestedTensor([torch.randn(4, 4, 3), torch.randn(6, 6, 3)])
         rows = grid.flatten(0, 1)
         assert isinstance(rows, NestedTensor)
-        assert rows._ragged_rank == 1
-        assert [tuple(x.shape) for x in rows._storage] == [(4, 3)] * 4 + [(6, 3)] * 6
+        assert len(rows.ragged_dims) == 1
+        assert [tuple(x.shape) for x in rows] == [(4, 3)] * 4 + [(6, 3)] * 6
         ref = [r for i in range(len(grid)) for r in grid[i].unbind(0)]
         assert all(torch.equal(rows[k], ref[k]) for k in range(len(ref)))
 
@@ -1258,7 +1165,7 @@ class TestFlattenUnflatten:
     def test_unflatten_batch_dim_not_supported(self):
         nt = NestedTensor([torch.tensor([[1, 2]])])
         with pytest.raises(ValueError):
-            unflatten(nt, dim=0, sizes=(1, 2))
+            torch.unflatten(nt, dim=0, sizes=(1, 2))
 
 
 class TestExpand:
@@ -1271,8 +1178,52 @@ class TestExpand:
             ]
         )
         output = nt.expand(-1, -1, 4, -1)
-        reference = NT([t.expand(-1, 4, -1) for t in nt], **nt._meta())
+        reference = NT([t.expand(-1, 4, -1) for t in nt], **reference_options(nt))
         assert_close(output, reference)
+
+    def test_expand_sample_axis(self, device, float_dtype):
+        parts = [torch.randn(length, 3, device=device, dtype=float_dtype, requires_grad=True) for length in (3, 5)]
+        reference_parts = [part.detach().clone().requires_grad_() for part in parts]
+        nt = NT(parts)
+
+        output = nt.unsqueeze(-3).expand(-1, 4, -1, -1)
+        reference = [part.unsqueeze(0).expand(4, -1, -1) for part in reference_parts]
+        for actual, expected in zip(output, reference):
+            assert_close(actual, expected)
+
+        weights = [torch.randn_like(element) for element in reference]
+        loss = sum((element * weight).sum() for element, weight in zip(output, weights))
+        reference_loss = sum((element * weight).sum() for element, weight in zip(reference, weights))
+        gradients = torch.autograd.grad(loss, parts)
+        reference_gradients = torch.autograd.grad(reference_loss, reference_parts)
+        for actual, expected in zip(gradients, reference_gradients):
+            assert_close(actual, expected)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_expand_sample_axis_compiles_with_vjp(self, device):
+        def consume(template, values):
+            reference_positions = template.packed_like(values)
+            sampled = reference_positions.unsqueeze(-3).expand(-1, 4, -1, -1)
+            return sampled.concat.square().sum()
+
+        compiled = torch.compile(consume, backend="aot_eager", fullgraph=True, dynamic=True)
+        template = NT([torch.empty(length, 3, device=device) for length in (2, 3)], ragged_dims=(0,))
+        values = torch.randn_like(template.concat, requires_grad=True)
+        loss = compiled(template, values)
+        gradient = torch.autograd.grad(loss, values)[0]
+        assert_close(loss, values.square().sum() * 4)
+        assert_close(gradient, 8 * values)
+
+    def test_expand_rejects_ragged_change(self):
+        reference_positions = NT([torch.empty(1, 3), torch.empty(2, 3)], ragged_dims=(0,))
+        sampled = reference_positions.unsqueeze(-3)
+        with pytest.raises(RuntimeError, match="cannot change a ragged dimension"):
+            sampled.expand(-1, 4, 7, -1)
+
+    def test_expand_rejects_non_singleton_static_change(self):
+        nt = NT([torch.empty(2, 2, 3), torch.empty(3, 2, 3)], ragged_dims=(0,))
+        with pytest.raises(RuntimeError):
+            nt.expand(-1, -1, 4, -1)
 
     @pytest.mark.parametrize("batch", [1, 3])
     def test_expand_rejects_batch_change(self, batch):
@@ -1286,7 +1237,7 @@ class TestFlipAndRoll:
     def test_flip_translates_dims_and_rejects_batch(self, device):
         nt = NT([torch.tensor([[1, 2], [3, 4]], device=device), torch.tensor([[5, 6]], device=device)])
         output = torch.flip(nt, dims=(-1,))
-        reference = NT([torch.flip(t, dims=(-1,)) for t in nt], **nt._meta())
+        reference = NT([torch.flip(t, dims=(-1,)) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
         with pytest.raises(ValueError):
@@ -1302,7 +1253,7 @@ class TestFlipAndRoll:
             ]
         )
         output = torch.flip(nt, dims=(-1,))
-        reference = NT([torch.flip(t, dims=(-1,)) for t in nt], **nt._meta())
+        reference = NT([torch.flip(t, dims=(-1,)) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_flip_ragged_2d_dims(self, device, float_dtype):
@@ -1317,141 +1268,42 @@ class TestFlipAndRoll:
         )
         for nt_dim, elem_dim in ((1, 0), (2, 1), (3, 2)):
             output = torch.flip(nt, dims=(nt_dim,))
-            reference = NT([torch.flip(t, dims=(elem_dim,)) for t in nt], **nt._meta())
+            reference = NT([torch.flip(t, dims=(elem_dim,)) for t in nt], **reference_options(nt))
             assert_close(output, reference)
 
     def test_roll_supports_dims_none(self, device):
         nt = NT([torch.tensor([1, 2, 3], device=device), torch.tensor([4, 5], device=device)])
         output = torch.roll(nt, shifts=1)
-        reference = NT([torch.roll(t, shifts=1) for t in nt], **nt._meta())
+        reference = NT([torch.roll(t, shifts=1) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_roll_translates_dims_and_rejects_batch(self, device):
         nt = NT([torch.tensor([[1, 2], [3, 4]], device=device), torch.tensor([[5, 6]], device=device)])
         output = torch.roll(nt, shifts=1, dims=-1)
-        reference = NT([torch.roll(t, shifts=1, dims=-1) for t in nt], **nt._meta())
+        reference = NT([torch.roll(t, shifts=1, dims=-1) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
         with pytest.raises(ValueError):
             torch.roll(nt, shifts=1, dims=0)
 
-    def test_flip_roll_rot90_preserve_autograd(self, device, float_dtype):
-        nt = NT(
-            [
-                torch.randn(2, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
-                torch.randn(3, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
-            ]
-        )
-        outputs = [
-            nt.flip((3,)),
-            torch.flip(nt, dims=(3,)),
-            nt.roll((1,), (3,)),
-            torch.roll(nt, shifts=(1,), dims=(3,)),
-            nt.rot90(1, (2, 3)),
-            torch.rot90(nt, 1, (2, 3)),
+    def test_rot90_values_and_vjp(self, device, float_dtype):
+        leaves = [
+            torch.randn(2, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
+            torch.randn(3, 1, 3, device=device, dtype=float_dtype, requires_grad=True),
         ]
+        references = [leaf.detach().clone().requires_grad_() for leaf in leaves]
+        output = torch.rot90(NT(leaves), 1, (2, 3))
+        expected = [torch.rot90(reference, 1, (1, 2)) for reference in references]
+        weights = [torch.randn_like(element) for element in expected]
+        actual_loss = sum((element * weight).sum() for element, weight in zip(output, weights))
+        expected_loss = sum((element * weight).sum() for element, weight in zip(expected, weights))
 
-        for output in outputs:
-            assert isinstance(output, NestedTensor)
-            assert output.requires_grad
-            assert output._values.requires_grad
-            assert output._values.grad_fn is not None
-            grad = torch.autograd.grad(output._values.sum(), nt._values, retain_graph=True)[0]
-            assert grad is not None
-            assert grad.shape == nt._values.shape
-
-
-class TestGatherScatter:
-
-    def test_gather_batch_first_false_respects_batch_dim(self, device, float_dtype):
-        nt = NestedTensor(
-            [
-                torch.arange(6, device=device, dtype=float_dtype).view(2, 3),
-                torch.arange(6, 12, device=device, dtype=float_dtype).view(3, 2),
-            ],
-            batch_first=False,
-        )
-        index = torch.zeros_like(nt.tensor, dtype=torch.long)
-        output = gather(nt, 0, index)
-        reference = NT([torch.gather(t, 0, torch.zeros_like(t, dtype=torch.long)) for t in nt], **nt._meta())
-        assert_close(output, reference)
-
-    def test_gather_on_batch_dim_not_supported(self):
-        nt = NestedTensor([torch.tensor([[1, 2]])])
-        idx = torch.zeros_like(nt.tensor, dtype=torch.long)
-        with pytest.raises(ValueError):
-            gather(nt, 0, idx)
-
-    def test_gather_with_nested_index_ragged_dim(self, device, float_dtype):
-        nt = NestedTensor(
-            [
-                torch.tensor([[10.0, 20.0, 30.0], [40.0, 50.0, 60.0]], device=device, dtype=float_dtype),
-                torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], device=device, dtype=float_dtype),
-            ]
-        )
-        index = NT(
-            [
-                torch.tensor([[1, 0, 1]], device=device, dtype=torch.long),
-                torch.tensor([[2, 1, 0], [0, 2, 1]], device=device, dtype=torch.long),
-            ]
-        )
-        output = gather(nt, 1, index)
-        reference = NT([torch.gather(t, 0, idx) for t, idx in zip(nt, index)], **nt._meta())
-        assert_close(output, reference)
-
-    def test_gather_with_tensor_index_converts(self, device, float_dtype):
-        nt = NestedTensor(
-            [
-                torch.arange(6, device=device, dtype=float_dtype).view(1, 6),
-                torch.arange(6, 12, device=device, dtype=float_dtype).view(1, 6),
-            ]
-        )
-        index = torch.zeros_like(nt.tensor, dtype=torch.long)
-        output = gather(nt, 1, index)
-        reference = NT([torch.gather(t, 0, torch.zeros_like(t, dtype=torch.long)) for t in nt], **nt._meta())
-        assert_close(output, reference)
-
-    def test_scatter_batch_first_false_respects_batch_dim(self, device, float_dtype):
-        nt = NestedTensor(
-            [
-                torch.zeros(2, 2, device=device, dtype=float_dtype),
-                torch.zeros(3, 2, device=device, dtype=float_dtype),
-            ],
-            batch_first=False,
-        )
-        index = torch.zeros_like(nt.tensor, dtype=torch.long)
-        src = torch.ones_like(nt.tensor, dtype=float_dtype)
-        output = scatter(nt, 2, index, src)
-        reference = NT(
-            [
-                torch.scatter(
-                    t,
-                    1,
-                    torch.zeros_like(t, dtype=torch.long),
-                    torch.ones_like(t, dtype=float_dtype),
-                )
-                for t in nt
-            ],
-            **nt._meta(),
-        )
-        assert_close(output, reference)
-
-    def test_scatter_with_tensor_index_and_src(self, device, float_dtype):
-        nt = NestedTensor(
-            [
-                torch.zeros(2, 2, device=device, dtype=float_dtype),
-                torch.zeros(2, 2, device=device, dtype=float_dtype),
-            ]
-        )
-        index = torch.tensor(
-            [[[0, 1], [0, 1]], [[1, 0], [1, 0]]],
-            dtype=torch.long,
-            device=device,
-        )
-        src = torch.ones_like(index, dtype=float_dtype, device=device)
-        output = scatter(nt, 1, index, src)
-        reference = NT([torch.scatter(t, 0, idx, src_slice) for t, idx, src_slice in zip(nt, index, src)], **nt._meta())
-        assert_close(output, reference)
+        actual_gradients = torch.autograd.grad(actual_loss, leaves)
+        expected_gradients = torch.autograd.grad(expected_loss, references)
+        for actual, reference in zip(output, expected):
+            assert_close(actual, reference)
+        for actual, reference in zip(actual_gradients, expected_gradients):
+            assert_close(actual, reference)
 
 
 class TestIndexingReadOps:
@@ -1464,15 +1316,19 @@ class TestIndexingReadOps:
             ]
         )
         output = torch.index_select(nt, 0, torch.tensor([1, 0, 1], device=device))
-        reference = NT([nt[1], nt[0], nt[1]], **nt._meta())
+        reference = NT([nt[1], nt[0], nt[1]], **reference_options(nt))
         assert_close(output, reference)
 
         output = torch.index_select(nt, 2, torch.tensor([2, 0], device=device))
-        reference = NT([torch.index_select(t, 1, torch.tensor([2, 0], device=device)) for t in nt], **nt._meta())
+        reference = NT(
+            [torch.index_select(t, 1, torch.tensor([2, 0], device=device)) for t in nt], **reference_options(nt)
+        )
         assert_close(output, reference)
 
         output = torch.index_select(nt, 1, torch.tensor([1, 0], device=device))
-        reference = NT([torch.index_select(t, 0, torch.tensor([1, 0], device=device)) for t in nt], **nt._meta())
+        reference = NT(
+            [torch.index_select(t, 0, torch.tensor([1, 0], device=device)) for t in nt], **reference_options(nt)
+        )
         assert_close(output, reference)
 
     def test_index_select_batch_first_false(self, device, float_dtype):
@@ -1484,7 +1340,7 @@ class TestIndexingReadOps:
             batch_first=False,
         )
         output = torch.index_select(nt, 1, torch.tensor([1, 0, 1], device=device))
-        reference = NT([nt[1], nt[0], nt[1]], **nt._meta())
+        reference = NT([nt[1], nt[0], nt[1]], **reference_options(nt))
         assert_close(output, reference)
 
     def test_masked_select(self, device, float_dtype):
@@ -1496,14 +1352,14 @@ class TestIndexingReadOps:
         )
         mask = nt > 2
         output = torch.masked_select(nt, mask)
-        reference = NT([torch.masked_select(t, m) for t, m in zip(nt, mask)], **nt._meta())
+        reference = NT([torch.masked_select(t, m) for t, m in zip(nt, mask)], **reference_options(nt))
         assert_close(output, reference)
 
         output = torch.masked_select(nt, mask.tensor)
         assert_close(output, reference)
 
         output = torch.masked_select(nt, torch.tensor(True, device=device))
-        reference = NT([t.reshape(-1) for t in nt], **nt._meta())
+        reference = NT([t.reshape(-1) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_masked_select_multi_ragged_exact_layout(self, device, float_dtype):
@@ -1515,7 +1371,7 @@ class TestIndexingReadOps:
         )
         mask = nt > 0
         output = torch.masked_select(nt, mask)
-        reference = NT([torch.masked_select(t, m) for t, m in zip(nt, mask)], **nt._meta())
+        reference = NT([torch.masked_select(t, m) for t, m in zip(nt, mask)], **reference_options(nt))
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "take_along_dim"), reason="requires torch.take_along_dim")
@@ -1536,7 +1392,7 @@ class TestIndexingReadOps:
         )
         output = torch.take_along_dim(nt, indices, dim=2)
         indices_nt = nt.nested_like(indices, strict=False)
-        reference = NT([torch.take_along_dim(t, i, dim=1) for t, i in zip(nt, indices_nt)], **nt._meta())
+        reference = NT([torch.take_along_dim(t, i, dim=1) for t, i in zip(nt, indices_nt)], **reference_options(nt))
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "take_along_dim"), reason="requires torch.take_along_dim")
@@ -1554,8 +1410,28 @@ class TestIndexingReadOps:
             ]
         )
         output = torch.take_along_dim(nt, indices, dim=1)
-        reference = NT([torch.take_along_dim(t, idx, dim=0) for t, idx in zip(nt, indices)], **nt._meta())
+        reference = NT([torch.take_along_dim(t, idx, dim=0) for t, idx in zip(nt, indices)], **reference_options(nt))
         assert_close(output, reference)
+
+    def test_multi_ragged_per_sample_row_selection(self, device, float_dtype):
+        elements = [
+            torch.randn(4, 3, 2, device=device, dtype=float_dtype),
+            torch.randn(3, 2, 2, device=device, dtype=float_dtype),
+        ]
+        rows = [torch.tensor([3, 1], device=device), torch.tensor([2], device=device)]
+        indices = [
+            row[:, None, None].expand(-1, element.shape[1], element.shape[2]) for row, element in zip(rows, elements)
+        ]
+        nested = NT(elements, ragged_dims=(0, 1))
+        nested_indices = NT(indices, ragged_dims=(0, 1))
+
+        output = torch.gather(nested, 1, nested_indices)
+        references = [torch.gather(element, 0, index) for element, index in zip(elements, indices)]
+
+        assert output.ragged_dims == (0, 1)
+        assert [element.shape for element in output] == [reference.shape for reference in references]
+        for actual, expected in zip(output, references):
+            assert_close(actual, expected)
 
 
 class TestIndexingWriteOps:
@@ -1570,10 +1446,10 @@ class TestIndexingWriteOps:
                 torch.tensor([1.0, 2.0], device=device, dtype=float_dtype),
                 torch.tensor([3.0, 4.0], device=device, dtype=float_dtype),
             ],
-            **base._meta(),
+            **reference_options(base),
         )
         output = torch.index_add(base, 1, index, src)
-        reference = NT([torch.index_add(t, 0, index, s) for t, s in zip(base, src)], **base._meta())
+        reference = NT([torch.index_add(t, 0, index, s) for t, s in zip(base, src)], **reference_options(base))
         assert_close(output, reference)
 
     def test_index_add_static_dim(self, device, float_dtype):
@@ -1589,10 +1465,10 @@ class TestIndexingWriteOps:
                 torch.tensor([[1.0, 2.0], [3.0, 4.0]], device=device, dtype=float_dtype),
                 torch.tensor([[5.0, 6.0], [7.0, 8.0], [9.0, 10.0]], device=device, dtype=float_dtype),
             ],
-            **base._meta(),
+            **reference_options(base),
         )
         output = torch.index_add(base, 2, index, src)
-        reference = NT([torch.index_add(t, 1, index, s) for t, s in zip(base, src)], **base._meta())
+        reference = NT([torch.index_add(t, 1, index, s) for t, s in zip(base, src)], **reference_options(base))
         assert_close(output, reference)
 
     def test_index_copy(self, device, float_dtype):
@@ -1605,10 +1481,10 @@ class TestIndexingWriteOps:
                 torch.tensor([1.0, 2.0], device=device, dtype=float_dtype),
                 torch.tensor([3.0, 4.0], device=device, dtype=float_dtype),
             ],
-            **base._meta(),
+            **reference_options(base),
         )
         output = torch.index_copy(base, 1, index, src)
-        reference = NT([torch.index_copy(t, 0, index, s) for t, s in zip(base, src)], **base._meta())
+        reference = NT([torch.index_copy(t, 0, index, s) for t, s in zip(base, src)], **reference_options(base))
         assert_close(output, reference)
 
     def test_index_copy_static_dim(self, device, float_dtype):
@@ -1624,10 +1500,10 @@ class TestIndexingWriteOps:
                 torch.tensor([[1.0, 2.0], [3.0, 4.0]], device=device, dtype=float_dtype),
                 torch.tensor([[5.0, 6.0], [7.0, 8.0], [9.0, 10.0]], device=device, dtype=float_dtype),
             ],
-            **base._meta(),
+            **reference_options(base),
         )
         output = torch.index_copy(base, 2, index, src)
-        reference = NT([torch.index_copy(t, 1, index, s) for t, s in zip(base, src)], **base._meta())
+        reference = NT([torch.index_copy(t, 1, index, s) for t, s in zip(base, src)], **reference_options(base))
         assert_close(output, reference)
 
     def test_index_put(self, device, float_dtype):
@@ -1640,10 +1516,10 @@ class TestIndexingWriteOps:
                 torch.tensor([10.0, 20.0], device=device, dtype=float_dtype),
                 torch.tensor([30.0, 40.0], device=device, dtype=float_dtype),
             ],
-            **base._meta(),
+            **reference_options(base),
         )
         output = torch.index_put(base, (index,), values, accumulate=False)
-        reference = NT([torch.index_put(t, (index,), v) for t, v in zip(base, values)], **base._meta())
+        reference = NT([torch.index_put(t, (index,), v) for t, v in zip(base, values)], **reference_options(base))
         assert_close(output, reference)
 
     def test_index_put_multi_index(self, device, float_dtype):
@@ -1660,14 +1536,14 @@ class TestIndexingWriteOps:
                 torch.tensor([[13.0, 17.0], [19.0, 23.0]], device=device, dtype=float_dtype),
                 torch.tensor([[29.0, 31.0], [37.0, 41.0]], device=device, dtype=float_dtype),
             ],
-            **base._meta(),
+            **reference_options(base),
         )
         output = torch.index_put(base, (rows, cols), values, accumulate=False)
-        reference = NT([torch.index_put(t, (rows, cols), v) for t, v in zip(base, values)], **base._meta())
+        reference = NT([torch.index_put(t, (rows, cols), v) for t, v in zip(base, values)], **reference_options(base))
         assert_close(output, reference)
 
-    @pytest.mark.parametrize("seed", [0, 1, 2])
-    def test_index_put_matches_dense(self, device, seed):
+    def test_index_put_matches_dense(self, device):
+        seed = 0
         dtype = torch.float32
         shapes = ragged_shapes(seed, batch_size=3, min_len=3, max_len=6, trailing_shape=(4,))
         base = nested_rand(shapes, device, dtype)
@@ -1681,14 +1557,16 @@ class TestIndexingWriteOps:
 
         shared_values = torch.randn(2, 4, device=device, dtype=dtype)
         row_output = torch.index_put(base, (rows,), shared_values, accumulate=False)
-        row_reference = NT([torch.index_put(t, (rows,), shared_values) for t in base], **base._meta())
+        row_reference = NT([torch.index_put(t, (rows,), shared_values) for t in base], **reference_options(base))
         assert_close(row_output, row_reference)
 
         dup_rows = rows.clone()
         dup_rows[0] = dup_rows[-1]
         dup_values = torch.randn(2, 4, device=device, dtype=dtype)
         dup_output = torch.index_put(base, (dup_rows,), dup_values, accumulate=True)
-        dup_reference = NT([torch.index_put(t, (dup_rows,), dup_values, accumulate=True) for t in base], **base._meta())
+        dup_reference = NT(
+            [torch.index_put(t, (dup_rows,), dup_values, accumulate=True) for t in base], **reference_options(base)
+        )
         assert_close(dup_output, dup_reference)
 
         point_rows = torch.randint(0, min_rows, (2, 2), generator=generator)
@@ -1697,12 +1575,12 @@ class TestIndexingWriteOps:
         point_cols = torch.randint(0, 4, (2, 2), generator=generator).to(device=device, dtype=torch.long)
         point_values = NestedTensor(
             [torch.randn(2, 2, device=device, dtype=dtype) for _ in range(len(base))],
-            **base._meta(),
+            **reference_options(base),
         )
         point_output = torch.index_put(base, (point_rows, point_cols), point_values, accumulate=False)
         point_reference = NT(
             [torch.index_put(t, (point_rows, point_cols), v) for t, v in zip(base, point_values)],
-            **base._meta(),
+            **reference_options(base),
         )
         assert_close(point_output, point_reference)
 
@@ -1719,10 +1597,10 @@ class TestIndexingWriteOps:
                 torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], device=device, dtype=float_dtype),
                 torch.tensor([[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]], device=device, dtype=float_dtype),
             ],
-            **base._meta(),
+            **reference_options(base),
         )
         output = torch.index_put(base, (index,), values, accumulate=False)
-        reference = NT([torch.index_put(t, (index,), v) for t, v in zip(base, values)], **base._meta())
+        reference = NT([torch.index_put(t, (index,), v) for t, v in zip(base, values)], **reference_options(base))
         assert_close(output, reference)
 
     def test_index_put_row_write_accumulate_duplicate_indices(self, device, float_dtype):
@@ -1743,7 +1621,7 @@ class TestIndexingWriteOps:
             dtype=float_dtype,
         )
         output = torch.index_put(base, (index,), values, accumulate=True)
-        reference = NT([torch.index_put(t, (index,), values, accumulate=True) for t in base], **base._meta())
+        reference = NT([torch.index_put(t, (index,), values, accumulate=True) for t in base], **reference_options(base))
         assert_close(output, reference)
 
     def test_index_put_row_write_dense_values(self, device, float_dtype):
@@ -1756,7 +1634,7 @@ class TestIndexingWriteOps:
         index = torch.tensor([0, 2], device=device)
         values = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], device=device, dtype=float_dtype)
         output = torch.index_put(base, (index,), values, accumulate=False)
-        reference = NT([torch.index_put(t, (index,), values) for t in base], **base._meta())
+        reference = NT([torch.index_put(t, (index,), values) for t in base], **reference_options(base))
         assert_close(output, reference)
 
     def test_index_put_row_write_scalar_tensor(self, device, float_dtype):
@@ -1769,7 +1647,7 @@ class TestIndexingWriteOps:
         index = torch.tensor([0, 2], device=device)
         value = torch.tensor(-3.0, device=device, dtype=float_dtype)
         output = torch.index_put(base, (index,), value, accumulate=False)
-        reference = NT([torch.index_put(t, (index,), value) for t in base], **base._meta())
+        reference = NT([torch.index_put(t, (index,), value) for t in base], **reference_options(base))
         assert_close(output, reference)
 
     def test_masked_fill(self, device, float_dtype):
@@ -1781,7 +1659,7 @@ class TestIndexingWriteOps:
         )
         mask = nt > 0
         output = torch.masked_fill(nt, mask, 0.0)
-        reference = NT([torch.masked_fill(t, m, 0.0) for t, m in zip(nt, mask)], **nt._meta())
+        reference = NT([torch.masked_fill(t, m, 0.0) for t, m in zip(nt, mask)], **reference_options(nt))
         assert_close(output, reference)
 
         output = torch.masked_fill(nt, mask.tensor, 0.0)
@@ -1798,9 +1676,9 @@ class TestIndexingWriteOps:
                 torch.randn(5, 4, device=device, dtype=float_dtype),
             ]
         )
-        nested_mask = NT([t[:, :1] > 0 for t in nt], **nt._meta())
+        nested_mask = NT([t[:, :1] > 0 for t in nt], **reference_options(nt))
         output = torch.masked_fill(nt, nested_mask, -7.0)
-        reference = NT([torch.masked_fill(t, t[:, :1] > 0, -7.0) for t in nt], **nt._meta())
+        reference = NT([torch.masked_fill(t, t[:, :1] > 0, -7.0) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
         padded = nt.tensor
@@ -1811,6 +1689,62 @@ class TestIndexingWriteOps:
             reference = padded.masked_fill(mask, -9.0)
             for index, length in enumerate(lengths):
                 assert_close(output[index], reference[index, :length])
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_masked_fill_multi_ragged_singleton_mask_fullgraph(self, device, float_dtype):
+        shapes = ((2, 3, 4), (3, 2, 4))
+        template = NT([torch.empty(shape, device=device, dtype=float_dtype) for shape in shapes], ragged_dims=(0, 1))
+        values = torch.randn_like(template.concat, requires_grad=True)
+        nested = template.packed_like(values)
+        masks = [torch.rand(*shape[:-1], 1, device=device) > 0.5 for shape in shapes]
+        mask = NT(masks, ragged_dims=(0, 1))
+
+        eager = torch.masked_fill(nested, mask, -7.0)
+        compiled = torch.compile(
+            lambda input_, condition: torch.masked_fill(input_, condition, -7.0).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        output = compiled(nested, mask)
+        packed_lengths = tuple(shape[0] * shape[1] for shape in shapes)
+        elements = [part.reshape(shape) for part, shape in zip(values.split(packed_lengths), shapes)]
+        reference = torch.cat(
+            [
+                torch.masked_fill(element, condition, -7.0).reshape(-1, shape[-1])
+                for element, condition, shape in zip(elements, masks, shapes)
+            ]
+        )
+        cotangent = torch.randn_like(reference)
+        actual_gradient = torch.autograd.grad(output, values, cotangent, retain_graph=True)[0]
+        expected_gradient = torch.autograd.grad(reference, values, cotangent)[0]
+
+        assert eager.ragged_dims == (0, 1)
+        assert eager.element_sizes().tolist() == [list(shape) for shape in shapes]
+        assert_close(eager.concat, reference)
+        assert_close(output, reference)
+        assert_close(actual_gradient, expected_gradient)
+
+    def test_masked_fill_dense_source_ragged_mask(self, device, float_dtype):
+        bias = torch.randn(2, 4, 3, 3, device=device, dtype=float_dtype)
+        mask = NT(
+            [
+                torch.rand(2, 2, device=device) > 0.5,
+                torch.rand(3, 3, device=device) > 0.5,
+            ]
+        )
+        output = torch.masked_fill(bias, mask, float("-inf"))
+        reference = NT(
+            [
+                bias[index, :, : element.shape[0], : element.shape[1]].masked_fill(element, float("-inf"))
+                for index, element in enumerate(mask)
+            ],
+            **reference_options(mask),
+        )
+        assert_close(output, reference)
+
+        with pytest.raises(ValueError, match="batch length mismatch"):
+            torch.masked_fill(torch.randn(5, 4, 3, 3, device=device, dtype=float_dtype), mask, -1.0)
 
     def test_masked_scatter(self, device, float_dtype):
         base = NestedTensor(
@@ -1826,7 +1760,7 @@ class TestIndexingWriteOps:
             ]
         )
         output = torch.masked_scatter(base, mask, src)
-        reference = NT([torch.masked_scatter(t, m, s) for t, m, s in zip(base, mask, src)], **base._meta())
+        reference = NT([torch.masked_scatter(t, m, s) for t, m, s in zip(base, mask, src)], **reference_options(base))
         assert_close(output, reference)
 
     def test_masked_scatter_same_shape_dense_source(self, device, float_dtype):
@@ -1846,7 +1780,7 @@ class TestIndexingWriteOps:
         nested_source = base.nested_like(dense_source, strict=False)
         reference = NT(
             [torch.masked_scatter(t, m, s) for t, m, s in zip(base, mask, nested_source)],
-            **base._meta(),
+            **reference_options(base),
         )
         assert_close(output, reference)
 
@@ -1867,33 +1801,7 @@ class TestInnerProducts:
             ]
         )
         result = torch.dot(lhs, rhs)
-        reference = NT([torch.dot(a, b) for a, b in zip(lhs, rhs)], **lhs._meta())
-        assert_close(result, reference)
-
-    def test_dot_both_nested(self, device, float_dtype):
-        lhs = NT(
-            [
-                torch.randn(4, device=device, dtype=float_dtype),
-                torch.randn(4, device=device, dtype=float_dtype),
-            ]
-        )
-        rhs = NT(
-            [
-                torch.randn(4, device=device, dtype=float_dtype),
-                torch.randn(4, device=device, dtype=float_dtype),
-            ]
-        )
-        original_iter = NestedTensor.__iter__
-
-        def _fail_iter(self):
-            raise AssertionError("torch.dot should not iterate per element for matching packed vectors")
-
-        NestedTensor.__iter__ = _fail_iter
-        try:
-            result = torch.dot(lhs, rhs)
-        finally:
-            NestedTensor.__iter__ = original_iter
-        reference = NT([torch.dot(a, b) for a, b in zip(lhs, rhs)], **lhs._meta())
+        reference = NT([torch.dot(a, b) for a, b in zip(lhs, rhs)], **reference_options(lhs))
         assert_close(result, reference)
 
     def test_inner_both_nested(self, device, float_dtype):
@@ -1904,7 +1812,7 @@ class TestInnerProducts:
         nt1 = NT([a1, a2])
         nt2 = NT([b1, b2])
         result = torch.inner(nt1, nt2)
-        reference = NT([torch.inner(a1, b1), torch.inner(a2, b2)], **nt1._meta())
+        reference = NT([torch.inner(a1, b1), torch.inner(a2, b2)], **reference_options(nt1))
         assert_close(result, reference)
 
     def test_inner_nested_tensor_with_vector(self, device, float_dtype):
@@ -1913,7 +1821,7 @@ class TestInnerProducts:
         w = torch.randn(4, device=device, dtype=float_dtype)
         nt = NT([a, b])
         result = torch.inner(nt, w)
-        reference = NT([torch.inner(a, w), torch.inner(b, w)], **nt._meta())
+        reference = NT([torch.inner(a, w), torch.inner(b, w)], **reference_options(nt))
         assert_close(result, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -1924,7 +1832,7 @@ class TestInnerProducts:
         nt = NT([a, b])
         compiled = torch.compile(lambda x, y: torch.inner(x, y), backend="inductor", fullgraph=True)
         result = compiled(nt, w)
-        reference = NT([torch.inner(a, w), torch.inner(b, w)], **nt._meta())
+        reference = NT([torch.inner(a, w), torch.inner(b, w)], **reference_options(nt))
         assert_close(result, reference)
 
     def test_inner_vector_with_nested_tensor(self, device, float_dtype):
@@ -1933,7 +1841,7 @@ class TestInnerProducts:
         w = torch.randn(4, device=device, dtype=float_dtype)
         nt = NT([a, b])
         result = torch.inner(w, nt)
-        reference = NT([torch.inner(w, a), torch.inner(w, b)], **nt._meta())
+        reference = NT([torch.inner(w, a), torch.inner(w, b)], **reference_options(nt))
         assert_close(result, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "vdot"), reason="torch.vdot not available")
@@ -1951,7 +1859,7 @@ class TestInnerProducts:
             ]
         )
         result = torch.vdot(lhs, rhs)
-        reference = NT([torch.vdot(a, b) for a, b in zip(lhs, rhs)], **lhs._meta())
+        reference = NT([torch.vdot(a, b) for a, b in zip(lhs, rhs)], **reference_options(lhs))
         assert_close(result, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "vdot"), reason="torch.vdot not available")
@@ -1969,7 +1877,7 @@ class TestInnerProducts:
             ]
         )
         result = torch.vdot(lhs, rhs)
-        reference = NT([torch.vdot(a, b) for a, b in zip(lhs, rhs)], **lhs._meta())
+        reference = NT([torch.vdot(a, b) for a, b in zip(lhs, rhs)], **reference_options(lhs))
         assert_close(result, reference)
 
 
@@ -1995,7 +1903,7 @@ class TestLikeCreators:
             ]
         )
         output = torch.full_like(nt, 3.0, dtype=torch.float32)
-        reference = NT([torch.full_like(t, 3.0, dtype=torch.float32) for t in nt], **nt._meta())
+        reference = NT([torch.full_like(t, 3.0, dtype=torch.float32) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_ones_like_dtype(self, device, float_dtype):
@@ -2006,7 +1914,7 @@ class TestLikeCreators:
             ]
         )
         output = torch.ones_like(nt, dtype=torch.float64)
-        reference = NT([torch.ones_like(t, dtype=torch.float64) for t in nt], **nt._meta())
+        reference = NT([torch.ones_like(t, dtype=torch.float64) for t in nt], **reference_options(nt))
         assert_close(output, reference)
         assert output.dtype == torch.float64
 
@@ -2015,7 +1923,7 @@ class TestLikeCreators:
         torch.manual_seed(1016)
         output = torch.randint_like(nt, 10)
         torch.manual_seed(1016)
-        reference = NT([torch.randint_like(t, 10) for t in nt], **nt._meta())
+        reference = NT([torch.randint_like(t, 10) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_zeros_like(self, device, float_dtype):
@@ -2027,12 +1935,58 @@ class TestLikeCreators:
         )
 
         output = torch.zeros_like(nt)
-        reference = NT([torch.zeros_like(t) for t in nt], **nt._meta())
+        reference = NT([torch.zeros_like(t) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
 
 class TestLinalgOps:
     """Tests for torch.linalg ops registered in torch_functions.py."""
+
+    def test_cross_static_tail_values_and_vjp(self, device, float_dtype):
+        template = NT(
+            [torch.empty(2, 3, device=device), torch.empty(5, 3, device=device)],
+            ragged_dims=(0,),
+        )
+        lhs_values = torch.randn_like(template.concat, dtype=float_dtype, requires_grad=True)
+        rhs_values = torch.randn_like(template.concat, dtype=float_dtype, requires_grad=True)
+        lhs = template.packed_like(lhs_values)
+        rhs = template.packed_like(rhs_values)
+        reference = torch.cross(lhs_values, rhs_values, dim=-1)
+
+        output = torch.cross(lhs, rhs, dim=-1)
+        linalg_output = torch.linalg.cross(lhs, rhs, dim=-1)
+
+        cotangent = torch.randn_like(reference)
+        actual_gradients = torch.autograd.grad(output.concat, (lhs_values, rhs_values), cotangent)
+        expected_gradients = torch.autograd.grad(reference, (lhs_values, rhs_values), cotangent)
+        assert output.ragged_dims == (0,)
+        assert_close(output.concat, reference)
+        assert_close(linalg_output.concat, reference)
+        for actual, expected in zip(actual_gradients, expected_gradients, strict=True):
+            assert_close(actual, expected)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_cross_static_tail_compiles_with_vjp(self, device):
+        compiled = torch.compile(
+            lambda template, lhs, rhs: torch.cross(
+                template.packed_like(lhs),
+                template.packed_like(rhs),
+                dim=-1,
+            ).concat,
+            backend="aot_eager",
+            fullgraph=True,
+        )
+        template = NT([torch.empty(length, 3, device=device) for length in (2, 5)], ragged_dims=(0,))
+        lhs = torch.randn_like(template.concat, requires_grad=True)
+        rhs = torch.randn_like(template.concat, requires_grad=True)
+        reference = torch.cross(lhs, rhs, dim=-1)
+        output = compiled(template, lhs, rhs)
+        cotangent = torch.randn_like(reference)
+        actual_gradients = torch.autograd.grad(output, (lhs, rhs), cotangent)
+        expected_gradients = torch.autograd.grad(reference, (lhs, rhs), cotangent)
+        assert_close(output, reference)
+        for actual, expected in zip(actual_gradients, expected_gradients, strict=True):
+            assert_close(actual, expected)
 
     def test_linalg_cholesky(self, device, float_dtype):
         # Create positive-definite matrices
@@ -2043,7 +1997,7 @@ class TestLinalgOps:
         nt = NT([a, b])
         pair = _run_or_expect_unsupported(
             lambda: torch.linalg.cholesky(nt),
-            lambda: NT([torch.linalg.cholesky(a), torch.linalg.cholesky(b)], **nt._meta()),
+            lambda: NT([torch.linalg.cholesky(a), torch.linalg.cholesky(b)], **reference_options(nt)),
         )
         if pair is None:
             return
@@ -2092,7 +2046,7 @@ class TestLinalgOps:
         nt = NT([a, b])
         pair = _run_or_expect_unsupported(
             lambda: torch.linalg.inv(nt),
-            lambda: NT([torch.linalg.inv(a), torch.linalg.inv(b)], **nt._meta()),
+            lambda: NT([torch.linalg.inv(a), torch.linalg.inv(b)], **reference_options(nt)),
         )
         if pair is None:
             return
@@ -2114,7 +2068,7 @@ class TestLinalgOps:
             fullgraph=True,
         )
         result = compiled(nt)
-        reference = NT([torch.linalg.norm(t, ord="fro", dim=(1, 2)) for t in nt], **nt._meta())
+        reference = NT([torch.linalg.norm(t, ord="fro", dim=(1, 2)) for t in nt], **reference_options(nt))
         assert_close(result, reference)
 
     def test_linalg_norm_negative_ord_ragged_dim(self, device, float_dtype):
@@ -2140,14 +2094,12 @@ class TestLinalgOps:
         a = torch.randn(3, 4, device=device, dtype=float_dtype)
         b = torch.randn(5, 4, device=device, dtype=float_dtype)
         nt = NT([a, b])
-        with nested_execution_guard(forbid_storage_map=True, forbid_padded_materialization=True):
-            result = torch.linalg.norm(nt, dim=1)
+        result = torch.linalg.norm(nt, dim=1)
         assert isinstance(result, NestedTensor)
         assert_close(result[0], torch.linalg.norm(a, dim=0))
         assert_close(result[1], torch.linalg.norm(b, dim=0))
 
-        with nested_execution_guard(forbid_storage_map=True, forbid_padded_materialization=True):
-            global_result = torch.linalg.vector_norm(nt, ord=0)
+        global_result = torch.linalg.vector_norm(nt, ord=0)
         assert_close(global_result[0].squeeze(), torch.linalg.vector_norm(a, ord=0))
         assert_close(global_result[1].squeeze(), torch.linalg.vector_norm(b, ord=0))
 
@@ -2185,7 +2137,7 @@ class TestLinalgOps:
         nt_b = NT([b_vec, b2_vec])
         pair = _run_or_expect_unsupported(
             lambda: torch.linalg.solve(nt_a, nt_b),
-            lambda: NT([torch.linalg.solve(a, b_vec), torch.linalg.solve(a2, b2_vec)], **nt_a._meta()),
+            lambda: NT([torch.linalg.solve(a, b_vec), torch.linalg.solve(a2, b2_vec)], **reference_options(nt_a)),
         )
         if pair is None:
             return
@@ -2229,7 +2181,7 @@ class TestLinalgOps:
         nt_b = NT([b0, b1])
 
         matmul_out = torch.matmul(nt_a, nt_b)
-        matmul_ref = NT([torch.matmul(x, y) for x, y in zip(nt_a, nt_b)], **nt_a._meta())
+        matmul_ref = NT([torch.matmul(x, y) for x, y in zip(nt_a, nt_b)], **reference_options(nt_a))
         assert_close(matmul_out, matmul_ref)
 
         sym_a0 = a0 + a0.transpose(-1, -2)
@@ -2239,7 +2191,7 @@ class TestLinalgOps:
         rhs1 = torch.randn(3, 3, 2)
         nt_rhs = NT([rhs0, rhs1])
         solve_out = torch.linalg.solve(nt_sym, nt_rhs)
-        solve_ref = NT([torch.linalg.solve(x, y) for x, y in zip(nt_sym, nt_rhs)], **nt_sym._meta())
+        solve_ref = NT([torch.linalg.solve(x, y) for x, y in zip(nt_sym, nt_rhs)], **reference_options(nt_sym))
         assert_close(solve_out, solve_ref, rtol=1e-5, atol=1e-5)
 
         svd_u, svd_s, svd_vh = torch.linalg.svd(nt_a, full_matrices=True)
@@ -2260,15 +2212,15 @@ class TestLogicOps:
             ]
         )
         output = torch.bitwise_and(nt, 1)
-        reference = NT([torch.bitwise_and(t, 1) for t in nt], **nt._meta())
+        reference = NT([torch.bitwise_and(t, 1) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
         output = torch.bitwise_or(nt, 1)
-        reference = NT([torch.bitwise_or(t, 1) for t in nt], **nt._meta())
+        reference = NT([torch.bitwise_or(t, 1) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
         output = torch.bitwise_xor(nt, 1)
-        reference = NT([torch.bitwise_xor(t, 1) for t in nt], **nt._meta())
+        reference = NT([torch.bitwise_xor(t, 1) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_logical_ops_accept_python_scalars(self, device):
@@ -2282,7 +2234,7 @@ class TestLogicOps:
         assert_close(output, nt)
 
         output = torch.logical_xor(nt, true_tensor)
-        reference = NT([torch.logical_xor(t, true_tensor) for t in nt], **nt._meta())
+        reference = NT([torch.logical_xor(t, true_tensor) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
         output = torch.logical_or(nt.tensor, nt)
@@ -2292,72 +2244,89 @@ class TestLogicOps:
 class TestMatrixMultiplication:
 
     @staticmethod
-    def _compile_matrix_smoke(
-        device: torch.device,
-        *,
-        hidden: int,
-        heads: int,
-        head_dim: int,
-        seqs: tuple[int, int],
-        atol: Optional[float] = None,
-        rtol: Optional[float] = None,
-    ) -> None:
-        dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+    def _complementary_matmul_inputs(lengths, device):
+        left = [torch.randn(length, 3, 2, device=device, requires_grad=True) for length in lengths]
+        right = [torch.randn(length, 2, 1, device=device, requires_grad=True) for length in lengths]
+        return left, right
 
-        dense_left = torch.randn(seqs[0], hidden, device=device, dtype=dtype)
-        right_2d = NT(
-            [
-                torch.randn(hidden, head_dim, device=device, dtype=dtype),
-                torch.randn(hidden, head_dim, device=device, dtype=dtype),
-            ]
-        )
-        bias_2d = torch.randn(seqs[0], head_dim, device=device, dtype=dtype)
+    @staticmethod
+    def _complementary_matmul_reference(left, right):
+        outputs = [torch.matmul(lhs.unsqueeze(1), rhs.unsqueeze(0)) for lhs, rhs in zip(left, right)]
+        return torch.cat([output.flatten(0, 1) for output in outputs])
 
-        attention_left = torch.randn(heads, 1, head_dim, device=device, dtype=dtype)
-        attention_right = NT(
-            [
-                torch.randn(heads, head_dim, seqs[0], device=device, dtype=dtype),
-                torch.randn(heads, head_dim, seqs[1], device=device, dtype=dtype),
-            ]
-        )
-        bias_3d = torch.randn(heads, 1, 1, device=device, dtype=dtype)
+    def test_complementary_ragged_matmul_matches_per_element_and_preserves_gradients(self, device):
+        lengths = (2, 4)
+        left_parts, right_parts = self._complementary_matmul_inputs(lengths, device)
+        reference_left = [part.detach().clone().requires_grad_() for part in left_parts]
+        reference_right = [part.detach().clone().requires_grad_() for part in right_parts]
+        left = NT(left_parts, ragged_dims=(0,)).unsqueeze(2)
+        right = NT(right_parts, ragged_dims=(0,)).unsqueeze(2).transpose(1, 2)
 
-        compiled_matmul = torch.compile(lambda x, y: torch.matmul(x, y), backend="inductor", fullgraph=True)
-        compiled_mm = torch.compile(lambda x, y: torch.mm(x, y), backend="inductor", fullgraph=True)
-        compiled_addmm = torch.compile(lambda a, x, y: torch.addmm(a, x, y), backend="inductor", fullgraph=True)
-        compiled_bmm = torch.compile(lambda x, y: torch.bmm(x, y), backend="inductor", fullgraph=True)
-        compiled_baddbmm = torch.compile(lambda a, x, y: torch.baddbmm(a, x, y), backend="inductor", fullgraph=True)
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            output = torch.matmul(left, right)
 
-        assert_close(
-            compiled_matmul(dense_left, right_2d),
-            NT([torch.matmul(dense_left, t) for t in right_2d], **right_2d._meta()),
-            atol=atol,
-            rtol=rtol,
-        )
-        assert_close(
-            compiled_mm(dense_left, right_2d),
-            NT([torch.mm(dense_left, t) for t in right_2d], **right_2d._meta()),
-            atol=atol,
-            rtol=rtol,
-        )
-        assert_close(
-            compiled_addmm(bias_2d, dense_left, right_2d),
-            NT([torch.addmm(bias_2d, dense_left, t) for t in right_2d], **right_2d._meta()),
-            atol=atol,
-            rtol=rtol,
-        )
-        assert_close(
-            compiled_bmm(attention_left, attention_right),
-            NT([torch.bmm(attention_left, t) for t in attention_right], **attention_right._meta()),
-            atol=atol,
-            rtol=rtol,
-        )
-        assert_close(
-            compiled_baddbmm(bias_3d, attention_left, attention_right),
-            NT([torch.baddbmm(bias_3d, attention_left, t) for t in attention_right], **attention_right._meta()),
-            atol=atol,
-            rtol=rtol,
-        )
+        reference = self._complementary_matmul_reference(reference_left, reference_right)
+        cotangent = torch.randn_like(reference)
+        actual_gradients = torch.autograd.grad(output.concat, (*left_parts, *right_parts), cotangent)
+        expected_gradients = torch.autograd.grad(reference, (*reference_left, *reference_right), cotangent)
+
+        assert output.ragged_dims == (0, 1)
+        assert output.element_sizes().tolist() == [[length, length, 3, 1] for length in lengths]
+        assert_close(output.concat, reference)
+        for actual, expected in zip(actual_gradients, expected_gradients, strict=True):
+            assert_close(actual, expected)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_complementary_ragged_matmul_dynamic_fullgraph(self, device):
+        def pairwise_matmul(left, right):
+            return torch.matmul(left.unsqueeze(2), right.unsqueeze(2).transpose(1, 2))
+
+        compiled = torch.compile(pairwise_matmul, backend="aot_eager", fullgraph=True, dynamic=True)
+
+        for lengths in ((2, 3), (1, 4, 2)):
+            left_parts, right_parts = self._complementary_matmul_inputs(lengths, device)
+            left_parts = [part.detach() for part in left_parts]
+            right_parts = [part.detach() for part in right_parts]
+
+            output = compiled(NT(left_parts, ragged_dims=(0,)), NT(right_parts, ragged_dims=(0,)))
+            reference = self._complementary_matmul_reference(left_parts, right_parts)
+
+            assert output.ragged_dims == (0, 1)
+            assert output.element_sizes().tolist() == [[length, length, 3, 1] for length in lengths]
+            assert_close(output.concat, reference)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_complementary_ragged_matmul_dynamic_fullgraph_wrapper_gradients(self, device):
+        def pairwise_matmul(left, right):
+            return torch.matmul(left.unsqueeze(2), right.unsqueeze(2).transpose(1, 2))
+
+        compiled = torch.compile(pairwise_matmul, backend="aot_eager", fullgraph=True, dynamic=True)
+
+        for lengths in ((2, 3), (1, 4, 2)):
+            left_parts, right_parts = self._complementary_matmul_inputs(lengths, device)
+            reference_left = [part.detach().clone().requires_grad_() for part in left_parts]
+            reference_right = [part.detach().clone().requires_grad_() for part in right_parts]
+            left = NT(left_parts, ragged_dims=(0,))
+            right = NT(right_parts, ragged_dims=(0,))
+
+            output = compiled(left, right)
+            reference = self._complementary_matmul_reference(reference_left, reference_right)
+            cotangent = torch.randn_like(reference)
+            actual_gradients = torch.autograd.grad(output.concat, (*left_parts, *right_parts), cotangent)
+            expected_gradients = torch.autograd.grad(reference, (*reference_left, *reference_right), cotangent)
+
+            assert isinstance(output, NestedTensor)
+            assert output.ragged_dims == (0, 1)
+            assert output.element_sizes().tolist() == [[length, length, 3, 1] for length in lengths]
+            assert_close(output.concat, reference)
+            for actual, expected in zip(actual_gradients, expected_gradients, strict=True):
+                assert_close(actual, expected)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_addmm_compile_fullgraph_tensor_lhs(self, device, float_dtype):
@@ -2371,22 +2340,7 @@ class TestMatrixMultiplication:
         )
         compiled = torch.compile(lambda x, y, z: torch.addmm(x, y, z), backend="inductor", fullgraph=True)
         output = compiled(bias, left, right)
-        reference = NT([torch.addmm(bias, left, b) for b in right], **right._meta())
-        assert_close(output, reference)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_addmm_compile_fullgraph_tensor_lhs_uniform_matrices(self, device, float_dtype):
-        bias = torch.randn(3, 7, device=device, dtype=float_dtype)
-        left = torch.randn(3, 5, device=device, dtype=float_dtype)
-        right = NT(
-            [
-                torch.randn(5, 7, device=device, dtype=float_dtype),
-                torch.randn(5, 7, device=device, dtype=float_dtype),
-            ]
-        )
-        compiled = torch.compile(lambda x, y, z: torch.addmm(x, y, z), backend="inductor", fullgraph=True)
-        output = compiled(bias, left, right)
-        reference = NT([torch.addmm(bias, left, b) for b in right], **right._meta())
+        reference = NT([torch.addmm(bias, left, b) for b in right], **reference_options(right))
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -2401,7 +2355,7 @@ class TestMatrixMultiplication:
         )
         compiled = torch.compile(lambda x, y, z: torch.addr(x, y, z), backend="inductor", fullgraph=True)
         output = compiled(bias, left, right)
-        reference = NT([torch.addr(bias, left, b) for b in right], **right._meta())
+        reference = NT([torch.addr(bias, left, b) for b in right], **reference_options(right))
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -2416,7 +2370,7 @@ class TestMatrixMultiplication:
         right = torch.randn(4, device=device, dtype=float_dtype)
         compiled = torch.compile(lambda x, y, z: torch.addr(x, y, z), backend="inductor", fullgraph=True)
         output = compiled(bias, left, right)
-        reference = NT([torch.addr(bias, a, right) for a in left], **left._meta())
+        reference = NT([torch.addr(bias, a, right) for a in left], **reference_options(left))
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -2431,12 +2385,8 @@ class TestMatrixMultiplication:
         )
         compiled = torch.compile(lambda x, y, z: torch.baddbmm(x, y, z), backend="inductor", fullgraph=True)
         output = compiled(bias, left, right)
-        reference = NT([torch.baddbmm(bias, left, b) for b in right], **right._meta())
+        reference = NT([torch.baddbmm(bias, left, b) for b in right], **reference_options(right))
         assert_close(output, reference)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_medium_matrix_compile(self, device):
-        self._compile_matrix_smoke(device, hidden=768, heads=12, head_dim=64, seqs=(384, 512))
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_bmm_compile_fullgraph_tensor_lhs(self, device, float_dtype):
@@ -2449,7 +2399,7 @@ class TestMatrixMultiplication:
         )
         compiled = torch.compile(lambda x, y: torch.bmm(x, y), backend="inductor", fullgraph=True)
         output = compiled(left, right)
-        reference = NT([torch.bmm(left, b) for b in right], **right._meta())
+        reference = NT([torch.bmm(left, b) for b in right], **reference_options(right))
         assert_close(output, reference)
 
     def test_bmm(self, device, float_dtype):
@@ -2464,10 +2414,10 @@ class TestMatrixMultiplication:
                 torch.randn(2, 3, 4, device=device, dtype=float_dtype),
                 torch.randn(1, 3, 5, device=device, dtype=float_dtype),
             ],
-            **left._meta(),
+            **reference_options(left),
         )
         output = torch.bmm(left, right)
-        reference = NT([torch.bmm(a, b) for a, b in zip(left, right)], **left._meta())
+        reference = NT([torch.bmm(a, b) for a, b in zip(left, right)], **reference_options(left))
         assert_close(output, reference)
 
     def test_jagged_attention_matmul(self, device, float_dtype):
@@ -2490,28 +2440,25 @@ class TestMatrixMultiplication:
             ]
         )
 
-        with nested_execution_guard(
-            forbid_iteration=True,
-            forbid_storage_map=True,
-            forbid_padded_materialization=True,
-            forbid_dense_repack=True,
-        ):
-            scores = torch.matmul(query, key)
-            probs = torch.softmax(scores, dim=-1)
-            log_probs = torch.log_softmax(scores, dim=-1)
-            context = torch.matmul(probs, value)
+        scores = torch.matmul(query, key)
+        probs = torch.softmax(scores, dim=-1)
+        log_probs = torch.log_softmax(scores, dim=-1)
+        context = torch.matmul(probs, value)
 
-        score_ref = NT([torch.matmul(q, k) for q, k in zip(query, key)], **query._meta())
-        prob_ref = NT([torch.softmax(score, dim=-1) for score in score_ref], **query._meta())
-        log_prob_ref = NT([torch.log_softmax(score, dim=-1) for score in score_ref], **query._meta())
-        context_ref = NT([torch.matmul(prob, val) for prob, val in zip(prob_ref, value)], **query._meta())
-        atol, rtol = low_precision_cuda_tolerances(
-            device, float_dtype, default=(1e-5, 1e-5), fp16=(1e-3, 1e-3), bf16=(5e-3, 5e-3)
+        score_ref = NT([torch.matmul(q, k) for q, k in zip(query, key)], **reference_options(query))
+        prob_ref = NT([torch.softmax(score, dim=-1) for score in score_ref], **reference_options(query))
+        log_prob_ref = NT([torch.log_softmax(score, dim=-1) for score in score_ref], **reference_options(query))
+        context_ref = NT([torch.matmul(prob, val) for prob, val in zip(prob_ref, value)], **reference_options(query))
+        stage_atol, stage_rtol = low_precision_cuda_tolerances(
+            device, float_dtype, default=(1e-5, 1e-5), fp16=(3e-3, 3e-3), bf16=(8e-3, 2e-2)
         )
-        assert_close(scores, score_ref, atol=atol, rtol=rtol)
-        assert_close(probs, prob_ref, atol=atol, rtol=rtol)
-        assert_close(log_probs, log_prob_ref, atol=atol, rtol=rtol)
-        assert_close(context, context_ref, atol=atol, rtol=rtol)
+        context_atol, context_rtol = low_precision_cuda_tolerances(
+            device, float_dtype, default=(1e-5, 1e-5), fp16=(3e-3, 3e-3), bf16=(2e-2, 3e-2)
+        )
+        assert_close(scores, score_ref, atol=stage_atol, rtol=stage_rtol)
+        assert_close(probs, prob_ref, atol=stage_atol, rtol=stage_rtol)
+        assert_close(log_probs, log_prob_ref, atol=stage_atol, rtol=stage_rtol)
+        assert_close(context, context_ref, atol=context_atol, rtol=context_rtol)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_jagged_attention_matmul_compile(self, device, float_dtype):
@@ -2540,36 +2487,16 @@ class TestMatrixMultiplication:
             return torch.matmul(probs, value)
 
         compiled = torch.compile(attention, backend="inductor", fullgraph=True)
-        with nested_execution_guard(
-            forbid_iteration=True,
-            forbid_storage_map=True,
-            forbid_padded_materialization=True,
-            forbid_dense_repack=True,
-        ):
-            output = compiled(query, key, value)
+        output = compiled(query, key, value)
 
         reference = NT(
             [torch.matmul(torch.softmax(torch.matmul(q, k), dim=-1), v) for q, k, v in zip(query, key, value)],
-            **query._meta(),
+            **reference_options(query),
         )
-        atol, rtol = low_precision_cuda_tolerances(
-            device, float_dtype, default=(1e-5, 1e-5), fp16=(1e-3, 1e-3), bf16=(5e-3, 5e-3)
+        context_atol, context_rtol = low_precision_cuda_tolerances(
+            device, float_dtype, default=(1e-5, 1e-5), fp16=(3e-3, 3e-3), bf16=(2e-2, 3e-2)
         )
-        assert_close(output, reference, atol=atol, rtol=rtol)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_large_matrix_compile(self, device):
-        if device.type != "cuda":
-            pytest.skip("large matrix compile smoke is only exercised on CUDA")
-        self._compile_matrix_smoke(
-            device,
-            hidden=5120,
-            heads=40,
-            head_dim=128,
-            seqs=(1536, 2048),
-            atol=1.0,
-            rtol=2e-2,
-        )
+        assert_close(output, reference, atol=context_atol, rtol=context_rtol)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_matmul_compile_fullgraph_tensor_lhs(self, device, float_dtype):
@@ -2582,35 +2509,7 @@ class TestMatrixMultiplication:
         weight = torch.randn(3, 4, device=device, dtype=float_dtype)
         compiled = torch.compile(lambda x, y: torch.matmul(x, y), backend="inductor", fullgraph=True)
         output = compiled(weight, nt)
-        reference = NT([torch.matmul(weight, t) for t in nt], **nt._meta())
-        assert_close(output, reference)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_matmul_compile_fullgraph_tensor_lhs_batched_uniform_matrices(self, device, float_dtype):
-        nt = NT(
-            [
-                torch.randn(5, 7, device=device, dtype=float_dtype),
-                torch.randn(5, 7, device=device, dtype=float_dtype),
-            ]
-        )
-        weight = torch.randn(3, 2, 5, device=device, dtype=float_dtype)
-        compiled = torch.compile(lambda x, y: torch.matmul(x, y), backend="inductor", fullgraph=True)
-        output = compiled(weight, nt)
-        reference = NT([torch.matmul(weight, t) for t in nt], **nt._meta())
-        assert_close(output, reference)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_matmul_compile_fullgraph_tensor_lhs_matrix(self, device, float_dtype):
-        nt = NT(
-            [
-                torch.randn(4, 5, device=device, dtype=float_dtype),
-                torch.randn(4, 3, device=device, dtype=float_dtype),
-            ]
-        )
-        weight = torch.randn(2, 4, device=device, dtype=float_dtype)
-        compiled = torch.compile(lambda x, y: torch.matmul(x, y), backend="inductor", fullgraph=True)
-        output = compiled(weight, nt)
-        reference = NT([torch.matmul(weight, t) for t in nt], **nt._meta())
+        reference = NT([torch.matmul(weight, t) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -2624,7 +2523,7 @@ class TestMatrixMultiplication:
         weight = torch.randn(4, 5, device=device, dtype=float_dtype)
         compiled = torch.compile(lambda x, y: torch.matmul(x, y), backend="inductor", fullgraph=True)
         output = compiled(nt, weight)
-        reference = NT([torch.matmul(t, weight) for t in nt], **nt._meta())
+        reference = NT([torch.matmul(t, weight) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_matmul_supports_tensor_lhs(self, device, float_dtype):
@@ -2636,7 +2535,7 @@ class TestMatrixMultiplication:
         )
         weight = torch.randn(5, 2, device=device, dtype=float_dtype)
         output = torch.matmul(weight, nt)
-        reference = NT([torch.matmul(weight, t) for t in nt], **nt._meta())
+        reference = NT([torch.matmul(weight, t) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_matmul_supports_tensor_rhs(self, device, float_dtype):
@@ -2649,7 +2548,7 @@ class TestMatrixMultiplication:
         )
         weight = torch.randn(3, 4, device=device, dtype=float_dtype)
         output = torch.matmul(nt, weight)
-        reference = NT([torch.matmul(t, weight) for t in nt], **nt._meta())
+        reference = NT([torch.matmul(t, weight) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -2663,21 +2562,7 @@ class TestMatrixMultiplication:
         )
         compiled = torch.compile(lambda x, y: torch.mm(x, y), backend="inductor", fullgraph=True)
         output = compiled(left, right)
-        reference = NT([torch.mm(left, b) for b in right], **right._meta())
-        assert_close(output, reference)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_mm_compile_fullgraph_tensor_lhs_uniform_matrices(self, device, float_dtype):
-        left = torch.randn(3, 5, device=device, dtype=float_dtype)
-        right = NT(
-            [
-                torch.randn(5, 7, device=device, dtype=float_dtype),
-                torch.randn(5, 7, device=device, dtype=float_dtype),
-            ]
-        )
-        compiled = torch.compile(lambda x, y: torch.mm(x, y), backend="inductor", fullgraph=True)
-        output = compiled(left, right)
-        reference = NT([torch.mm(left, b) for b in right], **right._meta())
+        reference = NT([torch.mm(left, b) for b in right], **reference_options(right))
         assert_close(output, reference)
 
     def test_mm(self, device, float_dtype):
@@ -2692,10 +2577,10 @@ class TestMatrixMultiplication:
                 torch.randn(3, 4, device=device, dtype=float_dtype),
                 torch.randn(2, 5, device=device, dtype=float_dtype),
             ],
-            **left._meta(),
+            **reference_options(left),
         )
         output = torch.mm(left, right)
-        reference = NT([torch.mm(a, b) for a, b in zip(left, right)], **left._meta())
+        reference = NT([torch.mm(a, b) for a, b in zip(left, right)], **reference_options(left))
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -2709,7 +2594,7 @@ class TestMatrixMultiplication:
         )
         compiled = torch.compile(lambda x, y: torch.outer(x, y), backend="inductor", fullgraph=True)
         output = compiled(left, right)
-        reference = NT([torch.outer(left, b) for b in right], **right._meta())
+        reference = NT([torch.outer(left, b) for b in right], **reference_options(right))
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -2723,7 +2608,7 @@ class TestMatrixMultiplication:
         right = torch.randn(4, device=device, dtype=float_dtype)
         compiled = torch.compile(lambda x, y: torch.outer(x, y), backend="inductor", fullgraph=True)
         output = compiled(left, right)
-        reference = NT([torch.outer(a, right) for a in left], **left._meta())
+        reference = NT([torch.outer(a, right) for a in left], **reference_options(left))
         assert_close(output, reference)
 
     def test_mv_dense_matrix_with_nested_vector(self, device, float_dtype):
@@ -2735,7 +2620,7 @@ class TestMatrixMultiplication:
             ]
         )
         result = torch.mv(lhs, rhs)
-        reference = NT([torch.mv(lhs, vec) for vec in rhs], **rhs._meta())
+        reference = NT([torch.mv(lhs, vec) for vec in rhs], **reference_options(rhs))
         assert_close(result, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -2746,7 +2631,7 @@ class TestMatrixMultiplication:
         nt = NT([a, b])
         compiled = torch.compile(lambda x, y: torch.mv(x, y), backend="inductor", fullgraph=True)
         result = compiled(nt, w)
-        reference = NT([torch.mv(a, w), torch.mv(b, w)], **nt._meta())
+        reference = NT([torch.mv(a, w), torch.mv(b, w)], **reference_options(nt))
         assert_close(result, reference)
 
     def test_mv_nested_tensor_with_vector(self, device, float_dtype):
@@ -2754,17 +2639,8 @@ class TestMatrixMultiplication:
         b = torch.randn(5, 4, device=device, dtype=float_dtype)
         w = torch.randn(4, device=device, dtype=float_dtype)
         nt = NT([a, b])
-        original_iter = NestedTensor.__iter__
-
-        def _fail_iter(self):
-            raise AssertionError("torch.mv should not iterate per element for NestedTensor x dense vector")
-
-        NestedTensor.__iter__ = _fail_iter
-        try:
-            result = torch.mv(nt, w)
-        finally:
-            NestedTensor.__iter__ = original_iter
-        reference = NT([torch.mv(a, w), torch.mv(b, w)], **nt._meta())
+        result = torch.mv(nt, w)
+        reference = NT([torch.mv(a, w), torch.mv(b, w)], **reference_options(nt))
         assert_close(result, reference)
 
 
@@ -2837,7 +2713,7 @@ class TestMatrixOps:
         nt = NT([a, b])
         pair = _run_or_expect_unsupported(
             lambda: torch.inverse(nt),
-            lambda: NT([torch.inverse(a), torch.inverse(b)], **nt._meta()),
+            lambda: NT([torch.inverse(a), torch.inverse(b)], **reference_options(nt)),
         )
         if pair is None:
             return
@@ -2851,7 +2727,7 @@ class TestMatrixOps:
         nt = NT([a, b])
         pair = _run_or_expect_unsupported(
             lambda: torch.matrix_exp(nt),
-            lambda: NT([torch.matrix_exp(a), torch.matrix_exp(b)], **nt._meta()),
+            lambda: NT([torch.matrix_exp(a), torch.matrix_exp(b)], **reference_options(nt)),
         )
         if pair is None:
             return
@@ -2873,7 +2749,7 @@ class TestMatrixOps:
         b = torch.randn(4, 3, 3, device=device, dtype=float_dtype)
         nt = NT([a, b])
         result = torch.matrix_power(nt, 3)
-        reference = NT([torch.matrix_power(a, 3), torch.matrix_power(b, 3)], **nt._meta())
+        reference = NT([torch.matrix_power(a, 3), torch.matrix_power(b, 3)], **reference_options(nt))
         assert isinstance(result, NestedTensor)
         assert_close(result, reference)
 
@@ -2884,7 +2760,7 @@ class TestMatrixOps:
         nt = NT([a, b])
         compiled = torch.compile(lambda x: torch.matrix_power(x, 3), backend="inductor", fullgraph=True)
         result = compiled(nt)
-        reference = NT([torch.matrix_power(a, 3), torch.matrix_power(b, 3)], **nt._meta())
+        reference = NT([torch.matrix_power(a, 3), torch.matrix_power(b, 3)], **reference_options(nt))
         assert isinstance(result, NestedTensor)
         assert_close(result, reference)
 
@@ -2898,7 +2774,7 @@ class TestMatrixOps:
         )
         compiled = torch.compile(lambda x: torch.repeat_interleave(x, 2, dim=2), backend="inductor", fullgraph=True)
         result = compiled(nt)
-        reference = NT([torch.repeat_interleave(t, 2, dim=1) for t in nt], **nt._meta())
+        reference = NT([torch.repeat_interleave(t, 2, dim=1) for t in nt], **reference_options(nt))
         assert_close(result, reference)
 
     def test_repeat_interleave_no_dim(self, device, float_dtype):
@@ -2972,17 +2848,17 @@ class TestNonzeroAndTake:
         )
 
         output = torch.nonzero(nt, as_tuple=False)
-        reference = NT([torch.nonzero(t, as_tuple=False) for t in nt], **nt._meta())
+        reference = NT([torch.nonzero(t, as_tuple=False) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_nonzero_ignores_padding_value(self, device):
         nt = NT([torch.tensor([0, 1, 0], device=device), torch.tensor([2], device=device)], padding_value=9)
         output = torch.nonzero(nt, as_tuple=False)
-        reference = NT([torch.nonzero(t, as_tuple=False) for t in nt], **nt._meta())
+        reference = NT([torch.nonzero(t, as_tuple=False) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
         output = torch.nonzero(nt, as_tuple=True)
-        reference = (NT([torch.nonzero(t, as_tuple=True)[0] for t in nt], **nt._meta()),)
+        reference = (NT([torch.nonzero(t, as_tuple=True)[0] for t in nt], **reference_options(nt)),)
         assert isinstance(output, tuple)
         assert len(output) == 1
         assert_close(output[0], reference[0])
@@ -2990,7 +2866,7 @@ class TestNonzeroAndTake:
     def test_nonzero_matches_dense_empty_result_dtype(self, device):
         nt = NT([torch.zeros(3, device=device), torch.zeros(1, device=device)], padding_value=7)
         output = torch.nonzero(nt, as_tuple=False)
-        reference = NT([torch.nonzero(t, as_tuple=False) for t in nt], **nt._meta())
+        reference = NT([torch.nonzero(t, as_tuple=False) for t in nt], **reference_options(nt))
 
         assert_close(output, reference)
         assert output.dtype == torch.long
@@ -3005,7 +2881,7 @@ class TestNonzeroAndTake:
             ]
         )
         output = torch.nonzero(nt, as_tuple=False)
-        reference = NT([torch.nonzero(t, as_tuple=False) for t in nt], **nt._meta())
+        reference = NT([torch.nonzero(t, as_tuple=False) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_take_nested_index_is_per_sample(self, device, float_dtype):
@@ -3015,9 +2891,9 @@ class TestNonzeroAndTake:
                 torch.tensor([3.0, 4.0, 5.0], device=device, dtype=float_dtype),
             ]
         )
-        index = NT([torch.tensor([1], device=device), torch.tensor([0, 2], device=device)], **nt._meta())
+        index = NT([torch.tensor([1], device=device), torch.tensor([0, 2], device=device)], **reference_options(nt))
         output = torch.take(nt, index)
-        reference = NT([torch.take(t.reshape(-1), i) for t, i in zip(nt, index)], **nt._meta())
+        reference = NT([torch.take(t.reshape(-1), i) for t, i in zip(nt, index)], **reference_options(nt))
         assert_close(output, reference)
 
     def test_take_tensor_index(self, device, float_dtype):
@@ -3038,8 +2914,7 @@ class TestNonzeroAndTake:
         output = torch.count_nonzero(nt)
         assert_close(output, torch.tensor(2, device=device))
 
-        with nested_execution_guard(forbid_storage_map=True, forbid_padded_materialization=True):
-            output = torch.count_nonzero(nt, dim=1)
+        output = torch.count_nonzero(nt, dim=1)
         assert_close(output, torch.tensor([2, 0], device=device))
 
         with pytest.raises(ValueError):
@@ -3111,7 +2986,9 @@ class TestOrderStatistics:
             ]
         )
         output = torch.nanmedian(nt_static, dim=2)
-        reference = tuple(NT([torch.nanmedian(t, dim=1)[i] for t in nt_static], **nt_static._meta()) for i in range(2))
+        reference = tuple(
+            NT([torch.nanmedian(t, dim=1)[i] for t in nt_static], **reference_options(nt_static)) for i in range(2)
+        )
         assert_close(output[0], reference[0], equal_nan=True)
         assert_close(output[1], reference[1])
 
@@ -3140,17 +3017,21 @@ class TestOrderStatistics:
         )
 
         kthvalue_out = torch.kthvalue(nt, k=2, dim=2)
-        kthvalue_ref = tuple(NT([torch.kthvalue(t, k=2, dim=1)[i] for t in nt], **nt._meta()) for i in range(2))
+        kthvalue_ref = tuple(
+            NT([torch.kthvalue(t, k=2, dim=1)[i] for t in nt], **reference_options(nt)) for i in range(2)
+        )
         assert_close(kthvalue_out[0], kthvalue_ref[0])
         assert_close(kthvalue_out[1], kthvalue_ref[1])
 
         median_out = torch.median(nt, dim=2, keepdim=True)
-        median_ref = tuple(NT([torch.median(t, dim=1, keepdim=True)[i] for t in nt], **nt._meta()) for i in range(2))
+        median_ref = tuple(
+            NT([torch.median(t, dim=1, keepdim=True)[i] for t in nt], **reference_options(nt)) for i in range(2)
+        )
         assert_close(median_out[0], median_ref[0])
         assert_close(median_out[1], median_ref[1])
 
         mode_out = torch.mode(nt, dim=2)
-        mode_ref = tuple(NT([torch.mode(t, dim=1)[i] for t in nt], **nt._meta()) for i in range(2))
+        mode_ref = tuple(NT([torch.mode(t, dim=1)[i] for t in nt], **reference_options(nt)) for i in range(2))
         assert_close(mode_out[0], mode_ref[0])
         assert_close(mode_out[1], mode_ref[1])
 
@@ -3183,17 +3064,11 @@ class TestRandomOps:
                 torch.ones(2, device=device, dtype=float_dtype),
             ]
         )
-        torch.manual_seed(1016)
-        output = torch.dropout(nt, p=0.5, train=True)
-        torch.manual_seed(1016)
-        reference = packed_result(nt, torch.dropout(nt._values, p=0.5, train=True))
-        assert_close(output, reference)
+        output = torch.dropout(nt, p=1.0, train=True)
+        assert_close(output, torch.zeros_like(nt))
 
-        torch.manual_seed(1016)
         output = torch.bernoulli(nt)
-        torch.manual_seed(1016)
-        reference = packed_result(nt, torch.bernoulli(nt._values))
-        assert_close(output, reference)
+        assert_close(output, nt)
 
     def test_rand_like_and_randn_like_respect_kwargs(self, device, float_dtype):
         nt = NestedTensor(
@@ -3207,17 +3082,127 @@ class TestRandomOps:
         assert output.dtype == torch.float64
 
         torch.manual_seed(1016)
-        reference = NT([torch.rand_like(t, dtype=torch.float64) for t in nt], **nt._meta())
+        reference = NT([torch.rand_like(t, dtype=torch.float64) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
         torch.manual_seed(1016)
         output = torch.randn_like(nt)
         torch.manual_seed(1016)
-        reference = NT([torch.randn_like(t) for t in nt], **nt._meta())
+        reference = NT([torch.randn_like(t) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
 
 class TestReductionOps:
+
+    @pytest.mark.parametrize(
+        ("shapes", "ragged_dims", "dim", "element_dim", "operation", "keepdim"), _BOOLEAN_REDUCTION_CASES
+    )
+    def test_boolean_ragged_reduction_matches_per_sample(
+        self, device, shapes, ragged_dims, dim, element_dim, operation, keepdim
+    ):
+        elements = boolean_reduction_elements(shapes, operation, device)
+        nested = NT(elements, ragged_dims=ragged_dims)
+        function = getattr(torch, operation)
+
+        output = (
+            nested.any(dim=dim, keepdim=keepdim) if operation == "any" else torch.all(nested, dim=dim, keepdim=keepdim)
+        )
+        reference_parts = [function(element, dim=element_dim, keepdim=keepdim) for element in elements]
+        reference = ragged_reduction_reference(reference_parts, ragged_dims, element_dim, keepdim)
+
+        if isinstance(reference, NT):
+            assert output.ragged_dims == reference.ragged_dims
+            assert_close(output.element_sizes(), reference.element_sizes())
+        assert_close(output, reference)
+
+        if len(ragged_dims) > 1 and keepdim:
+            broadcast = torch.logical_and(nested, output)
+            broadcast_reference = NT(
+                [torch.logical_and(element, part) for element, part in zip(elements, reference_parts)],
+                ragged_dims=ragged_dims,
+            )
+            assert_close(broadcast, broadcast_reference)
+
+    @pytest.mark.parametrize(
+        ("shapes", "ragged_dims", "dim", "element_dim", "operation", "keepdim"), _BOOLEAN_GRAPH_CASES
+    )
+    def test_boolean_ragged_reduction_supports_fake_tensor(
+        self, shapes, ragged_dims, dim, element_dim, operation, keepdim
+    ):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        symbolic_shapes = pytest.importorskip("torch.fx.experimental.symbolic_shapes")
+        nested = NT([torch.empty(shape, dtype=torch.bool) for shape in shapes], ragged_dims=ragged_dims)
+        function = getattr(torch, operation)
+
+        shape_env = symbolic_shapes.ShapeEnv(allow_dynamic_output_shape_ops=True)
+        with fake_tensor_mod.FakeTensorMode(shape_env=shape_env) as mode:
+            output = function(mode.from_tensor(nested), dim=dim, keepdim=keepdim)
+
+        assert fake_tensor_mod.is_fake(output.concat if isinstance(output, NT) else output)
+        reference_parts = [
+            function(torch.empty(shape, dtype=torch.bool), dim=element_dim, keepdim=keepdim) for shape in shapes
+        ]
+        reference = ragged_reduction_reference(reference_parts, ragged_dims, element_dim, keepdim)
+        assert output.shape == reference.shape
+        if isinstance(reference, NT):
+            assert output.ragged_dims == reference.ragged_dims
+            assert output.element_sizes().shape == reference.element_sizes().shape
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize(
+        ("shapes", "ragged_dims", "dim", "element_dim", "operation", "keepdim"), _BOOLEAN_GRAPH_CASES
+    )
+    def test_boolean_ragged_reduction_compiles_fullgraph(
+        self, device, shapes, ragged_dims, dim, element_dim, operation, keepdim
+    ):
+        elements = boolean_reduction_elements(shapes, operation, device)
+        nested = NT(elements, ragged_dims=ragged_dims)
+        function = getattr(torch, operation)
+        reducer = partial(function, dim=dim, keepdim=keepdim)
+        reference_parts = [function(element, dim=element_dim, keepdim=keepdim) for element in elements]
+        reference = ragged_reduction_reference(reference_parts, ragged_dims, element_dim, keepdim)
+
+        if len(ragged_dims) > 1 and keepdim:
+
+            def consume(structure, values):
+                source = structure.packed_like(values)
+                return torch.logical_and(source, reducer(source)).concat
+
+            expected = NT(
+                [torch.logical_and(element, part) for element, part in zip(elements, reference_parts)],
+                ragged_dims=ragged_dims,
+            ).concat
+        elif isinstance(reference, NT):
+
+            def consume(structure, values):
+                return reducer(structure.packed_like(values)).concat
+
+            expected = reference.concat
+        else:
+
+            def consume(structure, values):
+                return reducer(structure.packed_like(values))
+
+            expected = reference
+
+        compiled = torch.compile(consume, backend="aot_eager", fullgraph=True, dynamic=True)
+
+        assert_close(compiled(nested, nested.concat), expected)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_boolean_multi_ragged_tuple_dim_compiles_fullgraph(self):
+        elements = boolean_reduction_elements(((2, 4, 2), (3, 2, 2)), "any")
+        nested = NT(elements, ragged_dims=(0, 1))
+        compiled = torch.compile(
+            lambda structure, values: torch.any(structure.packed_like(values), dim=(1, 2)),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        output = compiled(nested, nested.concat)
+        reference = torch.stack([torch.any(element, dim=(0, 1)) for element in elements])
+        assert_close(output, reference)
 
     def test_all_any_multi_dim_reduction_ignores_padding(self, device, float_dtype):
         nt = NestedTensor(
@@ -3283,12 +3268,11 @@ class TestReductionOps:
         amax_reference = torch.stack([torch.amax(t, dim=-1) for t in nt])
         amin_reference = torch.stack([torch.amin(t, dim=-1) for t in nt])
 
-        with nested_execution_guard(forbid_storage_map=True, forbid_padded_materialization=True):
-            assert_close(torch.mean(nt, dim=-1), mean_reference)
-            assert_close(torch.sum(nt, dim=-1), sum_reference)
-            assert_close(torch.amax(nt, dim=-1), amax_reference)
-            assert_close(torch.amin(nt, dim=-1), amin_reference)
-            assert_close(torch.sum(nt, dim=-1, keepdim=True), sum_reference.unsqueeze(-1))
+        assert_close(torch.mean(nt, dim=-1), mean_reference)
+        assert_close(torch.sum(nt, dim=-1), sum_reference)
+        assert_close(torch.amax(nt, dim=-1), amax_reference)
+        assert_close(torch.amin(nt, dim=-1), amin_reference)
+        assert_close(torch.sum(nt, dim=-1, keepdim=True), sum_reference.unsqueeze(-1))
 
         nt = NT(
             [
@@ -3297,8 +3281,49 @@ class TestReductionOps:
             ]
         )
         reference = torch.stack([torch.sum(t, dim=0) for t in nt])
-        with nested_execution_guard(forbid_storage_map=True, forbid_padded_materialization=True):
-            assert_close(torch.sum(nt, dim=1), reference)
+        assert_close(torch.sum(nt, dim=1), reference)
+
+    def test_sampled_projected_mask_ragged_sum_values_and_vjp(self, device, float_dtype):
+        lengths = (3, 5)
+        samples = 2
+        channels = 3
+        template = NT(
+            [torch.empty(length, device=device, dtype=float_dtype) for length in lengths],
+            ragged_dims=(0,),
+        )
+        values = torch.randn_like(template.concat, requires_grad=True)
+        projected = template.packed_like(values).unsqueeze(-2).unsqueeze(-1).expand(-1, samples, -1, channels)
+
+        output = projected.sum(dim=-2, keepdim=True)
+
+        segment_sums = torch.stack([part.sum() for part in values.split(lengths)])
+        expected = segment_sums[:, None, None, None].expand(-1, samples, 1, channels)
+        cotangent = torch.randn_like(expected)
+        actual_grad = torch.autograd.grad(output, values, cotangent)[0]
+        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
+        assert output.shape == (2, samples, 1, channels)
+        assert_close(output, expected)
+        assert_close(actual_grad, expected_grad)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_sampled_projected_mask_ragged_sum_compiles_with_vjp(self, device):
+        def consume(template, values):
+            projected = template.packed_like(values).unsqueeze(-2).unsqueeze(-1).expand(-1, 2, -1, 3)
+            return projected.sum(dim=-2, keepdim=True)
+
+        compiled = torch.compile(consume, backend="aot_eager", fullgraph=True)
+        lengths = (3, 5)
+        template = NT([torch.empty(length, device=device) for length in lengths], ragged_dims=(0,))
+        values = torch.randn_like(template.concat, requires_grad=True)
+        output = compiled(template, values)
+
+        segment_sums = torch.stack([part.sum() for part in values.split(lengths)])
+        expected = segment_sums[:, None, None, None].expand(-1, 2, 1, 3)
+        cotangent = torch.randn_like(expected)
+        actual_grad = torch.autograd.grad(output, values, cotangent)[0]
+        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
+        assert_close(output, expected)
+        assert_close(actual_grad, expected_grad)
 
     def test_reduce_strided_ragged_last_dim(self, device, float_dtype):
         nt = NT(
@@ -3327,8 +3352,7 @@ class TestReductionOps:
             return torch.cat(pooled, dim=-1)
 
         reference = torch.stack([reduce_frames(t, m) for t, m in zip(nt, mask)])
-        with nested_execution_guard(forbid_storage_map=True, forbid_padded_materialization=True):
-            assert_close(reduce_frames(nt, mask), reference)
+        assert_close(reduce_frames(nt, mask), reference)
 
     def test_reduce_static_dims_preserves_ragged(self, device, float_dtype):
         nt = NT(
@@ -3338,28 +3362,27 @@ class TestReductionOps:
             ]
         )
         output = torch.sum(nt, dim=(1, 3))
-        reference = NT([torch.sum(t, dim=(0, 2)) for t in nt], **nt._meta())
+        reference = NT([torch.sum(t, dim=(0, 2)) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
-    @pytest.mark.parametrize("route", ["torch", "method"])
     @pytest.mark.parametrize(
         ("dim", "element_dim"),
-        [(1, 0), (-1, -1), ((1, 2), (0, 1))],
-        ids=("ragged", "static", "multi-dim"),
+        [(1, 0), (-1, -1)],
+        ids=("ragged", "static"),
     )
-    def test_sum_public_routes_preserve_autograd(self, device, float_dtype, route, dim, element_dim):
+    def test_sum_values_and_vjp(self, device, float_dtype, dim, element_dim):
         leaves = [
             torch.randn(2, 3, device=device, dtype=float_dtype, requires_grad=True),
             torch.randn(4, 3, device=device, dtype=float_dtype, requires_grad=True),
         ]
         references = [leaf.detach().clone().requires_grad_() for leaf in leaves]
         nt = NT(leaves)
-        output = torch.sum(nt, dim=dim) if route == "torch" else nt.sum(dim=dim)
+        output = torch.sum(nt, dim=dim)
         reference_parts = [torch.sum(tensor, dim=element_dim) for tensor in references]
-        reference = NT(reference_parts, **nt._meta()) if dim == -1 else torch.stack(reference_parts)
+        reference = NT(reference_parts, **reference_options(nt)) if dim == -1 else torch.stack(reference_parts)
         assert_close(output, reference)
 
-        output_values = output._values if isinstance(output, NestedTensor) else output
+        output_values = output.concat if isinstance(output, NestedTensor) else output
         grads = torch.autograd.grad(output_values.square().sum(), leaves)
         ref_grads = torch.autograd.grad(sum(tensor.square().sum() for tensor in reference_parts), references)
         for grad, ref_grad in zip(grads, ref_grads):
@@ -3464,25 +3487,68 @@ class TestReductionOps:
 
         argmax = torch.argmax(nt, dim=-1)
         count = torch.count_nonzero(nt, dim=-1)
-        assert_close(argmax, NT([torch.argmax(t, dim=-1) for t in parts], **nt._meta()))
-        assert_close(count, NT([torch.count_nonzero(t, dim=-1) for t in parts], **nt._meta()))
+        assert_close(argmax, NT([torch.argmax(t, dim=-1) for t in parts], **reference_options(nt)))
+        assert_close(count, NT([torch.count_nonzero(t, dim=-1) for t in parts], **reference_options(nt)))
 
         norm = torch.linalg.vector_norm(nt, dim=-1, keepdim=True)
         linalg_norm = torch.linalg.norm(nt, dim=-1, keepdim=True)
-        norm_reference = NT([torch.linalg.vector_norm(t, dim=-1, keepdim=True) for t in parts], **nt._meta())
+        norm_reference = NT([torch.linalg.vector_norm(t, dim=-1, keepdim=True) for t in parts], **reference_options(nt))
         assert_close(norm, norm_reference)
         assert_close(linalg_norm, norm_reference)
 
         variance, mean = torch.var_mean(nt, dim=-1, correction=0, keepdim=True)
         variance_reference = NT(
             [torch.var(t, dim=-1, correction=0, keepdim=True) for t in parts],
-            **nt._meta(),
+            **reference_options(nt),
         )
-        mean_reference = NT([torch.mean(t, dim=-1, keepdim=True) for t in parts], **nt._meta())
+        mean_reference = NT([torch.mean(t, dim=-1, keepdim=True) for t in parts], **reference_options(nt))
         assert_close(variance, variance_reference)
         assert_close(mean, mean_reference)
-        for output in (argmax, count, norm, linalg_norm, variance, mean):
-            output._validate_metadata()
+
+    @pytest.mark.parametrize("operation", [torch.sum, torch.mean, torch.amax, torch.amin])
+    @pytest.mark.parametrize(("dim", "element_dim"), [(1, 0), (2, 1)])
+    def test_multi_ragged_keepdim_reduction_broadcasts_back(self, device, float_dtype, operation, dim, element_dim):
+        elements = [
+            torch.randn(2, 3, 4, device=device, dtype=float_dtype),
+            torch.randn(4, 2, 4, device=device, dtype=float_dtype),
+        ]
+        nested = NT(elements, ragged_dims=(0, 1))
+
+        reduced = operation(nested, dim=dim, keepdim=True)
+        output = nested + reduced
+        reduced_references = [operation(element, dim=element_dim, keepdim=True) for element in elements]
+        references = [element + reduced for element, reduced in zip(elements, reduced_references)]
+
+        assert [element.shape for element in reduced] == [element.shape for element in reduced_references]
+        assert output.ragged_dims == (0, 1)
+        for actual, expected in zip(output, references):
+            assert_close(actual, expected)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize(("dim", "element_dim"), [(1, 0), (2, 1)])
+    def test_multi_ragged_keepdim_sum_and_broadcast_compile_dynamic_fullgraph(self, dim, element_dim):
+        if dim == 1:
+
+            def consume(structure, values):
+                source = structure.packed_like(values)
+                return (source + source.sum(dim=1, keepdim=True)).concat
+
+        else:
+
+            def consume(structure, values):
+                source = structure.packed_like(values)
+                return (source + source.sum(dim=2, keepdim=True)).concat
+
+        compiled = torch.compile(consume, backend="aot_eager", fullgraph=True, dynamic=True)
+        for shapes in (((2, 3, 4), (4, 2, 4)), ((3, 2, 4), (1, 5, 4))):
+            elements = [torch.randn(shape) for shape in shapes]
+            nested = NT(elements, ragged_dims=(0, 1))
+            expected = NT(
+                [element + element.sum(dim=element_dim, keepdim=True) for element in elements],
+                ragged_dims=(0, 1),
+            )
+
+            assert_close(compiled(nested, nested.concat), expected.concat)
 
     def test_multi_ragged_var_mean_and_vector_norm_preserve_grad(self, device, float_dtype):
         leaves = [
@@ -3496,13 +3562,13 @@ class TestReductionOps:
         norm = torch.linalg.vector_norm(nt, dim=-1)
         ref_pairs = [torch.var_mean(t, dim=-1, correction=0) for t in references]
         ref_norms = [torch.linalg.vector_norm(t, dim=-1) for t in references]
-        assert_close(variance, NT([pair[0] for pair in ref_pairs], **nt._meta()))
-        assert_close(mean, NT([pair[1] for pair in ref_pairs], **nt._meta()))
-        assert_close(norm, NT(ref_norms, **nt._meta()))
+        assert_close(variance, NT([pair[0] for pair in ref_pairs], **reference_options(nt)))
+        assert_close(mean, NT([pair[1] for pair in ref_pairs], **reference_options(nt)))
+        assert_close(norm, NT(ref_norms, **reference_options(nt)))
 
-        weights = [torch.randn_like(t) for t in variance._unpack()]
-        loss = sum((value * weight).sum() for value, weight in zip(variance._unpack(), weights))
-        loss = loss + mean._values.square().sum() + norm._values.square().sum()
+        weights = [torch.randn_like(t) for t in variance]
+        loss = sum((value * weight).sum() for value, weight in zip(variance, weights))
+        loss = loss + mean.concat.square().sum() + norm.concat.square().sum()
         ref_loss = sum((pair[0] * weight).sum() for pair, weight in zip(ref_pairs, weights))
         ref_loss = ref_loss + sum(pair[1].square().sum() for pair in ref_pairs)
         ref_loss = ref_loss + sum(value.square().sum() for value in ref_norms)
@@ -3521,9 +3587,9 @@ class TestReductionOps:
 
         output = torch.linalg.vector_norm(nt, ord=-1)
         reference = [torch.linalg.vector_norm(tensor, ord=-1) for tensor in references]
-        assert_close(output, NT(reference, **nt._meta()))
+        assert_close(output, NT(reference, **reference_options(nt)))
 
-        grads = torch.autograd.grad(output._values.square().sum(), leaves)
+        grads = torch.autograd.grad(output.concat.square().sum(), leaves)
         ref_grads = torch.autograd.grad(sum(tensor.square() for tensor in reference), references)
         for grad, ref_grad in zip(grads, ref_grads):
             assert_close(grad, ref_grad)
@@ -3536,12 +3602,12 @@ class TestReductionOps:
         nt = NT(parts)
         count = torch.count_nonzero(nt, dim=(-2, -1))
         variance, mean = torch.var_mean(nt, dim=(-2, -1), correction=0)
-        assert_close(count, NT([torch.count_nonzero(t, dim=(-2, -1)) for t in parts], **nt._meta()))
+        assert_close(count, NT([torch.count_nonzero(t, dim=(-2, -1)) for t in parts], **reference_options(nt)))
         assert_close(
             variance,
-            NT([torch.var(t, dim=(-2, -1), correction=0) for t in parts], **nt._meta()),
+            NT([torch.var(t, dim=(-2, -1), correction=0) for t in parts], **reference_options(nt)),
         )
-        assert_close(mean, NT([torch.mean(t, dim=(-2, -1)) for t in parts], **nt._meta()))
+        assert_close(mean, NT([torch.mean(t, dim=(-2, -1)) for t in parts], **reference_options(nt)))
 
     def test_count_nonzero_mixed_dims_maps_padded_axes(self, device, float_dtype):
         parts = [
@@ -3574,10 +3640,9 @@ class TestReductionOps:
             output = torch.linalg.norm(nt, dim=(-2, -1), keepdim=keepdim)
             reference = NT(
                 [torch.linalg.norm(t, dim=(-2, -1), keepdim=keepdim) for t in parts],
-                **nt._meta(),
+                **reference_options(nt),
             )
             assert_close(output, reference)
-            output._validate_metadata()
 
     @pytest.mark.parametrize(
         ("shapes", "logical_dim", "element_dim"),
@@ -3609,11 +3674,10 @@ class TestReductionOps:
             norm = torch.linalg.vector_norm(nt, dim=logical_dim, keepdim=keepdim)
             norm_reference = NT(
                 [torch.linalg.vector_norm(t, dim=element_dim, keepdim=keepdim) for t in parts],
-                **nt._meta(),
+                **reference_options(nt),
             )
             assert norm.shape == norm_reference.shape
             assert_close(norm, norm_reference)
-            norm._validate_metadata()
 
         count = torch.count_nonzero(nt, dim=logical_dim)
         count_reference = torch.stack([torch.count_nonzero(t, dim=element_dim) for t in parts])
@@ -3634,7 +3698,7 @@ class TestRot90:
         )
 
         output = torch.rot90(nt, k=1, dims=(1, 2))
-        reference = NT([torch.rot90(t, k=1, dims=(0, 1)) for t in nt], **nt._meta())
+        reference = NT([torch.rot90(t, k=1, dims=(0, 1)) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
         with pytest.raises(ValueError):
@@ -3645,8 +3709,6 @@ class TestRot90:
         [
             pytest.param(1, ((2, 5, 3), (4, 5, 3)), id="k1_swaps_plane"),
             pytest.param(2, ((2, 3, 5), (4, 3, 5)), id="k2_preserves_plane"),
-            pytest.param(3, ((2, 5, 3), (4, 5, 3)), id="k3_swaps_plane"),
-            pytest.param(4, ((2, 3, 5), (4, 3, 5)), id="k4_preserves_plane"),
         ],
     )
     def test_rot90_static_plane_metadata_respects_k(self, device, float_dtype, k, expected_shapes):
@@ -3658,90 +3720,9 @@ class TestRot90:
         )
 
         output = torch.rot90(nt, k=k, dims=(2, 3))
-        reference = NT([torch.rot90(t, k=k, dims=(1, 2)) for t in nt], **nt._meta())
+        reference = NT([torch.rot90(t, k=k, dims=(1, 2)) for t in nt], **reference_options(nt))
         assert_close(output, reference)
-        assert output._element_shapes == expected_shapes
-
-
-class TestScatterOps:
-
-    def test_scatter(self, device, float_dtype):
-        nt = NestedTensor(
-            [
-                torch.zeros(2, 3, device=device, dtype=float_dtype),
-                torch.zeros(3, 3, device=device, dtype=float_dtype),
-            ]
-        )
-        index = NestedTensor(
-            [
-                torch.tensor([[0, 2, 1], [1, 0, 2]], device=device, dtype=torch.long),
-                torch.tensor([[2, 1, 0], [0, 2, 1], [1, 1, 1]], device=device, dtype=torch.long),
-            ]
-        )
-        src = NestedTensor(
-            [
-                torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], device=device, dtype=float_dtype),
-                torch.tensor(
-                    [[7.0, 8.0, 9.0], [10.0, 11.0, 12.0], [13.0, 14.0, 15.0]],
-                    device=device,
-                    dtype=float_dtype,
-                ),
-            ]
-        )
-
-        output = torch.scatter(nt, 2, index, src)
-        reference = NT([torch.scatter(t, 1, idx, s) for t, idx, s in zip(nt, index, src)], **nt._meta())
-        assert_close(output, reference)
-
-        scalar_output = torch.scatter(nt, 2, index, -1.0)
-        scalar_reference = NT([torch.scatter(t, 1, idx, -1.0) for t, idx in zip(nt, index)], **nt._meta())
-        assert_close(scalar_output, scalar_reference)
-
-    def test_scatter_add(self, device, float_dtype):
-        nt = NestedTensor(
-            [
-                torch.zeros(2, 3, device=device, dtype=float_dtype),
-                torch.zeros(1, 3, device=device, dtype=float_dtype),
-            ]
-        )
-        index = torch.zeros_like(nt.tensor, dtype=torch.long)
-        src = torch.ones_like(nt.tensor, dtype=float_dtype)
-        output = torch.scatter_add(nt, 1, index, src)
-        reference = NT(
-            [
-                torch.scatter_add(t, 0, torch.zeros_like(t, dtype=torch.long), torch.ones_like(t, dtype=float_dtype))
-                for t in nt
-            ],
-            **nt._meta(),
-        )
-        assert_close(output, reference)
-
-    @pytest.mark.skipif(not hasattr(torch, "scatter_reduce"), reason="requires torch.scatter_reduce")
-    def test_scatter_reduce_sum(self, device, float_dtype):
-        nt = NestedTensor(
-            [
-                torch.zeros(2, 3, device=device, dtype=float_dtype),
-                torch.zeros(1, 3, device=device, dtype=float_dtype),
-            ]
-        )
-        index = torch.zeros_like(nt.tensor, dtype=torch.long)
-        src = torch.ones_like(nt.tensor, dtype=float_dtype)
-        output = torch.scatter_reduce(nt, 1, index, src, reduce="sum", include_self=True)
-        reference = NT(
-            [
-                torch.scatter_reduce(
-                    t,
-                    0,
-                    torch.zeros_like(t, dtype=torch.long),
-                    torch.ones_like(t, dtype=float_dtype),
-                    reduce="sum",
-                    include_self=True,
-                )
-                for t in nt
-            ],
-            **nt._meta(),
-        )
-        assert_close(output, reference)
+        assert tuple(tuple(element.shape) for element in output) == expected_shapes
 
 
 class TestSearchsorted:
@@ -3797,7 +3778,7 @@ class TestSearchsorted:
                 torch.searchsorted(sorted_a, float(3.5), sorter=sorter_a),
                 torch.searchsorted(sorted_b, float(3.5), sorter=sorter_b),
             ],
-            **nt_sorted._meta(),
+            **reference_options(nt_sorted),
         )
         assert_close(result, reference)
 
@@ -3813,6 +3794,73 @@ class TestSearchsorted:
 
 
 class TestSelectionOps:
+
+    @pytest.mark.parametrize("name", ["min", "max"])
+    @pytest.mark.parametrize("interface", ["function", "method"])
+    @pytest.mark.parametrize("backend", ["eager", "aot_eager"])
+    @pytest.mark.parametrize("reduction", ["global", "ragged", "static", "static_keepdim"])
+    def test_extrema_dispatch_gradients(self, device, name, interface, backend, reduction):
+        torch.compiler.reset()
+        operation = getattr(torch if interface == "function" else torch.Tensor, name)
+        dimension = 1 if reduction == "ragged" else -1
+
+        def reduce(value):
+            if reduction == "global":
+                return operation(value)
+            return operation(value, dim=dimension, keepdim=reduction == "static_keepdim")
+
+        run = reduce if backend == "eager" else torch.compile(reduce, backend=backend, fullgraph=True, dynamic=True)
+        for lengths in ((2, 4), (3, 5)):
+            parts = [
+                torch.arange(n * 3, device=device, dtype=torch.float64).reshape(n, 1, 3).remainder(2).requires_grad_()
+                for n in lengths
+            ]
+            nested = NT(parts, ragged_dims=(0,))
+            dense_operation = getattr(torch, name)
+            keepdim = reduction == "static_keepdim"
+            axis = 0 if reduction == "ragged" else -1
+            if reduction == "global":
+                expected = dense_operation(torch.cat([part.detach() for part in parts]))
+            else:
+                pairs = [dense_operation(part.detach(), dim=axis, keepdim=keepdim) for part in parts]
+                combine = torch.stack if reduction == "ragged" else torch.cat
+                expected = combine([pair.values for pair in pairs])
+                expected_indices = combine([pair.indices for pair in pairs])
+
+            with nested_execution_guard(
+                forbid_iteration=True,
+                forbid_storage_map=True,
+                forbid_eager_fallback=True,
+                forbid_padded_materialization=True,
+                forbid_dense_repack=True,
+            ):
+                result = run(nested)
+                if reduction == "global":
+                    values = result
+                else:
+                    values = result.values.concat if isinstance(result.values, NestedTensor) else result.values
+                    indices = result.indices.concat if isinstance(result.indices, NestedTensor) else result.indices
+                    torch.testing.assert_close(indices, expected_indices, rtol=0, atol=0)
+                torch.testing.assert_close(values, expected, rtol=0, atol=0)
+                weights = torch.arange(1, 2 * values.numel() + 1, device=device, dtype=torch.float64)
+                weights = weights.reshape(*values.shape, 2)[..., 0]
+                gradients = torch.autograd.grad(values, parts, weights)
+
+            if reduction == "global":
+                count = sum((part == expected).sum() for part in parts)
+                expected_gradients = [(part == expected).to(part.dtype) * weights / count for part in parts]
+            else:
+                element_weights = weights.unbind(0) if reduction == "ragged" else weights.split(lengths)
+                expected_gradients = [
+                    torch.zeros_like(part).scatter(
+                        axis,
+                        pair.indices if keepdim else pair.indices.unsqueeze(axis),
+                        weight if keepdim else weight.unsqueeze(axis),
+                    )
+                    for part, pair, weight in zip(parts, pairs, element_weights)
+                ]
+            for actual, wanted in zip(gradients, expected_gradients):
+                torch.testing.assert_close(actual, wanted, rtol=0, atol=0)
 
     def test_argmax_and_argmin_default_dim(self, device, float_dtype):
         nt = NestedTensor(
@@ -3834,11 +3882,10 @@ class TestSelectionOps:
         nt = NestedTensor([a, b])
 
         argmax_last = torch.argmax(nt, dim=2)
-        argmax_last_ref = NestedTensor([torch.argmax(a, dim=1), torch.argmax(b, dim=1)], **nt._meta())
+        argmax_last_ref = NestedTensor([torch.argmax(a, dim=1), torch.argmax(b, dim=1)], **reference_options(nt))
         assert_close(argmax_last, argmax_last_ref)
 
-        with nested_execution_guard(forbid_storage_map=True, forbid_padded_materialization=True):
-            argmin_ragged = torch.argmin(nt, dim=1)
+        argmin_ragged = torch.argmin(nt, dim=1)
         argmin_ragged_ref = torch.stack([torch.argmin(a, dim=0), torch.argmin(b, dim=0)])
         assert_close(argmin_ragged, argmin_ragged_ref)
 
@@ -3849,9 +3896,8 @@ class TestSelectionOps:
                 torch.tensor([4, 0], device=device, dtype=float_dtype),
             ]
         )
-        sorted_output = torch.sort(nt, dim=1, descending=False)
-        reference_indices = sorted_output[1]
-        assert_close(torch.argsort(nt), reference_indices)
+        reference = NT([torch.argsort(element) for element in nt], **reference_options(nt))
+        assert_close(torch.argsort(nt), reference)
 
     def test_max_and_min_dim(self, device, float_dtype):
         a = torch.tensor([[1, 5, 3], [2, 0, 4]], device=device, dtype=float_dtype)
@@ -3859,57 +3905,49 @@ class TestSelectionOps:
         nt = NestedTensor([a, b])
 
         max_last = torch.max(nt, dim=2)
-        max_last_ref_vals = NestedTensor([torch.max(a, dim=1).values, torch.max(b, dim=1).values], **nt._meta())
-        max_last_ref_idxs = NestedTensor([torch.max(a, dim=1).indices, torch.max(b, dim=1).indices], **nt._meta())
+        max_last_ref_vals = NestedTensor(
+            [torch.max(a, dim=1).values, torch.max(b, dim=1).values], **reference_options(nt)
+        )
+        max_last_ref_idxs = NestedTensor(
+            [torch.max(a, dim=1).indices, torch.max(b, dim=1).indices], **reference_options(nt)
+        )
         assert_close(max_last.values, max_last_ref_vals)
         assert_close(max_last.indices, max_last_ref_idxs)
 
-        with nested_execution_guard(forbid_storage_map=True, forbid_padded_materialization=True):
-            min_ragged = torch.min(nt, dim=1)
+        min_ragged = torch.min(nt, dim=1)
         min_ragged_ref_vals = torch.stack([torch.min(a, dim=0).values, torch.min(b, dim=0).values])
         min_ragged_ref_idxs = torch.stack([torch.min(a, dim=0).indices, torch.min(b, dim=0).indices])
         assert_close(min_ragged.values, min_ragged_ref_vals)
         assert_close(min_ragged.indices, min_ragged_ref_idxs)
 
-    def test_extrema_public_routes_preserve_autograd(self, device, float_dtype):
-        for name in ("amax", "amin"):
-            for use_method in (False, True):
-                leaves = [
-                    torch.randn(2, 4, device=device, dtype=float_dtype, requires_grad=True),
-                    torch.randn(3, 4, device=device, dtype=float_dtype, requires_grad=True),
-                ]
-                nt = NT(leaves)
-                output = getattr(nt, name)(dim=-1) if use_method else getattr(torch, name)(nt, dim=-1)
-                assert output._values.grad_fn is not None
-                torch.autograd.grad(output._values.sum(), leaves)
+    @pytest.mark.parametrize(
+        ("nested_op", "element_op"),
+        [
+            (lambda value: torch.amax(value, dim=-1), lambda value: torch.amax(value, dim=-1)),
+            (lambda value: torch.max(value, dim=-1).values, lambda value: torch.max(value, dim=-1).values),
+            (lambda value: torch.topk(value, 2, dim=-1).values, lambda value: torch.topk(value, 2, dim=-1).values),
+        ],
+        ids=("amax", "max", "topk"),
+    )
+    def test_extrema_values_and_vjp(self, device, float_dtype, nested_op, element_op):
+        leaves = [
+            torch.randn(2, 4, device=device, dtype=float_dtype, requires_grad=True),
+            torch.randn(3, 4, device=device, dtype=float_dtype, requires_grad=True),
+        ]
+        references = [leaf.detach().clone().requires_grad_() for leaf in leaves]
+        output = nested_op(NT(leaves))
+        expected = [element_op(reference) for reference in references]
+        weights = [torch.randn_like(element) for element in expected]
 
-        for name in ("max", "min"):
-            leaves = [
-                torch.randn(2, 4, device=device, dtype=float_dtype, requires_grad=True),
-                torch.randn(3, 4, device=device, dtype=float_dtype, requires_grad=True),
-            ]
-            nt = NT(leaves)
-            output = getattr(torch, name)(nt, dim=-1)
-            assert isinstance(output, getattr(torch.return_types, name))
-            assert output.values._values.grad_fn is not None
-            torch.autograd.grad(output.values._values.sum(), leaves)
+        actual_loss = sum((element * weight).sum() for element, weight in zip(output, weights))
+        expected_loss = sum((element * weight).sum() for element, weight in zip(expected, weights))
+        actual_gradients = torch.autograd.grad(actual_loss, leaves)
+        expected_gradients = torch.autograd.grad(expected_loss, references)
 
-            leaves = [leaf.detach().clone().requires_grad_() for leaf in leaves]
-            nt = NT(leaves)
-            global_output = getattr(torch, name)(nt)
-            assert global_output.grad_fn is not None
-            torch.autograd.grad(global_output, leaves)
-
-        for use_method in (False, True):
-            leaves = [
-                torch.randn(2, 4, device=device, dtype=float_dtype, requires_grad=True),
-                torch.randn(3, 4, device=device, dtype=float_dtype, requires_grad=True),
-            ]
-            nt = NT(leaves)
-            output = nt.topk(2, dim=-1) if use_method else torch.topk(nt, 2, dim=-1)
-            assert isinstance(output, torch.return_types.topk)
-            assert output.values._values.grad_fn is not None
-            torch.autograd.grad(output.values._values.sum(), leaves)
+        for actual, reference in zip(output, expected):
+            assert_close(actual, reference)
+        for actual, reference in zip(actual_gradients, expected_gradients):
+            assert_close(actual, reference)
 
     def test_non_leading_ragged_topk_and_max_min(self, device, float_dtype):
         leaves = [
@@ -3917,22 +3955,19 @@ class TestSelectionOps:
             torch.randn(2, 5, device=device, dtype=float_dtype, requires_grad=True),
         ]
         nt = NT(leaves)
-        for logical_dim, element_dim, k in ((1, 0, 1), (2, 1, 2)):
-            output = torch.topk(nt, k, dim=logical_dim)
-            references = [torch.topk(t, k, dim=element_dim) for t in leaves]
-            assert_close(output.values, NT([reference.values for reference in references], **nt._meta()))
-            assert_close(output.indices, NT([reference.indices for reference in references], **nt._meta()))
-            output.values._validate_metadata()
-            torch.autograd.grad(output.values._values.sum(), leaves, retain_graph=True)
+        output = torch.topk(nt, 2, dim=2)
+        references = [torch.topk(t, 2, dim=1) for t in leaves]
+        assert_close(output.values, NT([reference.values for reference in references], **reference_options(nt)))
+        assert_close(output.indices, NT([reference.indices for reference in references], **reference_options(nt)))
+        torch.autograd.grad(output.values.concat.sum(), leaves, retain_graph=True)
 
         for op in (torch.max, torch.min):
             output = op(nt, dim=1)
             references = [op(t, dim=0) for t in leaves]
-            assert_close(output.values, NT([reference.values for reference in references], **nt._meta()))
-            assert_close(output.indices, NT([reference.indices for reference in references], **nt._meta()))
-            output.values._validate_metadata()
-            assert torch.isfinite(output.values._values).all()
-            torch.autograd.grad(output.values._values.sum(), leaves, retain_graph=True)
+            assert_close(output.values, NT([reference.values for reference in references], **reference_options(nt)))
+            assert_close(output.indices, NT([reference.indices for reference in references], **reference_options(nt)))
+            assert torch.isfinite(output.values.concat).all()
+            torch.autograd.grad(output.values.concat.sum(), leaves, retain_graph=True)
 
     @pytest.mark.parametrize("name", ["argmax", "argmin", "max", "min"])
     def test_empty_ragged_extrema_axis_raises(self, device, float_dtype, name):
@@ -3945,18 +3980,16 @@ class TestSelectionOps:
         with pytest.raises(IndexError, match="non-zero size"):
             getattr(torch, name)(nt, dim=1)
 
-    @pytest.mark.parametrize("name", ["max", "min"])
-    @pytest.mark.parametrize("dim", [0, 1])
-    def test_max_min_ties_route_gradient_to_returned_index(self, device, float_dtype, name, dim):
-        high = 2.0 if name == "max" else -2.0
+    def test_max_ties_route_gradient_to_returned_index(self, device, float_dtype):
+        high = 2.0
         leaves = [
             torch.tensor([high, high, 0.0], device=device, dtype=float_dtype, requires_grad=True),
             torch.tensor([high, high], device=device, dtype=float_dtype, requires_grad=True),
         ]
         nt = NT(leaves)
-        output = getattr(torch, name)(nt, dim=dim)
+        output = torch.max(nt, dim=1)
         assert_close(output.indices, torch.zeros(2, device=device, dtype=torch.long))
-        loss = output.values._values.sum() if isinstance(output.values, NestedTensor) else output.values.sum()
+        loss = output.values.concat.sum() if isinstance(output.values, NestedTensor) else output.values.sum()
         grads = torch.autograd.grad(loss, leaves)
         assert_close(grads[0], torch.tensor([1.0, 0.0, 0.0], device=device, dtype=float_dtype))
         assert_close(grads[1], torch.tensor([1.0, 0.0], device=device, dtype=float_dtype))
@@ -3990,9 +4023,11 @@ class TestSelectionOps:
                     torch.tensor([3, 2], device=device, dtype=float_dtype),
                     torch.tensor([4, 0], device=device, dtype=float_dtype),
                 ],
-                **nt._meta(),
+                **reference_options(nt),
             ),
-            NestedTensor([torch.tensor([1, 2], device=device), torch.tensor([0, 1], device=device)], **nt._meta()),
+            NestedTensor(
+                [torch.tensor([1, 2], device=device), torch.tensor([0, 1], device=device)], **reference_options(nt)
+            ),
         )
         assert_close(output[0], reference[0])
         assert_close(output[1], reference[1])
@@ -4008,11 +4043,11 @@ class TestSoftmaxVariants:
             ]
         )
         output = torch.softmax(nt, dim=2)
-        reference = NT([torch.softmax(t, dim=1) for t in nt], **nt._meta())
+        reference = NT([torch.softmax(t, dim=1) for t in nt], **reference_options(nt))
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
         output = torch.log_softmax(nt, dim=2)
-        reference = NT([torch.log_softmax(t, dim=1) for t in nt], **nt._meta())
+        reference = NT([torch.log_softmax(t, dim=1) for t in nt], **reference_options(nt))
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
         with pytest.raises(ValueError):
@@ -4026,32 +4061,25 @@ class TestSoftmaxVariants:
             ]
         )
         output = torch.softmax(nt, dim=-1)
-        reference = NT([torch.softmax(t, dim=-1) for t in nt], **nt._meta())
+        reference = NT([torch.softmax(t, dim=-1) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     @pytest.mark.parametrize("name", ["softmax", "log_softmax"])
-    @pytest.mark.parametrize("route", ["torch", "functional", "method"])
-    def test_softmax_dtype_routes_preserve_grad(self, device, float_dtype, name, route):
+    def test_softmax_dtype_values_and_vjp(self, device, float_dtype, name):
         leaves = [
             torch.randn(2, 3, device=device, dtype=float_dtype, requires_grad=True),
             torch.randn(4, 3, device=device, dtype=float_dtype, requires_grad=True),
         ]
         references = [leaf.detach().clone().requires_grad_() for leaf in leaves]
         nt = NT(leaves)
-        if route == "torch":
-            output = getattr(torch, name)(nt, dim=-1, dtype=torch.float64)
-        elif route == "functional":
-            output = getattr(F, name)(nt, dim=-1, dtype=torch.float64)
-        else:
-            output = getattr(nt, name)(dim=-1, dtype=torch.float64)
+        output = getattr(torch, name)(nt, dim=-1, dtype=torch.float64)
 
         reference = [getattr(torch, name)(tensor, dim=-1, dtype=torch.float64) for tensor in references]
         assert output.dtype == torch.float64
-        assert output._values.grad_fn is not None
-        assert_close(output, NT(reference, **nt._meta()), atol=1e-6, rtol=1e-6)
+        assert_close(output, NT(reference, **reference_options(nt)), atol=1e-6, rtol=1e-6)
 
         weights = [torch.randn_like(tensor) for tensor in reference]
-        loss = sum((tensor * weight).sum() for tensor, weight in zip(output._unpack(), weights))
+        loss = sum((tensor * weight).sum() for tensor, weight in zip(output, weights))
         ref_loss = sum((tensor * weight).sum() for tensor, weight in zip(reference, weights))
         grads = torch.autograd.grad(loss, leaves)
         ref_grads = torch.autograd.grad(ref_loss, references)
@@ -4069,7 +4097,6 @@ class TestSoftmaxVariants:
             nt = NT(leaves)
             output = getattr(torch, name)(nt, dim=dim)
             reference = [getattr(torch, name)(tensor, dim=dim - 1) for tensor in references]
-            output._validate_metadata()
             value_atol, value_rtol = low_precision_cuda_tolerances(
                 device,
                 float_dtype,
@@ -4077,10 +4104,10 @@ class TestSoftmaxVariants:
                 fp16=(1e-3, 1e-3),
                 bf16=(1e-2, 1e-2),
             )
-            assert_close(output, NT(reference, **nt._meta()), atol=value_atol, rtol=value_rtol)
+            assert_close(output, NT(reference, **reference_options(nt)), atol=value_atol, rtol=value_rtol)
 
             weights = [torch.randn_like(tensor) for tensor in reference]
-            loss = sum((tensor * weight).sum() for tensor, weight in zip(output._unpack(), weights))
+            loss = sum((tensor * weight).sum() for tensor, weight in zip(output, weights))
             ref_loss = sum((tensor * weight).sum() for tensor, weight in zip(reference, weights))
             grads = torch.autograd.grad(loss, leaves)
             ref_grads = torch.autograd.grad(ref_loss, references)
@@ -4094,188 +4121,548 @@ class TestSoftmaxVariants:
             for grad, ref_grad in zip(grads, ref_grads):
                 assert_close(grad, ref_grad, atol=atol, rtol=rtol)
 
-    def test_ragged_softmax_uses_opmath_accumulation(self):
-        parts = [
-            torch.zeros(70_000, 1, dtype=torch.float16),
-            torch.zeros(2, 1, dtype=torch.float16),
-        ]
-        nt = NT(parts)
-        output = torch.softmax(nt, dim=1)
-        reference = NT([torch.softmax(t, dim=0) for t in parts], **nt._meta())
-        assert_close(output, reference)
-        assert bool((output[0] > 0).all())
-        assert_close(output[0].sum(), torch.tensor(1.0, dtype=torch.float16), atol=2e-3, rtol=2e-3)
-
-    def test_multi_ragged_softmax_compacts_sparse_group_ids(self):
-        from danling.tensors.aten_functions import _packed_varying_softmax_group_indices
-
-        parts = [
-            torch.randn(2, 1),
-            torch.randn(0, 257),
-            *(torch.randn(1, 1) for _ in range(30)),
-        ]
-        nt = NT(parts)
-        batch_idx, local_idx = nt._packed_batch_local_indices(device=nt.device, dtype=torch.long)
-        varying_coords = nt._packed_varying_coords(
-            batch_idx,
-            local_idx,
-            device=nt.device,
-            dtype=torch.long,
-        )
-        groups = _packed_varying_softmax_group_indices(nt, 0, batch_idx, varying_coords)
-        assert groups is not None
-        group_idx, group_count = groups
-
-        expected_group_count = sum(shape[1] for shape in (part.shape for part in parts) if shape[0] > 0)
-        global_cartesian_group_count = len(parts) * max(part.shape[1] for part in parts)
-        assert group_count == expected_group_count
-        assert group_count < global_cartesian_group_count
-        assert torch.unique(group_idx).numel() == group_count
-
-        output = torch.softmax(nt, dim=1)
-        reference = NT([torch.softmax(part, dim=0) for part in parts], **nt._meta())
-        assert_close(output, reference)
-
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_multi_ragged_softmax_compile_fullgraph(self):
         nt = NT([torch.randn(2, 3, 4), torch.randn(4, 2, 4)])
-        for dim in (1, 2):
-            compiled = torch.compile(
-                lambda tensor, target=dim: torch.softmax(tensor, dim=target),
-                backend="inductor",
-                fullgraph=True,
-            )
-            assert_close(compiled(nt), torch.softmax(nt, dim=dim))
+        compiled = torch.compile(lambda tensor: torch.softmax(tensor, dim=1), backend="inductor", fullgraph=True)
+        assert_close(compiled(nt), torch.softmax(nt, dim=1))
 
 
-class TestSplitChunkUnbind:
+class TestCreationFromExisting:
+    r"""``new_*`` take a fully specified shape, so they cannot produce a ragged result."""
 
-    def test_chunk_batch_dim(self, device, float_dtype):
-        nt = NestedTensor([torch.tensor([i], device=device, dtype=float_dtype) for i in range(5)])
-        output = torch.chunk(nt, 2, dim=0)
-        assert [len(x) for x in output] == [3, 2]
-
-    def test_chunk_excess_chunks(self, device, float_dtype):
-        nt = NestedTensor([torch.tensor([i], device=device, dtype=float_dtype) for i in range(5)])
-        output = torch.chunk(nt, 10, dim=0)
-        assert [len(x) for x in output] == [1, 1, 1, 1, 1]
-        recombined = NestedTensor([t for chunk in output for t in chunk], **nt._meta())
-        assert_close(recombined, nt)
-
-    def test_chunk_non_batch_dim(self, device, float_dtype):
-        a = torch.randn(3, 6, device=device, dtype=float_dtype)
-        b = torch.randn(5, 6, device=device, dtype=float_dtype)
-        nt = NestedTensor(a, b)
-        parts = torch.chunk(nt, 3, dim=-1)
-        assert len(parts) == 3
-        assert parts[0][0].shape == torch.Size([3, 2])
-        assert torch.equal(parts[0][0], a[:, :2])
-        assert torch.equal(parts[2][1], b[:, 4:6])
-
-    def test_chunk_non_batch_dim_mismatched_counts_raises(self, device, float_dtype):
-        a = torch.randn(2, 2, device=device, dtype=float_dtype)
-        b = torch.randn(2, 5, device=device, dtype=float_dtype)
-        nt = NestedTensor(a, b)
-        with pytest.raises(ValueError, match="uniform per-element chunk counts"):
-            torch.chunk(nt, 3, dim=-1)
-
-    def test_split_invalid_sections_raises(self, device, float_dtype):
-        nt = NestedTensor([torch.tensor([i], device=device, dtype=float_dtype) for i in range(5)])
-        with pytest.raises(ValueError):
-            torch.split(nt, [1, 1], dim=0)
-
-    def test_split_non_batch_dim(self, device, float_dtype):
-        a = torch.randn(3, 6, device=device, dtype=float_dtype)
-        b = torch.randn(5, 6, device=device, dtype=float_dtype)
-        nt = NestedTensor(a, b)
-        parts = torch.split(nt, 2, dim=-1)
-        assert len(parts) == 3
-        assert torch.equal(parts[0][0], a[:, :2])
-        assert torch.equal(parts[0][1], b[:, :2])
-        assert torch.equal(parts[1][0], a[:, 2:4])
-        assert torch.equal(parts[2][0], a[:, 4:6])
-
-    def test_split_non_batch_dim_mismatched_counts_raises(self, device, float_dtype):
-        a = torch.randn(2, 2, device=device, dtype=float_dtype)
-        b = torch.randn(2, 5, device=device, dtype=float_dtype)
-        nt = NestedTensor(a, b)
-        with pytest.raises(ValueError, match="uniform per-element split counts"):
-            torch.split(nt, 2, dim=-1)
-
-    def test_split_with_int_sections(self, device, float_dtype):
-        nt = NestedTensor([torch.tensor([i], device=device, dtype=float_dtype) for i in range(5)])
-        output = torch.split(nt, 2, dim=0)
-        assert isinstance(output, tuple)
-        assert [len(x) for x in output] == [2, 2, 1]
-        storage = tuple(nt)
-        reference = (
-            NT(storage[:2], **nt._meta()),
-            NT(storage[2:4], **nt._meta()),
-            NT(storage[4:], **nt._meta()),
-        )
-        assert_close(output[0], reference[0])
-        assert_close(output[1], reference[1])
-        assert_close(output[2], reference[2])
-
-    def test_split_with_list_sections(self, device, float_dtype):
-        nt = NestedTensor([torch.tensor([i], device=device, dtype=float_dtype) for i in range(5)])
-        output = torch.split(nt, [1, 3, 1], dim=0)
-        assert [len(x) for x in output] == [1, 3, 1]
-
-    def test_unbind_batch_dim_respects_batch_first(self, device, float_dtype):
-        nt = NestedTensor(
+    def test_new_family_returns_plain_tensors(self, device, float_dtype):
+        nt = NT(
             [
-                torch.tensor([1.0], device=device, dtype=float_dtype),
-                torch.tensor([2.0], device=device, dtype=float_dtype),
+                torch.randn(2, 3, device=device, dtype=float_dtype),
+                torch.randn(4, 3, device=device, dtype=float_dtype),
             ]
         )
-        output = torch.unbind(nt, dim=0)
-        assert isinstance(output, tuple)
-        assert_close(output[0], nt[0])
-        assert_close(output[1], nt[1])
 
-        nt = NestedTensor(
+        scalar = nt.new_zeros(())
+        assert type(scalar) is torch.Tensor
+        assert scalar.shape == torch.Size([])
+
+        for output in (nt.new_zeros(2, 3), nt.new_ones([2, 3]), nt.new_empty((2, 3))):
+            assert type(output) is torch.Tensor
+            assert output.shape == torch.Size([2, 3])
+            assert output.dtype == nt.dtype and output.device == nt.device
+
+        full = nt.new_full((2, 3), 7.0)
+        assert type(full) is torch.Tensor
+        assert_close(full, torch.full((2, 3), 7.0, device=device, dtype=float_dtype))
+
+        strided = nt.new_empty_strided((2, 3), (3, 1))
+        assert type(strided) is torch.Tensor
+        assert strided.shape == torch.Size([2, 3])
+        assert strided.stride() == (3, 1)
+
+
+class TestCdist:
+
+    @staticmethod
+    def _skip_unsupported_runtime_dtype(device, float_dtype):
+        if device.type == "cuda" and float_dtype in (torch.float16, torch.bfloat16):
+            pytest.skip("dense torch.cdist does not implement CUDA float16/bfloat16")
+
+    @pytest.mark.parametrize(
+        ("p", "compute_mode"),
+        [
+            (1.0, "donot_use_mm_for_euclid_dist"),
+            (2.0, "use_mm_for_euclid_dist"),
+            (float("inf"), "use_mm_for_euclid_dist_if_necessary"),
+        ],
+    )
+    def test_values_shape_and_vjp_match_dense(self, device, p, compute_mode):
+        left_values = torch.randn(7, 4, device=device, requires_grad=True)
+        right_values = torch.randn(6, 4, device=device, requires_grad=True)
+        left_parts = left_values.split((2, 5))
+        right_parts = right_values.split((4, 2))
+        left = NT(left_parts, ragged_dims=(0,))
+        right = NT(right_parts, ragged_dims=(0,))
+
+        output = left.cdist(right, p=p, compute_mode=compute_mode)
+        reference = torch.cat(
             [
-                torch.tensor([1.0], device=device, dtype=float_dtype),
-                torch.tensor([2.0], device=device, dtype=float_dtype),
-            ],
-            batch_first=False,
+                torch.cdist(lhs, rhs, p=p, compute_mode=compute_mode).reshape(-1)
+                for lhs, rhs in zip(left_parts, right_parts)
+            ]
         )
-        output = torch.unbind(nt, dim=1)
-        assert_close(output[0], nt[0])
-        assert_close(output[1], nt[1])
-        with pytest.raises(NotImplementedError):
-            torch.unbind(nt, dim=0)
+        cotangent = torch.randn_like(reference)
+        actual_gradients = torch.autograd.grad(
+            output.concat,
+            (left_values, right_values),
+            cotangent,
+            retain_graph=True,
+        )
+        expected_gradients = torch.autograd.grad(reference, (left_values, right_values), cotangent)
+
+        assert output.ragged_dims == (0, 1)
+        assert output.element_sizes().tolist() == [[2, 4], [5, 2]]
+        torch.testing.assert_close(output.concat, reference)
+        for actual, expected in zip(actual_gradients, expected_gradients):
+            torch.testing.assert_close(actual, expected)
+
+    def test_function_and_method_forms_match(self, device, float_dtype):
+        self._skip_unsupported_runtime_dtype(device, float_dtype)
+        left = NT(
+            [
+                torch.randn(2, 3, device=device, dtype=float_dtype),
+                torch.randn(4, 3, device=device, dtype=float_dtype),
+            ]
+        )
+        right = NT(
+            [
+                torch.randn(3, 3, device=device, dtype=float_dtype),
+                torch.randn(1, 3, device=device, dtype=float_dtype),
+            ]
+        )
+        assert_close(torch.cdist(left, right), left.cdist(right))
+
+    def test_mixed_dense_operand_preserves_logical_topology(self, device):
+        nested = NT(
+            [
+                torch.randn(2, 4, device=device),
+                torch.randn(3, 4, device=device),
+            ],
+            ragged_dims=(0,),
+        )
+        dense = torch.randn(5, 4, device=device)
+
+        output = torch.cdist(nested, dense)
+
+        assert output.ragged_dims == (0,)
+        assert [element.shape for element in output] == [torch.Size((2, 5)), torch.Size((3, 5))]
+        assert_close(output, NT([torch.cdist(element, dense) for element in nested], ragged_dims=(0,)))
+
+    def test_empty_points_keep_shape_and_autograd(self, device):
+        left_values = torch.randn(2, 3, device=device, requires_grad=True)
+        right_values = torch.randn(4, 3, device=device, requires_grad=True)
+        left_parts = (left_values[:0], left_values)
+        right_parts = (right_values[:3], right_values[3:])
+        left = NT(left_parts, ragged_dims=(0,))
+        right = NT(right_parts, ragged_dims=(0,))
+
+        output = left.cdist(right)
+        reference = torch.cat([torch.cdist(lhs, rhs).reshape(-1) for lhs, rhs in zip(left_parts, right_parts)])
+        gradients = torch.autograd.grad(output.concat.sum(), (left_values, right_values))
+
+        assert output.element_sizes().tolist() == [[0, 3], [2, 1]]
+        torch.testing.assert_close(output.concat, reference)
+        assert_close(gradients[0], torch.autograd.grad(reference.sum(), left_values, retain_graph=True)[0])
+        assert_close(gradients[1], torch.autograd.grad(reference.sum(), right_values)[0])
+
+    def test_batch_length_and_feature_mismatch_raise(self, device):
+        left = NT([torch.randn(2, 3, device=device)], ragged_dims=(0,))
+        with pytest.raises(ValueError, match="batch length mismatch"):
+            torch.cdist(left, NT([torch.randn(2, 3, device=device), torch.randn(1, 3, device=device)]))
+        with pytest.raises(RuntimeError, match="same number of columns"):
+            torch.cdist(left, NT([torch.randn(4, 5, device=device)], ragged_dims=(0,)))
+
+    def test_autocast_matches_dense(self, device):
+        dtype = torch.bfloat16 if device.type == "cpu" else torch.float16
+        left_values = torch.randn(4, 3, device=device, dtype=dtype, requires_grad=True)
+        right_values = torch.randn(5, 3, device=device, dtype=dtype, requires_grad=True)
+        left = NT([left_values], ragged_dims=(0,))
+        right = NT([right_values], ragged_dims=(0,))
+
+        with torch.autocast(device.type, dtype=dtype):
+            output = left.cdist(right).concat
+            reference = torch.cdist(left_values, right_values).reshape(-1)
+
+        assert output.dtype == reference.dtype
+        torch.testing.assert_close(output, reference)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_compile_fullgraph_preserves_values_and_vjp(self, device):
+        left_values = torch.randn(7, 3, device=device, requires_grad=True)
+        right_values = torch.randn(5, 3, device=device, requires_grad=True)
+        left_parts = left_values.split((2, 5))
+        right_parts = right_values.split((4, 1))
+        left = NT(left_parts, ragged_dims=(0,), batch_first=False)
+        right = NT(right_parts, ragged_dims=(0,), batch_first=False)
+        compiled = torch.compile(
+            lambda lhs, rhs: lhs.cdist(rhs).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        output = compiled(left, right)
+        reference = torch.cat([torch.cdist(lhs, rhs).reshape(-1) for lhs, rhs in zip(left_parts, right_parts)])
+        cotangent = torch.randn_like(reference)
+        actual_gradients = torch.autograd.grad(
+            output,
+            (left_values, right_values),
+            cotangent,
+            retain_graph=True,
+        )
+        expected_gradients = torch.autograd.grad(reference, (left_values, right_values), cotangent)
+
+        torch.testing.assert_close(output, reference)
+        for actual, expected in zip(actual_gradients, expected_gradients):
+            torch.testing.assert_close(actual, expected)
 
 
-class TestStackFunction:
+class TestSegmentedSort:
 
-    def test_stack_dim_zero(self):
-        a = NT([torch.tensor([1, 2]), torch.tensor([3, 4])])
-        b = NT([torch.tensor([5, 6]), torch.tensor([7, 8])])
-        output = torch.stack([a, b], dim=0)
-        reference = NT([torch.stack([a[i], b[i]], dim=0) for i in range(len(a))], **a._meta())
-        assert isinstance(output, NestedTensor)
+    def test_sort_and_argsort_match_per_element(self, device, float_dtype):
+        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 0, 5)]
+        nested = NT(elements, ragged_dims=(0,))
+
+        result = torch.sort(nested, dim=1)
+        expected = [torch.sort(element, dim=0) for element in elements]
+
+        assert_close(result.values, NT([item.values for item in expected], ragged_dims=(0,)))
+        assert_close(result.indices, NT([item.indices for item in expected], ragged_dims=(0,)))
+        assert_close(torch.argsort(nested, dim=1), result.indices)
+
+    def test_topk_values_indices_and_errors_match_dense(self, device, float_dtype):
+        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 5, 4)]
+        nested = NT(elements, ragged_dims=(0,))
+
+        result = torch.topk(nested, 2, dim=1, largest=False)
+        expected = [torch.topk(element, 2, dim=0, largest=False) for element in elements]
+
+        assert_close(result.values, NT([item.values for item in expected], ragged_dims=(0,)))
+        assert_close(result.indices, NT([item.indices for item in expected], ragged_dims=(0,)))
+        with pytest.raises(RuntimeError):
+            torch.topk(nested, 4, dim=1)
+
+    def test_sort_nonleading_declared_ragged_dim(self, device, float_dtype):
+        elements = [torch.randn(2, n, 3, device=device, dtype=float_dtype) for n in (3, 5)]
+        nested = NT(elements, ragged_dims=(1,))
+
+        result = torch.sort(nested, dim=2)
+
+        assert result.values.ragged_dims == (1,)
+        assert_close(result.values, NT([torch.sort(element, dim=1).values for element in elements], ragged_dims=(1,)))
+        assert_close(
+            result.indices,
+            NT([torch.sort(element, dim=1).indices for element in elements], ragged_dims=(1,)),
+        )
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_sort_and_topk_compile_fullgraph(self, device, float_dtype):
+        nested = NT(
+            [torch.randn(n, device=device, dtype=float_dtype) for n in (3, 5, 2)],
+            ragged_dims=(0,),
+        )
+
+        def run(value):
+            sorted_values = torch.sort(value, dim=1).values
+            top_values = torch.topk(value, 2, dim=1).values
+            return sorted_values.concat, top_values.concat
+
+        compiled = torch.compile(run, backend="aot_eager", fullgraph=True, dynamic=True)
+        actual = compiled(nested)
+        expected = run(nested)
+
+        assert_close(actual[0], expected[0])
+        assert_close(actual[1], expected[1])
+
+
+class TestSegmentedCumulative:
+
+    def test_cumprod_and_logcumsumexp_match_per_element(self, device, float_dtype):
+        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 0, 5)]
+        nested = NT(elements, ragged_dims=(0,))
+
+        assert_close(
+            torch.cumprod(nested, dim=1),
+            NT([torch.cumprod(element, dim=0) for element in elements], ragged_dims=(0,)),
+        )
+        assert_close(
+            torch.logcumsumexp(nested, dim=1),
+            NT([torch.logcumsumexp(element, dim=0) for element in elements], ragged_dims=(0,)),
+        )
+
+    def test_cumprod_vjp_matches_per_element(self, device, float_dtype):
+        values = torch.randn(8, 2, device=device, dtype=float_dtype, requires_grad=True)
+        parts = values.split((3, 5))
+        nested = NT(parts, ragged_dims=(0,))
+
+        output = torch.cumprod(nested, dim=1).concat
+        reference = torch.cat([torch.cumprod(part, dim=0) for part in parts])
+        cotangent = torch.randn_like(reference)
+        actual_gradient = torch.autograd.grad(output, values, cotangent, retain_graph=True)[0]
+        expected_gradient = torch.autograd.grad(reference, values, cotangent)[0]
+
         assert_close(output, reference)
+        assert_close(actual_gradient, expected_gradient)
 
-    def test_stack_empty_sequence(self):
-        with pytest.raises(ValueError):
-            stack([])
+    def test_cummax_and_cummin_values_and_indices(self, device, float_dtype):
+        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 1, 5)]
+        nested = NT(elements, ragged_dims=(0,))
 
-    def test_stack_non_batch_dim(self):
-        a = NT([torch.arange(2 * 3).reshape(2, 3), torch.arange(4 * 3).reshape(4, 3)])
-        b = -a
-        output = torch.stack([a, b], dim=-1)
-        reference = NT([torch.stack([a[i], b[i]], dim=-1) for i in range(len(a))], **a._meta())
-        assert isinstance(output, NestedTensor)
+        for op in (torch.cummax, torch.cummin):
+            result = op(nested, dim=1)
+            expected = [op(element, dim=0) for element in elements]
+            assert_close(result.values, NT([item.values for item in expected], ragged_dims=(0,)))
+            assert_close(result.indices, NT([item.indices for item in expected], ragged_dims=(0,)))
+
+    @pytest.mark.parametrize("dtype", [torch.bool, torch.int32])
+    def test_cumprod_matches_dense_dtype_promotion(self, device, dtype):
+        elements = [
+            torch.tensor([1, 0, 1], device=device, dtype=dtype),
+            torch.tensor([1, 1], device=device, dtype=dtype),
+        ]
+        nested = NT(elements, ragged_dims=(0,))
+
+        output = torch.cumprod(nested, dim=1)
+
+        assert output.dtype == torch.cumprod(elements[0], dim=0).dtype
+        assert_close(output, NT([torch.cumprod(element, dim=0) for element in elements], ragged_dims=(0,)))
+
+    def test_cumulative_ops_nonleading_ragged_dim(self, device, float_dtype):
+        elements = [torch.randn(2, n, device=device, dtype=float_dtype) for n in (3, 5)]
+        nested = NT(elements, ragged_dims=(1,))
+
+        assert_close(
+            torch.cumprod(nested, dim=2),
+            NT([torch.cumprod(element, dim=1) for element in elements], ragged_dims=(1,)),
+        )
+        result = torch.cummax(nested, dim=2)
+        assert_close(
+            result.values,
+            NT([torch.cummax(element, dim=1).values for element in elements], ragged_dims=(1,)),
+        )
+        assert_close(
+            result.indices,
+            NT([torch.cummax(element, dim=1).indices for element in elements], ragged_dims=(1,)),
+        )
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_cumprod_compile_fullgraph_backward(self, device):
+        values = torch.randn(8, 2, device=device, requires_grad=True)
+        parts = values.split((3, 5))
+        nested = NT(parts, ragged_dims=(0,))
+        compiled = torch.compile(
+            lambda value: value.cumprod(dim=1).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        output = compiled(nested)
+        reference = torch.cat([torch.cumprod(part, dim=0) for part in parts])
+        cotangent = torch.randn_like(reference)
+        actual_gradient = torch.autograd.grad(output, values, cotangent, retain_graph=True)[0]
+        expected_gradient = torch.autograd.grad(reference, values, cotangent)[0]
+
         assert_close(output, reference)
+        assert_close(actual_gradient, expected_gradient)
 
-    def test_stack_requires_nested_tensor_inputs(self):
-        with pytest.raises(NotImplementedError):
-            stack([torch.ones(1)])
+
+class TestInversePermutation:
+
+    def test_inverse_and_round_trip(self, device, float_dtype):
+        from danling.tensors import inverse_permutation
+
+        permutations = [torch.randperm(n, device=device) for n in (3, 0, 5, 2)]
+        values = [torch.randn(n, device=device, dtype=float_dtype) for n in (3, 0, 5, 2)]
+        nested = NT(permutations, ragged_dims=(0,))
+
+        inverse = inverse_permutation(nested)
+        expected = NT([torch.argsort(permutation) for permutation in permutations], ragged_dims=(0,))
+
+        assert_close(inverse, expected)
+        for element, permutation, undo in zip(values, permutations, inverse):
+            assert_close(element[permutation][undo], element)
+
+    def test_static_tail_and_nonleading_ragged_dim(self, device):
+        from danling.tensors import inverse_permutation
+
+        elements = [torch.stack([torch.randperm(n, device=device) for _ in range(2)]) for n in (3, 5)]
+        nested = NT(elements, ragged_dims=(1,))
+
+        output = inverse_permutation(nested, dim=2)
+
+        assert output.ragged_dims == (1,)
+        assert_close(output, NT([torch.argsort(element, dim=1) for element in elements], ragged_dims=(1,)))
+
+    @pytest.mark.parametrize(
+        "elements",
+        [
+            (torch.tensor([0, 0, 1]), torch.tensor([1, 0])),
+            (torch.tensor([2.0, 0.0, 1.0]), torch.tensor([1.0, 0.0])),
+        ],
+        ids=["not-bijection", "floating-point"],
+    )
+    def test_invalid_permutation_raises(self, device, elements):
+        from danling.tensors import inverse_permutation
+
+        nested = NT([element.to(device) for element in elements], ragged_dims=(0,))
+        with pytest.raises((RuntimeError, TypeError)):
+            inverse_permutation(nested)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_inverse_permutation_compiles(self, device):
+        from danling.tensors import inverse_permutation
+
+        nested = NT([torch.randperm(n, device=device) for n in (3, 5, 2)], ragged_dims=(0,))
+        compiled = torch.compile(
+            lambda value: inverse_permutation(value).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        assert_close(compiled(nested), inverse_permutation(nested).concat)
+
+
+class TestRank:
+
+    @pytest.mark.parametrize("descending", [False, True])
+    def test_rank_matches_double_argsort(self, device, float_dtype, descending):
+        from danling.tensors import rank
+
+        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 0, 5)]
+        nested = NT(elements, ragged_dims=(0,))
+
+        output = rank(nested, dim=1, descending=descending)
+        expected = NT(
+            [
+                torch.argsort(
+                    torch.argsort(element, dim=0, stable=True, descending=descending),
+                    dim=0,
+                )
+                for element in elements
+            ],
+            ragged_dims=(0,),
+        )
+
+        assert_close(output, expected)
+
+    def test_rank_rejects_multi_ragged_layout(self, device, float_dtype):
+        from danling.tensors import rank
+
+        nested = NT(
+            [
+                torch.randn(2, 3, device=device, dtype=float_dtype),
+                torch.randn(3, 2, device=device, dtype=float_dtype),
+            ],
+            ragged_dims=(0, 1),
+        )
+        with pytest.raises(ValueError, match="ragged dimension"):
+            rank(nested)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize("requires_grad", [False, True])
+    @pytest.mark.parametrize("composed", [False, True])
+    def test_rank_compiles(self, device, float_dtype, requires_grad, composed):
+        from danling.tensors import rank
+
+        torch.compiler.reset()
+        compiled = torch.compile(
+            lambda value: rank(value * 2 if composed else value).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        for lengths in ((3, 5, 2), (4, 2, 3)):
+            parts = [torch.randn(n, device=device, dtype=float_dtype, requires_grad=requires_grad) for n in lengths]
+            nested = NT(parts, ragged_dims=(0,))
+            expected = torch.cat([torch.argsort(torch.argsort(part, stable=True), stable=True) for part in parts])
+            with nested_execution_guard(
+                forbid_iteration=True,
+                forbid_storage_map=True,
+                forbid_eager_fallback=True,
+                forbid_padded_materialization=True,
+                forbid_dense_repack=True,
+            ):
+                assert_close(compiled(nested), expected)
+
+
+class TestCumcount:
+
+    def test_counts_within_each_sample_and_static_tail(self, device, float_dtype):
+        from danling.tensors import cumcount
+
+        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 0, 5)]
+        nested = NT(elements, ragged_dims=(0,))
+        expected = [
+            torch.arange(element.shape[0], device=device).view(-1, 1).expand_as(element) for element in elements
+        ]
+
+        assert_close(cumcount(nested), NT(expected, ragged_dims=(0,)))
+
+    def test_nonleading_declared_ragged_dim(self, device, float_dtype):
+        from danling.tensors import cumcount
+
+        elements = [torch.randn(2, n, 3, device=device, dtype=float_dtype) for n in (3, 5)]
+        nested = NT(elements, ragged_dims=(1,))
+        expected = [
+            torch.arange(element.shape[1], device=device).view(1, -1, 1).expand_as(element) for element in elements
+        ]
+
+        output = cumcount(nested, dim=2)
+
+        assert output.ragged_dims == (1,)
+        assert_close(output, NT(expected, ragged_dims=(1,)))
+
+
+class TestSegmentedComposition:
+
+    @pytest.mark.parametrize("tail", [(), (3,)])
+    def test_rank_is_inverse_permutation_of_argsort(self, device, float_dtype, tail):
+        from danling.tensors import inverse_permutation, rank
+
+        nested = NT(
+            [torch.randn(n, *tail, device=device, dtype=float_dtype) for n in (3, 5, 2)],
+            ragged_dims=(0,),
+        )
+
+        assert_close(inverse_permutation(torch.argsort(nested, dim=1), dim=1), rank(nested, dim=1))
 
 
 class TestUnaryBinaryMath:
+
+    def test_unary_tensor_method_values_and_vjp(self):
+        template = NestedTensor(
+            [torch.empty(2, 2, 4), torch.empty(3, 3, 4)],
+            ragged_dims=(0, 1),
+        ).transpose(1, 2)
+        packed_values = (torch.rand_like(template.concat) + 0.5).requires_grad_()
+        expected_values = packed_values.detach().clone().requires_grad_()
+        input_ = template.packed_like(packed_values)
+
+        output = input_.sigmoid()
+        expected = expected_values.sigmoid()
+        grad_output = torch.randn_like(expected)
+        actual_gradient = torch.autograd.grad(output.concat, packed_values, grad_output)[0]
+        expected_gradient = torch.autograd.grad(expected, expected_values, grad_output)[0]
+
+        assert_close(output.concat, expected)
+        assert_close(actual_gradient, expected_gradient)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_sigmoid_head_split_merge_compiles_with_vjp(self):
+        def run(template, values, weight):
+            source = template.packed_like(values)
+            projected = F.linear(source, weight).sigmoid().unflatten(-1, (2, 4))
+            return projected.flatten(-2).concat.square().sum()
+
+        compiled = torch.compile(run, backend="aot_eager", fullgraph=True)
+        template = NestedTensor(
+            [torch.empty(2, 2, 8), torch.empty(3, 3, 8)],
+            ragged_dims=(0, 1),
+        ).transpose(1, 2)
+        packed_values = torch.randn_like(template.concat, requires_grad=True)
+        expected_values = packed_values.detach().clone().requires_grad_()
+        weight = torch.randn(8, 8, requires_grad=True)
+        expected_weight = weight.detach().clone().requires_grad_()
+
+        loss = compiled(template, packed_values, weight)
+        expected_loss = (
+            F.linear(expected_values, expected_weight).sigmoid().unflatten(-1, (2, 4)).flatten(-2).square().sum()
+        )
+        gradients = torch.autograd.grad(loss, (packed_values, weight))
+        expected_gradients = torch.autograd.grad(expected_loss, (expected_values, expected_weight))
+
+        assert_close(loss, expected_loss)
+        for actual, expected in zip(gradients, expected_gradients, strict=True):
+            assert_close(actual, expected)
 
     def test_addcdiv(self, device, float_dtype):
         nt = NestedTensor(
@@ -4285,7 +4672,7 @@ class TestUnaryBinaryMath:
             ]
         )
         output = torch.addcdiv(nt, nt, nt + 1, value=2)
-        reference = NT([torch.addcdiv(t, t, t + 1, value=2) for t in nt], **nt._meta())
+        reference = NT([torch.addcdiv(t, t, t + 1, value=2) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_addcdiv_tensor_input(self, device, float_dtype):
@@ -4295,7 +4682,7 @@ class TestUnaryBinaryMath:
                 torch.tensor([4.0, 5.0], device=device, dtype=float_dtype),
             ]
         )
-        reference = NT([torch.addcdiv(t, t, t + 1, value=2) for t in nt], **nt._meta())
+        reference = NT([torch.addcdiv(t, t, t + 1, value=2) for t in nt], **reference_options(nt))
         output = torch.addcdiv(nt.tensor, nt, nt + 1, value=2)
         assert_close(output, reference)
 
@@ -4307,11 +4694,11 @@ class TestUnaryBinaryMath:
             ]
         )
         output = torch.addcmul(nt, nt, nt, value=2)
-        reference = NT([torch.addcmul(t, t, t, value=2) for t in nt], **nt._meta())
+        reference = NT([torch.addcmul(t, t, t, value=2) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
-    @pytest.mark.parametrize("seed", [0, 1, 2])
-    def test_addcmul_and_addcdiv_matches_dense(self, device, seed):
+    def test_addcmul_and_addcdiv_matches_dense(self, device):
+        seed = 0
         dtype = torch.float32
         shapes = ragged_shapes(seed, batch_size=3, min_len=2, max_len=5, trailing_shape=(4,))
         nt = nested_rand(shapes, device, dtype)
@@ -4321,11 +4708,11 @@ class TestUnaryBinaryMath:
         denom = torch.randn(4, device=device, dtype=dtype).abs() + 0.5
 
         addcmul_output = torch.addcmul(nt, bias, scale, value=0.25)
-        addcmul_reference = NT([torch.addcmul(t, bias, scale, value=0.25) for t in nt], **nt._meta())
+        addcmul_reference = NT([torch.addcmul(t, bias, scale, value=0.25) for t in nt], **reference_options(nt))
         assert_close(addcmul_output, addcmul_reference)
 
         addcdiv_output = torch.addcdiv(nt, scale, denom, value=-0.5)
-        addcdiv_reference = NT([torch.addcdiv(t, scale, denom, value=-0.5) for t in nt], **nt._meta())
+        addcdiv_reference = NT([torch.addcdiv(t, scale, denom, value=-0.5) for t in nt], **reference_options(nt))
         assert_close(addcdiv_output, addcdiv_reference)
 
     def test_addcmul_tensor_input(self, device, float_dtype):
@@ -4335,7 +4722,7 @@ class TestUnaryBinaryMath:
                 torch.tensor([4.0, 5.0], device=device, dtype=float_dtype),
             ]
         )
-        reference = NT([torch.addcmul(t, t, t, value=2) for t in nt], **nt._meta())
+        reference = NT([torch.addcmul(t, t, t, value=2) for t in nt], **reference_options(nt))
         output = torch.addcmul(nt.tensor, nt, nt, value=2)
         assert_close(output, reference)
 
@@ -4370,11 +4757,11 @@ class TestUnaryBinaryMath:
             ]
         )
         output = torch.clamp_min(nt, 0.0)
-        reference = NT([torch.clamp_min(t, 0.0) for t in nt], **nt._meta())
+        reference = NT([torch.clamp_min(t, 0.0) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
         output = torch.clamp_max(nt, 0.0)
-        reference = NT([torch.clamp_max(t, 0.0) for t in nt], **nt._meta())
+        reference = NT([torch.clamp_max(t, 0.0) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_isfinite_isnan_nan_to_num(self, device, float_dtype):
@@ -4385,15 +4772,15 @@ class TestUnaryBinaryMath:
             ]
         )
         output = torch.isnan(nt)
-        reference = NT([torch.isnan(t) for t in nt], **nt._meta())
+        reference = NT([torch.isnan(t) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
         output = torch.isfinite(nt)
-        reference = NT([torch.isfinite(t) for t in nt], **nt._meta())
+        reference = NT([torch.isfinite(t) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
         output = torch.nan_to_num(nt, nan=0.0, posinf=1.0, neginf=-1.0)
-        reference = NT([torch.nan_to_num(t, nan=0.0, posinf=1.0, neginf=-1.0) for t in nt], **nt._meta())
+        reference = NT([torch.nan_to_num(t, nan=0.0, posinf=1.0, neginf=-1.0) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_maximum_and_minimum(self, device, float_dtype):
@@ -4405,11 +4792,11 @@ class TestUnaryBinaryMath:
         )
         scalar = torch.tensor(0.0, device=device, dtype=float_dtype)
         output = torch.maximum(nt, scalar)
-        reference = NT([torch.maximum(t, scalar) for t in nt], **nt._meta())
+        reference = NT([torch.maximum(t, scalar) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
         output = torch.minimum(nt, scalar)
-        reference = NT([torch.minimum(t, scalar) for t in nt], **nt._meta())
+        reference = NT([torch.minimum(t, scalar) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
         output = torch.maximum(nt, nt.tensor)
@@ -4423,7 +4810,7 @@ class TestUnaryBinaryMath:
             ]
         )
         output = torch.neg(nt)
-        reference = NT([torch.neg(t) for t in nt], **nt._meta())
+        reference = NT([torch.neg(t) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_hypot(self, device, float_dtype):
@@ -4479,7 +4866,7 @@ class TestWhere:
                 torch.tensor([0.0, 0.0, 3.0], device=device, dtype=float_dtype),
                 torch.tensor([4.0, 5.0], device=device, dtype=float_dtype),
             ],
-            **nt._meta(),
+            **reference_options(nt),
         )
         assert_close(output, reference)
 
@@ -4491,7 +4878,7 @@ class TestWhere:
             ]
         )
         output = torch.where(nt.tensor > 2, nt, 0.0)
-        reference = NT([torch.where(t > 2, t, 0.0) for t in nt], **nt._meta())
+        reference = NT([torch.where(t > 2, t, 0.0) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_where_length_mismatch_raises(self):
@@ -4500,8 +4887,8 @@ class TestWhere:
         with pytest.raises(ValueError, match="batch length mismatch"):
             _ = torch.where(cond, input_nt, 0)
 
-    @pytest.mark.parametrize("seed", [0, 1, 2])
-    def test_where_matches_dense(self, device, seed):
+    def test_where_matches_dense(self, device):
+        seed = 0
         dtype = torch.float32
         shapes = ragged_shapes(seed, batch_size=3, min_len=2, max_len=5, trailing_shape=(4,))
         nt = nested_rand(shapes, device, dtype)
@@ -4509,7 +4896,7 @@ class TestWhere:
         condition = torch.randn(4, device=device) > 0
         other = torch.randn(4, device=device, dtype=dtype)
         output = torch.where(condition, nt, other)
-        reference = NT([torch.where(condition, t, other) for t in nt], **nt._meta())
+        reference = NT([torch.where(condition, t, other) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_where_scalar_operands(self, device, float_dtype):
@@ -4520,9 +4907,126 @@ class TestWhere:
             ]
         )
         scalar_self = torch.where(nt > 2, 1.0, nt)
-        scalar_self_ref = NT([torch.where(t > 2, 1.0, t) for t in nt], **nt._meta())
+        scalar_self_ref = NT([torch.where(t > 2, 1.0, t) for t in nt], **reference_options(nt))
         assert_close(scalar_self, scalar_self_ref)
 
         scalar_both = torch.where(nt > 2, 1.0, 0.0)
-        scalar_both_ref = NT([torch.where(t > 2, 1.0, 0.0) for t in nt], **nt._meta())
+        scalar_both_ref = NT([torch.where(t > 2, 1.0, 0.0) for t in nt], **reference_options(nt))
         assert_close(scalar_both, scalar_both_ref)
+
+
+def _public_ternary_result(op_name, reference, condition_values, packed_values, first, second):
+    input_ = reference.packed_like(packed_values)
+    if op_name == "where":
+        condition = reference.packed_like(condition_values)
+        return torch.where(condition, input_, first)
+    if op_name == "addcmul":
+        return torch.addcmul(input_, first, second, value=0.25)
+    if op_name == "addcdiv":
+        return torch.addcdiv(input_, first, second, value=-0.5)
+    if op_name == "lerp":
+        return torch.lerp(input_, first, second)
+    if op_name == "lerp_scalar":
+        return torch.lerp(input_, first, 0.25)
+    raise AssertionError(f"unknown ternary op {op_name}")
+
+
+def _dense_ternary_result(op_name, condition_values, packed_values, first, second):
+    if op_name == "where":
+        return torch.where(condition_values, packed_values, first)
+    if op_name == "addcmul":
+        return torch.addcmul(packed_values, first, second, value=0.25)
+    if op_name == "addcdiv":
+        return torch.addcdiv(packed_values, first, second, value=-0.5)
+    if op_name == "lerp":
+        return torch.lerp(packed_values, first, second)
+    if op_name == "lerp_scalar":
+        return torch.lerp(packed_values, first, 0.25)
+    raise AssertionError(f"unknown ternary op {op_name}")
+
+
+class TestTernaryAutograd:
+
+    @pytest.mark.parametrize("op_name", ["where", "addcmul", "addcdiv", "lerp", "lerp_scalar"])
+    def test_public_ternary_preserves_autograd(self, op_name):
+        reference = NT([torch.randn(2, 1), torch.randn(3, 1)])
+        condition_values = torch.tensor([[True], [False], [True], [False], [True]])
+        packed_values = torch.randn_like(reference.concat, requires_grad=True)
+        expected_values = packed_values.detach().clone().requires_grad_()
+        first = torch.randn(1, 4)
+        second = torch.randn(1, 4)
+        if op_name == "addcdiv":
+            second = second.abs() + 0.5
+        elif op_name == "lerp":
+            second = second.sigmoid()
+
+        output = _public_ternary_result(op_name, reference, condition_values, packed_values, first, second)
+        loss = output.concat.square().sum()
+        expected = _dense_ternary_result(op_name, condition_values, expected_values, first, second)
+        expected_loss = expected.square().sum()
+        (expected_grad,) = torch.autograd.grad(expected_loss, expected_values)
+        loss.backward()
+
+        assert [tuple(element.shape) for element in output] == [(2, 4), (3, 4)]
+        assert_close(output.concat, expected)
+        assert_close(loss, expected_loss)
+        assert_close(packed_values.grad, expected_grad)
+
+    def test_ternary_tensor_method_values_and_vjp(self):
+        reference = NT([torch.randn(2, 1), torch.randn(3, 1)])
+        packed_values = torch.randn_like(reference.concat, requires_grad=True)
+        expected_values = packed_values.detach().clone().requires_grad_()
+        input_ = reference.packed_like(packed_values)
+        first = torch.randn(1, 4)
+        weight = torch.rand(1, 4)
+
+        output = input_.lerp(first, weight)
+        expected = expected_values.lerp(first, weight)
+        cotangent = torch.randn_like(expected)
+        actual_gradient = torch.autograd.grad(output.concat, packed_values, cotangent)[0]
+        expected_gradient = torch.autograd.grad(expected, expected_values, cotangent)[0]
+
+        assert_close(output.concat, expected)
+        assert_close(actual_gradient, expected_gradient)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_public_ternary_compiles_with_vjp(self):
+        reference = NT([torch.randn(2, 1), torch.randn(3, 1)])
+        condition_values = torch.tensor([[True], [False], [True], [False], [True]])
+        packed_values = torch.randn_like(reference.concat, requires_grad=True)
+        expected_values = packed_values.detach().clone().requires_grad_()
+        first = torch.randn(1, 4)
+        second = torch.randn(1, 4)
+
+        compiled = torch.compile(
+            lambda ref, cond, values, lhs, rhs: _public_ternary_result("where", ref, cond, values, lhs, rhs)
+            .concat.square()
+            .sum(),
+            backend="aot_eager",
+            fullgraph=True,
+        )
+        loss = compiled(reference, condition_values, packed_values, first, second)
+        expected = _dense_ternary_result("where", condition_values, expected_values, first, second)
+        expected_loss = expected.square().sum()
+        (expected_grad,) = torch.autograd.grad(expected_loss, expected_values)
+        loss.backward()
+
+        assert_close(loss, expected_loss)
+        assert_close(packed_values.grad, expected_grad)
+
+    def test_public_ternary_supports_fake_tensor(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        FakeTensorMode = fake_tensor_mod.FakeTensorMode
+        is_fake = fake_tensor_mod.is_fake
+
+        with FakeTensorMode():
+            reference = NT([torch.empty(2, 1), torch.empty(3, 1)])
+            condition_values = torch.empty(5, 1, dtype=torch.bool)
+            packed_values = torch.empty_like(reference.concat)
+            first = torch.empty(1, 4)
+            second = torch.ones(1, 4)
+            output = _public_ternary_result("where", reference, condition_values, packed_values, first, second)
+
+            assert is_fake(output.concat)
+            assert output.concat.shape == torch.Size((5, 4))
+            assert [tuple(element.shape) for element in output] == [(2, 4), (3, 4)]

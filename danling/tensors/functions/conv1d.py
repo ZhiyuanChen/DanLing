@@ -98,14 +98,14 @@ def _packed_pointwise_conv1d_channel_dim(input: NestedTensor, weight, stride, pa
     if not _has_static_input_channels(input, in_channels, rank=1):
         return None
 
-    suffix_rank = input._values.dim() - 1
+    suffix_rank = input.concat.dim() - 1
     if suffix_rank <= 0:
         return None
     static_dims = tuple(int(dim) for dim in input._permutation[-suffix_rank:])
     if 0 not in static_dims:
         return None
     channel_dim = 1 + static_dims.index(0)
-    if int(input._values.shape[channel_dim]) != in_channels:
+    if int(input.concat.shape[channel_dim]) != in_channels:
         return None
     return channel_dim
 
@@ -118,7 +118,7 @@ def _packed_pointwise_conv1d(
 ) -> NestedTensor:
     r"""Run 1x1 conv1d over all packed valid positions with one dense linear op."""
     out_channels = int(weight.shape[0])
-    values = input._values
+    values = input.concat
     moved = channel_dim != values.dim() - 1
     if moved:
         values = values.movedim(channel_dim, -1)
@@ -138,6 +138,7 @@ def _packed_pointwise_conv1d(
         input._offsets,
         shape_tensor,
         permutation=input._permutation,
+        ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
         batch_first=input.batch_first,
         padding_value=input.padding_value,
         mask_value=input.mask_value,
@@ -1450,7 +1451,7 @@ def _spatial_tile_conv1d(
     out_channels = int(weight.shape[0])
     in_channels = int(weight.shape[1])
     kernel_size = int(weight.shape[2])
-    if not _valid_conv_bias(bias, out_channels=out_channels, device=input._values.device, dtype=input._values.dtype):
+    if not _valid_conv_bias(bias, out_channels=out_channels, device=input.concat.device, dtype=input.concat.dtype):
         return None
     output_meta = _conv1d_output_meta(
         input,
@@ -1466,12 +1467,13 @@ def _spatial_tile_conv1d(
     output_offsets = type(input)._offsets_from_sizes(output_packed_sizes, dtype=torch.long)
     total_out = int(output_offsets[-1].item())
     if total_out == 0:
-        output_values = input._values.new_empty((total_out, out_channels))
+        output_values = input.concat.new_empty((total_out, out_channels))
         return type(input)._from_packed(
             output_values,
             output_offsets,
             output_shape_tensor,
             permutation=input._permutation,
+            ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
             batch_first=input.batch_first,
             padding_value=input.padding_value,
             mask_value=input.mask_value,
@@ -1514,7 +1516,7 @@ def _spatial_tile_conv1d(
     if resolved_weight_max_tiles is None:
         return None
 
-    device = input._values.device
+    device = input.concat.device
     shape_meta = torch.tensor(
         [(int(input_shape[1]), int(output_shape[1])) for input_shape, output_shape in zip(input_shapes, output_shapes)],
         device=device,
@@ -1524,13 +1526,13 @@ def _spatial_tile_conv1d(
     input_offsets_device = input._offsets.to(device=device, non_blocking=True)
     output_offsets_device = output_offsets.to(device=device, non_blocking=True)
     requires_grad = torch.is_grad_enabled() and (
-        input._values.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
+        input.concat.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
     )
-    use_channels_last = bool(channels_last and input._values.is_cuda)
+    use_channels_last = bool(channels_last and input.concat.is_cuda)
 
     if requires_grad:
         output_values = _SpatialTileConv1dCudnnFunction.apply(
-            input._values,
+            input.concat,
             weight,
             bias,
             input_offsets_device,
@@ -1554,7 +1556,7 @@ def _spatial_tile_conv1d(
         )
     else:
         output_values = _spatial_tile_conv1d_forward_values(
-            input._values,
+            input.concat,
             weight.contiguous(),
             bias,
             output_size=total_out,
@@ -1581,6 +1583,7 @@ def _spatial_tile_conv1d(
         output_offsets,
         output_shape_tensor,
         permutation=input._permutation,
+        ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
         batch_first=input.batch_first,
         padding_value=input.padding_value,
         mask_value=input.mask_value,

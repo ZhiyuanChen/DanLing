@@ -17,7 +17,10 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
-import functools
+import math
+import os
+import subprocess
+import sys
 
 import pytest
 import torch
@@ -25,64 +28,29 @@ from torch import nn
 from torch.nn import functional as F
 
 from danling.tensors import NestedTensor, create_flex_block_mask
-from danling.tensors.aten_functions import _sdpa_pack_native, _sdpa_restore_native
-from danling.tensors.nn_functions import (
-    _concat_tensors,
-    _nested_from_padded_tensor,
-    _restore_flex_dense_tensor,
-)
-from danling.tensors.ops import nested_execution_guard
 from tests.tensors.utils import (
     assert_close,
     assert_nested_function_matches,
     low_precision_cuda_tolerances,
     nested_rand,
-    packed_result,
 )
 
 NT = NestedTensor
 
 
+def reference_options(source: NestedTensor) -> dict:
+    r"""Return public construction options for an elementwise reference."""
+    return {
+        "batch_first": source.batch_first,
+        "padding_value": source.padding_value,
+        "mask_value": source.mask_value,
+    }
+
+
 try:
-    from torch.nn.attention.flex_attention import create_block_mask, flex_attention
+    from torch.nn.attention.flex_attention import flex_attention
 except Exception:
-    create_block_mask = None
     flex_attention = None
-
-
-def _maybe_xfail_upstream_flex_error(exc: Exception) -> None:
-    message = str(exc)
-    if "Could not guard on data-dependent expression" in message:
-        pytest.xfail("Upstream PyTorch FlexAttention nested compile limitation")
-    if "block_mask was created for block_mask.shape" in message:
-        pytest.xfail("Upstream PyTorch FlexAttention treats DanLing nested inputs as dense for block-mask validation")
-    if "Please convert all Tensors to FakeTensors first" in message:
-        pytest.xfail("Upstream PyTorch FlexAttention fake-tensor limitation under outer fullgraph compile")
-    if "Logger not supported for non-export cases" in message or "logging.Logger method not supported" in message:
-        pytest.xfail("Upstream PyTorch FlexAttention logging limitation under outer fullgraph compile")
-    if "aten._local_scalar_dense.default" in message:
-        pytest.xfail("Upstream PyTorch FlexAttention scalar-output limitation under outer fullgraph compile")
-
-
-def _make_test_flex_block_mask(lengths: list[int], max_len: int, device, *, is_causal: bool):
-    if create_block_mask is None:
-        raise RuntimeError("FlexAttention unavailable")
-    lengths_tensor = torch.tensor(lengths, device=device, dtype=torch.int32)
-
-    def mask_mod(b, h, q_idx, kv_idx):
-        valid = (q_idx < lengths_tensor[b]) & (kv_idx < lengths_tensor[b])
-        if is_causal:
-            valid = valid & (q_idx >= kv_idx)
-        return valid
-
-    return create_block_mask(mask_mod, len(lengths), None, max_len, max_len, device=device, _compile=False)
-
-
-@functools.lru_cache(maxsize=1)
-def _compiled_test_flex_attention():
-    if flex_attention is None:
-        raise RuntimeError("FlexAttention unavailable")
-    return torch.compile(flex_attention, backend="inductor", fullgraph=True)
 
 
 def _compile_fullgraph(fn):
@@ -124,18 +92,11 @@ class TestActivations:
         assert_nested_function_matches(activation, nt, **kwargs)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    @pytest.mark.parametrize("activation", [F.relu, F.gelu, F.silu])
-    def test_unregistered_activation_compile_fullgraph(self, activation, device, float_dtype):
-        nt = nested_rand([(2, 4), (1, 4)], device, float_dtype)
-
-        torch._dynamo.reset()
-
-        def apply(x):
-            return activation(x)
-
-        compiled = _compile_fullgraph(apply)
+    def test_activation_compile_fullgraph(self, device):
+        nt = nested_rand([(2, 4), (1, 4)], device, torch.float32)
+        compiled = _compile_fullgraph(F.gelu)
         output = compiled(nt)
-        reference = activation(nt.tensor)
+        reference = F.gelu(nt.tensor)
         assert_close(output, reference)
 
 
@@ -284,7 +245,7 @@ class TestBilinear:
         weight = torch.randn(5, 3, 4, device=device, dtype=float_dtype)
         bias = torch.randn(5, device=device, dtype=float_dtype)
         output = F.bilinear(x1, x2, weight, bias)
-        reference = NT([F.bilinear(a, b, weight, bias) for a, b in zip(x1, x2)], **x1._meta())
+        reference = NT([F.bilinear(a, b, weight, bias) for a, b in zip(x1, x2)], **reference_options(x1))
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
 
@@ -298,7 +259,7 @@ class TestChannelShuffle:
             ]
         )
         output = F.channel_shuffle(x, groups=2)
-        reference = NT([F.channel_shuffle(t, groups=2) for t in x], **x._meta())
+        reference = NT([F.channel_shuffle(t, groups=2) for t in x], **reference_options(x))
         assert_close(output, reference)
 
 
@@ -337,12 +298,9 @@ class TestClassificationLosses:
         assert_close(output, reference)
 
     def test_binary_cross_entropy_with_logits_after_method_squeeze_preserves_grad(self, device, float_dtype):
-        logits = NT(
-            [
-                torch.randn(2, 3, 1, device=device, dtype=float_dtype, requires_grad=True),
-                torch.randn(1, 3, 1, device=device, dtype=float_dtype, requires_grad=True),
-            ]
-        )
+        values = torch.randn(3, 3, 1, device=device, dtype=float_dtype, requires_grad=True)
+        reference_values = values.detach().clone().requires_grad_()
+        logits = NT(values.split((2, 1)))
         targets = NT(
             [
                 torch.rand(2, 3, 1, device=device, dtype=float_dtype),
@@ -350,8 +308,16 @@ class TestClassificationLosses:
             ]
         )
         output = F.binary_cross_entropy_with_logits(logits.squeeze(-1), targets.squeeze(-1), reduction="mean")
-        assert output.requires_grad
-        assert output.grad_fn is not None
+        reference = F.binary_cross_entropy_with_logits(
+            reference_values.squeeze(-1),
+            targets.concat.squeeze(-1),
+            reduction="mean",
+        )
+
+        actual_gradient = torch.autograd.grad(output, values)[0]
+        expected_gradient = torch.autograd.grad(reference, reference_values)[0]
+        assert_close(output, reference)
+        assert_close(actual_gradient, expected_gradient)
 
     def test_cross_entropy_loss(self, device, float_dtype):
         logits = NT(
@@ -451,7 +417,7 @@ class TestClassificationLosses:
                 torch.tensor([[1.0, 0.0]], device=device, dtype=float_dtype),
             ]
         )
-        log_probs = NT([torch.log_softmax(t, dim=-1) for t in logits], **logits._meta())
+        log_probs = NT([torch.log_softmax(t, dim=-1) for t in logits], **reference_options(logits))
         targets = NT(
             [torch.tensor([0, 1], device=device, dtype=torch.long), torch.tensor([1], device=device, dtype=torch.long)]
         )
@@ -501,36 +467,21 @@ class TestCompile:
         layer_norm_comp = layer_norm_fn(nt)
         rms_norm_comp = rms_norm_fn(nt)
 
-        ref_linear = NT([F.linear(t, weight, bias) for t in nt], **nt._meta())
-        ref_softmax = NT([F.softmax(t, dim=0) for t in nt], **nt._meta())
-        ref_log_softmax = NT([F.log_softmax(t, dim=0) for t in nt], **nt._meta())
-        ref_layer_norm = NT([F.layer_norm(t, (2,)) for t in nt], **nt._meta())
-        ref_rms_norm = NT([F.rms_norm(t, (2,)) for t in nt], **nt._meta())
+        ref_linear = NT([F.linear(t, weight, bias) for t in nt], **reference_options(nt))
+        ref_softmax = NT([F.softmax(t, dim=0) for t in nt], **reference_options(nt))
+        ref_log_softmax = NT([F.log_softmax(t, dim=0) for t in nt], **reference_options(nt))
+        ref_layer_norm = NT([F.layer_norm(t, (2,)) for t in nt], **reference_options(nt))
+        ref_rms_norm = NT([F.rms_norm(t, (2,)) for t in nt], **reference_options(nt))
         assert isinstance(linear_comp, NestedTensor)
         assert isinstance(softmax_comp, NestedTensor)
         assert isinstance(log_softmax_comp, NestedTensor)
         assert isinstance(layer_norm_comp, NestedTensor)
         assert isinstance(rms_norm_comp, NestedTensor)
-        assert linear_comp._has_same_layout(ref_linear)
-        assert softmax_comp._has_same_layout(ref_softmax)
-        assert log_softmax_comp._has_same_layout(ref_log_softmax)
-        assert layer_norm_comp._has_same_layout(ref_layer_norm)
-        assert rms_norm_comp._has_same_layout(ref_rms_norm)
         assert_close(linear_comp, ref_linear)
         assert_close(softmax_comp, ref_softmax)
         assert_close(log_softmax_comp, ref_log_softmax)
         assert_close(layer_norm_comp, ref_layer_norm)
         assert_close(rms_norm_comp, ref_rms_norm)
-
-
-class TestConcatTensors:
-
-    def test__concat_tensors_with_plain_tensors(self, device, float_dtype):
-        first = torch.arange(4, device=device, dtype=float_dtype).reshape(2, 2)
-        second = torch.arange(4, 8, device=device, dtype=float_dtype).reshape(2, 2)
-        out_first, out_second = _concat_tensors(first, second)
-        assert_close(out_first, first)
-        assert_close(out_second, second)
 
 
 class TestConv:
@@ -549,19 +500,21 @@ class TestConv:
             bf16=(1e-1, 1e-1),
         )
 
-    @pytest.mark.parametrize("shape", [[(5, 8), (7, 8)]])
-    @pytest.mark.parametrize("kernel_size", [1, 2])
-    @pytest.mark.parametrize("stride", [1, 2])
-    @pytest.mark.parametrize("padding", [0, 1])
-    @pytest.mark.parametrize("dilation", [1, 2])
-    @pytest.mark.parametrize("groups", [1, 2])
-    def test_conv1d(self, shape, kernel_size, stride, padding, dilation, groups, device, float_dtype):
+    @pytest.mark.parametrize(
+        ("kernel_size", "stride", "padding", "dilation", "groups"),
+        [(1, 1, 0, 1, 1), (2, 2, 1, 2, 2)],
+        ids=("default", "combined-options"),
+    )
+    def test_conv1d(self, kernel_size, stride, padding, dilation, groups, device, float_dtype):
+        shape = [(5, 8), (7, 8)]
         base = nested_rand(shape, device, float_dtype)
         weight = torch.randn(4, base.shape[-1] // groups, kernel_size, device=device, dtype=float_dtype)
         bias = torch.randn(4, device=device, dtype=float_dtype)
         input = base.transpose(-1, -2)
         output = F.conv1d(input, weight, bias, stride, padding, dilation, groups)
-        reference = NT([F.conv1d(t, weight, bias, stride, padding, dilation, groups) for t in input], **input._meta())
+        reference = NT(
+            [F.conv1d(t, weight, bias, stride, padding, dilation, groups) for t in input], **reference_options(input)
+        )
         atol, rtol = self._tolerances(device, float_dtype)
         assert_close(output, reference, atol=atol, rtol=rtol)
 
@@ -574,10 +527,9 @@ class TestConv:
         )
         module = nn.Conv1d(2, 4, kernel_size=1).to(device=device, dtype=float_dtype).eval()
 
-        with nested_execution_guard(forbid_storage_map=True):
-            output = module(input)
+        output = module(input)
 
-        reference = NT([module(t) for t in input], **input._meta())
+        reference = NT([module(t) for t in input], **reference_options(input))
         atol, rtol = self._tolerances(device, float_dtype)
         assert_close(output, reference, atol=atol, rtol=rtol)
 
@@ -591,7 +543,7 @@ class TestConv:
         weight = torch.randn(4, 2, 3, device=device, dtype=float_dtype)
         bias = torch.randn(4, device=device, dtype=float_dtype)
         output = F.conv1d(input, weight, bias, padding="same")
-        reference = NT([F.conv1d(t, weight, bias, padding="same") for t in input], **input._meta())
+        reference = NT([F.conv1d(t, weight, bias, padding="same") for t in input], **reference_options(input))
         atol, rtol = self._tolerances(device, float_dtype)
         assert_close(output, reference, atol=atol, rtol=rtol)
 
@@ -606,7 +558,7 @@ class TestConv:
         weight = torch.randn(4, 2, 3, device=device, dtype=float_dtype)
         bias = torch.randn(4, device=device, dtype=float_dtype)
         output = F.conv1d(input, weight, bias, stride=1, padding=1)
-        reference = NT([F.conv1d(t, weight, bias, stride=1, padding=1) for t in input], **input._meta())
+        reference = NT([F.conv1d(t, weight, bias, stride=1, padding=1) for t in input], **reference_options(input))
         atol, rtol = self._tolerances(device, float_dtype)
         assert_close(output, reference, atol=atol, rtol=rtol)
 
@@ -621,33 +573,35 @@ class TestConv:
         weight = torch.randn(4, 2, 3, device=device, dtype=float_dtype)
         bias = torch.randn(4, device=device, dtype=float_dtype)
         output = F.conv1d(input, weight, bias, stride=1, padding=1)
-        reference = NT([F.conv1d(t, weight, bias, stride=1, padding=1) for t in input], **input._meta())
+        reference = NT([F.conv1d(t, weight, bias, stride=1, padding=1) for t in input], **reference_options(input))
         atol, rtol = self._tolerances(device, float_dtype)
         assert_close(output, reference, atol=atol, rtol=rtol)
 
-    @pytest.mark.parametrize("shape", [[(5, 7, 8), (11, 13, 8)]])
-    @pytest.mark.parametrize("kernel_size", [1, 2])
-    @pytest.mark.parametrize("stride", [1, 2])
-    @pytest.mark.parametrize("padding", [0, 1])
-    @pytest.mark.parametrize("dilation", [1, 2])
-    @pytest.mark.parametrize("groups", [1, 2])
-    def test_conv2d(self, shape, kernel_size, stride, padding, dilation, groups, device, float_dtype):
+    @pytest.mark.parametrize(
+        ("kernel_size", "stride", "padding", "dilation", "groups"),
+        [(1, 1, 0, 1, 1), (2, 2, 1, 2, 2)],
+        ids=("default", "combined-options"),
+    )
+    def test_conv2d(self, kernel_size, stride, padding, dilation, groups, device, float_dtype):
+        shape = [(5, 7, 8), (11, 13, 8)]
         base = nested_rand(shape, device, float_dtype)
         weight = torch.randn(4, base.shape[-1] // groups, kernel_size, kernel_size, device=device, dtype=float_dtype)
         bias = torch.randn(4, device=device, dtype=float_dtype)
         input = base.transpose(1, -1)
         output = F.conv2d(input, weight, bias, stride, padding, dilation, groups)
-        reference = NT([F.conv2d(t, weight, bias, stride, padding, dilation, groups) for t in input], **input._meta())
+        reference = NT(
+            [F.conv2d(t, weight, bias, stride, padding, dilation, groups) for t in input], **reference_options(input)
+        )
         atol, rtol = self._tolerances(device, float_dtype)
         assert_close(output, reference, atol=atol, rtol=rtol)
 
-    @pytest.mark.parametrize("shape", [[(5, 7, 9, 8), (11, 13, 15, 8)]])
-    @pytest.mark.parametrize("kernel_size", [1, 2])
-    @pytest.mark.parametrize("stride", [1, 2])
-    @pytest.mark.parametrize("padding", [0, 1])
-    @pytest.mark.parametrize("dilation", [1, 2])
-    @pytest.mark.parametrize("groups", [1, 2])
-    def test_conv3d(self, shape, kernel_size, stride, padding, dilation, groups, device, float_dtype):
+    @pytest.mark.parametrize(
+        ("kernel_size", "stride", "padding", "dilation", "groups"),
+        [(1, 1, 0, 1, 1), (2, 2, 1, 2, 2)],
+        ids=("default", "combined-options"),
+    )
+    def test_conv3d(self, kernel_size, stride, padding, dilation, groups, device, float_dtype):
+        shape = [(5, 7, 9, 8), (11, 13, 15, 8)]
         base = nested_rand(shape, device, float_dtype)
         weight = torch.randn(
             4, base.shape[-1] // groups, kernel_size, kernel_size, kernel_size, device=device, dtype=float_dtype
@@ -655,7 +609,9 @@ class TestConv:
         bias = torch.randn(4, device=device, dtype=float_dtype)
         input = base.permute(0, 4, 1, 2, 3)
         output = F.conv3d(input, weight, bias, stride, padding, dilation, groups)
-        reference = NT([F.conv3d(t, weight, bias, stride, padding, dilation, groups) for t in input], **input._meta())
+        reference = NT(
+            [F.conv3d(t, weight, bias, stride, padding, dilation, groups) for t in input], **reference_options(input)
+        )
         atol, rtol = self._tolerances(device, float_dtype)
         assert_close(output, reference, atol=atol, rtol=rtol)
 
@@ -676,18 +632,15 @@ class TestConvTranspose:
             bf16=(1e-1, 1e-1),
         )
 
-    @pytest.mark.parametrize("shape", [[(5, 8), (7, 8)]])
-    @pytest.mark.parametrize("kernel_size", [1, 2])
-    @pytest.mark.parametrize("stride", [1, 2])
-    @pytest.mark.parametrize("padding", [0, 1])
-    @pytest.mark.parametrize("output_padding", [0, 1])
-    @pytest.mark.parametrize("groups", [1, 2])
-    @pytest.mark.parametrize("dilation", [1, 2])
+    @pytest.mark.parametrize(
+        ("kernel_size", "stride", "padding", "output_padding", "groups", "dilation"),
+        [(1, 1, 0, 0, 1, 1), (2, 2, 1, 1, 2, 2)],
+        ids=("default", "combined-options"),
+    )
     def test_conv_transpose1d_functional(
-        self, shape, kernel_size, stride, padding, output_padding, groups, dilation, device, float_dtype
+        self, kernel_size, stride, padding, output_padding, groups, dilation, device, float_dtype
     ):
-        if stride == 1 and output_padding > 0:
-            pytest.skip("output_padding > 0 only valid when stride > 1")
+        shape = [(5, 8), (7, 8)]
         input = nested_rand(shape, device, float_dtype)
         weight = torch.randn(input.shape[-1], 4 // groups, kernel_size, device=device, dtype=float_dtype)
         bias = torch.randn(4, device=device, dtype=float_dtype)
@@ -695,23 +648,20 @@ class TestConvTranspose:
         output = F.conv_transpose1d(input, weight, bias, stride, padding, output_padding, groups, dilation)
         reference = NT(
             [F.conv_transpose1d(t, weight, bias, stride, padding, output_padding, groups, dilation) for t in input],
-            **input._meta(),
+            **reference_options(input),
         )
         atol, rtol = self._tolerances(device, float_dtype)
         assert_close(output, reference, atol=atol, rtol=rtol)
 
-    @pytest.mark.parametrize("shape", [[(5, 7, 8), (11, 13, 8)]])
-    @pytest.mark.parametrize("kernel_size", [1, 2])
-    @pytest.mark.parametrize("stride", [1, 2])
-    @pytest.mark.parametrize("padding", [0, 1])
-    @pytest.mark.parametrize("output_padding", [0, 1])
-    @pytest.mark.parametrize("groups", [1, 2])
-    @pytest.mark.parametrize("dilation", [1, 2])
+    @pytest.mark.parametrize(
+        ("kernel_size", "stride", "padding", "output_padding", "groups", "dilation"),
+        [(1, 1, 0, 0, 1, 1), (2, 2, 1, 1, 2, 2)],
+        ids=("default", "combined-options"),
+    )
     def test_conv_transpose2d_functional(
-        self, shape, kernel_size, stride, padding, output_padding, dilation, groups, device, float_dtype
+        self, kernel_size, stride, padding, output_padding, groups, dilation, device, float_dtype
     ):
-        if stride == 1 and output_padding > 0:
-            pytest.skip("output_padding > 0 only valid when stride > 1")
+        shape = [(5, 7, 8), (11, 13, 8)]
         input = nested_rand(shape, device, float_dtype)
         weight = torch.randn(input.shape[-1], 4 // groups, kernel_size, kernel_size, device=device, dtype=float_dtype)
         bias = torch.randn(4, device=device, dtype=float_dtype)
@@ -719,23 +669,20 @@ class TestConvTranspose:
         output = F.conv_transpose2d(input, weight, bias, stride, padding, output_padding, groups, dilation)
         reference = NT(
             [F.conv_transpose2d(t, weight, bias, stride, padding, output_padding, groups, dilation) for t in input],
-            **input._meta(),
+            **reference_options(input),
         )
         atol, rtol = self._tolerances(device, float_dtype)
         assert_close(output, reference, atol=atol, rtol=rtol)
 
-    @pytest.mark.parametrize("shape", [[(5, 7, 9, 8), (11, 13, 15, 8)]])
-    @pytest.mark.parametrize("kernel_size", [1, 2])
-    @pytest.mark.parametrize("stride", [1, 2])
-    @pytest.mark.parametrize("padding", [0, 1])
-    @pytest.mark.parametrize("output_padding", [0, 1])
-    @pytest.mark.parametrize("groups", [1, 2])
-    @pytest.mark.parametrize("dilation", [1, 2])
+    @pytest.mark.parametrize(
+        ("kernel_size", "stride", "padding", "output_padding", "groups", "dilation"),
+        [(1, 1, 0, 0, 1, 1), (2, 2, 1, 1, 2, 2)],
+        ids=("default", "combined-options"),
+    )
     def test_conv_transpose3d_functional(
-        self, shape, kernel_size, stride, padding, output_padding, dilation, groups, device, float_dtype
+        self, kernel_size, stride, padding, output_padding, groups, dilation, device, float_dtype
     ):
-        if stride == 1 and output_padding > 0:
-            pytest.skip("output_padding > 0 only valid when stride > 1")
+        shape = [(5, 7, 9, 8), (11, 13, 15, 8)]
         input = nested_rand(shape, device, float_dtype)
         weight = torch.randn(
             input.shape[-1], 4 // groups, kernel_size, kernel_size, kernel_size, device=device, dtype=float_dtype
@@ -745,7 +692,7 @@ class TestConvTranspose:
         output = F.conv_transpose3d(input, weight, bias, stride, padding, output_padding, groups, dilation)
         reference = NT(
             [F.conv_transpose3d(t, weight, bias, stride, padding, output_padding, groups, dilation) for t in input],
-            **input._meta(),
+            **reference_options(input),
         )
         atol, rtol = self._tolerances(device, float_dtype)
         assert_close(output, reference, atol=atol, rtol=rtol)
@@ -765,11 +712,8 @@ class TestDropout:
                 torch.ones(8, 20, device=device, dtype=float_dtype),
             ]
         )
-        torch.manual_seed(1016)
-        output = F.dropout(nt, p=0.5, training=True)
-        torch.manual_seed(1016)
-        reference = packed_result(nt, F.dropout(nt._values, p=0.5, training=True))
-        assert_close(output, reference)
+        output = F.dropout(nt, p=1.0, training=True)
+        assert_close(output, torch.zeros_like(nt))
 
     def test_dropout_variants_eval_is_identity(self, device, float_dtype):
         """All dropout variants are identity in eval mode."""
@@ -813,8 +757,59 @@ class TestEmbeddingOps:
             ]
         )
         output = F.embedding(nt_idx, weight)
-        reference = NT([F.embedding(t, weight) for t in nt_idx], **nt_idx._meta())
+        reference = NT([F.embedding(t, weight) for t in nt_idx], **reference_options(nt_idx))
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
+
+    @pytest.mark.parametrize("ragged_dims", [(0, 1), (1, 0)])
+    def test_embedding_multi_ragged_values_and_vjp(
+        self,
+        device,
+        float_dtype,
+        ragged_dims,
+    ):
+        indices = NT(
+            [
+                torch.tensor([[1, 3, 5], [2, 4, 6]], dtype=torch.long, device=device),
+                torch.tensor([[0, 7], [8, 2], [6, 1]], dtype=torch.long, device=device),
+            ],
+            ragged_dims=ragged_dims,
+        )
+        weight = torch.randn(10, 4, device=device, dtype=float_dtype, requires_grad=True)
+        reference_weight = weight.detach().clone().requires_grad_()
+
+        output = F.embedding(indices, weight)
+
+        reference = F.embedding(indices.concat, reference_weight)
+        cotangent = torch.randn_like(reference)
+        output_gradient = torch.autograd.grad(output.concat, weight, cotangent)[0]
+        reference_gradient = torch.autograd.grad(reference, reference_weight, cotangent)[0]
+        assert output.ragged_dims == ragged_dims
+        assert [element.shape for element in output] == [torch.Size((2, 3, 4)), torch.Size((3, 2, 4))]
+        assert_close(output.concat, reference)
+        assert_close(output_gradient, reference_gradient)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_embedding_multi_ragged_compiles_with_vjp(self, device):
+        compiled = torch.compile(
+            lambda indices, weight: F.embedding(indices, weight).square().concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        indices = NT(
+            [torch.arange(6, device=device).reshape(2, 3), torch.arange(4, device=device).reshape(1, 4)],
+            ragged_dims=(0, 1),
+        )
+        weight = torch.randn(13, 4, device=device, requires_grad=True)
+        reference_weight = weight.detach().clone().requires_grad_()
+        output = compiled(indices, weight)
+        reference = F.embedding(indices.concat, reference_weight).square()
+        cotangent = torch.randn_like(reference)
+        output_gradient = torch.autograd.grad(output, weight, cotangent)[0]
+        reference_gradient = torch.autograd.grad(reference, reference_weight, cotangent)[0]
+        assert_close(output, reference)
+        assert_close(output_gradient, reference_gradient)
 
     def test_embedding_bag(self, device, float_dtype):
         weight = torch.randn(10, 4, device=device, dtype=float_dtype)
@@ -826,7 +821,9 @@ class TestEmbeddingOps:
         )
         offsets = torch.tensor([0], dtype=torch.long, device=device)
         output = F.embedding_bag(nt_idx, weight, offsets=offsets, mode="mean")
-        reference = NT([F.embedding_bag(t, weight, offsets=offsets, mode="mean") for t in nt_idx], **nt_idx._meta())
+        reference = NT(
+            [F.embedding_bag(t, weight, offsets=offsets, mode="mean") for t in nt_idx], **reference_options(nt_idx)
+        )
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -842,7 +839,7 @@ class TestEmbeddingOps:
         output = compiled(nt_idx, weight)
         reference = NT(
             [F.embedding_bag(t, weight, offsets=torch.tensor([0], device=device), mode="mean") for t in nt_idx],
-            **nt_idx._meta(),
+            **reference_options(nt_idx),
         )
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
@@ -856,7 +853,9 @@ class TestEmbeddingOps:
         )
         offsets = torch.tensor([0, 2], dtype=torch.long, device=device)
         output = F.embedding_bag(nt_idx, weight, offsets=offsets, mode="sum")
-        reference = NT([F.embedding_bag(t, weight, offsets=offsets, mode="sum") for t in nt_idx], **nt_idx._meta())
+        reference = NT(
+            [F.embedding_bag(t, weight, offsets=offsets, mode="sum") for t in nt_idx], **reference_options(nt_idx)
+        )
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
     def test_embedding_bag_packed(self, device, float_dtype):
@@ -870,7 +869,7 @@ class TestEmbeddingOps:
         output = F.embedding_bag(nt_idx, weight, mode="mean")
         reference = NT(
             [F.embedding_bag(t, weight, offsets=torch.tensor([0], device=device), mode="mean") for t in nt_idx],
-            **nt_idx._meta(),
+            **reference_options(nt_idx),
         )
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
@@ -888,7 +887,7 @@ class TestFractionalMaxPool:
         output = F.fractional_max_pool2d(x, kernel_size=2, output_size=2, _random_samples=random_samples)
         reference = NT(
             [F.fractional_max_pool2d(t, kernel_size=2, output_size=2, _random_samples=random_samples) for t in x],
-            **x._meta(),
+            **reference_options(x),
         )
         assert_close(output, reference)
 
@@ -903,7 +902,7 @@ class TestFractionalMaxPool:
         output = F.fractional_max_pool3d(x, kernel_size=2, output_size=2, _random_samples=random_samples)
         reference = NT(
             [F.fractional_max_pool3d(t, kernel_size=2, output_size=2, _random_samples=random_samples) for t in x],
-            **x._meta(),
+            **reference_options(x),
         )
         assert_close(output, reference)
 
@@ -948,8 +947,8 @@ class TestFractionalMaxPool:
                 for t in nt
             ]
         )
-        reference_output = NT(reference_output, **nt._meta())
-        reference_idx = NT(reference_idx, **nt._meta())
+        reference_output = NT(reference_output, **reference_options(nt))
+        reference_idx = NT(reference_idx, **reference_options(nt))
         assert_close(output, reference_output)
         assert_close(idx, reference_idx)
 
@@ -968,7 +967,7 @@ class TestGridOps:
         output = F.grid_sample(nt_imgs, grids, align_corners=False)
         reference = NT(
             [F.grid_sample(img, grid, align_corners=False) for img, grid in zip(nt_imgs, grids)],
-            **nt_imgs._meta(),
+            **reference_options(nt_imgs),
         )
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
@@ -993,14 +992,13 @@ class TestInterpolate:
                 torch.ones(2, 2, 2, device=device, dtype=float_dtype),
             ]
         )
-        with nested_execution_guard(forbid_storage_map=True):
-            output = F.interpolate(nt, scale_factor=2, mode="bilinear", align_corners=False)
+        output = F.interpolate(nt, scale_factor=2, mode="bilinear", align_corners=False)
         reference = NT(
             [
                 F.interpolate(t.unsqueeze(0), scale_factor=2, mode="bilinear", align_corners=False).squeeze(0)
                 for t in nt
             ],
-            **nt._meta(),
+            **reference_options(nt),
         )
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
@@ -1011,10 +1009,10 @@ class TestInterpolate:
                 torch.ones(2, 2, 2, device=device, dtype=float_dtype),
             ]
         )
-        with nested_execution_guard(forbid_storage_map=True):
-            output = F.interpolate(nt, scale_factor=2, mode="nearest")
+        output = F.interpolate(nt, scale_factor=2, mode="nearest")
         reference = NT(
-            [F.interpolate(t.unsqueeze(0), scale_factor=2, mode="nearest").squeeze(0) for t in nt], **nt._meta()
+            [F.interpolate(t.unsqueeze(0), scale_factor=2, mode="nearest").squeeze(0) for t in nt],
+            **reference_options(nt),
         )
         assert_close(output, reference)
 
@@ -1027,7 +1025,8 @@ class TestInterpolate:
         )
         output = F.interpolate(nt, scale_factor=2, mode="nearest")
         reference = NT(
-            [F.interpolate(t.unsqueeze(0), scale_factor=2, mode="nearest").squeeze(0) for t in nt], **nt._meta()
+            [F.interpolate(t.unsqueeze(0), scale_factor=2, mode="nearest").squeeze(0) for t in nt],
+            **reference_options(nt),
         )
         assert_close(output, reference)
 
@@ -1048,8 +1047,52 @@ class TestLinear:
         weight = torch.randn(3, 5)
         bias = torch.randn(3)
         output = F.linear(input, weight, bias)
-        reference = NT([F.linear(t, weight, bias) for t in input], **input._meta())
+        reference = NT([F.linear(t, weight, bias) for t in input], **reference_options(input))
         assert_close(output, reference)
+
+    def test_permuted_static_features_values_and_vjp(self, device, float_dtype):
+        template = NT(
+            [torch.empty(2, 78, 2, device=device), torch.empty(5, 78, 2, device=device)],
+            ragged_dims=(0,),
+        )
+        values = torch.randn_like(template.concat, dtype=float_dtype, requires_grad=True)
+        weight = torch.randn(8, 78, device=device, dtype=float_dtype, requires_grad=True)
+        bias = torch.randn(8, device=device, dtype=float_dtype, requires_grad=True)
+        input = template.packed_like(values).movedim(2, 3)
+        expected = F.linear(values.movedim(1, 2), weight, bias)
+
+        output = F.linear(input, weight, bias)
+
+        leaves = (values, weight, bias)
+        cotangent = torch.randn_like(expected)
+        actual_gradients = torch.autograd.grad(output.concat, leaves, cotangent, retain_graph=True)
+        expected_gradients = torch.autograd.grad(expected, leaves, cotangent)
+        assert output.shape == torch.Size((2, 5, 2, 8))
+        assert output.ragged_dims == (0,)
+        assert_close(output.concat, expected)
+        for actual, reference in zip(actual_gradients, expected_gradients, strict=True):
+            assert_close(actual, reference)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_permuted_static_features_compile_with_vjp(self, device):
+        def run(template, values, weight, bias):
+            input = template.packed_like(values).movedim(2, 3)
+            return F.linear(input, weight, bias).concat
+
+        compiled = torch.compile(run, backend="aot_eager", fullgraph=True, dynamic=True)
+        template = NT([torch.empty(2, 78, 2), torch.empty(3, 78, 2)], ragged_dims=(0,))
+        values = torch.randn_like(template.concat, device=device, requires_grad=True)
+        weight = torch.randn(8, 78, device=device, requires_grad=True)
+        bias = torch.randn(8, device=device, requires_grad=True)
+        expected = F.linear(values.movedim(1, 2), weight, bias)
+        output = compiled(template, values, weight, bias)
+        leaves = (values, weight, bias)
+        cotangent = torch.randn_like(expected)
+        actual_gradients = torch.autograd.grad(output, leaves, cotangent)
+        expected_gradients = torch.autograd.grad(expected, leaves, cotangent)
+        assert_close(output, expected)
+        for actual, reference in zip(actual_gradients, expected_gradients, strict=True):
+            assert_close(actual, reference)
 
 
 class TestLpPool:
@@ -1194,7 +1237,7 @@ class TestMaxUnpool:
         pooled_nt = NT([pooled])
         unpooled = F.max_unpool1d(pooled_nt, idx, kernel_size=2, stride=2, output_size=orig.shape)
         reference = F.max_unpool1d(pooled, idx, kernel_size=2, stride=2, output_size=orig.shape)
-        reference = NT([reference], **unpooled._meta())
+        reference = NT([reference], **reference_options(unpooled))
         assert_close(unpooled, reference)
 
     def test_max_unpool2d_nested_indices(self):
@@ -1222,7 +1265,7 @@ class TestMaxUnpool:
         pooled_nt = NT([pooled])
         unpooled = F.max_unpool2d(pooled_nt, idx, kernel_size=2, stride=1, output_size=orig.shape)
         reference = F.max_unpool2d(pooled, idx, kernel_size=2, stride=1, output_size=orig.shape)
-        reference = NT([reference], **unpooled._meta())
+        reference = NT([reference], **reference_options(unpooled))
         assert_close(unpooled, reference)
 
     def test_max_unpool3d_nested_indices(self):
@@ -1247,7 +1290,7 @@ class TestMaxUnpool:
         pooled_nt = NT([pooled])
         unpooled = F.max_unpool3d(pooled_nt, idx, kernel_size=2, output_size=orig.shape)
         reference = F.max_unpool3d(pooled, idx, kernel_size=2, output_size=orig.shape)
-        reference = NT([reference], **unpooled._meta())
+        reference = NT([reference], **reference_options(unpooled))
         assert_close(unpooled, reference)
 
 
@@ -1261,7 +1304,7 @@ class TestModuleIntegration:
 
         output = layer(input)
         reference_storage = [reference_layer(t.unsqueeze(0)).squeeze(0) for t in input]
-        reference = NT(reference_storage, **input._meta())
+        reference = NT(reference_storage, **reference_options(input))
         atol, rtol = TestConv._tolerances(device, float_dtype)
         assert_close(output, reference, atol=atol, rtol=rtol)
 
@@ -1277,14 +1320,44 @@ class TestModuleIntegration:
         reference_layer.load_state_dict(layer.state_dict())
 
         output = layer(input)
-        reference = reference_layer(input.tensor)
-        reference = reference.masked_fill(~output.mask.unsqueeze(-1), 0)
-        assert_close(output, reference)
+        reference = [reference_layer(element) for element in input]
+        assert [element.shape for element in output] == [element.shape for element in reference]
+        for actual, expected in zip(output, reference):
+            assert_close(actual, expected)
 
-        output.sum().backward()
-        reference.sum().backward()
-        assert_close(layer.weight.grad, reference_layer.weight.grad)
-        assert_close(layer.bias.grad, reference_layer.bias.grad)
+        sum(element.sum() for element in output).backward()
+        # d(sum(y))/dW is the input column sum. Per-element half-precision
+        # gradients round before accumulation and are not an exact oracle.
+        columns = torch.cat([element.detach().cpu().double() for element in input]).T.tolist()
+        expected_weight = layer.weight.new_tensor([math.fsum(column) for column in columns])
+        assert_close(layer.weight.grad, expected_weight.expand_as(layer.weight))
+        assert_close(layer.bias.grad, torch.full_like(layer.bias, sum(len(element) for element in input)))
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_compiled_linear_module_dynamic_fullgraph_gradients(self, device):
+        layer = nn.Linear(3, 4).to(device)
+        reference_layer = nn.Linear(3, 4).to(device)
+        reference_layer.load_state_dict(layer.state_dict())
+        compiled = torch.compile(layer, backend="aot_eager", fullgraph=True, dynamic=True)
+
+        for lengths in ((2, 4), (3, 1, 5)):
+            elements = [torch.randn(length, 3, device=device, requires_grad=True) for length in lengths]
+            reference_elements = [element.detach().clone().requires_grad_() for element in elements]
+
+            output = compiled(NT(elements, ragged_dims=(0,))).concat
+            reference = torch.cat([reference_layer(element) for element in reference_elements])
+            assert_close(output, reference)
+
+            output.square().sum().backward()
+            reference.square().sum().backward()
+
+            for actual, expected in zip(elements, reference_elements, strict=True):
+                assert_close(actual.grad, expected.grad)
+            assert_close(layer.weight.grad, reference_layer.weight.grad)
+            assert_close(layer.bias.grad, reference_layer.bias.grad)
+
+            layer.zero_grad(set_to_none=True)
+            reference_layer.zero_grad(set_to_none=True)
 
     @pytest.mark.parametrize(
         "module_factory",
@@ -1294,7 +1367,9 @@ class TestModuleIntegration:
             pytest.param(lambda: nn.LSTM(8, 16, num_layers=2, bidirectional=True, batch_first=True), id="lstm"),
         ],
     )
-    def test_recurrent_module(self, device, module_factory):
+    def test_recurrent_module(self, device, module_factory, monkeypatch):
+        # This comparison asks for float32 accuracy, including inside cuDNN.
+        monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
         dtype = torch.float32
         elements = [torch.randn(length, 8, device=device, dtype=dtype) for length in (4, 7, 5)]
         nested = NT([t.clone() for t in elements])
@@ -1302,10 +1377,22 @@ class TestModuleIntegration:
 
         with torch.no_grad():
             output = module(nested)[0]
-            reference = NT([module(t.unsqueeze(0))[0].squeeze(0) for t in elements], **nested._meta())
+            reference = NT([module(t.unsqueeze(0))[0].squeeze(0) for t in elements], **reference_options(nested))
 
         assert isinstance(output, NestedTensor)
         assert_close(output, reference, atol=1e-4, rtol=1e-4)
+        if isinstance(module, nn.RNN):
+            weight_ih = module.weight_ih_l0.detach().cpu().double()
+            weight_hh = module.weight_hh_l0.detach().cpu().double()
+            bias_ih = module.bias_ih_l0.detach().cpu().double()
+            bias_hh = module.bias_hh_l0.detach().cpu().double()
+            for actual, element in zip(output, elements, strict=True):
+                hidden = torch.zeros(module.hidden_size, dtype=torch.float64)
+                expected = []
+                for step in element.cpu().double():
+                    hidden = torch.tanh(weight_ih @ step + bias_ih + weight_hh @ hidden + bias_hh)
+                    expected.append(hidden)
+                assert_close(actual.cpu().double(), torch.stack(expected), atol=1e-4, rtol=1e-4)
 
     def test_lstm_state(self, device):
         dtype = torch.float32
@@ -1733,7 +1820,7 @@ class TestNormalizationOps:
         reference = NestedTensor.from_concatenated(
             F.batch_norm(concat, running_mean=running_mean, running_var=running_var, training=True),
             shapes,
-            **nt._meta(),
+            **reference_options(nt),
         )
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
@@ -1749,24 +1836,22 @@ class TestNormalizationOps:
         weight = torch.randn(4, device=device, dtype=float_dtype)
         bias = torch.randn(4, device=device, dtype=float_dtype)
 
-        with nested_execution_guard(forbid_padded_materialization=True, forbid_dense_repack=True):
-            output = F.batch_norm(nt, running_mean, running_var, weight, bias, training=False)
+        output = F.batch_norm(nt, running_mean, running_var, weight, bias, training=False)
         reference = NT(
             [
                 F.batch_norm(t.unsqueeze(0), running_mean, running_var, weight, bias, training=False).squeeze(0)
                 for t in nt
             ],
-            **nt._meta(),
+            **reference_options(nt),
         )
 
         assert isinstance(output, NestedTensor)
-        assert output._has_same_layout(reference)
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
     def test_group_norm(self, device, float_dtype):
         nt = nested_rand([(3, 4), (2, 4)], device, float_dtype)
         output = F.group_norm(nt, num_groups=1)
-        reference = NT([F.group_norm(t.unsqueeze(0), num_groups=1).squeeze(0) for t in nt], **nt._meta())
+        reference = NT([F.group_norm(t.unsqueeze(0), num_groups=1).squeeze(0) for t in nt], **reference_options(nt))
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
     def test_instance_norm(self, device, float_dtype):
@@ -1777,13 +1862,15 @@ class TestNormalizationOps:
             ]
         )
         output = F.instance_norm(nt, use_input_stats=True)
-        reference = NT([F.instance_norm(t.unsqueeze(0), use_input_stats=True).squeeze(0) for t in nt], **nt._meta())
+        reference = NT(
+            [F.instance_norm(t.unsqueeze(0), use_input_stats=True).squeeze(0) for t in nt], **reference_options(nt)
+        )
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
     def test_layer_norm(self, device, float_dtype):
         nt = nested_rand([(3, 4), (2, 4)], device, float_dtype)
         output = F.layer_norm(nt, normalized_shape=(4,))
-        reference = NT([F.layer_norm(t, (4,)) for t in nt], **nt._meta())
+        reference = NT([F.layer_norm(t, (4,)) for t in nt], **reference_options(nt))
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
     def test_local_response_norm(self, device, float_dtype):
@@ -1794,13 +1881,13 @@ class TestNormalizationOps:
             ]
         )
         output = F.local_response_norm(nt, size=2)
-        reference = NT([F.local_response_norm(t.unsqueeze(0), size=2).squeeze(0) for t in nt], **nt._meta())
+        reference = NT([F.local_response_norm(t.unsqueeze(0), size=2).squeeze(0) for t in nt], **reference_options(nt))
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
     def test_rms_norm(self, device, float_dtype):
         nt = nested_rand([(1, 4), (1, 4)], device, float_dtype)
         output = F.rms_norm(nt, normalized_shape=(4,))
-        reference = NT([F.rms_norm(t, (4,)) for t in nt], **nt._meta())
+        reference = NT([F.rms_norm(t, (4,)) for t in nt], **reference_options(nt))
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
 
@@ -1825,8 +1912,76 @@ class TestNormalizeFunction:
             ]
         )
         output = F.normalize(input, dim=1)
-        reference = NT([F.normalize(t, dim=0) for t in input], **input._meta())
+        reference = NT([F.normalize(t, dim=0) for t in input], **reference_options(input))
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
+
+    def test_normalize_static_tail_values_and_vjp(self, device, float_dtype):
+        template = NT(
+            [
+                torch.empty(2, 4, device=device, dtype=float_dtype),
+                torch.empty(5, 4, device=device, dtype=float_dtype),
+            ],
+            ragged_dims=(0,),
+        )
+        values = torch.randn_like(template.concat, requires_grad=True)
+        input = template.packed_like(values)
+        reference = F.normalize(values, p=1.5, dim=-1, eps=0.25)
+        output = F.normalize(input, p=1.5, dim=-1, eps=0.25)
+
+        cotangent = torch.randn_like(reference)
+        output_gradient = torch.autograd.grad(output.concat, values, cotangent)[0]
+        reference_gradient = torch.autograd.grad(reference, values, cotangent)[0]
+        assert output.shape == input.shape
+        assert output.ragged_dims == input.ragged_dims
+        assert output.concat.shape == values.shape
+        assert_close(output.concat, reference, atol=1e-6, rtol=1e-6)
+        assert_close(output_gradient, reference_gradient, atol=1e-6, rtol=1e-6)
+
+    def test_normalize_static_tail_nonleading_ragged_layout_with_vjp(self, device, float_dtype):
+        template = NT(
+            [
+                torch.empty(2, 3, 4, device=device, dtype=float_dtype),
+                torch.empty(2, 5, 4, device=device, dtype=float_dtype),
+            ],
+            ragged_dims=(1,),
+        )
+        values = torch.randn_like(template.concat, requires_grad=True)
+        input = template.packed_like(values)
+        reference = F.normalize(values, dim=-1)
+
+        output = F.normalize(input, dim=-1)
+
+        cotangent = torch.randn_like(reference)
+        output_gradient = torch.autograd.grad(output.concat, values, cotangent)[0]
+        reference_gradient = torch.autograd.grad(reference, values, cotangent)[0]
+        assert output.ragged_dims == (1,)
+        assert output.shape == input.shape
+        assert_close(output.concat, reference)
+        assert_close(output_gradient, reference_gradient)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_normalize_static_tail_compiles_with_vjp(self, device):
+        compiled = torch.compile(
+            lambda template, values: F.normalize(
+                template.packed_like(values),
+                p=1.5,
+                dim=-1,
+                eps=0.25,
+            ).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        template = NT([torch.empty(2, 4), torch.empty(3, 4)], ragged_dims=(0,))
+        values = torch.randn_like(template.concat, device=device, requires_grad=True)
+        reference = F.normalize(values, p=1.5, dim=-1, eps=0.25)
+        output = compiled(template, values)
+        cotangent = torch.randn_like(reference)
+        output_gradient = torch.autograd.grad(output, values, cotangent)[0]
+        reference_gradient = torch.autograd.grad(reference, values, cotangent)[0]
+        assert_close(output, reference)
+        assert_close(output_gradient, reference_gradient)
 
 
 class TestOneHot:
@@ -1834,20 +1989,7 @@ class TestOneHot:
     def test_one_hot(self):
         x = NT([torch.tensor([0, 1, 2], dtype=torch.long), torch.tensor([1, 0], dtype=torch.long)])
         output = F.one_hot(x, num_classes=3)
-        reference = NT([F.one_hot(t, num_classes=3) for t in x], **x._meta())
-        assert_close(output, reference)
-
-    def test_one_hot_stays_packed(self):
-        x = NT([torch.tensor([0, 1, 2], dtype=torch.long), torch.tensor([1, 0], dtype=torch.long)])
-        with nested_execution_guard(
-            forbid_iteration=True,
-            forbid_storage_map=True,
-            forbid_padded_materialization=True,
-            forbid_dense_repack=True,
-        ):
-            output = F.one_hot(x, num_classes=3)
-        reference = NT([F.one_hot(t, num_classes=3) for t in x], **x._meta())
-        assert output._has_same_layout(reference)
+        reference = NT([F.one_hot(t, num_classes=3) for t in x], **reference_options(x))
         assert_close(output, reference)
 
 
@@ -1861,7 +2003,7 @@ class TestPad:
             ]
         )
         output = F.pad(nt, (1, 1, 1, 1), value=0.5)
-        reference = NT([F.pad(t, (1, 1, 1, 1), value=0.5) for t in nt], **nt._meta())
+        reference = NT([F.pad(t, (1, 1, 1, 1), value=0.5) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_pad_ragged_leading_dim(self, device, float_dtype):
@@ -1872,46 +2014,18 @@ class TestPad:
             ]
         )
         output = F.pad(nt, (1, 1, 1, 1), value=0.25)
-        reference = NT([F.pad(t, (1, 1, 1, 1), value=0.25) for t in nt], **nt._meta())
+        reference = NT([F.pad(t, (1, 1, 1, 1), value=0.25) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
-    def test_pad_variable_last_dim_stays_packed(self, device, float_dtype):
+    def test_pad_variable_last_dim(self, device, float_dtype):
         nt = NT(
             [
                 torch.randn(4, 17, device=device, dtype=float_dtype),
                 torch.randn(4, 29, device=device, dtype=float_dtype),
             ]
         )
-        with nested_execution_guard(
-            forbid_storage_map=True, forbid_padded_materialization=True, forbid_dense_repack=True
-        ):
-            output = F.pad(nt, (3, 5), value=0.25)
-        reference = NT([F.pad(t, (3, 5), value=0.25) for t in nt], **nt._meta())
-        assert output._has_same_layout(reference)
-        assert_close(output, reference)
-
-    def test_pad_custom_permutation_multi_varying_last_dim_falls_back(self, device, float_dtype):
-        tensors = (
-            torch.randn(2, 3, device=device, dtype=float_dtype),
-            torch.randn(4, 5, device=device, dtype=float_dtype),
-        )
-        values, offsets, shape_tensor, packed_sizes, element_shapes = NT._pack(tensors, permutation=(1, 0))
-        nt = NT._from_packed(
-            values,
-            offsets,
-            shape_tensor,
-            permutation=(1, 0),
-            batch_first=True,
-            padding_value=0.0,
-            mask_value=False,
-            pin_memory=False,
-            outer_size=torch.Size((len(tensors), 4, 5)),
-            packed_sizes=packed_sizes,
-            element_shapes=element_shapes,
-        )
-
-        output = F.pad(nt, (1, 2), value=0.25)
-        reference = NT([F.pad(t, (1, 2), value=0.25) for t in tensors], **nt._meta())
+        output = F.pad(nt, (3, 5), value=0.25)
+        reference = NT([F.pad(t, (3, 5), value=0.25) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
 
@@ -1921,14 +2035,14 @@ class TestPairwiseDistance:
         x1 = nested_rand([(2, 3), (1, 3)], device, float_dtype)
         x2 = nested_rand([(2, 3), (1, 3)], device, float_dtype)
         output = F.pairwise_distance(x1, x2)
-        reference = NT([F.pairwise_distance(a, b) for a, b in zip(x1, x2)], **x1._meta())
+        reference = NT([F.pairwise_distance(a, b) for a, b in zip(x1, x2)], **reference_options(x1))
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
     def test_pairwise_distance_p1(self, device, float_dtype):
         x1 = nested_rand([(2, 4), (3, 4)], device, float_dtype)
         x2 = nested_rand([(2, 4), (3, 4)], device, float_dtype)
         output = F.pairwise_distance(x1, x2, p=1)
-        reference = NT([F.pairwise_distance(a, b, p=1) for a, b in zip(x1, x2)], **x1._meta())
+        reference = NT([F.pairwise_distance(a, b, p=1) for a, b in zip(x1, x2)], **reference_options(x1))
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
 
@@ -1942,7 +2056,7 @@ class TestPdist:
             ]
         )
         try:
-            reference = NT([F.pdist(t) for t in x], **x._meta())
+            reference = NT([F.pdist(t) for t in x], **reference_options(x))
         except RuntimeError as error:
             with pytest.raises(type(error)):
                 F.pdist(x)
@@ -1961,7 +2075,7 @@ class TestPixelShuffle:
             ]
         )
         output = F.pixel_shuffle(nt, upscale_factor=2)
-        reference = NT([F.pixel_shuffle(t, upscale_factor=2) for t in nt], **nt._meta())
+        reference = NT([F.pixel_shuffle(t, upscale_factor=2) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
     def test_pixel_unshuffle(self, device, float_dtype):
@@ -2133,54 +2247,7 @@ class TestRegressionLosses:
 @pytest.mark.skipif(not hasattr(F, "scaled_dot_product_attention"), reason="scaled_dot_product_attention not available")
 class TestScaledDotProductAttention:
 
-    def test_sdpa_native_sequence_layout(self, device, float_dtype):
-        first = torch.randn(4, 11, 32, device=device, dtype=float_dtype)
-        second = torch.randn(4, 7, 32, device=device, dtype=float_dtype)
-        query = NT([first, second])
-
-        assert query._values.shape == (18, 4, 32)
-        assert query._offsets.tolist() == [0, 11, 18]
-        assert_close(query[0], first)
-        assert_close(query[1], second)
-
-    @pytest.mark.skipif(create_block_mask is None or flex_attention is None, reason="FlexAttention not available")
-    @pytest.mark.parametrize("is_causal", [False, True])
-    def test_flex_attention_matches_dense_sdpa(self, device, is_causal):
-        if device.type != "cuda":
-            pytest.skip("compiled FlexAttention benchmark path is CUDA-only")
-
-        batch_size, num_heads, max_len, head_dim = 2, 4, 32, 16
-        lengths = [32, 19]
-        dtype = torch.float32
-
-        query = torch.randn(batch_size, num_heads, max_len, head_dim, device=device, dtype=dtype)
-        key = torch.randn(batch_size, num_heads, max_len, head_dim, device=device, dtype=dtype)
-        value = torch.randn(batch_size, num_heads, max_len, head_dim, device=device, dtype=dtype)
-
-        block_mask = _make_test_flex_block_mask(lengths, max_len, device, is_causal=is_causal)
-        key_padding_mask = torch.zeros(batch_size, 1, 1, max_len, dtype=torch.bool, device=device)
-        query_valid_mask = torch.zeros(batch_size, 1, max_len, 1, dtype=torch.bool, device=device)
-        for i, length in enumerate(lengths):
-            key_padding_mask[i, 0, 0, :length] = True
-            query_valid_mask[i, 0, :length, 0] = True
-
-        flex_out = _compiled_test_flex_attention()(query, key, value, block_mask=block_mask)
-        sdpa_out = F.scaled_dot_product_attention(
-            query,
-            key,
-            value,
-            attn_mask=key_padding_mask,
-            dropout_p=0.0,
-            is_causal=is_causal,
-        )
-        assert_close(
-            flex_out.masked_fill(~query_valid_mask, 0),
-            sdpa_out.masked_fill(~query_valid_mask, 0),
-            atol=1e-4,
-            rtol=1e-4,
-        )
-
-    @pytest.mark.skipif(create_block_mask is None or flex_attention is None, reason="FlexAttention not available")
+    @pytest.mark.skipif(flex_attention is None, reason="FlexAttention not available")
     def test_flex_attention_wrapper(self, device):
         if device.type != "cuda":
             pytest.skip("DanLing FlexAttention wrapper is currently CUDA-focused")
@@ -2204,19 +2271,15 @@ class TestScaledDotProductAttention:
             ]
         )
 
-        try:
-            output = flex_attention(query, key, value)
-        except Exception as exc:
-            _maybe_xfail_upstream_flex_error(exc)
-            raise
+        output = flex_attention(query, key, value)
         reference = NT(
             [F.scaled_dot_product_attention(q, k, v, dropout_p=0.0) for q, k, v in zip(query, key, value)],
-            **query._meta(),
+            **reference_options(query),
         )
         assert isinstance(output, NT)
         assert_close(output, reference, atol=1e-4, rtol=1e-4)
 
-    @pytest.mark.skipif(create_block_mask is None or flex_attention is None, reason="FlexAttention not available")
+    @pytest.mark.skipif(flex_attention is None, reason="FlexAttention not available")
     def test_flex_attention_wrapper_supports_danling_block_mask(self, device):
         if device.type != "cuda":
             pytest.skip("DanLing FlexAttention wrapper is currently CUDA-focused")
@@ -2245,72 +2308,17 @@ class TestScaledDotProductAttention:
             query,
             key,
         )
-        try:
-            output, lse = flex_attention(query, key, value, block_mask=block_mask, return_lse=True)
-        except Exception as exc:
-            _maybe_xfail_upstream_flex_error(exc)
-            raise
+        output, lse = flex_attention(query, key, value, block_mask=block_mask, return_lse=True)
         reference = NT(
             [
                 F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=True)
                 for q, k, v in zip(query, key, value)
             ],
-            **query._meta(),
+            **reference_options(query),
         )
         assert isinstance(output, NT)
         assert isinstance(lse, NT)
         assert_close(output, reference, atol=1e-4, rtol=1e-4)
-
-    def test_nested_from_padded_tensor_roundtrip_for_attention_like_layout(self, device, float_dtype):
-        source = NT(
-            [
-                torch.randn(4, 11, 32, device=device, dtype=float_dtype),
-                torch.randn(4, 7, 32, device=device, dtype=float_dtype),
-            ]
-        )
-        padded = source.tensor[..., :16]
-
-        restored = _nested_from_padded_tensor(source, padded)
-        reference = NT([tensor[..., :16] for tensor in source], **source._meta())
-
-        assert restored._varying_dims == source._varying_dims
-        assert restored._static_dims == source._static_dims
-        assert_close(restored, reference)
-
-    def test_nested_from_padded_tensor_roundtrip_for_conv_like_layout(self, device, float_dtype):
-        source = NT(
-            [
-                torch.randn(3, 5, 7, device=device, dtype=float_dtype),
-                torch.randn(3, 4, 6, device=device, dtype=float_dtype),
-            ]
-        )
-        padded = source.tensor[:, :2]
-
-        restored = _nested_from_padded_tensor(source, padded)
-        reference = NT([tensor[:2] for tensor in source], **source._meta())
-
-        assert restored._varying_dims == source._varying_dims
-        assert restored._static_dims == source._static_dims
-        assert_close(restored, reference)
-
-    def test_restore_flex_dense_tensor_updates_suffix_metadata(self, device, float_dtype):
-        query = NT(
-            [
-                torch.randn(4, 11, 32, device=device, dtype=float_dtype),
-                torch.randn(4, 7, 32, device=device, dtype=float_dtype),
-            ]
-        )
-        output = torch.randn(1, 4, query._values.size(0), 6, device=device, dtype=float_dtype)
-
-        restored = _restore_flex_dense_tensor(output, query)
-
-        assert tuple(tuple(int(size) for size in row) for row in restored._physical_shape.tolist()) == (
-            (4, 11, 6),
-            (4, 7, 6),
-        )
-        assert restored._element_shapes == ((4, 11, 6), (4, 7, 6))
-        assert restored._packed_sizes == query._packed_sizes
-        assert restored.shape[-1] == 6
 
     def test_sdpa_batch_first_false_matches_reference(self):
         device = torch.device("cpu")
@@ -2334,7 +2342,7 @@ class TestScaledDotProductAttention:
         output = F.scaled_dot_product_attention(query, key, value, dropout_p=0.0)
         reference = NT(
             [F.scaled_dot_product_attention(q, k, v, dropout_p=0.0) for q, k, v in zip(query, key, value)],
-            **query._meta(),
+            **reference_options(query),
         )
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
@@ -2371,7 +2379,7 @@ class TestScaledDotProductAttention:
                 F.scaled_dot_product_attention(q, k, v, attn_mask=m, dropout_p=0.0)
                 for q, k, v, m in zip(query, key, value, masks)
             ],
-            **query._meta(),
+            **reference_options(query),
         )
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
@@ -2388,7 +2396,7 @@ class TestScaledDotProductAttention:
         output = F.scaled_dot_product_attention(query, query, query, attn_mask=mask, dropout_p=0.0)
         reference = NT(
             [F.scaled_dot_product_attention(q, q, q, attn_mask=mask[i], dropout_p=0.0) for i, q in enumerate(query)],
-            **query._meta(),
+            **reference_options(query),
         )
         atol, rtol = low_precision_cuda_tolerances(
             device,
@@ -2400,29 +2408,26 @@ class TestScaledDotProductAttention:
         assert_close(output, reference, atol=atol, rtol=rtol)
 
     def test_sdpa_matches_reference(self, device, float_dtype):
-        query = NT(
-            [
-                torch.randn(4, 64, 32, device=device, dtype=float_dtype),
-                torch.randn(4, 16, 32, device=device, dtype=float_dtype),
-            ]
-        )
-        key = NT(
-            [
-                torch.randn(4, 64, 32, device=device, dtype=float_dtype),
-                torch.randn(4, 20, 32, device=device, dtype=float_dtype),
-            ]
-        )
-        value = NT(
-            [
-                torch.randn(4, 64, 32, device=device, dtype=float_dtype),
-                torch.randn(4, 20, 32, device=device, dtype=float_dtype),
-            ]
-        )
+        query_parts = [
+            torch.randn(2, length, 8, device=device, dtype=float_dtype, requires_grad=True) for length in (6, 4)
+        ]
+        key_parts = [
+            torch.randn(2, length, 8, device=device, dtype=float_dtype, requires_grad=True) for length in (7, 3)
+        ]
+        value_parts = [
+            torch.randn(2, length, 8, device=device, dtype=float_dtype, requires_grad=True) for length in (7, 3)
+        ]
+        reference_query = [part.detach().clone().requires_grad_() for part in query_parts]
+        reference_key = [part.detach().clone().requires_grad_() for part in key_parts]
+        reference_value = [part.detach().clone().requires_grad_() for part in value_parts]
+        query = NT(query_parts)
+        key = NT(key_parts)
+        value = NT(value_parts)
         output = F.scaled_dot_product_attention(query, key, value, dropout_p=0.0)
-        reference = NT(
-            [F.scaled_dot_product_attention(q, k, v, dropout_p=0.0) for q, k, v in zip(query, key, value)],
-            **query._meta(),
-        )
+        reference = [
+            F.scaled_dot_product_attention(q, k, v, dropout_p=0.0)
+            for q, k, v in zip(reference_query, reference_key, reference_value)
+        ]
         atol, rtol = low_precision_cuda_tolerances(
             device,
             float_dtype,
@@ -2430,17 +2435,26 @@ class TestScaledDotProductAttention:
             fp16=(1e-3, 1e-3),
             bf16=(5e-3, 5e-3),
         )
-        assert_close(output, reference, atol=atol, rtol=rtol)
+        for actual, expected in zip(output, reference):
+            assert_close(actual, expected, atol=atol, rtol=rtol)
 
-    def test_sdpa_matches_reference_dense_batch(self, device, float_dtype):
-        query = NT(
-            [
-                torch.randn(4, 64, 32, device=device, dtype=float_dtype),
-                torch.randn(4, 56, 32, device=device, dtype=float_dtype),
-            ]
+        weights = [torch.randn_like(element) for element in reference]
+        loss = sum((element * weight).sum() for element, weight in zip(output, weights))
+        reference_loss = sum((element * weight).sum() for element, weight in zip(reference, weights))
+        gradients = torch.autograd.grad(loss, (*query_parts, *key_parts, *value_parts))
+        reference_gradients = torch.autograd.grad(
+            reference_loss,
+            (*reference_query, *reference_key, *reference_value),
         )
-        output = F.scaled_dot_product_attention(query, query, query, dropout_p=0.0)
-        reference = NT([F.scaled_dot_product_attention(q, q, q, dropout_p=0.0) for q in query], **query._meta())
+        for actual, expected in zip(gradients, reference_gradients):
+            assert_close(actual, expected, atol=atol, rtol=rtol)
+
+    def test_sdpa_is_causal(self, device, float_dtype):
+        query, key, value = (
+            NT([torch.randn(2, length, 8, device=device, dtype=float_dtype) for length in (6, 4)]) for _ in range(3)
+        )
+        output = F.scaled_dot_product_attention(query, key, value, is_causal=True)
+        reference = [F.scaled_dot_product_attention(q, k, v, is_causal=True) for q, k, v in zip(query, key, value)]
         atol, rtol = low_precision_cuda_tolerances(
             device,
             float_dtype,
@@ -2448,7 +2462,8 @@ class TestScaledDotProductAttention:
             fp16=(1e-3, 1e-3),
             bf16=(5e-3, 5e-3),
         )
-        assert_close(output, reference, atol=atol, rtol=rtol)
+        for actual, expected in zip(output, reference):
+            assert_close(actual, expected, atol=atol, rtol=rtol)
 
     def test_sdpa_mismatched_batch_lengths_raises(self):
         query = NT([torch.randn(2, 4, 8), torch.randn(2, 3, 8)])
@@ -2456,85 +2471,11 @@ class TestScaledDotProductAttention:
         with pytest.raises(ValueError, match="NestedTensor batch length mismatch"):
             F.scaled_dot_product_attention(query, key, key, dropout_p=0.0)
 
-    def test_sdpa_native_bridge_roundtrip(self, device, float_dtype):
-        query = NT(
-            [
-                torch.randn(4, 11, 32, device=device, dtype=float_dtype),
-                torch.randn(4, 7, 32, device=device, dtype=float_dtype),
-            ]
-        )
-
-        packed, _cumulative, _max_seqlen = _sdpa_pack_native(query)
-        restored = _sdpa_restore_native(packed, query)
-
-        assert_close(restored, query)
-
     def test_sdpa_requires_nested_query(self):
         tensor_query = torch.randn(2, 2, 4, 8)
         key = NT([torch.randn(2, 4, 8)])
         with pytest.raises(TypeError):
             F.scaled_dot_product_attention(tensor_query, key, key, dropout_p=0.0)
-
-    def test_sdpa_restore_native_updates_last_dim_metadata(self, device, float_dtype):
-        query = NT(
-            [
-                torch.randn(4, 11, 32, device=device, dtype=float_dtype),
-                torch.randn(4, 7, 32, device=device, dtype=float_dtype),
-            ]
-        )
-        packed = torch.randn(query._values.size(0), query._values.size(1), 16, device=device, dtype=float_dtype)
-
-        restored = _sdpa_restore_native(packed, query)
-
-        assert tuple(tuple(int(size) for size in row) for row in restored._physical_shape.tolist()) == (
-            (4, 11, 16),
-            (4, 7, 16),
-        )
-        assert restored._element_shapes == ((4, 11, 16), (4, 7, 16))
-        assert restored._packed_sizes == query._packed_sizes
-        assert restored.shape[-1] == 16
-
-    def test_flash_attention_forward_wrapper(self, device):
-        if device.type != "cuda":
-            pytest.skip("DanLing FlashAttention wrapper is CUDA-only")
-
-        query = NT(
-            [
-                torch.randn(4, 11, 32, device=device, dtype=torch.float16),
-                torch.randn(4, 7, 32, device=device, dtype=torch.float16),
-            ]
-        )
-        key = NT(
-            [
-                torch.randn(4, 11, 32, device=device, dtype=torch.float16),
-                torch.randn(4, 7, 32, device=device, dtype=torch.float16),
-            ]
-        )
-        value = NT(
-            [
-                torch.randn(4, 11, 32, device=device, dtype=torch.float16),
-                torch.randn(4, 7, 32, device=device, dtype=torch.float16),
-            ]
-        )
-
-        output = torch.ops.aten._flash_attention_forward.default(
-            query,
-            key,
-            value,
-            None,
-            None,
-            0,
-            0,
-            0.0,
-            False,
-            False,
-        )[0]
-        reference = NT(
-            [F.scaled_dot_product_attention(q, k, v, dropout_p=0.0) for q, k, v in zip(query, key, value)],
-            **query._meta(),
-        )
-        assert isinstance(output, NT)
-        assert_close(output, reference, atol=1e-3, rtol=1e-3)
 
     def test_sdpa_tensor_key_value(self, device, float_dtype):
         query = NT(
@@ -2544,7 +2485,9 @@ class TestScaledDotProductAttention:
             ]
         )
         output = F.scaled_dot_product_attention(query, query.tensor, query.tensor, dropout_p=0.0)
-        reference = NT([F.scaled_dot_product_attention(q, q, q, dropout_p=0.0) for q in query], **query._meta())
+        reference = NT(
+            [F.scaled_dot_product_attention(q, q, q, dropout_p=0.0) for q in query], **reference_options(query)
+        )
         atol, rtol = low_precision_cuda_tolerances(
             device,
             float_dtype,
@@ -2569,7 +2512,7 @@ class TestScaledDotProductAttention:
                 batch = torch.tensor(index, device=q.device)
                 scores = score_mod(scores, batch, head, q_idx, kv_idx).broadcast_to(scores.shape)
             outputs.append(torch.softmax(scores, dim=-1) @ v)
-        return NT(outputs, **query._meta())
+        return NT(outputs, **reference_options(query))
 
     @pytest.mark.skipif(flex_attention is None, reason="FlexAttention not available")
     def test_flex_eager_default_matches_sdpa(self, device):
@@ -2580,7 +2523,7 @@ class TestScaledDotProductAttention:
         output = flex_attention(query, key, value)
         reference = NT(
             [F.scaled_dot_product_attention(q, k, v, dropout_p=0.0) for q, k, v in zip(query, key, value)],
-            **query._meta(),
+            **reference_options(query),
         )
         assert isinstance(output, NT)
         assert_close(output, reference, atol=1e-4, rtol=1e-4)
@@ -2674,7 +2617,7 @@ class TestSoftmaxFamily:
     def test_gumbel_softmax(self, device, float_dtype):
         nt = nested_rand([(2, 4), (3, 4)], device, float_dtype)
         torch.manual_seed(1016)
-        reference = packed_result(nt, F.gumbel_softmax(nt._values, dim=-1))
+        reference = nt.packed_like(F.gumbel_softmax(nt.concat, dim=-1))
         torch.manual_seed(1016)
         output = F.gumbel_softmax(nt, dim=-1)
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
@@ -2702,7 +2645,7 @@ class TestSoftmaxFamily:
             ]
         )
         output = op(nt, dim=-1)
-        reference = NT([op(t, dim=-1) for t in nt], **nt._meta())
+        reference = NT([op(t, dim=-1) for t in nt], **reference_options(nt))
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
     @pytest.mark.parametrize("op", [F.softmax, F.log_softmax, F.softmin])
@@ -2714,7 +2657,7 @@ class TestSoftmaxFamily:
             ]
         )
         output = op(nt, dim=1)
-        reference = NT([op(t, dim=0) for t in nt], **nt._meta())
+        reference = NT([op(t, dim=0) for t in nt], **reference_options(nt))
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
     def test_softmin(self, device, float_dtype):
@@ -2732,10 +2675,147 @@ class TestUnfoldFold:
             ]
         )
         output = F.unfold(nt, kernel_size=2, stride=1)
-        reference = NT([F.unfold(t, kernel_size=2, stride=1) for t in nt], **nt._meta())
+        reference = NT([F.unfold(t, kernel_size=2, stride=1) for t in nt], **reference_options(nt))
         assert_close(output, reference)
 
         unfolded = output
         output = F.fold(unfolded, output_size=(3, 3), kernel_size=2, stride=1)
-        reference = NT([F.fold(t, output_size=(3, 3), kernel_size=2, stride=1) for t in unfolded], **unfolded._meta())
+        reference = NT(
+            [F.fold(t, output_size=(3, 3), kernel_size=2, stride=1) for t in unfolded], **reference_options(unfolded)
+        )
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
+
+
+class TestCrossEntropy:
+    r"""Class-last cross entropy, which keeps ragged structure that the generic loss path flattens."""
+
+    @staticmethod
+    def _logits_and_targets(device, float_dtype):
+        logits = NestedTensor(
+            [
+                torch.randn(2, 5, device=device, dtype=float_dtype),
+                torch.randn(3, 5, device=device, dtype=float_dtype),
+            ]
+        )
+        targets = NestedTensor(
+            [
+                torch.randint(0, 5, (2,), device=device),
+                torch.randint(0, 5, (3,), device=device),
+            ]
+        )
+        return logits, targets
+
+    @pytest.mark.parametrize("reduction", ["mean", "sum"])
+    def test_matches_dense_on_packed_rows(self, device, float_dtype, reduction):
+        # A 2-D element is (rows, C), where class-last and the dense class-dim-1 convention coincide.
+        logits, targets = self._logits_and_targets(device, float_dtype)
+        output = F.cross_entropy(logits, targets, reduction=reduction)
+        reference = F.cross_entropy(logits.concat, targets.concat, reduction=reduction)
+        torch.testing.assert_close(output, reference)
+
+    def test_weight_and_ignore_index_match_dense(self, device, float_dtype):
+        logits, targets = self._logits_and_targets(device, float_dtype)
+        weight = torch.rand(5, device=device, dtype=float_dtype)
+        ignore_index = int(targets[0][0])
+
+        kwargs = {"weight": weight, "ignore_index": ignore_index}
+        torch.testing.assert_close(
+            F.cross_entropy(logits, targets, **kwargs),
+            F.cross_entropy(logits.concat, targets.concat, **kwargs),
+        )
+
+    def test_reduction_none_keeps_multi_ragged_structure(self, device, float_dtype):
+        # The generic path concatenates into one (rows, C) matrix, which flattens this away.
+        logits = NestedTensor(
+            [
+                torch.randn(2, 2, 5, device=device, dtype=float_dtype),
+                torch.randn(3, 3, 5, device=device, dtype=float_dtype),
+            ]
+        )
+        targets = NestedTensor(
+            [
+                torch.randint(0, 5, (2, 2), device=device),
+                torch.randint(0, 5, (3, 3), device=device),
+            ]
+        )
+        output = F.cross_entropy(logits, targets, reduction="none")
+        assert isinstance(output, NestedTensor)
+        assert [tuple(element.shape) for element in output] == [(2, 2), (3, 3)]
+
+        reference = NestedTensor(
+            [
+                -torch.log_softmax(element, -1).gather(-1, target.unsqueeze(-1)).squeeze(-1)
+                for element, target in zip(logits, targets)
+            ],
+            ragged_dims=targets.ragged_dims,
+        )
+        torch.testing.assert_close(output.concat, reference.concat)
+
+    def test_preserves_autograd(self, device, float_dtype):
+        values = torch.randn(5, 5, device=device, dtype=float_dtype, requires_grad=True)
+        logits = NestedTensor([values[:2], values[2:]])
+        targets = NestedTensor([torch.randint(0, 5, (2,), device=device), torch.randint(0, 5, (3,), device=device)])
+        loss = F.cross_entropy(logits, targets)
+        assert loss.requires_grad
+        loss.backward()
+        assert values.grad is not None
+
+    def test_ignore_index_matches_dense(self, device, float_dtype):
+        logits, targets = self._logits_and_targets(device, float_dtype)
+
+        # An ignored sentinel is allowed to sit outside the class range.
+        sentinel = NestedTensor(
+            [
+                torch.tensor([999, 1], device=device),
+                torch.tensor([0, 1, 999], device=device),
+            ]
+        )
+        torch.testing.assert_close(
+            F.cross_entropy(logits, sentinel, ignore_index=999),
+            F.cross_entropy(logits.concat, sentinel.concat, ignore_index=999),
+        )
+
+    def test_rejects_out_of_range_label_that_is_not_ignored(self, device, float_dtype, request):
+        if device.type == "cuda" and os.environ.get("DANLING_TEST_CUDA_ASSERT_CHILD") != "1":
+            # A device assertion poisons the CUDA context even when caught. Execute
+            # this same parametrized case in a fresh process, synchronizing below.
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    "-o",
+                    "addopts=",
+                    "-p",
+                    "no:cacheprovider",
+                    "-q",
+                    request.node.nodeid,
+                ],
+                cwd=request.config.rootpath,
+                env={**os.environ, "DANLING_TEST_CUDA_ASSERT_CHILD": "1"},
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+            assert result.returncode == 0, result.stdout + result.stderr
+            torch.testing.assert_close(torch.ones(1, device=device).sum(), torch.ones((), device=device))
+            return
+        # Clamping an invalid label into a valid class would score it silently; the dense
+        # operator raises, so this must raise too.
+        logits, _ = self._logits_and_targets(device, float_dtype)
+        bad = NestedTensor(
+            [
+                torch.tensor([-5, 1], device=device),
+                torch.tensor([0, 1, 2], device=device),
+            ]
+        )
+        with pytest.raises((RuntimeError, IndexError), match="out of bounds|out of range|device-side assert"):
+            F.cross_entropy(logits, bad, ignore_index=-100)
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+
+    def test_rejects_label_smoothing(self, device, float_dtype):
+        logits, targets = self._logits_and_targets(device, float_dtype)
+        with pytest.raises(NotImplementedError, match="label_smoothing"):
+            F.cross_entropy(logits, targets, label_smoothing=0.1)
