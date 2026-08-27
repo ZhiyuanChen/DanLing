@@ -725,6 +725,22 @@ class TestPackedWithStaticTail:
         assert [tuple(element.shape) for element in output] == [(2, 2, 3), (4, 2, 3)]
         assert_close(gradient, 2 * leaf)
 
+    def test_packed_with_static_tail_supports_nonleading_ragged_dimension(self):
+        reference = NestedTensor(
+            [torch.empty(2, 2, 3), torch.empty(2, 4, 3)],
+            ragged_dims=(1,),
+        )
+        packed_values = torch.randn(6, 2, 7)
+
+        output = reference.packed_with_static_tail(packed_values)
+
+        assert output.concat is packed_values
+        assert output.shape == (2, 2, 4, 7)
+        assert output.ragged_dims == (1,)
+        expected = (packed_values[:2].permute(1, 0, 2), packed_values[2:].permute(1, 0, 2))
+        for actual, wanted in zip(output, expected):
+            assert_close(actual, wanted)
+
     def test_packed_with_static_tail_rejects_invalid_layouts_and_values(self):
         permuted = NestedTensor([torch.empty(2, 3), torch.empty(4, 3)]).permute(0, 2, 1)
         scalar = NestedTensor([torch.tensor(1.0), torch.tensor(2.0)])
