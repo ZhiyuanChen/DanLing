@@ -534,15 +534,12 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
         reverse = True
         input, other = other, input
 
-    if len(input) == 0:
+    if len(input) == 0 and not isinstance(other, cls):
         if isinstance(other, cls) and len(input) != len(other):
             raise ValueError(
                 "NestedTensor batch length mismatch between input and other: " f"input={len(input)}, other={len(other)}"
             )
-        if isinstance(other, cls):
-            resolved = other._values
-        else:
-            resolved = _as_tensor_like(other, input._values)
+        resolved = _as_tensor_like(other, input._values)
         new_values = (
             op(resolved, input._values, *extra_args, **extra_kwargs)
             if reverse
@@ -591,6 +588,20 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
             )
         lhs_v, rhs_v = (other._values, input._values) if reverse else (input._values, other._values)
         if input._has_same_structure(other):
+            if len(input) == 0:
+                input_extents = input._max_physical_dims()
+                other_extents = other._max_physical_dims()
+                for dim in range(len(input_extents)):
+                    if dim in input._ragged_dims:
+                        compatible = input_extents[dim] == other_extents[dim]
+                    else:
+                        compatible = (
+                            input_extents[dim] == 1
+                            or other_extents[dim] == 1
+                            or input_extents[dim] == other_extents[dim]
+                        )
+                    if not compatible:
+                        raise ValueError("Empty NestedTensor operands have incompatible retained logical extents")
             new_values = op(lhs_v, rhs_v, *extra_args, **extra_kwargs)
             # Fast path (the common elementwise case): the op preserved the static tail, so the ragged
             # metadata is reused as-is -- a single ``torch.Size`` comparison, no rebuild. Only when the

@@ -608,7 +608,52 @@ def _broadcast_nested_tensors_packed(tensors):
     if output_rank == 0:
         return None
 
-    output_varying, output_static = type(ref)._pack_layout_from_element_shapes(output_shapes)
+    inferred_output_varying, _ = type(ref)._pack_layout_from_element_shapes(output_shapes)
+    declared_orders = []
+    for tensor, shapes in zip(tensors, source_shapes):
+        if not tensor._ragged_dims_explicit:
+            continue
+        align = output_rank - len(shapes[0])
+        if align < 0:
+            return None
+        mapped = tuple(align + int(dim) for dim in tensor._ragged_dims)
+        if any(dim < 0 or dim >= output_rank for dim in mapped):
+            return None
+        declared_orders.append(mapped)
+
+    output_ragged_dims = None
+    if declared_orders:
+        reference_shape = output_shapes[0]
+        topology_dims = {
+            dim for dim in range(output_rank) if any(shape[dim] != reference_shape[dim] for shape in output_shapes[1:])
+        }
+        topology_dims.update(dim for order in declared_orders for dim in order)
+        successors = {dim: set() for dim in topology_dims}
+        indegree = dict.fromkeys(topology_dims, 0)
+        for order in declared_orders:
+            for before, after in zip(order, order[1:]):
+                if after not in successors[before]:
+                    successors[before].add(after)
+                    indegree[after] += 1
+
+        ordered = []
+        remaining = set(topology_dims)
+        while remaining:
+            candidate = next(
+                (dim for dim in range(output_rank) if dim in remaining and indegree[dim] == 0),
+                None,
+            )
+            if candidate is None:
+                return None
+            remaining.remove(candidate)
+            ordered.append(candidate)
+            for successor in successors[candidate]:
+                indegree[successor] -= 1
+        output_varying = tuple(ordered)
+        output_ragged_dims = output_varying
+    else:
+        output_varying = inferred_output_varying
+    output_static = tuple(dim for dim in range(output_rank) if dim not in output_varying)
     output_permutation = output_varying + output_static
     packed_sizes = tuple(type(ref)._packed_size_from_shape(shape, output_varying) for shape in output_shapes)
     output_offsets = type(ref)._offsets_from_sizes(packed_sizes, dtype=ref._offsets.dtype)
@@ -665,18 +710,21 @@ def _broadcast_nested_tensors_packed(tensors):
         source_flat = source_offsets[batch_idx.to(device=tensor.device)] + source_local
         selected = tensor._values[source_flat]
 
-        tail_index: list[object] = [slice(None)]
-        kept_static_dims: list[int] = []
-        for source_dim in source_static:
+        kept_static_dims = list(source_static)
+        for source_dim in tuple(source_static):
             output_dim = align + int(source_dim)
             if output_dim in output_static:
-                tail_index.append(slice(None))
-                kept_static_dims.append(int(source_dim))
-            else:
-                if any(shape[int(source_dim)] != 1 for shape in shapes):
-                    return None
-                tail_index.append(0)
-        selected = selected[tuple(tail_index)]
+                continue
+            coord = output_coords[output_dim].to(device=tensor.device)
+            source_sizes = source_shape_device[:, int(source_dim)][batch_idx]
+            coord = torch.where(source_sizes == 1, torch.zeros_like(coord), coord)
+            tail_dim = 1 + kept_static_dims.index(int(source_dim))
+            index_shape = [selected.shape[0], *([1] * (selected.dim() - 1))]
+            gather_shape = list(selected.shape)
+            gather_shape[tail_dim] = 1
+            gather = coord.reshape(index_shape).expand(gather_shape)
+            selected = selected.gather(tail_dim, gather).squeeze(tail_dim)
+            kept_static_dims.remove(int(source_dim))
 
         ordered_existing = [
             output_dim - align
@@ -709,6 +757,7 @@ def _broadcast_nested_tensors_packed(tensors):
                 output_offsets,
                 output_shape,
                 permutation=output_permutation,
+                ragged_dims=output_ragged_dims,
                 batch_first=tensor.batch_first,
                 padding_value=tensor.padding_value,
                 mask_value=tensor.mask_value,
@@ -923,27 +972,22 @@ def split(input: NestedTensor, split_size_or_sections, dim: int = 0):
             split_size = split_size_or_sections
             if split_size <= 0:
                 raise ValueError("split_size must be a positive integer.")
-            storage = input._storage
-            return tuple(
-                NestedTensor(storage[i : i + split_size], **input._meta())  # noqa: E203
-                for i in range(0, len(storage), split_size)
-            )
+            return tuple(input[i : i + split_size] for i in range(0, len(input), split_size))  # noqa: E203
 
         if not isinstance(split_size_or_sections, (list, tuple)):
             raise TypeError(
                 f"split_size_or_sections must be int or a sequence of ints, got {type(split_size_or_sections)}"
             )
 
-        storage = input._storage
         chunks = []
         start = 0
         for section in split_size_or_sections:
             if section < 0:
                 raise ValueError("split sections must be non-negative.")
             end = start + int(section)
-            chunks.append(NestedTensor(storage[start:end], **input._meta()))
+            chunks.append(input[start:end])
             start = end
-        if start != len(storage):
+        if start != len(input):
             raise ValueError("split sections do not sum to the NestedTensor batch size.")
         return tuple(chunks)
 
@@ -3964,6 +4008,7 @@ def transpose(input: NestedTensor, dim0: int, dim1: int) -> NestedTensor:
             packed_sizes=input._packed_sizes,
             element_shapes=input._element_shapes,
             permutation=input._permutation,
+            ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
             validate=False,
         )
     from .aten_functions import transpose as _aten_transpose

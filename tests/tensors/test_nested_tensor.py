@@ -469,6 +469,127 @@ class TestConstruction:
 # ---------------------------------------------------------------------------
 
 
+class TestDeclaredRaggedDims:
+
+    def test_declared_ragged_dims_preserve_values_and_layout(self):
+        elements = [torch.randn(2, 2, 3), torch.randn(4, 4, 3)]
+
+        nested = NestedTensor(elements, ragged_dims=(0, 1))
+
+        assert nested.ragged_dims == (0, 1)
+        assert nested.packed_dim_order == (0, 1, 2)
+        assert nested.concat.shape == (20, 3)
+        for actual, expected in zip(nested, elements):
+            assert_close(actual, expected)
+
+    def test_declared_ragged_dims_validate_static_dimensions(self):
+        inferred = NestedTensor([torch.randn(4, 4, 3), torch.randn(4, 4, 3)])
+        declared = NestedTensor([torch.randn(2, 2, 3), torch.randn(4, 4, 3)], ragged_dims=(0, 1))
+
+        assert inferred.ragged_dims == (0,)
+        with pytest.raises(AttributeError):
+            declared.ragged_dims = (0,)  # type: ignore[misc]
+        with pytest.raises(ValueError, match="not listed in ragged_dims"):
+            NestedTensor([torch.randn(2, 2, 3), torch.randn(4, 4, 5)], ragged_dims=(0, 1))
+
+    def test_declared_ragged_dims_support_fake_tensor(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        reference = NestedTensor([torch.empty(2, 2, 3), torch.empty(4, 4, 3)], ragged_dims=(0, 1))
+
+        with fake_tensor_mod.FakeTensorMode() as mode:
+            fake_reference = mode.from_tensor(reference)
+            output = fake_reference.packed_like(torch.empty_like(fake_reference.concat))
+
+        assert fake_tensor_mod.is_fake(output.concat)
+        assert output.ragged_dims == (0, 1)
+        assert output.shape == reference.shape
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_declared_ragged_dims_survive_fullgraph_with_backward(self):
+        reference = NestedTensor([torch.empty(2, 2, 3), torch.empty(4, 4, 3)], ragged_dims=(0, 1))
+        values = torch.randn_like(reference.concat, requires_grad=True)
+        compiled = torch.compile(
+            lambda ref, packed: ref.packed_like(packed.square()),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        output = compiled(reference, values)
+        output.concat.sum().backward()
+
+        assert output.ragged_dims == (0, 1)
+        assert output.shape == reference.shape
+        assert_close(values.grad, 2 * values)
+
+    def test_declared_pair_dense_matmul_matches_elementwise_reference(self):
+        elements = [torch.randn(2, 2, 3), torch.randn(4, 4, 3)]
+        nested = NestedTensor(elements, ragged_dims=(0, 1))
+        weight = torch.randn(3, 5)
+
+        output = nested @ weight
+
+        assert output.ragged_dims == (0, 1)
+        assert output.shape == (2, 4, 4, 5)
+        for actual, expected in zip(output, elements):
+            assert_close(actual, expected @ weight)
+
+    def test_source_derived_empty_batch_preserves_shape_and_basic_indexing(self):
+        source = NestedTensor(
+            [torch.empty(4, 3, 4), torch.empty(4, 5, 4)],
+            ragged_dims=(0, 1),
+        )
+        empty = source[:0]
+
+        assert empty.shape == (0, 4, 5, 4)
+        assert empty.ragged_dims == (0, 1)
+        indices = (
+            (slice(None), slice(1, 4, 2), slice(None), slice(1, None)),
+            (slice(None), slice(None), 0, slice(None)),
+        )
+        for index in indices:
+            actual = empty[index]
+            expected = source[index][:0]
+            assert actual.shape == expected.shape
+            assert actual.ragged_dims == expected.ragged_dims
+
+    def test_indexing_empty_batch_keeps_autograd_connection(self):
+        values = torch.randn(8, 2, requires_grad=True)
+        nested = NestedTensor(
+            [torch.empty(3, 2), torch.empty(5, 2)],
+            ragged_dims=(0,),
+        ).packed_like(values)
+
+        nested[:0, 0].sum().backward()
+
+        assert_close(values.grad, torch.zeros_like(values))
+
+    def test_shape_changing_ops_remap_declared_ragged_dims(self):
+        elements = [torch.randn(2, 2, 3), torch.randn(2, 2, 3)]
+        nested = NestedTensor(elements, ragged_dims=(0, 1))
+
+        permuted = nested.permute(0, 3, 1, 2)
+        indexed = nested[:, :, 0, :]
+
+        assert permuted.ragged_dims == (1, 2)
+        assert indexed.ragged_dims == (0,)
+        for actual, expected in zip(permuted, elements):
+            assert_close(actual, expected.permute(2, 0, 1))
+        for actual, expected in zip(indexed, elements):
+            assert_close(actual, expected[:, 0, :])
+
+    def test_from_concatenated_honors_declared_ragged_order(self):
+        elements = [torch.arange(12.0).reshape(2, 2, 3), torch.arange(12.0, 24.0).reshape(2, 2, 3)]
+        reference = NestedTensor(elements, ragged_dims=(1, 0))
+
+        values, shapes = reference.concatenate()
+        output = NestedTensor.from_concatenated(values, shapes, ragged_dims=(1, 0))
+
+        assert output.ragged_dims == (1, 0)
+        for actual, expected in zip(output, elements):
+            assert_close(actual, expected)
+
+
 class TestPackedLike:
 
     def test_packed_like_preserves_public_layout_and_runtime_config(self):
