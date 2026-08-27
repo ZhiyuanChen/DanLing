@@ -675,6 +675,30 @@ class TestPackedLike:
         with pytest.raises(TypeError, match="torch.strided"):
             reference.packed_like(torch.zeros_like(reference.concat).to_sparse())
 
+    def test_packed_offsets_and_element_sizes_report_public_layout(self):
+        nested = NestedTensor(
+            [torch.empty(2, 2, 4), torch.empty(3, 3, 4)],
+            ragged_dims=(0, 1),
+        )
+
+        assert_close(nested.packed_offsets(), torch.tensor([0, 4, 13]))
+        assert_close(nested.element_sizes(), torch.tensor([[2, 2, 4], [3, 3, 4]]))
+        assert_close(nested.packed_local_indices(level=0), torch.tensor([0, 1, 0, 1, 2]))
+
+    def test_packed_layout_accessors_support_empty_and_fake_tensors(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        empty = NestedTensor([], dtype=torch.float32)
+        reference = NestedTensor([torch.empty(2, 3), torch.empty(4, 3)])
+
+        with fake_tensor_mod.FakeTensorMode() as mode:
+            fake = mode.from_tensor(reference)
+            output = fake.packed_like(torch.empty_like(fake.concat))
+
+        assert empty.element_sizes().shape == (0, 0)
+        assert fake_tensor_mod.is_fake(output.concat)
+        assert fake_tensor_mod.is_fake(output.packed_offsets())
+        assert output.shape == reference.shape
+
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_packed_like_fullgraph_forward_backward(self):
         reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
