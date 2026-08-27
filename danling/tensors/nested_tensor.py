@@ -486,7 +486,11 @@ class NestedTensor(torch.Tensor):
                 if len(ragged_offsets) != 1:
                     raise ValueError(f"Expected one ragged offset tensor, got {len(ragged_offsets)}")
                 supplied = ragged_offsets[0]
-                if not (_is_fake_tensor(supplied) or _is_fake_tensor(offsets)) and not torch.equal(supplied, offsets):
+                if (
+                    supplied is not offsets
+                    and not (_is_fake_tensor(supplied) or _is_fake_tensor(offsets))
+                    and not torch.equal(supplied, offsets)
+                ):
                     raise ValueError("The supplied single-level ragged offsets must match offsets")
             return (offsets,)
         if ragged_offsets is not None:

@@ -781,16 +781,17 @@ class TestPackedWithStaticTail:
 
     def test_packed_with_static_tail_supports_fake_values(self):
         fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
-        reference = NestedTensor([torch.empty(2), torch.empty(4)])
+        reference = NestedTensor(
+            [torch.empty(2, 2, 3), torch.empty(2, 4, 3)],
+            ragged_dims=(1,),
+        )
 
         with fake_tensor_mod.FakeTensorMode() as mode:
-            output = mode.from_tensor(reference).packed_with_static_tail(
-                mode.from_tensor(torch.empty(6, 7))
-            )
+            output = mode.from_tensor(reference).packed_with_static_tail(mode.from_tensor(torch.empty(6, 2, 7)))
 
         assert fake_tensor_mod.is_fake(output.concat)
-        assert output.shape == (2, 4, 7)
-        assert output.ragged_dims == (0,)
+        assert output.shape == (2, 2, 4, 7)
+        assert output.ragged_dims == (1,)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_packed_with_static_tail_fullgraph_backward(self):
