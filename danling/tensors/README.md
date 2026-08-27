@@ -274,6 +274,8 @@ def _my_handler(func, args, kwargs):
 
 `packed_like` requires the packed output shape to remain unchanged. Operations
 that change element shapes must rebuild the corresponding shape metadata instead.
+`packed_dim_order` exposes the read-only mapping from logical element dimensions
+to physical packed-storage order when an operator needs to validate its layout.
 
 Critical packed paths can use `nested_execution_guard` from `danling.tensors` in
 tests or diagnostics to reject iteration, per-element fallback, padded

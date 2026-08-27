@@ -1837,6 +1837,17 @@ class NestedTensor(torch.Tensor):
         """
         return self._values
 
+    @property
+    def packed_dim_order(self) -> tuple[int, ...]:
+        r"""Logical element dimensions in physical packed-storage order.
+
+        The tuple is a read-only structural descriptor.  Identity order means
+        packed storage follows the element's logical dimension order; operations
+        that permute logical dimensions may retain the same packed values while
+        changing this mapping.
+        """
+        return self._permutation
+
     def concatenate(self) -> tuple[Tensor, tuple[torch.Size, ...]]:
         r"""
         Concatenate tensors in padding dimension and return structural information for reconstruction.

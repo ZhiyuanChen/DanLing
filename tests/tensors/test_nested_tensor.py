@@ -470,6 +470,16 @@ class TestConstruction:
 
 class TestPackedLike:
 
+    def test_packed_dim_order_tracks_logical_permutation(self):
+        reference = NestedTensor([torch.randn(2, 2, 3), torch.randn(4, 4, 3)])
+
+        assert reference.packed_dim_order == (0, 1, 2)
+
+        permuted = reference.permute(0, 3, 1, 2)
+        assert permuted.packed_dim_order == (1, 2, 0)
+        rebuilt = permuted.packed_like(torch.randn_like(permuted.concat))
+        assert rebuilt.packed_dim_order == permuted.packed_dim_order
+
     def test_packed_like_preserves_structure_and_runtime_config(self):
         reference = NestedTensor(
             [torch.randn(2, 3), torch.randn(4, 3)],
