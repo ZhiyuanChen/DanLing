@@ -30,6 +30,7 @@ and dispatch entry points.
 # pylint: disable=protected-access
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from typing import Any, Iterable, SupportsFloat, cast
 
@@ -168,6 +169,7 @@ class NestedTensor(torch.Tensor):
     _cached_ragged_level_offsets: dict[tuple[int, str, torch.dtype, tuple[int, ...]], Tensor] | None
     _RAGGED_OFFSETS_PREFIX = "_ragged_offsets_"
     _SERIALIZATION_VERSION = 3
+    _AOT_CACHE_HASH_VERSION = 1
 
     # Construction & Initialization
 
@@ -1344,6 +1346,54 @@ class NestedTensor(torch.Tensor):
     # ------------------------------------------------------------------
     # torch.compile support
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _tensor_metadata_for_caching(tensor: Tensor) -> tuple[Any, ...]:
+        r"""Return stable tensor metadata without inspecting storage contents.
+
+        Shapes and strides may contain ``SymInt`` expressions.  Their ``repr`` is
+        intentionally retained by :meth:`_stable_hash_for_caching`, matching the
+        representation-based stable hash used by PyTorch's ``DTensor`` cache
+        extension.  Storage addresses and tensor values are excluded;
+        ``storage_offset`` itself remains ordinary tensor metadata.
+        """
+        return (
+            str(tensor.dtype),
+            tensor.device.type,
+            tensor.device.index,
+            str(tensor.layout),
+            tuple(tensor.shape),
+            tuple(tensor.stride()),
+            tensor.storage_offset(),
+            bool(tensor.requires_grad),
+            bool(tensor.is_conj()),
+            bool(tensor.is_neg()),
+            bool(tensor.is_inference()),
+        )
+
+    def _stable_hash_for_caching(self) -> str:
+        r"""Return a deterministic metadata hash for PyTorch's AOTAutograd cache.
+
+        Tensor-backed offsets, physical shapes, and hierarchical row splits are
+        flattened children.  Only their tensor metadata participates in this hash;
+        their data does not.  Consequently, two dynamic calls with the same static
+        structure can reuse one cache entry even when their ragged lengths differ.
+        Legacy layouts whose topology still lives in ``packed_sizes`` or
+        ``element_shapes`` retain those tuples in the static flatten context and
+        therefore remain safely layout-specific.
+        """
+        inner_tensor_names, context = self.__tensor_flatten__()
+        tensor_metadata = type(self)._tensor_metadata_for_caching
+        payload = (
+            "danling.NestedTensor.aot_autograd",
+            type(self)._AOT_CACHE_HASH_VERSION,
+            type(self).__module__,
+            type(self).__qualname__,
+            tensor_metadata(self),
+            tuple((name, tensor_metadata(getattr(self, name))) for name in inner_tensor_names),
+            tuple(context.items()),
+        )
+        return hashlib.blake2b(repr(payload).encode("utf-8"), digest_size=16).hexdigest()
 
     @property
     def _max_length_binding(self) -> Tensor:
