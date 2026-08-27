@@ -266,10 +266,37 @@ def _broadcasts_per_element(source: NestedTensor, candidate: Tensor) -> bool:
     if source._element_shapes is not None:
         element_shapes = source._element_shapes
     else:
+        tensor_backed_layout = type(source)._is_tensor_backed_layout(source._permutation, source._ragged_dims)
+        if tensor_backed_layout:
+            physical_rank = int(source._physical_shape.size(1))
+            if candidate.dim() > physical_rank:
+                return False
+
+            leading_singletons = physical_rank - candidate.dim()
+            aligned_shape = (1,) * leading_singletons + tuple(candidate.shape)
+            candidate_ragged_size = aligned_shape[0]
+            if candidate_ragged_size != 1:
+                ragged_sizes_match = torch.all(source._physical_shape[:, 0] == candidate_ragged_size)
+                from .aten_functions import _is_fake_tensor
+
+                if _is_compiling() or _is_fake_tensor(source._physical_shape):
+                    torch._assert_async(
+                        ragged_sizes_match,
+                        "dense operand ragged extent must match every NestedTensor element",
+                    )
+                elif not bool(ragged_sizes_match):
+                    return False
+
+            value_tail = tuple(source._values.shape[1:])
+            try:
+                broadcasted_tail = torch.broadcast_shapes(value_tail, aligned_shape[1:])
+            except RuntimeError:
+                return False
+            return tuple(broadcasted_tail) == value_tail
         if _is_compiling():
             _compile_unsupported(
                 "dense NestedTensor broadcast",
-                "compile-safe broadcast checks require cached python element_shapes metadata",
+                "compile-safe broadcast checks require tensor-backed or cached element shape metadata",
             )
         element_shapes = tuple(tuple(int(size) for size in shape) for shape in source._physical_shape.tolist())
 
@@ -752,6 +779,8 @@ def _concat_dim_for_tensor_dim(input: NestedTensor, dim: int) -> int | None:
         return None
     if input._element_shapes is not None:
         static_dims = _static_dim_mask_from_element_shapes(input._element_shapes, int(st.size(1)))
+    elif type(input)._is_tensor_backed_layout(input._permutation, input._ragged_dims):
+        static_dims = (False, *(True for _ in range(1, int(st.size(1)))))
     else:
         if _is_compiling():
             _compile_unsupported(
@@ -1272,6 +1301,17 @@ def _can_concat_normalize(input: NestedTensor, normalized_shape: tuple[int, ...]
         return True
     element_shapes = input._element_shapes
     if element_shapes is None:
+        if type(input)._is_tensor_backed_layout(input._permutation, input._ragged_dims):
+            value_tail = tuple(input._values.shape[1:])
+            ndim = len(normalized_shape)
+            if ndim > len(value_tail):
+                return False
+            return tuple(value_tail[-ndim:]) == normalized_shape
+        if _is_compiling():
+            _compile_unsupported(
+                "NestedTensor normalization",
+                "compile-safe normalization requires tensor-backed or cached element shape metadata",
+            )
         element_shapes = tuple(tuple(int(size) for size in shape) for shape in input._physical_shape.tolist())
     if not element_shapes:
         return True

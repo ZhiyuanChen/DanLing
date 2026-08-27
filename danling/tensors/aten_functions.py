@@ -485,14 +485,6 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
         return reduced
 
     dim_adj = _translate_dim(source, dim)
-    if source._ragged_rank > 1:
-        # Multiple ragged levels collapse into one packed dim in ``_values``, so a per-element dim index no
-        # longer maps onto the packed layout; reduce per element, where each item still carries its full rank.
-        return _fallback([dim_adj], keepdim)
-    segment_reduced = _segment_reduce_ragged_dim(func, source, dim_adj, keepdim, kwargs)
-    if segment_reduced is not None:
-        return segment_reduced
-
     values_dim = _physical_to_values_dim(source, dim_adj)
     if values_dim is not None:
         return _reduce_non_ragged_packed(
@@ -501,6 +493,13 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
             dim_adj,
             keepdim,
         )
+    if source._ragged_rank > 1:
+        # Multiple ragged levels collapse into one packed dim in ``_values``, so a per-element dim index no
+        # longer maps onto the packed layout; reduce per element, where each item still carries its full rank.
+        return _fallback([dim_adj], keepdim)
+    segment_reduced = _segment_reduce_ragged_dim(func, source, dim_adj, keepdim, kwargs)
+    if segment_reduced is not None:
+        return segment_reduced
 
     if not _is_packed_identity(source):
         if dim_adj in source._varying_dims:
@@ -1733,6 +1732,7 @@ def _packed_new_dim_size(source: NestedTensor, new_values: Tensor, dim_adj: int,
         permutation=source._permutation,
         packed_sizes=packed_sizes,
         element_shapes=element_shapes,
+        preserve_ragged_offsets=dim_adj not in source._ragged_dims,
     )
 
 
@@ -1755,6 +1755,7 @@ def _packed_with_static_tail_from_values(source: NestedTensor, new_values: Tenso
         permutation=source._permutation,
         packed_sizes=source._packed_sizes,
         element_shapes=element_shapes,
+        preserve_ragged_offsets=True,
     )
     if source._cached_hierarchical_offsets is not None:
         result._cached_hierarchical_offsets = source._cached_hierarchical_offsets
@@ -1771,22 +1772,30 @@ def _packed_with_shape(
     permutation: tuple[int, ...] | None = None,
     packed_sizes: tuple[int, ...] | None = None,
     element_shapes: tuple[tuple[int, ...], ...] | None = None,
+    preserve_ragged_offsets: bool = False,
 ) -> NestedTensor:
     r"""Rebuild a NestedTensor with explicit ``_physical_shape`` and logical shape."""
+    source_offsets = offsets is None or offsets is source._offsets
     if offsets is None:
         offsets = source._offsets
     if new_logical_shape is None:
         new_logical_shape = type(source)._logical_shape_from_physical_shape(
             new_physical_shape, offsets, source.batch_first
         )
+    output_permutation = permutation
+    if output_permutation is None and int(new_physical_shape.size(1)) == len(source._permutation):
+        output_permutation = source._permutation
     declared_ragged_dims = None
-    if source._ragged_dims_explicit:
-        output_permutation = permutation
-        if output_permutation is None and int(new_physical_shape.size(1)) == len(source._permutation):
-            output_permutation = source._permutation
-        if output_permutation is not None:
-            output_ragged_rank = int(new_physical_shape.size(1)) - max(new_values.dim() - 1, 0)
-            declared_ragged_dims = tuple(int(dim) for dim in output_permutation[:output_ragged_rank])
+    if source._ragged_dims_explicit and output_permutation is not None:
+        output_ragged_rank = int(new_physical_shape.size(1)) - max(new_values.dim() - 1, 0)
+        declared_ragged_dims = tuple(int(dim) for dim in output_permutation[:output_ragged_rank])
+    ragged_offsets = None
+    if (
+        preserve_ragged_offsets
+        and source_offsets
+        and type(source)._is_tensor_backed_layout(output_permutation, declared_ragged_dims)
+    ):
+        ragged_offsets = source._persistent_ragged_offsets()
     return type(source)._from_packed(
         new_values,
         offsets,
@@ -1800,6 +1809,7 @@ def _packed_with_shape(
         outer_size=torch.Size(new_logical_shape),
         packed_sizes=packed_sizes,
         element_shapes=element_shapes,
+        ragged_offsets=ragged_offsets,
         validate=False,
     )
 
@@ -1844,6 +1854,7 @@ def _packed_with_tail_from_values(source: NestedTensor, new_values: Tensor) -> N
             permutation=source._permutation,
             packed_sizes=packed_sizes,
             element_shapes=element_shapes,
+            preserve_ragged_offsets=True,
         )
 
     leading_ragged = tuple(range(source._ragged_rank))
@@ -1867,6 +1878,7 @@ def _packed_with_tail_from_values(source: NestedTensor, new_values: Tensor) -> N
         permutation=tuple(range(source._ragged_rank + len(tail))),
         packed_sizes=packed_sizes,
         element_shapes=element_shapes,
+        preserve_ragged_offsets=True,
     )
 
 
@@ -2156,6 +2168,7 @@ def _reduce_non_ragged_packed(source: NestedTensor, out_values: Tensor, dim_adj:
         permutation=permutation,
         packed_sizes=packed_sizes,
         element_shapes=element_shapes,
+        preserve_ragged_offsets=True,
     )
 
 
@@ -2174,6 +2187,7 @@ def _reduce_non_ragged_packed_dims(source: NestedTensor, out_values: Tensor, dim
             permutation=source._permutation,
             packed_sizes=packed_sizes,
             element_shapes=element_shapes,
+            preserve_ragged_offsets=True,
         )
 
     keep_dims = tuple(i for i in range(source._physical_shape.size(1)) if i not in set(dims_adj))
@@ -2186,6 +2200,7 @@ def _reduce_non_ragged_packed_dims(source: NestedTensor, out_values: Tensor, dim
         permutation=source._project_permutation(keep_dims=keep_dims),
         packed_sizes=packed_sizes,
         element_shapes=element_shapes,
+        preserve_ragged_offsets=True,
     )
 
 
@@ -3630,6 +3645,11 @@ def squeeze_default(func, args, kwargs):
     rank = source._physical_shape.size(1)
     if rank == 0:
         return source._packed_like_unchecked(source._values)
+    if source._element_shapes is None and (_is_compiling() or _is_fake_tensor(source._physical_shape)):
+        _compile_unsupported(
+            "aten.squeeze",
+            "tensor-backed singleton-dimension analysis is not implemented",
+        )
 
     # If any sample has ragged size 1, squeezing dim-0 is per-element.
     if source._physical_shape.size(0) > 0 and bool(torch.any(source._physical_shape[:, 0] == 1)):
@@ -3759,6 +3779,7 @@ def transpose(func, args, kwargs):
             element_shapes=source._element_shapes,
             permutation=source._permutation,
             ragged_dims=source._ragged_dims if source._ragged_dims_explicit else None,
+            ragged_offsets=source._persistent_ragged_offsets(),
             validate=False,
         )
 
@@ -3888,6 +3909,7 @@ def unsqueeze(func, args, kwargs):
         permutation=shifted_varying + new_static,
         packed_sizes=source._packed_sizes,
         element_shapes=out_element_shapes,
+        preserve_ragged_offsets=True,
     )
 
 
@@ -4019,6 +4041,11 @@ def _packed_varying_softmax_group_indices(
     """
     element_shapes = source._element_shapes
     if element_shapes is None:
+        if _is_compiling() or _is_fake_tensor(source._physical_shape):
+            _compile_unsupported(
+                "NestedTensor ragged softmax",
+                "tensor-backed varying-dimension grouping is not implemented",
+            )
         if _is_fake_tensor(source._physical_shape):
             return None
         element_shapes = tuple(tuple(int(size) for size in shape) for shape in source._physical_shape.tolist())
@@ -4899,6 +4926,7 @@ def alias(func, args, kwargs):
 def clone(func, args, kwargs):
     r"""Clone all internal tensors of a NestedTensor."""
     source = args[0]
+    ragged_offsets = source._persistent_ragged_offsets()
     return type(source)._from_packed(
         source._values.clone(),
         source._offsets.clone(),
@@ -4912,6 +4940,7 @@ def clone(func, args, kwargs):
         element_shapes=source._element_shapes,
         permutation=source._permutation,
         ragged_dims=source._ragged_dims if source._ragged_dims_explicit else None,
+        ragged_offsets=tuple(level_offsets.clone() for level_offsets in ragged_offsets) if ragged_offsets else None,
         validate=False,
     )
 
@@ -4993,6 +5022,11 @@ def _constant_pad_packed_variable_last_dim(source: NestedTensor, pad: tuple[int,
     if source._packed_sizes is not None:
         packed_sizes = tuple(int(size) + pad_width for size in source._packed_sizes)
     else:
+        if _is_compiling() or _is_fake_tensor(source._offsets):
+            _compile_unsupported(
+                "aten.constant_pad_nd",
+                "tensor-backed ragged padding metadata is not implemented",
+            )
         packed_sizes = tuple(int(size) for size in (new_offsets[1:] - new_offsets[:-1]).tolist())
 
     outer_size = list(source._logical_shape)
@@ -5018,6 +5052,7 @@ def _constant_pad_packed_variable_last_dim(source: NestedTensor, pad: tuple[int,
 def detach(func, args, kwargs):
     r"""Detach all internal tensors from the computation graph."""
     source = args[0]
+    ragged_offsets = source._persistent_ragged_offsets()
     return type(source)._from_packed(
         source._values.detach(),
         source._offsets.detach(),
@@ -5031,6 +5066,7 @@ def detach(func, args, kwargs):
         element_shapes=source._element_shapes,
         permutation=source._permutation,
         ragged_dims=source._ragged_dims if source._ragged_dims_explicit else None,
+        ragged_offsets=tuple(level_offsets.detach() for level_offsets in ragged_offsets) if ragged_offsets else None,
         validate=False,
     )
 
