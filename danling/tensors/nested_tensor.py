@@ -55,6 +55,20 @@ except ImportError:
 from torch import nested
 
 
+@torch.library.custom_op("danling::_square_row_splits", mutates_args=())
+def _square_row_splits(lengths: Tensor) -> Tensor:
+    r"""Build the innermost CSR row splits for square ragged elements."""
+    row_widths = torch.repeat_interleave(lengths, lengths)
+    return torch.nn.functional.pad(row_widths.cumsum(0), (1, 0))
+
+
+@_square_row_splits.register_fake
+def _square_row_splits_fake(lengths: Tensor) -> Tensor:
+    ctx = torch.library.get_ctx()
+    row_splits_size = ctx.new_dynamic_size(min=1)
+    return lengths.new_empty((row_splits_size,))
+
+
 class NestedTensor(torch.Tensor):
     r"""
     A container for variable-length tensors that enables efficient batch operations.
@@ -2489,6 +2503,11 @@ class NestedTensor(torch.Tensor):
         if self._element_shapes is not None:
             return tuple(torch.Size(shape) for shape in self._element_shapes)
         if not _is_fake_tensor(self._physical_shape):
+            if self._persistent_ragged_offsets() is not None:
+                # Tensor-backed explicit layouts have a fixed, exact physical
+                # rank.  Their trailing zeros are real dimensions rather than
+                # padding columns (for example an empty square is ``(0, 0)``).
+                return tuple(torch.Size(row) for row in self._physical_shape.tolist())
             return tuple(torch.Size(type(self)._trim_shape(row)) for row in self._physical_shape.tolist())
         raise RuntimeError("NestedTensor shape metadata is unavailable for this instance.")
 
@@ -3309,6 +3328,144 @@ class NestedTensor(torch.Tensor):
             outer_size=logical_shape,
             packed_sizes=None,
             element_shapes=None,
+            validate=False,
+            materialize_python_metadata=False,
+        )
+        if symbolic_lengths:
+            result._max_length_binding = result._offsets.new_empty(()).expand(max_length)
+        return result
+
+    def packed_with_square_lengths(self, packed_values: Tensor, lengths: Tensor) -> Self:
+        r"""Wrap packed values as canonical square ragged elements.
+
+        ``lengths`` defines two canonical ragged dimensions with equal sizes,
+        so batch element ``i`` has shape
+        ``(lengths[i], lengths[i], *packed_values.shape[1:])``.  The reference
+        supplies only the batch size, subclass, and runtime configuration; its
+        existing topology is not retained.  The returned tensor shares
+        ``packed_values`` and its autograd history directly.
+
+        Args:
+            packed_values: Dense packed storage with shape
+                ``(sum(lengths.square()), *static_tail)``.
+            lengths: One-dimensional CPU integer tensor with one non-negative
+                length per batch element.
+
+        Returns:
+            A canonical two-ragged-dimension ``NestedTensor`` backed directly
+            by ``packed_values``.
+
+        Raises:
+            TypeError: If either tensor has an unsupported type, dtype, or
+                layout.
+            ValueError: If ``lengths`` is not valid one-dimensional CPU
+                metadata, has the wrong batch size, contains a negative value,
+                or its squared sizes do not sum to the packed leading
+                dimension.
+
+        Examples:
+            >>> reference = NestedTensor([torch.zeros(1), torch.zeros(1)])
+            >>> lengths = torch.tensor([2, 3])
+            >>> values = torch.randn(13, 4)
+            >>> output = reference.packed_with_square_lengths(values, lengths)
+            >>> [tuple(element.shape) for element in output]
+            [(2, 2, 4), (3, 3, 4)]
+            >>> output.concat is values
+            True
+        """
+        if (
+            not isinstance(packed_values, Tensor)
+            or isinstance(packed_values, NestedTensor)
+            or packed_values.is_nested
+            or packed_values.layout != torch.strided
+        ):
+            raise TypeError(
+                "packed_values must be a dense Tensor with torch.strided layout, "
+                f"got {type(packed_values).__name__} with layout "
+                f"{getattr(packed_values, 'layout', None)}"
+            )
+        if packed_values.dim() == 0:
+            raise ValueError("packed_values must have a leading packed dimension")
+        if (
+            not isinstance(lengths, Tensor)
+            or isinstance(lengths, NestedTensor)
+            or lengths.is_nested
+            or lengths.layout != torch.strided
+        ):
+            raise TypeError(
+                "lengths must be a dense Tensor with torch.strided layout, "
+                f"got {type(lengths).__name__} with layout {getattr(lengths, 'layout', None)}"
+            )
+        if lengths.device.type != "cpu":
+            raise ValueError(f"lengths must be on CPU, got {lengths.device}")
+        if lengths.dtype.is_floating_point or lengths.dtype.is_complex or lengths.dtype == torch.bool:
+            raise TypeError(f"lengths must use an integer dtype, got {lengths.dtype}")
+        if lengths.dim() != 1:
+            raise ValueError(f"lengths must be one-dimensional, got shape {tuple(lengths.shape)}")
+        if lengths.numel() != len(self):
+            raise ValueError(
+                "lengths must contain one value per batch element, "
+                f"got {lengths.numel()} values for batch size {len(self)}"
+            )
+
+        long_lengths = lengths.to(dtype=torch.long)
+        packed_sizes = long_lengths.square()
+        symbolic_lengths = _is_fake_tensor(lengths)
+        if symbolic_lengths:
+            if not _is_fake_tensor(packed_values):
+                raise ValueError(
+                    "FakeTensor lengths require FakeTensor packed_values; "
+                    "pass concrete CPU lengths for standalone FakeTensor reconstruction"
+                )
+            torch._assert_async(torch.all(long_lengths >= 0), "lengths must be non-negative")
+            torch._assert_async(
+                packed_sizes.sum() == packed_values.shape[0],
+                "squared lengths must sum to the packed values leading dimension",
+            )
+        else:
+            if bool(torch.any(long_lengths < 0)):
+                raise ValueError("lengths must be non-negative")
+            packed_length = int(packed_sizes.sum().item())
+            if packed_length != packed_values.shape[0]:
+                raise ValueError(
+                    "squared lengths must sum to the packed values leading dimension, "
+                    f"got sum {packed_length} and packed length {packed_values.shape[0]}"
+                )
+
+        static_tail = tuple(packed_values.shape[1:])
+        physical_rank = 2 + len(static_tail)
+        if lengths.numel():
+            square_shape = long_lengths.reshape(-1, 1).expand(-1, 2)
+            tail_shape = long_lengths.new_empty((lengths.numel(), len(static_tail)))
+            for dim, size in enumerate(static_tail):
+                tail_shape[:, dim] = size
+            physical_shape = torch.cat((square_shape, tail_shape), dim=1)
+        else:
+            physical_shape = long_lengths.new_empty((0, physical_rank))
+
+        outer_offsets = torch.nn.functional.pad(packed_sizes.cumsum(0), (1, 0))
+        level_zero_offsets = torch.nn.functional.pad(long_lengths.cumsum(0), (1, 0))
+        level_one_offsets = _square_row_splits(long_lengths)
+        max_length = long_lengths.max().item() if lengths.numel() else 0
+        if self.batch_first:
+            logical_shape = torch.Size((len(self), max_length, max_length, *static_tail))
+        else:
+            logical_shape = torch.Size((max_length, len(self), max_length, *static_tail))
+        pin_memory = bool(packed_values.device.type == "cpu" and packed_values.is_pinned())
+        result = type(self)._from_packed(
+            packed_values,
+            outer_offsets,
+            physical_shape,
+            permutation=tuple(range(physical_rank)),
+            ragged_dims=(0, 1),
+            batch_first=self.batch_first,
+            padding_value=self.padding_value,
+            mask_value=self.mask_value,
+            pin_memory=pin_memory,
+            outer_size=logical_shape,
+            packed_sizes=None,
+            element_shapes=None,
+            ragged_offsets=(level_zero_offsets, level_one_offsets),
             validate=False,
             materialize_python_metadata=False,
         )
