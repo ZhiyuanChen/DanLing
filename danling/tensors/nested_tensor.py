@@ -1767,6 +1767,17 @@ class NestedTensor(torch.Tensor):
             self._cached_packed_offsets[key] = converted
         return converted
 
+    def element_sizes(self) -> Tensor:
+        r"""Return every logical element shape as a CPU integer tensor.
+
+        Rows follow logical batch order and columns follow logical element
+        dimension order, independent of ``batch_first`` and physical packed
+        storage order.  The returned ``(batch_size, element_rank)`` tensor is
+        the canonical tensor-backed shape metadata and is therefore returned
+        without a copy.
+        """
+        return self._physical_shape
+
     def ragged_level_offsets(
         self,
         level: int = -1,

@@ -1286,6 +1286,109 @@ class TestPackedLike:
         assert offsets.tolist() == expected
         assert offsets[-1].item() == nested.concat.shape[0]
 
+    @pytest.mark.parametrize(
+        ("elements", "ragged_dims", "batch_first", "expected"),
+        [
+            (
+                [torch.empty(2, 4), torch.empty(3, 4)],
+                (0,),
+                True,
+                [[2, 4], [3, 4]],
+            ),
+            (
+                [torch.empty(0, 3), torch.empty(0, 7)],
+                (0, 1),
+                True,
+                [[0, 3], [0, 7]],
+            ),
+            (
+                [torch.empty(2, 3, 4), torch.empty(2, 5, 4)],
+                (1,),
+                True,
+                [[2, 3, 4], [2, 5, 4]],
+            ),
+            (
+                [torch.empty(2, 3, 4), torch.empty(2, 5, 4)],
+                (1,),
+                False,
+                [[2, 3, 4], [2, 5, 4]],
+            ),
+        ],
+        ids=["single", "multi-zero-volume", "nonleading", "batch-first-false"],
+    )
+    def test_element_sizes_follow_logical_element_dimensions(self, elements, ragged_dims, batch_first, expected):
+        nested = NestedTensor(elements, ragged_dims=ragged_dims, batch_first=batch_first)
+
+        sizes = nested.element_sizes()
+
+        assert sizes is nested._physical_shape
+        assert sizes.device.type == "cpu"
+        assert sizes.dtype == torch.int64
+        assert sizes.tolist() == expected
+
+    def test_element_sizes_empty_and_scalar_element_rank(self):
+        empty = NestedTensor([], dtype=torch.float32)
+        scalars = NestedTensor([torch.tensor(1.0), torch.tensor(2.0)])
+
+        assert empty.element_sizes().shape == (0, 0)
+        assert scalars.element_sizes().shape == (2, 0)
+        assert empty.element_sizes() is empty._physical_shape
+        assert scalars.element_sizes() is scalars._physical_shape
+
+    def test_element_sizes_survive_copy_and_pickle(self):
+        nested = NestedTensor(
+            [torch.empty(0, 3), torch.empty(0, 7)],
+            ragged_dims=(0, 1),
+        )
+
+        outputs = (copy.copy(nested), copy.deepcopy(nested), pickle.loads(pickle.dumps(nested)))
+        for output in outputs:
+            assert output.element_sizes() is output._physical_shape
+            assert output.element_sizes().tolist() == [[0, 3], [0, 7]]
+
+    def test_element_sizes_support_fake_tensor(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        nested = NestedTensor(
+            [torch.empty(0, 3), torch.empty(0, 7)],
+            ragged_dims=(0, 1),
+        )
+
+        with fake_tensor_mod.FakeTensorMode() as mode:
+            fake = mode.from_tensor(nested)
+            sizes = fake.element_sizes()
+
+        assert sizes is fake._physical_shape
+        assert fake_tensor_mod.is_fake(sizes)
+        assert sizes.device.type == "cpu"
+        assert sizes.dtype == torch.int64
+        assert sizes.shape == (2, 2)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_element_sizes_reuse_one_dynamic_multiragged_graph(self):
+        from torch._dynamo.testing import CompileCounter
+
+        counter = CompileCounter()
+        compiled = torch.compile(
+            lambda nested: nested.element_sizes(),
+            backend=counter,
+            fullgraph=True,
+            dynamic=True,
+        )
+        layouts = tuple(
+            NestedTensor(
+                [torch.empty(*shape) for shape in shapes],
+                ragged_dims=(0, 1),
+            )
+            for shapes in (((0, 3), (2, 5)), ((0, 7), (4, 9)))
+        )
+
+        outputs = tuple(compiled(nested) for nested in layouts)
+
+        assert_close(outputs[0], torch.tensor([[0, 3], [2, 5]]))
+        assert_close(outputs[1], torch.tensor([[0, 7], [4, 9]]))
+        assert layouts[0].packed_offsets()[1].item() == layouts[1].packed_offsets()[1].item() == 0
+        assert counter.frame_count == 1
+
     def test_packed_offsets_cache_dtype_conversion_per_instance(self):
         nested = NestedTensor(
             [torch.empty(2, 2, 4), torch.empty(3, 3, 4)],

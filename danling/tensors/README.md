@@ -347,6 +347,15 @@ and `dtype` conversions are cached on the `NestedTensor` instance. An explicit
 accelerator index is required for device caching; index-less device requests
 retain PyTorch's current-device semantics and are converted on every call.
 
+`element_sizes()` returns the exact logical shape of every batch element as a
+CPU `torch.int64` tensor with shape `(batch_size, element_rank)`. Columns remain
+in logical element-dimension order regardless of `batch_first` or
+`packed_dim_order`, so zero-volume shapes such as `(0, 3)` and `(0, 7)` remain
+distinguishable even when their packed offsets coincide. The method returns the
+canonical tensor-backed metadata without a copy. It intentionally has no
+device or dtype conversion arguments; consumers that need another placement or
+integer width can apply `.to(...)` explicitly.
+
 `packed_dim_order` exposes the read-only mapping from logical element dimensions
 to physical packed-storage order when an operator needs to validate its layout.
 
