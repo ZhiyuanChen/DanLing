@@ -489,6 +489,16 @@ class TestPackedLike:
         assert output.padding_value == -1.5
         assert output.mask_value is True
 
+    def test_packed_dim_order_tracks_logical_permutation(self):
+        reference = NestedTensor([torch.randn(2, 2, 3), torch.randn(4, 4, 3)])
+
+        permuted = reference.permute(0, 3, 1, 2)
+        rebuilt = permuted.packed_like(torch.randn_like(permuted.concat))
+
+        assert reference.packed_dim_order == (0, 1, 2)
+        assert permuted.packed_dim_order == (1, 2, 0)
+        assert rebuilt.packed_dim_order == permuted.packed_dim_order
+
     def test_packed_like_accepts_noncontiguous_values_without_copy(self):
         reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
         packed_values = torch.randn(3, reference.concat.size(0)).transpose(0, 1)
