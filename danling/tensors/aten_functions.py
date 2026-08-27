@@ -3630,6 +3630,11 @@ def squeeze_default(func, args, kwargs):
     rank = source._physical_shape.size(1)
     if rank == 0:
         return source._packed_like_unchecked(source._values)
+    if source._element_shapes is None and (_is_compiling() or _is_fake_tensor(source._physical_shape)):
+        _compile_unsupported(
+            "aten.squeeze",
+            "tensor-backed singleton-dimension analysis is not implemented",
+        )
 
     # If any sample has ragged size 1, squeezing dim-0 is per-element.
     if source._physical_shape.size(0) > 0 and bool(torch.any(source._physical_shape[:, 0] == 1)):
@@ -4019,6 +4024,11 @@ def _packed_varying_softmax_group_indices(
     """
     element_shapes = source._element_shapes
     if element_shapes is None:
+        if _is_compiling() or _is_fake_tensor(source._physical_shape):
+            _compile_unsupported(
+                "NestedTensor ragged softmax",
+                "tensor-backed varying-dimension grouping is not implemented",
+            )
         if _is_fake_tensor(source._physical_shape):
             return None
         element_shapes = tuple(tuple(int(size) for size in shape) for shape in source._physical_shape.tolist())
@@ -4993,6 +5003,11 @@ def _constant_pad_packed_variable_last_dim(source: NestedTensor, pad: tuple[int,
     if source._packed_sizes is not None:
         packed_sizes = tuple(int(size) + pad_width for size in source._packed_sizes)
     else:
+        if _is_compiling() or _is_fake_tensor(source._offsets):
+            _compile_unsupported(
+                "aten.constant_pad_nd",
+                "tensor-backed ragged padding metadata is not implemented",
+            )
         packed_sizes = tuple(int(size) for size in (new_offsets[1:] - new_offsets[:-1]).tolist())
 
     outer_size = list(source._logical_shape)

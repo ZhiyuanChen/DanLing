@@ -593,6 +593,13 @@ def _broadcast_nested_tensors_packed(tensors):
     source_shapes = []
     for tensor in tensors:
         if tensor._element_shapes is None:
+            from .aten_functions import _is_fake_tensor
+
+            if _is_compiling() or _is_fake_tensor(tensor._physical_shape):
+                _compile_unsupported(
+                    "torch.broadcast_tensors",
+                    "tensor-backed per-element broadcast shape synthesis is not implemented",
+                )
             source_shapes.append(tuple(type(tensor)._trim_shape(shape) for shape in tensor._physical_shape.tolist()))
         else:
             source_shapes.append(tensor._element_shapes)
@@ -2226,6 +2233,30 @@ def diagonal(input, offset=0, dim1=0, dim2=1):
     return torch.ops.aten.diagonal.default(input, offset, dim1, dim2)
 
 
+def _has_uniform_packed_vector_lengths(source) -> bool:
+    r"""Return whether a packed vector batch can reshape to ``[B, -1]`` safely."""
+    if len(source) == 0:
+        return False
+    if source._packed_sizes is not None:
+        return len(set(source._packed_sizes)) == 1
+
+    lengths = source._offsets[1:] - source._offsets[:-1]
+    uniform = torch.all(lengths == lengths[:1])
+    from .aten_functions import _is_fake_tensor
+
+    if _is_compiling() or _is_fake_tensor(source._offsets):
+        torch._assert_async(uniform, "NestedTensor dot requires uniform vector lengths")
+        return True
+    return bool(uniform)
+
+
+def _from_per_element_scalar_results(source, results) -> NestedTensor:
+    r"""Stack per-element scalar results without forwarding ragged dimensions."""
+    values = tuple(results)
+    stacked = torch.stack(values) if values else source._values.new_empty((0,))
+    return source._from_scalar_result_values(stacked)
+
+
 @NestedTensorFuncRegistry.implement(torch.dot)
 def dot(input, other, *, out=None):
     r"""Compute vector dot products for NestedTensor operands, using packed scalar fast paths for uniform vectors."""
@@ -2241,23 +2272,23 @@ def dot(input, other, *, out=None):
                 input._values.dim() == 1
                 and other._values.dim() == 1
                 and input._has_same_structure(other)
-                and input._packed_sizes is not None
-                and len(set(input._packed_sizes)) == 1
+                and _has_uniform_packed_vector_lengths(input)
             ):
                 values = (input._values * other._values).view(len(input), -1).sum(dim=1)
                 return input._from_scalar_result_values(values)
             if _is_compiling():
                 _compile_unsupported("torch.dot", "only uniform packed NestedTensor vector pairs are compile-safe")
-            return NestedTensor(
-                (torch.dot(lhs, rhs) for lhs, rhs in zip(input._storage, other._storage)), **input._meta()
+            return _from_per_element_scalar_results(
+                input,
+                (torch.dot(lhs, rhs) for lhs, rhs in zip(input._storage, other._storage)),
             )
         if _is_compiling():
             _compile_unsupported("torch.dot", "only uniform packed NestedTensor vector pairs are compile-safe")
-        return NestedTensor((torch.dot(lhs, other) for lhs in input._storage), **input._meta())
+        return _from_per_element_scalar_results(input, (torch.dot(lhs, other) for lhs in input._storage))
     if isinstance(other, NestedTensor):
         if _is_compiling():
             _compile_unsupported("torch.dot", "only uniform packed NestedTensor vector pairs are compile-safe")
-        return NestedTensor((torch.dot(input, rhs) for rhs in other._storage), **other._meta())
+        return _from_per_element_scalar_results(other, (torch.dot(input, rhs) for rhs in other._storage))
     return torch.dot(input, other)
 
 
@@ -2347,6 +2378,13 @@ def _einsum_packed_fastpath(equation: str, operands: tuple):
 def _source_packed_sizes(source) -> tuple:
     if source._packed_sizes is not None:
         return source._packed_sizes
+    from .aten_functions import _is_fake_tensor
+
+    if _is_compiling() or _is_fake_tensor(source._offsets):
+        _compile_unsupported(
+            "NestedTensor global-query einsum",
+            "tensor-backed projected output metadata is not implemented",
+        )
     offsets = source._offsets
     return tuple(int(x) for x in (offsets[1:] - offsets[:-1]).tolist())
 
@@ -2947,23 +2985,23 @@ if hasattr(torch, "vdot"):
                     input._values.dim() == 1
                     and other._values.dim() == 1
                     and input._has_same_structure(other)
-                    and input._packed_sizes is not None
-                    and len(set(input._packed_sizes)) == 1
+                    and _has_uniform_packed_vector_lengths(input)
                 ):
                     values = (torch.conj(input._values) * other._values).view(len(input), -1).sum(dim=1)
                     return input._from_scalar_result_values(values)
                 if _is_compiling():
                     _compile_unsupported("torch.vdot", "only uniform packed NestedTensor vector pairs are compile-safe")
-                return NestedTensor(
-                    (torch.vdot(lhs, rhs) for lhs, rhs in zip(input._storage, other._storage)), **input._meta()
+                return _from_per_element_scalar_results(
+                    input,
+                    (torch.vdot(lhs, rhs) for lhs, rhs in zip(input._storage, other._storage)),
                 )
             if _is_compiling():
                 _compile_unsupported("torch.vdot", "only uniform packed NestedTensor vector pairs are compile-safe")
-            return NestedTensor((torch.vdot(lhs, other) for lhs in input._storage), **input._meta())
+            return _from_per_element_scalar_results(input, (torch.vdot(lhs, other) for lhs in input._storage))
         if isinstance(other, NestedTensor):
             if _is_compiling():
                 _compile_unsupported("torch.vdot", "only uniform packed NestedTensor vector pairs are compile-safe")
-            return NestedTensor((torch.vdot(input, rhs) for rhs in other._storage), **other._meta())
+            return _from_per_element_scalar_results(other, (torch.vdot(input, rhs) for rhs in other._storage))
         return torch.vdot(input, other)
 
 

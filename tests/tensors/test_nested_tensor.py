@@ -812,6 +812,18 @@ class TestPackedLike:
         assert output._cached_tensor_view is None
         assert output._cached_storage is None
 
+    def test_packed_local_indices_respect_each_ragged_level(self):
+        reference = NestedTensor(
+            [torch.empty(2, 2), torch.empty(3, 3)],
+            ragged_dims=(0, 1),
+        )
+
+        assert_close(reference.packed_local_indices(level=0), torch.tensor([0, 1, 0, 1, 2]))
+        assert_close(
+            reference.packed_local_indices(level=1),
+            torch.tensor([0, 1, 0, 1, 0, 1, 2, 0, 1, 2, 0, 1, 2]),
+        )
+
     def test_packed_like_supports_fake_tensor(self):
         fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
         FakeTensorMode = fake_tensor_mod.FakeTensorMode
@@ -868,6 +880,611 @@ class TestPackedLike:
         assert type(output) is DerivedNestedTensor
         assert output.concat is packed_values
         assert output._has_same_layout(reference)
+
+
+class TestPackedWithStaticTail:
+
+    def test_adds_static_tail_without_copy_and_preserves_autograd(self):
+        reference = NestedTensor(
+            [torch.empty(2), torch.empty(4)],
+            batch_first=False,
+            padding_value=-2.5,
+            mask_value=True,
+        )
+        leaf = torch.randn(6, 2, 3, dtype=torch.float64, requires_grad=True)
+        packed_values = leaf.square()
+
+        output = reference.packed_with_static_tail(packed_values)
+
+        assert output.concat is packed_values
+        assert output.concat.stride() == packed_values.stride()
+        assert output.ragged_dims == (0,)
+        assert output.packed_dim_order == (0, 1, 2)
+        assert output.shape == (4, 2, 2, 3)
+        assert output.batch_first is False
+        assert output.padding_value == -2.5
+        assert output.mask_value is True
+        assert output._offsets is reference._offsets
+        assert [tuple(element.shape) for element in output] == [(2, 2, 3), (4, 2, 3)]
+        gradient = torch.autograd.grad(output.concat.sum(), leaf)[0]
+        assert_close(gradient, 2 * leaf)
+
+    def test_replaces_static_tail_and_preserves_multi_ragged_lengths(self):
+        reference = NestedTensor(
+            [torch.empty(2, 2, 7), torch.empty(3, 3, 7)],
+            ragged_dims=(0, 1),
+        )
+        packed_values = torch.randn(5, 13).transpose(0, 1)
+        assert not packed_values.is_contiguous()
+
+        output = reference.packed_with_static_tail(packed_values)
+
+        assert output.concat is packed_values
+        assert output.concat.stride() == packed_values.stride()
+        assert output.ragged_dims == (0, 1)
+        assert output.packed_dim_order == (0, 1, 2)
+        assert output._packed_sizes == (4, 9)
+        assert [tuple(element.shape) for element in output] == [(2, 2, 5), (3, 3, 5)]
+
+    def test_rejects_noncanonical_or_missing_ragged_topology(self):
+        reference = NestedTensor([torch.empty(2, 3), torch.empty(4, 3)]).permute(0, 2, 1)
+        scalar_reference = NestedTensor([torch.tensor(1.0), torch.tensor(2.0)])
+
+        with pytest.raises(ValueError, match="canonical packed order"):
+            reference.packed_with_static_tail(torch.empty(reference.concat.shape[0], 5))
+        with pytest.raises(ValueError, match="at least one ragged dimension"):
+            scalar_reference.packed_with_static_tail(torch.empty(2, 5))
+
+    def test_rejects_invalid_values(self):
+        reference = NestedTensor([torch.empty(2), torch.empty(4)])
+
+        with pytest.raises(TypeError, match="dense Tensor"):
+            reference.packed_with_static_tail(object())  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="leading packed dimension"):
+            reference.packed_with_static_tail(torch.tensor(1.0))
+        with pytest.raises(ValueError, match="reference packed length"):
+            reference.packed_with_static_tail(torch.empty(5, 3))
+        with pytest.raises(TypeError, match="torch.strided"):
+            reference.packed_with_static_tail(torch.empty(6, 3).to_sparse())
+
+    def test_supports_fake_values(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        mode = fake_tensor_mod.FakeTensorMode()
+        reference = NestedTensor([torch.empty(2), torch.empty(4)])
+        packed_values = mode.from_tensor(torch.empty(6, 3, 5))
+
+        output = reference.packed_with_static_tail(packed_values)
+
+        assert output.concat is packed_values
+        assert output.shape == (2, 4, 3, 5)
+        assert fake_tensor_mod.is_fake(output._offsets)
+        assert fake_tensor_mod.is_fake(output._physical_shape)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_fullgraph_forward_backward(self):
+        reference = NestedTensor([torch.empty(2), torch.empty(4)])
+        packed_values = torch.randn(6, 3, requires_grad=True)
+        compiled = torch.compile(
+            lambda ref, values: ref.packed_with_static_tail(values).concat.square().sum(),
+            backend="aot_eager",
+            fullgraph=True,
+        )
+
+        loss = compiled(reference, packed_values)
+        loss.backward()
+
+        assert type(loss.grad_fn).__name__ == "CompiledFunctionBackward"
+        assert_close(loss, packed_values.detach().square().sum())
+        assert_close(packed_values.grad, 2 * packed_values)
+
+
+class TestPackedWithLengths:
+
+    def test_replaces_lengths_without_copy_and_preserves_runtime_config(self):
+        reference = NestedTensor(
+            [torch.empty(1, 2), torch.empty(1, 2)],
+            batch_first=False,
+            padding_value=-3,
+            mask_value=True,
+        )
+        lengths = torch.tensor([0, 3], dtype=torch.int32)
+        leaf = torch.randn(3, 2, 4, dtype=torch.float64, requires_grad=True)
+        packed_values = leaf.square()
+
+        output = reference.packed_with_lengths(packed_values, lengths)
+
+        assert output.concat is packed_values
+        assert output.ragged_dims == (0,)
+        assert output.packed_dim_order == (0, 1, 2)
+        assert output.shape == (3, 2, 2, 4)
+        assert output.batch_first is False
+        assert output.padding_value == -3
+        assert output.mask_value is True
+        assert output._packed_sizes is None
+        assert output._element_shapes is None
+        assert_close(output._offsets, torch.tensor([0, 0, 3]))
+        assert [tuple(element.shape) for element in output] == [(0, 2, 4), (3, 2, 4)]
+        assert output._packed_sizes is None
+        assert output._element_shapes is None
+        gradient = torch.autograd.grad(output.concat.sum(), leaf)[0]
+        assert_close(gradient, 2 * leaf)
+
+    def test_tensor_backed_metadata_supports_iteration_and_pickle(self):
+        reference = NestedTensor([torch.empty(1), torch.empty(1), torch.empty(1)])
+        output = reference.packed_with_lengths(torch.randn(5, 4), torch.tensor([0, 2, 3]))
+        restored = pickle.loads(pickle.dumps(output))
+
+        assert output._packed_sizes is None
+        assert output._element_shapes is None
+        assert [tuple(element.shape) for element in output] == [(0, 4), (2, 4), (3, 4)]
+        assert restored._packed_sizes is None
+        assert restored._element_shapes is None
+        assert [tuple(element.shape) for element in restored] == [(0, 4), (2, 4), (3, 4)]
+        assert_close(restored.concat, output.concat)
+
+    def test_supports_empty_batch(self):
+        reference = NestedTensor([torch.empty(2)])[:0]
+        packed_values = torch.empty(0, 3)
+
+        output = reference.packed_with_lengths(packed_values, torch.empty(0, dtype=torch.long))
+
+        assert output.concat is packed_values
+        assert output.shape == (0, 0, 3)
+        assert output.ragged_dims == (0,)
+        assert output._offsets.tolist() == [0]
+        assert output._physical_shape.shape == (0, 2)
+        assert output._packed_sizes is None
+        assert output._element_shapes is None
+
+    def test_large_eager_batch_does_not_create_compile_max_length_binding(self):
+        batch_size = 65
+        reference = NestedTensor([torch.empty(1) for _ in range(batch_size)])
+        lengths = torch.ones(batch_size, dtype=torch.long)
+
+        output = reference.packed_with_lengths(torch.empty(batch_size, 3), lengths)
+
+        assert output.shape == (batch_size, 1, 3)
+        assert "_compile_max_length_binding" not in vars(output)
+        assert output._packed_sizes is None
+        assert output._element_shapes is None
+
+    @pytest.mark.parametrize(
+        ("lengths", "error", "match"),
+        [
+            (object(), TypeError, "dense Tensor"),
+            (torch.tensor([2.0, 3.0]), TypeError, "integer dtype"),
+            (torch.tensor([True, False]), TypeError, "integer dtype"),
+            (torch.tensor([[2, 3]]), ValueError, "one-dimensional"),
+            (torch.tensor([5]), ValueError, "one value per batch"),
+            (torch.tensor([2, -1]), ValueError, "non-negative"),
+            (torch.tensor([2, 2]), ValueError, "must sum"),
+            (torch.empty(2, dtype=torch.long, device="meta"), ValueError, "on CPU"),
+        ],
+    )
+    def test_validates_lengths(self, lengths, error, match):
+        reference = NestedTensor([torch.empty(1), torch.empty(1)])
+        packed_values = torch.empty(5, 3)
+
+        with pytest.raises(error, match=match):
+            reference.packed_with_lengths(packed_values, lengths)  # type: ignore[arg-type]
+
+    def test_rejects_invalid_values(self):
+        reference = NestedTensor([torch.empty(1), torch.empty(1)])
+        lengths = torch.tensor([2, 3])
+
+        with pytest.raises(TypeError, match="dense Tensor"):
+            reference.packed_with_lengths(object(), lengths)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="leading packed dimension"):
+            reference.packed_with_lengths(torch.tensor(1.0), lengths)
+        with pytest.raises(TypeError, match="torch.strided"):
+            reference.packed_with_lengths(torch.empty(5, 3).to_sparse(), lengths)
+
+    def test_supports_fake_values_with_concrete_cpu_lengths(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        mode = fake_tensor_mod.FakeTensorMode()
+        reference = NestedTensor([torch.empty(1), torch.empty(1)])
+        lengths = torch.tensor([2, 3])
+        packed_values = mode.from_tensor(torch.empty(5, 4))
+
+        output = reference.packed_with_lengths(packed_values, lengths)
+
+        assert output.concat is packed_values
+        assert output.shape == (2, 3, 4)
+        assert fake_tensor_mod.is_fake(output._offsets)
+        assert fake_tensor_mod.is_fake(output._physical_shape)
+        assert output._packed_sizes is None
+        assert output._element_shapes is None
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_eager_packed_with_lengths_outputs_are_dynamic_compile_inputs(self):
+        from torch._dynamo.testing import CompileCounter
+
+        reference = NestedTensor([torch.empty(1), torch.empty(1), torch.empty(1)])
+        counter = CompileCounter()
+        compiled = torch.compile(
+            lambda nested: (
+                nested.concat.sum(),
+                nested.packed_batch_indices(),
+                nested.packed_local_indices(),
+                nested.ragged_level_offsets(),
+            ),
+            backend=counter,
+            fullgraph=True,
+            dynamic=True,
+        )
+        layouts = (
+            reference.packed_with_lengths(torch.arange(5), torch.tensor([0, 2, 3])),
+            reference.packed_with_lengths(torch.arange(7), torch.tensor([4, 1, 2])),
+        )
+
+        for nested in layouts:
+            total, batch_indices, local_indices, offsets = compiled(nested)
+            lengths = nested._physical_shape[:, 0]
+            assert_close(total, nested.concat.sum())
+            assert_close(batch_indices, torch.repeat_interleave(torch.arange(3), lengths))
+            assert_close(local_indices, torch.cat([torch.arange(int(length)) for length in lengths]))
+            assert_close(offsets, torch.nn.functional.pad(lengths.cumsum(0), (1, 0)))
+
+        assert counter.frame_count == 1
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize("tensor_backed", [False, True])
+    def test_fullgraph_vector_tail_broadcast(self, tensor_backed):
+        elements = [torch.randn(2, 4), torch.randn(3, 4)]
+        if tensor_backed:
+            reference = NestedTensor([torch.empty(1), torch.empty(1)])
+            nested = reference.packed_with_lengths(torch.cat(elements), torch.tensor([2, 3]))
+        else:
+            nested = NestedTensor(elements, ragged_dims=(0,))
+        vector = torch.randn(4)
+        compiled = torch.compile(
+            lambda value, tail: (value + tail).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        output = compiled(nested, vector)
+
+        assert_close(output, torch.cat([element + vector for element in elements]))
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize("tensor_backed", [False, True])
+    def test_fullgraph_layer_norm_static_tail(self, tensor_backed):
+        elements = [torch.randn(2, 4), torch.randn(3, 4)]
+        if tensor_backed:
+            reference = NestedTensor([torch.empty(1), torch.empty(1)])
+            nested = reference.packed_with_lengths(torch.cat(elements), torch.tensor([2, 3]))
+        else:
+            nested = NestedTensor(elements, ragged_dims=(0,))
+        compiled = torch.compile(
+            lambda value: torch.layer_norm(value, (4,)).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        output = compiled(nested)
+
+        assert_close(output, torch.cat([torch.layer_norm(element, (4,)) for element in elements]))
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_fullgraph_binary_tensor_backed_layout_validation(self):
+        from torch._dynamo.testing import CompileCounter
+
+        reference = NestedTensor([torch.empty(1), torch.empty(1)])
+        counter = CompileCounter()
+        compiled = torch.compile(
+            lambda lhs, rhs: (lhs + rhs).concat,
+            backend=counter,
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        for lengths in (torch.tensor([2, 3]), torch.tensor([1, 2])):
+            lhs_values = torch.randn(int(lengths.sum()), 4)
+            rhs_values = torch.randn(int(lengths.sum()), 4)
+            lhs = reference.packed_with_lengths(lhs_values, lengths)
+            rhs = reference.packed_with_lengths(rhs_values, lengths.clone())
+            assert_close(compiled(lhs, rhs), lhs_values + rhs_values)
+
+        mismatched_lhs = reference.packed_with_lengths(torch.randn(5, 4), torch.tensor([2, 3]))
+        mismatched_rhs = reference.packed_with_lengths(torch.randn(5, 4), torch.tensor([3, 2]))
+        with pytest.raises(RuntimeError, match="NestedTensor ragged offsets must match"):
+            compiled(mismatched_lhs, mismatched_rhs)
+
+        assert counter.frame_count == 1
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_fullgraph_binary_explicit_list_inputs(self):
+        lhs_elements = [torch.randn(2, 4), torch.randn(3, 4)]
+        rhs_elements = [torch.randn(2, 4), torch.randn(3, 4)]
+        lhs = NestedTensor(lhs_elements, ragged_dims=(0,))
+        rhs = NestedTensor(rhs_elements, ragged_dims=(0,))
+        compiled = torch.compile(
+            lambda left, right: (left + right).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        output = compiled(lhs, rhs)
+
+        assert_close(output, torch.cat([left + right for left, right in zip(lhs_elements, rhs_elements)]))
+
+    @pytest.mark.parametrize("operation", [torch.dot, torch.vdot])
+    def test_tensor_backed_dot_returns_scalar_elements(self, operation):
+        reference = NestedTensor([torch.empty(1), torch.empty(1)])
+        for lengths in (torch.tensor([3, 3]), torch.tensor([2, 3])):
+            lhs_values = torch.randn(int(lengths.sum()))
+            rhs_values = torch.randn(int(lengths.sum()))
+            lhs = reference.packed_with_lengths(lhs_values, lengths)
+            rhs = reference.packed_with_lengths(rhs_values, lengths.clone())
+
+            output = operation(lhs, rhs)
+            expected = torch.stack([operation(left, right) for left, right in zip(lhs._storage, rhs._storage)])
+
+            assert output.ragged_dims == ()
+            assert_close(output.concat, expected)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize("operation", [torch.dot, torch.vdot])
+    def test_tensor_backed_uniform_dot_fullgraph_and_fake(self, operation):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        reference = NestedTensor([torch.empty(1), torch.empty(1)])
+        lengths = torch.tensor([3, 3])
+        lhs_values = torch.randn(6)
+        rhs_values = torch.randn(6)
+        lhs = reference.packed_with_lengths(lhs_values, lengths)
+        rhs = reference.packed_with_lengths(rhs_values, lengths.clone())
+        compiled = torch.compile(
+            lambda left, right: operation(left, right).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        output = compiled(lhs, rhs)
+        expected = torch.stack([operation(left, right) for left, right in zip(lhs._storage, rhs._storage)])
+        assert_close(output, expected)
+
+        mode = fake_tensor_mod.FakeTensorMode()
+        fake_lhs = reference.packed_with_lengths(mode.from_tensor(lhs_values), lengths)
+        fake_rhs = reference.packed_with_lengths(mode.from_tensor(rhs_values), lengths)
+        fake_output = operation(fake_lhs, fake_rhs)
+        assert fake_tensor_mod.is_fake(fake_output.concat)
+        assert fake_output.concat.shape == (2,)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "view",
+            "select",
+            "slice",
+            "pad",
+            "constant_pad",
+            "broadcast_tensors",
+            "einsum",
+            "ragged_softmax",
+            "squeeze",
+            "embedding_bag",
+        ],
+    )
+    def test_tensor_backed_staged_consumers_fail_compile_clearly(self, case):
+        reference = NestedTensor([torch.empty(1), torch.empty(1)])
+        lengths = torch.tensor([2, 3])
+        nested = reference.packed_with_lengths(torch.randn(5, 4), lengths)
+        if case == "view":
+
+            def operation(value):
+                return value.view(2, 3, 4)
+
+        elif case == "select":
+
+            def operation(value):
+                return value[:, 0]
+
+        elif case == "slice":
+
+            def operation(value):
+                return value[:, :2]
+
+        elif case == "pad":
+            nested = reference.packed_with_lengths(torch.randn(5), lengths)
+
+            def operation(value):
+                return torch.nn.functional.pad(value, (1, 1))
+
+        elif case == "constant_pad":
+            nested = reference.packed_with_lengths(torch.randn(5), lengths)
+
+            def operation(value):
+                return torch.ops.aten.constant_pad_nd.default(value, (1, 1), 0)
+
+        elif case == "broadcast_tensors":
+
+            def operation(value):
+                return torch.broadcast_tensors(value, value)
+
+        elif case == "einsum":
+            weight = torch.randn(2, 4, 3)
+
+            def operation(value):
+                return torch.einsum("bls,hsk->bhlk", value, weight)
+
+        elif case == "ragged_softmax":
+
+            def operation(value):
+                return torch.softmax(value, dim=1)
+
+        elif case == "squeeze":
+            nested = reference.packed_with_lengths(torch.randn(5, 1), lengths)
+
+            def operation(value):
+                return torch.squeeze(value)
+
+        else:
+            nested = reference.packed_with_lengths(torch.randint(0, 8, (5,)), lengths)
+            weight = torch.randn(8, 4)
+
+            def operation(value):
+                return torch.nn.functional.embedding_bag(value, weight)
+
+        compiled = torch.compile(operation, backend="aot_eager", fullgraph=True, dynamic=True)
+
+        with pytest.raises(Exception, match="tensor-backed"):
+            compiled(nested)
+
+    def test_rejects_data_less_fake_lengths(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        mode = fake_tensor_mod.FakeTensorMode()
+        reference = NestedTensor([torch.empty(1), torch.empty(1)])
+        fake_lengths = mode.from_tensor(torch.tensor([2, 3]))
+
+        with pytest.raises(ValueError, match="FakeTensor lengths require FakeTensor packed_values"):
+            reference.packed_with_lengths(torch.empty(5, 4), fake_lengths)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_fullgraph_backward_reuses_fixed_batch_across_lengths(self):
+        from torch._dynamo.testing import CompileCounter
+
+        reference = NestedTensor([torch.empty(1, 2), torch.empty(1, 2)])
+        counter = CompileCounter()
+        compiled = torch.compile(
+            lambda ref, values, lengths: ref.packed_with_lengths(values, lengths).concat.square().sum(),
+            backend=counter,
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        for lengths_tuple in ((2, 4), (3, 5)):
+            lengths = torch.tensor(lengths_tuple)
+            packed_values = torch.randn(sum(lengths_tuple), 7, requires_grad=True)
+            loss = compiled(reference, packed_values, lengths)
+            loss.backward()
+            assert_close(packed_values.grad, 2 * packed_values)
+
+        assert counter.frame_count == 1
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_fullgraph_batch_32_chains_tensor_topology_in_one_graph(self):
+        from torch._dynamo.testing import CompileCounter
+
+        batch_size = 32
+        reference = NestedTensor([torch.empty(1) for _ in range(batch_size)])
+        counter = CompileCounter()
+
+        def consume(ref, values, lengths):
+            output = ref.packed_with_lengths(values, lengths)
+            loss = output.concat.square().sum()
+            return (
+                loss,
+                output.packed_batch_indices(),
+                output.packed_local_indices(),
+                output.ragged_level_offsets(),
+            )
+
+        compiled = torch.compile(consume, backend=counter, fullgraph=True, dynamic=True)
+        layouts = (
+            torch.arange(batch_size, dtype=torch.long).remainder(4),
+            torch.arange(batch_size - 1, -1, -1, dtype=torch.long).remainder(5),
+            torch.arange(batch_size, dtype=torch.long).mul(3).remainder(7),
+        )
+        for lengths in layouts:
+            packed_values = torch.randn(int(lengths.sum()), 3, requires_grad=True)
+            loss, batch_indices, local_indices, offsets = compiled(reference, packed_values, lengths)
+            loss.backward()
+
+            expected_batch = torch.repeat_interleave(torch.arange(batch_size), lengths)
+            expected_local = torch.cat([torch.arange(int(length)) for length in lengths])
+            expected_offsets = torch.nn.functional.pad(lengths.cumsum(0), (1, 0))
+            assert_close(batch_indices, expected_batch)
+            assert_close(local_indices, expected_local)
+            assert_close(offsets, expected_offsets)
+            assert_close(packed_values.grad, 2 * packed_values)
+
+        assert counter.frame_count == 1
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_fullgraph_output_supports_iteration_and_pickle(self):
+        reference = NestedTensor([torch.empty(1), torch.empty(1), torch.empty(1)])
+        compiled = torch.compile(
+            lambda ref, values, lengths: ref.packed_with_lengths(values, lengths),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        lengths = torch.tensor([0, 2, 3])
+        packed_values = torch.randn(5, 4, requires_grad=True)
+
+        output = compiled(reference, packed_values, lengths)
+        restored = pickle.loads(pickle.dumps(output))
+
+        assert output.concat.data_ptr() == packed_values.data_ptr()
+        assert output._packed_sizes is None
+        assert output._element_shapes is None
+        assert [tuple(element.shape) for element in output] == [(0, 4), (2, 4), (3, 4)]
+        assert output._packed_sizes is None
+        assert output._element_shapes is None
+        assert [tuple(element.shape) for element in restored] == [(0, 4), (2, 4), (3, 4)]
+        assert_close(restored.concat, packed_values)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_compiled_output_reenters_fullgraph_without_python_topology(self):
+        from torch._dynamo.testing import CompileCounter
+
+        reference = NestedTensor([torch.empty(1), torch.empty(1), torch.empty(1)])
+        producer = torch.compile(
+            lambda ref, values, lengths: ref.packed_with_lengths(values, lengths),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        counter = CompileCounter()
+        consumer = torch.compile(
+            lambda nested: (
+                nested.concat.square().sum(),
+                nested.packed_batch_indices(),
+                nested.packed_local_indices(),
+                nested.ragged_level_offsets(),
+            ),
+            backend=counter,
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        # Keep the wrapper and packed shapes fixed here so this test isolates
+        # topology values from ordinary tensor-shape specialization.
+        for lengths in (torch.tensor([0, 2, 3]), torch.tensor([1, 1, 3])):
+            packed_values = torch.randn(int(lengths.sum()), 4)
+            output = producer(reference, packed_values, lengths)
+            loss, batch_indices, local_indices, offsets = consumer(output)
+
+            assert output._packed_sizes is None
+            assert output._element_shapes is None
+            assert_close(loss, packed_values.square().sum())
+            assert_close(batch_indices, torch.repeat_interleave(torch.arange(3), lengths))
+            assert_close(local_indices, torch.cat([torch.arange(int(length)) for length in lengths]))
+            assert_close(offsets, torch.nn.functional.pad(lengths.cumsum(0), (1, 0)))
+
+        assert counter.frame_count == 1
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_fullgraph_runtime_validates_length_values(self):
+        reference = NestedTensor([torch.empty(1, 2), torch.empty(1, 2)])
+        compiled = torch.compile(
+            lambda ref, values, lengths: ref.packed_with_lengths(values, lengths).concat.square().sum(),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        compiled(reference, torch.randn(6, 7), torch.tensor([2, 4]))
+
+        with pytest.raises(RuntimeError, match="lengths must be non-negative"):
+            compiled(reference, torch.randn(6, 7), torch.tensor([-1, 7]))
+        with pytest.raises(RuntimeError, match="lengths must sum"):
+            compiled(reference, torch.randn(6, 7), torch.tensor([2, 3]))
 
 
 # ---------------------------------------------------------------------------

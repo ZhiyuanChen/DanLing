@@ -1653,6 +1653,13 @@ def embedding_bag(
         >>> torch.allclose(out, ref)
         True
     """
+    from .aten_functions import _is_fake_tensor
+
+    if input._packed_sizes is None and (_is_compiling() or _is_fake_tensor(input._offsets)):
+        _compile_unsupported(
+            "torch.nn.functional.embedding_bag",
+            "tensor-backed bag output metadata is not implemented",
+        )
     if (
         len(input) > 0
         and input._values.dim() == 1
@@ -1812,7 +1819,12 @@ def linear(input: NestedTensor, weight: Tensor, bias: Tensor | None = None) -> N
         if input._element_shapes is not None:
             is_static_vector = all(shape == (in_features,) for shape in input._element_shapes)
         else:
-            is_static_vector = bool(input._physical_shape[:, 0].eq(in_features).all())
+            static_vector = input._physical_shape[:, 0].eq(in_features).all()
+            torch._assert_async(
+                static_vector,
+                "tensor-backed NestedTensor linear requires every vector length to equal in_features",
+            )
+            is_static_vector = True
         if is_static_vector:
             from .aten_functions import _from_uniform_batched_output
 
@@ -2494,6 +2506,13 @@ def _pad_packed_variable_last_dim(input: NestedTensor, pad: tuple[int, ...], val
     if input._packed_sizes is not None:
         packed_sizes = tuple(int(size) + pad_width for size in input._packed_sizes)
     else:
+        from .aten_functions import _is_fake_tensor
+
+        if _is_compiling() or _is_fake_tensor(input._offsets):
+            _compile_unsupported(
+                "torch.nn.functional.pad",
+                "tensor-backed ragged padding metadata is not implemented",
+            )
         packed_sizes = tuple(int(size) for size in new_sizes.tolist())
 
     return type(input)._from_packed(
