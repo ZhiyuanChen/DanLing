@@ -184,6 +184,89 @@ class TestCompile:
 
 class TestElementwiseOps:
 
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="pin_memory requires CUDA")
+    @pytest.mark.parametrize(
+        "factory",
+        [
+            pytest.param(lambda x, pin: torch.empty_like(x, pin_memory=pin), id="empty_like"),
+            pytest.param(lambda x, pin: torch.zeros_like(x, pin_memory=pin), id="zeros_like"),
+            pytest.param(lambda x, pin: torch.ones_like(x, pin_memory=pin), id="ones_like"),
+            pytest.param(lambda x, pin: torch.full_like(x, 2.0, pin_memory=pin), id="full_like"),
+        ],
+    )
+    @pytest.mark.parametrize("pin_memory", [False, True])
+    def test_creation_like_follows_result_pinning(self, factory, pin_memory):
+        source = NT([torch.randn(2, 3), torch.randn(4, 3)], pin_memory=True)
+        expected_values = factory(source.concat, pin_memory)
+
+        output = factory(source, pin_memory)
+
+        assert output._pin_memory is expected_values.is_pinned()
+        assert output.concat.is_pinned() is expected_values.is_pinned()
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="pin_memory requires CUDA")
+    @pytest.mark.parametrize("pin_memory", [False, True])
+    def test_to_copy_follows_result_pinning(self, pin_memory):
+        source = NT([torch.randn(2, 3), torch.randn(4, 3)], pin_memory=True)
+        expected_values = torch.ops.aten._to_copy.default(source.concat, pin_memory=pin_memory)
+
+        output = torch.ops.aten._to_copy.default(source, pin_memory=pin_memory)
+
+        assert output._pin_memory is expected_values.is_pinned()
+        assert output.concat.is_pinned() is expected_values.is_pinned()
+
+    def test_creation_like_rejects_sparse_result(self):
+        source = NT([torch.randn(2, 3), torch.randn(4, 3)])
+
+        with pytest.raises(TypeError, match="dense Tensor with torch.strided layout"):
+            torch.zeros_like(source, layout=torch.sparse_coo)
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_packed_tail_from_scalar_values_materializes(self, batch_first):
+        reference = NT(
+            [torch.tensor(1.0), torch.tensor(2.0)],
+            batch_first=batch_first,
+        )
+        values = torch.arange(6.0).reshape(2, 3)
+
+        output = nt_aten._packed_with_tail_from_values(reference, values)
+        expected = NT([values[0], values[1]], **reference._meta())
+
+        assert output.concat.data_ptr() == values.data_ptr()
+        assert output._has_same_layout(expected)
+        assert_close(output.tensor, expected.tensor)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_packed_tail_from_scalar_values_compile_fullgraph_backward(self):
+        reference = NT([torch.tensor(1.0), torch.tensor(2.0)])
+        values = torch.randn(2, 3, requires_grad=True)
+        compiled = torch.compile(
+            lambda ref, packed: nt_aten._packed_with_tail_from_values(ref, packed).concat.square().sum(),
+            backend="aot_eager",
+            fullgraph=True,
+        )
+
+        loss = compiled(reference, values)
+        loss.backward()
+
+        assert type(loss.grad_fn).__name__ == "CompiledFunctionBackward"
+        assert_close(values.grad, 2 * values)
+
+    def test_packed_tail_from_scalar_values_fake_tensor(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        FakeTensorMode = fake_tensor_mod.FakeTensorMode
+        is_fake = fake_tensor_mod.is_fake
+        reference = NT([torch.tensor(1.0), torch.tensor(2.0)])
+        values = FakeTensorMode().from_tensor(torch.empty(2, 3))
+
+        output = nt_aten._packed_with_tail_from_values(reference, values)
+
+        assert output.concat.shape == torch.Size((6,))
+        assert output._element_shapes == ((3,), (3,))
+        assert is_fake(output.concat)
+        assert is_fake(output._offsets)
+        assert is_fake(output._physical_shape)
+
     def test_binary_dense_same_shape(self):
         nt = NT([torch.tensor([2.0, 3.0]), torch.tensor([4.0, 5.0, 6.0])])
         dense = nt.tensor + 0.5
@@ -865,6 +948,50 @@ class TestSortingOps:
 
 
 class TestTernaryOps:
+
+    def test_ternary_broadcast_updates_static_tail(self):
+        input_ = NT([torch.randn(2, 1), torch.randn(3, 1)])
+        condition = input_ > 0
+        other = torch.arange(4.0).reshape(1, 4)
+
+        output = torch.ops.aten.where.self(condition, input_, other)
+        expected = NT(
+            [torch.where(cond, value, other) for cond, value in zip(condition, input_)],
+            **input_._meta(),
+        )
+
+        assert output._has_same_layout(expected)
+        assert_close(output.tensor, expected.tensor)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_ternary_broadcast_compile_fullgraph(self):
+        reference = NT([torch.randn(2, 1), torch.randn(3, 1)])
+        condition = reference.packed_like(torch.tensor([[True], [False], [True], [False], [True]]))
+        values = torch.randn_like(reference.concat)
+        input_ = reference.packed_like(values)
+        other = torch.arange(4.0).reshape(1, 4)
+        compiled = torch.compile(
+            lambda cond, value, dense: torch.ops.aten.where.self(cond, value, dense).concat.square().sum(),
+            backend="aot_eager",
+            fullgraph=True,
+        )
+
+        loss = compiled(condition, input_, other)
+        eager_loss = torch.ops.aten.where.self(condition, input_, other).concat.square().sum()
+        assert_close(loss, eager_loss)
+
+    def test_ternary_broadcast_fake_tensor(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        FakeTensorMode = fake_tensor_mod.FakeTensorMode
+
+        with FakeTensorMode():
+            input_ = NT([torch.empty(2, 1), torch.empty(3, 1)])
+            condition = input_ > 0
+            other = torch.empty(1, 4)
+            output = torch.ops.aten.where.self(condition, input_, other)
+
+            assert output.concat.shape == torch.Size((5, 4))
+            assert output._element_shapes == ((2, 4), (3, 4))
 
     def test_ternary_and_take(self):
         nt = NT(

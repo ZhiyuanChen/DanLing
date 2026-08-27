@@ -254,9 +254,9 @@ from danling.tensors.ops import NestedTensorFuncRegistry
 
 @NestedTensorFuncRegistry.implement(torch.my_custom_op)
 def my_custom_op(input, *args, **kwargs):
-    from danling.tensors.aten_functions import _packed_like
-    # For elementwise ops, apply on packed _values:
-    return _packed_like(input, torch.my_custom_op(input._values, *args, **kwargs))
+    # Shape-preserving elementwise ops can reuse the reference structure.
+    values = torch.my_custom_op(input.concat, *args, **kwargs)
+    return input.packed_like(values)
 ```
 
 For ops that are purely elementwise on the packed data, register at the aten level instead:
@@ -265,18 +265,15 @@ For ops that are purely elementwise on the packed data, register at the aten lev
 from danling.tensors.ops import NestedTensorAtenRegistry
 aten = torch.ops.aten
 
+@NestedTensorAtenRegistry.implement(aten.my_op.default, compile_safe=True)
 def _my_handler(func, args, kwargs):
     source = args[0]
-    return type(source)._from_packed(
-        func(source._values, *args[1:], **kwargs),
-        source._offsets, source._physical_shape,
-        batch_first=source.batch_first, padding_value=source.padding_value,
-        mask_value=source.mask_value, pin_memory=source._pin_memory,
-        outer_size=source._logical_shape,
-    )
-
-NestedTensorAtenRegistry[aten.my_op.default] = _my_handler
+    values = func(source.concat, *args[1:], **kwargs)
+    return source.packed_like(values)
 ```
+
+`packed_like` requires the packed output shape to remain unchanged. Operations
+that change element shapes must rebuild the corresponding shape metadata instead.
 
 ## Benchmarks
 

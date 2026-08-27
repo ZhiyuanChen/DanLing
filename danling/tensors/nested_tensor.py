@@ -923,6 +923,13 @@ class NestedTensor(torch.Tensor):
         # inspect partially constructed wrapper subclasses safely.
         instance_attrs = vars(self)
         inner_tensors = [name for name in ("_values", "_offsets", "_physical_shape") if name in instance_attrs]
+        # ``concat`` is the public alias of ``_values``.  Keep both names in
+        # the flatten contract so Dynamo can source-track ``result.concat``
+        # when ``result`` is a wrapper created inside the graph.  Without the
+        # alias, Dynamo sees a sourceless FakeTensor after an elementwise,
+        # view, or ``packed_like`` rebuild and cannot continue tracing.
+        if "_values" in instance_attrs:
+            inner_tensors.append("concat")
         if not inner_tensors:
             inner_tensors = ["_flatten_sentinel"]
         return inner_tensors, {
@@ -1828,8 +1835,6 @@ class NestedTensor(torch.Tensor):
             >>> nested_tensor.concat.shape
             torch.Size([202, 1, 5])
         """
-        if len(self._offsets) <= 1:
-            return torch.empty(0, dtype=self._values.dtype, device=self.device)
         return self._values
 
     def concatenate(self) -> tuple[Tensor, tuple[torch.Size, ...]]:
@@ -2240,6 +2245,99 @@ class NestedTensor(torch.Tensor):
     def _packed_sizes_like(self, element_shapes: tuple[tuple[int, ...], ...]) -> tuple[int, ...]:
         varying_dims, _ = type(self)._pack_layout_from_element_shapes(element_shapes)
         return tuple(type(self)._packed_size_from_shape(shape, varying_dims) for shape in element_shapes)
+
+    def _packed_like_unchecked(self, packed_values: Tensor) -> Self:
+        r"""Rebuild from packed values when the caller already proved shape compatibility."""
+        result = type(self)._from_packed(
+            packed_values,
+            self._offsets,
+            self._physical_shape,
+            permutation=self._permutation,
+            batch_first=self.batch_first,
+            padding_value=self.padding_value,
+            mask_value=self.mask_value,
+            pin_memory=self._pin_memory,
+            outer_size=self._logical_shape,
+            packed_sizes=self._packed_sizes,
+            element_shapes=self._element_shapes,
+            validate=False,
+        )
+        if (
+            self._cached_hierarchical_offsets is not None
+            and result._offsets is self._offsets
+            and result._physical_shape is self._physical_shape
+        ):
+            result._cached_hierarchical_offsets = self._cached_hierarchical_offsets
+        return result
+
+    def packed_like(self, packed_values: Tensor) -> Self:
+        r"""Wrap packed values with this ``NestedTensor``'s structure.
+
+        ``packed_values`` must have exactly the same shape as :attr:`concat`.
+        The returned ``NestedTensor`` shares ``packed_values`` directly, so its
+        dtype, device, strides, pinning, and autograd history all come from the
+        supplied tensor.  Ragged offsets, element shapes, permutation, logical
+        shape, and runtime configuration are inherited from ``self``.
+
+        Args:
+            packed_values: Dense packed storage for the returned
+                ``NestedTensor``.
+
+        Returns:
+            A ``NestedTensor`` with ``self``'s structure and
+            ``packed_values`` as its packed storage.
+
+        Raises:
+            TypeError: If ``packed_values`` is not a dense ``Tensor``.
+            ValueError: If its shape differs from ``self.concat.shape``.
+
+        Examples:
+            >>> reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+            >>> values = torch.ones_like(reference.concat)
+            >>> output = reference.packed_like(values)
+            >>> output.concat is values
+            True
+            >>> output.shape == reference.shape
+            True
+        """
+        if (
+            not isinstance(packed_values, Tensor)
+            or isinstance(packed_values, NestedTensor)
+            or packed_values.is_nested
+            or packed_values.layout != torch.strided
+        ):
+            raise TypeError(
+                "packed_values must be a dense Tensor with torch.strided layout, "
+                f"got {type(packed_values).__name__} with layout "
+                f"{getattr(packed_values, 'layout', None)}"
+            )
+        if packed_values.shape != self._values.shape:
+            raise ValueError(
+                "packed_values must have exactly the same shape as the reference packed storage, "
+                f"got {packed_values.shape} and expected {self._values.shape}"
+            )
+        pin_memory = bool(packed_values.device.type == "cpu" and packed_values.is_pinned())
+        result = type(self)._from_packed(
+            packed_values,
+            self._offsets,
+            self._physical_shape,
+            permutation=self._permutation,
+            batch_first=self.batch_first,
+            padding_value=self.padding_value,
+            mask_value=self.mask_value,
+            pin_memory=pin_memory,
+            outer_size=self._logical_shape,
+            packed_sizes=self._packed_sizes,
+            element_shapes=self._element_shapes,
+            validate=False,
+        )
+        if (
+            self._cached_hierarchical_offsets is not None
+            and result._offsets is self._offsets
+            and result._physical_shape is self._physical_shape
+        ):
+            result._cached_hierarchical_offsets = self._cached_hierarchical_offsets
+        return result
 
     def nested_like(self, tensor: Tensor, strict: bool = True) -> Self:
         r"""

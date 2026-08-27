@@ -205,7 +205,7 @@ def _transformer_encoder_layer_fwd(
 # Arithmetic
 
 
-@NestedTensorFuncRegistry.implement(torch.addcdiv)
+@NestedTensorFuncRegistry.implement(torch.addcdiv, compile_safe=True)
 def addcdiv(input, tensor1, tensor2, *, value=1):
     r"""
     Performs the element-wise division of `tensor1` by `tensor2`, multiplies the result by the scalar
@@ -230,12 +230,20 @@ def addcdiv(input, tensor1, tensor2, *, value=1):
     ref = next((t for t in (input, tensor1, tensor2) if isinstance(t, NestedTensor)), None)
     if ref is None:
         return torch.addcdiv(input, tensor1, tensor2, value=value)
+    from .aten_functions import _ternary_handler
+
     with suppress(NotImplementedError):
-        return torch.ops.aten.addcdiv.default(input, tensor1, tensor2, value=value)
+        return _ternary_handler(
+            torch.ops.aten.addcdiv.default,
+            (input, tensor1, tensor2),
+            {"value": value},
+        )
+    if _is_compiling():
+        _compile_unsupported("torch.addcdiv", "operands are not compatible with the packed layout")
     return _ternary_op(ref, input, tensor1, tensor2, torch.addcdiv, value=value)
 
 
-@NestedTensorFuncRegistry.implement(torch.addcmul)
+@NestedTensorFuncRegistry.implement(torch.addcmul, compile_safe=True)
 def addcmul(input, tensor1, tensor2, *, value=1):
     r"""
     Performs the element-wise multiplication of `tensor1` by `tensor2`, multiplies the result by the scalar
@@ -259,9 +267,35 @@ def addcmul(input, tensor1, tensor2, *, value=1):
     ref = next((t for t in (input, tensor1, tensor2) if isinstance(t, NestedTensor)), None)
     if ref is None:
         return torch.addcmul(input, tensor1, tensor2, value=value)
+    from .aten_functions import _ternary_handler
+
     with suppress(NotImplementedError):
-        return torch.ops.aten.addcmul.default(input, tensor1, tensor2, value=value)
+        return _ternary_handler(
+            torch.ops.aten.addcmul.default,
+            (input, tensor1, tensor2),
+            {"value": value},
+        )
+    if _is_compiling():
+        _compile_unsupported("torch.addcmul", "operands are not compatible with the packed layout")
     return _ternary_op(ref, input, tensor1, tensor2, torch.addcmul, value=value)
+
+
+@NestedTensorFuncRegistry.implement(torch.lerp, compile_safe=True)
+def lerp(input, end, weight):
+    r"""Linearly interpolate packed values while preserving public autograd semantics."""
+    from .aten_functions import _ternary_handler
+    from .nested_tensor import NestedTensor
+    from .ops import _ternary_op
+
+    ref = next((tensor for tensor in (input, end, weight) if isinstance(tensor, NestedTensor)), None)
+    if ref is None:
+        return torch.lerp(input, end, weight)
+    with suppress(NotImplementedError):
+        aten_lerp = torch.ops.aten.lerp.Tensor if isinstance(weight, Tensor) else torch.ops.aten.lerp.Scalar
+        return _ternary_handler(aten_lerp, (input, end, weight), {})
+    if _is_compiling():
+        _compile_unsupported("torch.lerp", "operands are not compatible with the packed layout")
+    return _ternary_op(ref, input, end, weight, torch.lerp)
 
 
 # Comparison
@@ -1095,9 +1129,8 @@ def alpha_dropout(input: NestedTensor, p: float = 0.5, train: bool = False):
     _validate_probability(float(p), error_type=RuntimeError)
     if (not train) or p == 0:
         return input
-    from .aten_functions import _packed_like
 
-    return _packed_like(input, torch.ops.aten.alpha_dropout.default(input._values, p, train))
+    return input._packed_like_unchecked(torch.ops.aten.alpha_dropout.default(input._values, p, train))
 
 
 @NestedTensorFuncRegistry.implement(torch.bernoulli)
@@ -1121,9 +1154,8 @@ def bernoulli(input: NestedTensor, *, generator=None):
         >>> out[0].shape == nt[0].shape and out[1].shape == nt[1].shape
         True
     """
-    from .aten_functions import _packed_like
 
-    return _packed_like(input, torch.ops.aten.bernoulli.default(input._values, generator=generator))
+    return input._packed_like_unchecked(torch.ops.aten.bernoulli.default(input._values, generator=generator))
 
 
 @NestedTensorFuncRegistry.implement(torch.dropout)
@@ -1150,9 +1182,8 @@ def dropout(input: NestedTensor, p: float = 0.5, train: bool = True):
     _validate_probability(float(p), error_type=RuntimeError)
     if (not train) or p == 0:
         return input
-    from .aten_functions import _packed_like
 
-    return _packed_like(input, torch.ops.aten.dropout.default(input._values, p, train))
+    return input._packed_like_unchecked(torch.ops.aten.dropout.default(input._values, p, train))
 
 
 @NestedTensorFuncRegistry.implement(torch.feature_alpha_dropout)
@@ -1161,9 +1192,8 @@ def feature_alpha_dropout(input: NestedTensor, p: float = 0.5, train: bool = Fal
     _validate_probability(float(p), error_type=RuntimeError)
     if (not train) or p == 0:
         return input
-    from .aten_functions import _packed_like
 
-    return _packed_like(input, torch.ops.aten.feature_alpha_dropout.default(input._values, p, train))
+    return input._packed_like_unchecked(torch.ops.aten.feature_alpha_dropout.default(input._values, p, train))
 
 
 # Indexing & Masking
@@ -1820,7 +1850,7 @@ if hasattr(torch, "take_along_dim"):
         return NestedTensor(torch.take_along_dim(t, indices_device, dim=dim_adj) for t in input._storage)
 
 
-@NestedTensorFuncRegistry.implement(torch.where)
+@NestedTensorFuncRegistry.implement(torch.where, compile_safe=True)
 def where(condition, input, other):
     r"""
     Return a tensor of elements selected from either `input` or `other`, depending on `condition`.
@@ -1884,8 +1914,13 @@ def where(condition, input, other):
     ref = next((v for v in (input, other, condition) if isinstance(v, NestedTensor)), None)
     if ref is None:
         return torch.where(condition, input, other)
+    from .aten_functions import _ternary_handler
+
     with suppress(NotImplementedError):
-        return select_aten_where(input, other)(condition, input, other)
+        return _ternary_handler(select_aten_where(input, other), (condition, input, other), {})
+
+    if _is_compiling():
+        _compile_unsupported("torch.where", "operands are not compatible with the packed layout")
 
     cond_nt = to_nested(condition, ref, dtype=torch.bool)
     input_nt = to_nested(input, ref)
@@ -4029,9 +4064,9 @@ def log_softmax(input: NestedTensor, dim: int, dtype: torch.dtype | None = None)
         >>> torch.allclose(out, ref)
         True
     """
-    from .aten_functions import _packed_like, _softmax_handler
+    from .aten_functions import _softmax_handler
 
-    source = input if dtype is None else _packed_like(input, input._values.to(dtype=dtype))
+    source = input if dtype is None else input._packed_like_unchecked(input._values.to(dtype=dtype))
     # Run the packed handler HERE (func level), where ``source._values`` still carry autograd, rather than
     # delegating to the aten op on the NestedTensor -- that re-enters ``__torch_dispatch__``, where autograd
     # has already detached ``_values``, so the result would drop grad (breaking a training loss's log_softmax).
@@ -4060,9 +4095,9 @@ def softmax(input: NestedTensor, dim: int, dtype: torch.dtype | None = None) -> 
         >>> torch.allclose(out, ref)
         True
     """
-    from .aten_functions import _packed_like, _softmax_handler
+    from .aten_functions import _softmax_handler
 
-    source = input if dtype is None else _packed_like(input, input._values.to(dtype=dtype))
+    source = input if dtype is None else input._packed_like_unchecked(input._values.to(dtype=dtype))
     # See ``log_softmax``: run the packed handler at func level so autograd on ``_values`` is preserved
     # instead of being detached by a re-entry into ``__torch_dispatch__``.
     return _softmax_handler(torch.ops.aten._softmax.default, (source, dim, False), {})
@@ -4467,9 +4502,8 @@ def topk(input: NestedTensor, k, dim: int | None = None, largest: bool = True, s
 
 def _elementwise_unary_handler(input, *args, _fn=None, **kwargs):
     r"""Apply a unary elementwise op directly to packed _values, bypassing aten decomposition."""
-    from .aten_functions import _packed_like
 
-    return _packed_like(input, _fn(input._values, *args, **kwargs))
+    return input._packed_like_unchecked(_fn(input._values, *args, **kwargs))
 
 
 def _elementwise_binary_handler(input, other, *args, _fn=None, **kwargs):
@@ -4633,8 +4667,11 @@ for _method, _func in TORCH_DUNDER_WRAPPER_TO_FUNC.items():
         )
 # Tensor.method → torch.func aliases, plus torch.movedim → torch.moveaxis alias
 for _alias_method, _alias_func in (
+    (torch.Tensor.addcdiv, torch.addcdiv),
+    (torch.Tensor.addcmul, torch.addcmul),
     (torch.Tensor.split, torch.split),
     (torch.Tensor.chunk, torch.chunk),
+    (torch.Tensor.lerp, torch.lerp),
     (torch.Tensor.matmul, torch.matmul),
     (torch.Tensor.softmax, torch.softmax),
     (torch.Tensor.log_softmax, torch.log_softmax),

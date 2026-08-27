@@ -464,6 +464,254 @@ class TestConstruction:
 
 
 # ---------------------------------------------------------------------------
+# Packed Reconstruction
+# ---------------------------------------------------------------------------
+
+
+class TestPackedLike:
+
+    def test_packed_like_preserves_structure_and_runtime_config(self):
+        reference = NestedTensor(
+            [torch.randn(2, 3), torch.randn(4, 3)],
+            batch_first=False,
+            padding_value=-1.5,
+            mask_value=True,
+        )
+        packed_values = torch.arange(reference.concat.numel(), dtype=torch.float32).reshape(reference.concat.shape)
+
+        output = reference.packed_like(packed_values)
+
+        assert output._has_same_layout(reference)
+        assert output.shape == reference.shape
+        assert output.batch_first is False
+        assert output.padding_value == -1.5
+        assert output.mask_value is True
+        assert output._offsets is reference._offsets
+        assert output._physical_shape is reference._physical_shape
+        assert output._permutation == reference._permutation
+        assert output._packed_sizes is reference._packed_sizes
+        assert output._element_shapes is reference._element_shapes
+
+    def test_packed_like_preserves_multi_ragged_permuted_layout(self):
+        reference = NestedTensor(
+            [
+                torch.randn(1, 2, 3, 5),
+                torch.randn(1, 4, 2, 5),
+            ]
+        )
+        assert reference._ragged_rank == 2
+        assert reference._permutation != tuple(range(4))
+        packed_values = torch.randn_like(reference.concat)
+
+        output = reference.packed_like(packed_values)
+
+        assert output._has_same_layout(reference)
+        assert output._ragged_rank == 2
+        assert output._permutation == reference._permutation
+        assert_close(output.concat, packed_values)
+
+    def test_packed_like_empty(self):
+        reference = NestedTensor([], dtype=torch.float32, batch_first=False, padding_value=-2, mask_value=True)
+        packed_values = torch.empty_like(reference.concat, dtype=torch.float64)
+
+        output = reference.packed_like(packed_values)
+
+        assert output.shape == reference.shape
+        assert output.dtype == torch.float64
+        assert output.concat is packed_values
+        assert output.batch_first is False
+        assert output.padding_value == -2
+        assert output.mask_value is True
+
+    def test_packed_like_uses_noncontiguous_values_without_copy(self):
+        reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+        packed_values = torch.randn(3, reference.concat.size(0)).transpose(0, 1)
+        assert not packed_values.is_contiguous()
+
+        output = reference.packed_like(packed_values)
+
+        assert output.concat is packed_values
+        assert output.concat.data_ptr() == packed_values.data_ptr()
+        assert output.concat.stride() == packed_values.stride()
+        assert output.concat.storage_offset() == packed_values.storage_offset()
+
+    def test_packed_like_rejects_shape_mismatch(self):
+        reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+
+        with pytest.raises(ValueError, match="exactly the same shape"):
+            reference.packed_like(reference.concat.reshape(-1))
+        with pytest.raises(ValueError, match="exactly the same shape"):
+            reference.packed_like(torch.empty(reference.concat.size(0) + 1, 3))
+
+    @pytest.mark.parametrize("packed_values", [object(), 1, [1.0, 2.0]])
+    def test_packed_like_rejects_non_tensor(self, packed_values):
+        reference = NestedTensor([torch.randn(2), torch.randn(1)])
+
+        with pytest.raises(TypeError, match="dense Tensor"):
+            reference.packed_like(packed_values)  # type: ignore[arg-type]
+
+    def test_packed_like_rejects_nested_tensor_values(self):
+        reference = NestedTensor([torch.randn(2), torch.randn(1)])
+
+        with pytest.raises(TypeError, match="dense Tensor"):
+            reference.packed_like(reference)
+
+    def test_packed_like_rejects_native_nested_tensor_values(self):
+        reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+        packed_values = torch.nested.nested_tensor([torch.randn(2, 3), torch.randn(4, 3)])
+
+        with pytest.raises(TypeError, match="dense Tensor with torch.strided layout"):
+            reference.packed_like(packed_values)
+
+    @pytest.mark.parametrize("layout", [torch.sparse_coo, torch.sparse_csr])
+    def test_packed_like_rejects_sparse_values(self, layout):
+        reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+        dense = torch.zeros_like(reference.concat)
+        packed_values = dense.to_sparse() if layout == torch.sparse_coo else dense.to_sparse_csr()
+
+        with pytest.raises(TypeError, match="dense Tensor with torch.strided layout"):
+            reference.packed_like(packed_values)
+
+    def test_packed_like_follows_dtype_and_autograd_history(self):
+        reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+        leaf = torch.randn(reference.concat.shape, dtype=torch.float64, requires_grad=True)
+        packed_values = leaf.square()
+
+        output = reference.packed_like(packed_values)
+
+        assert output.dtype == torch.float64
+        assert output.requires_grad
+        assert output.concat is packed_values
+        assert output.concat.grad_fn is packed_values.grad_fn
+        first_order = torch.autograd.grad(output.concat.sum(), leaf, create_graph=True)[0]
+        second_order = torch.autograd.grad(first_order.sum(), leaf)[0]
+        assert_close(first_order, 2 * leaf)
+        assert_close(second_order, torch.full_like(leaf, 2))
+
+    def test_packed_like_follows_values_device(self):
+        reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+        packed_values = torch.empty(reference.concat.shape, device="meta")
+
+        output = reference.packed_like(packed_values)
+
+        assert output.device.type == "meta"
+        assert output.concat is packed_values
+        assert output._offsets.device.type == "cpu"
+        assert output._physical_shape.device.type == "cpu"
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="pin_memory requires CUDA")
+    def test_packed_like_follows_values_pinning_without_implicit_pin(self):
+        pinned_reference = NestedTensor(
+            [torch.randn(2, 3), torch.randn(4, 3)],
+            pin_memory=True,
+        )
+        unpinned_values = torch.randn(pinned_reference.concat.shape)
+
+        unpinned_output = pinned_reference.packed_like(unpinned_values)
+
+        assert unpinned_output.concat is unpinned_values
+        assert not unpinned_output.concat.is_pinned()
+        assert unpinned_output._pin_memory is False
+
+        pinned_values = unpinned_values.pin_memory()
+        pinned_output = pinned_reference.packed_like(pinned_values)
+
+        assert pinned_output.concat is pinned_values
+        assert pinned_output.concat.is_pinned()
+        assert pinned_output._pin_memory is True
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="pin_memory requires CUDA")
+    def test_internal_packed_rebuilds_preserve_pinned_source(self):
+        reference = NestedTensor(
+            [torch.randn(2, 3), torch.randn(4, 3)],
+            pin_memory=True,
+        )
+
+        outputs = (torch.sin(reference), torch.ops.aten.alias.default(reference))
+
+        for output in outputs:
+            assert output._pin_memory is True
+            assert output.concat.is_pinned()
+
+    def test_packed_like_reuses_only_hierarchical_shape_cache(self):
+        reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+        _ = reference._hierarchical_offsets
+        _ = reference.packed_batch_indices()
+        _ = reference.packed_local_indices()
+        _ = reference.ragged_level_offsets(dtype=torch.int32)
+        _ = reference.mask
+        _ = reference.tensor
+        packed_values = torch.randn_like(reference.concat)
+
+        output = reference.packed_like(packed_values)
+
+        assert output._cached_hierarchical_offsets is reference._cached_hierarchical_offsets
+        assert output._cached_packed_batch_indices is None
+        assert output._cached_packed_local_indices is None
+        assert output._cached_ragged_level_offsets is None
+        assert output._cached_mask_view is None
+        assert output._cached_tensor_view is None
+        assert output._cached_storage is None
+
+    def test_packed_like_supports_fake_tensor(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        FakeTensorMode = fake_tensor_mod.FakeTensorMode
+        is_fake = fake_tensor_mod.is_fake
+        reference = NestedTensor([torch.empty(2, 3), torch.empty(4, 3)])
+        _ = reference._hierarchical_offsets
+        packed_values = FakeTensorMode().from_tensor(torch.empty_like(reference.concat))
+
+        output = reference.packed_like(packed_values)
+
+        assert output.concat is packed_values
+        assert output._cached_hierarchical_offsets is None
+        assert output._has_same_layout(reference)
+        assert is_fake(output._offsets)
+        assert is_fake(output._physical_shape)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_packed_like_fullgraph_forward_backward(self):
+        reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+        packed_values = torch.randn_like(reference.concat, requires_grad=True)
+
+        compiled = torch.compile(
+            lambda ref, values: ref.packed_like(values).concat.square().sum(),
+            backend="aot_eager",
+            fullgraph=True,
+        )
+        loss = compiled(reference, packed_values)
+        assert type(loss.grad_fn).__name__ == "CompiledFunctionBackward"
+        loss.backward()
+
+        assert_close(loss, packed_values.square().sum())
+        assert_close(packed_values.grad, 2 * packed_values)
+
+    def test_packed_like_pickle_roundtrip(self):
+        reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+        output = reference.packed_like(torch.randn_like(reference.concat, dtype=torch.float64))
+
+        restored = pickle.loads(pickle.dumps(output))
+
+        assert restored._has_same_layout(reference)
+        assert restored.dtype == torch.float64
+        assert_close(restored, output)
+
+    def test_packed_like_preserves_nested_tensor_subclass(self):
+
+        class DerivedNestedTensor(NestedTensor):
+            pass
+
+        reference = DerivedNestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+        packed_values = torch.randn_like(reference.concat)
+
+        output = reference.packed_like(packed_values)
+
+        assert type(output) is DerivedNestedTensor
+        assert output.concat is packed_values
+        assert output._has_same_layout(reference)
+
+
+# ---------------------------------------------------------------------------
 # Copy Semantics
 # ---------------------------------------------------------------------------
 
