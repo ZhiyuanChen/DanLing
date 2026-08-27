@@ -334,8 +334,18 @@ broadcasting, and static-tail normalization. Tensor-backed view/index remapping,
 padding, `broadcast_tensors`, global-query `einsum`, and ragged-dimension
 softmax remain staged; these paths raise an explicit compile error instead of
 materializing Python metadata or silently assuming a layout.
-They intentionally do not expose offsets or the general private packed
-constructor.
+They intentionally do not expose the general private packed constructor.
+
+`packed_offsets()` returns the boundaries of complete logical batch elements
+in the flattened leading dimension of `concat`. It is the public operator
+metadata interface for segmented kernels: for `(N_i, N_i, C)` elements it
+returns cumulative `N_i * N_i` cell counts, whereas
+`ragged_level_offsets(level)` returns row splits within the ragged hierarchy.
+The same contract applies to single-ragged and non-leading-ragged layouts.
+The canonical CPU integer tensor is returned without a copy; optional `device`
+and `dtype` conversions are cached on the `NestedTensor` instance. An explicit
+accelerator index is required for device caching; index-less device requests
+retain PyTorch's current-device semantics and are converted on every call.
 
 `packed_dim_order` exposes the read-only mapping from logical element dimensions
 to physical packed-storage order when an operator needs to validate its layout.

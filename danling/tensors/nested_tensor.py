@@ -166,6 +166,7 @@ class NestedTensor(torch.Tensor):
     _cached_mask_view: tuple[bool, bool, tuple[int, ...], Tensor] | None
     _cached_packed_batch_indices: dict[tuple[str, torch.dtype, tuple[int, ...]], Tensor] | None
     _cached_packed_local_indices: dict[tuple[int, str, torch.dtype, tuple[int, ...]], Tensor] | None
+    _cached_packed_offsets: dict[tuple[str, torch.dtype, tuple[int, ...]], Tensor] | None
     _cached_ragged_level_offsets: dict[tuple[int, str, torch.dtype, tuple[int, ...]], Tensor] | None
     _RAGGED_OFFSETS_PREFIX = "_ragged_offsets_"
     _SERIALIZATION_VERSION = 3
@@ -1109,6 +1110,7 @@ class NestedTensor(torch.Tensor):
         self._cached_mask_view = None
         self._cached_packed_batch_indices = None
         self._cached_packed_local_indices = None
+        self._cached_packed_offsets = None
         self._cached_ragged_level_offsets = None
 
     def _mark_tensor_backed_dynamic_dims(self) -> None:
@@ -1159,6 +1161,19 @@ class NestedTensor(torch.Tensor):
             if "Inference tensors do not track version counter" not in str(exc):
                 raise
             return id(tensor)
+
+    @staticmethod
+    def _offset_conversion_device_key(device: torch.device) -> str | None:
+        r"""Return an unambiguous per-device cache key for derived offsets.
+
+        An index-less non-CPU device follows PyTorch's current-device semantics.
+        Its concrete target can therefore change between calls, so it must not
+        participate in the conversion cache.  CPU has no per-process current
+        index and remains safely cacheable.
+        """
+        if device.type != "cpu" and device.index is None:
+            return None
+        return str(device)
 
     @classmethod
     def _validate_serialized_state(cls, state: Mapping) -> None:
@@ -1720,6 +1735,38 @@ class NestedTensor(torch.Tensor):
             return self._offsets
         return offsets[level]
 
+    def packed_offsets(
+        self,
+        *,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> Tensor:
+        r"""Return logical-batch boundaries in the packed leading dimension.
+
+        The returned offsets delimit each logical batch element in ``concat``.
+        This differs from :meth:`ragged_level_offsets` for multi-ragged layouts:
+        ``packed_offsets`` always addresses complete per-sample packed chunks,
+        while ragged-level offsets address rows within the ragged hierarchy.
+        Device and dtype conversions are cached per ``NestedTensor`` instance.
+        """
+        offsets = self._offsets
+        target_device = offsets.device if device is None else torch.device(device)
+        target_dtype = offsets.dtype if dtype is None else dtype
+        if offsets.device == target_device and offsets.dtype == target_dtype:
+            return offsets
+        device_key = type(self)._offset_conversion_device_key(target_device)
+        key = None if device_key is None else (device_key, target_dtype, self._shape_cache_token())
+        if key is not None and self._cached_packed_offsets is not None:
+            cached = self._cached_packed_offsets.get(key)
+            if cached is not None:
+                return cached
+        elif key is not None and not _is_fake_tensor(offsets):
+            self._cached_packed_offsets = {}
+        converted = offsets.to(device=target_device, dtype=target_dtype)
+        if key is not None and self._cached_packed_offsets is not None:
+            self._cached_packed_offsets[key] = converted
+        return converted
+
     def ragged_level_offsets(
         self,
         level: int = -1,
@@ -1733,15 +1780,20 @@ class NestedTensor(torch.Tensor):
         target_dtype = offsets.dtype if dtype is None else dtype
         if offsets.device == target_device and offsets.dtype == target_dtype:
             return offsets
-        key = (int(level), str(target_device), target_dtype, self._shape_cache_token())
-        if self._cached_ragged_level_offsets is not None:
+        device_key = type(self)._offset_conversion_device_key(target_device)
+        key = (
+            None
+            if device_key is None
+            else (int(level), device_key, target_dtype, self._shape_cache_token())
+        )
+        if key is not None and self._cached_ragged_level_offsets is not None:
             cached = self._cached_ragged_level_offsets.get(key)
             if cached is not None:
                 return cached
-        elif not _is_fake_tensor(offsets):
+        elif key is not None and not _is_fake_tensor(offsets):
             self._cached_ragged_level_offsets = {}
         converted = offsets.to(device=target_device, dtype=target_dtype)
-        if self._cached_ragged_level_offsets is not None:
+        if key is not None and self._cached_ragged_level_offsets is not None:
             self._cached_ragged_level_offsets[key] = converted
         return converted
 

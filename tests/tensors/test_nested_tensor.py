@@ -1251,6 +1251,7 @@ class TestPackedLike:
         _ = reference._hierarchical_offsets
         _ = reference.packed_batch_indices()
         _ = reference.packed_local_indices()
+        _ = reference.packed_offsets(dtype=torch.int32)
         _ = reference.ragged_level_offsets(dtype=torch.int32)
         _ = reference.mask
         _ = reference.tensor
@@ -1261,10 +1262,139 @@ class TestPackedLike:
         assert output._cached_hierarchical_offsets is reference._cached_hierarchical_offsets
         assert output._cached_packed_batch_indices is None
         assert output._cached_packed_local_indices is None
+        assert output._cached_packed_offsets is None
         assert output._cached_ragged_level_offsets is None
         assert output._cached_mask_view is None
         assert output._cached_tensor_view is None
         assert output._cached_storage is None
+
+    @pytest.mark.parametrize(
+        ("elements", "ragged_dims", "expected"),
+        [
+            ([torch.empty(2, 4), torch.empty(3, 4)], (0,), [0, 2, 5]),
+            ([torch.empty(2, 2, 4), torch.empty(3, 3, 4)], (0, 1), [0, 4, 13]),
+            ([torch.empty(2, 2, 4), torch.empty(2, 3, 4)], (1,), [0, 2, 5]),
+        ],
+        ids=["single", "multi", "nonleading"],
+    )
+    def test_packed_offsets_are_logical_batch_boundaries(self, elements, ragged_dims, expected):
+        nested = NestedTensor(elements, ragged_dims=ragged_dims)
+
+        offsets = nested.packed_offsets()
+
+        assert offsets is nested._offsets
+        assert offsets.tolist() == expected
+        assert offsets[-1].item() == nested.concat.shape[0]
+
+    def test_packed_offsets_cache_dtype_conversion_per_instance(self):
+        nested = NestedTensor(
+            [torch.empty(2, 2, 4), torch.empty(3, 3, 4)],
+            ragged_dims=(0, 1),
+        )
+
+        converted = nested.packed_offsets(device="cpu", dtype=torch.int32)
+
+        assert converted.dtype == torch.int32
+        assert converted.tolist() == [0, 4, 13]
+        assert nested.packed_offsets(device=torch.device("cpu"), dtype=torch.int32) is converted
+        assert nested.packed_offsets(device="cpu", dtype=torch.long) is nested._offsets
+
+    def test_packed_offsets_survive_copy_and_pickle(self):
+        nested = NestedTensor(
+            [torch.empty(2, 2, 4), torch.empty(3, 3, 4)],
+            ragged_dims=(0, 1),
+        )
+        converted = nested.packed_offsets(dtype=torch.int32)
+        shallow = copy.copy(nested)
+        deep = copy.deepcopy(nested)
+        restored = pickle.loads(pickle.dumps(nested))
+
+        assert converted is nested.packed_offsets(dtype=torch.int32)
+        for output in (shallow, deep, restored):
+            assert output._cached_packed_offsets is None
+            assert output.packed_offsets() is output._offsets
+            assert output.packed_offsets().tolist() == [0, 4, 13]
+
+    def test_packed_offsets_support_fake_tensor(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        nested = NestedTensor(
+            [torch.empty(2, 2, 4), torch.empty(3, 3, 4)],
+            ragged_dims=(0, 1),
+        )
+
+        with fake_tensor_mod.FakeTensorMode() as mode:
+            fake = mode.from_tensor(nested)
+            fake_offsets = fake.packed_offsets()
+            fake_int32_offsets = fake.packed_offsets(dtype=torch.int32)
+
+        assert fake_offsets is fake._offsets
+        assert fake_tensor_mod.is_fake(fake_offsets)
+        assert fake_tensor_mod.is_fake(fake_int32_offsets)
+        assert fake_int32_offsets.dtype == torch.int32
+
+    def test_indexless_non_cpu_offset_conversions_are_not_cached(self):
+        nested = NestedTensor(
+            [torch.empty(2, 2, 4), torch.empty(3, 3, 4)],
+            ragged_dims=(0, 1),
+        )
+
+        first_packed = nested.packed_offsets(device="meta", dtype=torch.int32)
+        second_packed = nested.packed_offsets(device="meta", dtype=torch.int32)
+        first_cells = nested.ragged_level_offsets(1, device="meta", dtype=torch.int32)
+        second_cells = nested.ragged_level_offsets(1, device="meta", dtype=torch.int32)
+
+        assert first_packed.device.type == "meta"
+        assert first_packed is not second_packed
+        assert first_cells is not second_cells
+        assert nested._cached_packed_offsets is None
+        assert nested._cached_ragged_level_offsets is None
+        assert NestedTensor._offset_conversion_device_key(torch.device("cuda")) is None
+        assert NestedTensor._offset_conversion_device_key(torch.device("cuda:0")) == "cuda:0"
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_packed_offsets_reuse_one_dynamic_multiragged_graph(self):
+        from torch._dynamo.testing import CompileCounter
+
+        counter = CompileCounter()
+        compiled = torch.compile(
+            lambda nested: (
+                nested.concat.sum(),
+                nested.packed_offsets(dtype=torch.int32),
+                nested.ragged_level_offsets(1, dtype=torch.int32),
+            ),
+            backend=counter,
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        layouts = tuple(
+            NestedTensor(
+                [torch.ones(length, length, 4) for length in lengths],
+                ragged_dims=(0, 1),
+            )
+            for lengths in ((2, 3), (3, 5))
+        )
+        first_packed = layouts[0].packed_offsets(dtype=torch.int32)
+        first_cells = layouts[0].ragged_level_offsets(1, dtype=torch.int32)
+        outputs = []
+
+        for nested, lengths in zip(layouts, ((2, 3), (3, 5))):
+            total, offsets, cell_offsets = compiled(nested)
+            outputs.append(offsets)
+
+            expected = torch.tensor([0, lengths[0] ** 2, lengths[0] ** 2 + lengths[1] ** 2], dtype=torch.int32)
+            cell_widths = torch.repeat_interleave(torch.tensor(lengths), torch.tensor(lengths))
+            expected_cells = torch.nn.functional.pad(cell_widths.cumsum(0), (1, 0)).to(torch.int32)
+            assert_close(total, nested.concat.sum())
+            assert_close(offsets, expected)
+            assert_close(cell_offsets, expected_cells)
+
+        assert layouts[0].packed_offsets(dtype=torch.int32) is first_packed
+        assert layouts[0].ragged_level_offsets(1, dtype=torch.int32) is first_cells
+        assert layouts[0]._cached_packed_offsets is not layouts[1]._cached_packed_offsets
+        assert layouts[0]._cached_ragged_level_offsets is not layouts[1]._cached_ragged_level_offsets
+        assert not torch.equal(outputs[0], outputs[1])
+        assert counter.frame_count == 1
 
     def test_packed_local_indices_respect_each_ragged_level(self):
         reference = NestedTensor(
