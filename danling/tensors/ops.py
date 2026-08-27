@@ -262,7 +262,7 @@ def _maybe_align_dense_to_nested(ref: NestedTensor, value) -> NestedTensor | Non
 
 
 def _broadcasts_per_element(source: NestedTensor, candidate: Tensor) -> bool:
-    r"""Return whether ``candidate`` broadcasts to each element without changing element shapes."""
+    r"""Return whether ``candidate`` broadcasts independently to every element."""
     if source._element_shapes is not None:
         element_shapes = source._element_shapes
     else:
@@ -274,12 +274,13 @@ def _broadcasts_per_element(source: NestedTensor, candidate: Tensor) -> bool:
         element_shapes = tuple(tuple(int(size) for size in shape) for shape in source._physical_shape.tolist())
 
     candidate_shape = tuple(candidate.shape)
+    varying_dims, _ = type(source)._pack_layout_from_element_shapes(element_shapes)
     for shape in element_shapes:
         try:
             broadcasted_shape = torch.broadcast_shapes(shape, candidate_shape)
         except RuntimeError:
             return False
-        if tuple(broadcasted_shape) != tuple(shape) and len(candidate_shape) >= len(shape):
+        if any(broadcasted_shape[dim] != shape[dim] for dim in varying_dims):
             return False
     return True
 
@@ -516,7 +517,7 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
       ``_maybe_exact_shape_nested_like`` internally, which has O(B * max_len) cost
       from repacking the dense tensor to match the packed layout. Avoid in hot paths.
     """
-    from .aten_functions import _packed_like, _packed_with_static_tail_from_values, _packed_with_tail_from_values
+    from .aten_functions import _packed_with_static_tail_from_values, _packed_with_tail_from_values
     from .nested_tensor import NestedTensor
 
     def _rebuild(values):
@@ -524,7 +525,7 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
             if values.dim() == input._values.dim():
                 return _packed_with_static_tail_from_values(input, values)
             return _packed_with_tail_from_values(input, values)
-        return _packed_like(input, values)
+        return input._packed_like_unchecked(values)
 
     # Normalize: input is always the NestedTensor
     cls = type(input) if isinstance(input, NestedTensor) else type(other)
@@ -547,7 +548,7 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
             if reverse
             else op(input._values, resolved, *extra_args, **extra_kwargs)
         )
-        return _packed_like(input, new_values)
+        return _rebuild(new_values)
 
     # NT + scalar or 0-d tensor (most common in training)
     if not isinstance(other, Tensor) or other.dim() == 0:
@@ -557,7 +558,7 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
             if reverse
             else op(input._values, val, *extra_args, **extra_kwargs)
         )
-        return _packed_like(input, new_values)
+        return input._packed_like_unchecked(new_values)
 
     # Packed dense resolution indexes metadata in packed physical-dim order.
     # For permuted layouts, fall back to logical per-element alignment first so
@@ -596,7 +597,7 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
             # trailing (non-ragged) dims actually broadcast -- e.g. (N,1,5,1,3) - (N,K,1,5,3) -> (N,K,5,5,3)
             # -- is the tail re-derived, rather than silently copying the left operand's element shape.
             if new_values.shape[1:] == input._values.shape[1:]:
-                return _packed_like(input, new_values)
+                return input._packed_like_unchecked(new_values)
             return _packed_with_static_tail_from_values(input, new_values)
         lhs_s, rhs_s = (other._storage, input._storage) if reverse else (input._storage, other._storage)
         return cls(
@@ -709,11 +710,10 @@ def _concat_apply(
 
 def _concat_apply_same_shape(input: NestedTensor, op: Callable[[Tensor], Tensor]):
     r"""Apply a shape-preserving op directly to packed _values."""
-    from .aten_functions import _packed_like
 
     if len(input) == 0:
         return type(input)([], **input._meta(include_dtype=True))
-    return _packed_like(input, op(input._values))
+    return input._packed_like_unchecked(op(input._values))
 
 
 def _static_dim_mask_from_element_shapes(
@@ -1279,13 +1279,11 @@ def _packed_layer_norm(
     if not _can_concat_normalize(input, normalized_shape):
         return None
 
-    from .aten_functions import _packed_like
-
     try:
         output, _, _ = torch.ops.aten.native_layer_norm.default(input._values, normalized_shape, weight, bias, eps)
     except RuntimeError:
         return None
-    return _packed_like(input, output)
+    return input._packed_like_unchecked(output)
 
 
 def _packed_rms_norm(input: NestedTensor, normalized_shape: tuple[int, ...], weight: Tensor | None, eps):
@@ -1293,13 +1291,11 @@ def _packed_rms_norm(input: NestedTensor, normalized_shape: tuple[int, ...], wei
     if not _can_concat_normalize(input, normalized_shape):
         return None
 
-    from .aten_functions import _packed_like
-
     try:
         output = torch.ops.aten.rms_norm.default(input._values, normalized_shape, weight, eps)
     except RuntimeError:
         return None
-    return _packed_like(input, output)
+    return input._packed_like_unchecked(output)
 
 
 def _run_layer_norm(

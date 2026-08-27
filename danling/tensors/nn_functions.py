@@ -357,10 +357,9 @@ def _apply_packed(input: NestedTensor, op: Callable, *args, **kwargs) -> NestedT
 
 def _activation_handler(input: NestedTensor, *args, _fn=None, inplace=False, **kwargs):
     r"""Run an activation function on packed _values, ignoring the inplace flag."""
-    from .aten_functions import _packed_like
 
     new_values = _fn(input._values, *args, **kwargs)
-    return _packed_like(input, new_values)
+    return input._packed_like_unchecked(new_values)
 
 
 NN_ACTIVATION_OPS = [
@@ -1197,8 +1196,6 @@ def multi_head_attention_forward(
         k_heads = k_values.unflatten(-1, (num_heads, head_dim)).contiguous()
         v_heads = v_values.unflatten(-1, (num_heads, head_dim)).contiguous()
 
-        from .aten_functions import _packed_like
-
         q_attn = _project_attention_values(query, q_heads, num_heads, head_dim)
         k_attn = _project_attention_values(key, k_heads, num_heads, head_dim)
         v_attn = _project_attention_values(value, v_heads, num_heads, head_dim)
@@ -1214,7 +1211,7 @@ def multi_head_attention_forward(
         out_values = F.linear(
             attn_output._values.reshape(attn_output._values.size(0), -1), out_proj_weight, out_proj_bias
         )
-        result = _packed_like(query, out_values)
+        result = query._packed_like_unchecked(out_values)
         if _was_seq_first:
             result = result.transpose(0, 1)
         return result, None
@@ -2365,7 +2362,6 @@ def affine_grid(input, *args, **kwargs):
 
 @NestedTensorFuncRegistry.implement(F.alpha_dropout)
 def alpha_dropout(input, p=0.5, training=False, inplace=False):
-    from .aten_functions import _packed_like
 
     _validate_probability(float(p), error_type=ValueError)
     if (not training) or p == 0:
@@ -2374,7 +2370,7 @@ def alpha_dropout(input, p=0.5, training=False, inplace=False):
         F.alpha_dropout(input._values, p=p, training=training, inplace=True)
         input._invalidate_transient_caches()
         return input
-    return _packed_like(input, torch.ops.aten.alpha_dropout.default(input._values, p, training))
+    return input._packed_like_unchecked(torch.ops.aten.alpha_dropout.default(input._values, p, training))
 
 
 @NestedTensorFuncRegistry.implement(F.bilinear)
@@ -2393,7 +2389,6 @@ def bilinear(input1, input2, weight, bias=None):
 
 @NestedTensorFuncRegistry.implement(F.dropout)
 def dropout(input, p=0.5, training=True, inplace=False):
-    from .aten_functions import _packed_like
 
     _validate_probability(float(p), error_type=ValueError)
     if (not training) or p == 0:
@@ -2402,7 +2397,7 @@ def dropout(input, p=0.5, training=True, inplace=False):
         F.dropout(input._values, p=p, training=training, inplace=True)
         input._invalidate_transient_caches()
         return input
-    return _packed_like(input, torch.ops.aten.dropout.default(input._values, p, training))
+    return input._packed_like_unchecked(torch.ops.aten.dropout.default(input._values, p, training))
 
 
 @NestedTensorFuncRegistry.implement(F.grid_sample)
@@ -2612,13 +2607,13 @@ def f_softmin(input, dim=-1, _stacklevel=3, dtype=None):
 
 @NestedTensorFuncRegistry.implement(F.gumbel_softmax, compile_safe=False)
 def gumbel_softmax(logits, *args, dim=-1, **kwargs):
-    from .aten_functions import _packed_like, _packed_to_padded
+    from .aten_functions import _packed_to_padded
 
     dim_adj = _translate_non_batch_dim(logits, dim)
     if dim_adj == 0:
         padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(logits, fill_value=float("-inf"))
         out_padded = F.gumbel_softmax(padded, *args, dim=1, **kwargs)
-        return _packed_like(logits, out_padded[batch_idx, local_idx])
+        return logits._packed_like_unchecked(out_padded[batch_idx, local_idx])
     concat_dim = _concat_dim_for_tensor_dim(logits, dim_adj)
     if concat_dim is not None:
         return _apply_packed(logits, F.gumbel_softmax, *args, dim=concat_dim, **kwargs)

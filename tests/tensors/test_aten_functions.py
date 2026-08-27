@@ -184,6 +184,22 @@ class TestCompile:
 
 class TestElementwiseOps:
 
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="pin_memory requires CUDA")
+    @pytest.mark.parametrize("pin_memory", [False, True])
+    def test_zeros_like_follows_requested_pinning(self, pin_memory):
+        source = NT([torch.randn(2, 3), torch.randn(4, 3)], pin_memory=True)
+        expected = torch.zeros_like(source.concat, pin_memory=pin_memory)
+
+        output = torch.zeros_like(source, pin_memory=pin_memory)
+
+        assert output.concat.is_pinned() is expected.is_pinned()
+
+    def test_creation_like_rejects_sparse_result(self):
+        source = NT([torch.randn(2, 3), torch.randn(4, 3)])
+
+        with pytest.raises(TypeError, match="dense Tensor with torch.strided layout"):
+            torch.zeros_like(source, layout=torch.sparse_coo)
+
     def test_binary_dense_same_shape(self):
         nt = NT([torch.tensor([2.0, 3.0]), torch.tensor([4.0, 5.0, 6.0])])
         dense = nt.tensor + 0.5

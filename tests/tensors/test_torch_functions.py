@@ -51,6 +51,18 @@ def _run_or_expect_unsupported(nested_call, tensor_call):
 
 class TestArithmeticFunctions:
 
+    def test_dense_broadcast_expands_only_static_tail(self):
+        nested = NT([torch.randn(2, 1), torch.randn(3, 1)])
+
+        output = nested + torch.ones(1, 4)
+
+        assert [element.shape for element in output] == [torch.Size((2, 4)), torch.Size((3, 4))]
+        assert_close(output.concat, nested.concat + torch.ones(1, 4))
+
+        single = NT([torch.randn(1, 3)])
+        with pytest.raises(NotImplementedError, match="neither shape-aligned nor broadcast-compatible"):
+            torch.add(single, torch.ones(4, 3))
+
     def test_add_converts_tensor_to_nested(self, device, float_dtype):
         nt = NestedTensor([torch.ones(2, device=device, dtype=float_dtype)])
         tensor = torch.ones_like(nt.tensor)
@@ -4526,3 +4538,122 @@ class TestWhere:
         scalar_both = torch.where(nt > 2, 1.0, 0.0)
         scalar_both_ref = NT([torch.where(t > 2, 1.0, 0.0) for t in nt], **nt._meta())
         assert_close(scalar_both, scalar_both_ref)
+
+
+def _public_ternary_result(op_name, reference, condition_values, packed_values, first, second):
+    input_ = reference.packed_like(packed_values)
+    if op_name == "where":
+        condition = reference.packed_like(condition_values)
+        return torch.where(condition, input_, first)
+    if op_name == "addcmul":
+        return torch.addcmul(input_, first, second, value=0.25)
+    if op_name == "addcdiv":
+        return torch.addcdiv(input_, first, second, value=-0.5)
+    if op_name == "lerp":
+        return torch.lerp(input_, first, second)
+    if op_name == "lerp_scalar":
+        return torch.lerp(input_, first, 0.25)
+    raise AssertionError(f"unknown ternary op {op_name}")
+
+
+def _dense_ternary_result(op_name, condition_values, packed_values, first, second):
+    if op_name == "where":
+        return torch.where(condition_values, packed_values, first)
+    if op_name == "addcmul":
+        return torch.addcmul(packed_values, first, second, value=0.25)
+    if op_name == "addcdiv":
+        return torch.addcdiv(packed_values, first, second, value=-0.5)
+    if op_name == "lerp":
+        return torch.lerp(packed_values, first, second)
+    if op_name == "lerp_scalar":
+        return torch.lerp(packed_values, first, 0.25)
+    raise AssertionError(f"unknown ternary op {op_name}")
+
+
+class TestTernaryAutograd:
+
+    @pytest.mark.parametrize("op_name", ["where", "addcmul", "addcdiv", "lerp", "lerp_scalar"])
+
+    @pytest.mark.parametrize("op_name", ["where", "addcmul", "addcdiv", "lerp", "lerp_scalar"])
+    def test_public_ternary_preserves_autograd(self, op_name):
+        reference = NT([torch.randn(2, 1), torch.randn(3, 1)])
+        condition_values = torch.tensor([[True], [False], [True], [False], [True]])
+        packed_values = torch.randn_like(reference.concat, requires_grad=True)
+        expected_values = packed_values.detach().clone().requires_grad_()
+        first = torch.randn(1, 4)
+        second = torch.randn(1, 4)
+        if op_name == "addcdiv":
+            second = second.abs() + 0.5
+        elif op_name == "lerp":
+            second = second.sigmoid()
+
+        output = _public_ternary_result(op_name, reference, condition_values, packed_values, first, second)
+        loss = output.concat.square().sum()
+        expected = _dense_ternary_result(op_name, condition_values, expected_values, first, second)
+        expected_loss = expected.square().sum()
+        (expected_grad,) = torch.autograd.grad(expected_loss, expected_values)
+        loss.backward()
+
+        assert [tuple(element.shape) for element in output] == [(2, 4), (3, 4)]
+        assert_close(output.concat, expected)
+        assert_close(loss, expected_loss)
+        assert_close(packed_values.grad, expected_grad)
+
+    def test_ternary_tensor_method_values_and_vjp(self):
+        reference = NT([torch.randn(2, 1), torch.randn(3, 1)])
+        packed_values = torch.randn_like(reference.concat, requires_grad=True)
+        expected_values = packed_values.detach().clone().requires_grad_()
+        input_ = reference.packed_like(packed_values)
+        first = torch.randn(1, 4)
+        weight = torch.rand(1, 4)
+
+        output = input_.lerp(first, weight)
+        expected = expected_values.lerp(first, weight)
+        cotangent = torch.randn_like(expected)
+        actual_gradient = torch.autograd.grad(output.concat, packed_values, cotangent)[0]
+        expected_gradient = torch.autograd.grad(expected, expected_values, cotangent)[0]
+
+        assert_close(output.concat, expected)
+        assert_close(actual_gradient, expected_gradient)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_public_ternary_compiles_with_vjp(self):
+        reference = NT([torch.randn(2, 1), torch.randn(3, 1)])
+        condition_values = torch.tensor([[True], [False], [True], [False], [True]])
+        packed_values = torch.randn_like(reference.concat, requires_grad=True)
+        expected_values = packed_values.detach().clone().requires_grad_()
+        first = torch.randn(1, 4)
+        second = torch.randn(1, 4)
+
+        compiled = torch.compile(
+            lambda ref, cond, values, lhs, rhs: _public_ternary_result("where", ref, cond, values, lhs, rhs)
+            .concat.square()
+            .sum(),
+            backend="aot_eager",
+            fullgraph=True,
+        )
+        loss = compiled(reference, condition_values, packed_values, first, second)
+        expected = _dense_ternary_result("where", condition_values, expected_values, first, second)
+        expected_loss = expected.square().sum()
+        (expected_grad,) = torch.autograd.grad(expected_loss, expected_values)
+        loss.backward()
+
+        assert_close(loss, expected_loss)
+        assert_close(packed_values.grad, expected_grad)
+
+    def test_public_ternary_supports_fake_tensor(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        FakeTensorMode = fake_tensor_mod.FakeTensorMode
+        is_fake = fake_tensor_mod.is_fake
+
+        with FakeTensorMode():
+            reference = NT([torch.empty(2, 1), torch.empty(3, 1)])
+            condition_values = torch.empty(5, 1, dtype=torch.bool)
+            packed_values = torch.empty_like(reference.concat)
+            first = torch.empty(1, 4)
+            second = torch.ones(1, 4)
+            output = _public_ternary_result("where", reference, condition_values, packed_values, first, second)
+
+            assert is_fake(output.concat)
+            assert output.concat.shape == torch.Size((5, 4))
+            assert [tuple(element.shape) for element in output] == [(2, 4), (3, 4)]

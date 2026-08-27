@@ -27,6 +27,7 @@ import torch
 from packaging.version import Version
 
 from danling.tensors import NestedTensor
+from danling.tensors.ops import nested_execution_guard
 from tests.tensors.utils import assert_close
 
 NT = NestedTensor
@@ -461,6 +462,122 @@ class TestConstruction:
                 packed_sizes=nt._packed_sizes,
                 element_shapes=bad_shapes,
             )
+
+
+# ---------------------------------------------------------------------------
+# Copy Semantics
+# ---------------------------------------------------------------------------
+
+
+class TestPackedLike:
+
+    def test_packed_like_preserves_public_layout_and_runtime_config(self):
+        reference = NestedTensor(
+            [torch.randn(2, 3), torch.randn(4, 3)],
+            batch_first=False,
+            padding_value=-1.5,
+            mask_value=True,
+        )
+        packed_values = torch.arange(reference.concat.numel(), dtype=torch.float32).reshape(reference.concat.shape)
+
+        output = reference.packed_like(packed_values)
+
+        assert output.concat is packed_values
+        assert output.shape == reference.shape
+        assert output.ragged_dims == reference.ragged_dims
+        assert output.batch_first is False
+        assert output.padding_value == -1.5
+        assert output.mask_value is True
+
+    def test_packed_like_accepts_noncontiguous_values_without_copy(self):
+        reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+        packed_values = torch.randn(3, reference.concat.size(0)).transpose(0, 1)
+
+        output = reference.packed_like(packed_values)
+
+        assert output.concat is packed_values
+        assert output.concat.stride() == packed_values.stride()
+
+    def test_packed_like_follows_dtype_and_autograd_history(self):
+        reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+        leaf = torch.randn(reference.concat.shape, dtype=torch.float64, requires_grad=True)
+
+        output = reference.packed_like(leaf.square())
+        first_order = torch.autograd.grad(output.concat.sum(), leaf, create_graph=True)[0]
+        second_order = torch.autograd.grad(first_order.sum(), leaf)[0]
+
+        assert output.dtype == torch.float64
+        assert output.requires_grad
+        assert_close(first_order, 2 * leaf)
+        assert_close(second_order, torch.full_like(leaf, 2))
+
+    def test_packed_like_follows_values_device(self):
+        reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+        packed_values = torch.empty(reference.concat.shape, device="meta")
+
+        output = reference.packed_like(packed_values)
+
+        assert output.device.type == "meta"
+        assert output.concat is packed_values
+
+    def test_packed_like_rejects_invalid_values(self):
+        reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+
+        with pytest.raises(ValueError, match="exactly the same shape"):
+            reference.packed_like(reference.concat.reshape(-1))
+        with pytest.raises(TypeError, match="dense Tensor"):
+            reference.packed_like(object())  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="dense Tensor"):
+            reference.packed_like(reference)
+        with pytest.raises(TypeError, match="torch.strided"):
+            reference.packed_like(torch.zeros_like(reference.concat).to_sparse())
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_packed_like_fullgraph_forward_backward(self):
+        reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+        packed_values = torch.randn_like(reference.concat, requires_grad=True)
+        compiled = torch.compile(
+            lambda ref, values: ref.packed_like(values).concat.square().sum(),
+            backend="aot_eager",
+            fullgraph=True,
+        )
+
+        loss = compiled(reference, packed_values)
+        loss.backward()
+
+        assert_close(loss, packed_values.square().sum())
+        assert_close(packed_values.grad, 2 * packed_values)
+
+    def test_packed_like_preserves_nested_tensor_subclass(self):
+        class DerivedNestedTensor(NestedTensor):
+            pass
+
+        reference = DerivedNestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+        output = reference.packed_like(torch.randn_like(reference.concat))
+
+        assert type(output) is DerivedNestedTensor
+        assert output.shape == reference.shape
+
+
+class TestToDtype:
+
+    @pytest.mark.parametrize("target_dtype", [torch.float32, torch.float64])
+    def test_to_dtype_preserves_packed_topology(self, target_dtype):
+        elements = [torch.randn(length, 3) for length in (2, 4)]
+        nested = NT(elements)
+
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            output = nested.to(target_dtype)
+
+        assert output.dtype == target_dtype
+        assert [element.shape for element in output] == [element.shape for element in nested]
+        assert_close(output.concat, torch.cat(elements).to(target_dtype))
 
 
 # ---------------------------------------------------------------------------
