@@ -484,6 +484,40 @@ class TestDeclaredRaggedDims:
         for actual, expected in zip(nested, elements):
             assert_close(actual, expected)
 
+    def test_declared_multiragged_topology_has_persistent_level_offsets(self):
+        nested = NestedTensor(
+            [torch.empty(2, 3, 5), torch.empty(1, 4, 5)],
+            ragged_dims=(0, 1),
+        )
+
+        level_offsets = nested._persistent_ragged_offsets()
+        assert level_offsets is not None
+        assert tuple(offset.tolist() for offset in level_offsets) == (
+            [0, 2, 3],
+            [0, 3, 6, 10],
+        )
+        assert nested._offsets.tolist() == [0, 6, 10]
+        assert nested.packed_local_indices(0).tolist() == [0, 1, 0]
+        assert nested.packed_local_indices(1).tolist() == [0, 1, 2, 0, 1, 2, 0, 1, 2, 3]
+
+        attrs, ctx = nested.__tensor_flatten__()
+        assert "_ragged_offsets_0" in attrs
+        assert "_ragged_offsets_1" in attrs
+        assert ctx["packed_sizes"] is None
+        assert ctx["element_shapes"] is None
+
+    def test_only_explicit_canonical_multiragged_layouts_use_persistent_offsets(self):
+        inferred = NestedTensor([torch.empty(2, 3, 5), torch.empty(1, 4, 5)])
+        noncanonical = NestedTensor(
+            [torch.empty(2, 3, 5), torch.empty(2, 3, 5)],
+            ragged_dims=(1, 0),
+        )
+
+        assert inferred._persistent_ragged_offsets() is None
+        assert noncanonical._persistent_ragged_offsets() is None
+        assert inferred.__tensor_flatten__()[1]["element_shapes"] is not None
+        assert noncanonical.__tensor_flatten__()[1]["element_shapes"] is not None
+
     def test_default_pair_topology_keeps_existing_inference(self):
         nested = NestedTensor([torch.randn(4, 4, 3), torch.randn(4, 4, 3)])
 
@@ -513,6 +547,25 @@ class TestDeclaredRaggedDims:
         assert is_fake(output.concat)
         assert is_fake(output._offsets)
         assert is_fake(output._physical_shape)
+        assert output._packed_sizes is None
+        assert output._element_shapes is None
+        assert all(is_fake(offset) for offset in output._hierarchical_offsets)
+        assert tuple(offset.shape for offset in output._hierarchical_offsets) == ((3,), (9,))
+
+    def test_declared_ragged_dims_construct_directly_from_fake_elements(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        FakeTensorMode = fake_tensor_mod.FakeTensorMode
+        is_fake = fake_tensor_mod.is_fake
+
+        with FakeTensorMode():
+            output = NestedTensor(
+                [torch.empty(2, 2, 3), torch.empty(4, 4, 3)],
+                ragged_dims=(0, 1),
+            )
+
+        assert is_fake(output.concat)
+        assert all(is_fake(offset) for offset in output._hierarchical_offsets)
+        assert tuple(offset.shape for offset in output._hierarchical_offsets) == ((3,), (7,))
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_declared_ragged_dims_survive_fullgraph_output(self):
@@ -528,6 +581,135 @@ class TestDeclaredRaggedDims:
         assert output.concat.shape == (32, 3)
         assert_close(values.grad, 2 * values)
 
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_declared_pair_fullgraph_reuses_dynamic_layout_and_backward(self):
+        from torch._dynamo.testing import CompileCounter
+
+        counter = CompileCounter()
+
+        def consume(nested):
+            output = nested.packed_like(nested.concat.square())
+            return (
+                output.concat.sum(),
+                output.ragged_level_offsets(0),
+                output.ragged_level_offsets(1),
+                output.packed_local_indices(0),
+                output.packed_local_indices(1),
+            )
+
+        compiled = torch.compile(consume, backend=counter, fullgraph=True, dynamic=True)
+        for lengths in ((2, 3), (3, 5)):
+            reference = NestedTensor(
+                [torch.empty(length, length, 3) for length in lengths],
+                ragged_dims=(0, 1),
+            )
+            values = torch.randn_like(reference.concat, requires_grad=True)
+            nested = reference.packed_like(values)
+
+            loss, rows, cells, row_local, cell_local = compiled(nested)
+            loss.backward()
+
+            expected_rows = torch.nn.functional.pad(torch.tensor(lengths).cumsum(0), (1, 0))
+            expected_cell_widths = torch.repeat_interleave(torch.tensor(lengths), torch.tensor(lengths))
+            expected_cells = torch.nn.functional.pad(expected_cell_widths.cumsum(0), (1, 0))
+            assert_close(rows, expected_rows)
+            assert_close(cells, expected_cells)
+            assert_close(row_local, torch.cat([torch.arange(length) for length in lengths]))
+            assert_close(
+                cell_local,
+                torch.cat([torch.arange(length).repeat(length) for length in lengths]),
+            )
+            assert_close(values.grad, 2 * values)
+
+        assert counter.frame_count == 1
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_declared_pair_static_tail_reuses_dynamic_layout_and_backward(self):
+        from torch._dynamo.testing import CompileCounter
+
+        counter = CompileCounter()
+
+        def consume(nested, values):
+            output = nested.packed_with_static_tail(values.square())
+            return output.concat.sum(), output.ragged_level_offsets(0), output.ragged_level_offsets(1)
+
+        compiled = torch.compile(consume, backend=counter, fullgraph=True, dynamic=True)
+        for lengths in ((2, 3), (3, 5)):
+            reference = NestedTensor(
+                [torch.empty(length, length, 3) for length in lengths],
+                ragged_dims=(0, 1),
+            )
+            values = torch.randn(reference.concat.shape[0], 7, requires_grad=True)
+
+            loss, rows, cells = compiled(reference, values)
+            loss.backward()
+
+            assert_close(rows, reference.ragged_level_offsets(0))
+            assert_close(cells, reference.ragged_level_offsets(1))
+            assert_close(values.grad, 2 * values)
+
+        assert counter.frame_count == 1
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize(
+        ("name", "operation"),
+        [
+            ("linear", lambda nested: torch.nn.functional.linear(nested, torch.ones(5, 3))),
+            ("batch_transpose", lambda nested: nested.transpose(0, 1)),
+            ("unsqueeze_tail", lambda nested: nested.unsqueeze(-1)),
+            ("sum_static_tail", lambda nested: nested.sum(-1, keepdim=True)),
+        ],
+    )
+    def test_declared_pair_shape_preserving_ops_reuse_dynamic_layout(self, name, operation):
+        del name
+        from torch._dynamo.testing import CompileCounter
+
+        counter = CompileCounter()
+        compiled = torch.compile(operation, backend=counter, fullgraph=True, dynamic=True)
+        for lengths in ((2, 3), (3, 5)):
+            nested = NestedTensor(
+                [torch.randn(length, length, 3) for length in lengths],
+                ragged_dims=(0, 1),
+            )
+            expected = operation(nested)
+            output = compiled(nested)
+
+            assert output.ragged_dims == expected.ragged_dims
+            assert output.shape == expected.shape
+            assert_close(output.concat, expected.concat)
+            assert all(
+                torch.equal(actual, reference)
+                for actual, reference in zip(output._hierarchical_offsets, nested._hierarchical_offsets)
+            )
+
+        assert counter.frame_count == 1
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_cacheless_compiled_pair_rebuilds_do_not_materialize_python_metadata(self):
+        reference = NestedTensor([torch.empty(2, 2, 3), torch.empty(3, 3, 3)], ragged_dims=(0, 1))
+        producer = torch.compile(
+            lambda nested, values: nested.packed_like(values),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        output = producer(reference, torch.randn_like(reference.concat))
+        rebuilds = (
+            output.packed_like(torch.randn_like(output.concat)),
+            output.packed_with_static_tail(torch.randn(output.concat.shape[0], 7)),
+            copy.copy(output),
+            copy.deepcopy(output),
+            output.clone(),
+            output.detach(),
+            pickle.loads(pickle.dumps(output)),
+        )
+
+        assert output._packed_sizes is None
+        assert output._element_shapes is None
+        assert all(rebuilt._packed_sizes is None for rebuilt in rebuilds)
+        assert all(rebuilt._element_shapes is None for rebuilt in rebuilds)
+        assert all(len(rebuilt._hierarchical_offsets) == 2 for rebuilt in rebuilds)
+
     def test_declared_ragged_dims_survive_meta_copy_and_pickle(self):
         reference = NestedTensor([torch.randn(2, 2, 3), torch.randn(4, 4, 3)], ragged_dims=(0, 1))
 
@@ -540,6 +722,41 @@ class TestDeclaredRaggedDims:
 
         assert all(output.ragged_dims == (0, 1) for output in outputs)
         assert all(output.concat.shape == (20, 3) for output in outputs)
+        expected_offsets = tuple(offset.tolist() for offset in reference._hierarchical_offsets)
+        assert all(
+            tuple(offset.tolist() for offset in output._hierarchical_offsets) == expected_offsets for output in outputs
+        )
+
+    def test_declared_pair_shape_preserving_rebuilds_propagate_offsets(self):
+        reference = NestedTensor([torch.randn(2, 2, 3), torch.randn(4, 4, 3)], ragged_dims=(0, 1))
+        packed = reference.packed_like(torch.randn_like(reference.concat))
+        static_tail = reference.packed_with_static_tail(torch.randn(reference.concat.shape[0], 7))
+        shallow = copy.copy(reference)
+        detached = reference.detach()
+        cloned = reference.clone()
+        deep = copy.deepcopy(reference)
+        restored = pickle.loads(pickle.dumps(reference))
+
+        for output in (packed, static_tail, shallow):
+            assert all(
+                actual is expected
+                for actual, expected in zip(output._hierarchical_offsets, reference._hierarchical_offsets)
+            )
+        assert tuple(offset.tolist() for offset in detached._hierarchical_offsets) == tuple(
+            offset.tolist() for offset in reference._hierarchical_offsets
+        )
+        assert all(
+            actual.data_ptr() == expected.data_ptr()
+            for actual, expected in zip(detached._hierarchical_offsets, reference._hierarchical_offsets)
+        )
+        for output in (cloned, deep, restored):
+            assert tuple(offset.tolist() for offset in output._hierarchical_offsets) == tuple(
+                offset.tolist() for offset in reference._hierarchical_offsets
+            )
+            assert all(
+                actual is not expected
+                for actual, expected in zip(output._hierarchical_offsets, reference._hierarchical_offsets)
+            )
 
     def test_declared_pair_dense_matmul_preserves_topology(self):
         elements = [torch.randn(2, 2, 3), torch.randn(4, 4, 3)]
@@ -613,7 +830,28 @@ class TestDeclaredRaggedDims:
         state = reference.__getstate__()
         state["_ragged_dims"] = (0,)
 
-        with pytest.raises(ValueError, match="Packed values rank is inconsistent with ragged_dims"):
+        with pytest.raises(ValueError, match="Expected one ragged offset tensor"):
+            NestedTensor._from_state(state)
+
+    def test_serialized_state_rejects_ragged_offset_payload_mismatch(self):
+        reference = NestedTensor([torch.randn(2, 2, 3), torch.randn(3, 3, 3)], ragged_dims=(0, 1))
+        state = reference.__getstate__()
+        ragged_offsets = state["_ragged_offsets"]
+        assert ragged_offsets is not None
+        bad_inner = ragged_offsets[1].clone()
+        bad_inner[2] += 1
+        state["_ragged_offsets"] = (ragged_offsets[0], bad_inner)
+
+        with pytest.raises(ValueError, match=r"ragged_offsets\[1\] does not match physical_shape"):
+            NestedTensor._from_state(state)
+
+    def test_serialized_state_rejects_single_level_offset_payload_mismatch(self):
+        source = NestedTensor([torch.empty(1), torch.empty(1)])
+        reference = source.packed_with_lengths(torch.randn(5, 3), torch.tensor([2, 3]))
+        state = reference.__getstate__()
+        state["_ragged_offsets"] = (torch.tensor([0, 1, 5]),)
+
+        with pytest.raises(ValueError, match="single-level ragged offsets must match offsets"):
             NestedTensor._from_state(state)
 
 
@@ -1556,7 +1794,7 @@ class TestCopySemantics:
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA map_location")
     def test_torch_load_map_location_keeps_metadata_on_cpu(self):
-        nt = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+        nt = NestedTensor([torch.randn(2, 2, 3), torch.randn(4, 4, 3)], ragged_dims=(0, 1))
         buffer = io.BytesIO()
         torch.save(nt, buffer)
         buffer.seek(0)
@@ -1566,6 +1804,7 @@ class TestCopySemantics:
         assert restored.device.type == "cuda"
         assert restored._offsets.device.type == "cpu"
         assert restored._physical_shape.device.type == "cpu"
+        assert all(offset.device.type == "cpu" for offset in restored._hierarchical_offsets)
         assert_close(restored.tensor.cpu(), nt.tensor)
 
     def test_pickle_roundtrip_preserves_noncanonical_permutation(self):
@@ -1581,6 +1820,7 @@ class TestCopySemantics:
         nt = NestedTensor([torch.tensor([1.0, 2.0, 3.0]), torch.tensor([4.0, 5.0])])
         state = nt.__getstate__()
         assert state["_state_version"] == NestedTensor._SERIALIZATION_VERSION
+        assert state["_state_version"] == 3
         assert "_physical_shape" in state
         torch.testing.assert_close(state["_physical_shape"], nt._physical_shape)
 
@@ -1592,7 +1832,10 @@ class TestCopySemantics:
             restored = copy.copy(nt)
             restored.__setstate__(state)
 
-    @pytest.mark.parametrize("missing_key", ["_permutation", "_ragged_dims", "_packed_sizes", "_element_shapes"])
+    @pytest.mark.parametrize(
+        "missing_key",
+        ["_permutation", "_ragged_dims", "_packed_sizes", "_element_shapes", "_ragged_offsets"],
+    )
     def test_setstate_rejects_missing_layout_metadata(self, missing_key):
         nt = NestedTensor([torch.arange(6.0).reshape(2, 3)]).unsqueeze(1)
         state = dict(nt.__getstate__())

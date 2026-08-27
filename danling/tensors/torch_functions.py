@@ -4047,6 +4047,7 @@ def transpose(input: NestedTensor, dim0: int, dim1: int) -> NestedTensor:
             element_shapes=input._element_shapes,
             permutation=input._permutation,
             ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
+            ragged_offsets=input._persistent_ragged_offsets(),
             validate=False,
         )
     from .aten_functions import transpose as _aten_transpose
