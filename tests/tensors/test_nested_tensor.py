@@ -1534,9 +1534,10 @@ class TestPackedWithStaticTail:
 
         counter = CompileCounter()
 
-        def consume(reference):
-            output = reference.packed_with_static_tail(reference.concat.square())
-            return output.concat.sum(), output.ragged_level_offsets()
+        def consume(reference, weight):
+            projected = reference.concat @ weight
+            output = reference.packed_with_static_tail(projected)
+            return output.concat.square().sum(), output.ragged_level_offsets()
 
         compiled = torch.compile(consume, backend=counter, fullgraph=True, dynamic=True)
         for index, lengths in enumerate(((2, 3), (3, 5))):
@@ -1548,17 +1549,24 @@ class TestPackedWithStaticTail:
             template = NestedTensor(elements, ragged_dims=(ragged_dim,))
             values = torch.randn_like(template.concat, requires_grad=True)
             reference = template.packed_like(values)
+            weight = torch.randn(5, 7, requires_grad=True)
             if index == 0:
-                # The first trace has ``sum(lengths) == channels == 5``. Dynamo's
-                # ordinary duck shaping would unify those dimensions on a plain dense
-                # input; tensor-backed packed dim 0 must remain independently dynamic.
+                # The first trace has ``sum(lengths) == source channels == 5``.
+                # The in-graph projection replaces that source tail with 7 channels;
+                # packed dim 0 must remain independently dynamic on the next layout.
                 assert values.shape[0] == values.shape[-1]
 
-            loss, offsets = compiled(reference)
-            loss.backward()
+            loss, offsets = compiled(reference, weight)
+            actual_gradients = torch.autograd.grad(loss, (values, weight))
+            expected_values = values.detach().requires_grad_()
+            expected_weight = weight.detach().requires_grad_()
+            expected_loss = (expected_values @ expected_weight).square().sum()
+            expected_gradients = torch.autograd.grad(expected_loss, (expected_values, expected_weight))
 
+            assert_close(loss, expected_loss)
             assert_close(offsets, reference.ragged_level_offsets())
-            assert_close(values.grad, 2 * values)
+            for actual, expected in zip(actual_gradients, expected_gradients):
+                assert_close(actual, expected)
 
         assert counter.frame_count == 1
 
