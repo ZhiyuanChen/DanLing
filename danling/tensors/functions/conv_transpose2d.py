@@ -1397,7 +1397,7 @@ def _spatial_tile_conv_transpose2d(
     kernel_size = (int(weight.shape[2]), int(weight.shape[3]))
     if any(size <= 0 for size in kernel_size):
         return None
-    if not _valid_conv_bias(bias, out_channels=out_channels, device=input._values.device, dtype=input._values.dtype):
+    if not _valid_conv_bias(bias, out_channels=out_channels, device=input.concat.device, dtype=input.concat.dtype):
         return None
 
     output_meta = _conv_transpose2d_output_meta(
@@ -1415,12 +1415,13 @@ def _spatial_tile_conv_transpose2d(
     output_offsets = type(input)._offsets_from_sizes(output_packed_sizes, dtype=torch.long)
     total_out = int(output_offsets[-1].item())
     if total_out == 0:
-        output_values = input._values.new_empty((total_out, out_channels))
+        output_values = input.concat.new_empty((total_out, out_channels))
         return type(input)._from_packed(
             output_values,
             output_offsets,
             output_shape_tensor,
             permutation=input._permutation,
+            ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
             batch_first=input.batch_first,
             padding_value=input.padding_value,
             mask_value=input.mask_value,
@@ -1431,7 +1432,7 @@ def _spatial_tile_conv_transpose2d(
 
     input_shapes = tuple(_resolve_element_shapes(input))
     requires_grad = torch.is_grad_enabled() and (
-        input._values.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
+        input.concat.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
     )
 
     resolved_tile_config = _resolve_spatial_tile2d_config(input_shapes, tile_size, max_tiles_per_batch)
@@ -1476,7 +1477,7 @@ def _spatial_tile_conv_transpose2d(
         local_output_shape=local_output_shape,
     )
 
-    device = input._values.device
+    device = input.concat.device
     shape_meta = torch.tensor(
         [
             (int(input_shape[1]), int(input_shape[2]), int(output_shape[1]), int(output_shape[2]))
@@ -1509,11 +1510,11 @@ def _spatial_tile_conv_transpose2d(
     )
     if resolved_weight_max_tiles is None:
         return None
-    use_channels_last = bool(channels_last and input._values.is_cuda)
+    use_channels_last = bool(channels_last and input.concat.is_cuda)
 
     if requires_grad:
         output_values = _SpatialTileConvTranspose2dCudnnFunction.apply(
-            input._values,
+            input.concat,
             weight,
             bias,
             input_offsets_device,
@@ -1537,7 +1538,7 @@ def _spatial_tile_conv_transpose2d(
         )
     else:
         output_values = _spatial_tile_conv_transpose2d_forward_values(
-            input._values,
+            input.concat,
             weight.contiguous(),
             bias,
             output_size=total_out,
@@ -1563,6 +1564,7 @@ def _spatial_tile_conv_transpose2d(
         output_offsets,
         output_shape_tensor,
         permutation=input._permutation,
+        ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
         batch_first=input.batch_first,
         padding_value=input.padding_value,
         mask_value=input.mask_value,

@@ -42,8 +42,9 @@ from torch.utils.data._utils.collate import default_collate_fn_map
 from . import nn_functions, torch_functions  # noqa: F401
 from .nested_tensor import NestedTensor
 from .nn_functions import create_flex_block_mask
-from .ops import NestedTensorAtenRegistry, NestedTensorFuncRegistry, TorchFuncRegistry
+from .ops import NestedTensorAtenRegistry, NestedTensorFuncRegistry, TorchFuncRegistry, nested_execution_guard
 from .pn_tensor import PNTensor, tensor
+from .torch_functions import cumcount, inverse_permutation, rank
 
 __all__ = [
     "NestedTensor",
@@ -55,7 +56,11 @@ __all__ = [
     "TorchFuncRegistry",
     "NestedTensorFuncRegistry",
     "NestedTensorAtenRegistry",
+    "nested_execution_guard",
     "create_flex_block_mask",
+    "inverse_permutation",
+    "rank",
+    "cumcount",
 ]
 
 

@@ -43,8 +43,8 @@ def tensor(data: Any, dtype=None, device=None, requires_grad: bool = False, pin_
 
     Args:
         data: Initial data for the tensor. Can be a list, tuple, NumPy ndarray, scalar, etc.
-        dtype: Desired data type of the returned tensor.
-        device: Device on which to place the tensor.
+        dtype (torch.dtype | None): Desired data type of the returned tensor.
+        device (torch.device | str | int | None): Device on which to place the tensor.
         requires_grad: If autograd should record operations on the returned tensor.
         pin_memory: If True, the tensor will be allocated in pinned memory.
 
@@ -74,11 +74,7 @@ class PNTensor(Tensor):
     - `.mask`: A tensor of ones with the same shape as self
     - `.concat`: The tensor itself (self)
 
-    Attributes:
-        Inherits all attributes from torch.Tensor
-
-    Methods:
-        Inherits all methods from torch.Tensor
+    Other attributes and methods are inherited from `torch.Tensor`.
 
     Examples:
         Basic usage with PyTorch DataLoader:
