@@ -1072,6 +1072,24 @@ class TestDeclaredRaggedDims:
 
 
 class TestPackedLike:
+    def test_nonleading_single_ragged_packed_like_accepts_external_fake_values(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        reference = NestedTensor(
+            [torch.empty(2, 3, 5), torch.empty(2, 4, 5)],
+            ragged_dims=(1,),
+        )
+
+        with fake_tensor_mod.FakeTensorMode():
+            fake_values = torch.empty(tuple(reference.concat.shape), dtype=reference.dtype)
+            output = reference.packed_like(fake_values)
+
+        assert output.concat is fake_values
+        assert fake_tensor_mod.is_fake(output.concat)
+        assert fake_tensor_mod.is_fake(output.packed_offsets())
+        assert output.ragged_level_offsets() is output.packed_offsets()
+        assert output.packed_offsets().shape == reference.packed_offsets().shape
+        assert output.ragged_dims == (1,)
+        assert output.packed_dim_order == (1, 0, 2)
 
     def test_packed_dim_order_tracks_logical_permutation(self):
         reference = NestedTensor([torch.randn(2, 2, 3), torch.randn(4, 4, 3)])
