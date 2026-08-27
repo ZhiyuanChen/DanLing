@@ -19,8 +19,14 @@
 
 import copy
 import io
+import json
+import os
 import pickle
 import random
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
 
 import pytest
 import torch
@@ -1723,6 +1729,200 @@ class TestPackedWithLengths:
             compiled(reference, torch.randn(6, 7), torch.tensor([-1, 7]))
         with pytest.raises(RuntimeError, match="lengths must sum"):
             compiled(reference, torch.randn(6, 7), torch.tensor([2, 3]))
+
+
+# ---------------------------------------------------------------------------
+# Stable AOTAutograd cache metadata
+# ---------------------------------------------------------------------------
+
+
+class TestStableAOTCacheHash:
+
+    @staticmethod
+    def _tensor_backed(
+        lengths,
+        *,
+        channels=4,
+        dtype=torch.float32,
+        requires_grad=False,
+        batch_first=True,
+        padding_value=0.0,
+        mask_value=False,
+        storage_offset=False,
+    ):
+        reference = NestedTensor(
+            [torch.empty(1, channels) for _ in lengths],
+            ragged_dims=(0,),
+            batch_first=batch_first,
+            padding_value=padding_value,
+            mask_value=mask_value,
+        )
+        packed_length = sum(lengths)
+        if storage_offset:
+            backing = torch.randn(packed_length + 1, channels, dtype=dtype)
+            values = backing[1:]
+            values.requires_grad_(requires_grad)
+        else:
+            values = torch.randn(packed_length, channels, dtype=dtype, requires_grad=requires_grad)
+        return reference.packed_with_lengths(values, torch.tensor(lengths, dtype=torch.long))
+
+    def test_hash_ignores_values_and_distinguishes_static_metadata(self):
+        base = self._tensor_backed((1, 4, 3))
+        same_metadata = self._tensor_backed((1, 4, 3))
+
+        assert base._stable_hash_for_caching() == same_metadata._stable_hash_for_caching()
+
+        variants = (
+            self._tensor_backed((1, 4, 3), dtype=torch.bfloat16),
+            self._tensor_backed((1, 4, 3), requires_grad=True),
+            self._tensor_backed((1, 4, 3), channels=5),
+            self._tensor_backed((1, 4, 3), batch_first=False),
+            self._tensor_backed((1, 4, 3), padding_value=-1.0),
+            self._tensor_backed((1, 4, 3), mask_value=True),
+            self._tensor_backed((1, 4, 3), storage_offset=True),
+            NestedTensor([torch.empty(1, 1, 4), torch.empty(3, 3, 4)], ragged_dims=(0, 1)),
+        )
+        hashes = {base._stable_hash_for_caching(), *(variant._stable_hash_for_caching() for variant in variants)}
+        assert len(hashes) == len(variants) + 1
+
+    def test_tensor_backed_topology_values_do_not_change_hash(self):
+        first = self._tensor_backed((1, 4, 3))
+        second = self._tensor_backed((2, 4, 2))
+
+        assert not torch.equal(first._offsets, second._offsets)
+        assert first.shape == second.shape
+        assert first._stable_hash_for_caching() == second._stable_hash_for_caching()
+
+        first_pair = NestedTensor([torch.empty(1, 1, 4), torch.empty(3, 3, 4)], ragged_dims=(0, 1))
+        second_pair = NestedTensor([torch.empty(3, 3, 4), torch.empty(1, 1, 4)], ragged_dims=(0, 1))
+        assert not torch.equal(first_pair.ragged_level_offsets(1), second_pair.ragged_level_offsets(1))
+        assert first_pair.shape == second_pair.shape
+        assert first_pair._stable_hash_for_caching() == second_pair._stable_hash_for_caching()
+
+    def test_legacy_python_topology_remains_layout_specific(self):
+        first = NestedTensor(
+            [torch.empty(length, 4) for length in (1, 4, 3)],
+            ragged_dims=(0,),
+        )
+        second = NestedTensor(
+            [torch.empty(length, 4) for length in (2, 4, 2)],
+            ragged_dims=(0,),
+        )
+
+        first_context = first.__tensor_flatten__()[1]
+        second_context = second.__tensor_flatten__()[1]
+        assert first_context["packed_sizes"] is not None
+        assert second_context["packed_sizes"] is not None
+        assert first.shape == second.shape
+        assert first.concat.shape == second.concat.shape
+        assert first._stable_hash_for_caching() != second._stable_hash_for_caching()
+
+    def test_symbolic_fake_hash_does_not_read_topology_values(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        symbolic_shapes = pytest.importorskip("torch.fx.experimental.symbolic_shapes")
+        nested = NestedTensor([torch.empty(2, 2, 3), torch.empty(4, 4, 3)], ragged_dims=(0, 1))
+        mode = fake_tensor_mod.FakeTensorMode(shape_env=symbolic_shapes.ShapeEnv())
+
+        with mode:
+            fake = mode.from_tensor(nested, static_shapes=False)
+            digest = fake._stable_hash_for_caching()
+
+        assert len(digest) == 32
+        assert int(digest, 16) >= 0
+
+    def test_hash_is_stable_across_python_hash_seeds(self):
+        repository = Path(__file__).resolve().parents[2]
+        script = textwrap.dedent("""
+            import torch
+            from danling.tensors import NestedTensor
+
+            reference = NestedTensor([torch.empty(1, 4) for _ in range(3)], ragged_dims=(0,))
+            nested = reference.packed_with_lengths(torch.zeros(8, 4), torch.tensor([1, 4, 3]))
+            print(nested._stable_hash_for_caching())
+            """)
+        digests = []
+        for seed in ("0", "314159"):
+            environment = os.environ.copy()
+            environment["PYTHONHASHSEED"] = seed
+            completed = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=repository,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            digests.append(completed.stdout.strip().splitlines()[-1])
+
+        assert digests[0] == digests[1]
+
+    @pytest.mark.skipif(
+        TORCH_VERSION < Version("2.13"), reason="stable AOTAutograd subclass cache hook is PyTorch 2.13+"
+    )
+    def test_inductor_aot_cache_reuses_dynamic_layout_without_warning(self, tmp_path):
+        repository = Path(__file__).resolve().parents[2]
+        script = textwrap.dedent("""
+            import json
+            import warnings
+
+            import torch
+            from danling.tensors import NestedTensor
+            from torch._dynamo.utils import counters
+            from torch._functorch import config
+            from torch._functorch._aot_autograd.autograd_cache import AOTAutogradCache
+
+            counters.clear()
+            AOTAutogradCache.clear()
+
+            def operation(nested):
+                return nested.packed_like(nested.concat.square())
+
+            stable_hash_warnings = []
+            with config.patch(enable_autograd_cache=True):
+                for lengths in ((2, 3), (3, 5)):
+                    torch._dynamo.reset()
+                    reference = NestedTensor([torch.empty(1, 4), torch.empty(1, 4)], ragged_dims=(0,))
+                    nested = reference.packed_with_lengths(
+                        torch.randn(sum(lengths), 4),
+                        torch.tensor(lengths),
+                    )
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        output = torch.compile(operation, fullgraph=True, dynamic=True)(nested)
+                    assert output.concat.shape == (sum(lengths), 4)
+                    stable_hash_warnings.extend(
+                        str(warning.message)
+                        for warning in caught
+                        if "_stable_hash_for_caching" in str(warning.message)
+                    )
+
+            cache = counters["aot_autograd"]
+            print(
+                json.dumps(
+                    {
+                        "warnings": stable_hash_warnings,
+                        "miss": cache["autograd_cache_miss"],
+                        "saved": cache["autograd_cache_saved"],
+                        "hit": cache["autograd_cache_hit"],
+                    }
+                )
+            )
+            """)
+        environment = os.environ.copy()
+        environment["TORCHINDUCTOR_CACHE_DIR"] = os.fspath(tmp_path / "inductor-cache")
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=repository,
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        result = json.loads(completed.stdout.strip().splitlines()[-1])
+
+        assert result == {"warnings": [], "miss": 1, "saved": 1, "hit": 1}
 
 
 # ---------------------------------------------------------------------------
