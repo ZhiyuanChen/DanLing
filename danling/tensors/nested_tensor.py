@@ -533,7 +533,16 @@ class NestedTensor(torch.Tensor):
         if not type(self)._is_tensor_backed_layout(self._permutation, declared_ragged_dims):
             return None
         if self._ragged_rank == 1:
-            if instance_attrs.get("_packed_sizes", ()) is None and instance_attrs.get("_element_shapes", ()) is None:
+            metadata_is_tensor_only = (
+                instance_attrs.get("_packed_sizes", ()) is None and instance_attrs.get("_element_shapes", ()) is None
+            )
+            # An explicit non-leading ragged dimension is already first in packed order,
+            # so its one row-splits tensor and physical-shape tensor fully describe the
+            # layout.  Keep ordinary leading single-ragged list construction on its
+            # established Python-metadata path; ``packed_with_lengths`` outputs remain
+            # tensor-backed through ``metadata_is_tensor_only``.
+            explicit_nonleading_packed_prefix = self._ragged_dims[0] != 0
+            if metadata_is_tensor_only or explicit_nonleading_packed_prefix:
                 return (self._offsets,)
             return None
         names = type(self)._ragged_offset_names(self._ragged_rank)
@@ -2983,10 +2992,13 @@ class NestedTensor(torch.Tensor):
         r"""Wrap packed values after replacing this tensor's static tail.
 
         This operation preserves every declared ragged level and replaces all
-        static element dimensions with ``packed_values.shape[1:]``.  The
-        reference must use canonical packed order: its ragged dimensions form a
-        leading logical prefix and :attr:`packed_dim_order` is the identity.
-        The returned tensor shares ``packed_values`` directly.
+        static element dimensions with ``packed_values.shape[1:]``.  A
+        canonical reference may change the number of static dimensions.  An
+        explicit tensor-backed reference with one non-leading logical ragged
+        dimension may instead replace its existing static dimensions in packed
+        order, but must keep the same static rank.  This preserves where those
+        dimensions appear in the logical element layout.  The returned tensor
+        shares ``packed_values`` directly.
 
         Args:
             packed_values: Dense packed storage whose leading dimension equals
@@ -2994,13 +3006,16 @@ class NestedTensor(torch.Tensor):
                 static tail.
 
         Returns:
-            A canonical ``NestedTensor`` with this tensor's ragged lengths and
-            ``packed_values`` as its packed storage.
+            A ``NestedTensor`` preserving the declared ragged topology and
+            supported packed layout, with ``packed_values`` as its packed
+            storage.
 
         Raises:
             TypeError: If ``packed_values`` is not a dense strided tensor.
-            ValueError: If the reference is not canonical, has no ragged
-                dimensions, or the packed leading dimension does not match.
+            ValueError: If the reference has no ragged dimensions, is neither
+                canonical nor a supported tensor-backed non-leading layout,
+                changes the static rank of such a non-leading layout, or has a
+                mismatched packed leading dimension.
 
         Examples:
             >>> atoms = NestedTensor([torch.zeros(2), torch.zeros(4)])
@@ -3030,9 +3045,18 @@ class NestedTensor(torch.Tensor):
         canonical_order = tuple(range(len(self._permutation)))
         if ragged_rank == 0:
             raise ValueError("packed_with_static_tail requires at least one ragged dimension")
-        if self._ragged_dims != canonical_ragged_dims or self._permutation != canonical_order:
+        canonical_layout = self._ragged_dims == canonical_ragged_dims and self._permutation == canonical_order
+        nonleading_tensor_backed_layout = (
+            self._ragged_dims_explicit
+            and ragged_rank == 1
+            and self._ragged_dims[0] != 0
+            and self._permutation[0] == self._ragged_dims[0]
+            and self._persistent_ragged_offsets() is not None
+        )
+        if not canonical_layout and not nonleading_tensor_backed_layout:
             raise ValueError(
-                "packed_with_static_tail requires canonical packed order with leading ragged dimensions, "
+                "packed_with_static_tail requires canonical packed order or an explicit tensor-backed "
+                "single non-leading ragged dimension, "
                 f"got ragged_dims={self._ragged_dims} and packed_dim_order={self._permutation}"
             )
         if packed_values.shape[0] != self._values.shape[0]:
@@ -3042,10 +3066,38 @@ class NestedTensor(torch.Tensor):
             )
 
         static_tail = tuple(packed_values.shape[1:])
-        physical_shape, packed_sizes, element_shapes = self._shape_meta_from_components(
-            keep_dims=self._ragged_dims,
-            suffix=static_tail,
-        )
+        if canonical_layout:
+            physical_shape, packed_sizes, element_shapes = self._shape_meta_from_components(
+                keep_dims=self._ragged_dims,
+                suffix=static_tail,
+            )
+            permutation = tuple(range(ragged_rank + len(static_tail)))
+            ragged_dims = canonical_ragged_dims
+            outer_size = self._logical_shape_from_components(
+                keep_dims=self._ragged_dims,
+                suffix=static_tail,
+            )
+        else:
+            static_dims = self._static_dims
+            if len(static_tail) != len(static_dims):
+                raise ValueError(
+                    "packed_with_static_tail requires a non-leading ragged layout to keep the same "
+                    "number of packed static dimensions, "
+                    f"got {len(static_tail)} and expected {len(static_dims)}"
+                )
+            replacements = dict(zip(static_dims, static_tail))
+            # This is the production packed path: update the fixed-rank tensor metadata
+            # directly instead of rebuilding one Python shape tuple per sample.  Dropping
+            # those legacy caches also ensures that outputs remain layout-dynamic when an
+            # eager reference enters a compiled graph.
+            physical_shape = self._physical_shape.clone()
+            for dim, size in replacements.items():
+                physical_shape[:, dim] = size
+            packed_sizes = None
+            element_shapes = None
+            permutation = self._permutation
+            ragged_dims = self._ragged_dims
+            outer_size = self._logical_shape_from_components(replace_dims=replacements)
         if len(self) == 0:
             packed_sizes = ()
             element_shapes = ()
@@ -3054,16 +3106,13 @@ class NestedTensor(torch.Tensor):
             packed_values,
             self._offsets,
             physical_shape,
-            permutation=tuple(range(ragged_rank + len(static_tail))),
-            ragged_dims=canonical_ragged_dims,
+            permutation=permutation,
+            ragged_dims=ragged_dims,
             batch_first=self.batch_first,
             padding_value=self.padding_value,
             mask_value=self.mask_value,
             pin_memory=pin_memory,
-            outer_size=self._logical_shape_from_components(
-                keep_dims=self._ragged_dims,
-                suffix=static_tail,
-            ),
+            outer_size=outer_size,
             packed_sizes=packed_sizes,
             element_shapes=element_shapes,
             ragged_offsets=self._persistent_ragged_offsets(),

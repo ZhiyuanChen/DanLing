@@ -281,24 +281,37 @@ atom_values = token_values.index_select(0, packed_atom_to_token)
 atoms = atom_mapping.packed_with_static_tail(atom_values)
 ```
 
-The reference must use canonical packed order: its ragged dimensions are a
-leading logical prefix and `packed_dim_order` is the identity. The packed
-leading dimension is unchanged, while `atom_values.shape[1:]` becomes the new
-static tail.
+For a canonical reference, the ragged dimensions are a leading logical prefix,
+`packed_dim_order` is the identity, and the packed-value tail may have any
+rank. The packed leading dimension is unchanged, while
+`atom_values.shape[1:]` becomes the new static tail.
 
-Explicit multi-ragged layouts retain one tensor-backed row-splits child per
-ragged level whenever `packed_dim_order` begins with `ragged_dims`. The ragged
-dimensions need not be a leading logical prefix: for example, elements shaped
-`(1, H, N_i, N_i)` with `ragged_dims=(2, 3)` pack in `(2, 3, 0, 1)` order and
-remain tensor-backed. These children are available through
+An explicit tensor-backed layout with one non-leading logical ragged dimension
+may also replace its static dimensions, provided their packed rank does not
+change. Tail sizes follow `packed_dim_order` and return to their original
+logical positions. For example, sampled single representations remain
+sample-major logically while token-major in packed storage:
+
+```python
+single = NestedTensor(single_elements, ragged_dims=(1,))  # each (S, N_i, C)
+output = single.packed_with_static_tail(output_values)    # (sum N_i, S, C_out)
+# each output element is (S, N_i, C_out), with packed_dim_order == (1, 0, 2)
+```
+
+Explicit multi-ragged layouts, and explicit single-ragged layouts whose ragged
+dimension is non-leading logically, retain tensor-backed row splits whenever
+`packed_dim_order` begins with `ragged_dims`. The ragged dimensions need not be
+a leading logical prefix: for example, elements shaped `(1, H, N_i, N_i)` with
+`ragged_dims=(2, 3)` pack in `(2, 3, 0, 1)` order and remain tensor-backed.
+These row splits are available through
 `ragged_level_offsets(level)` and travel with `packed_like`, shape-preserving
 static-tail operations, autograd transforms, and serialization. Because
 per-sample lengths are tensor inputs rather than Python flatten metadata,
-fixed-rank layouts such as `(N_i, N_i, C)` can reuse one
+fixed-rank layouts such as `(N_i, N_i, C)` and `(S, N_i, C)` can reuse one
 `torch.compile(dynamic=True)` graph across different `N_i`. This does not
 expose the private child names or add a general packed constructor; inferred
-layouts keep their existing Python-metadata contract, and
-`packed_with_static_tail` still requires canonical leading ragged dimensions.
+layouts and ordinary leading single-ragged list construction keep their
+existing Python-metadata contracts.
 
 When an operator produces a new one-dimensional ragged topology, use a concrete
 CPU integer lengths tensor:

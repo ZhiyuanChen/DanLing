@@ -3582,6 +3582,7 @@ def _packed_metadata_permute(source: NestedTensor, tensor_dims: tuple[int, ...])
         permutation=new_packed_order,
         packed_sizes=source._packed_sizes,
         element_shapes=out_element_shapes,
+        preserve_ragged_offsets=True,
     )
 
 

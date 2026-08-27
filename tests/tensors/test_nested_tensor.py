@@ -32,7 +32,7 @@ import pytest
 import torch
 from packaging.version import Version
 
-from danling.tensors import NestedTensor
+from danling.tensors import NestedTensor, nested_execution_guard
 from tests.tensors.utils import assert_close
 
 NT = NestedTensor
@@ -527,6 +527,35 @@ class TestDeclaredRaggedDims:
         assert inferred_permuted.__tensor_flatten__()[1]["element_shapes"] is not None
         assert explicit_permuted.__tensor_flatten__()[1]["element_shapes"] is None
 
+    def test_explicit_nonleading_single_ragged_layout_is_tensor_backed(self):
+        sampled = NestedTensor(
+            [torch.empty(2, 3, 5), torch.empty(2, 4, 5)],
+            ragged_dims=(1,),
+        )
+        canonical = NestedTensor(
+            [torch.empty(3, 5), torch.empty(4, 5)],
+            ragged_dims=(0,),
+        )
+
+        assert sampled.ragged_dims == (1,)
+        assert sampled.packed_dim_order == (1, 0, 2)
+        sampled_offsets = sampled._persistent_ragged_offsets()
+        assert sampled_offsets is not None
+        assert sampled_offsets[0] is sampled._offsets
+        assert sampled._dynamo_propagated_dynamic_indices == {2}
+        assert sampled.concat._dynamo_propagated_dynamic_indices == {0}
+        sampled_context = sampled.__tensor_flatten__()[1]
+        assert sampled_context["packed_sizes"] is None
+        assert sampled_context["element_shapes"] is None
+
+        # Preserve the established list-construction contract for ordinary
+        # leading single-ragged layouts. Tensor-backed ``packed_with_lengths``
+        # outputs continue to use their separate metadata-free route.
+        assert canonical._persistent_ragged_offsets() is None
+        canonical_context = canonical.__tensor_flatten__()[1]
+        assert canonical_context["packed_sizes"] == (3, 4)
+        assert canonical_context["element_shapes"] == ((3, 5), (4, 5))
+
     @pytest.mark.parametrize(
         ("kind", "ragged_dims", "packed_order", "packed_shape", "dynamic_dims"),
         [
@@ -796,6 +825,41 @@ class TestDeclaredRaggedDims:
             loss, rows, cells = compiled(reference, values)
             loss.backward()
 
+            assert_close(rows, reference.ragged_level_offsets(0))
+            assert_close(cells, reference.ragged_level_offsets(1))
+            assert_close(values.grad, 2 * values)
+
+        assert counter.frame_count == 1
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_declared_pair_static_tail_movedim_reuses_dynamic_layout_and_backward(self):
+        from torch._dynamo.testing import CompileCounter
+
+        counter = CompileCounter()
+
+        def consume(reference, values):
+            projected = reference.packed_with_static_tail(values.square())
+            head_major = torch.movedim(projected, -2, 1)
+            return (
+                head_major.concat.sum(),
+                head_major.ragged_level_offsets(0),
+                head_major.ragged_level_offsets(1),
+            )
+
+        compiled = torch.compile(consume, backend=counter, fullgraph=True, dynamic=True)
+        for lengths in ((2, 3), (3, 5)):
+            reference = NestedTensor(
+                [torch.empty(length, length, 3) for length in lengths],
+                ragged_dims=(0, 1),
+            )
+            values = torch.randn(sum(length * length for length in lengths), 2, 7, requires_grad=True)
+
+            loss, rows, cells = compiled(reference, values)
+            loss.backward()
+
+            eager = torch.movedim(reference.packed_with_static_tail(values.detach().square()), -2, 1)
+            assert eager.ragged_dims == (1, 2)
+            assert eager.packed_dim_order == (1, 2, 0, 3)
             assert_close(rows, reference.ragged_level_offsets(0))
             assert_close(cells, reference.ragged_level_offsets(1))
             assert_close(values.grad, 2 * values)
@@ -1316,6 +1380,86 @@ class TestPackedWithStaticTail:
         assert output._packed_sizes == (4, 9)
         assert [tuple(element.shape) for element in output] == [(2, 2, 5), (3, 3, 5)]
 
+    def test_replaces_nonleading_packed_static_dims_without_copy(self):
+        reference = NestedTensor(
+            [torch.empty(2, 2, 3), torch.empty(2, 4, 3)],
+            ragged_dims=(1,),
+            padding_value=-2.5,
+            mask_value=True,
+        )
+        leaf = torch.randn(6, 2, 7, dtype=torch.float64, requires_grad=True)
+        packed_values = leaf.square()
+
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            output = reference.packed_with_static_tail(packed_values)
+
+        assert output.concat is packed_values
+        assert output.concat.stride() == packed_values.stride()
+        assert output.ragged_dims == (1,)
+        assert output.packed_dim_order == (1, 0, 2)
+        assert output.shape == (2, 2, 4, 7)
+        assert output.padding_value == -2.5
+        assert output.mask_value is True
+        assert output._offsets is reference._offsets
+        assert output.ragged_level_offsets() is reference.ragged_level_offsets()
+        assert output._packed_sizes is None
+        assert output._element_shapes is None
+        assert output.__tensor_flatten__()[1]["packed_sizes"] is None
+        assert output.__tensor_flatten__()[1]["element_shapes"] is None
+        expected = (
+            packed_values[:2].permute(1, 0, 2),
+            packed_values[2:].permute(1, 0, 2),
+        )
+        assert [tuple(element.shape) for element in output] == [(2, 2, 7), (2, 4, 7)]
+        for actual, wanted in zip(output, expected):
+            assert_close(actual, wanted)
+        gradient = torch.autograd.grad(output.concat.sum(), leaf)[0]
+        assert_close(gradient, 2 * leaf)
+
+    def test_nonleading_static_tail_supports_fake_and_copy(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        reference = NestedTensor(
+            [torch.empty(2, 2, 3), torch.empty(2, 4, 3)],
+            ragged_dims=(1,),
+        )
+        output = reference.packed_with_static_tail(torch.randn(6, 2, 7))
+
+        copies = (
+            copy.copy(output),
+            copy.deepcopy(output),
+            output.clone(),
+            output.detach(),
+            pickle.loads(pickle.dumps(output)),
+        )
+        for copied in copies:
+            assert copied.ragged_dims == (1,)
+            assert copied.packed_dim_order == (1, 0, 2)
+            assert copied.shape == output.shape
+            assert copied.__tensor_flatten__()[1]["packed_sizes"] is None
+            assert copied.__tensor_flatten__()[1]["element_shapes"] is None
+            assert_close(copied.concat, output.concat)
+
+        with fake_tensor_mod.FakeTensorMode() as mode:
+            fake_reference = mode.from_tensor(reference)
+            fake_values = mode.from_tensor(torch.empty(6, 2, 7))
+            fake_output = fake_reference.packed_with_static_tail(fake_values)
+
+        assert fake_output.concat is fake_values
+        assert fake_tensor_mod.is_fake(fake_output.concat)
+        assert fake_tensor_mod.is_fake(fake_output._offsets)
+        assert fake_tensor_mod.is_fake(fake_output._physical_shape)
+        assert fake_output.ragged_dims == (1,)
+        assert fake_output.packed_dim_order == (1, 0, 2)
+        assert fake_output.shape == (2, 2, 4, 7)
+        assert fake_output.__tensor_flatten__()[1]["packed_sizes"] is None
+        assert fake_output.__tensor_flatten__()[1]["element_shapes"] is None
+
     def test_rejects_noncanonical_or_missing_ragged_topology(self):
         reference = NestedTensor([torch.empty(2, 3), torch.empty(4, 3)]).permute(0, 2, 1)
         permuted_explicit = NestedTensor(
@@ -1330,6 +1474,16 @@ class TestPackedWithStaticTail:
             permuted_explicit.packed_with_static_tail(torch.empty(permuted_explicit.concat.shape[0], 5))
         with pytest.raises(ValueError, match="at least one ragged dimension"):
             scalar_reference.packed_with_static_tail(torch.empty(2, 5))
+
+    @pytest.mark.parametrize("packed_shape", [(6, 7), (6, 2, 7, 1)])
+    def test_nonleading_layout_rejects_changed_static_rank(self, packed_shape):
+        reference = NestedTensor(
+            [torch.empty(2, 2, 3), torch.empty(2, 4, 3)],
+            ragged_dims=(1,),
+        )
+
+        with pytest.raises(ValueError, match="same number of packed static dimensions"):
+            reference.packed_with_static_tail(torch.empty(packed_shape))
 
     def test_rejects_invalid_values(self):
         reference = NestedTensor([torch.empty(2), torch.empty(4)])
@@ -1372,6 +1526,41 @@ class TestPackedWithStaticTail:
         assert type(loss.grad_fn).__name__ == "CompiledFunctionBackward"
         assert_close(loss, packed_values.detach().square().sum())
         assert_close(packed_values.grad, 2 * packed_values)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize("ragged_dim", [1, 2], ids=["dim1", "dim2"])
+    def test_nonleading_fullgraph_derived_values_avoid_duck_shape_collision(self, ragged_dim):
+        from torch._dynamo.testing import CompileCounter
+
+        counter = CompileCounter()
+
+        def consume(reference):
+            output = reference.packed_with_static_tail(reference.concat.square())
+            return output.concat.sum(), output.ragged_level_offsets()
+
+        compiled = torch.compile(consume, backend=counter, fullgraph=True, dynamic=True)
+        for index, lengths in enumerate(((2, 3), (3, 5))):
+            elements = (
+                [torch.empty(2, length, 5) for length in lengths]
+                if ragged_dim == 1
+                else [torch.empty(2, 4, length, 5) for length in lengths]
+            )
+            template = NestedTensor(elements, ragged_dims=(ragged_dim,))
+            values = torch.randn_like(template.concat, requires_grad=True)
+            reference = template.packed_like(values)
+            if index == 0:
+                # The first trace has ``sum(lengths) == channels == 5``. Dynamo's
+                # ordinary duck shaping would unify those dimensions on a plain dense
+                # input; tensor-backed packed dim 0 must remain independently dynamic.
+                assert values.shape[0] == values.shape[-1]
+
+            loss, offsets = compiled(reference)
+            loss.backward()
+
+            assert_close(offsets, reference.ragged_level_offsets())
+            assert_close(values.grad, 2 * values)
+
+        assert counter.frame_count == 1
 
 
 class TestPackedWithLengths:
@@ -1520,6 +1709,32 @@ class TestPackedWithLengths:
             assert_close(batch_indices, torch.repeat_interleave(torch.arange(3), lengths))
             assert_close(local_indices, torch.cat([torch.arange(int(length)) for length in lengths]))
             assert_close(offsets, torch.nn.functional.pad(lengths.cumsum(0), (1, 0)))
+
+        assert counter.frame_count == 1
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_leading_tensor_backed_layout_avoids_duck_shape_collision(self):
+        from torch._dynamo.testing import CompileCounter
+
+        reference = NestedTensor([torch.empty(1), torch.empty(1)])
+        counter = CompileCounter()
+
+        def consume(nested):
+            output = nested.packed_like(nested.concat.square())
+            return output.concat.sum(), output.ragged_level_offsets()
+
+        compiled = torch.compile(consume, backend=counter, fullgraph=True, dynamic=True)
+        for index, lengths in enumerate((torch.tensor([2, 3]), torch.tensor([3, 4]))):
+            values = torch.randn(int(lengths.sum()), 5, requires_grad=True)
+            nested = reference.packed_with_lengths(values, lengths)
+            if index == 0:
+                assert values.shape[0] == values.shape[-1]
+
+            loss, offsets = compiled(nested)
+            loss.backward()
+
+            assert_close(offsets, nested.ragged_level_offsets())
+            assert_close(values.grad, 2 * values)
 
         assert counter.frame_count == 1
 
