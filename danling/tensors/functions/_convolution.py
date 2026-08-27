@@ -140,6 +140,7 @@ def _packed_pointwise_conv_transpose(
         input._offsets,
         shape_tensor,
         permutation=input._permutation,
+        ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
         batch_first=input.batch_first,
         padding_value=input.padding_value,
         mask_value=input.mask_value,

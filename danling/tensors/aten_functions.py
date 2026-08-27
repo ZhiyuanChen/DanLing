@@ -213,7 +213,7 @@ def per_element_fallback(func, args, kwargs):
     return _per_element_fallback_serial(func, args, kwargs, source)
 
 
-def _apply_per_element_nested(source: NestedTensor, op):
+def _apply_per_element_nested(source: NestedTensor, op, *, ragged_dims=_MISSING):
     r"""
     Apply ``op`` to each element and always rebuild a NestedTensor.
 
@@ -224,7 +224,16 @@ def _apply_per_element_nested(source: NestedTensor, op):
     cls = type(source)
     if len(source) == 0:
         return cls([], **source._meta(include_dtype=True))
-    return cls((op(t) for t in source._unpack()), **source._meta())
+    elements = source._unpack()
+    outputs = tuple(op(t) for t in elements)
+    meta = dict(source._meta())
+    if source._ragged_dims_explicit:
+        if ragged_dims is _MISSING:
+            shape_preserving = all(output.shape == element.shape for output, element in zip(outputs, elements))
+            meta["ragged_dims"] = source._ragged_dims if shape_preserving else None
+        else:
+            meta["ragged_dims"] = ragged_dims
+    return cls(outputs, **meta)
 
 
 # ---------------------------------------------------------------------------
@@ -449,12 +458,16 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
             dims_adj = _translate_dims(source, dims)
         except ValueError as exc:
             raise NotImplementedError(f"NestedTensor: {func} with dim={dims} is not supported") from exc
+        values_dims = tuple(_physical_to_values_dim(source, dim_i) for dim_i in dims_adj)
+        if all(dim_i is not None for dim_i in values_dims):
+            return _reduce_non_ragged_packed_dims(
+                source,
+                _call(source._values, [int(dim_i) for dim_i in values_dims], keepdim),
+                dims_adj,
+                keepdim,
+            )
         if not _is_packed_identity(source) or source._ragged_rank > 1:
             return _fallback(list(dims_adj), keepdim)
-        if source._values.dim() > 1 and all(dim_i > 0 for dim_i in dims_adj):
-            return _reduce_non_ragged_packed_dims(
-                source, _call(source._values, list(dims_adj), keepdim), dims_adj, keepdim
-            )
         if ragged_fill is not None and 0 in dims_adj:
             padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=ragged_fill)
             # Padded has shape [B, max_len, ...], so element dim d maps to padded dim d+1
@@ -479,6 +492,15 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
     segment_reduced = _segment_reduce_ragged_dim(func, source, dim_adj, keepdim, kwargs)
     if segment_reduced is not None:
         return segment_reduced
+
+    values_dim = _physical_to_values_dim(source, dim_adj)
+    if values_dim is not None:
+        return _reduce_non_ragged_packed(
+            source,
+            _call(source._values, [values_dim], keepdim),
+            dim_adj,
+            keepdim,
+        )
 
     if not _is_packed_identity(source):
         if dim_adj in source._varying_dims:
@@ -1209,6 +1231,8 @@ def gather(func, args, kwargs):
                 out_padded[batch_idx, local_idx],
                 index._offsets,
                 index._physical_shape,
+                permutation=index._permutation,
+                ragged_dims=index._ragged_dims if index._ragged_dims_explicit else None,
                 batch_first=source.batch_first,
                 padding_value=source.padding_value,
                 mask_value=source.mask_value,
@@ -1521,6 +1545,8 @@ def index_select(func, args, kwargs):
             out_values,
             out_offsets,
             out_shape,
+            permutation=source._permutation,
+            ragged_dims=source._ragged_dims if source._ragged_dims_explicit else None,
             batch_first=source.batch_first,
             padding_value=source.padding_value,
             mask_value=source.mask_value,
@@ -1664,19 +1690,21 @@ def take(func, args, kwargs):
 
 def _packed_new_last_dim(source: NestedTensor, new_values: Tensor, new_last_dim) -> NestedTensor:
     r"""Rebuild a NestedTensor with a changed last dimension (e.g. after matmul)."""
+    physical_rank = int(source._physical_shape.size(1))
+    if physical_rank > 0:
+        last_dim = physical_rank - 1
+        if last_dim not in source._static_dims:
+            raise NotImplementedError("Packed last-dimension updates require the last physical dim to be static.")
+        return _packed_new_dim_size(source, new_values, last_dim, int(new_last_dim))
+
     new_physical_shape = source._physical_shape.clone()
-    if new_physical_shape.size(1) == 0:
-        new_physical_shape = new_physical_shape.new_full((len(source), 1), new_last_dim)
-    else:
-        new_physical_shape[:, -1] = new_last_dim
+    new_physical_shape = new_physical_shape.new_full((len(source), 1), new_last_dim)
 
     packed_sizes = None
     element_shapes = None
     if source._element_shapes is not None and isinstance(new_last_dim, int):
-        element_shapes = tuple(
-            (*shape[:-1], int(new_last_dim)) if shape else (int(new_last_dim),) for shape in source._element_shapes
-        )
-        packed_sizes = source._packed_sizes_like(element_shapes)
+        element_shapes = tuple((int(new_last_dim),) for _ in source._element_shapes)
+        packed_sizes = tuple(int(new_last_dim) for _ in source._element_shapes)
 
     new_outer_size = list(source._logical_shape)
     if new_outer_size:
@@ -1751,11 +1779,20 @@ def _packed_with_shape(
         new_logical_shape = type(source)._logical_shape_from_physical_shape(
             new_physical_shape, offsets, source.batch_first
         )
+    declared_ragged_dims = None
+    if source._ragged_dims_explicit:
+        output_permutation = permutation
+        if output_permutation is None and int(new_physical_shape.size(1)) == len(source._permutation):
+            output_permutation = source._permutation
+        if output_permutation is not None:
+            output_ragged_rank = int(new_physical_shape.size(1)) - max(new_values.dim() - 1, 0)
+            declared_ragged_dims = tuple(int(dim) for dim in output_permutation[:output_ragged_rank])
     return type(source)._from_packed(
         new_values,
         offsets,
         new_physical_shape,
         permutation=permutation,
+        ragged_dims=declared_ragged_dims,
         batch_first=source.batch_first,
         padding_value=source.padding_value,
         mask_value=source.mask_value,
@@ -1795,15 +1832,39 @@ def _packed_with_tail_from_values(source: NestedTensor, new_values: Tensor) -> N
             element_shapes=scalar_element_shapes,
         )
 
-    out_shape, outer_size, packed_sizes, element_shapes = source._leading_dim_preserving_meta(tail)
+    static_dims = source._static_dims
+    if len(tail) == len(static_dims):
+        replacements = {int(dim): size for dim, size in zip(static_dims, tail)}
+        out_shape, packed_sizes, element_shapes = source._shape_meta_from_components(replace_dims=replacements)
+        return _packed_with_shape(
+            source,
+            new_values,
+            out_shape,
+            source._logical_shape_from_components(replace_dims=replacements),
+            permutation=source._permutation,
+            packed_sizes=packed_sizes,
+            element_shapes=element_shapes,
+        )
+
+    leading_ragged = tuple(range(source._ragged_rank))
+    if source._ragged_dims != leading_ragged or source._static_dims != tuple(
+        range(source._ragged_rank, source._physical_shape.size(1))
+    ):
+        raise NotImplementedError(
+            "Packed tail rank changes require leading ragged dimensions and a trailing static suffix."
+        )
+
+    out_shape, packed_sizes, element_shapes = source._shape_meta_from_components(
+        keep_dims=source._ragged_dims,
+        suffix=tail,
+    )
+    outer_size = source._logical_shape_from_components(keep_dims=source._ragged_dims, suffix=tail)
     return _packed_with_shape(
         source,
         new_values,
         out_shape,
         outer_size,
-        permutation=source._permutation_after_replacing_trailing_dims(
-            max(source._physical_shape.size(1) - 1, 0), len(tail)
-        ),
+        permutation=tuple(range(source._ragged_rank + len(tail))),
         packed_sizes=packed_sizes,
         element_shapes=element_shapes,
     )
@@ -2082,6 +2143,7 @@ def _reduce_non_ragged_packed(source: NestedTensor, out_values: Tensor, dim_adj:
     else:
         keep_dims = tuple(i for i in range(source._physical_shape.size(1)) if i != dim_adj)
         out_shape, packed_sizes, element_shapes = source._shape_meta_from_components(keep_dims=keep_dims)
+    permutation = source._permutation if keepdim else source._project_permutation(keep_dims=keep_dims)
     return _packed_with_shape(
         source,
         out_values,
@@ -2091,6 +2153,7 @@ def _reduce_non_ragged_packed(source: NestedTensor, out_values: Tensor, dim_adj:
             if keepdim
             else source._logical_shape_from_components(keep_dims=keep_dims)
         ),
+        permutation=permutation,
         packed_sizes=packed_sizes,
         element_shapes=element_shapes,
     )
@@ -2108,6 +2171,7 @@ def _reduce_non_ragged_packed_dims(source: NestedTensor, out_values: Tensor, dim
             out_values,
             out_shape,
             source._logical_shape_from_components(replace_dims={int(d): 1 for d in dims_adj}),
+            permutation=source._permutation,
             packed_sizes=packed_sizes,
             element_shapes=element_shapes,
         )
@@ -2119,6 +2183,7 @@ def _reduce_non_ragged_packed_dims(source: NestedTensor, out_values: Tensor, dim
         out_values,
         out_shape,
         source._logical_shape_from_components(keep_dims=keep_dims),
+        permutation=source._project_permutation(keep_dims=keep_dims),
         packed_sizes=packed_sizes,
         element_shapes=element_shapes,
     )
@@ -3483,21 +3548,13 @@ def _packed_metadata_permute(source: NestedTensor, tensor_dims: tuple[int, ...])
     rank = int(source._physical_shape.size(1))
     if len(tensor_dims) != rank:
         return None
-    old_packed_order = source._permutation
-    if not old_packed_order:
-        old_varying, old_static = type(source)._pack_layout_meta(source._physical_shape, source._element_shapes)
-        old_packed_order = old_varying + old_static
-
     out_shape = source._physical_shape[:, tensor_dims]
     out_element_shapes = None
     if source._element_shapes is not None:
         out_element_shapes = tuple(tuple(shape[dim] for dim in tensor_dims) for shape in source._element_shapes)
 
-    new_varying, new_static = type(source)._pack_layout_meta(out_shape, out_element_shapes)
-    new_packed_order = new_varying + new_static
-    new_packed_order_in_old_dims = tuple(tensor_dims[dim] for dim in new_packed_order)
-    if new_packed_order_in_old_dims != old_packed_order:
-        return None
+    old_to_new = {int(old_dim): new_dim for new_dim, old_dim in enumerate(tensor_dims)}
+    new_packed_order = tuple(old_to_new[int(dim)] for dim in source._permutation)
 
     out_logical = source._logical_shape_from_physical_dims(
         tuple(source._max_physical_dims()[dim] for dim in tensor_dims)
@@ -3576,7 +3633,16 @@ def squeeze_default(func, args, kwargs):
 
     # If any sample has ragged size 1, squeezing dim-0 is per-element.
     if source._physical_shape.size(0) > 0 and bool(torch.any(source._physical_shape[:, 0] == 1)):
-        return _apply_per_element_nested(source, lambda t: t.squeeze())
+        first_shape = source._element_shapes[0] if source._element_shapes else ()
+        keep_dims = tuple(dim for dim, size in enumerate(first_shape) if int(size) != 1)
+        if source._element_shapes is not None and all(
+            tuple(dim for dim, size in enumerate(shape) if int(size) != 1) == keep_dims
+            for shape in source._element_shapes
+        ):
+            ragged_dims = source._project_declared_ragged_dims(keep_dims=keep_dims)
+        else:
+            ragged_dims = None
+        return _apply_per_element_nested(source, lambda t: t.squeeze(), ragged_dims=ragged_dims)
 
     out_values = func(source._values, **kwargs)
     if source._physical_shape.size(0) == 0:
@@ -3633,7 +3699,12 @@ def squeeze_dim(func, args, kwargs):
         return source
     if dim_adj not in source._static_dims:
         # Squeezing ragged dims is per-element because packed values collapse them.
-        return _apply_per_element_nested(source, lambda t: t.squeeze(dim_adj))
+        keep_dims = tuple(dim for dim in range(source._physical_shape.size(1)) if dim != dim_adj)
+        return _apply_per_element_nested(
+            source,
+            lambda t: t.squeeze(dim_adj),
+            ragged_dims=source._project_declared_ragged_dims(keep_dims=keep_dims),
+        )
 
     values_dim = 1 + source._static_dims.index(dim_adj)
     out_values = func(source._values, values_dim, **kwargs)
@@ -3687,6 +3758,7 @@ def transpose(func, args, kwargs):
             packed_sizes=source._packed_sizes,
             element_shapes=source._element_shapes,
             permutation=source._permutation,
+            ragged_dims=source._ragged_dims if source._ragged_dims_explicit else None,
             validate=False,
         )
 
@@ -4839,6 +4911,7 @@ def clone(func, args, kwargs):
         packed_sizes=source._packed_sizes,
         element_shapes=source._element_shapes,
         permutation=source._permutation,
+        ragged_dims=source._ragged_dims if source._ragged_dims_explicit else None,
         validate=False,
     )
 
@@ -4929,6 +5002,7 @@ def _constant_pad_packed_variable_last_dim(source: NestedTensor, pad: tuple[int,
         new_offsets,
         shape_tensor,
         permutation=source._permutation,
+        ragged_dims=source._ragged_dims if source._ragged_dims_explicit else None,
         batch_first=source.batch_first,
         padding_value=source.padding_value,
         mask_value=source.mask_value,
@@ -4956,6 +5030,7 @@ def detach(func, args, kwargs):
         packed_sizes=source._packed_sizes,
         element_shapes=source._element_shapes,
         permutation=source._permutation,
+        ragged_dims=source._ragged_dims if source._ragged_dims_explicit else None,
         validate=False,
     )
 

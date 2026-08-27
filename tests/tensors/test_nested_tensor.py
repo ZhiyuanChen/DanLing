@@ -468,6 +468,155 @@ class TestConstruction:
 # ---------------------------------------------------------------------------
 
 
+class TestDeclaredRaggedDims:
+
+    @pytest.mark.parametrize("sizes", [(4,), (4, 4), (2, 4)])
+    def test_declared_pair_topology_has_stable_flat_packing(self, sizes):
+        elements = [torch.randn(size, size, 3) for size in sizes]
+
+        nested = NestedTensor(elements, ragged_dims=(0, 1))
+
+        assert nested.ragged_dims == (0, 1)
+        assert nested.packed_dim_order == (0, 1, 2)
+        assert nested.concat.shape == (sum(size * size for size in sizes), 3)
+        assert nested._packed_sizes == tuple(size * size for size in sizes)
+        assert [tuple(element.shape) for element in nested] == [tuple(element.shape) for element in elements]
+        for actual, expected in zip(nested, elements):
+            assert_close(actual, expected)
+
+    def test_default_pair_topology_keeps_existing_inference(self):
+        nested = NestedTensor([torch.randn(4, 4, 3), torch.randn(4, 4, 3)])
+
+        assert nested.ragged_dims == (0,)
+        assert nested.concat.shape == (8, 4, 3)
+
+    def test_declared_ragged_dims_are_read_only_and_validate_static_dims(self):
+        nested = NestedTensor([torch.randn(2, 2, 3), torch.randn(4, 4, 3)], ragged_dims=(0, 1))
+
+        with pytest.raises(AttributeError):
+            nested.ragged_dims = (0,)  # type: ignore[misc]
+        with pytest.raises(ValueError, match="not listed in ragged_dims"):
+            NestedTensor([torch.randn(2, 2, 3), torch.randn(4, 4, 5)], ragged_dims=(0, 1))
+
+    def test_declared_ragged_dims_survive_fake_tensor_rebuild(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        FakeTensorMode = fake_tensor_mod.FakeTensorMode
+        is_fake = fake_tensor_mod.is_fake
+        reference = NestedTensor([torch.empty(4, 4, 3), torch.empty(4, 4, 3)], ragged_dims=(0, 1))
+
+        with FakeTensorMode() as mode:
+            fake_reference = mode.from_tensor(reference)
+            output = fake_reference.packed_like(torch.empty_like(fake_reference.concat))
+
+        assert output.ragged_dims == (0, 1)
+        assert output.concat.shape == (32, 3)
+        assert is_fake(output.concat)
+        assert is_fake(output._offsets)
+        assert is_fake(output._physical_shape)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_declared_ragged_dims_survive_fullgraph_output(self):
+        reference = NestedTensor([torch.randn(4, 4, 3), torch.randn(4, 4, 3)], ragged_dims=(0, 1))
+        values = torch.randn_like(reference.concat, requires_grad=True)
+        compiled = torch.compile(lambda ref, packed: ref.packed_like(packed), backend="aot_eager", fullgraph=True)
+
+        output = compiled(reference, values)
+        loss = output.concat.square().sum()
+        loss.backward()
+
+        assert output.ragged_dims == (0, 1)
+        assert output.concat.shape == (32, 3)
+        assert_close(values.grad, 2 * values)
+
+    def test_declared_ragged_dims_survive_meta_copy_and_pickle(self):
+        reference = NestedTensor([torch.randn(2, 2, 3), torch.randn(4, 4, 3)], ragged_dims=(0, 1))
+
+        outputs = (
+            NestedTensor(reference._storage, **reference._meta()),
+            copy.copy(reference),
+            copy.deepcopy(reference),
+            pickle.loads(pickle.dumps(reference)),
+        )
+
+        assert all(output.ragged_dims == (0, 1) for output in outputs)
+        assert all(output.concat.shape == (20, 3) for output in outputs)
+
+    def test_declared_pair_dense_matmul_preserves_topology(self):
+        elements = [torch.randn(2, 2, 3), torch.randn(4, 4, 3)]
+        nested = NestedTensor(elements, ragged_dims=(0, 1))
+        weight = torch.randn(3, 5)
+
+        output = nested @ weight
+
+        assert output.ragged_dims == (0, 1)
+        assert output.packed_dim_order == (0, 1, 2)
+        assert output.concat.shape == (20, 5)
+        assert output._packed_sizes == (4, 16)
+        for actual, expected in zip(output, elements):
+            assert_close(actual, expected @ weight)
+
+    def test_source_derived_empty_batch_preserves_declared_topology(self):
+        nested = NestedTensor([torch.randn(2, 2, 3), torch.randn(4, 4, 3)], ragged_dims=(0, 1))
+
+        sliced = nested[:0]
+        split_empty, split_full = torch.split(nested, [0, 2], dim=0)
+
+        for output in (sliced, split_empty):
+            assert output.shape == (0, 4, 4, 3)
+            assert output.ragged_dims == (0, 1)
+            assert output.packed_dim_order == (0, 1, 2)
+            assert output.concat.shape == (0, 3)
+            assert output._physical_shape.shape == (0, 3)
+        assert split_full.ragged_dims == (0, 1)
+
+        with pytest.raises(ValueError, match="outside element rank 0"):
+            NestedTensor([], ragged_dims=(0, 1))
+
+    def test_shape_changing_ops_remap_declared_ragged_dims(self):
+        elements = [torch.randn(2, 2, 3), torch.randn(2, 2, 3)]
+        nested = NestedTensor(elements, ragged_dims=(0, 1))
+
+        permuted = nested.permute(0, 3, 1, 2)
+        indexed = nested[:, :, 0, :]
+
+        assert permuted.ragged_dims == (1, 2)
+        assert permuted.packed_dim_order == (1, 2, 0)
+        assert permuted.concat.shape == (8, 3)
+        assert indexed.ragged_dims == (0,)
+        assert indexed.concat.shape == (4, 3)
+        for actual, expected in zip(permuted, elements):
+            assert_close(actual, expected.permute(2, 0, 1))
+        for actual, expected in zip(indexed, elements):
+            assert_close(actual, expected[:, 0, :])
+
+        nonleading = NestedTensor([torch.randn(2, 3, 4), torch.randn(2, 3, 4)], ragged_dims=(2,))
+        reduced = torch.sum(nonleading, dim=1)
+        assert reduced.ragged_dims == (1,)
+        assert reduced.packed_dim_order == (1, 0)
+        for actual, expected in zip(reduced, nonleading):
+            assert_close(actual, expected.sum(dim=0))
+
+    def test_from_concatenated_honors_declared_ragged_order(self):
+        elements = [torch.arange(12.0).reshape(2, 2, 3), torch.arange(12.0, 24.0).reshape(2, 2, 3)]
+        reference = NestedTensor(elements, ragged_dims=(1, 0))
+
+        values, shapes = reference.concatenate()
+        output = NestedTensor.from_concatenated(values, shapes, ragged_dims=(1, 0))
+
+        assert output.ragged_dims == (1, 0)
+        assert output.packed_dim_order == (1, 0, 2)
+        for actual, expected in zip(output, elements):
+            assert_close(actual, expected)
+
+    def test_serialized_state_rejects_topology_payload_mismatch(self):
+        reference = NestedTensor([torch.randn(2, 2, 3), torch.randn(2, 2, 3)], ragged_dims=(0, 1))
+        state = reference.__getstate__()
+        state["_ragged_dims"] = (0,)
+
+        with pytest.raises(ValueError, match="Packed values rank is inconsistent with ragged_dims"):
+            NestedTensor._from_state(state)
+
+
 class TestPackedLike:
 
     def test_packed_dim_order_tracks_logical_permutation(self):
@@ -826,7 +975,7 @@ class TestCopySemantics:
             restored = copy.copy(nt)
             restored.__setstate__(state)
 
-    @pytest.mark.parametrize("missing_key", ["_permutation", "_packed_sizes", "_element_shapes"])
+    @pytest.mark.parametrize("missing_key", ["_permutation", "_ragged_dims", "_packed_sizes", "_element_shapes"])
     def test_setstate_rejects_missing_layout_metadata(self, missing_key):
         nt = NestedTensor([torch.arange(6.0).reshape(2, 3)]).unsqueeze(1)
         state = dict(nt.__getstate__())
@@ -1329,6 +1478,7 @@ class TestPackOptimization:
             outer_size=nt._logical_shape,
             packed_sizes=nt._packed_sizes,
             element_shapes=nt._element_shapes,
+            validate=False,
         )
 
         assert not nt._has_same_layout(mismatched)
@@ -1534,6 +1684,7 @@ class TestPackedCacheInvalidation:
             outer_size=dest._logical_shape,
             packed_sizes=dest._packed_sizes,
             element_shapes=dest._element_shapes,
+            validate=False,
         )
 
         with pytest.raises(NotImplementedError, match="matching packed layout"):

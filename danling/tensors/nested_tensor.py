@@ -87,6 +87,9 @@ class NestedTensor(torch.Tensor):
     Args:
         *tensors: Variable-length tensors or sequences to store
         batch_first: Whether to use batch-first representation.
+        ragged_dims: Optional ordered element dimensions that remain ragged even
+            when their sizes happen to be equal within a batch. ``None`` keeps
+            the existing shape-inference behavior.
         padding_value: Value to use for padding.
         mask_value: Boolean fill value used for padding positions in masks.
 
@@ -147,6 +150,8 @@ class NestedTensor(torch.Tensor):
     _physical_shape: Tensor
     _flatten_sentinel: Tensor = torch.empty(0)
     _logical_shape: torch.Size
+    _ragged_dims: tuple[int, ...]
+    _ragged_dims_explicit: bool
     _batch_first: bool
     _padding_value: float
     _mask_value: bool
@@ -160,7 +165,7 @@ class NestedTensor(torch.Tensor):
     _cached_packed_batch_indices: dict[tuple[str, torch.dtype, tuple[int, int]], Tensor] | None
     _cached_packed_local_indices: dict[tuple[int, str, torch.dtype, tuple[int, int]], Tensor] | None
     _cached_ragged_level_offsets: dict[tuple[int, str, torch.dtype, tuple[int, int]], Tensor] | None
-    _SERIALIZATION_VERSION = 1
+    _SERIALIZATION_VERSION = 2
 
     # Construction & Initialization
 
@@ -172,6 +177,7 @@ class NestedTensor(torch.Tensor):
         device: torch.device | None = None,
         requires_grad: bool | None = None,
         pin_memory: bool = False,
+        ragged_dims: tuple[int, ...] | None = None,
         batch_first: bool = True,
         padding_value: SupportsFloat = 0.0,
         mask_value: bool = False,
@@ -196,9 +202,14 @@ class NestedTensor(torch.Tensor):
             validated,
             dtype=out_dtype,
             device=out_device,
+            ragged_dims=ragged_dims,
         )
         values = cls._maybe_pin_values(values, pin_memory)
-        permutation = cls._permutation_from_element_shapes(element_shapes)
+        if ragged_dims is None:
+            resolved_ragged_dims, static_dims = cls._pack_layout_from_element_shapes(element_shapes)
+        else:
+            resolved_ragged_dims, static_dims = cls._pack_layout_from_declared_ragged_dims(element_shapes, ragged_dims)
+        permutation = resolved_ragged_dims + static_dims
 
         # Compute logical shape
         logical_shape = cls._compute_logical_shape(validated, batch_first)
@@ -216,6 +227,8 @@ class NestedTensor(torch.Tensor):
         result._values = values
         result._offsets = offsets
         result._permutation = permutation
+        result._ragged_dims = resolved_ragged_dims
+        result._ragged_dims_explicit = ragged_dims is not None
         result._physical_shape = shape_tensor
         result._logical_shape = logical_shape
         result._set_runtime_config(
@@ -232,6 +245,7 @@ class NestedTensor(torch.Tensor):
             result._offsets,
             result._physical_shape,
             permutation=result._permutation,
+            ragged_dims=result._ragged_dims,
             logical_shape=result._logical_shape,
             batch_first=result.batch_first,
             packed_sizes=result._packed_sizes,
@@ -316,6 +330,7 @@ class NestedTensor(torch.Tensor):
         dtype: torch.dtype | None = None,
         device: torch.device | None = None,
         permutation: tuple[int, ...] | None = None,
+        ragged_dims: tuple[int, ...] | None = None,
     ) -> tuple[Tensor, Tensor, Tensor, tuple[int, ...], tuple[tuple[int, ...], ...]]:
         r"""Pack a sequence of tensors into values, offsets, tensor metadata, and Python metadata."""
         if not tensors:
@@ -329,6 +344,9 @@ class NestedTensor(torch.Tensor):
 
         max_ndim = max(t.ndim for t in tensors)
         element_shapes = tuple(tuple(int(dim) for dim in t.shape) for t in tensors)
+        declared_layout = None
+        if ragged_dims is not None:
+            declared_layout = NestedTensor._pack_layout_from_declared_ragged_dims(element_shapes, ragged_dims)
 
         # Offsets and shape_tensor are metadata - always on CPU to avoid CUDA syncs.
         shape_tensor = torch.tensor([list(t.shape) + [0] * (max_ndim - t.ndim) for t in tensors], dtype=torch.long)
@@ -338,15 +356,27 @@ class NestedTensor(torch.Tensor):
             packed_sizes = tuple(1 for _ in tensors)
         else:
             if permutation is None:
-                varying_dims, static_dims = NestedTensor._pack_layout_from_element_shapes(element_shapes)
+                if declared_layout is None:
+                    varying_dims, static_dims = NestedTensor._pack_layout_from_element_shapes(element_shapes)
+                else:
+                    varying_dims, static_dims = declared_layout
                 permutation = varying_dims + static_dims
             else:
                 permutation = tuple(int(dim) for dim in permutation)
                 if len(permutation) != max_ndim or tuple(sorted(permutation)) != tuple(range(max_ndim)):
                     raise ValueError(f"Invalid permutation dims {permutation} for tensors with rank {max_ndim}")
-                ragged_rank = len(NestedTensor._hierarchical_level_sizes_from_element_shapes(element_shapes))
-                varying_dims = permutation[:ragged_rank]
-                static_dims = permutation[ragged_rank:]
+                if declared_layout is None:
+                    ragged_rank = len(NestedTensor._hierarchical_level_sizes_from_element_shapes(element_shapes))
+                    varying_dims = permutation[:ragged_rank]
+                    static_dims = permutation[ragged_rank:]
+                else:
+                    varying_dims, _ = declared_layout
+                    if permutation[: len(varying_dims)] != varying_dims:
+                        raise ValueError(
+                            "permutation must begin with ragged_dims in the declared order, "
+                            f"got permutation={permutation} and ragged_dims={varying_dims}"
+                        )
+                    static_dims = permutation[len(varying_dims) :]
             packed = []
             packed_sizes_list = []
             identity_permutation = tuple(range(max_ndim))
@@ -363,6 +393,100 @@ class NestedTensor(torch.Tensor):
         torch.cumsum(sizes, dim=0, out=offsets[1:])
 
         return values, offsets, shape_tensor, packed_sizes, element_shapes
+
+    @staticmethod
+    def _normalize_ragged_dims(ragged_dims: tuple[int, ...], physical_rank: int) -> tuple[int, ...]:
+        if not isinstance(ragged_dims, tuple):
+            raise TypeError(f"ragged_dims must be a tuple of ints or None, got {type(ragged_dims).__name__}")
+        normalized: list[int] = []
+        for dim in ragged_dims:
+            if not isinstance(dim, int) or isinstance(dim, bool):
+                raise TypeError(f"ragged_dims must contain only ints, got {type(dim).__name__}")
+            normalized_dim = dim + physical_rank if dim < 0 else dim
+            if normalized_dim < 0 or normalized_dim >= physical_rank:
+                raise ValueError(f"ragged_dims contains dim {dim} outside element rank {physical_rank}")
+            if normalized_dim in normalized:
+                raise ValueError(f"ragged_dims must not contain duplicate dimensions, got {ragged_dims}")
+            normalized.append(normalized_dim)
+        return tuple(normalized)
+
+    @classmethod
+    def _pack_layout_from_declared_ragged_dims(
+        cls,
+        element_shapes: tuple[tuple[int, ...], ...],
+        ragged_dims: tuple[int, ...],
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        physical_rank = len(element_shapes[0]) if element_shapes else 0
+        varying_dims = cls._normalize_ragged_dims(ragged_dims, physical_rank)
+        static_dims = tuple(dim for dim in range(physical_rank) if dim not in varying_dims)
+        if element_shapes:
+            reference = element_shapes[0]
+            for dim in static_dims:
+                if any(len(shape) != physical_rank or shape[dim] != reference[dim] for shape in element_shapes[1:]):
+                    raise ValueError(
+                        "Dimensions not listed in ragged_dims must have identical sizes across elements, "
+                        f"but dim {dim} varies for shapes {element_shapes}"
+                    )
+        return varying_dims, static_dims
+
+    def _project_declared_ragged_dims(
+        self,
+        *,
+        prefix: Sequence[int] = (),
+        keep_dims: Sequence[int] | None = None,
+    ) -> tuple[int, ...] | None:
+        r"""Remap declared ragged dimensions through a basic physical-dimension projection."""
+        if not self._ragged_dims_explicit:
+            return None
+        if keep_dims is None:
+            keep_dims = tuple(range(self._physical_shape.size(1)))
+        old_to_new = {int(dim): len(prefix) + index for index, dim in enumerate(keep_dims)}
+        return tuple(old_to_new[dim] for dim in self._ragged_dims if dim in old_to_new)
+
+    def _project_permutation(
+        self,
+        *,
+        prefix: Sequence[int] = (),
+        keep_dims: Sequence[int] | None = None,
+        suffix: Sequence[int] = (),
+    ) -> tuple[int, ...]:
+        r"""Remap packed dimension order through a projection with dense prefix/suffix dimensions."""
+        if keep_dims is None:
+            keep_dims = tuple(range(self._physical_shape.size(1)))
+        keep_dims = tuple(int(dim) for dim in keep_dims)
+        prefix_rank = len(prefix)
+        old_to_new = {dim: prefix_rank + index for index, dim in enumerate(keep_dims)}
+        retained = tuple(old_to_new[dim] for dim in self._permutation if dim in old_to_new)
+        prefix_dims = tuple(range(prefix_rank))
+        suffix_start = prefix_rank + len(keep_dims)
+        suffix_dims = tuple(range(suffix_start, suffix_start + len(suffix)))
+        retained_set = set(retained)
+        added_static = tuple(dim for dim in (*prefix_dims, *suffix_dims) if dim not in retained_set)
+        return retained + added_static
+
+    @classmethod
+    def _ragged_dims_from_packed_layout(
+        cls,
+        values: Tensor,
+        physical_rank: int,
+        permutation: tuple[int, ...],
+        ragged_dims: tuple[int, ...] | None,
+    ) -> tuple[int, ...]:
+        if ragged_dims is not None:
+            resolved = cls._normalize_ragged_dims(ragged_dims, physical_rank)
+            if permutation[: len(resolved)] != resolved:
+                raise ValueError(
+                    "permutation must begin with ragged_dims in the declared order, "
+                    f"got permutation={permutation} and ragged_dims={resolved}"
+                )
+            return resolved
+        ragged_rank = physical_rank - max(values.dim() - 1, 0)
+        if ragged_rank < 0 or ragged_rank > physical_rank:
+            raise ValueError(
+                "Packed values rank is inconsistent with the element rank, "
+                f"got values rank {values.dim()} and element rank {physical_rank}"
+            )
+        return permutation[:ragged_rank]
 
     @staticmethod
     def _maybe_pin_values(values: Tensor, pin_memory: bool) -> Tensor:
@@ -422,10 +546,14 @@ class NestedTensor(torch.Tensor):
     def _hierarchical_level_sizes_from_element_shapes(
         cls,
         element_shapes: tuple[tuple[int, ...], ...],
+        ragged_dims: tuple[int, ...] | None = None,
     ) -> tuple[tuple[int, ...], ...]:
         if not element_shapes:
             return ()
-        varying_dims, _ = cls._pack_layout_from_element_shapes(element_shapes)
+        if ragged_dims is None:
+            varying_dims, _ = cls._pack_layout_from_element_shapes(element_shapes)
+        else:
+            varying_dims, _ = cls._pack_layout_from_declared_ragged_dims(element_shapes, ragged_dims)
         if not varying_dims:
             return ()
 
@@ -447,15 +575,19 @@ class NestedTensor(torch.Tensor):
         cls,
         physical_shape: Tensor,
         element_shapes: tuple[tuple[int, ...], ...] | None = None,
+        ragged_dims: tuple[int, ...] | None = None,
     ) -> tuple[tuple[int, ...], ...]:
         if physical_shape.numel() == 0:
             return ()
         if element_shapes is not None:
-            return cls._hierarchical_level_sizes_from_element_shapes(element_shapes)
+            return cls._hierarchical_level_sizes_from_element_shapes(element_shapes, ragged_dims)
         if _is_fake_tensor(physical_shape):
             return ()
 
-        varying_dims, _ = cls._pack_layout_meta(physical_shape, None)
+        if ragged_dims is None:
+            varying_dims, _ = cls._pack_layout_meta(physical_shape, None)
+        else:
+            varying_dims = cls._normalize_ragged_dims(ragged_dims, int(physical_shape.size(1)))
         if not varying_dims:
             return ()
 
@@ -608,6 +740,7 @@ class NestedTensor(torch.Tensor):
         shape_tensor: Tensor,
         *,
         permutation: tuple[int, ...],
+        ragged_dims: tuple[int, ...],
         logical_shape: torch.Size,
         batch_first: bool,
         packed_sizes: tuple[int, ...] | None,
@@ -649,6 +782,20 @@ class NestedTensor(torch.Tensor):
             range(physical_rank)
         ):
             raise ValueError(f"Invalid permutation dims {permutation} for shape with {physical_rank} dims")
+        normalized_ragged_dims = cls._normalize_ragged_dims(ragged_dims, physical_rank)
+        if permutation[: len(normalized_ragged_dims)] != normalized_ragged_dims:
+            raise ValueError(
+                "permutation must begin with ragged_dims in the declared order, "
+                f"got permutation={permutation} and ragged_dims={normalized_ragged_dims}"
+            )
+        static_dims = tuple(int(dim) for dim in permutation[len(normalized_ragged_dims) :])
+        expected_values_rank = 1 + len(static_dims)
+        if values.dim() != expected_values_rank:
+            raise ValueError(
+                "Packed values rank is inconsistent with ragged_dims, "
+                f"got values rank {values.dim()}, expected {expected_values_rank} for "
+                f"physical rank {physical_rank} and ragged_dims={normalized_ragged_dims}"
+            )
 
         if packed_sizes is not None:
             if len(packed_sizes) != batch_size:
@@ -677,6 +824,26 @@ class NestedTensor(torch.Tensor):
                 shape_rows = tuple(tuple(int(size) for size in row) for row in shape_tensor.tolist())
                 if normalized_shapes != shape_rows:
                     raise ValueError("element_shapes must match shape_tensor exactly")
+            # The packed leading dimension is the product of declared ragged
+            # dimensions.  Every remaining dimension is represented directly
+            # in the packed value tail and therefore must be uniform.
+            if normalized_shapes:
+                cls._pack_layout_from_declared_ragged_dims(normalized_shapes, normalized_ragged_dims)
+            expected_packed_sizes = tuple(
+                cls._packed_size_from_shape(shape, normalized_ragged_dims) for shape in normalized_shapes
+            )
+            if packed_sizes is not None and tuple(int(size) for size in packed_sizes) != expected_packed_sizes:
+                raise ValueError(
+                    "packed_sizes must equal the product of ragged dimensions for every element, "
+                    f"got {packed_sizes} and expected {expected_packed_sizes}"
+                )
+            if normalized_shapes:
+                expected_tail = tuple(normalized_shapes[0][dim] for dim in static_dims)
+                if tuple(values.shape[1:]) != expected_tail:
+                    raise ValueError(
+                        "Packed values tail must match static dimensions in permutation order, "
+                        f"got {tuple(values.shape[1:])} and expected {expected_tail}"
+                    )
 
         if _is_fake_tensor(offsets) or _is_fake_tensor(shape_tensor):
             return
@@ -688,6 +855,13 @@ class NestedTensor(torch.Tensor):
         deltas = offsets[1:] - offsets[:-1]
         if bool((deltas < 0).any()):
             raise ValueError("offsets must be monotonically non-decreasing")
+        if packed_sizes is not None:
+            delta_sizes = tuple(int(size) for size in deltas.tolist())
+            normalized_packed_sizes = tuple(int(size) for size in packed_sizes)
+            if delta_sizes != normalized_packed_sizes:
+                raise ValueError(
+                    "offset deltas must match packed_sizes exactly, " f"got {delta_sizes} and {normalized_packed_sizes}"
+                )
         if packed_sizes is None and int(offsets[-1].item()) != int(values.shape[0]):
             raise ValueError(
                 f"offsets[-1] must equal packed values length, got offsets[-1]={int(offsets[-1].item())} "
@@ -701,6 +875,7 @@ class NestedTensor(torch.Tensor):
             self._offsets,
             self._physical_shape,
             permutation=self._permutation,
+            ragged_dims=self._ragged_dims,
             logical_shape=self._logical_shape,
             batch_first=self.batch_first,
             packed_sizes=self._packed_sizes,
@@ -780,6 +955,7 @@ class NestedTensor(torch.Tensor):
             "_values",
             "_offsets",
             "_permutation",
+            "_ragged_dims",
             "_physical_shape",
             "_logical_shape",
             "batch_first",
@@ -804,6 +980,7 @@ class NestedTensor(torch.Tensor):
         shape_tensor: Tensor,
         *,
         permutation: tuple[int, ...] | None = None,
+        ragged_dims: tuple[int, ...] | None = None,
         batch_first: bool = True,
         padding_value: float = 0.0,
         mask_value: bool = False,
@@ -841,6 +1018,25 @@ class NestedTensor(torch.Tensor):
         if element_shapes is None and not _is_fake_tensor(shape_tensor):
             element_shapes = tuple(cls._trim_shape(shape) for shape in shape_tensor.tolist())
 
+        physical_rank = int(shape_tensor.size(1))
+        if permutation is None:
+            if ragged_dims is None:
+                resolved_permutation = cls._permutation_from_physical_shape(shape_tensor, element_shapes)
+            else:
+                resolved_ragged_dims = cls._normalize_ragged_dims(ragged_dims, physical_rank)
+                resolved_permutation = resolved_ragged_dims + tuple(
+                    dim for dim in range(physical_rank) if dim not in resolved_ragged_dims
+                )
+        else:
+            resolved_permutation = tuple(int(dim) for dim in permutation)
+        resolved_ragged_dims = cls._ragged_dims_from_packed_layout(
+            values,
+            physical_rank,
+            resolved_permutation,
+            ragged_dims,
+        )
+        ragged_dims_explicit = ragged_dims is not None
+
         if (
             not compiling
             and _is_fake_tensor(values)
@@ -862,11 +1058,9 @@ class NestedTensor(torch.Tensor):
                 offsets,
                 shape_tensor,
                 logical_shape,
-                (
-                    tuple(int(dim) for dim in permutation)
-                    if permutation is not None
-                    else cls._permutation_from_physical_shape(shape_tensor, element_shapes)
-                ),
+                resolved_permutation,
+                resolved_ragged_dims,
+                ragged_dims_explicit,
                 bool(batch_first),
                 float(padding_value),
                 bool(mask_value),
@@ -884,11 +1078,9 @@ class NestedTensor(torch.Tensor):
             )
             result._values = values
             result._offsets = offsets
-            result._permutation = (
-                tuple(int(dim) for dim in permutation)
-                if permutation is not None
-                else cls._permutation_from_physical_shape(shape_tensor, element_shapes)
-            )
+            result._permutation = resolved_permutation
+            result._ragged_dims = resolved_ragged_dims
+            result._ragged_dims_explicit = ragged_dims_explicit
             result._physical_shape = shape_tensor
             result._logical_shape = logical_shape
             result._set_runtime_config(
@@ -906,6 +1098,7 @@ class NestedTensor(torch.Tensor):
                 result._offsets,
                 result._physical_shape,
                 permutation=result._permutation,
+                ragged_dims=result._ragged_dims,
                 logical_shape=result._logical_shape,
                 batch_first=result.batch_first,
                 packed_sizes=result._packed_sizes,
@@ -940,6 +1133,9 @@ class NestedTensor(torch.Tensor):
             "packed_sizes": getattr(self, "_packed_sizes", ()),
             "element_shapes": getattr(self, "_element_shapes", ()),
             "permutation": getattr(self, "_permutation", ()),
+            "ragged_dims": (
+                getattr(self, "_ragged_dims", ()) if getattr(self, "_ragged_dims_explicit", False) else None
+            ),
         }
 
     @classmethod
@@ -993,6 +1189,14 @@ class NestedTensor(torch.Tensor):
         result._packed_sizes = ctx["packed_sizes"]
         result._element_shapes = ctx["element_shapes"]
         result._permutation = tuple(int(dim) for dim in ctx["permutation"])
+        declared_ragged_dims = ctx.get("ragged_dims")
+        result._ragged_dims = cls._ragged_dims_from_packed_layout(
+            values,
+            len(result._permutation),
+            result._permutation,
+            declared_ragged_dims,
+        )
+        result._ragged_dims_explicit = declared_ragged_dims is not None
         result._invalidate_transient_caches()
         return result
 
@@ -1103,6 +1307,7 @@ class NestedTensor(torch.Tensor):
         values, offsets, shape_tensor, packed_sizes, element_shapes = self._pack(
             tensors,
             permutation=self._permutation if tensors else None,
+            ragged_dims=self._ragged_dims if self._ragged_dims_explicit else None,
         )
         values = type(self)._maybe_pin_values(values, self._pin_memory)
         self._values = values
@@ -1111,6 +1316,13 @@ class NestedTensor(torch.Tensor):
         self._logical_shape = self._compute_logical_shape(tensors, self.batch_first)
         self._packed_sizes = packed_sizes
         self._element_shapes = element_shapes
+        if not self._ragged_dims_explicit:
+            self._ragged_dims = type(self)._ragged_dims_from_packed_layout(
+                values,
+                int(shape_tensor.size(1)),
+                self._permutation,
+                None,
+            )
         self._validate_metadata()
 
     @property
@@ -1119,6 +1331,7 @@ class NestedTensor(torch.Tensor):
             level_sizes = type(self)._hierarchical_level_sizes_from_physical_shape(
                 self._physical_shape,
                 self._element_shapes,
+                self._ragged_dims,
             )
             if not level_sizes:
                 if self._element_shapes is None and self._packed_sizes is not None:
@@ -1140,7 +1353,7 @@ class NestedTensor(torch.Tensor):
 
     @property
     def _ragged_rank(self) -> int:
-        return len(self._hierarchical_offsets)
+        return len(self._ragged_dims)
 
     def _ragged_level_offsets(self, level: int = -1) -> Tensor:
         offsets = self._hierarchical_offsets
@@ -1256,28 +1469,28 @@ class NestedTensor(torch.Tensor):
 
     @property
     def _varying_dims(self) -> tuple[int, ...]:
-        ragged_rank = self._ragged_rank
-        if ragged_rank <= 0:
-            return ()
-        if self._permutation:
-            return tuple(int(dim) for dim in self._permutation[:ragged_rank])
-        varying_dims, _ = type(self)._pack_layout_meta(self._physical_shape, self._element_shapes)
-        return varying_dims
+        return self._ragged_dims
 
     @property
     def _static_dims(self) -> tuple[int, ...]:
-        ragged_rank = self._ragged_rank
-        if self._permutation:
-            return tuple(int(dim) for dim in self._permutation[ragged_rank:])
-        _, static_dims = type(self)._pack_layout_meta(self._physical_shape, self._element_shapes)
-        return static_dims
+        return tuple(int(dim) for dim in self._permutation[len(self._ragged_dims) :])
 
     def _has_same_structure(self, other: Self) -> bool:
-        if self.batch_first != other.batch_first or self._permutation != other._permutation:
+        if (
+            self.batch_first != other.batch_first
+            or self._permutation != other._permutation
+            or self._ragged_dims != other._ragged_dims
+        ):
             return False
         if self._element_shapes is not None and other._element_shapes is not None:
-            lhs_levels = type(self)._hierarchical_level_sizes_from_element_shapes(self._element_shapes)
-            rhs_levels = type(self)._hierarchical_level_sizes_from_element_shapes(other._element_shapes)
+            lhs_levels = type(self)._hierarchical_level_sizes_from_element_shapes(
+                self._element_shapes,
+                self._ragged_dims,
+            )
+            rhs_levels = type(self)._hierarchical_level_sizes_from_element_shapes(
+                other._element_shapes,
+                other._ragged_dims,
+            )
             if lhs_levels or rhs_levels:
                 return lhs_levels == rhs_levels
             return len(self) == len(other)
@@ -1441,7 +1654,12 @@ class NestedTensor(torch.Tensor):
                 [list(shape) + [0] * (max_ndim - len(shape)) for shape in element_shapes],
                 dtype=torch.long,
             )
-            return shape, self._packed_sizes_like(element_shapes), element_shapes
+            output_ragged_dims = None
+            if self._ragged_dims_explicit:
+                output_ragged_dims = tuple(
+                    len(prefix) + keep_dims.index(dim) for dim in self._ragged_dims if dim in keep_dims
+                )
+            return shape, self._packed_sizes_like(element_shapes, output_ragged_dims), element_shapes
 
         parts: list[Tensor] = []
         batch_size = len(self)
@@ -1657,6 +1875,7 @@ class NestedTensor(torch.Tensor):
             new_offsets,
             new_physical_shape,
             permutation=reference_permutation,
+            ragged_dims=ref._ragged_dims if ref._ragged_dims_explicit else None,
             batch_first=ref.batch_first,
             padding_value=ref.padding_value,
             mask_value=ref.mask_value,
@@ -1847,6 +2066,15 @@ class NestedTensor(torch.Tensor):
         changing this mapping.
         """
         return self._permutation
+
+    @property
+    def ragged_dims(self) -> tuple[int, ...]:
+        r"""Logical element dimensions represented by packed ragged levels.
+
+        The order is stable when ``ragged_dims`` was declared at construction,
+        even when all elements in a particular batch happen to have equal sizes.
+        """
+        return self._ragged_dims
 
     def concatenate(self) -> tuple[Tensor, tuple[torch.Size, ...]]:
         r"""
@@ -2083,7 +2311,11 @@ class NestedTensor(torch.Tensor):
 
         num_elements = [shape.numel() for shape in shapes]
         element_shapes = tuple(tuple(int(dim) for dim in shape) for shape in shapes)
-        varying_dims, static_dims = cls._pack_layout_from_element_shapes(element_shapes)
+        declared_ragged_dims = kwargs.get("ragged_dims")
+        if declared_ragged_dims is None:
+            varying_dims, static_dims = cls._pack_layout_from_element_shapes(element_shapes)
+        else:
+            varying_dims, static_dims = cls._pack_layout_from_declared_ragged_dims(element_shapes, declared_ragged_dims)
         permutation = varying_dims + static_dims
         identity_permutation = tuple(range(len(element_shapes[0]))) if element_shapes and element_shapes[0] else ()
 
@@ -2253,8 +2485,15 @@ class NestedTensor(torch.Tensor):
 
         return batch_leading[self._packed_dense_index(device=batch_leading.device)].contiguous()
 
-    def _packed_sizes_like(self, element_shapes: tuple[tuple[int, ...], ...]) -> tuple[int, ...]:
-        varying_dims, _ = type(self)._pack_layout_from_element_shapes(element_shapes)
+    def _packed_sizes_like(
+        self,
+        element_shapes: tuple[tuple[int, ...], ...],
+        ragged_dims: tuple[int, ...] | None = None,
+    ) -> tuple[int, ...]:
+        if ragged_dims is None:
+            varying_dims, _ = type(self)._pack_layout_from_element_shapes(element_shapes)
+        else:
+            varying_dims, _ = type(self)._pack_layout_from_declared_ragged_dims(element_shapes, ragged_dims)
         return tuple(type(self)._packed_size_from_shape(shape, varying_dims) for shape in element_shapes)
 
     def _packed_like_unchecked(self, packed_values: Tensor) -> Self:
@@ -2264,6 +2503,7 @@ class NestedTensor(torch.Tensor):
             self._offsets,
             self._physical_shape,
             permutation=self._permutation,
+            ragged_dims=self._ragged_dims if self._ragged_dims_explicit else None,
             batch_first=self.batch_first,
             padding_value=self.padding_value,
             mask_value=self.mask_value,
@@ -2333,6 +2573,7 @@ class NestedTensor(torch.Tensor):
             self._offsets,
             self._physical_shape,
             permutation=self._permutation,
+            ragged_dims=self._ragged_dims if self._ragged_dims_explicit else None,
             batch_first=self.batch_first,
             padding_value=self.padding_value,
             mask_value=self.mask_value,
@@ -2397,6 +2638,8 @@ class NestedTensor(torch.Tensor):
                 values,
                 self._offsets,
                 self._physical_shape,
+                permutation=self._permutation,
+                ragged_dims=self._ragged_dims if self._ragged_dims_explicit else None,
                 batch_first=self.batch_first,
                 padding_value=self.padding_value,
                 mask_value=self.mask_value,
@@ -2618,6 +2861,7 @@ class NestedTensor(torch.Tensor):
             offsets,
             new_physical_shape,
             permutation=self._permutation,
+            ragged_dims=self._ragged_dims if self._ragged_dims_explicit else None,
             batch_first=self.batch_first,
             padding_value=self.padding_value,
             mask_value=self.mask_value,
@@ -2627,6 +2871,61 @@ class NestedTensor(torch.Tensor):
             element_shapes=element_shapes,
             validate=False,
         )
+
+    def _empty_batch_like(self) -> Self:
+        r"""Return a source-derived empty batch without discarding element-rank topology."""
+        outer_size = list(self._logical_shape)
+        batch_dim = type(self)._batch_dim_from_logical_shape(self._logical_shape, self.batch_first)
+        outer_size[batch_dim] = 0
+        return type(self)._from_packed(
+            self._values.narrow(0, 0, 0),
+            self._offsets.new_zeros((1,)),
+            self._physical_shape[:0],
+            permutation=self._permutation,
+            ragged_dims=self._ragged_dims if self._ragged_dims_explicit else None,
+            batch_first=self.batch_first,
+            padding_value=self.padding_value,
+            mask_value=self.mask_value,
+            pin_memory=self._pin_memory,
+            outer_size=torch.Size(outer_size),
+            packed_sizes=(),
+            element_shapes=(),
+            validate=False,
+        )
+
+    def _meta_after_basic_index(self, rest: tuple, *, include_dtype: bool = True) -> Mapping:
+        r"""Return reconstruction metadata after basic indexing of physical element dimensions."""
+        meta = dict(self._meta(include_dtype=include_dtype))
+        if not self._ragged_dims_explicit:
+            return meta
+
+        old_to_new: dict[int, int] = {}
+        old_dim = 0
+        new_dim = 0
+        for selector in rest:
+            if selector is None:
+                new_dim += 1
+                continue
+            if old_dim >= self._physical_shape.size(1):
+                meta["ragged_dims"] = None
+                return meta
+            if isinstance(selector, int):
+                old_dim += 1
+                continue
+            if not isinstance(selector, slice):
+                # Advanced indexing can reorder dimensions; without explicit
+                # provenance it is safer to drop the declaration than guess.
+                meta["ragged_dims"] = None
+                return meta
+            old_to_new[old_dim] = new_dim
+            old_dim += 1
+            new_dim += 1
+        while old_dim < self._physical_shape.size(1):
+            old_to_new[old_dim] = new_dim
+            old_dim += 1
+            new_dim += 1
+        meta["ragged_dims"] = tuple(old_to_new[dim] for dim in self._ragged_dims if dim in old_to_new)
+        return meta
 
     def __getitem__(self, index: int | slice | list | tuple | Tensor | NestedTensor) -> Tensor | NestedTensor:
         r"""Retrieve element(s) by index, slice, list, tuple, or tensor mask."""
@@ -2638,6 +2937,8 @@ class NestedTensor(torch.Tensor):
                     raise IndexError(f"Boolean index has length {len(index)} but batch size is {len(self)}")
                 index = [i for i, flag in enumerate(index) if flag]
             storage = tuple(self._storage[index] if isinstance(index, slice) else [self._storage[i] for i in index])
+            if not storage and self._ragged_dims_explicit:
+                return self._empty_batch_like()
             return self.__class__(storage, **self._meta(include_dtype=True))
         if isinstance(index, tuple):
             if len(index) == 0:
@@ -2692,7 +2993,12 @@ class NestedTensor(torch.Tensor):
                 if rest:
                     rest_tuple = tuple(rest)
                     selected = tuple(t[rest_tuple] for t in selected)
-                return self.__class__(selected, **self._meta(include_dtype=True))
+                    meta = self._meta_after_basic_index(rest_tuple, include_dtype=True)
+                else:
+                    meta = self._meta(include_dtype=True)
+                if not selected and self._ragged_dims_explicit and not rest:
+                    return self._empty_batch_like()
+                return self.__class__(selected, **meta)
             raise ValueError(f"Unsupported batch index type {type(batch_index)}")
         if isinstance(index, NestedTensor):
             if len(self) != len(index):
@@ -2711,8 +3017,12 @@ class NestedTensor(torch.Tensor):
                     if index.numel() != len(self):
                         raise IndexError(f"Boolean index has length {index.numel()} but batch size is {len(self)}")
                     selected = tuple(self._storage[i] for i, flag in enumerate(index.tolist()) if bool(flag))
+                    if not selected and self._ragged_dims_explicit:
+                        return self._empty_batch_like()
                     return self.__class__(selected, **self._meta(include_dtype=True))
                 if index.dtype in (torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8):
+                    if index.numel() == 0 and self._ragged_dims_explicit:
+                        return self._empty_batch_like()
                     return self.__class__(
                         [self._storage[int(i)] for i in index.tolist()],
                         **self._meta(include_dtype=True),
@@ -2806,7 +3116,10 @@ class NestedTensor(torch.Tensor):
                 element_shapes[idx] = tuple(int(dim) for dim in value.shape)
                 self._element_shapes = tuple(element_shapes)
                 packed_sizes = list(self._packed_sizes)
-                packed_sizes[idx] = self._packed_sizes_like((self._element_shapes[idx],))[0]
+                packed_sizes[idx] = self._packed_sizes_like(
+                    (self._element_shapes[idx],),
+                    self._ragged_dims if self._ragged_dims_explicit else None,
+                )[0]
                 self._packed_sizes = tuple(packed_sizes)
             self._validate_metadata()
         elif isinstance(index, (slice, list)):
@@ -2997,6 +3310,7 @@ class NestedTensor(torch.Tensor):
                 "padding_value": self.padding_value,
                 "mask_value": self.mask_value,
                 "pin_memory": self._pin_memory,
+                "ragged_dims": self._ragged_dims if self._ragged_dims_explicit else None,
                 "device": self._values.device,
                 "dtype": self.dtype,
             }
@@ -3005,6 +3319,7 @@ class NestedTensor(torch.Tensor):
             "padding_value": self.padding_value,
             "mask_value": self.mask_value,
             "pin_memory": self._pin_memory,
+            "ragged_dims": self._ragged_dims if self._ragged_dims_explicit else None,
             "device": self._values.device,
         }
 
@@ -3014,6 +3329,7 @@ class NestedTensor(torch.Tensor):
             "_values": self._values,
             "_offsets": self._offsets,
             "_permutation": self._permutation,
+            "_ragged_dims": self._ragged_dims if self._ragged_dims_explicit else None,
             "_physical_shape": self._physical_shape,
             "_logical_shape": self._logical_shape,
             "batch_first": self.batch_first,
@@ -3029,6 +3345,14 @@ class NestedTensor(torch.Tensor):
         self._values = state["_values"]
         self._offsets = state["_offsets"].cpu()
         self._permutation = tuple(int(dim) for dim in state["_permutation"])
+        declared_ragged_dims = state["_ragged_dims"]
+        self._ragged_dims = type(self)._ragged_dims_from_packed_layout(
+            self._values,
+            len(self._permutation),
+            self._permutation,
+            declared_ragged_dims,
+        )
+        self._ragged_dims_explicit = declared_ragged_dims is not None
         self._physical_shape = state["_physical_shape"].cpu()
         self._logical_shape = state["_logical_shape"]
         self._set_runtime_config(
@@ -3054,6 +3378,7 @@ class NestedTensor(torch.Tensor):
             state["_offsets"].cpu(),
             state["_physical_shape"].cpu(),
             permutation=tuple(int(dim) for dim in state["_permutation"]),
+            ragged_dims=state["_ragged_dims"],
             batch_first=state["batch_first"],
             padding_value=state["padding_value"],
             mask_value=state["mask_value"],
@@ -3070,6 +3395,7 @@ class NestedTensor(torch.Tensor):
             self._offsets,
             self._physical_shape,
             permutation=self._permutation,
+            ragged_dims=self._ragged_dims if self._ragged_dims_explicit else None,
             batch_first=self.batch_first,
             padding_value=self.padding_value,
             mask_value=self.mask_value,
@@ -3087,6 +3413,7 @@ class NestedTensor(torch.Tensor):
             self._offsets.clone(),
             self._physical_shape.clone(),
             permutation=self._permutation,
+            ragged_dims=self._ragged_dims if self._ragged_dims_explicit else None,
             batch_first=self.batch_first,
             padding_value=self.padding_value,
             mask_value=self.mask_value,
@@ -3253,6 +3580,8 @@ class NestedTensor(torch.Tensor):
             self._values.pin_memory(),
             self._offsets,
             self._physical_shape,
+            permutation=self._permutation,
+            ragged_dims=self._ragged_dims if self._ragged_dims_explicit else None,
             batch_first=self.batch_first,
             padding_value=self.padding_value,
             mask_value=self.mask_value,
@@ -3617,6 +3946,8 @@ def _make_nested_tensor_from_packed(
     shape_tensor: Tensor,
     logical_shape: torch.Size,
     permutation: tuple[int, ...],
+    ragged_dims: tuple[int, ...],
+    ragged_dims_explicit: bool,
     batch_first: bool,
     padding_value: float,
     mask_value: bool,
@@ -3634,6 +3965,8 @@ def _make_nested_tensor_from_packed(
     result._values = values
     result._offsets = offsets
     result._permutation = permutation
+    result._ragged_dims = ragged_dims
+    result._ragged_dims_explicit = ragged_dims_explicit
     result._physical_shape = shape_tensor
     result._logical_shape = logical_shape
     result._set_runtime_config(
