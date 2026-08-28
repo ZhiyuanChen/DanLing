@@ -1277,6 +1277,162 @@ class TestFlattenUnflatten:
         reference = NT([torch.flatten(t, start_dim=2) for t in nt], **nt._meta())
         assert_close(output, reference)
 
+    @pytest.mark.parametrize("transposed", [False, True], ids=["canonical", "transposed"])
+    def test_unflatten_static_tail_uses_packed_path(self, transposed):
+        source = NestedTensor(
+            [torch.empty(2, 2, 8), torch.empty(3, 3, 8)],
+            ragged_dims=(0, 1),
+        )
+        if transposed:
+            source = source.transpose(1, 2)
+        leaf = torch.randn_like(source.concat, requires_grad=True)
+        source = source.packed_like(leaf)
+
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            output = source.unflatten(-1, (2, 4))
+
+        assert output.ragged_dims == ((1, 0) if transposed else (0, 1))
+        assert output.packed_dim_order == ((1, 0, 2, 3) if transposed else (0, 1, 2, 3))
+        assert output.concat.shape == (13, 2, 4)
+        assert output._persistent_ragged_offsets() is not None
+        assert_close(output.concat, leaf.unflatten(-1, (2, 4)))
+        output.concat.square().sum().backward()
+        assert_close(leaf.grad, 2 * leaf)
+
+    @pytest.mark.parametrize("transposed", [False, True], ids=["canonical", "transposed"])
+    def test_unflatten_static_tail_external_fake(self, transposed):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        source = NestedTensor(
+            [torch.empty(2, 2, 8), torch.empty(3, 3, 8)],
+            ragged_dims=(0, 1),
+        )
+        if transposed:
+            source = source.transpose(1, 2)
+        with fake_tensor_mod.FakeTensorMode():
+            fake_source = source.packed_like(torch.empty(13, 8, device="cuda"))
+            output = fake_source.unflatten(-1, (2, 4))
+
+        assert fake_tensor_mod.is_fake(output.concat)
+        assert output.concat.shape == (13, 2, 4)
+        assert output.ragged_dims == ((1, 0) if transposed else (0, 1))
+        assert output.packed_dim_order == ((1, 0, 2, 3) if transposed else (0, 1, 2, 3))
+
+    @pytest.mark.parametrize("transposed", [False, True], ids=["canonical", "transposed"])
+    def test_unflatten_static_tail_reuses_one_dynamic_fullgraph(self, transposed):
+        from torch._dynamo.testing import CompileCounter
+
+        counter = CompileCounter()
+        compiled = torch.compile(
+            lambda source: source.unflatten(-1, (2, 4)).concat.square().sum(),
+            backend=counter,
+            fullgraph=True,
+            dynamic=True,
+        )
+        for lengths in ((2, 3), (3, 5)):
+            template = NestedTensor(
+                [torch.empty(length, length, 8) for length in lengths],
+                ragged_dims=(0, 1),
+            )
+            if transposed:
+                template = template.transpose(1, 2)
+            values = torch.randn_like(template.concat, requires_grad=True)
+            source = template.packed_like(values)
+            with nested_execution_guard(
+                forbid_iteration=True,
+                forbid_storage_map=True,
+                forbid_eager_fallback=True,
+                forbid_padded_materialization=True,
+                forbid_dense_repack=True,
+            ):
+                loss = compiled(source)
+            loss.backward()
+            assert_close(values.grad, 2 * values)
+        assert counter.frame_count == 1
+
+    @pytest.mark.parametrize("transposed", [False, True], ids=["canonical", "transposed"])
+    def test_flatten_static_tail_uses_packed_path(self, transposed):
+        source = NestedTensor(
+            [torch.empty(2, 2, 2, 4), torch.empty(3, 3, 2, 4)],
+            ragged_dims=(0, 1),
+        )
+        if transposed:
+            source = source.transpose(1, 2)
+        leaf = torch.randn_like(source.concat, requires_grad=True)
+        source = source.packed_like(leaf)
+
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            output = source.flatten(-2)
+
+        assert output.ragged_dims == ((1, 0) if transposed else (0, 1))
+        assert output.packed_dim_order == ((1, 0, 2) if transposed else (0, 1, 2))
+        assert output.concat.shape == (13, 8)
+        assert output._persistent_ragged_offsets() is not None
+        assert_close(output.concat, leaf.flatten(-2))
+        output.concat.square().sum().backward()
+        assert_close(leaf.grad, 2 * leaf)
+
+    @pytest.mark.parametrize("transposed", [False, True], ids=["canonical", "transposed"])
+    def test_flatten_static_tail_external_fake(self, transposed):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        source = NestedTensor(
+            [torch.empty(2, 2, 2, 4), torch.empty(3, 3, 2, 4)],
+            ragged_dims=(0, 1),
+        )
+        if transposed:
+            source = source.transpose(1, 2)
+        with fake_tensor_mod.FakeTensorMode():
+            fake_source = source.packed_like(torch.empty(13, 2, 4, device="cuda"))
+            output = fake_source.flatten(-2)
+
+        assert fake_tensor_mod.is_fake(output.concat)
+        assert output.concat.shape == (13, 8)
+        assert output.ragged_dims == ((1, 0) if transposed else (0, 1))
+        assert output.packed_dim_order == ((1, 0, 2) if transposed else (0, 1, 2))
+
+    @pytest.mark.parametrize("transposed", [False, True], ids=["canonical", "transposed"])
+    def test_flatten_static_tail_reuses_one_dynamic_fullgraph(self, transposed):
+        from torch._dynamo.testing import CompileCounter
+
+        counter = CompileCounter()
+        compiled = torch.compile(
+            lambda source: source.flatten(-2).concat.square().sum(),
+            backend=counter,
+            fullgraph=True,
+            dynamic=True,
+        )
+        for lengths in ((2, 3), (3, 5)):
+            template = NestedTensor(
+                [torch.empty(length, length, 2, 4) for length in lengths],
+                ragged_dims=(0, 1),
+            )
+            if transposed:
+                template = template.transpose(1, 2)
+            values = torch.randn_like(template.concat, requires_grad=True)
+            source = template.packed_like(values)
+            with nested_execution_guard(
+                forbid_iteration=True,
+                forbid_storage_map=True,
+                forbid_eager_fallback=True,
+                forbid_padded_materialization=True,
+                forbid_dense_repack=True,
+            ):
+                loss = compiled(source)
+            loss.backward()
+            assert_close(values.grad, 2 * values)
+        assert counter.frame_count == 1
+
     def test_flatten_start_dim_zero_returns_tensor(self, device, float_dtype):
         nt = NestedTensor(
             [

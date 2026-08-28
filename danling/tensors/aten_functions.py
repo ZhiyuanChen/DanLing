@@ -3526,13 +3526,17 @@ def flatten(func, args, kwargs):
 
     start_adj = _translate_dim(source, start)
     end_adj = _translate_dim(source, end)
-    if start_adj == 0:
+    flattened_dims = tuple(range(start_adj, end_adj + 1))
+    if any(dim not in source._static_dims for dim in flattened_dims):
+        return per_element_fallback(func, (source, start_adj, end_adj), kwargs)
+    packed_positions = tuple(source._static_dims.index(dim) for dim in flattened_dims)
+    first_packed_position = packed_positions[0]
+    if packed_positions != tuple(range(first_packed_position, first_packed_position + len(flattened_dims))):
         return per_element_fallback(func, (source, start_adj, end_adj), kwargs)
 
-    if source._ragged_rank > 1:
-        return per_element_fallback(func, (source, start_adj, end_adj), kwargs)
-
-    out_values = func(source._values, start_adj, end_adj, **kwargs)
+    values_start = 1 + first_packed_position
+    values_end = values_start + len(flattened_dims) - 1
+    out_values = func(source._values, values_start, values_end, **kwargs)
     merged = torch.prod(source._physical_shape[:, start_adj : end_adj + 1], dim=1, keepdim=True)
     out_shape = torch.cat(
         (source._physical_shape[:, :start_adj], merged, source._physical_shape[:, end_adj + 1 :]),
@@ -3548,13 +3552,27 @@ def flatten(func, args, kwargs):
             for shape in source._element_shapes
         )
         out_packed_sizes = source._packed_sizes_like(out_element_shapes)
+    collapsed_rank = end_adj - start_adj
+    shifted_permutation: list[int] = []
+    flattened_inserted = False
+    for physical_dim in source._permutation:
+        if physical_dim < start_adj:
+            shifted_permutation.append(physical_dim)
+        elif physical_dim <= end_adj:
+            if not flattened_inserted:
+                shifted_permutation.append(start_adj)
+                flattened_inserted = True
+        else:
+            shifted_permutation.append(physical_dim - collapsed_rank)
     return _packed_with_shape(
         source,
         out_values,
         out_shape,
         source._logical_shape_from_physical_dims(physical_dims),
+        permutation=tuple(shifted_permutation),
         packed_sizes=out_packed_sizes,
         element_shapes=out_element_shapes,
+        preserve_ragged_offsets=True,
     )
 
 
@@ -3834,14 +3852,15 @@ def unflatten(func, args, kwargs):
         raise ValueError("unflatten at or before the batch dimension is not supported for NestedTensor.")
 
     dim_adj = _translate_dim(source, dim)
-    if dim_adj == 0:
-        # Unflattening ragged dim can produce shape patterns that may collapse to a
+    if dim_adj not in source._static_dims:
+        # Unflattening a ragged dim can produce shape patterns that may collapse to a
         # plain Tensor when uniform across batch; keep generic fallback semantics.
         return per_element_fallback(func, (source, dim_adj, sizes), kwargs)
 
-    out_values = func(source._values, dim_adj, sizes, **kwargs)
+    values_dim = 1 + source._static_dims.index(dim_adj)
+    out_values = func(source._values, values_dim, sizes, **kwargs)
     inserted_rank = out_values.dim() - source._values.dim() + 1
-    resolved_sizes = out_values.shape[dim_adj : dim_adj + inserted_rank]
+    resolved_sizes = out_values.shape[values_dim : values_dim + inserted_rank]
     inserted = source._physical_shape.new_tensor(resolved_sizes).unsqueeze(0).expand(source._physical_shape.size(0), -1)
     out_shape = torch.cat(
         (source._physical_shape[:, :dim_adj], inserted, source._physical_shape[:, dim_adj + 1 :]),
@@ -3857,13 +3876,23 @@ def unflatten(func, args, kwargs):
             shape[:dim_adj] + inserted_sizes + shape[dim_adj + 1 :] for shape in source._element_shapes
         )
         out_packed_sizes = source._packed_sizes_like(out_element_shapes)
+    shifted_permutation: list[int] = []
+    for physical_dim in source._permutation:
+        if physical_dim < dim_adj:
+            shifted_permutation.append(physical_dim)
+        elif physical_dim == dim_adj:
+            shifted_permutation.extend(range(dim_adj, dim_adj + inserted_rank))
+        else:
+            shifted_permutation.append(physical_dim + inserted_rank - 1)
     return _packed_with_shape(
         source,
         out_values,
         out_shape,
         source._logical_shape_from_physical_dims(physical_dims),
+        permutation=tuple(shifted_permutation),
         packed_sizes=out_packed_sizes,
         element_shapes=out_element_shapes,
+        preserve_ragged_offsets=True,
     )
 
 

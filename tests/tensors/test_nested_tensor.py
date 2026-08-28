@@ -586,7 +586,7 @@ class TestDeclaredRaggedDims:
         assert inferred_permuted.__tensor_flatten__()[1]["element_shapes"] is not None
         assert explicit_permuted.__tensor_flatten__()[1]["element_shapes"] is None
 
-    def test_explicit_nonleading_single_ragged_layout_is_tensor_backed(self):
+    def test_explicit_single_ragged_layouts_are_tensor_backed(self):
         sampled = NestedTensor(
             [torch.empty(2, 3, 5), torch.empty(2, 4, 5)],
             ragged_dims=(1,),
@@ -607,13 +607,14 @@ class TestDeclaredRaggedDims:
         assert sampled_context["packed_sizes"] is None
         assert sampled_context["element_shapes"] is None
 
-        # Preserve the established list-construction contract for ordinary
-        # leading single-ragged layouts. Tensor-backed ``packed_with_lengths``
-        # outputs continue to use their separate metadata-free route.
-        assert canonical._persistent_ragged_offsets() is None
+        canonical_offsets = canonical._persistent_ragged_offsets()
+        assert canonical_offsets is not None
+        assert canonical_offsets[0] is canonical._offsets
+        assert canonical._dynamo_propagated_dynamic_indices == {1}
+        assert canonical.concat._dynamo_propagated_dynamic_indices == {0}
         canonical_context = canonical.__tensor_flatten__()[1]
-        assert canonical_context["packed_sizes"] == (3, 4)
-        assert canonical_context["element_shapes"] == ((3, 5), (4, 5))
+        assert canonical_context["packed_sizes"] is None
+        assert canonical_context["element_shapes"] is None
 
     @pytest.mark.parametrize(
         ("kind", "ragged_dims", "packed_order", "packed_shape", "dynamic_dims"),
@@ -2632,7 +2633,7 @@ class TestStableAOTCacheHash:
         assert first_pair.shape == second_pair.shape
         assert first_pair._stable_hash_for_caching() == second_pair._stable_hash_for_caching()
 
-    def test_legacy_python_topology_remains_layout_specific(self):
+    def test_explicit_leading_topology_values_do_not_change_hash(self):
         first = NestedTensor(
             [torch.empty(length, 4) for length in (1, 4, 3)],
             ragged_dims=(0,),
@@ -2644,11 +2645,14 @@ class TestStableAOTCacheHash:
 
         first_context = first.__tensor_flatten__()[1]
         second_context = second.__tensor_flatten__()[1]
-        assert first_context["packed_sizes"] is not None
-        assert second_context["packed_sizes"] is not None
+        assert first_context["packed_sizes"] is None
+        assert second_context["packed_sizes"] is None
+        assert first_context["element_shapes"] is None
+        assert second_context["element_shapes"] is None
+        assert not torch.equal(first._offsets, second._offsets)
         assert first.shape == second.shape
         assert first.concat.shape == second.concat.shape
-        assert first._stable_hash_for_caching() != second._stable_hash_for_caching()
+        assert first._stable_hash_for_caching() == second._stable_hash_for_caching()
 
     def test_symbolic_fake_hash_does_not_read_topology_values(self):
         fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")

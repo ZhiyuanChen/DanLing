@@ -552,18 +552,11 @@ class NestedTensor(torch.Tensor):
         if not type(self)._is_tensor_backed_layout(self._permutation, declared_ragged_dims):
             return None
         if self._ragged_rank == 1:
-            metadata_is_tensor_only = (
-                instance_attrs.get("_packed_sizes", ()) is None and instance_attrs.get("_element_shapes", ()) is None
-            )
-            # An explicit non-leading ragged dimension is already first in packed order,
-            # so its one row-splits tensor and physical-shape tensor fully describe the
-            # layout.  Keep ordinary leading single-ragged list construction on its
-            # established Python-metadata path; ``packed_with_lengths`` outputs remain
-            # tensor-backed through ``metadata_is_tensor_only``.
-            explicit_nonleading_packed_prefix = self._ragged_dims[0] != 0
-            if metadata_is_tensor_only or explicit_nonleading_packed_prefix:
-                return (self._offsets,)
-            return None
+            # Every explicit single-ragged layout is already packed with that ragged
+            # dimension first. Its row splits and physical-shape tensor completely
+            # describe the topology, including the ordinary leading-ragged case. Do not
+            # retain legacy per-element Python shape caches in the compile contract.
+            return (self._offsets,)
         names = type(self)._ragged_offset_names(self._ragged_rank)
         if any(name not in instance_attrs for name in names):
             return None
