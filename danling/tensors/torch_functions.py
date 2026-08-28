@@ -1296,7 +1296,13 @@ def gather(input: NestedTensor, dim: int, index, *, sparse_grad: bool = False):
         True
     """
     if input._values.dim() > 1:
-        return torch.ops.aten.gather.default(input, dim, index, sparse_grad=sparse_grad)
+        # Run the packed handler HERE (func level), where ``input._values`` still carry autograd, rather
+        # than delegating to the aten op on the NestedTensor -- that re-enters ``__torch_dispatch__``,
+        # where autograd has already detached ``_values``, so the result would drop grad. Mirrors the
+        # same treatment in ``log_softmax``/``softmax``.
+        from .aten_functions import gather as _aten_gather
+
+        return _aten_gather(torch.ops.aten.gather.default, (input, dim, index), {"sparse_grad": sparse_grad})
 
     from .nested_tensor import NestedTensor
 
