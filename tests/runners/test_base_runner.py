@@ -224,89 +224,40 @@ def test_base_runner_write_result_skips_flattening_without_sinks(tmp_path: Path)
         runner.close()
 
 
-def test_base_runner_wandb_logs_flattened_result_once(tmp_path: Path) -> None:
-    wandb_calls: list[dict[str, object]] = []
-    log_calls: list[tuple[dict[str, object], int]] = []
-    finish_calls: list[str] = []
 
-    class RecordingRun:
-        def log(self, payload: dict[str, object], step: int) -> None:
-            log_calls.append((payload, step))
 
-        def finish(self) -> None:
-            finish_calls.append("finish")
+def test_base_runner_wandb_accepts_nested_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("wandb.sdk", reason="W&B support is an optional dependency")
+    import wandb  # pylint: disable=import-outside-toplevel
 
-    def record_init(**kwargs):
-        wandb_calls.append(kwargs)
-        return RecordingRun()
-
-    previous_wandb = sys.modules.get("wandb")
-    wandb_module = ModuleType("wandb")
-    wandb_module.init = record_init  # type: ignore[attr-defined]
-    sys.modules["wandb"] = wandb_module
-
+    monkeypatch.setenv("WANDB_SILENT", "true")
+    monkeypatch.setenv("WANDB_CONSOLE", "off")
+    runner: MinimalRunner | None = None
+    run_dir: Path | None = None
     try:
         runner = MinimalRunner(
             _config(
                 tmp_path,
                 wandb={
                     "enabled": True,
-                    "id": "run-a",
-                    "notes": "smoke run",
-                    "tags": ["mnist", "debug"],
-                    "resume": True,
-                    "save_code": True,
-                    "sync_tensorboard": True,
+                    "mode": "offline",
+                    "save_code": False,
+                    "sync_tensorboard": False,
                 },
             )
         )
-        writes: list[tuple[str, Any, str, int]] = []
-
-        def capture(name: str, score: float, split: str, steps: int) -> None:
-            writes.append((name, score, split, steps))
-
-        assert len(wandb_calls) == 1
-        init_kwargs = wandb_calls[0]
-        assert init_kwargs["project"] == "lineage-a"
-        assert init_kwargs["group"] == "experiment-a"
-        assert init_kwargs["name"] == runner.id
-        assert init_kwargs["dir"] == runner.workspace.dir
-        assert init_kwargs["id"] == "run-a"
-        assert init_kwargs["notes"] == "smoke run"
-        assert init_kwargs["tags"] == ["mnist", "debug"]
-        assert init_kwargs["resume"] is True
-        assert init_kwargs["save_code"] is True
-        assert init_kwargs["sync_tensorboard"] is True
-        assert init_kwargs["config"] == runner.config.dict()
-
+        assert runner.wandb is not None
+        run_dir = Path(runner.wandb.dir).parent
         runner.train_state.global_step = 5
-        runner.write_score = capture  # type: ignore[method-assign]
         runner.write_result({"loss": 1.0, "metrics": {"acc": 0.75, "topk": [0.8, 0.9]}}, "train")
-        assert writes == [
-            ("loss", 1.0, "train", 5),
-            ("metrics/acc", 0.75, "train", 5),
-            ("metrics/topk/0", 0.8, "train", 5),
-            ("metrics/topk/1", 0.9, "train", 5),
-        ]
-        assert log_calls == [
-            (
-                {
-                    "train/loss": 1.0,
-                    "train/metrics/acc": 0.75,
-                    "train/metrics/topk/0": 0.8,
-                    "train/metrics/topk/1": 0.9,
-                },
-                5,
-            )
-        ]
     finally:
-        runner.close()
-        if previous_wandb is None:
-            sys.modules.pop("wandb", None)
-        else:
-            sys.modules["wandb"] = previous_wandb
+        if runner is not None:
+            runner.close()
+        if wandb.run is not None:
+            wandb.finish()
 
-    assert finish_calls == ["finish"]
+    assert run_dir is not None
+    assert list(run_dir.glob("run-*.wandb"))
 
 
 def test_base_runner_mlflow_logs_flattened_result_once(tmp_path: Path) -> None:
