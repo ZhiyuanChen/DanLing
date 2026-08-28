@@ -4176,6 +4176,66 @@ def expand(input: NestedTensor, *sizes) -> NestedTensor:
     return NestedTensor((t.expand(*elem_sizes) for t in input._storage), **input._meta())
 
 
+def _normalize_new_size(shape: tuple, kwargs: dict | None = None) -> tuple:
+    r"""
+    Normalize ``new_*`` size arguments.
+
+    The dense methods accept the shape as varargs ints, as a single sequence, or by the
+    ``size=`` keyword, so all three have to resolve to the same tuple here. ``kwargs`` is
+    consumed in place when the shape arrived by keyword.
+    """
+    if not shape and kwargs is not None and "size" in kwargs:
+        shape = (kwargs.pop("size"),)
+    if len(shape) == 1 and isinstance(shape[0], (list, tuple, torch.Size)):
+        return tuple(int(dim) for dim in shape[0])
+    return tuple(int(dim) for dim in shape)
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.new_zeros)
+def new_zeros(input: NestedTensor, *shape, **kwargs) -> Tensor:
+    r"""
+    Create a plain tensor of the given size with this NestedTensor's dtype and device.
+    See also [torch.Tensor.new_zeros][].
+
+    The ``new_*`` family takes a fully specified shape of plain ints, which can never express
+    raggedness, so the result is an ordinary tensor and never a NestedTensor. Without this the
+    default path returns a degenerate subclass instance -- ``nt.new_zeros(())`` came back as a
+    NestedTensor of the batch length rather than a scalar, quietly turning scalar accumulators
+    into ragged tensors that drop grad.
+    """
+    return input._values.new_zeros(_normalize_new_size(shape, kwargs), **kwargs)
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.new_ones)
+def new_ones(input: NestedTensor, *shape, **kwargs) -> Tensor:
+    r"""Plain-tensor counterpart of [torch.Tensor.new_ones][]. See [new_zeros][] for why."""
+    return input._values.new_ones(_normalize_new_size(shape, kwargs), **kwargs)
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.new_empty)
+def new_empty(input: NestedTensor, *shape, **kwargs) -> Tensor:
+    r"""Plain-tensor counterpart of [torch.Tensor.new_empty][]. See [new_zeros][] for why."""
+    return input._values.new_empty(_normalize_new_size(shape, kwargs), **kwargs)
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.new_full)
+def new_full(input: NestedTensor, size=None, fill_value=None, **kwargs) -> Tensor:
+    r"""Plain-tensor counterpart of [torch.Tensor.new_full][]. See [new_zeros][] for why."""
+    if fill_value is None:
+        fill_value = kwargs.pop("fill_value")
+    resolved = _normalize_new_size(() if size is None else (size,), kwargs)
+    return input._values.new_full(resolved, fill_value, **kwargs)
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.new_empty_strided)
+def new_empty_strided(input: NestedTensor, size=None, stride=None, **kwargs) -> Tensor:
+    r"""Plain-tensor counterpart of [torch.Tensor.new_empty_strided][]. See [new_zeros][] for why."""
+    if stride is None:
+        stride = kwargs.pop("stride")
+    resolved = _normalize_new_size(() if size is None else (size,), kwargs)
+    return input._values.new_empty_strided(resolved, tuple(int(s) for s in stride), **kwargs)
+
+
 @NestedTensorFuncRegistry.implement(torch.transpose)
 def transpose(input: NestedTensor, dim0: int, dim1: int) -> NestedTensor:
     r"""

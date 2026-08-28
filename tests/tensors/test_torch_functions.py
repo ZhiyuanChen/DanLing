@@ -4410,6 +4410,36 @@ class TestStackFunction:
             stack([torch.ones(1)])
 
 
+class TestCreationFromExisting:
+    r"""``new_*`` take a fully specified shape, so they cannot produce a ragged result."""
+
+    def test_new_family_returns_plain_tensors(self, device, float_dtype):
+        nt = NT(
+            [
+                torch.randn(2, 3, device=device, dtype=float_dtype),
+                torch.randn(4, 3, device=device, dtype=float_dtype),
+            ]
+        )
+
+        scalar = nt.new_zeros(())
+        assert type(scalar) is torch.Tensor
+        assert scalar.shape == torch.Size([])
+
+        for output in (nt.new_zeros(2, 3), nt.new_ones([2, 3]), nt.new_empty((2, 3))):
+            assert type(output) is torch.Tensor
+            assert output.shape == torch.Size([2, 3])
+            assert output.dtype == nt.dtype and output.device == nt.device
+
+        full = nt.new_full((2, 3), 7.0)
+        assert type(full) is torch.Tensor
+        assert_close(full, torch.full((2, 3), 7.0, device=device, dtype=float_dtype))
+
+        strided = nt.new_empty_strided((2, 3), (3, 1))
+        assert type(strided) is torch.Tensor
+        assert strided.shape == torch.Size([2, 3])
+        assert strided.stride() == (3, 1)
+
+
 class TestUnaryBinaryMath:
 
     def test_unary_tensor_method_values_and_vjp(self):
