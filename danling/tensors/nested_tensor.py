@@ -55,6 +55,18 @@ except ImportError:
 from torch import nested
 
 
+@torch.library.custom_op("danling::_metadata_tensors_equal", mutates_args=())
+def _metadata_tensors_equal(lhs: Tensor, rhs: Tensor) -> Tensor:
+    r"""Compare metadata tensors opaquely, including shape and values."""
+    return lhs.new_tensor(torch.equal(lhs, rhs), dtype=torch.bool)
+
+
+@_metadata_tensors_equal.register_fake
+def _metadata_tensors_equal_fake(lhs: Tensor, rhs: Tensor) -> Tensor:
+    del rhs
+    return lhs.new_empty((), dtype=torch.bool)
+
+
 @torch.library.custom_op("danling::_square_row_splits", mutates_args=())
 def _square_row_splits(lengths: Tensor) -> Tensor:
     r"""Build the innermost CSR row splits for square ragged elements."""
@@ -700,13 +712,28 @@ class NestedTensor(torch.Tensor):
     ) -> bool:
         if lhs is rhs:
             return True
+        if lhs.dim() != rhs.dim():
+            return False
+        if _is_compiling() or _is_fake_tensor(lhs) or _is_fake_tensor(rhs):
+            from torch.fx.experimental.symbolic_shapes import statically_known_true
+
+            if any(statically_known_true(lhs_size != rhs_size) for lhs_size, rhs_size in zip(lhs.shape, rhs.shape)):
+                return False
+            if not runtime_assert and not _is_compiling() and all(
+                statically_known_true(lhs_size == rhs_size) for lhs_size, rhs_size in zip(lhs.shape, rhs.shape)
+            ):
+                # Standalone FakeTensor execution has nowhere to retain a runtime
+                # value assertion. Preserve the conservative eager-Fake contract
+                # when the shapes are already known; an unbacked shape still takes
+                # the opaque assertion path used by compiled reconstruction.
+                return False
+            torch._assert_async(_metadata_tensors_equal(lhs, rhs), message)
+            return True
         if lhs.shape != rhs.shape:
             return False
-        if runtime_assert or _is_compiling():
+        if runtime_assert:
             torch._assert_async(torch.all(lhs == rhs), message)
             return True
-        if _is_fake_tensor(lhs) or _is_fake_tensor(rhs):
-            return False
         return bool(torch.equal(lhs, rhs))
 
     @classmethod
