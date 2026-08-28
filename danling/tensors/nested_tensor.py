@@ -5085,6 +5085,36 @@ class NestedTensor(torch.Tensor):
         """
         return torch.where(condition, self, other)
 
+    def cumprod(self, dim: int, *, dtype: torch.dtype | None = None) -> NestedTensor:
+        r"""Compute cumulative products through the traceable packed segmented path.
+
+        The explicit method keeps gradients connected to prebuilt packed leaves across
+        AOTAutograd/Inductor. As with :meth:`cdist`, consume or return ``result.concat`` at a
+        compiled training boundary because PyTorch detaches newly returned wrapper children.
+        """
+        op = torch.ops.aten.cumprod.default
+        kwargs = {} if dtype is None else {"dtype": dtype}
+        return NestedTensorAtenRegistry[op](op, (self, dim), kwargs)
+
+
+_cumprod_eager = NestedTensor.cumprod
+
+
+@torch.compiler.substitute_in_graph(_cumprod_eager)
+def _traceable_cumprod(
+    self: NestedTensor,
+    dim: int,
+    *,
+    dtype: torch.dtype | None = None,
+) -> NestedTensor:
+    r"""Preserve packed-leaf autograd while tracing segmented cumprod."""
+    op = torch.ops.aten.cumprod.default
+    kwargs = {} if dtype is None else {"dtype": dtype}
+    return NestedTensorAtenRegistry[op](op, (self, dim), kwargs)
+
+
+NestedTensor.cumprod = _traceable_cumprod  # type: ignore[method-assign]
+
 
 _repeat_batch_eager = NestedTensor.repeat_batch
 

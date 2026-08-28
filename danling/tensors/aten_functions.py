@@ -2511,6 +2511,31 @@ def _segment_reduce_ragged_dim(
     return _format_segment_reduction(source, out, dim_adj, keepdim)
 
 
+def _packed_new_ragged_size(
+    source: NestedTensor, new_values: Tensor, dim_adj: int, new_ragged_size: int
+) -> NestedTensor:
+    r"""Rebuild a NestedTensor when its one ragged dim takes a uniform size.
+
+    Reconstructing from a list of elements instead would drop the packed permutation and, for
+    an empty batch, take the dtype from ``_meta()`` — which would hand ``topk`` an index tensor
+    in the *value* dtype.
+    """
+    batch_size = source._offsets.size(0) - 1
+    # Keep offsets on the same device as the source metadata (CPU by design).
+    new_offsets = torch.arange(batch_size + 1, dtype=torch.long, device=source._offsets.device) * new_ragged_size
+    new_physical_shape = source._physical_shape.clone()
+    if new_physical_shape.numel() > 0:
+        new_physical_shape[:, dim_adj] = new_ragged_size
+    return _packed_with_shape(
+        source,
+        new_values,
+        new_physical_shape,
+        source._logical_shape_from_components(replace_dims={int(dim_adj): int(new_ragged_size)}),
+        offsets=new_offsets,
+        permutation=source._permutation,
+    )
+
+
 def _packed_to_padded(source: NestedTensor, *, fill_value) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, int]:
     r"""Convert packed values [sum(L_i), ...] into padded [B, max(L_i), ...] plus gather indices."""
     lengths = source._offsets[1:] - source._offsets[:-1]
@@ -4207,6 +4232,20 @@ def _softmax_handler(func, args, kwargs):
 # ---------------------------------------------------------------------------
 
 
+def _packed_static_dim(source: NestedTensor, dim_adj: int) -> int | None:
+    r"""Return the packed axis for a static per-element dim, or None when it is ragged.
+
+    A per-element dim is only its own packed axis when the packed permutation is the identity,
+    so every handler that runs a dense kernel on ``_values`` has to map through the layout
+    rather than reusing ``dim_adj``. The ragged dims collapse into packed axis 0 and get None;
+    :func:`_has_single_packed_ragged_dim` decides whether the segmented path may claim them.
+    """
+    try:
+        return _physical_to_values_dim(source, dim_adj)
+    except (IndexError, RuntimeError):
+        return None
+
+
 def _sort_like_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
     r"""Return whether sort/argsort/topk stay on packed compile-safe paths."""
     source = args[0]
@@ -4221,7 +4260,7 @@ def _sort_like_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
         dim_adj = _translate_dim(source, dim)
     except (TypeError, ValueError, IndexError):
         return False
-    return dim_adj == 0 or (source._values.dim() > 1 and dim_adj > 0)
+    return _packed_static_dim(source, dim_adj) is not None or _has_single_packed_ragged_dim(source, dim_adj)
 
 
 def _cumulative_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
@@ -4240,7 +4279,8 @@ def _cumulative_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
         dim_adj = _translate_dim(source, dim)
     except (TypeError, ValueError, IndexError):
         return False
-    return source._values.dim() > 1 and dim_adj > 0
+    # The ragged path is a data-dependent log-step loop, so only the static path may compile.
+    return _packed_static_dim(source, dim_adj) is not None
 
 
 def _cumsum_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
@@ -4259,7 +4299,7 @@ def _cumsum_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
         dim_adj = _translate_dim(source, dim)
     except (TypeError, ValueError, IndexError):
         return False
-    return dim_adj == 0 or (source._values.dim() > 1 and dim_adj > 0)
+    return _packed_static_dim(source, dim_adj) is not None or _has_single_packed_ragged_dim(source, dim_adj)
 
 
 def _segmented_cumsum_values(source: NestedTensor, *extra_args, **kwargs) -> Tensor:
@@ -4293,6 +4333,16 @@ def _segmented_cumsum_values(source: NestedTensor, *extra_args, **kwargs) -> Ten
     correction = out_values.new_zeros(out_values.shape)
     correction = correction.index_add(0, safe_start_offsets, prefix_delta)
     return out_values - aten.cumsum.default(correction, 0, *extra_args, **kwargs)
+
+
+def _cumprod_result_dtype(values_dtype: torch.dtype, dtype: torch.dtype | None) -> torch.dtype:
+    r"""Return the dtype in which native per-segment cumprod must accumulate."""
+    if dtype is not None:
+        return dtype
+    if values_dtype.is_floating_point or values_dtype.is_complex:
+        return values_dtype
+    # aten.cumprod promotes integral and boolean inputs when dtype is omitted.
+    return torch.int64
 
 
 def _flip_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
@@ -4379,9 +4429,10 @@ def argsort(func, args, kwargs):
         return func(tensor, dim_value, descending, **kwargs)
 
     dim_adj = _translate_dim(source, dim)
-    if source._values.dim() > 1 and dim_adj > 0:
-        return source._packed_like_unchecked(_call_argsort(source._values, dim_adj))
-    if dim_adj == 0:
+    values_dim = _packed_static_dim(source, dim_adj)
+    if values_dim is not None:
+        return source._packed_like_unchecked(_call_argsort(source._values, values_dim))
+    if _has_single_packed_ragged_dim(source, dim_adj):
         # Sort the packed values in place of a padded rectangle; see ``sort`` below for detail.
         from .segmented import segmented_sort_perm
 
@@ -4409,7 +4460,7 @@ def argsort(func, args, kwargs):
 @NestedTensorAtenRegistry.implement(
     aten.cumprod.default,
     compile_safe=True,
-    compile_guard=_cumulative_compile_safe,
+    compile_guard=_cumsum_compile_safe,
 )
 @NestedTensorAtenRegistry.implement(
     aten.logcumsumexp.default,
@@ -4430,34 +4481,40 @@ def cumulative(func, args, kwargs):
         dim = kw_dim
     dim_adj = _translate_dim(source, dim)
     extra_args = args[2:] if len(args) > 2 else ()
-    if source._values.dim() > 1 and dim_adj > 0:
-        return source._packed_like_unchecked(func(source._values, dim_adj, *extra_args, **kwargs))
-    if dim_adj == 0:
+    values_dim = _packed_static_dim(source, dim_adj)
+    if values_dim is not None:
+        return source._packed_like_unchecked(func(source._values, values_dim, *extra_args, **kwargs))
+    if _has_single_packed_ragged_dim(source, dim_adj):
         if func is aten.cumsum.default:
             return source._packed_like_unchecked(_segmented_cumsum_values(source, *extra_args, **kwargs))
+        # cumsum returned above through its own packed path; only cumprod and logcumsumexp
+        # arrive here. Neither has a usable inverse, so they need a real segmented scan rather
+        # than the global-scan-and-correct trick cumsum uses.
+        dtype = kwargs.pop("dtype", None)
+        # Both schemas end at ``dtype``, which is keyword-only, so nothing else should arrive.
+        # Refuse rather than drop, so a schema change surfaces here instead of silently.
+        if extra_args or kwargs:
+            raise TypeError(
+                f"{func._schema.name.split('::')[-1]}() got unexpected arguments {extra_args!r}, {kwargs!r}"
+            )
+        if func is aten.cumprod.default:
+            from .segmented import segmented_cumprod
+
+            result_dtype = _cumprod_result_dtype(source._values.dtype, dtype)
+            # Cast before accumulating, not after: that is the dense op's contract, and the two
+            # orders are not numerically equivalent.
+            values = source._values.to(result_dtype)
+            return source._packed_like_unchecked(segmented_cumprod(values, source._offsets))
         if _is_compiling():
             _compile_unsupported(
                 f"{func._schema.name.split('::')[-1]}",
                 "ragged-dimension cumulative ops are eager-only under compile",
             )
-        # cumsum returned above through its own packed path; only cumprod and logcumsumexp
-        # arrive here. Neither has a usable inverse, so they need a real segmented scan rather
-        # than the global-scan-and-correct trick cumsum uses.
         from .segmented import segmented_scan
 
-        values = source._values
-        dtype = kwargs.pop("dtype", None)
-        if dtype is not None:
-            # Match the dense op's contract: cast the input before accumulating, not the
-            # accumulated result afterward — this is also what guards against overflow during
-            # accumulation, and the two orders are not numerically equivalent.
-            values = values.to(dtype=dtype)
-        if extra_args or kwargs:
-            raise TypeError(
-                f"{func._schema.name.split('::')[-1]}() got unexpected arguments {extra_args!r}, {kwargs!r}"
-            )
-        combine = torch.mul if func is aten.cumprod.default else torch.logaddexp
-        return source._packed_like_unchecked(segmented_scan(values, source.packed_batch_indices(), combine))
+        result_dtype = source._values.dtype if dtype is None else dtype
+        scanned = segmented_scan(source._values.to(result_dtype), source.packed_batch_indices(), torch.logaddexp)
+        return source._packed_like_unchecked(scanned)
     return per_element_fallback(func, (source, dim_adj, *extra_args), kwargs)
 
 
@@ -4495,10 +4552,11 @@ def cumulative_pair(func, args, kwargs):
             raise TypeError(f"{func._schema.name.split('::')[-1]}() missing required argument 'dim'")
         dim = kw_dim
     dim_adj = _translate_dim(source, dim)
-    if source._values.dim() > 1 and dim_adj > 0:
-        vals, idxs = func(source._values, dim_adj, **kwargs)
+    values_dim = _packed_static_dim(source, dim_adj)
+    if values_dim is not None:
+        vals, idxs = func(source._values, values_dim, **kwargs)
         return source._packed_like_unchecked(vals), source._packed_like_unchecked(idxs)
-    if dim_adj == 0:
+    if _has_single_packed_ragged_dim(source, dim_adj):
         if _is_compiling():
             _compile_unsupported(
                 f"{func._schema.name.split('::')[-1]}",
@@ -4511,10 +4569,12 @@ def cumulative_pair(func, args, kwargs):
             # popped above), so this should be unreachable; raise rather than drop silently.
             raise TypeError(f"{func._schema.name.split('::')[-1]}() got unexpected arguments {kwargs!r}")
         largest = func is aten.cummax.default
-        batch_idx = source.packed_batch_indices()
-        offsets = source._offsets.to(device=source._values.device, dtype=torch.long)
-        local_idx = torch.arange(source._values.shape[0], device=source._values.device) - offsets[batch_idx]
-        values, indices = segmented_arg_scan(source._values, batch_idx, local_idx, largest=largest)
+        values, indices = segmented_arg_scan(
+            source._values,
+            source.packed_batch_indices(),
+            source.packed_local_indices(device=source._values.device),
+            largest=largest,
+        )
         return source._packed_like_unchecked(values), source._packed_like_unchecked(indices)
     return per_element_fallback(func, (source, dim_adj), kwargs)
 
@@ -4858,10 +4918,11 @@ def sort(func, args, kwargs):
         return func(tensor, dim_value, descending, **kwargs)
 
     dim_adj = _translate_dim(source, dim)
-    if source._values.dim() > 1 and dim_adj > 0:
-        vals, idxs = _call_sort(source._values, dim_adj)
+    values_dim = _packed_static_dim(source, dim_adj)
+    if values_dim is not None:
+        vals, idxs = _call_sort(source._values, values_dim)
         return source._packed_like_unchecked(vals), source._packed_like_unchecked(idxs)
-    if dim_adj == 0:
+    if _has_single_packed_ragged_dim(source, dim_adj):
         # Sort the packed values in place of a padded rectangle. The segmented permutation is
         # stable, which is what the ``stable=True`` overload asks for and is harmless otherwise.
         from .segmented import segmented_sort_perm
@@ -4926,40 +4987,40 @@ def topk(func, args, kwargs):
     if source._ragged_rank > 1:
         # Multiple ragged levels collapse into one packed dim in ``_values``; take top-k per element instead.
         return per_element_fallback(func, (source, k, dim_adj, largest, sorted_output), kwargs)
-    values_dim = _physical_to_values_dim(source, dim_adj)
+    values_dim = _packed_static_dim(source, dim_adj)
     if values_dim is not None:
         vals, idxs = func(source._values, k, values_dim, largest, sorted_output, **kwargs)
         return (
             _packed_new_dim_size(source, vals, dim_adj, k),
             _packed_new_dim_size(source, idxs, dim_adj, k),
         )
-    if dim_adj == 0:
+    if _has_single_packed_ragged_dim(source, dim_adj):
         # Sort the packed segments instead of padding to a rectangle, then keep the first k of
         # each. k is checked against the shortest segment because a per-segment k has no dense
         # meaning. ``topk`` stays eager-only under compile (see ``_topk_compile_safe``) because
         # that check is data-dependent.
         from .segmented import segmented_sort_perm
 
-        lengths = source._offsets[1:] - source._offsets[:-1]
+        offsets = source._offsets.to(device=source._values.device, dtype=torch.long)
+        lengths = offsets[1:] - offsets[:-1]
         k_value = int(k)
-        if lengths.numel() > 0 and not _is_fake_tensor(source._values):
+        if lengths.numel() > 0 and not (_is_compiling() or _is_fake_tensor(source._values)):
             shortest = int(lengths.min())
             if k_value > shortest:
                 raise RuntimeError(f"selected index k out of range: k={k_value} exceeds shortest segment {shortest}")
 
-        batch_idx = source.packed_batch_indices()
-        perm, local = segmented_sort_perm(source._values, source._offsets, batch_idx, descending=largest)
-        positions = torch.arange(perm.shape[0], device=perm.device) - source._offsets.to(perm.device)[batch_idx]
-        keep = positions < k_value
-        # Every output segment now has the uniform width k, so the result is a plain dense
-        # stack rather than anything ragged. ``source._meta()`` is kept anyway: an explicit
-        # topology declares which dims MAY vary, not which do on this particular batch.
-        tail = source._values.shape[1:]
-        values = torch.gather(source._values, 0, perm)[keep].view(len(source), k_value, *tail)
-        indices = local[keep].view(len(source), k_value, *tail)
+        perm, local = segmented_sort_perm(
+            source._values, source._offsets, source.packed_batch_indices(), descending=largest
+        )
+        # Every output segment now has the uniform width k. Selecting the survivors by their
+        # offsets keeps the output shape a function of k alone; a boolean mask over the sorted
+        # rows would instead make it depend on the data, which no graph can trace.
+        keep = (offsets[:-1].view(-1, 1) + torch.arange(k_value, device=perm.device)).reshape(-1)
         return (
-            type(source)(list(values), **source._meta()),
-            type(source)(list(indices), **source._meta()),
+            _packed_new_ragged_size(
+                source, torch.gather(source._values, 0, perm).index_select(0, keep), dim_adj, k_value
+            ),
+            _packed_new_ragged_size(source, local.index_select(0, keep), dim_adj, k_value),
         )
     return per_element_fallback(func, (source, k, dim_adj, largest, sorted_output), kwargs)
 

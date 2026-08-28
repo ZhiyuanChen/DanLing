@@ -23,7 +23,7 @@ import pytest
 import torch
 
 from danling.tensors import NestedTensor
-from danling.tensors.segmented import segmented_arg_scan, segmented_scan, segmented_sort_perm
+from danling.tensors.segmented import align_rows, segmented_arg_scan, segmented_scan, segmented_sort_perm
 
 
 def lengths_case(shape_fn):
@@ -52,7 +52,7 @@ class TestSegmentedSortPerm:
         torch.testing.assert_close(nested.concat[permutation], expected_values)
 
     def test_sorts_each_static_tail_column(self):
-        nested = lengths_case(lambda length: (length,))
+        nested = lengths_case(lambda length: (length, 4))
         _, local_indices = segmented_sort_perm(
             nested.concat,
             nested.packed_offsets(),
@@ -71,6 +71,15 @@ class TestSegmentedSortPerm:
         assert torch.equal(local_indices, torch.cat([torch.arange(len(element)) for element in nested]))
 
 
+class TestAlignRows:
+
+    def test_broadcasts_by_row_across_a_static_tail(self):
+        rows = torch.arange(5)
+        aligned = align_rows(rows, torch.randn(5, 5, 2))
+
+        assert aligned.shape == (5, 5, 2)
+        assert torch.equal(aligned, rows.view(5, 1, 1).expand(5, 5, 2))
+        assert torch.equal(align_rows(rows, torch.randn(5)), rows)
 
 
 class TestSegmentedScan:
@@ -84,7 +93,7 @@ class TestSegmentedScan:
         ids=["cumprod", "logcumsumexp"],
     )
     def test_matches_per_element_scan(self, combine, reference):
-        nested = lengths_case(lambda length: (length,))
+        nested = lengths_case(lambda length: (length, 3))
 
         output = segmented_scan(nested.concat, nested.packed_batch_indices(), combine)
 
@@ -92,7 +101,7 @@ class TestSegmentedScan:
 
     @pytest.mark.parametrize("largest", [False, True], ids=["cummin", "cummax"])
     def test_arg_scan_matches_values_and_indices(self, largest):
-        nested = lengths_case(lambda length: (length,))
+        nested = lengths_case(lambda length: (length, 4))
 
         values, indices = segmented_arg_scan(
             nested.concat,
@@ -106,9 +115,12 @@ class TestSegmentedScan:
         assert torch.equal(indices, torch.cat([reference.indices for reference in references]))
 
     @pytest.mark.parametrize("largest", [False, True], ids=["cummin", "cummax"])
-    def test_arg_scan_matches_tie_semantics(self, largest):
+    def test_arg_scan_matches_ties_and_nan_semantics(self, largest):
         nested = NestedTensor(
-            [torch.tensor([0.0, 0.0, 2.0]), torch.tensor([3.0, 3.0, 1.0])]
+            [
+                torch.tensor([0.0, 0.0, float("nan"), 2.0]),
+                torch.tensor([3.0, 3.0, 1.0]),
+            ]
         )
 
         values, indices = segmented_arg_scan(
@@ -119,13 +131,20 @@ class TestSegmentedScan:
         )
 
         references = [(torch.cummax(element, 0) if largest else torch.cummin(element, 0)) for element in nested]
-        torch.testing.assert_close(values, torch.cat([reference.values for reference in references]))
+        torch.testing.assert_close(
+            values,
+            torch.cat([reference.values for reference in references]),
+            equal_nan=True,
+        )
         assert torch.equal(indices, torch.cat([reference.indices for reference in references]))
 
     def test_empty_input(self):
-        empty = torch.zeros(0)
+        empty = torch.zeros(0, 3)
         batch = torch.zeros(0, dtype=torch.long)
 
         scanned = segmented_scan(empty, batch, torch.mul)
+        values, indices = segmented_arg_scan(empty, batch, batch, largest=True)
 
-        assert scanned.shape == (0,)
+        assert scanned.shape == (0, 3)
+        assert values.shape == (0, 3)
+        assert indices.shape == (0, 3)

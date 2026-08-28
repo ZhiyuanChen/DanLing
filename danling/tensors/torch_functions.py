@@ -1320,7 +1320,26 @@ def gather(input: NestedTensor, dim: int, index, *, sparse_grad: bool = False):
     return NestedTensor(torch.gather(t, dim_adj, index) for t in input._storage)
 
 
-def inverse_permutation(input: NestedTensor, dim: int = -1) -> NestedTensor:
+def _require_packed_ragged_dim(input: NestedTensor, dim: int | None, name: str) -> None:
+    r"""Refuse anything but the ragged dimension of a layout the packed path can serve.
+
+    ``dim`` is optional because the ragged dimension is the only one these operators accept,
+    and no fixed default finds it: ``-1`` is the batch dimension under ``batch_first=False``
+    and a static dimension under a declared ``ragged_dims=(1,)``.
+    """
+    from .aten_functions import _has_single_packed_ragged_dim
+
+    ragged_dims = input._ragged_dims
+    if len(ragged_dims) != 1:
+        raise ValueError(f"{name} applies to the ragged dimension, but {ragged_dims} of them vary")
+    ragged_dim = ragged_dims[0]
+    if dim is not None and _translate_dim(input, dim) != ragged_dim:
+        raise ValueError(f"{name} applies to the ragged dimension")
+    if not _has_single_packed_ragged_dim(input, ragged_dim):
+        raise ValueError(f"{name} requires the ragged dimension to lead the packed layout")
+
+
+def inverse_permutation(input: NestedTensor, dim: int | None = None) -> NestedTensor:
     r"""
     Invert a per-sample permutation.
 
@@ -1330,15 +1349,18 @@ def inverse_permutation(input: NestedTensor, dim: int = -1) -> NestedTensor:
     This is one scatter. Writing it as ``argsort(argsort(x))`` costs two sorts for the same
     result, which is why it is worth its own operator.
 
-    Every element must actually be a permutation of ``range(n_i)``; a repeated or missing index
-    is detected and raises ``RuntimeError`` rather than silently returning uninitialized memory.
+    Every element must actually be a permutation of ``range(n_i)``; a repeated, missing or
+    negative index is detected and raises ``RuntimeError`` rather than silently returning
+    uninitialized memory. An element rank above one is inverted per column, matching how
+    ``sort`` and ``argsort`` treat a static tail.
 
     Args:
-        input: Per-sample permutations, one per element.
-        dim: The ragged dimension. Only the ragged dimension is meaningful here.
+        input: Per-sample permutations, one per element. Must have an integer dtype: coercing
+            a float index would defeat the bijection check rather than report it.
+        dim: The ragged dimension, or None for whichever dimension that is.
 
     Returns:
-        NestedTensor: The inverse permutations, with the input's structure.
+        NestedTensor: The inverse permutations, in the input's dtype and structure.
 
     Examples:
         >>> import torch
@@ -1348,22 +1370,28 @@ def inverse_permutation(input: NestedTensor, dim: int = -1) -> NestedTensor:
         [[1, 2, 0], [1, 0]]
     """
     from .aten_functions import _is_fake_tensor
+    from .segmented import align_rows
 
-    if _translate_dim(input, dim) != 0:
-        raise ValueError("inverse_permutation applies to the ragged dimension")
-    batch_idx = input.packed_batch_indices()
-    base = input._offsets.to(batch_idx.device)[batch_idx]
-    positions = torch.arange(input._values.shape[0], device=input._values.device) - base
+    _require_packed_ragged_dim(input, dim, "inverse_permutation")
+    values = input._values
+    if values.dtype.is_floating_point or values.dtype.is_complex or values.dtype is torch.bool:
+        raise TypeError(f"inverse_permutation requires an integer index dtype, got {values.dtype}")
+    offsets = input._offsets.to(device=values.device, dtype=torch.long)
+    base = align_rows(offsets[input.packed_batch_indices(device=values.device)], values)
+    positions = align_rows(input.packed_local_indices(device=values.device), values)
     # A sentinel of -1 turns a repeated (and therefore also a missing) index into a slot that
-    # is never written -- an out-of-range index is already caught by scatter_'s own bounds check.
-    inverse = torch.full_like(positions, -1)
-    inverse.scatter_(0, input._values.long() + base, positions)
-    if inverse.numel() > 0 and not _is_fake_tensor(input._values) and bool((inverse < 0).any().item()):
+    # is never written -- an out-of-range index is already caught by scatter_'s own bounds
+    # check. A negative index is not: it lands in the segment before its own, where it can
+    # fill exactly the slot some other segment overshot, so it is rejected up front.
+    inverse = torch.full_like(base, -1)
+    inverse.scatter_(0, values.long() + base, positions)
+    checkable = inverse.numel() > 0 and not (_is_compiling() or _is_fake_tensor(values))
+    if checkable and bool(((inverse < 0) | (values < 0)).any().item()):
         raise RuntimeError("inverse_permutation: input must be a permutation of range(n_i) per sample")
-    return input._packed_like_unchecked(inverse.to(input._values.dtype))
+    return input._packed_like_unchecked(inverse.to(values.dtype))
 
 
-def rank(input: NestedTensor, dim: int = -1, *, descending: bool = False) -> NestedTensor:
+def rank(input: NestedTensor, dim: int | None = None, *, descending: bool = False) -> NestedTensor:
     r"""
     Position of each element within its own sample.
 
@@ -1373,11 +1401,12 @@ def rank(input: NestedTensor, dim: int = -1, *, descending: bool = False) -> Nes
 
     Args:
         input: The values to rank.
-        dim: The ragged dimension.
+        dim: The ragged dimension, or None for whichever dimension that is.
         descending: Rank largest first.
 
     Returns:
-        NestedTensor: Per-sample ranks, a permutation of ``range(n_i)`` for every element.
+        NestedTensor: Per-sample int64 ranks, a permutation of ``range(n_i)`` for every element,
+        ranked per column when the elements carry a static tail.
 
     Examples:
         >>> import torch
@@ -1388,18 +1417,17 @@ def rank(input: NestedTensor, dim: int = -1, *, descending: bool = False) -> Nes
     """
     from .segmented import segmented_sort_perm
 
-    if _translate_dim(input, dim) != 0:
-        raise ValueError("rank applies to the ragged dimension")
+    _require_packed_ragged_dim(input, dim, "rank")
     _, local = segmented_sort_perm(
         input._values,
         input._offsets,
-        input.packed_batch_indices(),
+        input.packed_batch_indices(device=input._values.device),
         descending=descending,
     )
     return inverse_permutation(input._packed_like_unchecked(local), dim=dim)
 
 
-def cumcount(input: NestedTensor, dim: int = -1) -> NestedTensor:
+def cumcount(input: NestedTensor, dim: int | None = None) -> NestedTensor:
     r"""
     Ordinal of each element within its own sample.
 
@@ -1409,10 +1437,11 @@ def cumcount(input: NestedTensor, dim: int = -1) -> NestedTensor:
 
     Args:
         input: Any NestedTensor; only its layout is read.
-        dim: The ragged dimension.
+        dim: The ragged dimension, or None for whichever dimension that is.
 
     Returns:
-        NestedTensor: Per-sample positions, with the input's structure and an integer dtype.
+        NestedTensor: Per-sample int64 positions, with the input's structure. A static tail
+        repeats the row's position across every column, so the result matches the input's rank.
 
     Examples:
         >>> import torch
@@ -1421,12 +1450,12 @@ def cumcount(input: NestedTensor, dim: int = -1) -> NestedTensor:
         >>> [element.tolist() for element in cumcount(nested, dim=1)]
         [[0, 1, 2], [0, 1]]
     """
-    if _translate_dim(input, dim) != 0:
-        raise ValueError("cumcount applies to the ragged dimension")
-    batch_idx = input.packed_batch_indices()
-    offsets = input._offsets.to(device=batch_idx.device, dtype=torch.long)
-    positions = torch.arange(input._values.shape[0], device=input._values.device) - offsets[batch_idx]
-    return input._packed_like_unchecked(positions)
+    from .segmented import align_rows
+
+    _require_packed_ragged_dim(input, dim, "cumcount")
+    values = input._values
+    positions = align_rows(input.packed_local_indices(device=values.device), values)
+    return input._packed_like_unchecked(positions.clone())
 
 
 @NestedTensorFuncRegistry.implement(torch.index_add)
@@ -4371,6 +4400,16 @@ def cdist(x1, x2, p: float = 2.0, compute_mode: str = "use_mm_for_euclid_dist_if
     meta = dict(reference._meta())
     meta["ragged_dims"] = _cdist_ragged_dims(x1 if x1_nested else None, x2 if x2_nested else None, parts)
     return NestedTensor(parts, **meta)
+
+
+@NestedTensorFuncRegistry.implement(torch.cumprod)
+def cumprod(input: NestedTensor, dim: int, *, dtype: torch.dtype | None = None):
+    r"""Compute cumulative products, dispatching ragged dimensions without padding.
+
+    ``NestedTensor.cumprod`` is the traceable training spelling; this built-in spelling keeps
+    eager behavior and autograd aligned with it.
+    """
+    return input.cumprod(dim, dtype=dtype)
 
 
 def _cdist_ragged_dims(x1, x2, parts) -> tuple[int, ...] | None:
