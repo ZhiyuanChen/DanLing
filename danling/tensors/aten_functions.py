@@ -1245,8 +1245,14 @@ def gather(func, args, kwargs):
             )
 
         if dim_adj > 0 and source._values.dim() > 1 and source._has_same_structure(index):
-            out_values = func(source._values, dim_adj, index._values, sparse_grad=sparse_grad, **kwargs)
-            return _packed_with_shape(source, out_values, index._physical_shape, index._logical_shape)
+            # Gather runs on the packed values, so a per-element dim has to be mapped onto its packed
+            # axis: with more than one ragged level the collapsed ragged block shifts the later dims
+            # down, and passing the per-element index straight through indexes the wrong axis. A
+            # varying dim has no single packed axis, so those fall through to the paths below.
+            values_dim = _physical_to_values_dim(source, dim_adj)
+            if values_dim is not None:
+                out_values = func(source._values, values_dim, index._values, sparse_grad=sparse_grad, **kwargs)
+                return _packed_with_shape(source, out_values, index._physical_shape, index._logical_shape)
 
         if dim_adj == 0 and source._values.dim() > 1 and index._values.dim() > 1:
             padded, lengths, lengths_dev, _, _, _ = _packed_to_padded(source, fill_value=0)
