@@ -370,6 +370,20 @@ canonical tensor-backed metadata without a copy. It intentionally has no
 device or dtype conversion arguments; consumers that need another placement or
 integer width can apply `.to(...)` explicitly.
 
+`torch.repeat_interleave(input, repeats, dim=batch_dim)` and
+`input.repeat_interleave(repeats, dim=batch_dim)` accept a non-negative integer
+`repeats` and duplicate complete logical batch elements in their original
+order. They repeat packed sample segments and every tensor-backed ragged
+row-split level directly, without padding or per-element Python dispatch.
+`input.repeat_batch(repeats)` is the equivalent explicit batch operation and
+the canonical AOTAutograd-safe entry for compiled model code. Explicit single-
+and multi-ragged layouts can reuse one
+`torch.compile(fullgraph=True, dynamic=True)` graph across different ragged
+lengths, and gradients from repeated samples accumulate into the original
+packed values. Tensor-valued batch repeat counts are intentionally unsupported;
+non-batch dimensions retain ordinary per-element `torch.repeat_interleave`
+semantics.
+
 `packed_dim_order` exposes the read-only mapping from logical element dimensions
 to physical packed-storage order when an operator needs to validate its layout.
 

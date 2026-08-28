@@ -3744,14 +3744,124 @@ def permute(input: NestedTensor, dims: Sequence[int]) -> NestedTensor:
     return _aten_permute(torch.ops.aten.permute.default, (input, list(normalized_dims)), {})
 
 
+def _offsets_from_packed_lengths(lengths: Tensor) -> Tensor:
+    r"""Build zero-prefixed packed offsets without reading length values in Python."""
+    return F.pad(lengths.cumsum(0), (1, 0))
+
+
+def _repeat_packed_sample_segments(values: Tensor, sample_offsets: Tensor, repeats: int) -> Tensor:
+    r"""Repeat complete variable-length sample segments with one packed gather."""
+    if repeats == 0:
+        return values[:0]
+    sample_lengths = sample_offsets[1:] - sample_offsets[:-1]
+    output_lengths = sample_lengths.repeat_interleave(repeats)
+    output_offsets = _offsets_from_packed_lengths(output_lengths)
+    source_starts = sample_offsets[:-1].repeat_interleave(repeats)
+    adjustments = source_starts - output_offsets[:-1]
+    output_size = values.shape[0] * repeats
+    gather = torch.arange(output_size, dtype=torch.long, device=values.device)
+    gather = gather + torch.repeat_interleave(
+        adjustments.to(device=values.device),
+        output_lengths.to(device=values.device),
+        output_size=output_size,
+    )
+    return values.index_select(0, gather)
+
+
+def _repeat_packed_ragged_offsets(
+    source_offsets: tuple[Tensor, ...],
+    repeats: int,
+) -> tuple[Tensor, ...]:
+    r"""Repeat every sample subtree in a tensor-backed ragged hierarchy."""
+    sample_parent_offsets = torch.arange(
+        source_offsets[0].numel(),
+        dtype=source_offsets[0].dtype,
+        device=source_offsets[0].device,
+    )
+    output_offsets = []
+    for level_offsets in source_offsets:
+        level_sizes = level_offsets[1:] - level_offsets[:-1]
+        output_sizes = _repeat_packed_sample_segments(level_sizes, sample_parent_offsets, repeats)
+        output_offsets.append(_offsets_from_packed_lengths(output_sizes))
+        sample_parent_offsets = level_offsets.index_select(0, sample_parent_offsets.to(torch.long))
+    return tuple(output_offsets)
+
+
+def _repeat_interleave_packed_batch(
+    input: NestedTensor,
+    repeats: int,
+    *,
+    output_size: int | None,
+) -> NestedTensor:
+    r"""Repeat the logical batch axis while keeping every element padding-free."""
+    if not isinstance(repeats, int) or isinstance(repeats, bool):
+        raise TypeError("NestedTensor batch repeat_interleave requires repeats to be an int")
+    if repeats < 0:
+        raise RuntimeError("Repeats must be non-negative")
+    expected_output_size = len(input) * repeats
+    if output_size is not None and output_size != expected_output_size:
+        raise RuntimeError(
+            f"repeat_interleave: Invalid output_size, expected {expected_output_size} but got {output_size}"
+        )
+
+    source_offsets = input._offsets
+    output_values = _repeat_packed_sample_segments(input._values, source_offsets, repeats)
+    packed_lengths = source_offsets[1:] - source_offsets[:-1]
+    output_offsets = _offsets_from_packed_lengths(packed_lengths.repeat_interleave(repeats))
+    output_shape = input._physical_shape.repeat_interleave(repeats, dim=0)
+
+    source_ragged_offsets = input._persistent_ragged_offsets()
+    if source_ragged_offsets is None and input._ragged_rank == 1:
+        source_ragged_offsets = (source_offsets,)
+    elif source_ragged_offsets is None and input._ragged_rank > 1:
+        if _is_compiling():
+            _compile_unsupported(
+                "torch.repeat_interleave",
+                "compiled multi-ragged batch repeats require an explicit tensor-backed layout",
+            )
+        source_ragged_offsets = input._hierarchical_offsets
+
+    output_ragged_offsets = None
+    declared_ragged_dims = None
+    if source_ragged_offsets:
+        declared_ragged_dims = tuple(int(dim) for dim in input._ragged_dims)
+        output_ragged_offsets = _repeat_packed_ragged_offsets(source_ragged_offsets, repeats)
+        if len(output_ragged_offsets) == 1:
+            output_ragged_offsets = (output_offsets,)
+    elif _is_compiling():
+        _compile_unsupported(
+            "torch.repeat_interleave",
+            "compiled batch repeats require at least one ragged dimension",
+        )
+
+    logical_shape = list(input._logical_shape)
+    logical_shape[_get_batch_dim(input)] = expected_output_size
+    return type(input)._from_packed(
+        output_values,
+        output_offsets,
+        output_shape,
+        permutation=input._permutation,
+        ragged_dims=declared_ragged_dims,
+        batch_first=input.batch_first,
+        padding_value=input.padding_value,
+        mask_value=input.mask_value,
+        pin_memory=input._pin_memory,
+        outer_size=torch.Size(logical_shape),
+        ragged_offsets=output_ragged_offsets,
+        validate=False,
+        materialize_python_metadata=False,
+    )
+
+
 @NestedTensorFuncRegistry.implement(torch.repeat_interleave, compile_safe=True)
 @NestedTensorFuncRegistry.implement(torch.Tensor.repeat_interleave, compile_safe=True)
 def repeat_interleave(input, repeats, dim=None, *, output_size=None):
     r"""
     Apply [torch.repeat_interleave][] to each element of a NestedTensor.
 
-    ``dim=None`` flattens each element before repeating. Other dims are
-    translated to skip the batch dimension.
+    ``dim=None`` flattens each element before repeating. A scalar integer repeat
+    on the logical batch dimension duplicates complete packed samples. Other
+    dimensions are translated to skip the batch dimension.
     """
     from .aten_functions import _packed_new_dim_size
 
@@ -3762,6 +3872,8 @@ def repeat_interleave(input, repeats, dim=None, *, output_size=None):
             input, lambda t: torch.repeat_interleave(t, repeats, dim=None, output_size=output_size)
         )
     dim_norm = _normalize_dim(dim, input.dim())
+    if dim_norm == _get_batch_dim(input):
+        return _repeat_interleave_packed_batch(input, repeats, output_size=output_size)
     dim_adj = _translate_non_batch_dim(input, dim, name="repeat_interleave")
     if dim_adj in input._static_dims and isinstance(repeats, int):
         new_values = torch.repeat_interleave(input._values, repeats, dim=dim_adj, output_size=output_size)

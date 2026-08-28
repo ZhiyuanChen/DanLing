@@ -208,6 +208,10 @@ class NestedTensor(torch.Tensor):
 
     # Construction & Initialization
 
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        cls._compiled_packed_constructor = staticmethod(_make_nested_tensor_from_packed_constructor(cls))
+
     @staticmethod
     def __new__(
         cls,
@@ -449,6 +453,12 @@ class NestedTensor(torch.Tensor):
             raise TypeError(f"ragged_dims must be a tuple of ints or None, got {type(ragged_dims).__name__}")
         normalized: list[int] = []
         for dim in ragged_dims:
+            if isinstance(dim, torch.SymInt):
+                # AOTAutograd can round-trip literal layout dimensions through
+                # wrapper-subclass metadata as constant SymInts.  Layout axes are
+                # structural integers, never data-dependent sizes, so normalize
+                # those constants before applying the public type/range contract.
+                dim = int(dim)
             if not isinstance(dim, int) or isinstance(dim, bool):
                 raise TypeError(f"ragged_dims must contain only ints, got {type(dim).__name__}")
             normalized_dim = dim + physical_rank if dim < 0 else dim
@@ -1340,8 +1350,9 @@ class NestedTensor(torch.Tensor):
                         )
 
         values = cls._maybe_pin_values(values, pin_memory)
-        if compiling and cls is NestedTensor:
-            result = _make_nested_tensor_from_packed(
+        if compiling:
+            constructor = cls._compiled_packed_constructor
+            result = constructor(
                 values,
                 offsets,
                 shape_tensor,
@@ -4709,6 +4720,12 @@ class NestedTensor(torch.Tensor):
         target_shape = shape[0] if len(shape) == 1 and isinstance(shape[0], (tuple, list, torch.Size)) else shape
         return torch.reshape(self, target_shape)
 
+    def repeat_batch(self, repeats: int, *, output_size: int | None = None) -> Self:
+        r"""Repeat complete logical batch elements in interleaved order."""
+        from .torch_functions import _repeat_interleave_packed_batch
+
+        return _repeat_interleave_packed_batch(self, repeats, output_size=output_size)
+
     def flatten(self, start_dim: int = 0, end_dim: int = -1):
         r"""Flatten each tensor in the NestedTensor."""
         return torch.flatten(self, start_dim=start_dim, end_dim=end_dim)
@@ -5026,7 +5043,22 @@ class NestedTensor(torch.Tensor):
         return torch.where(condition, self, other)
 
 
-def _make_nested_tensor_from_packed(
+_repeat_batch_eager = NestedTensor.repeat_batch
+
+
+@torch.compiler.substitute_in_graph(_repeat_batch_eager)
+def _traceable_repeat_batch(self: NestedTensor, repeats: int, *, output_size: int | None = None) -> NestedTensor:
+    r"""Repeat complete logical batch elements in interleaved order."""
+    from .torch_functions import _repeat_interleave_packed_batch
+
+    return _repeat_interleave_packed_batch(self, repeats, output_size=output_size)
+
+
+NestedTensor.repeat_batch = _traceable_repeat_batch  # type: ignore[method-assign]
+
+
+def _make_nested_tensor_from_packed_impl(
+    nested_tensor_cls: type[NestedTensor],
     values: Tensor,
     offsets: Tensor,
     shape_tensor: Tensor,
@@ -5043,7 +5075,7 @@ def _make_nested_tensor_from_packed(
     ragged_offsets: tuple[Tensor, ...] | None,
 ) -> NestedTensor:
     result = torch.Tensor._make_wrapper_subclass(
-        NestedTensor,
+        nested_tensor_cls,
         logical_shape,
         dtype=values.dtype,
         device=values.device,
@@ -5051,8 +5083,8 @@ def _make_nested_tensor_from_packed(
     )
     result._values = values
     result._offsets = offsets
-    result._permutation = permutation
-    result._ragged_dims = ragged_dims
+    result._permutation = tuple(int(dim) for dim in permutation)
+    result._ragged_dims = tuple(int(dim) for dim in ragged_dims)
     result._ragged_dims_explicit = ragged_dims_explicit
     result._physical_shape = shape_tensor
     result._logical_shape = logical_shape
@@ -5064,10 +5096,60 @@ def _make_nested_tensor_from_packed(
     result._pin_memory = pin_memory
     result._packed_sizes = packed_sizes
     result._element_shapes = element_shapes
-    NestedTensor._install_persistent_ragged_offsets(result, ragged_offsets)
+    nested_tensor_cls._install_persistent_ragged_offsets(result, ragged_offsets)
     result._invalidate_transient_caches()
     return result
 
 
+def _make_nested_tensor_from_packed(
+    values: Tensor,
+    offsets: Tensor,
+    shape_tensor: Tensor,
+    logical_shape: torch.Size,
+    permutation: tuple[int, ...],
+    ragged_dims: tuple[int, ...],
+    ragged_dims_explicit: bool,
+    batch_first: bool,
+    padding_value: float,
+    mask_value: bool,
+    pin_memory: bool,
+    packed_sizes: tuple[int, ...] | None,
+    element_shapes: tuple[tuple[int, ...], ...] | None,
+    ragged_offsets: tuple[Tensor, ...] | None,
+) -> NestedTensor:
+    r"""Construct the base wrapper through a stable module-level graph target."""
+    return _make_nested_tensor_from_packed_impl(
+        NestedTensor,
+        values,
+        offsets,
+        shape_tensor,
+        logical_shape,
+        permutation,
+        ragged_dims,
+        ragged_dims_explicit,
+        batch_first,
+        padding_value,
+        mask_value,
+        pin_memory,
+        packed_sizes,
+        element_shapes,
+        ragged_offsets,
+    )
+
+
 if hasattr(torch, "compiler") and hasattr(torch.compiler, "allow_in_graph"):
     _make_nested_tensor_from_packed = torch.compiler.allow_in_graph(_make_nested_tensor_from_packed)
+
+
+def _make_nested_tensor_from_packed_constructor(nested_tensor_cls: type[NestedTensor]):
+    r"""Capture a concrete wrapper class without passing its type through FX."""
+
+    def constructor(*args) -> NestedTensor:
+        return _make_nested_tensor_from_packed_impl(nested_tensor_cls, *args)
+
+    if hasattr(torch, "compiler") and hasattr(torch.compiler, "allow_in_graph"):
+        constructor = torch.compiler.allow_in_graph(constructor)
+    return constructor
+
+
+NestedTensor._compiled_packed_constructor = staticmethod(_make_nested_tensor_from_packed)
