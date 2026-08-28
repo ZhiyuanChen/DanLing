@@ -1272,6 +1272,7 @@ def feature_alpha_dropout(input: NestedTensor, p: float = 0.5, train: bool = Fal
 
 
 @NestedTensorFuncRegistry.implement(torch.gather)
+@NestedTensorFuncRegistry.implement(torch.Tensor.gather)
 def gather(input: NestedTensor, dim: int, index, *, sparse_grad: bool = False):
     r"""
     Gathers values along an axis specified by `dim`.
@@ -3328,6 +3329,7 @@ def max(input: NestedTensor, dim: int | None = None, keepdim: bool = False):
 
 
 @NestedTensorFuncRegistry.implement(torch.mean)
+@NestedTensorFuncRegistry.implement(torch.Tensor.mean)
 def mean(
     input,
     dim: int | None = None,
@@ -3522,6 +3524,7 @@ def std(
 
 
 @NestedTensorFuncRegistry.implement(torch.sum)
+@NestedTensorFuncRegistry.implement(torch.Tensor.sum)
 def sum(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: bool = False, *, dtype=None):
     r"""Compute sums via aten fastpaths for global and single-dim reductions."""
     if dim is None:
