@@ -4487,6 +4487,20 @@ class TestCdist:
             torch.cdist(left, NT([torch.randn(4, 5, device=device)], ragged_dims=(0,)))
 
 
+class TestSegmentedSort:
+
+    def test_sort_and_argsort_match_per_element(self, device, float_dtype):
+        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 0, 5)]
+        nested = NT(elements, ragged_dims=(0,))
+
+        values, indices = torch.sort(nested, dim=1)
+        expected = [torch.sort(element, dim=0) for element in elements]
+
+        assert_close(values, NT([item.values for item in expected], ragged_dims=(0,)))
+        assert_close(indices, NT([item.indices for item in expected], ragged_dims=(0,)))
+        assert_close(torch.argsort(nested, dim=1), indices)
+
+
 class TestUnaryBinaryMath:
 
     def test_unary_tensor_method_values_and_vjp(self):

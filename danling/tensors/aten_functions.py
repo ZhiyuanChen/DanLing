@@ -4243,7 +4243,7 @@ def _sort_like_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
         dim_adj = _translate_dim(source, dim)
     except (TypeError, ValueError, IndexError):
         return False
-    return source._values.dim() > 1 and dim_adj > 0
+    return dim_adj == 0 or (source._values.dim() > 1 and dim_adj > 0)
 
 
 def _cumulative_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
@@ -4404,12 +4404,16 @@ def argsort(func, args, kwargs):
     if source._values.dim() > 1 and dim_adj > 0:
         return source._packed_like_unchecked(_call_argsort(source._values, dim_adj))
     if dim_adj == 0:
-        if _is_compiling():
-            _compile_unsupported("aten.argsort.default", "ragged-dimension argsort is eager-only under compile")
-        fill_value = _topk_fill_value(source._values.dtype, largest=descending)
-        padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(source, fill_value=fill_value)
-        idxs = _call_argsort(padded, 1)
-        return source._packed_like_unchecked(idxs[batch_idx, local_idx])
+        # Sort the packed values in place of a padded rectangle; see ``sort`` below for detail.
+        from .segmented import segmented_sort_perm
+
+        _, local = segmented_sort_perm(
+            source._values,
+            source._offsets,
+            source.packed_batch_indices(),
+            descending=descending,
+        )
+        return source._packed_like_unchecked(local)
     if stable_overload or stable is not None:
         return per_element_fallback(
             torch.ops.aten.argsort.stable,
@@ -4867,13 +4871,18 @@ def sort(func, args, kwargs):
         vals, idxs = _call_sort(source._values, dim_adj)
         return source._packed_like_unchecked(vals), source._packed_like_unchecked(idxs)
     if dim_adj == 0:
-        if _is_compiling():
-            _compile_unsupported("aten.sort.default", "ragged-dimension sort is eager-only under compile")
-        fill_value = _topk_fill_value(source._values.dtype, largest=descending)
-        padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(source, fill_value=fill_value)
-        vals, idxs = _call_sort(padded, 1)
-        return source._packed_like_unchecked(vals[batch_idx, local_idx]), source._packed_like_unchecked(
-            idxs[batch_idx, local_idx]
+        # Sort the packed values in place of a padded rectangle. The segmented permutation is
+        # stable, which is what the ``stable=True`` overload asks for and is harmless otherwise.
+        from .segmented import segmented_sort_perm
+
+        perm, local = segmented_sort_perm(
+            source._values,
+            source._offsets,
+            source.packed_batch_indices(),
+            descending=descending,
+        )
+        return source._packed_like_unchecked(torch.gather(source._values, 0, perm)), source._packed_like_unchecked(
+            local
         )
     if stable_overload or stable is not None:
         return per_element_fallback(
