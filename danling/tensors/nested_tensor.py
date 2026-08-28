@@ -2414,13 +2414,26 @@ class NestedTensor(torch.Tensor):
 
     @property
     def _storage(self) -> tuple[Tensor, ...]:
-        if self._cached_storage is None:
-            self._cached_storage = self._unpack()
-        return self._cached_storage
+        cached = self._cached_storage
+        if cached is None or self._storage_cache_dropped_grad(cached):
+            cached = self._unpack()
+            self._cached_storage = cached
+        return cached
 
     @_storage.setter
     def _storage(self, tensors: Sequence) -> None:
         self._repack(tensors)
+
+    def _storage_cache_dropped_grad(self, cached: tuple[Tensor, ...]) -> bool:
+        r"""
+        Report whether a cached unpack predates the autograd graph now on ``_values``.
+
+        ``_cached_storage`` keeps whatever the first access produced, so a cache filled
+        under ``no_grad`` (or below the autograd layer inside ``__torch_dispatch__``) holds
+        detached views. Serving those later would silently cut the graph for every consumer
+        that reads elements instead of ``_values``.
+        """
+        return bool(cached) and self._values.requires_grad and cached[0].grad_fn is None
 
     # ------------------------------------------------------------------
     # Cached materialized views

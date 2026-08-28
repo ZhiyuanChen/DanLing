@@ -278,3 +278,16 @@ class TestDenseBinaryOperands:
         assert len(output) == 2
         for index, element in enumerate(output):
             torch.testing.assert_close(element, nt[index] + dense[index])
+
+    def test_gather_keeps_grad_after_no_grad_iteration(self):
+        values = torch.randn(5, requires_grad=True)
+        nt = NT([values[:2], values[2:]])
+        with torch.no_grad():
+            tuple(nt)
+
+        index = NT([torch.tensor([1, 0]), torch.tensor([2, 1, 0])])
+        output = torch.gather(nt, 1, index)
+        output.concat.sum().backward()
+
+        torch.testing.assert_close(output.concat, torch.cat((values[:2].flip(0), values[2:].flip(0))))
+        torch.testing.assert_close(values.grad, torch.ones_like(values))
