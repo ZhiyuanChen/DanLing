@@ -70,6 +70,18 @@ def _validate_concrete_square_lengths(lengths: Tensor) -> None:
         raise ValueError("the cumulative sum of squared lengths must fit in torch.int64")
 
 
+@torch.library.custom_op("danling::_metadata_tensors_equal", mutates_args=())
+def _metadata_tensors_equal(lhs: Tensor, rhs: Tensor) -> Tensor:
+    r"""Compare metadata tensors opaquely, including shape and values."""
+    return lhs.new_tensor(torch.equal(lhs, rhs), dtype=torch.bool)
+
+
+@_metadata_tensors_equal.register_fake
+def _metadata_tensors_equal_fake(lhs: Tensor, rhs: Tensor) -> Tensor:
+    del rhs
+    return lhs.new_empty((), dtype=torch.bool)
+
+
 @torch.library.custom_op("danling::_square_row_splits", mutates_args=())
 def _square_row_splits(lengths: Tensor) -> Tensor:
     r"""Build the innermost CSR row splits for square ragged elements."""
@@ -724,13 +736,28 @@ class NestedTensor(torch.Tensor):
     ) -> bool:
         if lhs is rhs:
             return True
+        if lhs.dim() != rhs.dim():
+            return False
+        if _is_compiling() or _is_fake_tensor(lhs) or _is_fake_tensor(rhs):
+            from torch.fx.experimental.symbolic_shapes import statically_known_true
+
+            if any(statically_known_true(lhs_size != rhs_size) for lhs_size, rhs_size in zip(lhs.shape, rhs.shape)):
+                return False
+            if not runtime_assert and not _is_compiling() and all(
+                statically_known_true(lhs_size == rhs_size) for lhs_size, rhs_size in zip(lhs.shape, rhs.shape)
+            ):
+                # Standalone FakeTensor execution has nowhere to retain a runtime
+                # value assertion. Preserve the conservative eager-Fake contract
+                # when the shapes are already known; an unbacked shape still takes
+                # the opaque assertion path used by compiled reconstruction.
+                return False
+            torch._assert_async(_metadata_tensors_equal(lhs, rhs), message)
+            return True
         if lhs.shape != rhs.shape:
             return False
-        if runtime_assert or _is_compiling():
+        if runtime_assert:
             torch._assert_async(torch.all(lhs == rhs), message)
             return True
-        if _is_fake_tensor(lhs) or _is_fake_tensor(rhs):
-            return False
         return bool(torch.equal(lhs, rhs))
 
     @classmethod
@@ -1154,7 +1181,7 @@ class NestedTensor(torch.Tensor):
         self._cached_packed_offsets = None
         self._cached_ragged_level_offsets = None
 
-    def _mark_tensor_backed_dynamic_dims(self) -> None:
+    def _mark_tensor_backed_dynamic_dims(self, *, mark_values: bool = True) -> None:
         r"""Mark packed and logical ragged extents dynamic without guarded user state."""
         ragged_offsets = self._persistent_ragged_offsets()
         if ragged_offsets is None:
@@ -1168,9 +1195,10 @@ class NestedTensor(torch.Tensor):
             logical_dim = physical_dim + 1 if self.batch_first or physical_dim > 0 else physical_dim
             wrapper_dynamic.add(logical_dim)
         self._dynamo_propagated_dynamic_indices = wrapper_dynamic
-        values_dynamic = set(getattr(self._values, "_dynamo_propagated_dynamic_indices", ()))
-        values_dynamic.add(0)
-        self._values._dynamo_propagated_dynamic_indices = values_dynamic
+        if mark_values:
+            values_dynamic = set(getattr(self._values, "_dynamo_propagated_dynamic_indices", ()))
+            values_dynamic.add(0)
+            self._values._dynamo_propagated_dynamic_indices = values_dynamic
         for level_offsets in ragged_offsets:
             offsets_dynamic = set(getattr(level_offsets, "_dynamo_propagated_dynamic_indices", ()))
             offsets_dynamic.add(0)
@@ -1260,6 +1288,7 @@ class NestedTensor(torch.Tensor):
         ragged_offsets: tuple[Tensor, ...] | None = None,
         validate: bool = True,
         materialize_python_metadata: bool = True,
+        mark_values_dynamic: bool = True,
     ) -> Self:
         r"""Construct a NestedTensor directly from packed representation."""
         # offsets and shape_tensor MUST live on CPU to avoid implicit CUDA syncs
@@ -1393,7 +1422,7 @@ class NestedTensor(torch.Tensor):
             result._element_shapes = element_shapes
             cls._install_persistent_ragged_offsets(result, resolved_ragged_offsets)
             result._invalidate_transient_caches()
-        result._mark_tensor_backed_dynamic_dims()
+        result._mark_tensor_backed_dynamic_dims(mark_values=mark_values_dynamic)
         if validate:
             cls._validate_packed_metadata(
                 result._values,
@@ -3495,6 +3524,9 @@ class NestedTensor(torch.Tensor):
         else:
             logical_shape = torch.Size((max_length, len(self), max_length, *static_tail))
         pin_memory = bool(packed_values.device.type == "cpu" and packed_values.is_pinned())
+        # Both ragged axes and their offsets already carry the dynamic shape contract. Marking
+        # caller-owned packed storage here would mutate a compiled graph input after Dynamo has
+        # installed its guards, forcing an otherwise unnecessary second compilation.
         result = type(self)._from_packed(
             packed_values,
             outer_offsets,
@@ -3511,6 +3543,7 @@ class NestedTensor(torch.Tensor):
             ragged_offsets=(level_zero_offsets, level_one_offsets),
             validate=False,
             materialize_python_metadata=False,
+            mark_values_dynamic=False,
         )
         if symbolic_lengths:
             result._max_length_binding = result._offsets.new_empty(()).expand(max_length)
