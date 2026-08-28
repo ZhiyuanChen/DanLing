@@ -4236,6 +4236,60 @@ def new_empty_strided(input: NestedTensor, size=None, stride=None, **kwargs) -> 
     return input._values.new_empty_strided(resolved, tuple(int(s) for s in stride), **kwargs)
 
 
+@NestedTensorFuncRegistry.implement(torch.cdist)
+def cdist(x1, x2, p: float = 2.0, compute_mode: str = "use_mm_for_euclid_dist_if_necessary"):
+    r"""
+    Pairwise p-distances computed per element. See also [torch.cdist][].
+
+    Each element ``x1_i [.., P_i, M]`` against ``x2_i [.., R_i, M]`` gives ``[.., P_i, R_i]``, so when
+    both P and R are ragged the result is doubly ragged, as in an ``[N_token, N_token]`` distance map.
+    Computing per element here, at the torch-function level, keeps autograd on ``_values``; delegating
+    to the aten op on the wrapper instead returns a detached result.
+    """
+    from .nested_tensor import NestedTensor
+
+    x1_nested = isinstance(x1, NestedTensor)
+    x2_nested = isinstance(x2, NestedTensor)
+    reference = x1 if x1_nested else x2
+    if x1_nested and x2_nested:
+        if len(x1) != len(x2):
+            raise ValueError(f"NestedTensor batch length mismatch in cdist: {len(x1)} vs {len(x2)}")
+        parts = [torch.cdist(a, b, p, compute_mode) for a, b in zip(x1._unpack(), x2._unpack())]
+    elif x1_nested:
+        parts = [torch.cdist(a, x2, p, compute_mode) for a in x1._unpack()]
+    else:
+        parts = [torch.cdist(x1, b, p, compute_mode) for b in x2._unpack()]
+    meta = dict(reference._meta())
+    meta["ragged_dims"] = _cdist_ragged_dims(x1 if x1_nested else None, x2 if x2_nested else None, parts)
+    return NestedTensor(parts, **meta)
+
+
+def _cdist_ragged_dims(x1, x2, parts) -> tuple[int, ...] | None:
+    r"""
+    Project a declared topology through ``cdist``.
+
+    Each element ``(.., P_i, M)`` against ``(.., R_i, M)`` becomes ``(.., P_i, R_i)``: the rank
+    is unchanged, ``P`` keeps its position, and ``R`` lands where ``M`` was. Dimensions before
+    ``P`` are untouched. Returning ``None`` lets the topology be inferred, which is what an
+    operand without a declared one already implies.
+    """
+    declared_1 = tuple(x1._ragged_dims) if x1 is not None and x1._ragged_dims_explicit else None
+    declared_2 = tuple(x2._ragged_dims) if x2 is not None and x2._ragged_dims_explicit else None
+    if declared_1 is None and declared_2 is None:
+        return None
+    rank = parts[0].dim()
+    ragged = set()
+    if declared_1 is not None:
+        # Leading dims keep their index, and P stays at rank - 2 because the rank is unchanged.
+        ragged.update(dim for dim in declared_1 if dim <= rank - 2)
+    # ``_ragged_dims`` is in element coordinates, so drop the batch dim from the logical rank
+    # before asking whether x2's second-to-last element dim is the ragged one.
+    if declared_2 is not None and (x2.dim() - 1) - 2 in declared_2:
+        # R replaces M, the last dim.
+        ragged.add(rank - 1)
+    return tuple(sorted(ragged)) or None
+
+
 @NestedTensorFuncRegistry.implement(torch.transpose)
 def transpose(input: NestedTensor, dim0: int, dim1: int) -> NestedTensor:
     r"""

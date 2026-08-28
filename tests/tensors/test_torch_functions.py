@@ -4440,6 +4440,53 @@ class TestCreationFromExisting:
         assert strided.stride() == (3, 1)
 
 
+class TestCdist:
+
+    @staticmethod
+
+    @staticmethod
+    def _skip_unsupported_runtime_dtype(device, float_dtype):
+        if device.type == "cuda" and float_dtype in (torch.float16, torch.bfloat16):
+            pytest.skip("dense torch.cdist does not implement CUDA float16/bfloat16")
+
+    @pytest.mark.parametrize("p", [1.0, 2.0, float("inf")])
+    def test_values_shape_and_vjp_match_dense(self, device, p):
+        values = torch.randn(6, 3, device=device, requires_grad=True)
+        nested = NT([values[:2], values[2:]])
+
+        output = torch.cdist(nested, nested, p=p)
+        references = [torch.cdist(element, element, p=p) for element in nested]
+
+        assert [element.shape for element in output] == [reference.shape for reference in references]
+        for actual, expected in zip(output, references):
+            assert_close(actual, expected)
+        output.concat.sum().backward()
+        assert values.grad is not None
+
+    def test_function_and_method_forms_match(self, device, float_dtype):
+        self._skip_unsupported_runtime_dtype(device, float_dtype)
+        left = NT(
+            [
+                torch.randn(2, 3, device=device, dtype=float_dtype),
+                torch.randn(4, 3, device=device, dtype=float_dtype),
+            ]
+        )
+        right = NT(
+            [
+                torch.randn(3, 3, device=device, dtype=float_dtype),
+                torch.randn(1, 3, device=device, dtype=float_dtype),
+            ]
+        )
+        assert_close(torch.cdist(left, right), left.cdist(right))
+
+    def test_batch_length_and_feature_mismatch_raise(self, device):
+        left = NT([torch.randn(2, 3, device=device)], ragged_dims=(0,))
+        with pytest.raises(ValueError, match="batch length mismatch"):
+            torch.cdist(left, NT([torch.randn(2, 3, device=device), torch.randn(1, 3, device=device)]))
+        with pytest.raises(RuntimeError, match="same number of columns"):
+            torch.cdist(left, NT([torch.randn(4, 5, device=device)], ragged_dims=(0,)))
+
+
 class TestUnaryBinaryMath:
 
     def test_unary_tensor_method_values_and_vjp(self):
