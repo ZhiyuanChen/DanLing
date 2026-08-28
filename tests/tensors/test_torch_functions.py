@@ -4500,6 +4500,18 @@ class TestSegmentedSort:
         assert_close(indices, NT([item.indices for item in expected], ragged_dims=(0,)))
         assert_close(torch.argsort(nested, dim=1), indices)
 
+    def test_topk_values_indices_and_errors_match_dense(self, device, float_dtype):
+        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 5, 4)]
+        nested = NT(elements, ragged_dims=(0,))
+
+        result = torch.topk(nested, 2, dim=1, largest=False)
+        expected = [torch.topk(element, 2, dim=0, largest=False) for element in elements]
+
+        assert_close(result.values, NT([item.values for item in expected], ragged_dims=(0,)))
+        assert_close(result.indices, NT([item.indices for item in expected], ragged_dims=(0,)))
+        with pytest.raises(RuntimeError):
+            torch.topk(nested, 4, dim=1)
+
 
 class TestUnaryBinaryMath:
 

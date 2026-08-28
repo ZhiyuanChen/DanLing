@@ -2511,24 +2511,6 @@ def _segment_reduce_ragged_dim(
     return _format_segment_reduction(source, out, dim_adj, keepdim)
 
 
-def _packed_new_ragged_size(source: NestedTensor, new_values: Tensor, new_ragged_size) -> NestedTensor:
-    r"""Rebuild a NestedTensor when per-element dim-0 size changes uniformly."""
-    batch_size = source._offsets.size(0) - 1
-    # Keep offsets on the same device as the source metadata (CPU by design).
-    new_offsets = torch.arange(batch_size + 1, dtype=torch.long, device=source._offsets.device) * new_ragged_size
-    new_physical_shape = source._physical_shape.clone()
-    if new_physical_shape.numel() > 0:
-        new_physical_shape[:, 0] = new_ragged_size
-    return _packed_with_shape(
-        source,
-        new_values,
-        new_physical_shape,
-        source._logical_shape_from_components(replace_dims={0: int(new_ragged_size)}),
-        offsets=new_offsets,
-        permutation=source._permutation,
-    )
-
-
 def _packed_to_padded(source: NestedTensor, *, fill_value) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, int]:
     r"""Convert packed values [sum(L_i), ...] into padded [B, max(L_i), ...] plus gather indices."""
     lengths = source._offsets[1:] - source._offsets[:-1]
@@ -2813,10 +2795,6 @@ def _topk_fill_value(dtype: torch.dtype, largest: bool):
         return not largest
     info = torch.iinfo(dtype)
     return info.min if largest else info.max
-
-
-def _needs_masked_topk_scores(dtype: torch.dtype) -> bool:
-    return (not dtype.is_floating_point) and (not dtype.is_complex)
 
 
 @NestedTensorAtenRegistry.implement(aten.addmm.default)
@@ -4943,49 +4921,32 @@ def topk(func, args, kwargs):
             _packed_new_dim_size(source, idxs, dim_adj, k),
         )
     if dim_adj == 0:
-        if _is_compiling():
-            _compile_unsupported("aten.topk.default", "ragged-dimension topk is eager-only under compile")
-        padded, lengths, lengths_dev, batch_idx, local_idx, max_len = _packed_to_padded(
-            source, fill_value=_topk_fill_value(source._values.dtype, largest)
-        )
-        if lengths.numel() == 0:
-            return source._packed_like_unchecked(source._values), source._packed_like_unchecked(
-                source._values.to(dtype=torch.long)
-            )
+        # Sort the packed segments instead of padding to a rectangle, then keep the first k of
+        # each. k is checked against the shortest segment because a per-segment k has no dense
+        # meaning. ``topk`` stays eager-only under compile (see ``_topk_compile_safe``) because
+        # that check is data-dependent.
+        from .segmented import segmented_sort_perm
 
+        lengths = source._offsets[1:] - source._offsets[:-1]
         k_value = int(k)
-        if not _is_fake_tensor(source._values):
-            min_len = int(lengths.min().item())
-            if k_value > min_len:
-                raise ValueError(
-                    f"NestedTensor topk along ragged dim requires k <= min segment length, "
-                    f"but got k={k_value}, min={min_len}"
-                )
+        if lengths.numel() > 0 and not _is_fake_tensor(source._values):
+            shortest = int(lengths.min())
+            if k_value > shortest:
+                raise RuntimeError(f"selected index k out of range: k={k_value} exceeds shortest segment {shortest}")
 
-        if _needs_masked_topk_scores(source._values.dtype):
-            valid_mask = torch.arange(max_len, device=source._values.device, dtype=torch.long).unsqueeze(0)
-            valid_mask = valid_mask < lengths_dev.unsqueeze(1)
-            while valid_mask.dim() < padded.dim():
-                valid_mask = valid_mask.unsqueeze(-1)
-            score_dtype = torch.float64
-            scores = padded.to(dtype=score_dtype)
-            fill_score = torch.full(
-                (),
-                float("-inf") if largest else float("inf"),
-                dtype=score_dtype,
-                device=scores.device,
-            )
-            scores = torch.where(valid_mask, scores, fill_score)
-            _, idxs = func(scores, k_value, 1, largest, sorted_output, **kwargs)
-            vals = torch.gather(padded, 1, idxs)
-        else:
-            vals, idxs = func(padded, k_value, 1, largest, sorted_output, **kwargs)
-
-        vals_packed = vals.reshape(-1, *vals.shape[2:])
-        idxs_packed = idxs.reshape(-1, *idxs.shape[2:])
+        batch_idx = source.packed_batch_indices()
+        perm, local = segmented_sort_perm(source._values, source._offsets, batch_idx, descending=largest)
+        positions = torch.arange(perm.shape[0], device=perm.device) - source._offsets.to(perm.device)[batch_idx]
+        keep = positions < k_value
+        # Every output segment now has the uniform width k, so the result is a plain dense
+        # stack rather than anything ragged. ``source._meta()`` is kept anyway: an explicit
+        # topology declares which dims MAY vary, not which do on this particular batch.
+        tail = source._values.shape[1:]
+        values = torch.gather(source._values, 0, perm)[keep].view(len(source), k_value, *tail)
+        indices = local[keep].view(len(source), k_value, *tail)
         return (
-            _packed_new_ragged_size(source, vals_packed, k_value),
-            _packed_new_ragged_size(source, idxs_packed, k_value),
+            type(source)(list(values), **source._meta()),
+            type(source)(list(indices), **source._meta()),
         )
     return per_element_fallback(func, (source, k, dim_adj, largest, sorted_output), kwargs)
 

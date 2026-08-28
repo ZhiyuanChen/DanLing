@@ -802,7 +802,7 @@ class TestSortingOps:
                 torch.tensor([[5.0, 6.0], [7.0, 8.0], [9.0, 10.0]]),
             ]
         )
-        with pytest.raises(ValueError, match="k <= min segment length"):
+        with pytest.raises(RuntimeError, match="k out of range"):
             torch.ops.aten.topk.default(nt, 3, 1, True, True)
 
     @pytest.mark.parametrize(
