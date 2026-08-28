@@ -1282,6 +1282,52 @@ class TestFlattenUnflatten:
         reference = NT([torch.flatten(t, start_dim=2) for t in nt], **nt._meta())
         assert_close(output, reference)
 
+    @pytest.mark.parametrize("transposed", [False, True], ids=["canonical", "transposed"])
+    def test_static_tail_flatten_unflatten_values_and_vjp(self, transposed):
+        source = NestedTensor(
+            [torch.empty(2, 2, 2, 4), torch.empty(3, 3, 2, 4)],
+            ragged_dims=(0, 1),
+        )
+        if transposed:
+            source = source.transpose(1, 2)
+        leaf = torch.randn_like(source.concat, requires_grad=True)
+        source = source.packed_like(leaf)
+
+        flattened = source.flatten(-2)
+        restored = flattened.unflatten(-1, (2, 4))
+
+        assert flattened.ragged_dims == source.ragged_dims
+        assert restored.shape == source.shape
+        assert restored.ragged_dims == source.ragged_dims
+        assert_close(flattened.concat, leaf.flatten(-2))
+        assert_close(restored.concat, leaf)
+        restored.concat.square().sum().backward()
+        assert_close(leaf.grad, 2 * leaf)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_static_tail_flatten_unflatten_compiles(self):
+        template = NestedTensor(
+            [torch.empty(2, 2, 2, 4), torch.empty(3, 3, 2, 4)],
+            ragged_dims=(0, 1),
+        )
+        values = torch.randn_like(template.concat, requires_grad=True)
+        compiled = torch.compile(
+            lambda structure, packed: structure.packed_like(packed)
+            .flatten(-2)
+            .unflatten(-1, (2, 4))
+            .concat.square()
+            .sum(),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        loss = compiled(template, values)
+        gradient = torch.autograd.grad(loss, values)[0]
+
+        assert_close(loss, values.square().sum())
+        assert_close(gradient, 2 * values)
+
     def test_flatten_start_dim_zero_returns_tensor(self, device, float_dtype):
         nt = NestedTensor(
             [
