@@ -168,6 +168,44 @@ Compile coverage: each rewritten operator gets a `fullgraph=True` test asserting
 one graph is reused across two different length distributions, matching the
 existing `frame_count == 1` convention.
 
+## Failure modes to test for
+
+An external review of the operators already rewritten in this style found six
+defects, none of which a happy-path test would have caught. Every operator added
+under this design gets a test for each mode that applies to it.
+
+**Divergence from the dense operator on edge inputs.** The rewritten
+`cross_entropy` returned `0` where dense returns `NaN` for an entirely ignored
+batch, indexed out of bounds on a sentinel above the class count, and scored an
+invalid negative label as class `0` instead of raising. Compare against the
+dense operator on empty, all-masked, and out-of-range inputs, not only on
+well-formed ones.
+
+**Declared topology not projected.** `unbind` forwarded `ragged_dims` unchanged
+onto a reduced rank and raised `ValueError`; `cdist` dropped the declaration and
+re-inferred. Any operator that changes rank or structure is tested with an
+explicit `ragged_dims`, asserting both the projected value and
+`_validate_metadata()`.
+
+**Autograd severed through cached storage.** `_cached_storage` keeps whatever
+the first access produced, so a cache filled under `no_grad` held detached
+views. Any operator that reads elements rather than `_values` is tested after a
+`no_grad` warm-up, asserting the gradient still reaches the packed values.
+
+**Silent dtype coercion.** Batch `repeat_interleave` cast float counts to long,
+repeating a truncated number of times without saying so. Operators taking index
+or count tensors assert that invalid dtypes are refused, matching the dense
+operator, rather than being coerced.
+
+**Device assumptions.** The same cast fixed dtype but not device, so counts
+computed on CUDA against CPU offsets mismatched. Operators taking an auxiliary
+tensor move it onto the values' device.
+
+**Incomplete argument spellings.** The `new_*` handlers accepted varargs and a
+sequence but not the `size=` keyword, because the varargs parameter was itself
+named `size`. Operators accept every spelling the dense method does, and the
+tests exercise each.
+
 ## Out of scope
 
 - The CUDA attention path, pending a GPU audit.
