@@ -1042,7 +1042,7 @@ def stack(*args, **kwargs):
         >>> torch.equal(out, ref)
         True
     """
-    tensors = args[0] if args else ()
+    tensors = args[0] if args else kwargs.get("tensors", ())
     if len(args) > 1:
         if "dim" in kwargs:
             raise TypeError("stack() got multiple values for argument 'dim'")
