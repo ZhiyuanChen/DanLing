@@ -429,6 +429,12 @@ class NestedTensor(torch.Tensor):
             raise TypeError(f"ragged_dims must be a tuple of ints or None, got {type(ragged_dims).__name__}")
         normalized: list[int] = []
         for dim in ragged_dims:
+            if isinstance(dim, torch.SymInt):
+                # AOTAutograd can round-trip literal layout dimensions through
+                # wrapper-subclass metadata as constant SymInts.  Layout axes are
+                # structural integers, never data-dependent sizes, so normalize
+                # those constants before applying the public type/range contract.
+                dim = int(dim)
             if not isinstance(dim, int) or isinstance(dim, bool):
                 raise TypeError(f"ragged_dims must contain only ints, got {type(dim).__name__}")
             normalized_dim = dim + physical_rank if dim < 0 else dim
@@ -4551,6 +4557,12 @@ class NestedTensor(torch.Tensor):
         target_shape = shape[0] if len(shape) == 1 and isinstance(shape[0], (tuple, list, torch.Size)) else shape
         return torch.reshape(self, target_shape)
 
+    def repeat_batch(self, repeats: int, *, output_size: int | None = None) -> Self:
+        r"""Repeat complete logical batch elements in interleaved order."""
+        from .torch_functions import _repeat_interleave_packed_batch
+
+        return _repeat_interleave_packed_batch(self, repeats, output_size=output_size)
+
     def flatten(self, start_dim: int = 0, end_dim: int = -1):
         r"""Flatten each tensor in the NestedTensor."""
         return torch.flatten(self, start_dim=start_dim, end_dim=end_dim)
@@ -4868,6 +4880,20 @@ class NestedTensor(torch.Tensor):
         return torch.where(condition, self, other)
 
 
+_repeat_batch_eager = NestedTensor.repeat_batch
+
+
+@torch.compiler.substitute_in_graph(_repeat_batch_eager)
+def _traceable_repeat_batch(self: NestedTensor, repeats: int, *, output_size: int | None = None) -> NestedTensor:
+    r"""Repeat complete logical batch elements in interleaved order."""
+    from .torch_functions import _repeat_interleave_packed_batch
+
+    return _repeat_interleave_packed_batch(self, repeats, output_size=output_size)
+
+
+NestedTensor.repeat_batch = _traceable_repeat_batch  # type: ignore[method-assign]
+
+
 def _make_nested_tensor_from_packed(
     values: Tensor,
     offsets: Tensor,
@@ -4893,8 +4919,8 @@ def _make_nested_tensor_from_packed(
     )
     result._values = values
     result._offsets = offsets
-    result._permutation = permutation
-    result._ragged_dims = ragged_dims
+    result._permutation = tuple(int(dim) for dim in permutation)
+    result._ragged_dims = tuple(int(dim) for dim in ragged_dims)
     result._ragged_dims_explicit = ragged_dims_explicit
     result._physical_shape = shape_tensor
     result._logical_shape = logical_shape
