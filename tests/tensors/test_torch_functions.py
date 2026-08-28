@@ -207,6 +207,57 @@ class TestArithmeticFunctions:
             assert output._packed_sizes == lhs._packed_sizes
             assert output._values.shape[0] == sum(output._packed_sizes)
 
+    @pytest.mark.parametrize("shapes", [((4, 3),), ((2, 3), (4, 5))], ids=("single", "batched"))
+    def test_nested_singleton_ragged_broadcast_stays_packed(self, device, float_dtype, shapes):
+        channels = 4
+        lhs_parts = [torch.randn(m, n, channels, device=device, dtype=float_dtype) for m, n in shapes]
+        rhs_parts = [torch.randn(n, channels, device=device, dtype=float_dtype) for _m, n in shapes]
+        lhs_values = torch.cat([part.reshape(-1, channels) for part in lhs_parts]).requires_grad_()
+        rhs_values = torch.cat(rhs_parts).requires_grad_()
+        lhs = NT([torch.empty_like(part) for part in lhs_parts], ragged_dims=(0, 1)).packed_like(lhs_values)
+        rhs = NT([torch.empty_like(part) for part in rhs_parts], ragged_dims=(0,)).packed_like(rhs_values).unsqueeze(-3)
+
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            added = lhs + rhs
+            lhs_minus_rhs = lhs - rhs
+            rhs_minus_lhs = rhs - lhs
+
+        expected_add = torch.cat([(left + right).reshape(-1, channels) for left, right in zip(lhs_parts, rhs_parts)])
+        expected_sub = torch.cat([(left - right).reshape(-1, channels) for left, right in zip(lhs_parts, rhs_parts)])
+        assert_close(added.concat, expected_add)
+        assert_close(lhs_minus_rhs.concat, expected_sub)
+        assert_close(rhs_minus_lhs.concat, -expected_sub)
+        assert added.ragged_dims == lhs.ragged_dims
+        assert added.packed_dim_order == lhs.packed_dim_order
+        assert_close(added.element_sizes(), lhs.element_sizes())
+
+        lhs_grad, rhs_grad = torch.autograd.grad(added.concat.sum(), (lhs_values, rhs_values))
+        expected_rhs_grad = torch.cat([torch.full_like(right, m) for (m, _n), right in zip(shapes, rhs_parts)])
+        assert_close(lhs_grad, torch.ones_like(lhs_values))
+        assert_close(rhs_grad, expected_rhs_grad)
+
+    def test_nested_singleton_ragged_broadcast_supports_fake_tensor(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        lhs = NT([torch.empty(2, 3, 4), torch.empty(4, 5, 4)], ragged_dims=(0, 1))
+        rhs = NT([torch.empty(3, 4), torch.empty(5, 4)], ragged_dims=(0,)).unsqueeze(-3)
+
+        with fake_tensor_mod.FakeTensorMode() as mode:
+            fake_lhs = mode.from_tensor(lhs)
+            fake_rhs = mode.from_tensor(rhs)
+            output = fake_lhs + fake_rhs
+
+        assert fake_tensor_mod.is_fake(output.concat)
+        assert fake_tensor_mod.is_fake(output.element_sizes())
+        assert output.concat.shape == lhs.concat.shape
+        assert output.ragged_dims == (0, 1)
+        assert output.packed_dim_order == (0, 1, 2)
+
     def test_dense_vector_broadcast_rejects_ragged_final_physical_dim(self, device, float_dtype):
         parts = [
             torch.arange(4, device=device, dtype=float_dtype).reshape(4, 1),

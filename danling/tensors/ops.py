@@ -529,6 +529,138 @@ def _binary_dense_padded_broadcast(input, other, op, reverse, extra_args, extra_
     )
 
 
+def _can_broadcast_nested_to(target: NestedTensor, source: NestedTensor) -> bool:
+    r"""Return whether ``source`` has a packed singleton-prefix broadcast into ``target``.
+
+    The supported layout is the zero-padding counterpart of an ordinary
+    per-element broadcast such as ``(M_i, N_i, C) + (1, N_i, C)``.  ``source``
+    may omit one or more *outer* ragged levels by storing singleton static
+    dimensions there, while sharing ``target``'s innermost ragged level.
+    Tensor-backed size equality is validated by
+    :func:`_broadcast_nested_to_values`; this predicate intentionally uses only
+    static layout descriptors so it is safe in a compile guard.
+    """
+    if target.batch_first != source.batch_first:
+        return False
+    if target._physical_shape.size(1) != source._physical_shape.size(1):
+        return False
+
+    target_ragged = target._ragged_dims
+    source_ragged = source._ragged_dims
+    if len(source_ragged) != 1 or not target_ragged:
+        return False
+    if target_ragged[-1] != source_ragged[0]:
+        return False
+
+    omitted_ragged = target_ragged[:-1]
+    source_static = source._static_dims
+    if any(dim not in source_static for dim in omitted_ragged):
+        return False
+
+    remaining_source_static = tuple(dim for dim in source_static if dim not in omitted_ragged)
+    return len(remaining_source_static) == len(target._static_dims) and set(remaining_source_static) == set(
+        target._static_dims
+    )
+
+
+def _broadcast_metadata_matches(target: NestedTensor, source: NestedTensor, omitted_ragged: tuple[int, ...]) -> bool:
+    r"""Validate tensor-backed sizes for a packed NestedTensor broadcast."""
+    from .aten_functions import _is_fake_tensor
+
+    target_shape = target._physical_shape
+    source_shape = source._physical_shape
+    source_ragged = source._ragged_dims
+    target_static = target._static_dims
+
+    conditions = []
+    conditions.extend(torch.all(source_shape.select(1, dim) == 1) for dim in omitted_ragged)
+    conditions.extend(torch.all(target_shape.select(1, dim) == source_shape.select(1, dim)) for dim in source_ragged)
+    conditions.extend(torch.all(target_shape.select(1, dim) == source_shape.select(1, dim)) for dim in target_static)
+    if not conditions:
+        return True
+
+    valid = torch.stack(conditions).all()
+    if _is_compiling() or _is_fake_tensor(valid):
+        torch._assert_async(
+            valid,
+            "NestedTensor singleton ragged broadcast requires singleton omitted dimensions "
+            "and matching shared dimensions",
+        )
+        return True
+    return bool(valid)
+
+
+def _broadcast_nested_to_values(target: NestedTensor, source: NestedTensor) -> Tensor | None:
+    r"""Align ``source`` with ``target._values`` without padding or storage mapping."""
+    if not _can_broadcast_nested_to(target, source):
+        return None
+
+    omitted_ragged = target._ragged_dims[:-1]
+    if not _broadcast_metadata_matches(target, source, omitted_ragged):
+        return None
+
+    device = source._values.device
+    batch_indices = target.packed_batch_indices(device=device)
+    source_local = target.packed_local_indices(-1, device=device)
+    source_offsets = source.packed_offsets(device=device, dtype=source_local.dtype)
+    source_indices = source_offsets[batch_indices] + source_local
+    values = source._values.index_select(0, source_indices)
+
+    source_static = source._static_dims
+    omitted_axes = sorted((1 + source_static.index(dim) for dim in omitted_ragged), reverse=True)
+    for axis in omitted_axes:
+        values = values.select(axis, 0)
+
+    remaining_source_static = tuple(dim for dim in source_static if dim not in omitted_ragged)
+    if remaining_source_static != target._static_dims:
+        permutation = (0, *(1 + remaining_source_static.index(dim) for dim in target._static_dims))
+        values = values.permute(permutation)
+    return values
+
+
+def _single_element_logical_view(input: NestedTensor) -> Tensor:
+    r"""View one packed element in logical dimension order without storage mapping."""
+    element_shape = tuple(int(size) for size in input._physical_shape[0].tolist())
+    packed_shape = tuple(element_shape[dim] for dim in input._permutation)
+    packed_view = input._values.reshape(packed_shape)
+    inverse_permutation = tuple(input._permutation.index(dim) for dim in range(len(input._permutation)))
+    return packed_view.permute(inverse_permutation)
+
+
+def _binary_single_element_nested_broadcast(
+    target: NestedTensor,
+    source: NestedTensor,
+    op,
+    *,
+    source_first: bool,
+    extra_args,
+    extra_kwargs,
+):
+    r"""Run a one-element broadcast as one dense TensorIterator operation."""
+    from .aten_functions import _is_fake_tensor
+
+    if len(target) != 1 or len(source) != 1 or _is_compiling():
+        return None
+    if _is_fake_tensor(target._values) or _is_fake_tensor(source._values):
+        return None
+    if not _can_broadcast_nested_to(target, source):
+        return None
+
+    omitted_ragged = target._ragged_dims[: -len(source._ragged_dims)]
+    if not _broadcast_metadata_matches(target, source, omitted_ragged):
+        return None
+
+    target_view = _single_element_logical_view(target)
+    source_view = _single_element_logical_view(source)
+    result = (
+        op(source_view, target_view, *extra_args, **extra_kwargs)
+        if source_first
+        else op(target_view, source_view, *extra_args, **extra_kwargs)
+    )
+    packed_result = result.permute(target._permutation).reshape(target._values.shape)
+    return target._packed_like_unchecked(packed_result)
+
+
 def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
     r"""
     Apply a binary op between a NestedTensor and a tensor/scalar/NestedTensor.
@@ -626,6 +758,39 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
             if new_values.shape[1:] == input._values.shape[1:]:
                 return input._packed_like_unchecked(new_values)
             return _packed_with_static_tail_from_values(input, new_values)
+
+        single_element = _binary_single_element_nested_broadcast(
+            input,
+            other,
+            op,
+            source_first=False,
+            extra_args=extra_args,
+            extra_kwargs=extra_kwargs,
+        )
+        if single_element is not None:
+            return single_element
+
+        single_element = _binary_single_element_nested_broadcast(
+            other,
+            input,
+            op,
+            source_first=True,
+            extra_args=extra_args,
+            extra_kwargs=extra_kwargs,
+        )
+        if single_element is not None:
+            return single_element
+
+        aligned_other = _broadcast_nested_to_values(input, other)
+        if aligned_other is not None:
+            new_values = op(input._values, aligned_other, *extra_args, **extra_kwargs)
+            return input._packed_like_unchecked(new_values)
+
+        aligned_input = _broadcast_nested_to_values(other, input)
+        if aligned_input is not None:
+            new_values = op(aligned_input, other._values, *extra_args, **extra_kwargs)
+            return other._packed_like_unchecked(new_values)
+
         lhs_s, rhs_s = (other._storage, input._storage) if reverse else (input._storage, other._storage)
         return cls(
             (op(x, y, *extra_args, **extra_kwargs) for x, y in zip(lhs_s, rhs_s)),
@@ -663,18 +828,22 @@ def _binary_op_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
     if not isinstance(other, Tensor) or other.dim() == 0:
         return True
 
-    if not isinstance(other, NestedTensor) and not _is_packed_identity(input):
+    if isinstance(other, NestedTensor):
+        if len(input) != len(other):
+            return False
+        if input._has_same_structure(other):
+            return True
+        return _can_broadcast_nested_to(input, other) or _can_broadcast_nested_to(other, input)
+
+    if not _is_packed_identity(input):
         return False
 
-    if not isinstance(other, NestedTensor) and _resolve_dense_for_values(input, other) is not None:
+    if _resolve_dense_for_values(input, other) is not None:
         return True
 
     aligned_other = _maybe_align_dense_to_nested(input, other)
     if aligned_other is not None:
         return input._has_same_structure(aligned_other)
-
-    if isinstance(other, NestedTensor):
-        return len(input) == len(other) and input._has_same_structure(other)
 
     return _resolve_dense_for_values(input, other) is not None
 

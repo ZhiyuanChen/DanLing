@@ -47,6 +47,65 @@ random.seed(1016)
 
 class TestArithmetic:
 
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize(
+        "shape_batches",
+        [
+            (((2, 3),), ((3, 4),)),
+            (((2, 3), (4, 5)), ((3, 4), (2, 6))),
+        ],
+        ids=("single", "batched"),
+    )
+    def test_singleton_ragged_broadcast_reuses_one_dynamic_fullgraph(self, shape_batches):
+        from torch._dynamo.testing import CompileCounter
+
+        channels = 4
+        counter = CompileCounter()
+        compiled = torch.compile(
+            lambda lhs, rhs: ((lhs + rhs).concat, (rhs - lhs).concat),
+            backend=counter,
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        for shapes in shape_batches:
+            lhs_values = torch.randn(sum(m * n for m, n in shapes), channels, requires_grad=True)
+            rhs_values = torch.randn(sum(n for _m, n in shapes), channels, requires_grad=True)
+            lhs = NT(
+                [torch.empty(m, n, channels) for m, n in shapes],
+                ragged_dims=(0, 1),
+            ).packed_like(lhs_values)
+            rhs = (
+                NT([torch.empty(n, channels) for _m, n in shapes], ragged_dims=(0,))
+                .packed_like(rhs_values)
+                .unsqueeze(-3)
+            )
+
+            added, reversed_sub = compiled(lhs, rhs)
+            lhs_splits = lhs_values.split([m * n for m, n in shapes])
+            rhs_splits = rhs_values.split([n for _m, n in shapes])
+            expected_add = torch.cat(
+                [
+                    (left.reshape(m, n, channels) + right).reshape(-1, channels)
+                    for (m, n), left, right in zip(shapes, lhs_splits, rhs_splits)
+                ]
+            )
+            expected_reversed_sub = torch.cat(
+                [
+                    (right - left.reshape(m, n, channels)).reshape(-1, channels)
+                    for (m, n), left, right in zip(shapes, lhs_splits, rhs_splits)
+                ]
+            )
+            assert_close(added, expected_add)
+            assert_close(reversed_sub, expected_reversed_sub)
+
+            added.sum().backward()
+            assert_close(lhs_values.grad, torch.ones_like(lhs_values))
+            expected_rhs_grad = torch.cat([torch.full_like(right, m) for (m, _n), right in zip(shapes, rhs_splits)])
+            assert_close(rhs_values.grad, expected_rhs_grad)
+
+        assert counter.frame_count == 1
+
     @pytest.mark.parametrize(
         "i",
         [
