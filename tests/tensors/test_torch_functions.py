@@ -1926,6 +1926,27 @@ class TestIndexingWriteOps:
             for index, length in enumerate(lengths):
                 assert_close(output[index], reference[index, :length])
 
+    def test_masked_fill_dense_source_ragged_mask(self, device, float_dtype):
+        bias = torch.randn(2, 4, 3, 3, device=device, dtype=float_dtype)
+        mask = NT(
+            [
+                torch.rand(2, 2, device=device) > 0.5,
+                torch.rand(3, 3, device=device) > 0.5,
+            ]
+        )
+        output = torch.masked_fill(bias, mask, float("-inf"))
+        reference = NT(
+            [
+                bias[index, :, : element.shape[0], : element.shape[1]].masked_fill(element, float("-inf"))
+                for index, element in enumerate(mask)
+            ],
+            **reference_options(mask),
+        )
+        assert_close(output, reference)
+
+        with pytest.raises(ValueError, match="batch length mismatch"):
+            torch.masked_fill(torch.randn(5, 4, 3, 3, device=device, dtype=float_dtype), mask, -1.0)
+
     def test_masked_scatter(self, device, float_dtype):
         base = NestedTensor(
             [torch.zeros(3, device=device, dtype=float_dtype), torch.zeros(2, device=device, dtype=float_dtype)]

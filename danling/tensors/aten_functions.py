@@ -915,11 +915,46 @@ def _masked_scatter_source_consumption_matches(mask: NestedTensor, source: Neste
     return bool(torch.equal(source_numel, mask_true))
 
 
+def _plain_filled_by_nested_mask(source, mask, value, func, kwargs):
+    r"""
+    Fill a dense ``source`` by a ragged ``mask``, yielding a ragged result.
+
+    ``__torch_function__`` also dispatches here when only the mask is nested, as in
+    ``dense_bias.masked_fill(ragged_mask, -inf)``. Each element becomes
+    ``source_element.masked_fill(mask_element, value)``: the source is sliced down to the
+    element's ragged extent on the mask's varying dims while broadcast dims stay full, so a
+    padded ``(B, H, N, N)`` attention bias filled by a ``(B, 1, N, N)`` ragged mask gives a
+    ragged ``(H, n_i, n_i)`` result.
+    """
+    if not isinstance(source, Tensor) or source.dim() == 0:
+        return type(mask)((func(source, element, value, **kwargs) for element in mask._storage), **mask._meta())
+    batch_dim = 0 if mask.batch_first else 1
+    if source.size(batch_dim) != len(mask):
+        raise ValueError(
+            "NestedTensor batch length mismatch between source and mask: "
+            f"source={source.size(batch_dim)}, mask={len(mask)}"
+        )
+    varying = {int(dim) for dim in mask._varying_dims}
+    results = []
+    for index, element in enumerate(mask._storage):
+        element_source = source.select(batch_dim, index)
+        offset = element_source.dim() - element.dim()
+        slices = [slice(None)] * element_source.dim()
+        for dim in range(element.dim()):
+            extent = int(element.shape[dim])
+            if dim in varying or (extent != 1 and extent < int(element_source.shape[offset + dim])):
+                slices[offset + dim] = slice(0, extent)
+        results.append(func(element_source[tuple(slices)], element, value, **kwargs))
+    return type(mask)(results, **mask._meta())
+
+
 def _masked_fill_handler(func, args, kwargs):
     r"""Dispatch handler for masked_fill: packed fast path + per-element broadcast fallback."""
     from .nested_tensor import NestedTensor
 
     source, mask, value = args[0], args[1], args[2]
+    if not isinstance(source, NestedTensor) and isinstance(mask, NestedTensor):
+        return _plain_filled_by_nested_mask(source, mask, value, func, kwargs)
     if isinstance(mask, NestedTensor) and source._has_same_layout(mask):
         return source._packed_like_unchecked(func(source._values, mask._values, value, **kwargs))
     aligned = source._maybe_exact_shape_nested_like(mask)

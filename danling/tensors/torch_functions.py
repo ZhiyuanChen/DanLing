@@ -1502,8 +1502,11 @@ def masked_fill(input: NestedTensor, mask, value):
         >>> torch.equal(out, ref)
         True
     """
+    from .aten_functions import _plain_filled_by_nested_mask
     from .nested_tensor import NestedTensor
 
+    if not isinstance(input, NestedTensor) and isinstance(mask, NestedTensor):
+        return _plain_filled_by_nested_mask(input, mask, value, torch.masked_fill, {})
     aligned_mask = input._maybe_exact_shape_nested_like(mask)
     if aligned_mask is not None:
         mask = aligned_mask
@@ -4780,9 +4783,7 @@ TORCH_INPLACE_METHOD_MAP = {
 
 _TENSOR_UNARY_ELEMENTWISE_METHODS = tuple(
     dict.fromkeys(
-        method
-        for op in TORCH_UNARY_ELEMENTWISE_OPS
-        if (method := getattr(torch.Tensor, op.__name__, None)) is not None
+        method for op in TORCH_UNARY_ELEMENTWISE_OPS if (method := getattr(torch.Tensor, op.__name__, None)) is not None
     )
 )
 
@@ -4791,7 +4792,11 @@ _TORCH_HANDLER_TABLE: list[tuple] = [
     *((op, _elementwise_binary_handler) for op in TORCH_BINARY_ELEMENTWISE_OPS if op not in NestedTensorFuncRegistry),
     # _elementwise_unary_handler — bypasses aten decomposition for direct packed operation
     *((op, _elementwise_unary_handler) for op in TORCH_UNARY_ELEMENTWISE_OPS if op not in NestedTensorFuncRegistry),
-    *((op, _elementwise_unary_handler) for op in _TENSOR_UNARY_ELEMENTWISE_METHODS if op not in NestedTensorFuncRegistry),
+    *(
+        (op, _elementwise_unary_handler)
+        for op in _TENSOR_UNARY_ELEMENTWISE_METHODS
+        if op not in NestedTensorFuncRegistry
+    ),
     # _inplace_binary_torch_handler — converts operands before aten in-place dispatch
     *((op, _inplace_binary_torch_handler) for op, _ in TORCH_INPLACE_METHOD_MAP.items()),
     # _make_simple_reduce_handler — simple reductions delegating to _reduce
