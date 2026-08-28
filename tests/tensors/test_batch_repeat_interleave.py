@@ -87,6 +87,15 @@ def test_batch_repeat_interleave_preserves_multi_ragged_layout():
     assert_close(grad, 4 * values)
 
 
+def test_batch_repeat_interleave_handles_zero_and_per_element_counts():
+    source = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)], ragged_dims=(0,))
+
+    empty = torch.repeat_interleave(source, 0, dim=0)
+    counted = torch.repeat_interleave(source, torch.tensor([0, 2]), dim=0)
+
+    assert len(empty) == 0
+    assert empty.concat.shape == (0, 3)
+    assert_close(counted, NestedTensor([source[1], source[1]], ragged_dims=(0,)))
 
 
 def test_batch_repeat_interleave_supports_static_layout():
@@ -97,6 +106,17 @@ def test_batch_repeat_interleave_supports_static_layout():
     assert_close(output, NestedTensor(_expected_elements(source, 2)))
 
 
+def test_batch_repeat_interleave_validates_counts_and_output_size():
+    source = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)], ragged_dims=(0,))
+
+    with pytest.raises(RuntimeError, match="Repeats must be non-negative"):
+        torch.repeat_interleave(source, -1, dim=0)
+    with pytest.raises(NotImplementedError, match="dtype"):
+        torch.repeat_interleave(source, torch.tensor([2.5, 1.5]), dim=0)
+    with pytest.raises(RuntimeError, match="same size as input along dim 0"):
+        torch.repeat_interleave(source, torch.tensor([1, 2, 3]), dim=0)
+    with pytest.raises(RuntimeError, match="Invalid output_size"):
+        torch.repeat_interleave(source, torch.tensor([2, 1]), dim=0, output_size=9)
 
 
 def test_batch_repeat_interleave_supports_fake_tensor():

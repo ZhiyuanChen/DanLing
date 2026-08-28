@@ -3773,16 +3773,22 @@ def _offsets_from_packed_lengths(lengths: Tensor) -> Tensor:
     return F.pad(lengths.cumsum(0), (1, 0))
 
 
-def _repeat_packed_sample_segments(values: Tensor, sample_offsets: Tensor, repeats: int) -> Tensor:
-    r"""Repeat complete variable-length sample segments with one packed gather."""
-    if repeats == 0:
+def _repeat_packed_sample_segments(values: Tensor, sample_offsets: Tensor, repeats: int | Tensor) -> Tensor:
+    r"""Repeat complete variable-length sample segments with one packed gather.
+
+    ``repeats`` is either an int applied to every segment or a 1-D tensor of per-segment
+    counts. The int form keeps the output size symbolic so the gather stays compile-safe.
+    """
+    if isinstance(repeats, int) and repeats == 0:
         return values[:0]
     sample_lengths = sample_offsets[1:] - sample_offsets[:-1]
     output_lengths = sample_lengths.repeat_interleave(repeats)
     output_offsets = _offsets_from_packed_lengths(output_lengths)
     source_starts = sample_offsets[:-1].repeat_interleave(repeats)
     adjustments = source_starts - output_offsets[:-1]
-    output_size = values.shape[0] * repeats
+    output_size = values.shape[0] * repeats if isinstance(repeats, int) else int(output_offsets[-1])
+    if output_size == 0:
+        return values[:0]
     gather = torch.arange(output_size, dtype=torch.long, device=values.device)
     gather = gather + torch.repeat_interleave(
         adjustments.to(device=values.device),
@@ -3794,7 +3800,7 @@ def _repeat_packed_sample_segments(values: Tensor, sample_offsets: Tensor, repea
 
 def _repeat_packed_ragged_offsets(
     source_offsets: tuple[Tensor, ...],
-    repeats: int,
+    repeats: int | Tensor,
 ) -> tuple[Tensor, ...]:
     r"""Repeat every sample subtree in a tensor-backed ragged hierarchy."""
     sample_parent_offsets = torch.arange(
@@ -3811,18 +3817,51 @@ def _repeat_packed_ragged_offsets(
     return tuple(output_offsets)
 
 
+def _normalize_batch_repeats(input: NestedTensor, repeats) -> tuple[int | Tensor, int]:
+    r"""
+    Validate batch repeats and report the resulting batch size.
+
+    ``repeats`` is either a non-negative int applied to every element, or a 1-D tensor of
+    per-element counts, one per element of the batch. A 0-d tensor is treated as an int.
+    """
+    if isinstance(repeats, Tensor) and repeats.dim() > 0:
+        if _is_compiling():
+            # The output batch size is the sum of the counts, so it cannot be known symbolically.
+            _compile_unsupported("torch.repeat_interleave", "per-element batch repeats are eager-only")
+        # Casting a float or bool tensor to long would round counts away silently, so refuse the
+        # dtype the way the dense operator does rather than repeating a truncated number of times.
+        if repeats.dtype == torch.bool or repeats.is_floating_point() or repeats.is_complex():
+            raise NotImplementedError(f"repeat_interleave is not implemented for repeats of dtype {repeats.dtype}")
+        if repeats.numel() != len(input):
+            raise RuntimeError(
+                "repeat_interleave: repeats must have the same size as input along dim 0, "
+                f"but got {repeats.numel()} and {len(input)}"
+            )
+        if bool((repeats < 0).any()):
+            raise RuntimeError("Repeats must be non-negative")
+        # The packed helpers index offsets and physical shapes that live on the tensor's device,
+        # so a repeats vector supplied on another device must be moved before it is used.
+        repeats = repeats.to(device=input._values.device, dtype=torch.long)
+        return repeats, int(repeats.sum())
+    if isinstance(repeats, Tensor):
+        if repeats.dtype == torch.bool or repeats.is_floating_point() or repeats.is_complex():
+            raise NotImplementedError(f"repeat_interleave is not implemented for repeats of dtype {repeats.dtype}")
+        repeats = int(repeats)
+    if not isinstance(repeats, int) or isinstance(repeats, bool):
+        raise TypeError("NestedTensor batch repeat_interleave requires repeats to be an int or a 1-D tensor")
+    if repeats < 0:
+        raise RuntimeError("Repeats must be non-negative")
+    return repeats, len(input) * repeats
+
+
 def _repeat_interleave_packed_batch(
     input: NestedTensor,
-    repeats: int,
+    repeats: int | Tensor,
     *,
     output_size: int | None,
 ) -> NestedTensor:
     r"""Repeat the logical batch axis while keeping every element padding-free."""
-    if not isinstance(repeats, int) or isinstance(repeats, bool):
-        raise TypeError("NestedTensor batch repeat_interleave requires repeats to be an int")
-    if repeats < 0:
-        raise RuntimeError("Repeats must be non-negative")
-    expected_output_size = len(input) * repeats
+    repeats, expected_output_size = _normalize_batch_repeats(input, repeats)
     if output_size is not None and output_size != expected_output_size:
         raise RuntimeError(
             f"repeat_interleave: Invalid output_size, expected {expected_output_size} but got {output_size}"
@@ -3883,9 +3922,10 @@ def repeat_interleave(input, repeats, dim=None, *, output_size=None):
     r"""
     Apply [torch.repeat_interleave][] to each element of a NestedTensor.
 
-    ``dim=None`` flattens each element before repeating. A scalar integer repeat
-    on the logical batch dimension duplicates complete packed samples. Other
-    dimensions are translated to skip the batch dimension.
+    ``dim=None`` flattens each element before repeating. On the logical batch dimension a
+    scalar integer duplicates every packed sample, while a 1-D tensor gives a per-element
+    count, so ``repeats=torch.tensor([2, 1])`` keeps the first element twice and the second
+    once. Other dimensions are translated to skip the batch dimension.
     """
     from .aten_functions import _packed_new_dim_size
 
