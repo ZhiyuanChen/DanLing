@@ -4571,6 +4571,32 @@ class TestInversePermutation:
             inverse_permutation(nested)
 
 
+class TestRank:
+
+    @pytest.mark.parametrize("descending", [False, True])
+
+    @pytest.mark.parametrize("descending", [False, True])
+    def test_rank_matches_double_argsort(self, device, float_dtype, descending):
+        from danling.tensors import rank
+
+        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 0, 5)]
+        nested = NT(elements, ragged_dims=(0,))
+
+        output = rank(nested, dim=1, descending=descending)
+        expected = NT(
+            [
+                torch.argsort(
+                    torch.argsort(element, dim=0, stable=True, descending=descending),
+                    dim=0,
+                )
+                for element in elements
+            ],
+            ragged_dims=(0,),
+        )
+
+        assert_close(output, expected)
+
+
 class TestUnaryBinaryMath:
 
     def test_unary_tensor_method_values_and_vjp(self):

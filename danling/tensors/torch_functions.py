@@ -1363,6 +1363,42 @@ def inverse_permutation(input: NestedTensor, dim: int = -1) -> NestedTensor:
     return input._packed_like_unchecked(inverse.to(input._values.dtype))
 
 
+def rank(input: NestedTensor, dim: int = -1, *, descending: bool = False) -> NestedTensor:
+    r"""
+    Position of each element within its own sample.
+
+    The inverse of the sample-local argsort: where ``argsort`` answers "which element belongs
+    at position i", ``rank`` answers "at which position does element i belong". Rank validation
+    asks the second question directly, which is why it gets its own operator.
+
+    Args:
+        input: The values to rank.
+        dim: The ragged dimension.
+        descending: Rank largest first.
+
+    Returns:
+        NestedTensor: Per-sample ranks, a permutation of ``range(n_i)`` for every element.
+
+    Examples:
+        >>> import torch
+        >>> from danling.tensors import NestedTensor, rank
+        >>> nested = NestedTensor(torch.tensor([3.0, 1.0, 2.0]), torch.tensor([5.0, 4.0]))
+        >>> [element.tolist() for element in rank(nested, dim=1)]
+        [[2, 0, 1], [1, 0]]
+    """
+    from .segmented import segmented_sort_perm
+
+    if _translate_dim(input, dim) != 0:
+        raise ValueError("rank applies to the ragged dimension")
+    _, local = segmented_sort_perm(
+        input._values,
+        input._offsets,
+        input.packed_batch_indices(),
+        descending=descending,
+    )
+    return inverse_permutation(input._packed_like_unchecked(local), dim=dim)
+
+
 @NestedTensorFuncRegistry.implement(torch.index_add)
 def index_add(input: NestedTensor, dim: int, index, source, *, alpha=1):
     r"""Out-of-place version of [torch.index_add][]."""
