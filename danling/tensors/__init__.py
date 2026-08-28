@@ -44,6 +44,7 @@ from .nested_tensor import NestedTensor
 from .nn_functions import create_flex_block_mask
 from .ops import NestedTensorAtenRegistry, NestedTensorFuncRegistry, TorchFuncRegistry, nested_execution_guard
 from .pn_tensor import PNTensor, tensor
+from .torch_functions import inverse_permutation
 
 __all__ = [
     "NestedTensor",
@@ -57,6 +58,7 @@ __all__ = [
     "NestedTensorAtenRegistry",
     "nested_execution_guard",
     "create_flex_block_mask",
+    "inverse_permutation",
 ]
 
 

@@ -4539,6 +4539,38 @@ class TestSegmentedCumulative:
             assert_close(result.indices, NT([item.indices for item in expected], ragged_dims=(0,)))
 
 
+class TestInversePermutation:
+
+    def test_inverse_and_round_trip(self, device, float_dtype):
+        from danling.tensors import inverse_permutation
+
+        permutations = [torch.randperm(n, device=device) for n in (3, 0, 5, 2)]
+        values = [torch.randn(n, device=device, dtype=float_dtype) for n in (3, 0, 5, 2)]
+        nested = NT(permutations, ragged_dims=(0,))
+
+        inverse = inverse_permutation(nested)
+        expected = NT([torch.argsort(permutation) for permutation in permutations], ragged_dims=(0,))
+
+        assert_close(inverse, expected)
+        for element, permutation, undo in zip(values, permutations, inverse):
+            assert_close(element[permutation][undo], element)
+
+    @pytest.mark.parametrize(
+        "elements",
+        [
+            (torch.tensor([0, 0, 1]), torch.tensor([1, 0])),
+            (torch.tensor([2.0, 0.0, 1.0]), torch.tensor([1.0, 0.0])),
+        ],
+        ids=["not-bijection", "floating-point"],
+    )
+    def test_invalid_permutation_raises(self, device, elements):
+        from danling.tensors import inverse_permutation
+
+        nested = NT([element.to(device) for element in elements], ragged_dims=(0,))
+        with pytest.raises((RuntimeError, TypeError)):
+            inverse_permutation(nested)
+
+
 class TestUnaryBinaryMath:
 
     def test_unary_tensor_method_values_and_vjp(self):

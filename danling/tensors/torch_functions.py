@@ -1320,6 +1320,49 @@ def gather(input: NestedTensor, dim: int, index, *, sparse_grad: bool = False):
     return NestedTensor(torch.gather(t, dim_adj, index) for t in input._storage)
 
 
+def inverse_permutation(input: NestedTensor, dim: int = -1) -> NestedTensor:
+    r"""
+    Invert a per-sample permutation.
+
+    Given a NestedTensor whose every element is a permutation of ``range(n_i)``, return the
+    permutation that undoes it, so ``values[perm][inverse]`` is ``values`` again.
+
+    This is one scatter. Writing it as ``argsort(argsort(x))`` costs two sorts for the same
+    result, which is why it is worth its own operator.
+
+    Every element must actually be a permutation of ``range(n_i)``; a repeated or missing index
+    is detected and raises ``RuntimeError`` rather than silently returning uninitialized memory.
+
+    Args:
+        input: Per-sample permutations, one per element.
+        dim: The ragged dimension. Only the ragged dimension is meaningful here.
+
+    Returns:
+        NestedTensor: The inverse permutations, with the input's structure.
+
+    Examples:
+        >>> import torch
+        >>> from danling.tensors import NestedTensor, inverse_permutation
+        >>> perm = NestedTensor(torch.tensor([2, 0, 1]), torch.tensor([1, 0]))
+        >>> [element.tolist() for element in inverse_permutation(perm, dim=1)]
+        [[1, 2, 0], [1, 0]]
+    """
+    from .aten_functions import _is_fake_tensor
+
+    if _translate_dim(input, dim) != 0:
+        raise ValueError("inverse_permutation applies to the ragged dimension")
+    batch_idx = input.packed_batch_indices()
+    base = input._offsets.to(batch_idx.device)[batch_idx]
+    positions = torch.arange(input._values.shape[0], device=input._values.device) - base
+    # A sentinel of -1 turns a repeated (and therefore also a missing) index into a slot that
+    # is never written -- an out-of-range index is already caught by scatter_'s own bounds check.
+    inverse = torch.full_like(positions, -1)
+    inverse.scatter_(0, input._values.long() + base, positions)
+    if inverse.numel() > 0 and not _is_fake_tensor(input._values) and bool((inverse < 0).any().item()):
+        raise RuntimeError("inverse_permutation: input must be a permutation of range(n_i) per sample")
+    return input._packed_like_unchecked(inverse.to(input._values.dtype))
+
+
 @NestedTensorFuncRegistry.implement(torch.index_add)
 def index_add(input: NestedTensor, dim: int, index, source, *, alpha=1):
     r"""Out-of-place version of [torch.index_add][]."""
