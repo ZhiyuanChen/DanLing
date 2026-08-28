@@ -4440,16 +4440,24 @@ def cumulative(func, args, kwargs):
                 f"{func._schema.name.split('::')[-1]}",
                 "ragged-dimension cumulative ops are eager-only under compile",
             )
-        if func is aten.cumsum.default:
-            neutral = 0
-        elif func is aten.cumprod.default:
-            neutral = 1
-        else:
-            # logcumsumexp identity: log(0) == -inf
-            neutral = float("-inf")
-        padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(source, fill_value=neutral)
-        out_padded = func(padded, 1, *extra_args, **kwargs)
-        return source._packed_like_unchecked(out_padded[batch_idx, local_idx])
+        # cumsum returned above through its own packed path; only cumprod and logcumsumexp
+        # arrive here. Neither has a usable inverse, so they need a real segmented scan rather
+        # than the global-scan-and-correct trick cumsum uses.
+        from .segmented import segmented_scan
+
+        values = source._values
+        dtype = kwargs.pop("dtype", None)
+        if dtype is not None:
+            # Match the dense op's contract: cast the input before accumulating, not the
+            # accumulated result afterward — this is also what guards against overflow during
+            # accumulation, and the two orders are not numerically equivalent.
+            values = values.to(dtype=dtype)
+        if extra_args or kwargs:
+            raise TypeError(
+                f"{func._schema.name.split('::')[-1]}() got unexpected arguments {extra_args!r}, {kwargs!r}"
+            )
+        combine = torch.mul if func is aten.cumprod.default else torch.logaddexp
+        return source._packed_like_unchecked(segmented_scan(values, source.packed_batch_indices(), combine))
     return per_element_fallback(func, (source, dim_adj, *extra_args), kwargs)
 
 
@@ -4496,13 +4504,18 @@ def cumulative_pair(func, args, kwargs):
                 f"{func._schema.name.split('::')[-1]}",
                 "ragged-dimension cumulative ops are eager-only under compile",
             )
+        from .segmented import segmented_arg_scan
+
+        if kwargs:
+            # aten.cummax/cummin.default take no keyword arguments besides `dim` (already
+            # popped above), so this should be unreachable; raise rather than drop silently.
+            raise TypeError(f"{func._schema.name.split('::')[-1]}() got unexpected arguments {kwargs!r}")
         largest = func is aten.cummax.default
-        fill_value = _topk_fill_value(source._values.dtype, largest=largest)
-        padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(source, fill_value=fill_value)
-        vals, idxs = func(padded, 1, **kwargs)
-        return source._packed_like_unchecked(vals[batch_idx, local_idx]), source._packed_like_unchecked(
-            idxs[batch_idx, local_idx]
-        )
+        batch_idx = source.packed_batch_indices()
+        offsets = source._offsets.to(device=source._values.device, dtype=torch.long)
+        local_idx = torch.arange(source._values.shape[0], device=source._values.device) - offsets[batch_idx]
+        values, indices = segmented_arg_scan(source._values, batch_idx, local_idx, largest=largest)
+        return source._packed_like_unchecked(values), source._packed_like_unchecked(indices)
     return per_element_fallback(func, (source, dim_adj), kwargs)
 
 

@@ -4513,6 +4513,32 @@ class TestSegmentedSort:
             torch.topk(nested, 4, dim=1)
 
 
+class TestSegmentedCumulative:
+
+    def test_cumprod_and_logcumsumexp_match_per_element(self, device, float_dtype):
+        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 0, 5)]
+        nested = NT(elements, ragged_dims=(0,))
+
+        assert_close(
+            torch.cumprod(nested, dim=1),
+            NT([torch.cumprod(element, dim=0) for element in elements], ragged_dims=(0,)),
+        )
+        assert_close(
+            torch.logcumsumexp(nested, dim=1),
+            NT([torch.logcumsumexp(element, dim=0) for element in elements], ragged_dims=(0,)),
+        )
+
+    def test_cummax_and_cummin_values_and_indices(self, device, float_dtype):
+        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 1, 5)]
+        nested = NT(elements, ragged_dims=(0,))
+
+        for op in (torch.cummax, torch.cummin):
+            result = op(nested, dim=1)
+            expected = [op(element, dim=0) for element in elements]
+            assert_close(result.values, NT([item.values for item in expected], ragged_dims=(0,)))
+            assert_close(result.indices, NT([item.indices for item in expected], ragged_dims=(0,)))
+
+
 class TestUnaryBinaryMath:
 
     def test_unary_tensor_method_values_and_vjp(self):

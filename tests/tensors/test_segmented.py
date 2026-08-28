@@ -105,6 +105,22 @@ class TestSegmentedScan:
         torch.testing.assert_close(values, torch.cat([reference.values for reference in references]))
         assert torch.equal(indices, torch.cat([reference.indices for reference in references]))
 
+    @pytest.mark.parametrize("largest", [False, True], ids=["cummin", "cummax"])
+    def test_arg_scan_matches_tie_semantics(self, largest):
+        nested = NestedTensor(
+            [torch.tensor([0.0, 0.0, 2.0]), torch.tensor([3.0, 3.0, 1.0])]
+        )
+
+        values, indices = segmented_arg_scan(
+            nested.concat,
+            nested.packed_batch_indices(),
+            nested.packed_local_indices(),
+            largest=largest,
+        )
+
+        references = [(torch.cummax(element, 0) if largest else torch.cummin(element, 0)) for element in nested]
+        torch.testing.assert_close(values, torch.cat([reference.values for reference in references]))
+        assert torch.equal(indices, torch.cat([reference.indices for reference in references]))
 
     def test_empty_input(self):
         empty = torch.zeros(0)
