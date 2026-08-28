@@ -4496,6 +4496,78 @@ class TestStackFunction:
 
 class TestUnaryBinaryMath:
 
+    @pytest.mark.parametrize(
+        "method_name",
+        [
+            "abs",
+            "neg",
+            "reciprocal",
+            "sqrt",
+            "square",
+            "exp",
+            "log",
+            "sin",
+            "cos",
+            "tanh",
+            "sigmoid",
+            "relu",
+            "erf",
+        ],
+    )
+    def test_unary_tensor_methods_preserve_autograd(self, method_name):
+        template = NestedTensor(
+            [torch.empty(2, 2, 4), torch.empty(3, 3, 4)],
+            ragged_dims=(0, 1),
+        ).transpose(1, 2)
+        packed_values = (torch.rand_like(template.concat) + 0.5).requires_grad_()
+        expected_values = packed_values.detach().clone().requires_grad_()
+        input_ = template.packed_like(packed_values)
+
+        output = getattr(input_, method_name)()
+        expected = getattr(expected_values, method_name)()
+        grad_output = torch.randn_like(expected)
+        actual_gradient = torch.autograd.grad(output.concat, packed_values, grad_output)[0]
+        expected_gradient = torch.autograd.grad(expected, expected_values, grad_output)[0]
+
+        assert output.concat.requires_grad
+        assert output.concat.grad_fn is not None
+        assert_close(output.concat, expected)
+        assert_close(actual_gradient, expected_gradient)
+
+    @pytest.mark.parametrize("transposed", [False, True], ids=["canonical", "transposed"])
+    def test_sigmoid_head_split_merge_reuses_one_dynamic_fullgraph(self, transposed):
+        from torch._dynamo.testing import CompileCounter
+
+        counter = CompileCounter()
+
+        def run(source, weight):
+            projected = F.linear(source, weight).sigmoid().unflatten(-1, (2, 4))
+            return projected.flatten(-2).concat.square().sum()
+
+        compiled = torch.compile(run, backend=counter, fullgraph=True, dynamic=True)
+        for lengths in ((2, 3), (3, 5)):
+            template = NestedTensor(
+                [torch.empty(length, length, 8) for length in lengths],
+                ragged_dims=(0, 1),
+            )
+            if transposed:
+                template = template.transpose(1, 2)
+            packed_values = torch.randn_like(template.concat, requires_grad=True)
+            source = template.packed_like(packed_values)
+            weight = torch.randn(8, 8, requires_grad=True)
+            with nested_execution_guard(
+                forbid_iteration=True,
+                forbid_storage_map=True,
+                forbid_eager_fallback=True,
+                forbid_padded_materialization=True,
+                forbid_dense_repack=True,
+            ):
+                loss = compiled(source, weight)
+            input_gradient, weight_gradient = torch.autograd.grad(loss, (packed_values, weight))
+            assert input_gradient is not None
+            assert weight_gradient is not None
+        assert counter.frame_count == 1
+
     def test_addcdiv(self, device, float_dtype):
         nt = NestedTensor(
             [
