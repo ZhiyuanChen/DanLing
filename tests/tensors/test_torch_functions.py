@@ -207,6 +207,62 @@ class TestArithmeticFunctions:
             assert output._packed_sizes == lhs._packed_sizes
             assert output._values.shape[0] == sum(output._packed_sizes)
 
+    @pytest.mark.parametrize(
+        ("lhs_shapes", "rhs_shapes"),
+        [
+            (((2, 2, 1), (3, 3, 1)), ((2, 2, 4), (3, 3, 4))),
+            (((2, 2, 1), (2, 3, 1)), ((2, 2, 4), (2, 3, 4))),
+        ],
+        ids=("multi-ragged", "permuted-ragged"),
+    )
+    def test_nested_static_broadcast_values_and_shapes(
+        self,
+        device,
+        float_dtype,
+        lhs_shapes,
+        rhs_shapes,
+    ):
+        lhs_parts = [torch.randn(shape, device=device, dtype=float_dtype) for shape in lhs_shapes]
+        rhs_parts = [torch.randn(shape, device=device, dtype=float_dtype) for shape in rhs_shapes]
+        lhs = NT(lhs_parts)
+        rhs = NT(rhs_parts)
+        bias = torch.randn(4, device=device, dtype=float_dtype)
+
+        for output, reference_parts in (
+            (torch.add(lhs, rhs), [x + y for x, y in zip(lhs_parts, rhs_parts)]),
+            (torch.add(lhs, bias), [x + bias for x in lhs_parts]),
+        ):
+            assert_close(output, NT(reference_parts, **reference_options(lhs)))
+            assert [tuple(element.shape) for element in output] == list(rhs_shapes)
+            assert output.ragged_dims == rhs.ragged_dims
+
+    def test_nested_singleton_ragged_broadcast_values_and_vjp(self, device, float_dtype):
+        shapes = ((2, 3), (4, 5))
+        channels = 4
+        lhs_parts = [torch.randn(m, n, channels, device=device, dtype=float_dtype) for m, n in shapes]
+        rhs_parts = [torch.randn(n, channels, device=device, dtype=float_dtype) for _m, n in shapes]
+        lhs_values = torch.cat([part.reshape(-1, channels) for part in lhs_parts]).requires_grad_()
+        rhs_values = torch.cat(rhs_parts).requires_grad_()
+        lhs = NT([torch.empty_like(part) for part in lhs_parts], ragged_dims=(0, 1)).packed_like(lhs_values)
+        rhs = NT([torch.empty_like(part) for part in rhs_parts], ragged_dims=(0,)).packed_like(rhs_values).unsqueeze(-3)
+
+        added = lhs + rhs
+        lhs_minus_rhs = lhs - rhs
+        rhs_minus_lhs = rhs - lhs
+
+        expected_add = torch.cat([(left + right).reshape(-1, channels) for left, right in zip(lhs_parts, rhs_parts)])
+        expected_sub = torch.cat([(left - right).reshape(-1, channels) for left, right in zip(lhs_parts, rhs_parts)])
+        assert_close(added.concat, expected_add)
+        assert_close(lhs_minus_rhs.concat, expected_sub)
+        assert_close(rhs_minus_lhs.concat, -expected_sub)
+        assert added.ragged_dims == lhs.ragged_dims
+        assert_close(added.element_sizes(), lhs.element_sizes())
+
+        lhs_grad, rhs_grad = torch.autograd.grad(added.concat.sum(), (lhs_values, rhs_values))
+        expected_rhs_grad = torch.cat([torch.full_like(right, m) for (m, _n), right in zip(shapes, rhs_parts)])
+        assert_close(lhs_grad, torch.ones_like(lhs_values))
+        assert_close(rhs_grad, expected_rhs_grad)
+
     def test_dense_vector_broadcast_rejects_ragged_final_physical_dim(self, device, float_dtype):
         parts = [
             torch.arange(4, device=device, dtype=float_dtype).reshape(4, 1),
