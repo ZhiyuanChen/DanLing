@@ -1399,6 +1399,36 @@ def rank(input: NestedTensor, dim: int = -1, *, descending: bool = False) -> Nes
     return inverse_permutation(input._packed_like_unchecked(local), dim=dim)
 
 
+def cumcount(input: NestedTensor, dim: int = -1) -> NestedTensor:
+    r"""
+    Ordinal of each element within its own sample.
+
+    A per-sample ``arange``: the position every packed handler derives internally from the
+    offsets. There is no torch spelling for it, so callers would otherwise re-derive the
+    offsets by hand.
+
+    Args:
+        input: Any NestedTensor; only its layout is read.
+        dim: The ragged dimension.
+
+    Returns:
+        NestedTensor: Per-sample positions, with the input's structure and an integer dtype.
+
+    Examples:
+        >>> import torch
+        >>> from danling.tensors import NestedTensor, cumcount
+        >>> nested = NestedTensor(torch.tensor([9.0, 8.0, 7.0]), torch.tensor([6.0, 5.0]))
+        >>> [element.tolist() for element in cumcount(nested, dim=1)]
+        [[0, 1, 2], [0, 1]]
+    """
+    if _translate_dim(input, dim) != 0:
+        raise ValueError("cumcount applies to the ragged dimension")
+    batch_idx = input.packed_batch_indices()
+    offsets = input._offsets.to(device=batch_idx.device, dtype=torch.long)
+    positions = torch.arange(input._values.shape[0], device=input._values.device) - offsets[batch_idx]
+    return input._packed_like_unchecked(positions)
+
+
 @NestedTensorFuncRegistry.implement(torch.index_add)
 def index_add(input: NestedTensor, dim: int, index, source, *, alpha=1):
     r"""Out-of-place version of [torch.index_add][]."""

@@ -4597,6 +4597,20 @@ class TestRank:
         assert_close(output, expected)
 
 
+class TestCumcount:
+
+    def test_counts_within_each_sample_and_static_tail(self, device, float_dtype):
+        from danling.tensors import cumcount
+
+        elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 0, 5)]
+        nested = NT(elements, ragged_dims=(0,))
+        expected = [
+            torch.arange(element.shape[0], device=device).view(-1, 1).expand_as(element) for element in elements
+        ]
+
+        assert_close(cumcount(nested), NT(expected, ragged_dims=(0,)))
+
+
 class TestUnaryBinaryMath:
 
     def test_unary_tensor_method_values_and_vjp(self):
