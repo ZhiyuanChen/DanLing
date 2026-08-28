@@ -4391,6 +4391,52 @@ class TestStackFunction:
 
 class TestUnaryBinaryMath:
 
+    def test_unary_tensor_method_values_and_vjp(self):
+        template = NestedTensor(
+            [torch.empty(2, 2, 4), torch.empty(3, 3, 4)],
+            ragged_dims=(0, 1),
+        ).transpose(1, 2)
+        packed_values = (torch.rand_like(template.concat) + 0.5).requires_grad_()
+        expected_values = packed_values.detach().clone().requires_grad_()
+        input_ = template.packed_like(packed_values)
+
+        output = input_.sigmoid()
+        expected = expected_values.sigmoid()
+        grad_output = torch.randn_like(expected)
+        actual_gradient = torch.autograd.grad(output.concat, packed_values, grad_output)[0]
+        expected_gradient = torch.autograd.grad(expected, expected_values, grad_output)[0]
+
+        assert_close(output.concat, expected)
+        assert_close(actual_gradient, expected_gradient)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_sigmoid_head_split_merge_compiles_with_vjp(self):
+        def run(template, values, weight):
+            source = template.packed_like(values)
+            projected = F.linear(source, weight).sigmoid().unflatten(-1, (2, 4))
+            return projected.flatten(-2).concat.square().sum()
+
+        compiled = torch.compile(run, backend="aot_eager", fullgraph=True)
+        template = NestedTensor(
+            [torch.empty(2, 2, 8), torch.empty(3, 3, 8)],
+            ragged_dims=(0, 1),
+        ).transpose(1, 2)
+        packed_values = torch.randn_like(template.concat, requires_grad=True)
+        expected_values = packed_values.detach().clone().requires_grad_()
+        weight = torch.randn(8, 8, requires_grad=True)
+        expected_weight = weight.detach().clone().requires_grad_()
+
+        loss = compiled(template, packed_values, weight)
+        expected_loss = (
+            F.linear(expected_values, expected_weight).sigmoid().unflatten(-1, (2, 4)).flatten(-2).square().sum()
+        )
+        gradients = torch.autograd.grad(loss, (packed_values, weight))
+        expected_gradients = torch.autograd.grad(expected_loss, (expected_values, expected_weight))
+
+        assert_close(loss, expected_loss)
+        for actual, expected in zip(gradients, expected_gradients, strict=True):
+            assert_close(actual, expected)
+
     def test_addcdiv(self, device, float_dtype):
         nt = NestedTensor(
             [

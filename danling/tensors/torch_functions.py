@@ -4666,11 +4666,20 @@ TORCH_INPLACE_METHOD_MAP = {
 # @NestedTensorFuncRegistry.implement(...) decorators above handle 1:1 ops.
 # ---------------------------------------------------------------------------
 
+_TENSOR_UNARY_ELEMENTWISE_METHODS = tuple(
+    dict.fromkeys(
+        method
+        for op in TORCH_UNARY_ELEMENTWISE_OPS
+        if (method := getattr(torch.Tensor, op.__name__, None)) is not None
+    )
+)
+
 _TORCH_HANDLER_TABLE: list[tuple] = [
     # _elementwise_binary_handler — bypasses aten decomposition for direct packed operation
     *((op, _elementwise_binary_handler) for op in TORCH_BINARY_ELEMENTWISE_OPS if op not in NestedTensorFuncRegistry),
     # _elementwise_unary_handler — bypasses aten decomposition for direct packed operation
     *((op, _elementwise_unary_handler) for op in TORCH_UNARY_ELEMENTWISE_OPS if op not in NestedTensorFuncRegistry),
+    *((op, _elementwise_unary_handler) for op in _TENSOR_UNARY_ELEMENTWISE_METHODS if op not in NestedTensorFuncRegistry),
     # _inplace_binary_torch_handler — converts operands before aten in-place dispatch
     *((op, _inplace_binary_torch_handler) for op, _ in TORCH_INPLACE_METHOD_MAP.items()),
     # _make_simple_reduce_handler — simple reductions delegating to _reduce
