@@ -255,3 +255,26 @@ class TestStackOrNest:
         assert_close = torch.testing.assert_close
         assert_close(output[0], values[0])
         assert_close(output[1], values[1])
+
+
+class TestDenseBinaryOperands:
+
+    def test_dense_operand_matching_concat_shape_is_elementwise(self):
+        nt = NT([torch.randn(2, 3), torch.randn(4, 3)])
+        dense = torch.randn_like(nt.concat)
+
+        output = nt * dense
+
+        torch.testing.assert_close(output.concat, nt.concat * dense)
+        assert [tuple(element.shape) for element in output] == [(2, 3), (4, 3)]
+
+    def test_per_element_dense_broadcast(self):
+        # (B, 1, ragged_N, C) against a (B, S, 1, C) term: each element pairs with its own slice.
+        nt = NT([torch.randn(1, 2, 3), torch.randn(1, 4, 3)])
+        dense = torch.randn(2, 5, 1, 3)
+
+        output = nt + dense
+        assert isinstance(output, NestedTensor)
+        assert len(output) == 2
+        for index, element in enumerate(output):
+            torch.testing.assert_close(element, nt[index] + dense[index])

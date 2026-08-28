@@ -336,6 +336,13 @@ def _resolve_dense_for_values(nt: NestedTensor, other) -> Tensor | None:
     if len(nt) == 0 or nt._values.dim() == 0:
         return None
 
+    # A dense operand shaped exactly like the packed values is elementwise on them, which is what a
+    # danling op that concatenated this same tensor produces (e.g. F.cross_entropy(reduction="none")).
+    # The match covers packed dim 0, whose extent is data-dependent, so it cannot be a coincidental
+    # collision with a ragged maximum.
+    if other.shape == nt._values.shape:
+        return other
+
     if not _is_packed_identity(nt):
         # A one-dimensional operand can only address the final packed/static
         # dimension, so its meaning is unambiguous even when ragged dimensions
@@ -902,7 +909,10 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
         if len(input) == 0:
             raise ValueError("Empty NestedTensor operands have incompatible retained layouts")
 
-        lhs_s, rhs_s = (other._storage, input._storage) if reverse else (input._storage, other._storage)
+        # Re-derive elements with _unpack() rather than reading _storage: _cached_storage is filled on
+        # first access and keeps whatever it saw, so a cache populated under no_grad (or below the
+        # autograd layer) holds detached views that would silently cut autograd on this path.
+        lhs_s, rhs_s = (other._unpack(), input._unpack()) if reverse else (input._unpack(), other._unpack())
         return cls(
             (op(x, y, *extra_args, **extra_kwargs) for x, y in zip(lhs_s, rhs_s)),
             batch_first=input.batch_first,
@@ -915,6 +925,25 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
         broadcast_up = _binary_dense_padded_broadcast(input, other, op, reverse, extra_args, extra_kwargs)
         if broadcast_up is not None:
             return broadcast_up
+        # A dense operand led by the batch dim whose remaining dims only broadcast per element, such as
+        # a (B, S, 1, C) noise term against a (B, 1, ragged_N, C) tensor. Packed values interleave the
+        # elements on dim 0, so no single packed broadcast applies and each element pairs with its own
+        # slice. _unpack() again, for the same autograd reason as the nested-nested path above.
+        if isinstance(other, Tensor) and other.dim() >= 1 and other.shape[0] == len(input):
+            pairs = zip(input._unpack(), other.unbind(0))
+            return type(input)(
+                [
+                    (
+                        op(slice_, element, *extra_args, **extra_kwargs)
+                        if reverse
+                        else op(element, slice_, *extra_args, **extra_kwargs)
+                    )
+                    for element, slice_ in pairs
+                ],
+                batch_first=input.batch_first,
+                padding_value=input.padding_value,
+                mask_value=input.mask_value,
+            )
         raise NotImplementedError(
             "NestedTensor binary op with non-scalar Tensor operand that is neither shape-aligned nor "
             f"broadcast-compatible with packed values: values shape {input._values.shape}, tensor shape {other.shape}"
