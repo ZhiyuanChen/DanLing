@@ -1151,10 +1151,11 @@ def unbind(input: NestedTensor, dim: int = 0):
 
     Args:
         input: The input NestedTensor.
-        dim: Dimension to remove (only batch dimension is supported).
+        dim: Dimension to remove. Must be the batch dimension or a static (non-ragged) one.
 
     Returns:
-        list[Tensor]: List of tensors from the storage.
+        list[Tensor]: Elements of the storage, when unbinding the batch dimension.
+        list[NestedTensor]: Slices sharing the original raggedness, for a static dimension.
 
     Examples:
         >>> import torch
@@ -1163,12 +1164,32 @@ def unbind(input: NestedTensor, dim: int = 0):
         >>> out = torch.unbind(nt, dim=0)
         >>> torch.equal(out[0], nt[0]) and torch.equal(out[1], nt[1])
         True
+        >>> wide = NestedTensor(torch.ones(2, 3), torch.ones(4, 3))
+        >>> [tuple(part.shape) for part in torch.unbind(wide, dim=2)]
+        [(2, 4), (2, 4), (2, 4)]
     """
     dim = _normalize_dim(dim, input.dim())
     batch_dim = _get_batch_dim(input)
-    if dim != batch_dim:
-        raise NotImplementedError("torch.unbind for NestedTensor only supports unbinding along the batch dimension.")
-    return input._storage
+    if dim == batch_dim:
+        return input._storage
+    # A static dim has the same extent in every element, so it splits into uniform slices that each
+    # keep the original raggedness. A ragged dim varies per element and has no such uniform split.
+    element_dim = dim - 1 if dim > batch_dim else dim
+    if element_dim in input._varying_dims:
+        raise NotImplementedError(
+            "torch.unbind for NestedTensor supports the batch dimension or a static (non-ragged) dimension, "
+            "not a ragged dimension."
+        )
+    parts = [element.unbind(element_dim) for element in input._storage]
+    meta = dict(input._meta())
+    declared = meta.get("ragged_dims")
+    if declared is not None:
+        # Removing an element dimension renumbers every dimension after it, so a declared
+        # topology has to be projected onto the reduced rank. Passing the source's indices
+        # through unchanged makes them describe the wrong axes, and any index equal to the
+        # old rank falls outside it entirely.
+        meta["ragged_dims"] = tuple(d - 1 if d > element_dim else d for d in declared)
+    return [type(input)([part[index] for part in parts], **meta) for index in range(input.size(dim))]
 
 
 # Dropout & Sampling
