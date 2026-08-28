@@ -743,8 +743,10 @@ class NestedTensor(torch.Tensor):
 
             if any(statically_known_true(lhs_size != rhs_size) for lhs_size, rhs_size in zip(lhs.shape, rhs.shape)):
                 return False
-            if not runtime_assert and not _is_compiling() and all(
-                statically_known_true(lhs_size == rhs_size) for lhs_size, rhs_size in zip(lhs.shape, rhs.shape)
+            if (
+                not runtime_assert
+                and not _is_compiling()
+                and all(statically_known_true(lhs_size == rhs_size) for lhs_size, rhs_size in zip(lhs.shape, rhs.shape))
             ):
                 # Standalone FakeTensor execution has nowhere to retain a runtime
                 # value assertion. Preserve the conservative eager-Fake contract
@@ -1187,22 +1189,21 @@ class NestedTensor(torch.Tensor):
         if ragged_offsets is None:
             return
 
-        # Match PyTorch's jagged NestedTensor convention.  The propagated
-        # attribute is intentionally unguarded and lets a NestedTensor cross a
-        # graph boundary without specializing its ragged or packed extent.
-        wrapper_dynamic = set(getattr(self, "_dynamo_propagated_dynamic_indices", ()))
+        # Go through the public marker rather than writing the private attribute behind it, so
+        # the mark keeps working if PyTorch renames its bookkeeping. This is the same call
+        # torch's own jagged NestedTensor makes for its ragged dim: a hint that a dimension may
+        # vary, which lets a NestedTensor cross a graph boundary without specializing its ragged
+        # or packed extent. The stricter `mark_dynamic` is wrong here because it asserts the
+        # dimension really is dynamic, and layouts whose ragged extent is fixed would fail it.
+        from torch._dynamo import maybe_mark_dynamic
+
         for physical_dim in self._ragged_dims:
             logical_dim = physical_dim + 1 if self.batch_first or physical_dim > 0 else physical_dim
-            wrapper_dynamic.add(logical_dim)
-        self._dynamo_propagated_dynamic_indices = wrapper_dynamic
+            maybe_mark_dynamic(self, logical_dim)
         if mark_values:
-            values_dynamic = set(getattr(self._values, "_dynamo_propagated_dynamic_indices", ()))
-            values_dynamic.add(0)
-            self._values._dynamo_propagated_dynamic_indices = values_dynamic
+            maybe_mark_dynamic(self._values, 0)
         for level_offsets in ragged_offsets:
-            offsets_dynamic = set(getattr(level_offsets, "_dynamo_propagated_dynamic_indices", ()))
-            offsets_dynamic.add(0)
-            level_offsets._dynamo_propagated_dynamic_indices = offsets_dynamic
+            maybe_mark_dynamic(level_offsets, 0)
 
     def _values_cache_token(self) -> tuple[int, ...]:
         r"""Return a cache token for views that depend on packed values and layout metadata.
@@ -1863,11 +1864,7 @@ class NestedTensor(torch.Tensor):
         if offsets.device == target_device and offsets.dtype == target_dtype:
             return offsets
         device_key = type(self)._offset_conversion_device_key(target_device)
-        key = (
-            None
-            if device_key is None
-            else (int(level), device_key, target_dtype, self._shape_cache_token())
-        )
+        key = None if device_key is None else (int(level), device_key, target_dtype, self._shape_cache_token())
         if key is not None and self._cached_ragged_level_offsets is not None:
             cached = self._cached_ragged_level_offsets.get(key)
             if cached is not None:

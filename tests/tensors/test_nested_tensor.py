@@ -901,7 +901,7 @@ class TestPackedWithLengths:
             dynamic=True,
         )
 
-        for lengths_tuple in ((2, 4),):
+        for lengths_tuple in ((2, 4), (3, 5)):
             packed_values = torch.randn(sum(lengths_tuple), 7, requires_grad=True)
             loss = compiled(reference, packed_values, torch.tensor(lengths_tuple))
             loss.backward()
@@ -915,6 +915,7 @@ class TestPackedWithLengths:
             lambda ref, values, lengths: ref.packed_with_lengths(values, lengths).concat,
             backend="aot_eager",
             fullgraph=True,
+            dynamic=True,
         )
 
         assert compiled(reference, torch.randn(6, 7), torch.tensor([2, 4])).shape == (6, 7)
