@@ -2739,3 +2739,111 @@ class TestUnfoldFold:
         output = F.fold(unfolded, output_size=(3, 3), kernel_size=2, stride=1)
         reference = NT([F.fold(t, output_size=(3, 3), kernel_size=2, stride=1) for t in unfolded], **unfolded._meta())
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
+
+
+class TestCrossEntropy:
+    r"""Class-last cross entropy, which keeps ragged structure that the generic loss path flattens."""
+
+    @staticmethod
+    def _logits_and_targets(device, float_dtype):
+        logits = NestedTensor(
+            [
+                torch.randn(2, 5, device=device, dtype=float_dtype),
+                torch.randn(3, 5, device=device, dtype=float_dtype),
+            ]
+        )
+        targets = NestedTensor(
+            [
+                torch.randint(0, 5, (2,), device=device),
+                torch.randint(0, 5, (3,), device=device),
+            ]
+        )
+        return logits, targets
+
+    @pytest.mark.parametrize("reduction", ["mean", "sum"])
+    def test_matches_dense_on_packed_rows(self, device, float_dtype, reduction):
+        # A 2-D element is (rows, C), where class-last and the dense class-dim-1 convention coincide.
+        logits, targets = self._logits_and_targets(device, float_dtype)
+        output = F.cross_entropy(logits, targets, reduction=reduction)
+        reference = F.cross_entropy(logits.concat, targets.concat, reduction=reduction)
+        torch.testing.assert_close(output, reference)
+
+    def test_weight_and_ignore_index_match_dense(self, device, float_dtype):
+        logits, targets = self._logits_and_targets(device, float_dtype)
+        weight = torch.rand(5, device=device, dtype=float_dtype)
+        ignore_index = int(targets[0][0])
+
+        kwargs = {"weight": weight, "ignore_index": ignore_index}
+        torch.testing.assert_close(
+            F.cross_entropy(logits, targets, **kwargs),
+            F.cross_entropy(logits.concat, targets.concat, **kwargs),
+        )
+
+    def test_reduction_none_keeps_multi_ragged_structure(self, device, float_dtype):
+        # The generic path concatenates into one (rows, C) matrix, which flattens this away.
+        logits = NestedTensor(
+            [
+                torch.randn(2, 2, 5, device=device, dtype=float_dtype),
+                torch.randn(3, 3, 5, device=device, dtype=float_dtype),
+            ]
+        )
+        targets = NestedTensor(
+            [
+                torch.randint(0, 5, (2, 2), device=device),
+                torch.randint(0, 5, (3, 3), device=device),
+            ]
+        )
+        output = F.cross_entropy(logits, targets, reduction="none")
+        assert isinstance(output, NestedTensor)
+        assert [tuple(element.shape) for element in output] == [(2, 2), (3, 3)]
+
+        reference = NestedTensor(
+            [
+                -torch.log_softmax(element, -1).gather(-1, target.unsqueeze(-1)).squeeze(-1)
+                for element, target in zip(logits, targets)
+            ],
+            ragged_dims=targets.ragged_dims,
+        )
+        torch.testing.assert_close(output.concat, reference.concat)
+
+    def test_preserves_autograd(self, device, float_dtype):
+        values = torch.randn(5, 5, device=device, dtype=float_dtype, requires_grad=True)
+        logits = NestedTensor([values[:2], values[2:]])
+        targets = NestedTensor([torch.randint(0, 5, (2,), device=device), torch.randint(0, 5, (3,), device=device)])
+        loss = F.cross_entropy(logits, targets)
+        assert loss.requires_grad
+        loss.backward()
+        assert values.grad is not None
+
+    def test_ignore_index_matches_dense(self, device, float_dtype):
+        logits, targets = self._logits_and_targets(device, float_dtype)
+
+        # An ignored sentinel is allowed to sit outside the class range.
+        sentinel = NestedTensor(
+            [
+                torch.tensor([999, 1], device=device),
+                torch.tensor([0, 1, 999], device=device),
+            ]
+        )
+        torch.testing.assert_close(
+            F.cross_entropy(logits, sentinel, ignore_index=999),
+            F.cross_entropy(logits.concat, sentinel.concat, ignore_index=999),
+        )
+
+    def test_rejects_out_of_range_label_that_is_not_ignored(self, device, float_dtype):
+        # Clamping an invalid label into a valid class would score it silently; the dense
+        # operator raises, so this must raise too.
+        logits, _ = self._logits_and_targets(device, float_dtype)
+        bad = NestedTensor(
+            [
+                torch.tensor([-5, 1], device=device),
+                torch.tensor([0, 1, 2], device=device),
+            ]
+        )
+        with pytest.raises((RuntimeError, IndexError)):
+            F.cross_entropy(logits, bad, ignore_index=-100)
+
+    def test_rejects_label_smoothing(self, device, float_dtype):
+        logits, targets = self._logits_and_targets(device, float_dtype)
+        with pytest.raises(NotImplementedError, match="label_smoothing"):
+            F.cross_entropy(logits, targets, label_smoothing=0.1)

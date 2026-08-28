@@ -1513,7 +1513,6 @@ def ctc_loss(
 NN_LOSS_OPS_2 = [
     F.binary_cross_entropy,
     F.binary_cross_entropy_with_logits,
-    F.cross_entropy,
     F.gaussian_nll_loss,
     F.hinge_embedding_loss,
     F.huber_loss,
@@ -1534,6 +1533,71 @@ NN_LOSS_OPS_3 = [
     F.triplet_margin_loss,
     F.triplet_margin_with_distance_loss,
 ]
+
+
+@NestedTensorFuncRegistry.implement(F.cross_entropy)
+def cross_entropy(
+    input: NestedTensor,
+    target,
+    weight=None,
+    size_average=None,
+    ignore_index: int = -100,
+    reduce=None,
+    reduction: str = "mean",
+    label_smoothing: float = 0.0,
+):
+    r"""
+    Cross entropy with the class axis LAST. See also [torch.nn.functional.cross_entropy][].
+
+    Computed as ``-log_softmax(input, -1)[target]``, so it touches only the static class dim and is
+    structure-agnostic for any ragged layout: a doubly-ragged ``[.., N, N, C]`` pair, a sample axis
+    before the ragged dim ``[.., S, N, C]``, and so on. The generic loss path concatenates everything
+    into one ``(rows, C)`` matrix, which loses that structure for ``reduction='none'``.
+
+    The class axis is the last dim, the convention for logit NestedTensors, rather than dim 1 as in
+    the dense operator; for a 2-D ``(rows, C)`` input the two coincide. ``target`` holds class indices
+    and its shape is ``input``'s without the class dim. ``reduction='none'`` returns a NestedTensor
+    carrying ``input``'s structure minus the class dim; the other reductions return a scalar.
+    """
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(input, NestedTensor):
+        return F.cross_entropy(input, target, weight, size_average, ignore_index, reduce, reduction, label_smoothing)
+    # The deprecated size_average/reduce aliases override ``reduction`` exactly as the dense op does.
+    if size_average is not None or reduce is not None:
+        averaged = True if size_average is None else bool(size_average)
+        reduced = True if reduce is None else bool(reduce)
+        reduction = "mean" if averaged and reduced else ("sum" if reduced else "none")
+    if reduction not in ("none", "mean", "sum"):
+        raise ValueError(f"{reduction} is not a valid value for reduction")
+    if label_smoothing != 0.0:
+        raise NotImplementedError("NestedTensor cross_entropy does not support label_smoothing")
+
+    indices = target.long()
+    log_probs = torch.log_softmax(input, dim=-1)
+    # Ignored positions may carry any sentinel class, negative or past the class count, so replace
+    # exactly those before gathering. Everything else is passed through untouched: an out-of-range
+    # label that is not the ignore index must raise, the way the dense operator does, rather than
+    # being clamped into a valid class and scored silently.
+    valid = indices != ignore_index
+    gather_index = torch.where(valid, indices, torch.zeros_like(indices))
+    nll = -log_probs.gather(-1, gather_index.unsqueeze(-1)).squeeze(-1)
+    # Per-position weight is the class weight times the ignore_index validity mask, which reproduces
+    # the dense weighted result: 'sum' is sum_i w_i * nll_i and 'mean' divides that by sum_i w_i.
+    if weight is not None:
+        weight = weight.to(device=log_probs.device, dtype=log_probs.dtype)
+        per_position = F.embedding(gather_index, weight.unsqueeze(-1)).squeeze(-1)
+    else:
+        per_position = torch.ones_like(nll)
+    per_position = per_position * valid.to(nll.dtype)
+    nll = nll * per_position
+    if reduction == "sum":
+        return nll.sum()
+    if reduction == "mean":
+        # Not clamped: when every position is ignored the weight total is zero and the result is
+        # NaN, which is what the dense operator returns for an entirely ignored batch.
+        return nll.sum() / per_position.sum()
+    return nll
 
 
 # Linear & Embeddings
