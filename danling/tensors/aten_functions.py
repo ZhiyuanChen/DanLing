@@ -31,6 +31,7 @@ Architecture:
 
 from __future__ import annotations
 
+import builtins
 import math
 from collections.abc import Sequence
 from contextlib import suppress
@@ -2425,6 +2426,33 @@ def _resolved_packed_sizes(source: NestedTensor, op_name: str) -> tuple[int, ...
     return tuple(int(size) for size in (source._offsets[1:] - source._offsets[:-1]).tolist())
 
 
+def _outer_size(
+    source: NestedTensor,
+    physical_shape: Tensor,
+    offsets: Tensor,
+    element_shapes: tuple[tuple[int, ...], ...] | None,
+) -> torch.Size:
+    r"""
+    Report the logical shape of a rebuilt NestedTensor, from Python metadata where there is any.
+
+    ``_logical_shape_from_physical_shape`` reads the per-dimension maximum off the shape tensor,
+    which is a value read: under tracing it makes the *shape* of the result depend on data and
+    the graph refuses. The same maximum is already in ``element_shapes`` whenever the layout
+    carries them, and there it is plain Python.
+    """
+    if element_shapes is None:
+        return type(source)._logical_shape_from_physical_shape(physical_shape, offsets, source.batch_first)
+    batch_size = len(element_shapes)
+    if batch_size == 0:
+        return torch.Size((0,))
+    rank = builtins.max(len(shape) for shape in element_shapes)
+    dims = [
+        builtins.max((shape[index] if index < len(shape) else 0) for shape in element_shapes) for index in range(rank)
+    ]
+    dims.insert(0 if source.batch_first else 1, batch_size)
+    return torch.Size(dims)
+
+
 def _packed_batch_slice(source: NestedTensor, start: int, length: int, op_name: str) -> NestedTensor:
     r"""
     Keep ``length`` samples starting at ``start``, addressing packed rows rather than elements.
@@ -2441,6 +2469,7 @@ def _packed_batch_slice(source: NestedTensor, start: int, length: int, op_name: 
     offsets = source._offsets[start : start + length + 1] - source._offsets[start]  # noqa: E203
     physical_shape = source._physical_shape[start : start + length]  # noqa: E203
     element_shapes = source._element_shapes
+    sliced_shapes = None if element_shapes is None else element_shapes[start : start + length]  # noqa: E203
     return type(source)._from_packed(
         source._values.narrow(0, row_start, row_count),
         offsets,
@@ -2451,9 +2480,9 @@ def _packed_batch_slice(source: NestedTensor, start: int, length: int, op_name: 
         padding_value=source.padding_value,
         mask_value=source.mask_value,
         pin_memory=source._pin_memory,
-        outer_size=type(source)._logical_shape_from_physical_shape(physical_shape, offsets, source.batch_first),
+        outer_size=_outer_size(source, physical_shape, offsets, sliced_shapes),
         packed_sizes=tuple(sizes[start : start + length]),  # noqa: E203
-        element_shapes=None if element_shapes is None else element_shapes[start : start + length],  # noqa: E203
+        element_shapes=sliced_shapes,
         validate=False,
     )
 
@@ -2527,9 +2556,42 @@ def _packed_ragged_slice(
         padding_value=source.padding_value,
         mask_value=source.mask_value,
         pin_memory=source._pin_memory,
-        outer_size=type(source)._logical_shape_from_physical_shape(physical_shape, new_offsets, source.batch_first),
+        outer_size=_outer_size(source, physical_shape, new_offsets, element_shapes),
         packed_sizes=lengths,
         element_shapes=element_shapes,
+        validate=False,
+    )
+
+
+def _packed_uniform_ragged_slice(source: NestedTensor, dim_adj: int, start: int, length: int) -> NestedTensor:
+    r"""
+    Keep the same span of the sole ragged dim in every sample, reading no per-sample extent.
+
+    A layout whose ``__tensor_flatten__`` context drops the Python shape metadata has no
+    per-sample lengths to slice with, so :func:`_packed_ragged_slice` cannot serve it under
+    tracing. It does not need to: a span that is the same everywhere leaves every sample with
+    exactly ``length`` rows, which makes both the offsets and the new ragged extent constants.
+    """
+    device = source._values.device
+    offsets = source._offsets.to(device=device, dtype=torch.long)
+    rows = (offsets[:-1] + start).unsqueeze(1) + torch.arange(length, device=device, dtype=torch.long)
+    physical_shape = source._physical_shape.clone()
+    physical_shape[:, dim_adj] = length
+    batch_size = source._offsets.shape[0] - 1
+    new_offsets = torch.arange(batch_size + 1, dtype=source._offsets.dtype, device=source._offsets.device) * length
+    return type(source)._from_packed(
+        source._values.index_select(0, rows.reshape(-1)),
+        new_offsets,
+        physical_shape,
+        permutation=source._permutation,
+        ragged_dims=source._ragged_dims if source._ragged_dims_explicit else None,
+        batch_first=source.batch_first,
+        padding_value=source.padding_value,
+        mask_value=source.mask_value,
+        pin_memory=source._pin_memory,
+        outer_size=source._logical_shape_from_components(replace_dims={dim_adj: length}),
+        packed_sizes=None,
+        element_shapes=None,
         validate=False,
     )
 
@@ -4495,7 +4557,11 @@ def narrow_nested(source: NestedTensor, dim: int, start, length: int) -> NestedT
             raise RuntimeError(f"start ({start}) + length ({length}) exceeds dimension size ({extent}).")
         return _packed_static_slice(source, dim_adj, resolved, length)
 
-    if _packed_sole_ragged_dim(source, dim_adj) and source._packed_sizes is not None:
+    if _packed_sole_ragged_dim(source, dim_adj):
+        if source._packed_sizes is None and _is_fake_tensor(source._offsets):
+            if start < 0:
+                _compile_unsupported("torch.narrow", "a negative start needs each sample's own extent")
+            return _packed_uniform_ragged_slice(source, dim_adj, start, length)
         extents = _resolved_packed_sizes(source, "torch.narrow")
         starts = []
         for position, extent in enumerate(extents):

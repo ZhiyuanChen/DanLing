@@ -44,7 +44,7 @@ import builtins
 import contextlib
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import torch
 from torch import Tensor
@@ -500,29 +500,28 @@ def cat(tensors: tuple[Tensor | NestedTensor, ...], dim: int = 0):
         return tensors[0]
 
     if dim == batch_dim:
-        # Check if all inputs are NestedTensor (common case — enables packed fast path)
-        all_nt = all(isinstance(t, NestedTensor) for t in tensors)
-        if all_nt:
-            nt_tensors = tensors  # type: ignore[assignment]
-            merged = NestedTensor._cat_batch_packed(nt_tensors)
-            if merged is None:
-                # Incompatible packed layouts (e.g., one flattened, one N-D packed):
-                # fall back to unpack→repack.
-                fallback_storage: list[Tensor] = []
-                fallback_state: Mapping = ref._meta()
-                for tensor in nt_tensors:
-                    fallback_storage.extend(tensor._storage)
-                return NestedTensor(fallback_storage, **fallback_state)
-            return merged
-        # Fallback: mix of NT and plain tensors
-        storage: list = []
+        # A dense operand joins the batch as one more element, and an empty NestedTensor
+        # contributes nothing, so both become NestedTensor operands the packed merge can take.
         state: Mapping = ref._meta()
-        for tensor in tensors:
-            if isinstance(tensor, NestedTensor):
-                storage.extend(tensor._storage)
-            else:
-                storage.append(tensor)
-        return NestedTensor(storage, **state)
+        operands = [
+            tensor if isinstance(tensor, NestedTensor) else NestedTensor([tensor], **state)
+            for tensor in tensors
+            if not (isinstance(tensor, NestedTensor) and len(tensor) == 0)
+        ]
+        if not operands:
+            return tensors[0]
+        if len(operands) == 1:
+            return operands[0]
+        merged = NestedTensor._cat_batch_packed(operands)
+        if merged is None:
+            # Merging incompatible layouts would turn a dim that is static in every operand
+            # into a ragged one, which dense torch rejects outright: the result would report a
+            # shape no operand has and would lose the packed path for every later operator.
+            raise ValueError(
+                "torch.cat along the batch dimension requires NestedTensor operands to share a packed layout, "
+                f"but got shapes {[tuple(operand.shape) for operand in operands]}."
+            )
+        return merged
 
     first: NestedTensor = ref  # the first NestedTensor input (tensors[0] may be dense)
     nt_lengths = [len(t) for t in tensors if isinstance(t, NestedTensor)]
@@ -552,6 +551,13 @@ def cat(tensors: tuple[Tensor | NestedTensor, ...], dim: int = 0):
                 )
 
     dim_adj = _translate_dim(first, dim)
+    packed = _cat_packed_non_batch(tensors, first, dim_adj)
+    if packed is not None:
+        return packed
+
+    _check_execution_guard(_ExecutionGuardKind.EAGER_FALLBACK, "torch_functions.cat")
+    if _is_compiling():
+        _compile_unsupported("torch.cat", "a dense operand is replayed once per sample")
     varying = set(first._varying_dims)  # element-dim indices that carry ragged padding
 
     def _element(tensor, i):
@@ -567,6 +573,105 @@ def cat(tensors: tuple[Tensor | NestedTensor, ...], dim: int = 0):
 
     storage = [torch.cat([_element(t, i) for t in tensors], dim=dim_adj) for i in range(len(first))]
     return NestedTensor(storage, **first._meta())
+
+
+def _cat_packed_non_batch(tensors, first: NestedTensor, dim_adj: int):
+    r"""
+    Concatenate along a per-element dim on the packed buffers, or return ``None``.
+
+    A static dim owns one packed axis, so the dense kernel runs on ``_values`` unchanged. The
+    sole ragged dim is packed dim 0, where concatenation interleaves the operands: every
+    sample's rows from operand 0 come first, then its rows from operand 1, and so on. That
+    reordering is one scatter of positions rather than one ``cat`` per sample.
+    """
+    from .aten_functions import _outer_size, _packed_sole_ragged_dim, _packed_static_dim, _packed_with_shape
+    from .nested_tensor import NestedTensor
+
+    if not all(isinstance(tensor, NestedTensor) for tensor in tensors):
+        return None
+    if any(tensor.batch_first != first.batch_first or tensor.device != first.device for tensor in tensors):
+        return None
+    if any(tensor._permutation != first._permutation for tensor in tensors):
+        return None
+    if any(tensor._values.dim() != first._values.dim() for tensor in tensors):
+        return None
+
+    values_dim = _packed_static_dim(first, dim_adj)
+    if values_dim is not None:
+        if any(not first._has_same_structure(tensor) for tensor in tensors):
+            return None
+        replacement = {dim_adj: builtins.sum(int(tensor._values.shape[values_dim]) for tensor in tensors)}
+        shape, packed_sizes, element_shapes = first._shape_meta_from_components(replace_dims=replacement)
+        return _packed_with_shape(
+            first,
+            torch.cat([tensor._values for tensor in tensors], dim=values_dim),
+            shape,
+            first._logical_shape_from_components(replace_dims=replacement),
+            permutation=first._permutation,
+            packed_sizes=packed_sizes,
+            element_shapes=element_shapes,
+            preserve_ragged_offsets=True,
+        )
+
+    if not _packed_sole_ragged_dim(first, dim_adj) or any(tensor._ragged_rank != 1 for tensor in tensors):
+        return None
+    if any(tensor._ragged_dims != first._ragged_dims for tensor in tensors):
+        return None
+
+    device = first._values.device
+    # Offsets are the running sums of the segment lengths, so the output's offsets are the
+    # operands' offsets added position by position -- no length has to be read back to Python.
+    new_offsets = first._offsets.clone()
+    for tensor in tensors[1:]:
+        new_offsets = new_offsets + tensor._offsets
+    # The row count is the sum of the operands' buffers, which is a shape, not a value.
+    total = builtins.sum(int(tensor._values.shape[0]) for tensor in tensors)
+    destinations = []
+    prefix = torch.zeros_like(first._offsets[:-1], device=device, dtype=torch.long)
+    new_offsets_dev = new_offsets.to(device=device, dtype=torch.long)
+    for tensor in tensors:
+        offsets = tensor._offsets.to(device=device, dtype=torch.long)
+        lengths = offsets[1:] - offsets[:-1]
+        rows = int(tensor._values.shape[0])
+        batch_index = torch.repeat_interleave(
+            torch.arange(len(tensor), device=device, dtype=torch.long), lengths, output_size=rows
+        )
+        local = torch.arange(rows, device=device, dtype=torch.long) - offsets[:-1][batch_index]
+        destinations.append(new_offsets_dev[:-1][batch_index] + prefix[batch_index] + local)
+        prefix = prefix + lengths
+    destination = torch.cat(destinations, dim=0)
+    source = torch.empty((total,), device=device, dtype=torch.long).scatter_(
+        0, destination, torch.arange(total, device=device, dtype=torch.long)
+    )
+    values = torch.cat([tensor._values for tensor in tensors], dim=0).index_select(0, source)
+
+    physical_shape = first._physical_shape.clone()
+    for tensor in tensors[1:]:
+        physical_shape[:, dim_adj] += tensor._physical_shape[:, dim_adj]
+    element_shapes = None
+    if all(tensor._element_shapes is not None for tensor in tensors):
+        element_shapes = tuple(
+            (*shape[:dim_adj], builtins.sum(t._element_shapes[index][dim_adj] for t in tensors), *shape[dim_adj + 1 :])
+            for index, shape in enumerate(cast(tuple[tuple[int, ...], ...], first._element_shapes))
+        )
+    packed_sizes = None
+    if all(tensor._packed_sizes is not None for tensor in tensors):
+        packed_sizes = tuple(builtins.sum(sizes) for sizes in zip(*(t._packed_sizes for t in tensors)))
+    return NestedTensor._from_packed(
+        values,
+        new_offsets,
+        physical_shape,
+        permutation=first._permutation,
+        ragged_dims=first._ragged_dims if first._ragged_dims_explicit else None,
+        batch_first=first.batch_first,
+        padding_value=first.padding_value,
+        mask_value=first.mask_value,
+        pin_memory=first._pin_memory,
+        outer_size=_outer_size(first, physical_shape, new_offsets, element_shapes),
+        packed_sizes=packed_sizes,
+        element_shapes=element_shapes,
+        validate=False,
+    )
 
 
 # Aliases for torch.cat
@@ -1056,6 +1161,9 @@ def _split_like(input: NestedTensor, dim: int, spans_for, op_name: str):
         return tuple(outputs)
 
     if _packed_sole_ragged_dim(input, dim_adj):
+        # Where the cuts fall depends on each sample's own extent, so a layout that cannot
+        # report those extents cannot answer at all -- say so rather than let ``_storage`` raise
+        # about packed sizes, which names neither the operator nor the dim.
         per_sample = [spans_for(extent) for extent in _resolved_packed_sizes(input, op_name)]
         counts = [len(spans) for spans in per_sample]
         if len(set(counts)) > 1:

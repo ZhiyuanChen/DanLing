@@ -2367,12 +2367,12 @@ class NestedTensor(torch.Tensor):
 
         new_values = torch.cat([tensor._values for tensor in tensors], dim=0)
 
-        offset_parts = []
-        cumulative = 0
-        for index, tensor in enumerate(tensors):
-            offsets = tensor._offsets if index == 0 else tensor._offsets[1:] + cumulative
-            offset_parts.append(offsets)
-            cumulative += int(tensor._offsets[-1].item())
+        # Rebasing each operand's offsets on the running row total is tensor arithmetic; reading
+        # that total back with ``.item()`` makes the rebase depend on a value, which is what
+        # stopped batch concatenation from tracing while the slower non-batch path traced fine.
+        offset_parts = [tensors[0]._offsets]
+        for tensor in tensors[1:]:
+            offset_parts.append(tensor._offsets[1:] + offset_parts[-1][-1])
         new_offsets = torch.cat(offset_parts, dim=0)
 
         max_cols = max(tensor._physical_shape.size(1) for tensor in tensors)
