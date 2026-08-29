@@ -4438,25 +4438,47 @@ class TestCreationFromExisting:
 class TestCdist:
 
     @staticmethod
-
-    @staticmethod
     def _skip_unsupported_runtime_dtype(device, float_dtype):
         if device.type == "cuda" and float_dtype in (torch.float16, torch.bfloat16):
             pytest.skip("dense torch.cdist does not implement CUDA float16/bfloat16")
 
-    @pytest.mark.parametrize("p", [1.0, 2.0, float("inf")])
-    def test_values_shape_and_vjp_match_dense(self, device, p):
-        values = torch.randn(6, 3, device=device, requires_grad=True)
-        nested = NT([values[:2], values[2:]])
+    @pytest.mark.parametrize(
+        ("p", "compute_mode"),
+        [
+            (1.0, "donot_use_mm_for_euclid_dist"),
+            (2.0, "use_mm_for_euclid_dist"),
+            (float("inf"), "use_mm_for_euclid_dist_if_necessary"),
+        ],
+    )
+    def test_values_shape_and_vjp_match_dense(self, device, p, compute_mode):
+        left_values = torch.randn(7, 4, device=device, requires_grad=True)
+        right_values = torch.randn(6, 4, device=device, requires_grad=True)
+        left_parts = left_values.split((2, 5))
+        right_parts = right_values.split((4, 2))
+        left = NT(left_parts, ragged_dims=(0,))
+        right = NT(right_parts, ragged_dims=(0,))
 
-        output = torch.cdist(nested, nested, p=p)
-        references = [torch.cdist(element, element, p=p) for element in nested]
+        output = left.cdist(right, p=p, compute_mode=compute_mode)
+        reference = torch.cat(
+            [
+                torch.cdist(lhs, rhs, p=p, compute_mode=compute_mode).reshape(-1)
+                for lhs, rhs in zip(left_parts, right_parts)
+            ]
+        )
+        cotangent = torch.randn_like(reference)
+        actual_gradients = torch.autograd.grad(
+            output.concat,
+            (left_values, right_values),
+            cotangent,
+            retain_graph=True,
+        )
+        expected_gradients = torch.autograd.grad(reference, (left_values, right_values), cotangent)
 
-        assert [element.shape for element in output] == [reference.shape for reference in references]
-        for actual, expected in zip(output, references):
-            assert_close(actual, expected)
-        output.concat.sum().backward()
-        assert values.grad is not None
+        assert output.ragged_dims == (0, 1)
+        assert output.element_sizes().tolist() == [[2, 4], [5, 2]]
+        torch.testing.assert_close(output.concat, reference)
+        for actual, expected in zip(actual_gradients, expected_gradients):
+            torch.testing.assert_close(actual, expected)
 
     def test_function_and_method_forms_match(self, device, float_dtype):
         self._skip_unsupported_runtime_dtype(device, float_dtype)
@@ -4474,12 +4496,89 @@ class TestCdist:
         )
         assert_close(torch.cdist(left, right), left.cdist(right))
 
+    def test_mixed_dense_operand_preserves_logical_topology(self, device):
+        nested = NT(
+            [
+                torch.randn(2, 4, device=device),
+                torch.randn(3, 4, device=device),
+            ],
+            ragged_dims=(0,),
+        )
+        dense = torch.randn(5, 4, device=device)
+
+        output = torch.cdist(nested, dense)
+
+        assert output.ragged_dims == (0,)
+        assert [element.shape for element in output] == [torch.Size((2, 5)), torch.Size((3, 5))]
+        assert_close(output, NT([torch.cdist(element, dense) for element in nested], ragged_dims=(0,)))
+
+    def test_empty_points_keep_shape_and_autograd(self, device):
+        left_values = torch.randn(2, 3, device=device, requires_grad=True)
+        right_values = torch.randn(4, 3, device=device, requires_grad=True)
+        left_parts = (left_values[:0], left_values)
+        right_parts = (right_values[:3], right_values[3:])
+        left = NT(left_parts, ragged_dims=(0,))
+        right = NT(right_parts, ragged_dims=(0,))
+
+        output = left.cdist(right)
+        reference = torch.cat([torch.cdist(lhs, rhs).reshape(-1) for lhs, rhs in zip(left_parts, right_parts)])
+        gradients = torch.autograd.grad(output.concat.sum(), (left_values, right_values))
+
+        assert output.element_sizes().tolist() == [[0, 3], [2, 1]]
+        torch.testing.assert_close(output.concat, reference)
+        assert_close(gradients[0], torch.autograd.grad(reference.sum(), left_values, retain_graph=True)[0])
+        assert_close(gradients[1], torch.autograd.grad(reference.sum(), right_values)[0])
+
     def test_batch_length_and_feature_mismatch_raise(self, device):
         left = NT([torch.randn(2, 3, device=device)], ragged_dims=(0,))
         with pytest.raises(ValueError, match="batch length mismatch"):
             torch.cdist(left, NT([torch.randn(2, 3, device=device), torch.randn(1, 3, device=device)]))
         with pytest.raises(RuntimeError, match="same number of columns"):
             torch.cdist(left, NT([torch.randn(4, 5, device=device)], ragged_dims=(0,)))
+
+    def test_autocast_matches_dense(self, device):
+        dtype = torch.bfloat16 if device.type == "cpu" else torch.float16
+        left_values = torch.randn(4, 3, device=device, dtype=dtype, requires_grad=True)
+        right_values = torch.randn(5, 3, device=device, dtype=dtype, requires_grad=True)
+        left = NT([left_values], ragged_dims=(0,))
+        right = NT([right_values], ragged_dims=(0,))
+
+        with torch.autocast(device.type, dtype=dtype):
+            output = left.cdist(right).concat
+            reference = torch.cdist(left_values, right_values).reshape(-1)
+
+        assert output.dtype == reference.dtype
+        torch.testing.assert_close(output, reference)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_compile_fullgraph_preserves_values_and_vjp(self, device):
+        left_values = torch.randn(7, 3, device=device, requires_grad=True)
+        right_values = torch.randn(5, 3, device=device, requires_grad=True)
+        left_parts = left_values.split((2, 5))
+        right_parts = right_values.split((4, 1))
+        left = NT(left_parts, ragged_dims=(0,), batch_first=False)
+        right = NT(right_parts, ragged_dims=(0,), batch_first=False)
+        compiled = torch.compile(
+            lambda lhs, rhs: lhs.cdist(rhs).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        output = compiled(left, right)
+        reference = torch.cat([torch.cdist(lhs, rhs).reshape(-1) for lhs, rhs in zip(left_parts, right_parts)])
+        cotangent = torch.randn_like(reference)
+        actual_gradients = torch.autograd.grad(
+            output,
+            (left_values, right_values),
+            cotangent,
+            retain_graph=True,
+        )
+        expected_gradients = torch.autograd.grad(reference, (left_values, right_values), cotangent)
+
+        torch.testing.assert_close(output, reference)
+        for actual, expected in zip(actual_gradients, expected_gradients):
+            torch.testing.assert_close(actual, expected)
 
 
 class TestSegmentedSort:

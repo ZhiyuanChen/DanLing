@@ -4374,6 +4374,127 @@ def new_empty_strided(input: NestedTensor, size=None, stride=None, **kwargs) -> 
     return input._values.new_empty_strided(resolved, tuple(int(s) for s in stride), **kwargs)
 
 
+def _has_packed_cdist_layout(value) -> bool:
+    r"""Return whether cdist can stay on canonical tensor-backed packed storage."""
+    from .nested_tensor import NestedTensor
+
+    return (
+        isinstance(value, NestedTensor)
+        and value._ragged_dims_explicit
+        and value.ragged_dims == (0,)
+        and value.packed_dim_order == (0, 1)
+        and value.concat.dim() == 2
+    )
+
+
+_CDIST_COMPUTE_MODES = (
+    "use_mm_for_euclid_dist_if_necessary",
+    "use_mm_for_euclid_dist",
+    "donot_use_mm_for_euclid_dist",
+)
+
+
+def _validate_packed_cdist_operands(
+    x1: NestedTensor,
+    x2: NestedTensor,
+    p: float,
+    compute_mode: str,
+) -> float:
+    r"""Validate the static part of dense cdist's runtime contract."""
+    if compute_mode not in _CDIST_COMPUTE_MODES:
+        raise ValueError(f"{compute_mode} is not a valid value for compute_mode")
+    p_value = float(p)
+    if not p_value >= 0:
+        raise RuntimeError("cdist only supports non-negative p values")
+    if x1.concat.device != x2.concat.device:
+        raise RuntimeError(
+            "X1 and X2 must be on the same device, " f"but got {x1.concat.device} and {x2.concat.device}"
+        )
+    left_dtype = x1.concat.dtype
+    right_dtype = x2.concat.dtype
+    if not left_dtype.is_floating_point:
+        raise RuntimeError(f"cdist only supports floating-point dtypes, X1 got: {left_dtype}")
+    if not right_dtype.is_floating_point:
+        raise RuntimeError(f"cdist only supports floating-point dtypes, X2 got: {right_dtype}")
+    autocast_to_fp32 = (
+        torch.is_autocast_enabled(x1.concat.device.type)
+        and left_dtype != torch.float64
+        and right_dtype != torch.float64
+    )
+    if left_dtype != right_dtype and not autocast_to_fp32:
+        raise RuntimeError("X1 and X2 must have the same dtype, " f"but got {left_dtype} and {right_dtype}")
+    if x1.concat.shape[-1] != x2.concat.shape[-1]:
+        raise RuntimeError(
+            "X1 and X2 must have the same number of columns, "
+            f"but got {x1.concat.shape[-1]} and {x2.concat.shape[-1]}"
+        )
+    return p_value
+
+
+def _eager_segmented_cdist(
+    left: Tensor,
+    right: Tensor,
+    row_lengths: Tensor,
+    column_lengths: Tensor,
+    p: float,
+    compute_mode: str,
+) -> Tensor:
+    r"""Use native differentiable cdist calls without custom-op dispatch overhead."""
+    rows = [int(length) for length in row_lengths.tolist()]
+    columns = [int(length) for length in column_lengths.tolist()]
+    parts = []
+    left_start = right_start = 0
+    for row_count, column_count in zip(rows, columns):
+        parts.append(
+            torch.cdist(
+                left[left_start : left_start + row_count],
+                right[right_start : right_start + column_count],
+                p=p,
+                compute_mode=compute_mode,
+            ).reshape(-1)
+        )
+        left_start += row_count
+        right_start += column_count
+    return torch.cat(parts)
+
+
+def _packed_cdist_nested(x1: NestedTensor, x2: NestedTensor, p: float, compute_mode: str) -> NestedTensor:
+    r"""Compute canonical per-sample cdist without iteration, padding, or cross-sample pairs."""
+    left_batch = x1.element_sizes().shape[0]
+    right_batch = x2.element_sizes().shape[0]
+    if left_batch != right_batch:
+        raise ValueError(f"NestedTensor batch length mismatch in cdist: {left_batch} vs {right_batch}")
+    p_value = _validate_packed_cdist_operands(x1, x2, p, compute_mode)
+
+    from .aten_functions import _is_fake_tensor
+    from .segmented import segmented_cdist
+
+    row_lengths = x1.element_sizes()[:, 0]
+    column_lengths = x2.element_sizes()[:, 0]
+    left = x1.concat
+    right = x2.concat
+    # Cdist is an FP32 autocast op. Keep this policy dtype-generic so new
+    # low-precision floating formats do not require an allowlist update.
+    if torch.is_autocast_enabled(left.device.type) and left.dtype != torch.float64:
+        left = left.float()
+        right = right.float()
+    if left_batch == 1:
+        distances = torch.cdist(left, right, p=p_value, compute_mode=compute_mode).reshape(-1)
+    elif not _is_compiling() and not _is_fake_tensor(left) and left_batch > 0:
+        distances = _eager_segmented_cdist(
+            left,
+            right,
+            row_lengths,
+            column_lengths,
+            p_value,
+            compute_mode,
+        )
+    else:
+        mode = _CDIST_COMPUTE_MODES.index(compute_mode)
+        distances = segmented_cdist(left, right, row_lengths, column_lengths, p_value, mode)
+    return x1.packed_with_rectangular_lengths(distances, row_lengths, column_lengths)
+
+
 @NestedTensorFuncRegistry.implement(torch.cdist)
 def cdist(x1, x2, p: float = 2.0, compute_mode: str = "use_mm_for_euclid_dist_if_necessary"):
     r"""
@@ -4381,14 +4502,30 @@ def cdist(x1, x2, p: float = 2.0, compute_mode: str = "use_mm_for_euclid_dist_if
 
     Each element ``x1_i [.., P_i, M]`` against ``x2_i [.., R_i, M]`` gives ``[.., P_i, R_i]``, so when
     both P and R are ragged the result is doubly ragged, as in an ``[N_token, N_token]`` distance map.
-    Computing per element here, at the torch-function level, keeps autograd on ``_values``; delegating
-    to the aten op on the wrapper instead returns a detached result.
+    Two explicit canonical ``(P_i, M)`` / ``(R_i, M)`` operands use native cdist directly for a single
+    sample and one registered segmented operation for larger compiled batches, followed by rectangular packed
+    reconstruction: no graph-unrolled sample loop, padding, dense repack, cross-sample matrix, or
+    feature-expanded Cartesian gather is created, and one dynamic fullgraph serves different P/R distributions.
+    Eager execution uses the same per-sample native calls without custom-op dispatch overhead; other eager layouts
+    retain the per-element compatibility path.
+    Runtime dtype support follows dense ``torch.cdist``;
+    low-precision support therefore depends on device, shape, and ``compute_mode``, while autocast
+    follows the dense operator's FP32 execution policy rather than adding an implicit eager promotion.
+    ``NestedTensor.cdist`` is the traceable training entry point; ``torch.cdist`` remains the eager
+    compatibility spelling because Dynamo treats the built-in function itself as an opaque graph leaf.
     """
     from .nested_tensor import NestedTensor
 
     x1_nested = isinstance(x1, NestedTensor)
     x2_nested = isinstance(x2, NestedTensor)
     reference = x1 if x1_nested else x2
+    if x1_nested and x2_nested and _has_packed_cdist_layout(x1) and _has_packed_cdist_layout(x2):
+        return _packed_cdist_nested(x1, x2, p, compute_mode)
+    if _is_compiling():
+        _compile_unsupported(
+            "torch.cdist",
+            "fullgraph requires two explicit canonical NestedTensor operands with (P_i, M) elements",
+        )
     if x1_nested and x2_nested:
         if len(x1) != len(x2):
             raise ValueError(f"NestedTensor batch length mismatch in cdist: {len(x1)} vs {len(x2)}")
@@ -4397,8 +4534,10 @@ def cdist(x1, x2, p: float = 2.0, compute_mode: str = "use_mm_for_euclid_dist_if
         parts = [torch.cdist(a, x2, p, compute_mode) for a in x1._unpack()]
     else:
         parts = [torch.cdist(x1, b, p, compute_mode) for b in x2._unpack()]
+    if not parts:
+        return _empty_cdist_fallback(x1, x2, p, compute_mode, reference)
     meta = dict(reference._meta())
-    meta["ragged_dims"] = _cdist_ragged_dims(x1 if x1_nested else None, x2 if x2_nested else None, parts)
+    meta["ragged_dims"] = _cdist_ragged_dims(x1, x2, parts)
     return NestedTensor(parts, **meta)
 
 
@@ -4412,6 +4551,32 @@ def cumprod(input: NestedTensor, dim: int, *, dtype: torch.dtype | None = None):
     return input.cumprod(dim, dtype=dtype)
 
 
+def _empty_cdist_element(value: NestedTensor) -> Tensor:
+    r"""Build one graph-connected representative element for an empty logical batch."""
+    batch_dim = _get_batch_dim(value)
+    element_shape = list(value.shape)
+    element_shape.pop(batch_dim)
+    for dim in value.ragged_dims:
+        element_shape[dim] = 0
+    if 0 in element_shape:
+        return value.concat.reshape(element_shape)
+    return value.concat.new_zeros(element_shape) + value.concat.sum()
+
+
+def _empty_cdist_fallback(x1, x2, p: float, compute_mode: str, reference: NestedTensor) -> NestedTensor:
+    r"""Project an eager outer-empty batch through one dense shape prototype."""
+    from .nested_tensor import NestedTensor
+
+    left = _empty_cdist_element(x1) if isinstance(x1, NestedTensor) else x1
+    right = _empty_cdist_element(x2) if isinstance(x2, NestedTensor) else x2
+    prototype = torch.cdist(left, right, p=p, compute_mode=compute_mode)
+    meta = dict(reference._meta())
+    meta["dtype"] = prototype.dtype
+    meta["device"] = prototype.device
+    meta["ragged_dims"] = _cdist_ragged_dims(x1, x2, (prototype,))
+    return NestedTensor([prototype], **meta)[:0]
+
+
 def _cdist_ragged_dims(x1, x2, parts) -> tuple[int, ...] | None:
     r"""
     Project a declared topology through ``cdist``.
@@ -4421,20 +4586,28 @@ def _cdist_ragged_dims(x1, x2, parts) -> tuple[int, ...] | None:
     ``P`` are untouched. Returning ``None`` lets the topology be inferred, which is what an
     operand without a declared one already implies.
     """
-    declared_1 = tuple(x1._ragged_dims) if x1 is not None and x1._ragged_dims_explicit else None
-    declared_2 = tuple(x2._ragged_dims) if x2 is not None and x2._ragged_dims_explicit else None
+    from .nested_tensor import NestedTensor
+
+    nested_1 = isinstance(x1, NestedTensor)
+    nested_2 = isinstance(x2, NestedTensor)
+    declared_1 = tuple(x1._ragged_dims) if nested_1 and x1._ragged_dims_explicit else None
+    declared_2 = tuple(x2._ragged_dims) if nested_2 and x2._ragged_dims_explicit else None
     if declared_1 is None and declared_2 is None:
         return None
     rank = parts[0].dim()
-    ragged = set()
+    rank_1 = int(x1.element_sizes().shape[1]) if nested_1 else x1.dim()
+    rank_2 = int(x2.element_sizes().shape[1]) if nested_2 else x2.dim()
+    ragged: set[int] = set()
     if declared_1 is not None:
-        # Leading dims keep their index, and P stays at rank - 2 because the rank is unchanged.
-        ragged.update(dim for dim in declared_1 if dim <= rank - 2)
-    # ``_ragged_dims`` is in element coordinates, so drop the batch dim from the logical rank
-    # before asking whether x2's second-to-last element dim is the ragged one.
-    if declared_2 is not None and (x2.dim() - 1) - 2 in declared_2:
-        # R replaces M, the last dim.
-        ragged.add(rank - 1)
+        left_shift = rank - rank_1
+        ragged.update(dim + left_shift for dim in declared_1 if dim < rank_1 - 2)
+        if rank_1 - 2 in declared_1:
+            ragged.add(rank - 2)
+    if declared_2 is not None:
+        right_shift = rank - rank_2
+        ragged.update(dim + right_shift for dim in declared_2 if dim < rank_2 - 2)
+        if rank_2 - 2 in declared_2:
+            ragged.add(rank - 1)
     return tuple(sorted(ragged)) or None
 
 

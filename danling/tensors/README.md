@@ -337,7 +337,16 @@ pair = reference.packed_with_square_lengths(pair_values, token_lengths)
 Here `pair_values.shape[0]` must equal `token_lengths.square().sum()`. The
 result persistently carries both CSR row-split levels as tensor metadata, so a
 fixed batch size can reuse one dynamic compiled graph across different square
-layouts. Both length-based reconstruction methods are zero-copy with respect
+layouts. Rectangular pair operators use two independent length vectors:
+
+```python
+distances = reference.packed_with_rectangular_lengths(distance_values, query_lengths, key_lengths)
+# element i has shape (query_lengths[i], key_lengths[i], *distance_values.shape[1:])
+```
+
+Here the packed leading length is `(query_lengths * key_lengths).sum()` and
+both ragged maxima remain tensor-backed graph inputs. All three length-based
+reconstruction methods are zero-copy with respect
 to their packed values and preserve dtype, device, strides, pinning, subclass,
 runtime configuration, and autograd history. Reconstruction stores dynamic
 lengths in tensor-backed offsets and shape metadata rather than Python tuples,
@@ -348,6 +357,18 @@ normalization. Tensor-backed view/index remapping, padding,
 `broadcast_tensors`, global-query `einsum`, and ragged-dimension softmax remain
 staged; these paths raise an explicit compile error instead of materializing
 Python metadata or silently assuming a layout.
+
+For pairwise distances between explicit canonical `(P_i, M)` and `(R_i, M)`
+elements, use `left.cdist(right)` in compiled code. A single-sample batch calls
+native `cdist` directly; larger compiled batches use a registered segmented
+operation that runs native `cdist` independently over the packed samples.
+Eager mode issues the same native calls directly to avoid custom-op dispatcher
+overhead. The result is
+reconstructed as `(P_i, R_i)` through the rectangular metadata above. It does not
+materialize padding, a cross-sample matrix, pair index tensors, or
+`sum(P_i * R_i) x M` gathered operands. Eager `torch.cdist(left, right)` remains
+supported, but the method form is the AOT/Inductor entry point because PyTorch
+treats the built-in function as an opaque graph leaf.
 
 For cumulative products along a canonical ragged dimension, use
 `input.cumprod(dim)` in compiled training code. The segmented operator invokes

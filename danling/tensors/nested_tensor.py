@@ -101,6 +101,21 @@ def _square_row_splits_fake(lengths: Tensor) -> Tensor:
     return lengths.new_empty((row_splits_size,))
 
 
+@torch.library.custom_op("danling::_rectangular_row_splits", mutates_args=())
+def _rectangular_row_splits(row_lengths: Tensor, column_lengths: Tensor) -> Tensor:
+    r"""Build innermost CSR row splits for rectangular ragged elements."""
+    row_widths = torch.repeat_interleave(column_lengths, row_lengths)
+    return torch.nn.functional.pad(row_widths.cumsum(0), (1, 0))
+
+
+@_rectangular_row_splits.register_fake
+def _rectangular_row_splits_fake(row_lengths: Tensor, column_lengths: Tensor) -> Tensor:
+    del column_lengths
+    ctx = torch.library.get_ctx()
+    row_splits_size = ctx.new_dynamic_size(min=1)
+    return row_lengths.new_empty((row_splits_size,))
+
+
 class NestedTensor(torch.Tensor):
     r"""
     A container for variable-length tensors that enables efficient batch operations.
@@ -1183,7 +1198,7 @@ class NestedTensor(torch.Tensor):
         self._cached_packed_offsets = None
         self._cached_ragged_level_offsets = None
 
-    def _mark_tensor_backed_dynamic_dims(self, *, mark_values: bool = True) -> None:
+    def _mark_tensor_backed_dynamic_dims(self) -> None:
         r"""Mark packed and logical ragged extents dynamic without guarded user state."""
         ragged_offsets = self._persistent_ragged_offsets()
         if ragged_offsets is None:
@@ -1200,8 +1215,7 @@ class NestedTensor(torch.Tensor):
         for physical_dim in self._ragged_dims:
             logical_dim = physical_dim + 1 if self.batch_first or physical_dim > 0 else physical_dim
             maybe_mark_dynamic(self, logical_dim)
-        if mark_values:
-            maybe_mark_dynamic(self._values, 0)
+        maybe_mark_dynamic(self._values, 0)
         for level_offsets in ragged_offsets:
             maybe_mark_dynamic(level_offsets, 0)
 
@@ -1289,7 +1303,6 @@ class NestedTensor(torch.Tensor):
         ragged_offsets: tuple[Tensor, ...] | None = None,
         validate: bool = True,
         materialize_python_metadata: bool = True,
-        mark_values_dynamic: bool = True,
     ) -> Self:
         r"""Construct a NestedTensor directly from packed representation."""
         # offsets and shape_tensor MUST live on CPU to avoid implicit CUDA syncs
@@ -1423,7 +1436,7 @@ class NestedTensor(torch.Tensor):
             result._element_shapes = element_shapes
             cls._install_persistent_ragged_offsets(result, resolved_ragged_offsets)
             result._invalidate_transient_caches()
-        result._mark_tensor_backed_dynamic_dims(mark_values=mark_values_dynamic)
+        result._mark_tensor_backed_dynamic_dims()
         if validate:
             cls._validate_packed_metadata(
                 result._values,
@@ -3534,9 +3547,6 @@ class NestedTensor(torch.Tensor):
         else:
             logical_shape = torch.Size((max_length, len(self), max_length, *static_tail))
         pin_memory = bool(packed_values.device.type == "cpu" and packed_values.is_pinned())
-        # Both ragged axes and their offsets already carry the dynamic shape contract. Marking
-        # caller-owned packed storage here would mutate a compiled graph input after Dynamo has
-        # installed its guards, forcing an otherwise unnecessary second compilation.
         result = type(self)._from_packed(
             packed_values,
             outer_offsets,
@@ -3553,10 +3563,154 @@ class NestedTensor(torch.Tensor):
             ragged_offsets=(level_zero_offsets, level_one_offsets),
             validate=False,
             materialize_python_metadata=False,
-            mark_values_dynamic=False,
         )
         if symbolic_lengths:
             result._max_length_binding = result._offsets.new_empty(()).expand(max_length)
+        return result
+
+    def packed_with_rectangular_lengths(
+        self,
+        packed_values: Tensor,
+        row_lengths: Tensor,
+        column_lengths: Tensor,
+    ) -> Self:
+        r"""Wrap packed values as canonical rectangular ragged elements.
+
+        Batch element ``i`` has shape
+        ``(row_lengths[i], column_lengths[i], *packed_values.shape[1:])``.
+        Both ragged axes and their hierarchical row splits remain tensor-backed,
+        so a fixed outer batch can reuse one dynamic fullgraph across different
+        rectangular layouts. The returned tensor shares ``packed_values`` and
+        its autograd history directly.
+
+        Args:
+            packed_values: Dense storage with leading length
+                ``sum(row_lengths * column_lengths)``.
+            row_lengths: One-dimensional CPU integer row counts.
+            column_lengths: One-dimensional CPU integer column counts.
+
+        Returns:
+            A canonical two-ragged-dimension ``NestedTensor``.
+
+        Examples:
+            >>> reference = NestedTensor([torch.zeros(1), torch.zeros(1)])
+            >>> rows, columns = torch.tensor([2, 3]), torch.tensor([4, 1])
+            >>> values = torch.randn(11, 5)
+            >>> output = reference.packed_with_rectangular_lengths(values, rows, columns)
+            >>> [tuple(element.shape) for element in output]
+            [(2, 4, 5), (3, 1, 5)]
+            >>> output.concat is values
+            True
+        """
+        if (
+            not isinstance(packed_values, Tensor)
+            or isinstance(packed_values, NestedTensor)
+            or packed_values.is_nested
+            or packed_values.layout != torch.strided
+        ):
+            raise TypeError(
+                "packed_values must be a dense Tensor with torch.strided layout, "
+                f"got {type(packed_values).__name__} with layout "
+                f"{getattr(packed_values, 'layout', None)}"
+            )
+        if packed_values.dim() == 0:
+            raise ValueError("packed_values must have a leading packed dimension")
+
+        batch_size = self._physical_shape.shape[0]
+        for name, lengths in (("row_lengths", row_lengths), ("column_lengths", column_lengths)):
+            if (
+                not isinstance(lengths, Tensor)
+                or isinstance(lengths, NestedTensor)
+                or lengths.is_nested
+                or lengths.layout != torch.strided
+            ):
+                raise TypeError(
+                    f"{name} must be a dense Tensor with torch.strided layout, "
+                    f"got {type(lengths).__name__} with layout {getattr(lengths, 'layout', None)}"
+                )
+            if lengths.device.type != "cpu":
+                raise ValueError(f"{name} must be on CPU, got {lengths.device}")
+            if lengths.dtype.is_floating_point or lengths.dtype.is_complex or lengths.dtype == torch.bool:
+                raise TypeError(f"{name} must use an integer dtype, got {lengths.dtype}")
+            if lengths.dim() != 1:
+                raise ValueError(f"{name} must be one-dimensional, got shape {tuple(lengths.shape)}")
+            if lengths.numel() != batch_size:
+                raise ValueError(
+                    f"{name} must contain one value per batch element, "
+                    f"got {lengths.numel()} values for batch size {batch_size}"
+                )
+
+        long_rows = row_lengths.to(dtype=torch.long)
+        long_columns = column_lengths.to(dtype=torch.long)
+        packed_sizes = long_rows * long_columns
+        symbolic_lengths = _is_fake_tensor(row_lengths) or _is_fake_tensor(column_lengths)
+        if symbolic_lengths:
+            if not (
+                _is_fake_tensor(row_lengths) and _is_fake_tensor(column_lengths) and _is_fake_tensor(packed_values)
+            ):
+                raise ValueError(
+                    "FakeTensor rectangular lengths require FakeTensor packed_values and matching FakeTensor metadata"
+                )
+            torch._assert_async(torch.all(long_rows >= 0), "row_lengths must be non-negative")
+            torch._assert_async(torch.all(long_columns >= 0), "column_lengths must be non-negative")
+            torch._assert_async(
+                packed_sizes.sum() == packed_values.shape[0],
+                "rectangular lengths must cover the packed values leading dimension",
+            )
+        else:
+            if bool(torch.any(long_rows < 0)):
+                raise ValueError("row_lengths must be non-negative")
+            if bool(torch.any(long_columns < 0)):
+                raise ValueError("column_lengths must be non-negative")
+            packed_length = int(packed_sizes.sum().item())
+            if packed_length != packed_values.shape[0]:
+                raise ValueError(
+                    "row_lengths * column_lengths must sum to the packed values leading dimension, "
+                    f"got sum {packed_length} and packed length {packed_values.shape[0]}"
+                )
+
+        static_tail = tuple(packed_values.shape[1:])
+        physical_rank = 2 + len(static_tail)
+        if row_lengths.numel():
+            rectangular_shape = torch.stack((long_rows, long_columns), dim=1)
+            tail_shape = long_rows.new_empty((row_lengths.numel(), len(static_tail)))
+            for dim, size in enumerate(static_tail):
+                tail_shape[:, dim] = size
+            physical_shape = torch.cat((rectangular_shape, tail_shape), dim=1)
+        else:
+            physical_shape = long_rows.new_empty((0, physical_rank))
+
+        outer_offsets = torch.nn.functional.pad(packed_sizes.cumsum(0), (1, 0))
+        level_zero_offsets = torch.nn.functional.pad(long_rows.cumsum(0), (1, 0))
+        level_one_offsets = _rectangular_row_splits(long_rows, long_columns)
+        max_rows = long_rows.max().item() if row_lengths.numel() else 0
+        max_columns = long_columns.max().item() if column_lengths.numel() else 0
+        if self.batch_first:
+            logical_shape = torch.Size((batch_size, max_rows, max_columns, *static_tail))
+        else:
+            logical_shape = torch.Size((max_rows, batch_size, max_columns, *static_tail))
+        pin_memory = bool(packed_values.device.type == "cpu" and packed_values.is_pinned())
+        result = type(self)._from_packed(
+            packed_values,
+            outer_offsets,
+            physical_shape,
+            permutation=tuple(range(physical_rank)),
+            ragged_dims=(0, 1),
+            batch_first=self.batch_first,
+            padding_value=self.padding_value,
+            mask_value=self.mask_value,
+            pin_memory=pin_memory,
+            outer_size=logical_shape,
+            packed_sizes=None,
+            element_shapes=None,
+            ragged_offsets=(level_zero_offsets, level_one_offsets),
+            validate=False,
+            materialize_python_metadata=False,
+        )
+        # The generic fallback binds only physical dim 0. Rectangular outputs
+        # carry two independent data-derived maxima, so expose a zero-stride
+        # two-dimensional child for both eager and Fake/compiled rebuilds.
+        result._max_length_binding = result._offsets.new_empty(()).expand(max_rows, max_columns)
         return result
 
     def nested_like(self, tensor: Tensor, strict: bool = True) -> Self:
@@ -5085,18 +5239,57 @@ class NestedTensor(torch.Tensor):
         """
         return torch.where(condition, self, other)
 
-    def cumprod(self, dim: int, *, dtype: torch.dtype | None = None) -> NestedTensor:
-        r"""Compute cumulative products through the traceable packed segmented path.
+    def cdist(
+        self,
+        other: Tensor | NestedTensor,
+        p: float = 2.0,
+        compute_mode: str = "use_mm_for_euclid_dist_if_necessary",
+    ) -> NestedTensor:
+        r"""Compute per-sample pairwise distances through the traceable packed path.
 
-        The explicit method keeps gradients connected to prebuilt packed leaves across
-        AOTAutograd/Inductor. As with :meth:`cdist`, consume or return ``result.concat`` at a
-        compiled training boundary because PyTorch detaches newly returned wrapper children.
+        This method shares :func:`torch.cdist`'s ``p`` and ``compute_mode``
+        contract. Unlike the built-in spelling, Dynamo can inline this explicit
+        NestedTensor handler, so AOT/Inductor preserve gradients to prebuilt
+        packed leaves when the result is consumed inside the compiled region.
+        PyTorch currently detaches newly computed wrapper-subclass children if
+        a compiled function returns only the wrapper; return or consume
+        ``result.concat`` at that boundary when training.
         """
-        op = torch.ops.aten.cumprod.default
-        kwargs = {} if dtype is None else {"dtype": dtype}
-        return NestedTensorAtenRegistry[op](op, (self, dim), kwargs)
+        from .torch_functions import cdist
+
+        return cdist(self, other, p, compute_mode)
 
 
+_cdist_eager = NestedTensor.cdist
+
+
+@torch.compiler.substitute_in_graph(_cdist_eager)
+def _traceable_cdist(
+    self: NestedTensor,
+    other: Tensor | NestedTensor,
+    p: float = 2.0,
+    compute_mode: str = "use_mm_for_euclid_dist_if_necessary",
+) -> NestedTensor:
+    r"""Preserve packed-leaf autograd while tracing the explicit method."""
+    from .torch_functions import cdist
+
+    return cdist(self, other, p, compute_mode)
+
+
+# Wrapper-subclass inputs need the decorated replacement to be the bound
+# method itself; registering the substitution without assigning it lets AOT
+# build a backward graph but disconnects pre-existing packed leaves.
+NestedTensor.cdist = _traceable_cdist  # type: ignore[method-assign]
+
+
+def _cumprod_method(self: NestedTensor, dim: int, *, dtype: torch.dtype | None = None) -> NestedTensor:
+    r"""Compute cumulative products through the traceable packed segmented path."""
+    op = torch.ops.aten.cumprod.default
+    kwargs = {} if dtype is None else {"dtype": dtype}
+    return NestedTensorAtenRegistry[op](op, (self, dim), kwargs)
+
+
+NestedTensor.cumprod = _cumprod_method  # type: ignore[attr-defined]
 _cumprod_eager = NestedTensor.cumprod
 
 

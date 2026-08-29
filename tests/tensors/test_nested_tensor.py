@@ -1039,6 +1039,93 @@ class TestPackedWithSquareLengths:
             compiled(reference, torch.randn(13, 4), torch.tensor([2**32, 0]))
 
 
+class TestPackedWithRectangularLengths:
+
+    def test_rebuilds_rectangular_topology_and_keeps_autograd(self):
+        reference = NestedTensor(
+            [torch.empty(1), torch.empty(1)],
+            batch_first=False,
+            padding_value=-3,
+            mask_value=True,
+        )
+        rows = torch.tensor([0, 3], dtype=torch.int32)
+        columns = torch.tensor([4, 2], dtype=torch.int64)
+        leaf = torch.randn(6, 4, requires_grad=True)
+        values = leaf.square()
+
+        output = reference.packed_with_rectangular_lengths(values, rows, columns)
+
+        assert output.ragged_dims == (0, 1)
+        assert output.packed_dim_order == (0, 1, 2)
+        assert output.shape == (3, 2, 4, 4)
+        assert output.batch_first is False
+        assert output.padding_value == -3
+        assert output.mask_value is True
+        assert output.element_sizes().tolist() == [[0, 4, 4], [3, 2, 4]]
+        assert [tuple(element.shape) for element in output] == [(0, 4, 4), (3, 2, 4)]
+        assert_close(output.concat, values)
+        assert_close(torch.autograd.grad(output.concat.sum(), leaf)[0], 2 * leaf)
+
+    @pytest.mark.parametrize(
+        ("rows", "columns", "error", "match"),
+        [
+            ([2, 3], torch.tensor([4, 1]), TypeError, "row_lengths must be a dense Tensor"),
+            (torch.tensor([2, 3]), torch.tensor([4.0, 1.0]), TypeError, "integer dtype"),
+            (torch.tensor([-2, 3]), torch.tensor([4, 1]), ValueError, "non-negative"),
+            (torch.tensor([1, 3]), torch.tensor([4, 1]), ValueError, "must sum to the packed values"),
+        ],
+    )
+    def test_validates_rectangular_metadata(self, rows, columns, error, match):
+        reference = NestedTensor([torch.empty(1), torch.empty(1)])
+
+        with pytest.raises(error, match=match):
+            reference.packed_with_rectangular_lengths(torch.empty(11, 3), rows, columns)
+
+    def test_supports_fake_values_with_concrete_lengths(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        mode = fake_tensor_mod.FakeTensorMode()
+        reference = NestedTensor([torch.empty(1), torch.empty(1)])
+        fake_values = mode.from_tensor(torch.empty(11, 2))
+
+        output = reference.packed_with_rectangular_lengths(
+            fake_values,
+            torch.tensor([2, 3]),
+            torch.tensor([4, 1]),
+        )
+
+        assert fake_tensor_mod.is_fake(output.concat)
+        assert output.shape == (2, 3, 4, 2)
+        assert output.ragged_dims == (0, 1)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_fullgraph_rectangular_backward_across_layouts(self):
+        reference = NestedTensor([torch.empty(1), torch.empty(1)])
+        compiled = torch.compile(
+            lambda ref, values, rows, columns: (
+                ref.packed_with_rectangular_lengths(values, rows, columns).concat.square().sum()
+            ),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        for row_lengths, column_lengths in (((2, 3), (4, 1)), ((1, 4), (2, 3))):
+            values = torch.randn(
+                sum(row * column for row, column in zip(row_lengths, column_lengths, strict=True)),
+                3,
+                requires_grad=True,
+            )
+            loss = compiled(
+                reference,
+                values,
+                torch.tensor(row_lengths),
+                torch.tensor(column_lengths),
+            )
+            loss.backward()
+
+            assert_close(values.grad, 2 * values)
+
+
 class TestToDtype:
 
     @pytest.mark.parametrize("target_dtype", [torch.float32, torch.float64])
@@ -1058,7 +1145,6 @@ class TestToDtype:
         assert output.dtype == target_dtype
         assert [element.shape for element in output] == [element.shape for element in nested]
         assert_close(output.concat, torch.cat(elements).to(target_dtype))
-
 class TestCopySemantics:
 
     def test_shallow_copy_shares_data(self):

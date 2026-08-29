@@ -30,45 +30,236 @@ import torch
 from torch import Tensor
 
 
+def _segmented_cdist_lengths(row_lengths: Tensor, column_lengths: Tensor) -> tuple[list[int], list[int]]:
+    r"""Validate CPU length metadata and return concrete runtime segment sizes."""
+    if row_lengths.dim() != 1 or column_lengths.dim() != 1:
+        raise ValueError("segmented cdist lengths must be one-dimensional")
+    if row_lengths.shape != column_lengths.shape:
+        raise ValueError("segmented cdist length tensors must contain the same number of samples")
+    if row_lengths.device.type != "cpu" or column_lengths.device.type != "cpu":
+        raise ValueError("segmented cdist lengths must be CPU tensors")
+    if row_lengths.dtype != torch.long or column_lengths.dtype != torch.long:
+        raise TypeError("segmented cdist lengths must use torch.int64")
+    rows = [int(length) for length in row_lengths.tolist()]
+    columns = [int(length) for length in column_lengths.tolist()]
+    if any(length < 0 for length in rows) or any(length < 0 for length in columns):
+        raise ValueError("segmented cdist lengths must be non-negative")
+    return rows, columns
+
+
+def _validate_segmented_cdist_operands(
+    left: Tensor,
+    right: Tensor,
+    rows: list[int],
+    columns: list[int],
+    compute_mode: int,
+) -> None:
+    if left.dim() != 2 or right.dim() != 2:
+        raise ValueError("segmented cdist operands must be two-dimensional")
+    if left.device != right.device or left.dtype != right.dtype:
+        raise ValueError("segmented cdist operands must have the same device and dtype")
+    if left.shape[1] != right.shape[1]:
+        raise ValueError("segmented cdist operands must have the same feature width")
+    if sum(rows) != left.shape[0] or sum(columns) != right.shape[0]:
+        raise ValueError("segmented cdist lengths must cover their packed operands exactly")
+    if compute_mode not in (0, 1, 2):
+        raise ValueError(f"invalid segmented cdist compute_mode code: {compute_mode}")
+
+
+def _mm_cdist_backward(
+    grad: Tensor,
+    left: Tensor,
+    right: Tensor,
+    distances: Tensor,
+) -> tuple[Tensor, Tensor]:
+    r"""Differentiate the Euclidean MM path through its composite matrix formula.
+
+    Dense cdist's Euclidean MM path is composite-autograd. Writing the same
+    derivative as two matrix products preserves the live matmul precision
+    policy, supports FP16/BF16 where native ``_cdist_backward`` does not, and
+    needs only the distance matrix rather than a ``[P, R, M]`` difference.
+    """
+    scale = torch.where(distances != 0, grad / distances, torch.zeros_like(grad))
+    grad_left = left * scale.sum(dim=1, keepdim=True) - scale @ right
+    grad_right = right * scale.sum(dim=0).unsqueeze(1) - scale.mT @ left
+    return grad_left, grad_right
+
+
+@torch.library.custom_op("danling::_segmented_cdist_backward", mutates_args=())
+def segmented_cdist_backward(
+    grad_output: Tensor,
+    left: Tensor,
+    right: Tensor,
+    row_lengths: Tensor,
+    column_lengths: Tensor,
+    distances: Tensor,
+    p: float,
+    compute_mode: int,
+) -> tuple[Tensor, Tensor]:
+    r"""First-order VJP for :func:`segmented_cdist`, kept opaque to AOTAutograd."""
+    rows, columns = _segmented_cdist_lengths(row_lengths, column_lengths)
+    _validate_segmented_cdist_operands(left, right, rows, columns, compute_mode)
+    total_pairs = sum(row * column for row, column in zip(rows, columns))
+    if grad_output.numel() != total_pairs or distances.numel() != total_pairs:
+        raise ValueError("segmented cdist gradients and distances must cover every output pair")
+
+    grad_left = torch.zeros_like(left)
+    grad_right = torch.zeros_like(right)
+    left_start = right_start = output_start = 0
+    for row_count, column_count in zip(rows, columns):
+        pair_count = row_count * column_count
+        if row_count and column_count and left.shape[1]:
+            left_segment = left[left_start : left_start + row_count]
+            right_segment = right[right_start : right_start + column_count]
+            grad_segment = grad_output[output_start : output_start + pair_count].reshape(row_count, column_count)
+            distance_segment = distances[output_start : output_start + pair_count].reshape(row_count, column_count)
+            uses_mm = p == 2 and (compute_mode == 1 or (compute_mode == 0 and (row_count > 25 or column_count > 25)))
+            if uses_mm:
+                left_vjp, right_vjp = _mm_cdist_backward(
+                    grad_segment,
+                    left_segment,
+                    right_segment,
+                    distance_segment,
+                )
+                grad_left[left_start : left_start + row_count].copy_(left_vjp)
+                grad_right[right_start : right_start + column_count].copy_(right_vjp)
+            else:
+                torch.ops.aten._cdist_backward.out(
+                    grad_segment.unsqueeze(0),
+                    left_segment.unsqueeze(0),
+                    right_segment.unsqueeze(0),
+                    p,
+                    distance_segment.unsqueeze(0),
+                    out=grad_left[left_start : left_start + row_count].unsqueeze(0),
+                )
+                torch.ops.aten._cdist_backward.out(
+                    grad_segment.mT.unsqueeze(0),
+                    right_segment.unsqueeze(0),
+                    left_segment.unsqueeze(0),
+                    p,
+                    distance_segment.mT.unsqueeze(0),
+                    out=grad_right[right_start : right_start + column_count].unsqueeze(0),
+                )
+        left_start += row_count
+        right_start += column_count
+        output_start += pair_count
+    return grad_left, grad_right
+
+
+@segmented_cdist_backward.register_fake
+def _segmented_cdist_backward_fake(
+    grad_output: Tensor,
+    left: Tensor,
+    right: Tensor,
+    row_lengths: Tensor,
+    column_lengths: Tensor,
+    distances: Tensor,
+    p: float,
+    compute_mode: int,
+) -> tuple[Tensor, Tensor]:
+    del grad_output, row_lengths, column_lengths, distances, p, compute_mode
+    return torch.empty_like(left), torch.empty_like(right)
+
+
+@torch.library.custom_op("danling::_segmented_cdist", mutates_args=())
+def segmented_cdist(
+    left: Tensor,
+    right: Tensor,
+    row_lengths: Tensor,
+    column_lengths: Tensor,
+    p: float,
+    compute_mode: int,
+) -> Tensor:
+    r"""Run native cdist independently over packed variable-length segments.
+
+    The operator is a single graph node with a data-dependent packed output
+    extent. At runtime each segment retains PyTorch's optimized direct/MM
+    selection and dtype behavior. No padded batch, cross-sample matrix, pair
+    index tensor, or feature-expanded Cartesian gather is materialized.
+    """
+    rows, columns = _segmented_cdist_lengths(row_lengths, column_lengths)
+    _validate_segmented_cdist_operands(left, right, rows, columns, compute_mode)
+    output = left.new_empty((sum(row * column for row, column in zip(rows, columns)),))
+    left_start = right_start = output_start = 0
+    for row_count, column_count in zip(rows, columns):
+        pair_count = row_count * column_count
+        torch.ops.aten._cdist_forward.out(
+            left[left_start : left_start + row_count],
+            right[right_start : right_start + column_count],
+            p,
+            compute_mode,
+            out=output[output_start : output_start + pair_count].view(row_count, column_count),
+        )
+        left_start += row_count
+        right_start += column_count
+        output_start += pair_count
+    return output
+
+
+@segmented_cdist.register_fake
+def _segmented_cdist_fake(
+    left: Tensor,
+    right: Tensor,
+    row_lengths: Tensor,
+    column_lengths: Tensor,
+    p: float,
+    compute_mode: int,
+) -> Tensor:
+    del right, row_lengths, column_lengths, p, compute_mode
+    total_pairs = torch.library.get_ctx().new_dynamic_size(min=0)
+    return left.new_empty((total_pairs,))
+
+
+def _segmented_cdist_setup_context(ctx, inputs, output) -> None:
+    left, right, row_lengths, column_lengths, p, compute_mode = inputs
+    ctx.save_for_backward(left, right, row_lengths, column_lengths, output)
+    ctx.p = p
+    ctx.compute_mode = compute_mode
+    ctx.set_materialize_grads(False)
+
+
+def _segmented_cdist_autograd_backward(ctx, grad_output):
+    if grad_output is None:
+        return None, None, None, None, None, None
+    left, right, row_lengths, column_lengths, distances = ctx.saved_tensors
+    grad_left, grad_right = segmented_cdist_backward(
+        grad_output,
+        left,
+        right,
+        row_lengths,
+        column_lengths,
+        distances,
+        ctx.p,
+        ctx.compute_mode,
+    )
+    return grad_left, grad_right, None, None, None, None
+
+
+torch.library.register_autograd(
+    segmented_cdist,
+    _segmented_cdist_autograd_backward,
+    setup_context=_segmented_cdist_setup_context,
+)
+
+
 def _segment_lengths(offsets: Tensor, total: int) -> list[int]:
     r"""Validate packed offsets and return concrete runtime segment lengths."""
-    if offsets.dim() != 1:
-        raise ValueError("segmented offsets must be one-dimensional")
-    if offsets.device.type != "cpu":
-        raise ValueError("segmented offsets must be a CPU tensor")
-    if offsets.dtype != torch.long:
-        raise TypeError("segmented offsets must use torch.int64")
     positions = [int(offset) for offset in offsets.tolist()]
-    if not positions or positions[0] != 0:
-        raise ValueError("segmented offsets must start at zero")
-    if any(left > right for left, right in zip(positions, positions[1:])):
-        raise ValueError("segmented offsets must be nondecreasing")
-    if positions[-1] != total:
+    if not positions or positions[0] != 0 or positions[-1] != total:
         raise ValueError("segmented offsets must cover the packed values exactly")
     return [right - left for left, right in zip(positions, positions[1:])]
 
 
 @torch.library.custom_op("danling::_segmented_cumprod_backward", mutates_args=())
-def segmented_cumprod_backward(
-    grad_output: Tensor,
-    values: Tensor,
-    offsets: Tensor,
-    output: Tensor,
-) -> Tensor:
-    r"""Apply native cumprod's first-order VJP independently to packed segments."""
+def segmented_cumprod_backward(grad_output: Tensor, values: Tensor, offsets: Tensor, output: Tensor) -> Tensor:
     lengths = _segment_lengths(offsets, values.shape[0])
-    if grad_output.shape != values.shape or output.shape != values.shape:
-        raise ValueError("segmented cumprod values, output, and gradient must have the same shape")
     grad_values = torch.empty_like(values)
     start = 0
     for length in lengths:
         if length:
             segment = values.narrow(0, start, length)
             grad_segment = torch.ops.aten.cumprod_backward.default(
-                grad_output.narrow(0, start, length),
-                segment,
-                0,
-                output.narrow(0, start, length),
+                grad_output.narrow(0, start, length), segment, 0, output.narrow(0, start, length)
             )
             grad_values.narrow(0, start, length).copy_(grad_segment)
         start += length
@@ -76,34 +267,19 @@ def segmented_cumprod_backward(
 
 
 @segmented_cumprod_backward.register_fake
-def _segmented_cumprod_backward_fake(
-    grad_output: Tensor,
-    values: Tensor,
-    offsets: Tensor,
-    output: Tensor,
-) -> Tensor:
+def _segmented_cumprod_backward_fake(grad_output: Tensor, values: Tensor, offsets: Tensor, output: Tensor) -> Tensor:
     del grad_output, offsets, output
     return torch.empty_like(values)
 
 
 @torch.library.custom_op("danling::_segmented_cumprod", mutates_args=())
 def segmented_cumprod(values: Tensor, offsets: Tensor) -> Tensor:
-    r"""Run native cumprod independently over packed variable-length segments.
-
-    Calling the device's native kernel per segment preserves its accumulation order, including
-    device-specific rounding, underflow, zero, and non-finite behavior. The custom-op boundary
-    keeps the data-dependent segment loop opaque to full-graph compilation without padding.
-    """
     lengths = _segment_lengths(offsets, values.shape[0])
     output = torch.empty_like(values)
     start = 0
     for length in lengths:
         if length:
-            torch.ops.aten.cumprod.out(
-                values.narrow(0, start, length),
-                0,
-                out=output.narrow(0, start, length),
-            )
+            torch.ops.aten.cumprod.out(values.narrow(0, start, length), 0, out=output.narrow(0, start, length))
         start += length
     return output
 
