@@ -577,6 +577,36 @@ for _alias in (torch.concat, torch.concatenate):
         return torch.cat(tuple(tensors), dim=dim)
 
 
+# ``vstack``/``hstack``/``dstack`` are ``cat`` on a fixed axis of the *logical* shape. Left
+# unregistered they decompose per element, where that axis is a different dimension: on a
+# ``(B, L, C)`` NestedTensor ``vstack`` would concatenate the ragged dim instead of the batch.
+
+
+@NestedTensorFuncRegistry.implement(torch.vstack)
+@NestedTensorFuncRegistry.implement(torch.row_stack)
+def vstack(tensors):
+    r"""Concatenate along logical dimension 0. See also [torch.vstack][]."""
+    return torch.cat(tuple(tensors), dim=0)
+
+
+@NestedTensorFuncRegistry.implement(torch.hstack)
+@NestedTensorFuncRegistry.implement(torch.column_stack)
+def hstack(tensors):
+    r"""Concatenate along logical dimension 1. See also [torch.hstack][]."""
+    tensors = tuple(tensors)
+    return torch.cat(tensors, dim=0 if tensors[0].dim() == 1 else 1)
+
+
+@NestedTensorFuncRegistry.implement(torch.dstack)
+def dstack(tensors):
+    r"""Concatenate along logical dimension 2. See also [torch.dstack][]."""
+    tensors = tuple(tensors)
+    if tensors[0].dim() >= 3:
+        return torch.cat(tensors, dim=2)
+    # ``atleast_3d`` appends the missing axis, so a 2-D logical operand contributes one column.
+    return torch.cat(tuple(tensor.unsqueeze(-1) for tensor in tensors), dim=2)
+
+
 def _broadcast_nested_tensors_packed(tensors):
     r"""Broadcast same-batch NestedTensor operands directly in packed layout."""
     from .nested_tensor import NestedTensor
@@ -1226,13 +1256,19 @@ def stack(*args, **kwargs):
         >>> import torch
         >>> from danling.tensors import NestedTensor
         >>> nt = NestedTensor(torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0, 5.0]))
-        >>> out = torch.stack((nt, nt), dim=0)
+        >>> out = torch.stack((nt, nt), dim=1)
         >>> ref = NestedTensor(
         ...     torch.stack((nt[0], nt[0]), dim=0),
         ...     torch.stack((nt[1], nt[1]), dim=0),
         ... )
         >>> torch.equal(out, ref)
         True
+
+        A new dimension at or before the batch dimension has nowhere to live:
+        >>> torch.stack((nt, nt), dim=0)
+        Traceback (most recent call last):
+        NotImplementedError: torch.stack for NestedTensor cannot insert a dimension at or before
+        the batch dimension (0), but got dim 0.
     """
     tensors = args[0] if args else kwargs.get("tensors", ())
     if len(args) > 1:
@@ -1261,10 +1297,15 @@ def stack(*args, **kwargs):
         raise NotImplementedError("torch.stack for NestedTensor requires all inputs to share the same packed layout.")
     dim = _normalize_dim(int(dim), first.dim() + 1)
     batch_dim = _get_batch_dim(first)
-    if first.batch_first:
-        storage_dim = dim - 1 if dim > batch_dim else dim
-    else:
-        storage_dim = dim if dim < batch_dim else dim - 1
+    if dim <= batch_dim:
+        # Stacking here would put a new outermost axis in front of the batch, i.e. a batch of
+        # batches. A NestedTensor holds exactly one batch dimension, so there is nowhere to put
+        # it; silently stacking a per-element dim instead answers a different question.
+        raise NotImplementedError(
+            f"torch.stack for NestedTensor cannot insert a dimension at or before the batch dimension "
+            f"({batch_dim}), but got dim {dim}."
+        )
+    storage_dim = dim - 1
     element_rank = int(first._physical_shape.size(1))
     if storage_dim < 0 or storage_dim > element_rank:
         raise IndexError(
