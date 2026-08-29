@@ -1663,7 +1663,11 @@ def _check_segment_index_bounds(index_values: Tensor, lengths: Tensor, dim: int,
     from .segmented import align_rows
 
     outside = (index_values < 0) | (index_values >= align_rows(lengths, index_values))
-    if not bool(outside.any()):
+    in_bounds = ~outside.any()
+    if _is_compiling() or _is_fake_tensor(in_bounds):
+        torch._assert_async(in_bounds, f"{op_name}: index is out of bounds for dimension {dim}")
+        return
+    if bool(in_bounds):
         return
     position = int(torch.nonzero(outside.reshape(-1))[0])
     row = position // max(1, index_values[0].numel())
@@ -1678,9 +1682,29 @@ def _segmented_scatter_index(source: NestedTensor, index_values: Tensor, dim: in
     from .segmented import align_rows, segment_row_bounds
 
     starts, lengths = segment_row_bounds(_inner_segment_offsets(source), index_values.shape[0])
-    if not _is_fake_tensor(index_values):
-        _check_segment_index_bounds(index_values, lengths, dim, op_name)
+    _check_segment_index_bounds(index_values, lengths, dim, op_name)
     return align_rows(starts, index_values) + index_values
+
+
+def _scatter_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
+    r"""Return whether the scatter family resolves to a packed axis for these operands."""
+    from .nested_tensor import NestedTensor
+
+    if len(args) < 4:
+        return False
+    source, dim, index, src = args[0], args[1], args[2], args[3]
+    if not isinstance(index, NestedTensor) or _packed_scatter_src(source, src) is _NO_PACKED_SRC:
+        return False
+    try:
+        dim = _normalize_dim(dim, source.dim())
+        if dim == _get_batch_dim(source):
+            return False
+        dim_adj = _translate_dim(source, dim)
+    except (TypeError, ValueError, IndexError):
+        return False
+    if not source._has_same_structure(index):
+        return False
+    return _packed_static_dim(source, dim_adj) is not None or _packed_inner_ragged_dim(source, dim_adj)
 
 
 def _scatter_like(source, dim, index, src, apply_fn, op_name: str):
@@ -1750,21 +1774,33 @@ def _scatter_like(source, dim, index, src, apply_fn, op_name: str):
     return type(source)(storage, **source._meta())
 
 
-@NestedTensorAtenRegistry.implement(aten.scatter_add.default)
+@NestedTensorAtenRegistry.implement(
+    aten.scatter_add.default,
+    compile_safe=True,
+    compile_guard=_scatter_compile_safe,
+)
 def scatter_add(func, args, kwargs):
     r"""Apply ``scatter_add`` with packed fast paths when index/source layouts align."""
     source, dim, index, src = args[0], args[1], args[2], args[3]
     return _scatter_like(source, dim, index, src, lambda t, d, i, s: func(t, d, i, s, **kwargs), "scatter_add")
 
 
-@NestedTensorAtenRegistry.implement(aten.scatter.src)
+@NestedTensorAtenRegistry.implement(
+    aten.scatter.src,
+    compile_safe=True,
+    compile_guard=_scatter_compile_safe,
+)
 def scatter_src(func, args, kwargs):
     r"""Apply ``scatter`` with Tensor/NestedTensor src via packed fast paths when layouts align."""
     source, dim, index, src = args[0], args[1], args[2], args[3]
     return _scatter_like(source, dim, index, src, lambda t, d, i, s: func(t, d, i, s, **kwargs), "scatter")
 
 
-@NestedTensorAtenRegistry.implement(aten.scatter.value)
+@NestedTensorAtenRegistry.implement(
+    aten.scatter.value,
+    compile_safe=True,
+    compile_guard=_scatter_compile_safe,
+)
 def scatter_value(func, args, kwargs):
     r"""Apply scalar ``scatter`` with packed fast paths when index layouts align."""
     source, dim, index, value = args[0], args[1], args[2], args[3]
@@ -1773,7 +1809,11 @@ def scatter_value(func, args, kwargs):
 
 if hasattr(aten, "scatter_reduce"):
 
-    @NestedTensorAtenRegistry.implement(aten.scatter_reduce.two)
+    @NestedTensorAtenRegistry.implement(
+        aten.scatter_reduce.two,
+        compile_safe=True,
+        compile_guard=_scatter_compile_safe,
+    )
     def scatter_reduce(func, args, kwargs):
         r"""Apply ``scatter_reduce`` with packed fast paths when index/source layouts align."""
         source, dim, index, src, reduce = args[0], args[1], args[2], args[3], args[4]

@@ -188,6 +188,27 @@ class TestScatterErrors:
             torch.scatter(nested, 0, index, source)
 
 
+class TestScatterCompile:
+
+    def test_scatter_fullgraph(self):
+        shapes = [(2, 3, 4), (2, 2, 4)]
+        nested, index, source, bases, indices, sources = build_case(
+            shapes,
+            1,
+            ragged_dims=(1,),
+        )
+        compiled = torch.compile(
+            lambda input_, indices_, source_: torch.scatter(input_, 2, indices_, source_),
+            backend="aot_eager",
+            fullgraph=True,
+        )
+
+        output = compiled(nested, index, source)
+
+        assert_matches(
+            output,
+            [torch.scatter(base, 1, idx, src) for base, idx, src in zip(bases, indices, sources)],
+        )
 
 
 MASKED_CASES = [
