@@ -1161,9 +1161,9 @@ def _split_like(input: NestedTensor, dim: int, spans_for, op_name: str):
         return tuple(outputs)
 
     if _packed_sole_ragged_dim(input, dim_adj):
-        # Where the cuts fall depends on each sample's own extent, so a layout that cannot
-        # report those extents cannot answer at all -- say so rather than let ``_storage`` raise
-        # about packed sizes, which names neither the operator nor the dim.
+        # Where the cuts fall depends on each sample's own extent, so this is the one axis whose
+        # spans have to be recomputed per sample -- and the one a layout without Python metadata
+        # cannot answer for at all, which _resolved_packed_sizes says in the operator's name.
         per_sample = [spans_for(extent) for extent in _resolved_packed_sizes(input, op_name)]
         counts = [len(spans) for spans in per_sample]
         if len(set(counts)) > 1:
