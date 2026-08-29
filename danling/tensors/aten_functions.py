@@ -1295,45 +1295,39 @@ def gather(func, args, kwargs):
                 f"input={len(source)}, index={len(index)}"
             )
 
-        if dim_adj > 0 and source._values.dim() > 1 and source._has_same_structure(index):
-            # Gather runs on the packed values, so a per-element dim has to be mapped onto its packed
-            # axis: with more than one ragged level the collapsed ragged block shifts the later dims
-            # down, and passing the per-element index straight through indexes the wrong axis. A
-            # varying dim has no single packed axis, so those fall through to the paths below.
-            values_dim = _physical_to_values_dim(source, dim_adj)
+        if _single_ragged_gather_supported(source, index, dim_adj):
+            index_values = index._values.to(device=source._values.device, dtype=torch.long)
+            packed_index = _segmented_row_index(
+                source,
+                index_values,
+                dim,
+                "gather",
+                row_batch_indices=index.packed_batch_indices(device=source._values.device),
+            )
+            out_values = func(source._values, 0, packed_index, sparse_grad=sparse_grad, **kwargs)
+            return _packed_gather_output(source, index, out_values)
+
+        if source._has_same_structure(index):
+            # Gather runs on the packed values, so a per-element dim has to be mapped onto its
+            # packed axis: the packed axes are the permuted per-element dims with every ragged dim
+            # collapsed into axis 0, so the two numberings agree only under an identity layout. A
+            # static dim keeps an axis of its own, whatever its per-element position; the innermost
+            # ragged dim becomes packed dim 0 once each index is rebased onto its own sample's
+            # starting row. Any other ragged dim needs a stride that varies per sample, so it falls
+            # through to the per-sample loop.
+            values_dim = _packed_static_dim(source, dim_adj)
             if values_dim is not None:
                 out_values = func(source._values, values_dim, index._values, sparse_grad=sparse_grad, **kwargs)
-                return _packed_with_shape(source, out_values, index._physical_shape, index._logical_shape)
+                return _packed_gather_output(source, index, out_values)
+            if _packed_inner_ragged_dim(source, dim_adj):
+                index_values = index._values.to(device=source._values.device, dtype=torch.long)
+                packed_index = _segmented_row_index(source, index_values, dim, "gather")
+                out_values = func(source._values, 0, packed_index, sparse_grad=sparse_grad, **kwargs)
+                return _packed_gather_output(source, index, out_values)
 
-        if dim_adj == 0 and source._values.dim() > 1 and index._values.dim() > 1:
-            padded, lengths, lengths_dev, _, _, _ = _packed_to_padded(source, fill_value=0)
-            index_padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(index, fill_value=0)
-
-            if index._values.numel() > 0 and not (_is_fake_tensor(source._values) or _is_fake_tensor(index._values)):
-                gather_lengths = lengths_dev[batch_idx]
-                while gather_lengths.dim() < index._values.dim():
-                    gather_lengths = gather_lengths.unsqueeze(-1)
-                invalid = (index._values < 0) | (index._values >= gather_lengths)
-                if bool(invalid.any().item()):
-                    raise RuntimeError("index out of bounds for gather along the ragged dimension")
-
-            out_padded = func(padded, 1, index_padded, sparse_grad=sparse_grad, **kwargs)
-            return type(source)._from_packed(
-                out_padded[batch_idx, local_idx],
-                index._offsets,
-                index._physical_shape,
-                permutation=index._permutation,
-                ragged_dims=index._ragged_dims if index._ragged_dims_explicit else None,
-                batch_first=source.batch_first,
-                padding_value=source.padding_value,
-                mask_value=source.mask_value,
-                pin_memory=source._pin_memory,
-                outer_size=torch.Size(index._logical_shape),
-                packed_sizes=index._packed_sizes,
-                element_shapes=index._element_shapes,
-                validate=False,
-            )
-
+        # Nothing above claimed a packed axis, so report the per-sample loop rather than letting a
+        # warm ``_storage`` cache carry it past the guards unannounced.
+        _check_execution_guard(_ExecutionGuardKind.EAGER_FALLBACK, "aten_functions.gather")
         storage = []
         for tensor, idx in zip(source._storage, index._storage):
             if idx.device != tensor.device:
@@ -1341,6 +1335,7 @@ def gather(func, args, kwargs):
             storage.append(func(tensor, dim_adj, idx, sparse_grad=sparse_grad, **kwargs))
         return type(source)(storage, **source._meta())
 
+    _check_execution_guard(_ExecutionGuardKind.EAGER_FALLBACK, "aten_functions.gather")
     storage = []
     for tensor in source._storage:
         idx = index
@@ -1348,6 +1343,44 @@ def gather(func, args, kwargs):
             idx = idx.to(device=tensor.device)
         storage.append(func(tensor, dim_adj, idx, sparse_grad=sparse_grad, **kwargs))
     return type(source)(storage, **source._meta())
+
+
+def _single_ragged_gather_supported(source: NestedTensor, index: NestedTensor, dim_adj: int) -> bool:
+    r"""Whether one packed ragged axis can be addressed from a different index topology."""
+    return (
+        source.batch_first == index.batch_first
+        and len(source._ragged_dims) == 1
+        and source._ragged_dims == index._ragged_dims
+        and source._permutation == index._permutation
+        and source._values.dim() == index._values.dim()
+        and _packed_inner_ragged_dim(source, dim_adj)
+    )
+
+
+def _packed_gather_output(source: NestedTensor, index: NestedTensor, out_values: Tensor) -> NestedTensor:
+    r"""
+    Rebuild the result of a packed gather, which is shaped like the index rather than the source.
+
+    ``gather`` may be handed an index narrower than the source on every dim it does not read, so
+    the output takes the index's element shapes. Carrying them across rather than recovering them
+    from the physical shape also keeps an empty segment's rank, which trailing-zero trimming drops.
+    """
+    return type(source)._from_packed(
+        out_values,
+        index._offsets,
+        index._physical_shape,
+        permutation=index._permutation,
+        ragged_dims=index._ragged_dims if index._ragged_dims_explicit else None,
+        batch_first=source.batch_first,
+        padding_value=source.padding_value,
+        mask_value=source.mask_value,
+        pin_memory=source._pin_memory,
+        outer_size=torch.Size(index._logical_shape),
+        packed_sizes=index._packed_sizes,
+        element_shapes=index._element_shapes,
+        ragged_offsets=index._persistent_ragged_offsets(),
+        validate=False,
+    )
 
 
 def _index_write_like(source, dim, index, src, apply_fn, op_name: str):
@@ -1728,11 +1761,29 @@ def _check_segment_index_bounds(index_values: Tensor, lengths: Tensor, dim: int,
     )
 
 
-def _segmented_scatter_index(source: NestedTensor, index_values: Tensor, dim: int, op_name: str) -> Tensor:
-    r"""Rebase per-sample indices along the innermost ragged dim onto packed dim 0."""
+def _segmented_row_index(
+    source: NestedTensor,
+    index_values: Tensor,
+    dim: int,
+    op_name: str,
+    *,
+    row_batch_indices: Tensor | None = None,
+) -> Tensor:
+    r"""
+    Rebase per-sample indices along the innermost ragged dim onto packed dim 0.
+
+    Every operator that addresses a position along that dim -- a scatter destination, a gather
+    source -- needs the same translation, because the packed buffer numbers rows across the
+    whole batch while the caller numbers them inside one sample.
+    """
     from .segmented import align_rows, segment_row_bounds
 
-    starts, lengths = segment_row_bounds(_inner_segment_offsets(source), index_values.shape[0])
+    offsets = _inner_segment_offsets(source)
+    if row_batch_indices is None:
+        starts, lengths = segment_row_bounds(offsets, source._values.shape[0])
+    else:
+        starts = offsets[:-1].index_select(0, row_batch_indices)
+        lengths = (offsets[1:] - offsets[:-1]).index_select(0, row_batch_indices)
     _check_segment_index_bounds(index_values, lengths, dim, op_name)
     return align_rows(starts, index_values) + index_values
 
@@ -1797,7 +1848,7 @@ def _scatter_like(source, dim, index, src, apply_fn, op_name: str):
         if values_dim is not None:
             return source._packed_like_unchecked(apply_fn(source._values, values_dim, index_values, src_values))
         if _packed_inner_ragged_dim(source, dim_adj):
-            packed_index = _segmented_scatter_index(source, index_values, dim, op_name)
+            packed_index = _segmented_row_index(source, index_values, dim, op_name)
             return source._packed_like_unchecked(apply_fn(source._values, 0, packed_index, src_values))
 
     # Nothing above claimed a packed axis, so report the per-sample loop rather than letting a

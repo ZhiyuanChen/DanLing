@@ -1296,28 +1296,15 @@ def gather(input: NestedTensor, dim: int, index, *, sparse_grad: bool = False):
         >>> torch.equal(out, ref)
         True
     """
-    if input._values.dim() > 1:
-        # Run the packed handler HERE (func level), where ``input._values`` still carry autograd, rather
-        # than delegating to the aten op on the NestedTensor -- that re-enters ``__torch_dispatch__``,
-        # where autograd has already detached ``_values``, so the result would drop grad. Mirrors the
-        # same treatment in ``log_softmax``/``softmax``.
-        from .aten_functions import gather as _aten_gather
+    # Run the packed handler HERE (func level), where ``input._values`` still carry autograd, rather
+    # than delegating to the aten op on the NestedTensor -- that re-enters ``__torch_dispatch__``,
+    # where autograd has already detached ``_values``, so the result would drop grad. Mirrors the
+    # same treatment in ``log_softmax``/``softmax``. One-dimensional packed values go the same way:
+    # a 1-D element is a ragged dim like any other, and splitting it off here only bought a Python
+    # loop over ``_storage``.
+    from .aten_functions import gather as _aten_gather
 
-        return _aten_gather(torch.ops.aten.gather.default, (input, dim, index), {"sparse_grad": sparse_grad})
-
-    from .nested_tensor import NestedTensor
-
-    dim_adj = _translate_non_batch_dim(input, dim, name="gather")
-    aligned_index = input._maybe_exact_shape_nested_like(index)
-    if aligned_index is not None:
-        index = aligned_index
-    if isinstance(index, NestedTensor):
-        if len(input) != len(index):
-            raise ValueError(
-                "NestedTensor batch length mismatch between input and index: " f"input={len(input)}, index={len(index)}"
-            )
-        return NestedTensor(torch.gather(t, dim_adj, idx) for t, idx in zip(input._storage, index._storage))
-    return NestedTensor(torch.gather(t, dim_adj, index) for t in input._storage)
+    return _aten_gather(torch.ops.aten.gather.default, (input, dim, index), {"sparse_grad": sparse_grad})
 
 
 def _require_packed_ragged_dim(input: NestedTensor, dim: int | None, name: str) -> None:
