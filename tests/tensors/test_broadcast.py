@@ -103,6 +103,56 @@ def broadcast_case_params(cases=None):
     )
 
 
+class TestDenseBroadcast:
+
+    @broadcast_case_params()
+    def test_shared_tail_operand(self, case_id, shapes, metadata, operand_shape):
+        elements = build_elements(shapes)
+        operand = operand_for(operand_shape)
+
+        output = NestedTensor(elements, **metadata) + operand
+
+        assert_elements_close(output, [element + operand for element in elements])
+
+    @pytest.mark.parametrize(
+        "operation",
+        [torch.div, torch.maximum, torch.gt],
+        ids=["div", "maximum", "greater"],
+    )
+    def test_other_binary_operations(self, operation):
+        elements = build_elements([(3, 2, 5), (3, 4, 5)])
+        operand = operand_for((1, 5))
+
+        output = operation(NestedTensor(elements, ragged_dims=(1,)), operand)
+
+        assert_elements_close(output, [operation(element, operand) for element in elements])
+
+
+    @broadcast_case_params(broadcast_cases_named("leading-ragged", "batch-second"))
+    def test_reversed_operand_order(self, case_id, shapes, metadata, operand_shape):
+        elements = build_elements(shapes)
+        operand = operand_for(operand_shape)
+
+        output = operand - NestedTensor(elements, **metadata)
+
+        assert_elements_close(output, [operand - element for element in elements])
+
+    def test_scalar_and_packed_shaped_operands(self):
+        elements = build_elements([(2, 5), (4, 5)])
+        nested = NestedTensor(elements, ragged_dims=(0,))
+        assert_elements_close(nested + 2.5, [element + 2.5 for element in elements])
+
+        packed_operand = torch.arange(float(nested.concat.numel())).reshape(nested.concat.shape)
+        torch.testing.assert_close((nested + packed_operand).concat, nested.concat + packed_operand)
+
+    def test_projected_layout(self):
+        projected = projected_case()
+        elements = list(projected)
+        operand = torch.randn(9)
+
+        output = projected + operand
+
+        assert_elements_close(output, [element + operand for element in elements])
 
 
 
@@ -111,6 +161,17 @@ def broadcast_case_params(cases=None):
 
 class TestLayoutPreservation:
 
+    @pytest.mark.parametrize("lengths", [(3, 3), (3,), (0, 4)], ids=["equal", "single", "empty"])
+    def test_declared_ragged_dimension_is_preserved(self, lengths):
+        elements = [torch.randn(2, length, 5) for length in lengths]
+        nested = NestedTensor(elements, ragged_dims=(1,))
+        operand = torch.randn(5)
+
+        output = nested + operand
+
+        assert output.ragged_dims == (1,)
+        assert_elements_close(output, [element + operand for element in elements])
+        assert output.shape == nested.shape
 
     def test_source_derived_empty_batch_preserves_topology(self):
         nested = NestedTensor(
@@ -232,6 +293,75 @@ class TestNestedBroadcast:
             wide + narrow
 
 
+class TestWhereAndTernary:
+
+    @staticmethod
+    def sampled_operands(lengths, *, condition_spelling, requires_grad=False):
+        samples = 4
+        channels = 3
+        coordinate = NestedTensor(
+            [torch.empty(length, channels) for length in lengths],
+            ragged_dims=(0,),
+        )
+        unit_template = coordinate.unsqueeze(-3)
+        sampled_template = unit_template.expand(-1, samples, -1, -1)
+        unit_values = torch.randn_like(unit_template.concat, requires_grad=requires_grad)
+        sampled_values = torch.randn_like(sampled_template.concat, requires_grad=requires_grad)
+        unit = unit_template.packed_like(unit_values)
+        sampled = sampled_template.packed_like(sampled_values)
+
+        mask_template = NestedTensor(
+            [torch.empty(length, dtype=torch.bool) for length in lengths],
+            ragged_dims=(0,),
+        )
+        mask_values = torch.arange(sum(lengths)).remainder(2).eq(0)
+        condition = mask_template.packed_like(mask_values)
+        if condition_spelling == "lower-rank":
+            condition = condition.unsqueeze(-1)
+        else:
+            condition = condition.unsqueeze(-2).unsqueeze(-1)
+        return condition, unit, sampled, unit_values, sampled_values
+
+    @staticmethod
+    def packed_condition(condition):
+        values = condition.concat
+        return values.unsqueeze(1) if values.dim() == 2 else values
+
+
+
+
+    def test_where_with_dense_tail_and_condition(self):
+        elements = [torch.randn(3, length, 5) for length in (2, 4)]
+        nested = NestedTensor(elements, ragged_dims=(1,))
+        tail = torch.rand(5)
+        dense_condition = torch.rand(2, 1, 1, 5) > 0.5
+
+        assert_elements_close(
+            torch.where(nested > 0, nested, tail),
+            [torch.where(element > 0, element, tail) for element in elements],
+        )
+        assert_elements_close(
+            torch.where(dense_condition, nested, 0.0),
+            [torch.where(dense_condition[index], element, torch.zeros(())) for index, element in enumerate(elements)],
+        )
+
+
+
+class TestInPlace:
+
+    @pytest.mark.parametrize("operation", ["add_", "sub_", "mul_"])
+    def test_matches_out_of_place_operation(self, operation):
+        elements = [torch.randn(3, length, 5) for length in (2, 4)]
+        nested = NestedTensor(elements, ragged_dims=(1,))
+        operand = torch.rand(5)
+        expected = [getattr(element.clone(), operation)(operand) for element in elements]
+        target = nested.clone()
+
+        getattr(target, operation)(operand)
+
+        assert_elements_close(target, expected)
+
+
 class TestNestedViewAlignment:
 
     @staticmethod
@@ -323,3 +453,51 @@ class TestCompile:
         values, sizes = compiled(target[:0], source[:0])
         assert values.shape == (0, 4)
         assert sizes.shape == (0, 3)
+
+    def test_dense_tail_broadcast_fullgraph(self):
+        elements = [torch.randn(3, length, 5) for length in (2, 4)]
+        nested = NestedTensor(elements, ragged_dims=(1,))
+        operand = torch.rand(5)
+        compiled = torch.compile(
+            lambda input_, other: input_ + other,
+            backend="aot_eager",
+            fullgraph=True,
+        )
+
+        output = compiled(nested, operand)
+
+        assert_elements_close(output, [element + operand for element in elements])
+
+    def test_projected_layout_fullgraph(self):
+        projected = projected_case()
+        elements = list(projected)
+        operand = torch.rand(9)
+        compiled = torch.compile(
+            lambda input_, other: input_ + other,
+            backend="aot_eager",
+            fullgraph=True,
+        )
+
+        output = compiled(projected, operand)
+
+        assert_elements_close(output, [element + operand for element in elements])
+
+
+class TestAutograd:
+
+    def test_dense_operand_gradient_matches_per_element_reference(self):
+        leaves = [torch.randn(3, length, 5, requires_grad=True) for length in (2, 4)]
+        operand = torch.randn(5, requires_grad=True)
+
+        (NestedTensor(leaves, ragged_dims=(1,)) * operand).concat.sum().backward()
+
+        actual_leaf_gradients = [leaf.grad.clone() for leaf in leaves]
+        actual_operand_gradient = operand.grad.clone()
+
+        reference_leaves = [leaf.detach().clone().requires_grad_() for leaf in leaves]
+        reference_operand = operand.detach().clone().requires_grad_()
+        sum((leaf * reference_operand).sum() for leaf in reference_leaves).backward()
+
+        for actual, reference in zip(actual_leaf_gradients, reference_leaves):
+            torch.testing.assert_close(actual, reference.grad)
+        torch.testing.assert_close(actual_operand_gradient, reference_operand.grad)
