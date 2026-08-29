@@ -332,6 +332,28 @@ def align_rows(rows: Tensor, values: Tensor) -> Tensor:
     return rows.view(-1, *([1] * (values.dim() - 1))).expand_as(values)
 
 
+def segment_row_bounds(offsets: Tensor, total: int) -> tuple[Tensor, Tensor]:
+    r"""
+    Report, for every packed row, where its segment starts and how long that segment is.
+
+    An operator that addresses a position *inside* a segment — a scatter destination, a
+    per-segment lookup — needs both halves of this. The start rebases the position onto the
+    packed buffer, and the length is the only thing that separates a legal write from one that
+    lands in the neighbouring sample: once the position has been rebased, a dense kernel sees a
+    row number that is in range for the buffer and writes it without complaint.
+
+    Args:
+        offsets: Segment offsets along packed dim 0, length ``segments + 1``.
+        total: Number of packed rows, i.e. ``offsets[-1]``.
+
+    Returns:
+        tuple[Tensor, Tensor]: The starting row and the length of each row's segment.
+    """
+    lengths = offsets[1:] - offsets[:-1]
+    starts = torch.repeat_interleave(offsets[:-1], lengths, output_size=total)
+    return starts, torch.repeat_interleave(lengths, lengths, output_size=total)
+
+
 def segmented_sort_perm(
     values: Tensor,
     offsets: Tensor,

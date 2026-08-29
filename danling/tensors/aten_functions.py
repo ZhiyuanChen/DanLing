@@ -1603,8 +1603,88 @@ def index_select(func, args, kwargs):
     return per_element_fallback(func, (source, dim_adj, index_device), kwargs)
 
 
+#: Returned by :func:`_packed_scatter_src` for a ``src`` the packed buffer cannot express.
+_NO_PACKED_SRC = object()
+
+
+def _packed_inner_ragged_dim(source: NestedTensor, dim_adj: int) -> bool:
+    r"""
+    Whether packed dim 0 steps along ``dim_adj`` one position at a time.
+
+    Packed rows enumerate the ragged dims in permutation order, so advancing one row advances
+    the *innermost* ragged coordinate by one and leaves the outer ones alone. That is what lets
+    a per-sample index along that dim be rebased onto packed dim 0 by adding the row its
+    segment starts at. Any other ragged dim would need a stride that varies from sample to
+    sample, which no single packed axis provides.
+    """
+    ragged = tuple(source._varying_dims)
+    if not ragged or dim_adj != ragged[-1]:
+        return False
+    rank = int(source._physical_shape.size(1))
+    return tuple(source._permutation or tuple(range(rank)))[: len(ragged)] == ragged
+
+
+def _packed_scatter_src(source: NestedTensor, src):
+    r"""
+    Return the packed stand-in for ``src``, or :data:`_NO_PACKED_SRC` when it has none.
+
+    A scalar writes the same value everywhere and needs no translation. A NestedTensor sharing
+    ``source``'s structure is already row-aligned with it. A dense tensor is neither: the
+    per-element path replays the whole tensor once per sample, which one packed buffer with one
+    row per sample cannot express.
+    """
+    from .nested_tensor import NestedTensor
+
+    if isinstance(src, NestedTensor):
+        if not source._has_same_structure(src):
+            return _NO_PACKED_SRC
+        values = src._values
+        return values if values.device == source._values.device else values.to(device=source._values.device)
+    if isinstance(src, Tensor):
+        return _NO_PACKED_SRC
+    return src
+
+
+def _inner_segment_offsets(source: NestedTensor) -> Tensor:
+    r"""Return the offsets delimiting the innermost ragged level along packed dim 0."""
+    offsets = source._offsets if source._ragged_rank <= 1 else source._ragged_level_offsets(-1)
+    return offsets.to(device=source._values.device, dtype=torch.long)
+
+
+def _check_segment_index_bounds(index_values: Tensor, lengths: Tensor, dim: int, op_name: str) -> None:
+    r"""
+    Reject an index that would be rebased out of its own segment.
+
+    Rebasing an index onto packed dim 0 turns an out-of-range write into a write into the
+    neighbouring sample: the row it lands on is a real row of the packed buffer, so the dense
+    kernel accepts it and the corruption is silent. The range therefore has to be checked here,
+    against the sample's own extent, rather than left to the kernel.
+    """
+    from .segmented import align_rows
+
+    outside = (index_values < 0) | (index_values >= align_rows(lengths, index_values))
+    if not bool(outside.any()):
+        return
+    position = int(torch.nonzero(outside.reshape(-1))[0])
+    row = position // max(1, index_values[0].numel())
+    raise IndexError(
+        f"{op_name}: index {int(index_values.reshape(-1)[position])} is out of bounds for "
+        f"dimension {dim} with size {int(lengths[row])}"
+    )
+
+
+def _segmented_scatter_index(source: NestedTensor, index_values: Tensor, dim: int, op_name: str) -> Tensor:
+    r"""Rebase per-sample indices along the innermost ragged dim onto packed dim 0."""
+    from .segmented import align_rows, segment_row_bounds
+
+    starts, lengths = segment_row_bounds(_inner_segment_offsets(source), index_values.shape[0])
+    if not _is_fake_tensor(index_values):
+        _check_segment_index_bounds(index_values, lengths, dim, op_name)
+    return align_rows(starts, index_values) + index_values
+
+
 def _scatter_like(source, dim, index, src, apply_fn, op_name: str):
-    r"""Apply scatter-style writes with a packed fast path for matching-offset static dims."""
+    r"""Apply scatter-style writes on the packed values whenever the written dim maps to one axis."""
     from .nested_tensor import NestedTensor
 
     dim = _normalize_dim(dim, source.dim())
@@ -1631,22 +1711,19 @@ def _scatter_like(source, dim, index, src, apply_fn, op_name: str):
             f"source={len(src)}"
         )
 
-    if isinstance(index, NestedTensor) and dim_adj > 0 and source._values.dim() > dim_adj:
-        # Writes along the ragged leading dim are not packed-safe: a padded fallback would let
-        # invalid rows participate in the write. Restrict the fast path to static per-element dims.
+    src_values = _packed_scatter_src(source, src)
+    if isinstance(index, NestedTensor) and src_values is not _NO_PACKED_SRC and source._has_same_structure(index):
         index_values = index._values.to(device=source._values.device, dtype=torch.long)
-        if source._has_same_structure(index):
-            if isinstance(src, NestedTensor):
-                if source._has_same_structure(src):
-                    src_values = src._values
-                    if src_values.device != source._values.device:
-                        src_values = src_values.to(device=source._values.device)
-                    return source._packed_like_unchecked(apply_fn(source._values, dim_adj, index_values, src_values))
-            else:
-                src_values = src
-                if isinstance(src_values, Tensor) and src_values.device != source._values.device:
-                    src_values = src_values.to(device=source._values.device)
-                return source._packed_like_unchecked(apply_fn(source._values, dim_adj, index_values, src_values))
+        # ``dim_adj`` numbers per-element dimensions and the packed axes are the permuted,
+        # ragged-collapsed ones, so the two agree only under an identity layout. Map through the
+        # layout instead: a static dim keeps its own axis, and the innermost ragged dim becomes
+        # packed dim 0 once its indices are rebased onto the sample's starting row.
+        values_dim = _packed_static_dim(source, dim_adj)
+        if values_dim is not None:
+            return source._packed_like_unchecked(apply_fn(source._values, values_dim, index_values, src_values))
+        if _packed_inner_ragged_dim(source, dim_adj):
+            packed_index = _segmented_scatter_index(source, index_values, dim, op_name)
+            return source._packed_like_unchecked(apply_fn(source._values, 0, packed_index, src_values))
 
     storage = []
     if isinstance(index, NestedTensor):
