@@ -1725,6 +1725,12 @@ def _scatter_like(source, dim, index, src, apply_fn, op_name: str):
             packed_index = _segmented_scatter_index(source, index_values, dim, op_name)
             return source._packed_like_unchecked(apply_fn(source._values, 0, packed_index, src_values))
 
+    # Nothing above claimed a packed axis, so report the per-sample loop rather than letting a
+    # warm ``_storage`` cache carry it past the guards unannounced.
+    _check_execution_guard(_ExecutionGuardKind.EAGER_FALLBACK, f"aten_functions._scatter_like({op_name})")
+    if _is_compiling():
+        _compile_unsupported(op_name, "the written dimension does not resolve to a single packed axis")
+
     storage = []
     if isinstance(index, NestedTensor):
         indices = index._storage
