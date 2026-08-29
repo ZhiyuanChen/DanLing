@@ -186,6 +186,51 @@ class TestNestedBroadcast:
 
         assert_elements_close(output, [target_element + source_element])
 
+    def test_empty_lower_rank_mismatch_raises(self):
+        wide = NestedTensor(
+            [torch.empty(3, 2, 5), torch.empty(3, 4, 5)],
+            ragged_dims=(1,),
+        )[:0]
+        narrow = NestedTensor(
+            [torch.empty(3, 5), torch.empty(5, 5)],
+            ragged_dims=(0,),
+        )[:0]
+
+        with pytest.raises(ValueError):
+            wide - narrow
+
+    @pytest.mark.parametrize("narrow_first", [False, True])
+    def test_lower_rank_nested_operand(self, narrow_first):
+        wide_elements = [torch.randn(3, length, 5) for length in (2, 4)]
+        narrow_elements = [torch.randn(length, 5) for length in (2, 4)]
+        wide = NestedTensor(wide_elements, ragged_dims=(1,))
+        narrow = NestedTensor(narrow_elements, ragged_dims=(0,))
+
+        output = narrow + wide if narrow_first else wide + narrow
+
+        assert_elements_close(
+            output,
+            (
+                [a + b for a, b in zip(narrow_elements, wide_elements)]
+                if narrow_first
+                else [a + b for a, b in zip(wide_elements, narrow_elements)]
+            ),
+        )
+        assert output.ragged_dims == (1,)
+
+    def test_mismatched_nested_lengths_raise(self):
+        wide = NestedTensor(
+            [torch.randn(3, length, 5) for length in (2, 4)],
+            ragged_dims=(1,),
+        )
+        narrow = NestedTensor(
+            [torch.randn(length, 5) for length in (2, 3)],
+            ragged_dims=(0,),
+        )
+
+        with pytest.raises(RuntimeError):
+            wide + narrow
+
 
 class TestNestedViewAlignment:
 
@@ -278,4 +323,3 @@ class TestCompile:
         values, sizes = compiled(target[:0], source[:0])
         assert values.shape == (0, 4)
         assert sizes.shape == (0, 3)
-

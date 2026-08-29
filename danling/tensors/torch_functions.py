@@ -60,6 +60,7 @@ from .ops import (
     _bind_fn,
     _check_execution_guard,
     _compile_unsupported,
+    _dense_operand_for_element,
     _ExecutionGuardKind,
     _get_batch_dim,
     _is_compiling,
@@ -952,29 +953,14 @@ def broadcast_tensors(*tensors):
     if packed is not None:
         return packed
 
-    batch_dim = _get_batch_dim(ref)
-    varying = set(ref._varying_dims)
-
-    def _dense_element(tensor: Tensor, index: int) -> Tensor:
-        elem = ref._storage[index]
-        if tensor.dim() == ref.dim() and tensor.shape[batch_dim] in (1, n):
-            tensor = tensor.select(batch_dim, 0 if tensor.shape[batch_dim] == 1 else index)
-        elif tensor.dim() > 1 and tensor.shape[0] in (1, n):
-            tensor = tensor[0 if tensor.shape[0] == 1 else index]
-        if tensor.dim() == elem.dim():
-            slices = []
-            for dim, (size, elem_size) in enumerate(zip(tensor.shape, elem.shape)):
-                if dim in varying and size > elem_size:
-                    slices.append(slice(0, int(elem_size)))
-                else:
-                    slices.append(slice(None))
-            tensor = tensor[tuple(slices)]
-        return tensor
-
     def _element(tensor, index: int):
         if isinstance(tensor, NestedTensor):
             return tensor._storage[index]
-        return _dense_element(tensor, index)
+        # One reading of a dense operand, shared with the binary and ternary handlers: the batch
+        # dimension participates only when the operand carries an axis there, so a shorter
+        # operand whose leading extent happens to equal the batch size stays a tail broadcast.
+        aligned = _dense_operand_for_element(ref, tensor, index, ref._storage[index])
+        return tensor if aligned is None else aligned
 
     _check_execution_guard(_ExecutionGuardKind.STORAGE_MAP, "broadcast_tensors")
     with torch._C.DisableTorchFunctionSubclass():

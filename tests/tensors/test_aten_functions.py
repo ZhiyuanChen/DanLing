@@ -265,6 +265,24 @@ class TestElementwiseOps:
         reference = NT([tensor * operand[index] for index, tensor in enumerate(nt)], **nt._meta())
         assert_close(result, reference)
 
+    def test_dense_operand_can_target_static_tail_or_batch(self):
+        nt = NT(
+            [
+                torch.arange(2 * 2 * 3, dtype=torch.float32).reshape(2, 2, 3),
+                torch.arange(3 * 2 * 3, dtype=torch.float32).reshape(3, 2, 3),
+            ],
+            batch_first=True,
+        )
+        operand = torch.tensor([[2.0, 3.0, 4.0], [5.0, 6.0, 7.0]])
+
+        tail_aligned = nt * operand
+        batchwise = operand.reshape(2, 1, 1, operand.shape[-1])
+        batch_aligned = nt * batchwise
+
+        for index, element in enumerate(nt):
+            assert_close(tail_aligned[index], element * operand)
+            assert_close(batch_aligned[index], element * operand[index])
+
     @pytest.mark.parametrize("reverse", [False, True])
     def test_binary_op_dense_padded_shape_trailing_broadcast(self, reverse):
         # A mask-like NT with a singleton channel dim against a dense operand carrying the
