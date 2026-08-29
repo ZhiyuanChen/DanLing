@@ -298,3 +298,39 @@ class TestMaskedScatter:
             torch.masked_scatter(NT(bases), NT(masks), NT(sources))
 
 
+class TestMaskedScatterAutograd:
+
+    @staticmethod
+    def build(exact_supply):
+        torch.manual_seed(0)
+        leaves = [torch.randn(3, 4, requires_grad=True), torch.randn(5, 4, requires_grad=True)]
+        elements = [leaf * 1.0 for leaf in leaves]
+        masks = [leaf.detach() > 0 for leaf in leaves]
+        counts = [int(mask.sum()) for mask in masks] if exact_supply else [mask.numel() for mask in masks]
+        supply = torch.randn(sum(counts), requires_grad=True)
+        source_elements = [supply[: counts[0]], supply[counts[0] :]]
+        return (
+            leaves,
+            supply,
+            elements,
+            masks,
+            source_elements,
+            NT(elements, ragged_dims=(0,)),
+            NT(masks, ragged_dims=(0,)),
+            NT(source_elements, ragged_dims=(0,)),
+        )
+
+    @pytest.mark.parametrize("exact_supply", [False, True], ids=["surplus", "exact"])
+    def test_gradient_matches_per_element_reference(self, exact_supply):
+        leaves, supply, _, _, _, nested, mask, source = self.build(exact_supply)
+        torch.masked_scatter(nested, mask, source).concat.sum().backward()
+        actual = [leaf.grad.clone() for leaf in leaves] + [supply.grad.clone()]
+
+        leaves, supply, elements, masks, sources, _, _, _ = self.build(exact_supply)
+        sum(
+            torch.masked_scatter(element, mask, source).sum() for element, mask, source in zip(elements, masks, sources)
+        ).backward()
+        expected = [leaf.grad.clone() for leaf in leaves] + [supply.grad.clone()]
+
+        for actual_gradient, expected_gradient in zip(actual, expected):
+            torch.testing.assert_close(actual_gradient, expected_gradient)

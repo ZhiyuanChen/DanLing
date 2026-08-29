@@ -2063,7 +2063,7 @@ def masked_scatter(input: NestedTensor, mask, source):
         >>> torch.equal(out, ref)
         True
     """
-    from .aten_functions import _masked_scatter_packed_supported
+    from .aten_functions import _masked_scatter_handler, _masked_scatter_packed_supported
     from .nested_tensor import NestedTensor
 
     aligned_mask = input._maybe_exact_shape_nested_like(mask)
@@ -2088,7 +2088,12 @@ def masked_scatter(input: NestedTensor, mask, source):
     ):
         # Dense Tensor mask or source stay on the fallback path: eager semantics replay them
         # independently for each element rather than consuming one packed stream.
-        return torch.ops.aten.masked_scatter.default(input, mask, source)
+        #
+        # Run the packed handler HERE (func level), where ``input._values`` still carry autograd,
+        # rather than delegating to the aten op on the NestedTensor -- that re-enters
+        # ``__torch_dispatch__``, where autograd has already detached ``_values``, so the result
+        # would drop grad. Mirrors the same treatment in ``gather``.
+        return _masked_scatter_handler(torch.ops.aten.masked_scatter.default, (input, mask, source), {})
 
     _check_execution_guard(_ExecutionGuardKind.EAGER_FALLBACK, "torch_functions.masked_scatter")
     storage = []
