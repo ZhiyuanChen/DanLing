@@ -48,11 +48,15 @@ from .ops import (
     _binary_op_maybe_tensor,
     _check_execution_guard,
     _compile_unsupported,
+    _dense_alignment,
+    _dense_alignment_to_values,
+    _dense_operand_for_element,
     _ExecutionGuardKind,
     _get_batch_dim,
     _is_compiling,
     _is_packed_identity,
     _maybe_align_dense_to_nested,
+    _nested_like_elements,
     _normalize_dim,
     _physical_to_values_dim,
     _resolve_dense_for_values,
@@ -65,6 +69,9 @@ if TYPE_CHECKING:
     from .nested_tensor import NestedTensor
 
 aten = torch.ops.aten
+
+#: Sentinel for a ternary operand that no packed resolution serves.
+_UNRESOLVED = object()
 
 try:
     from torch._subclasses.fake_tensor import is_fake as _torch_is_fake
@@ -285,72 +292,41 @@ def _is_scalar_binary_overload(func) -> bool:
     return "Scalar" in str(getattr(func, "_overloadname", ""))
 
 
-def _broadcasts_per_element(source, candidate: Tensor) -> bool:
+def _resolve_ternary_other(source, other):
     r"""
-    Return whether a dense tensor is safe for a packed fast path.
+    Resolve a ternary-op operand against ``source``, or report that nothing packed applies.
 
-    Dense parity requires two things:
-    1. the tensor broadcasts against every individual NestedTensor element
-    2. any non-trivial broadcast extent lands only on packed static dims, never on
-       the leading packed dim that concatenates ragged rows across elements
-    """
-    element_ndim = source._physical_shape.size(1)
-    if element_ndim == 0:
-        return candidate.dim() == 0
-    if source._values.dim() != element_ndim:
-        return False
-
-    candidate_shape = tuple(candidate.shape)
-    padded_shape = (1,) * max(0, element_ndim - len(candidate_shape)) + candidate_shape
-    if padded_shape and padded_shape[0] != 1:
-        return False
-    element_shapes = source._element_shapes
-    if element_shapes is None:
-        if _is_fake_tensor(source._physical_shape):
-            return False
-        element_shapes = tuple(type(source)._trim_shape(row) for row in source._physical_shape.tolist())
-    for shape in element_shapes:
-        try:
-            torch.broadcast_shapes(tuple(shape), candidate_shape)
-        except RuntimeError:
-            return False
-    return True
-
-
-def _resolve_ternary_other(source, other, func):
-    r"""
-    Resolve a ternary-op operand against ``source``.
-
-    This accepts the same layout-aligned NestedTensor and logical-shape-aligned
-    dense tensor cases as ``_resolve_other``. Plain tensors are only accepted when
-    they broadcast against each element individually, which matches dense semantics.
+    This accepts the same layout-aligned NestedTensor and dense tensor cases as
+    ``_resolve_other``: a dense operand is read against the logical shape by
+    :func:`_resolve_dense_for_values` and rewritten into packed axis order, which is what keeps
+    a ``[B, 1, 1, C]`` operand a per-sample slab rather than an extra logical dimension.
+    Returns ``_UNRESOLVED`` when the operand needs the per-element path; an operand whose shape
+    has more than one reading raises from ``_resolve_dense_for_values`` and is not swallowed.
     """
     from .nested_tensor import NestedTensor
 
     device = source._values.device
     if isinstance(other, NestedTensor):
-        if source._has_same_structure(other):
-            values = other._values
-            if values.device != device:
-                values = values.to(device=device)
-            return values
-        raise NotImplementedError(f"NestedTensor: {func} requires matching packed structure across all NT operands")
+        if not source._has_same_structure(other):
+            return _UNRESOLVED
+        values = other._values
+        return values if values.device == device else values.to(device=device)
     if isinstance(other, Tensor):
         if other.dim() == 0:
             return other if other.device == device else other.to(device=device)
         aligned = _maybe_align_dense_to_nested(source, other)
         if aligned is not None and source._has_same_structure(aligned):
             values = aligned._values
-            if values.device != device:
-                values = values.to(device=device)
-            return values
+            return values if values.device == device else values.to(device=device)
+        # Not ``_resolve_dense_for_values``: its packed-shape rule reads an operand shaped like
+        # ``_values`` as elementwise on the packed rows, which for a ternary op would silently
+        # accept a tensor that no element broadcasts against. Only the alignment applies here.
         candidate = other if other.device == device else other.to(device=device)
-        if _broadcasts_per_element(source, candidate):
-            return candidate
-        raise NotImplementedError(
-            f"NestedTensor: {func} with non-scalar Tensor operand that is neither shape-aligned nor "
-            "broadcast-compatible with each NestedTensor element"
-        )
+        aligned = _dense_alignment(source, candidate)
+        if aligned is None:
+            return _UNRESOLVED
+        resolved = _dense_alignment_to_values(source, candidate, aligned)
+        return _UNRESOLVED if resolved is None else resolved
     return other
 
 
@@ -6023,6 +5999,38 @@ def _creation_like_handler(func, args, kwargs):
 # ---------------------------------------------------------------------------
 
 
+def _ternary_per_element(func, args, kwargs, ref):
+    r"""
+    Replay a ternary op per element, giving each dense operand the slice that element meets.
+
+    ``per_element_fallback`` substitutes elements for NestedTensors and passes every other
+    argument through untouched, which for a dense operand carrying a batch axis hands the whole
+    batch to every element and inflates the result's rank. Dense operands are aligned here the
+    same way the packed resolver reads them, so the fallback answers what the packed path would.
+    """
+    from .nested_tensor import NestedTensor
+
+    _check_execution_guard(_ExecutionGuardKind.EAGER_FALLBACK, "aten_functions._ternary_per_element")
+    if _is_compiling():
+        _compile_unsupported(str(getattr(func, "_schema", func)), "would fall back to per-element eager execution")
+    operands = [operand._unpack() if isinstance(operand, NestedTensor) else operand for operand in args[:3]]
+    results = []
+    for index, anchor in enumerate(ref._unpack()):
+        elements = []
+        for operand in operands:
+            if isinstance(operand, tuple):
+                elements.append(operand[index])
+            elif isinstance(operand, Tensor):
+                # Nothing aligns: hand the operand over untouched so the dense kernel reports
+                # the mismatch in its own words rather than inventing a reading for it.
+                aligned = _dense_operand_for_element(ref, operand, index, anchor)
+                elements.append(operand if aligned is None else aligned)
+            else:
+                elements.append(operand)
+        results.append(func(*elements, *args[3:], **kwargs))
+    return _nested_like_elements(ref, results)
+
+
 def _ternary_handler(func, args, kwargs):
     r"""Dispatch handler for ternary ops (where, addcmul, etc.) on packed _values."""
     a, b, c = args[0], args[1], args[2]
@@ -6035,14 +6043,15 @@ def _ternary_handler(func, args, kwargs):
     for other in sources[1:]:
         if len(other) != len(ref):
             raise ValueError(f"NestedTensor batch length mismatch for {func}: expected {len(ref)}, got {len(other)}")
-    try:
-        va = _resolve_ternary_other(ref, a, func)
-        vb = _resolve_ternary_other(ref, b, func)
-        vc = _resolve_ternary_other(ref, c, func)
-    except NotImplementedError:
+    va = _resolve_ternary_other(ref, a)
+    vb = _resolve_ternary_other(ref, b)
+    vc = _resolve_ternary_other(ref, c)
+    if any(value is _UNRESOLVED for value in (va, vb, vc)):
         # Preserve dense parity when a packed fast path cannot prove per-element
         # broadcasting semantics for every plain Tensor operand.
-        return per_element_fallback(func, args, kwargs)
+        if len(ref) == 0:
+            return per_element_fallback(func, args, kwargs)
+        return _ternary_per_element(func, args, kwargs, ref)
     out_values = func(va, vb, vc, **kwargs)
     if tuple(out_values.shape[1:]) == tuple(ref._values.shape[1:]):
         return ref._packed_like_unchecked(out_values)
