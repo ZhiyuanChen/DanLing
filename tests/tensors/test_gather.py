@@ -115,6 +115,7 @@ class TestGatherParity:
             "leading-ragged",
             "trailing-ragged",
             "multi-ragged-inner",
+            "multi-ragged-outer",
             "static-tail",
             "batch-second",
             "empty-segment",
@@ -230,6 +231,57 @@ class TestNarrowIndex:
             fake_source = source.packed_like(mode.from_tensor(source.concat))
             fake_index = index.packed_like(mode.from_tensor(index.concat))
             output = torch.gather(fake_source, 1, fake_index)
+
+        assert fake_tensor.is_fake(output.concat)
+        assert output.shape == fake_index.shape
+        assert output.ragged_dims == fake_index.ragged_dims
+        assert output.concat.shape == fake_index.concat.shape
+
+    @pytest.mark.parametrize("operation", ["gather", "take_along_dim"])
+    def test_multi_ragged_row_selection(self, operation):
+        source_shapes = [(4, 3, 2), (3, 2, 2)]
+        elements = build_elements(source_shapes)
+        rows = [torch.tensor([3, 1]), torch.tensor([2])]
+        indices = [row[:, None, None].expand(-1, shape[1], shape[2]) for row, shape in zip(rows, source_shapes)]
+        source = NT(elements, ragged_dims=(0, 1))
+        index = NT(indices, ragged_dims=(0, 1))
+
+        if operation == "gather":
+            output = torch.gather(source, 1, index)
+            expected = [torch.gather(element, 0, sample_index) for element, sample_index in zip(elements, indices)]
+        else:
+            output = torch.take_along_dim(source, index, dim=1)
+            expected = [
+                torch.take_along_dim(element, sample_index, dim=0) for element, sample_index in zip(elements, indices)
+            ]
+
+        assert output.shape == index.shape
+        assert output.ragged_dims == index.ragged_dims
+        torch.testing.assert_close(output.element_sizes(), index.element_sizes())
+        for actual, reference in zip(output, expected, strict=True):
+            torch.testing.assert_close(actual, reference)
+
+    @pytest.mark.parametrize("operation", ["gather", "take_along_dim"])
+    def test_multi_ragged_row_selection_with_fake_tensors(self, operation):
+        fake_tensor = pytest.importorskip("torch._subclasses.fake_tensor")
+        symbolic_shapes = pytest.importorskip("torch.fx.experimental.symbolic_shapes")
+        source = NT([torch.empty(4, 3, 2), torch.empty(3, 2, 2)], ragged_dims=(0, 1))
+        index = NT(
+            [
+                torch.empty(2, 3, 2, dtype=torch.long),
+                torch.empty(1, 2, 2, dtype=torch.long),
+            ],
+            ragged_dims=(0, 1),
+        )
+
+        shape_env = symbolic_shapes.ShapeEnv(allow_dynamic_output_shape_ops=True)
+        with fake_tensor.FakeTensorMode(shape_env=shape_env) as mode:
+            fake_source = mode.from_tensor(source)
+            fake_index = mode.from_tensor(index)
+            if operation == "gather":
+                output = torch.gather(fake_source, 1, fake_index)
+            else:
+                output = torch.take_along_dim(fake_source, fake_index, dim=1)
 
         assert fake_tensor.is_fake(output.concat)
         assert output.shape == fake_index.shape
@@ -448,6 +500,37 @@ class TestGatherCompile:
             output,
             [torch.gather(element, 1, index) for element, index in zip(elements, indices)],
         )
+
+    @pytest.mark.parametrize("operation", ["gather", "take_along_dim"])
+    def test_multi_ragged_row_selection_dynamic_fullgraph(self, operation):
+        def select(source, index):
+            if operation == "gather":
+                return torch.gather(source, 1, index)
+            return torch.take_along_dim(source, index, dim=1)
+
+        cases = [
+            ([(4, 3, 2), (3, 2, 2)], [torch.tensor([3, 1]), torch.tensor([2])]),
+            ([(5, 2, 2), (2, 4, 2)], [torch.tensor([4, 2, 0]), torch.tensor([1])]),
+        ]
+        compiled = torch.compile(select, backend="aot_eager", fullgraph=True, dynamic=True)
+
+        for source_shapes, rows in cases:
+            indices = [row[:, None, None].expand(-1, shape[1], shape[2]) for row, shape in zip(rows, source_shapes)]
+            elements = build_elements(source_shapes)
+            source = NT(elements, ragged_dims=(0, 1))
+            index = NT(indices, ragged_dims=(0, 1))
+
+            actual = compiled(source, index)
+            if operation == "gather":
+                expected = [torch.gather(element, 0, sample_index) for element, sample_index in zip(elements, indices)]
+            else:
+                expected = [
+                    torch.take_along_dim(element, sample_index, dim=0)
+                    for element, sample_index in zip(elements, indices)
+                ]
+            assert actual.ragged_dims == index.ragged_dims
+            torch.testing.assert_close(actual.element_sizes(), index.element_sizes())
+            assert_matches(actual, expected)
 
     def test_different_shapes_aot_eager_vjp_and_runtime_bounds(self):
         source_lengths = (3, 5, 2)

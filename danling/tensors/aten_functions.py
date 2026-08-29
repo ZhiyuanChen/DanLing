@@ -1307,21 +1307,30 @@ def gather(func, args, kwargs):
             out_values = func(source._values, 0, packed_index, sparse_grad=sparse_grad, **kwargs)
             return _packed_gather_output(source, index, out_values)
 
+        if _multi_ragged_outer_gather_supported(source, index, dim_adj):
+            index_values = index._values.to(device=source._values.device, dtype=torch.long)
+            packed_index = _segmented_outer_row_index(source, index, index_values, dim, "gather")
+            out_values = func(source._values, 0, packed_index, sparse_grad=sparse_grad, **kwargs)
+            return _packed_gather_output(source, index, out_values)
+
         if source._has_same_structure(index):
             # Gather runs on the packed values, so a per-element dim has to be mapped onto its
             # packed axis: the packed axes are the permuted per-element dims with every ragged dim
             # collapsed into axis 0, so the two numberings agree only under an identity layout. A
-            # static dim keeps an axis of its own, whatever its per-element position; the innermost
-            # ragged dim becomes packed dim 0 once each index is rebased onto its own sample's
-            # starting row. Any other ragged dim needs a stride that varies per sample, so it falls
-            # through to the per-sample loop.
+            # static dim keeps an axis of its own, whatever its per-element position; a ragged one
+            # resolves to a row of the packed buffer, which a read can name outright even where a
+            # write cannot, because the index says which row rather than which stride to take.
             values_dim = _packed_static_dim(source, dim_adj)
             if values_dim is not None:
                 out_values = func(source._values, values_dim, index._values, sparse_grad=sparse_grad, **kwargs)
                 return _packed_gather_output(source, index, out_values)
+            index_values = index._values.to(device=source._values.device, dtype=torch.long)
             if _packed_inner_ragged_dim(source, dim_adj):
-                index_values = index._values.to(device=source._values.device, dtype=torch.long)
                 packed_index = _segmented_row_index(source, index_values, dim, "gather")
+                out_values = func(source._values, 0, packed_index, sparse_grad=sparse_grad, **kwargs)
+                return _packed_gather_output(source, index, out_values)
+            if _packed_outer_ragged_dim(source, dim_adj):
+                packed_index = _segmented_outer_row_index(source, index, index_values, dim, "gather")
                 out_values = func(source._values, 0, packed_index, sparse_grad=sparse_grad, **kwargs)
                 return _packed_gather_output(source, index, out_values)
 
@@ -1357,6 +1366,19 @@ def _single_ragged_gather_supported(source: NestedTensor, index: NestedTensor, d
         and source._permutation == index._permutation
         and source._values.dim() == index._values.dim()
         and _packed_inner_ragged_dim(source, dim_adj)
+    )
+
+
+def _multi_ragged_outer_gather_supported(source: NestedTensor, index: NestedTensor, dim_adj: int) -> bool:
+    r"""Whether an index topology can select rows from the outer of two ragged dims."""
+    return (
+        source.batch_first == index.batch_first
+        and source._ragged_dims == index._ragged_dims
+        and len(source._ragged_dims) == 2
+        and source._permutation == index._permutation
+        and source._values.dim() == index._values.dim()
+        and _packed_outer_ragged_dim(source, dim_adj)
+        and _packed_outer_ragged_dim(index, dim_adj)
     )
 
 
@@ -1446,7 +1468,9 @@ def _gather_equivalent_index(source: NestedTensor, index: NestedTensor, dim_adj:
     """
     if source._values.dim() != index._values.dim():
         return False
-    if _single_ragged_gather_supported(source, index, dim_adj):
+    if _single_ragged_gather_supported(source, index, dim_adj) or _multi_ragged_outer_gather_supported(
+        source, index, dim_adj
+    ):
         rank = int(source._physical_shape.size(1))
         if rank != int(index._physical_shape.size(1)):
             return False
@@ -1945,6 +1969,72 @@ def _segmented_row_index(
         lengths = (offsets[1:] - offsets[:-1]).index_select(0, row_batch_indices)
     _check_segment_index_bounds(index_values, lengths, dim, op_name)
     return align_rows(starts, index_values) + index_values
+
+
+def _packed_outer_ragged_dim(source: NestedTensor, dim_adj: int) -> bool:
+    r"""
+    Whether ``dim_adj`` is the outer dim of a doubly-ragged layout that leads the packed order.
+
+    Advancing along that dim skips a whole inner segment, and inner segments differ in length
+    from sample to sample, so no packed axis has the stride. A read can still be expressed --
+    the index names the segment rather than a stride -- which is what
+    :func:`_segmented_outer_row_index` builds.
+    """
+    ragged = tuple(source._varying_dims)
+    if len(ragged) != 2 or dim_adj != ragged[0]:
+        return False
+    rank = int(source._physical_shape.size(1))
+    return tuple(source._permutation or tuple(range(rank)))[:2] == ragged
+
+
+def _segmented_outer_row_index(
+    source: NestedTensor,
+    index: NestedTensor,
+    index_values: Tensor,
+    dim: int,
+    op_name: str,
+) -> Tensor:
+    r"""
+    Resolve indices along the outer of two ragged dims to the packed rows they name.
+
+    A packed row belongs to one sample and has an inner coordinate. Moving along the outer dim
+    keeps that coordinate, but source and index may contain different numbers of outer rows. Use
+    the index topology to recover the retained coordinate, then address the selected row inside
+    the corresponding source sample.
+    """
+    from .segmented import align_rows
+
+    device = source._values.device
+    batch_index, local_index = index._packed_batch_local_indices(device=device, dtype=torch.long)
+    _, inner_position = index._packed_varying_coords(
+        batch_index,
+        local_index,
+        device=device,
+        dtype=torch.long,
+    )
+
+    outer_dim, inner_dim = source._varying_dims
+    source_shape = source._physical_shape.to(device=device, dtype=torch.long)
+    index_shape = index._physical_shape.to(device=device, dtype=torch.long)
+    source_outer = source_shape[:, outer_dim]
+    source_inner = source_shape[:, inner_dim]
+    index_inner = index_shape[:, inner_dim]
+
+    inner_fits = (index_inner <= source_inner).all()
+    if _is_compiling() or _is_fake_tensor(inner_fits):
+        torch._assert_async(
+            inner_fits,
+            f"{op_name}: index shape exceeds the input outside dimension {dim}",
+        )
+    elif not bool(inner_fits):
+        raise RuntimeError(f"{op_name}: index shape exceeds the input outside dimension {dim}")
+
+    outer_lengths = source_outer.index_select(0, batch_index)
+    _check_segment_index_bounds(index_values, outer_lengths, dim, op_name)
+    sample_starts = source._offsets.to(device=device, dtype=torch.long).index_select(0, batch_index)
+    inner_lengths = source_inner.index_select(0, batch_index)
+    base_rows = sample_starts + inner_position
+    return align_rows(base_rows, index_values) + index_values * align_rows(inner_lengths, index_values)
 
 
 def _scatter_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
