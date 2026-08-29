@@ -502,8 +502,6 @@ class TestAdditionalSpellings:
         assert_matches(output, [elements[position] for position in index.tolist()])
 
 
-
-
 class TestGatherBounds:
 
     def test_out_of_range_index_raises(self):
@@ -512,6 +510,53 @@ class TestGatherBounds:
         message = r"gather: index 2 is out of bounds for dimension 1 with size 2"
         with pytest.raises(IndexError, match=message):
             torch.gather(NT(bases), 1, NT(indices))
+
+
+class TestGatherAutograd:
+
+    def test_gather_gradient_matches_dense_reference(self):
+        shapes = [(3, 4), (5, 4), (2, 4)]
+        elements = [element.requires_grad_() for element in build_elements(shapes)]
+        indices = build_indices(shapes, 0)
+
+        torch.gather(NT(elements), 1, NT(indices)).concat.sum().backward()
+
+        for element, index in zip(elements, indices):
+            reference = element.detach().clone().requires_grad_()
+            torch.gather(reference, 0, index).sum().backward()
+            torch.testing.assert_close(element.grad, reference.grad)
+
+    def test_take_along_dim_gradient_matches_dense_reference(self):
+        shapes = [(3, 4), (5, 4), (2, 4)]
+        elements = [element.requires_grad_() for element in build_elements(shapes)]
+        indices = build_indices(shapes, 0)
+
+        torch.take_along_dim(NT(elements), NT(indices), dim=1).concat.sum().backward()
+
+        for element, index in zip(elements, indices):
+            reference = element.detach().clone().requires_grad_()
+            torch.take_along_dim(reference, index, dim=0).sum().backward()
+            torch.testing.assert_close(element.grad, reference.grad)
+
+    def test_index_select_gradient_matches_dense_reference(self):
+        elements = [element.requires_grad_() for element in build_elements([(3, 4), (5, 4), (2, 4)])]
+        index = torch.tensor([1, 0])
+
+        torch.index_select(NT(elements), 1, index).concat.sum().backward()
+
+        for element in elements:
+            reference = element.detach().clone().requires_grad_()
+            torch.index_select(reference, 0, index).sum().backward()
+            torch.testing.assert_close(element.grad, reference.grad)
+
+    def test_batch_index_select_accumulates_repeated_gradients(self):
+        elements = [element.requires_grad_() for element in build_elements([(3, 4), (5, 4), (2, 4)])]
+
+        torch.index_select(NT(elements), 0, torch.tensor([2, 0, 2])).concat.sum().backward()
+
+        torch.testing.assert_close(elements[2].grad, torch.full((2, 4), 2.0))
+        torch.testing.assert_close(elements[0].grad, torch.ones(3, 4))
+        torch.testing.assert_close(elements[1].grad, torch.zeros(5, 4))
 
 
 class TestGatherCompile:
