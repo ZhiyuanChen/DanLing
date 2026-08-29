@@ -32,6 +32,7 @@ Architecture:
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 
@@ -2404,6 +2405,160 @@ def _offsets_from_packed_sizes(source: NestedTensor, sizes: tuple[int, ...]) -> 
     return source._offsets.new_tensor(offsets)
 
 
+# ---------------------------------------------------------------------------
+# Packed slicing.
+#
+# ``narrow``, ``split``, ``chunk``, ``tensor_split`` and ``unbind`` all reduce to "keep this
+# span of this axis". Which packed axis that is depends entirely on the layout: the batch dim
+# is a run of packed rows, a static per-element dim is an axis of its own, and the innermost
+# ragged dim is a span *inside* every segment of packed dim 0.
+# ---------------------------------------------------------------------------
+
+
+def _resolved_packed_sizes(source: NestedTensor, op_name: str) -> tuple[int, ...]:
+    r"""Return the packed row count of every sample, refusing a layout that cannot report it."""
+    packed_sizes = source._packed_sizes
+    if packed_sizes is not None:
+        return tuple(int(size) for size in packed_sizes)
+    if _is_fake_tensor(source._offsets) or _is_compiling():
+        _compile_unsupported(op_name, "the batch dimension needs concrete packed sizes")
+    return tuple(int(size) for size in (source._offsets[1:] - source._offsets[:-1]).tolist())
+
+
+def _packed_batch_slice(source: NestedTensor, start: int, length: int, op_name: str) -> NestedTensor:
+    r"""
+    Keep ``length`` samples starting at ``start``, addressing packed rows rather than elements.
+
+    Every sample owns a contiguous run of packed dim 0, so a run of samples is a run of rows.
+    The offsets have to be rebased on the first kept sample; everything else is a slice of the
+    per-sample metadata.
+    """
+    if length <= 0:
+        return source._empty_batch_like()
+    sizes = _resolved_packed_sizes(source, op_name)
+    row_start = sum(sizes[:start])
+    row_count = sum(sizes[start : start + length])  # noqa: E203
+    offsets = source._offsets[start : start + length + 1] - source._offsets[start]  # noqa: E203
+    physical_shape = source._physical_shape[start : start + length]  # noqa: E203
+    element_shapes = source._element_shapes
+    return type(source)._from_packed(
+        source._values.narrow(0, row_start, row_count),
+        offsets,
+        physical_shape,
+        permutation=source._permutation,
+        ragged_dims=source._ragged_dims if source._ragged_dims_explicit else None,
+        batch_first=source.batch_first,
+        padding_value=source.padding_value,
+        mask_value=source.mask_value,
+        pin_memory=source._pin_memory,
+        outer_size=type(source)._logical_shape_from_physical_shape(physical_shape, offsets, source.batch_first),
+        packed_sizes=tuple(sizes[start : start + length]),  # noqa: E203
+        element_shapes=None if element_shapes is None else element_shapes[start : start + length],  # noqa: E203
+        validate=False,
+    )
+
+
+def _packed_static_slice(source: NestedTensor, dim_adj: int, start: int, length: int) -> NestedTensor:
+    r"""Keep ``length`` positions of a static per-element dim, on the packed axis that carries it."""
+    values_dim = _packed_static_dim(source, dim_adj)
+    if values_dim is None:
+        raise RuntimeError(f"NestedTensor dimension {dim_adj} is ragged and has no packed axis of its own")
+    replacement = {dim_adj: length}
+    shape, packed_sizes, element_shapes = source._shape_meta_from_components(replace_dims=replacement)
+    return _packed_with_shape(
+        source,
+        source._values.narrow(values_dim, start, length),
+        shape,
+        source._logical_shape_from_components(replace_dims=replacement),
+        permutation=source._permutation,
+        packed_sizes=packed_sizes,
+        element_shapes=element_shapes,
+        preserve_ragged_offsets=True,
+    )
+
+
+def _packed_ragged_slice(
+    source: NestedTensor,
+    dim_adj: int,
+    starts: Sequence[int],
+    lengths: Sequence[int],
+) -> NestedTensor:
+    r"""
+    Keep a per-sample span of the sole ragged dim, gathering the rows it names.
+
+    The span may differ from sample to sample -- that is what ``chunk`` and ``tensor_split``
+    produce on a ragged axis -- so the rows cannot be a single ``narrow``. They are still
+    contiguous within each segment, so the gather index is the segment's start plus the
+    sample's own offset plus a running position.
+    """
+    device = source._values.device
+    offsets = source._offsets.to(device=device, dtype=torch.long)
+    starts = tuple(int(start) for start in starts)
+    lengths = tuple(int(length) for length in lengths)
+    total = sum(lengths)
+    new_offsets = _offsets_from_packed_sizes(source, lengths)
+    if total == 0:
+        rows = torch.empty((0,), device=device, dtype=torch.long)
+    else:
+        lengths_dev = torch.as_tensor(lengths, device=device, dtype=torch.long)
+        starts_dev = torch.as_tensor(starts, device=device, dtype=torch.long)
+        batch_index = torch.repeat_interleave(
+            torch.arange(len(lengths), device=device, dtype=torch.long),
+            lengths_dev,
+            output_size=total,
+        )
+        local = torch.arange(total, device=device, dtype=torch.long) - new_offsets.to(device=device)[batch_index]
+        rows = offsets[:-1][batch_index] + starts_dev[batch_index] + local
+    physical_shape = source._physical_shape.clone()
+    physical_shape[:, dim_adj] = physical_shape.new_tensor(lengths)
+    element_shapes = source._element_shapes
+    if element_shapes is not None:
+        element_shapes = tuple(
+            (*shape[:dim_adj], length, *shape[dim_adj + 1 :])  # noqa: E203
+            for shape, length in zip(element_shapes, lengths)
+        )
+    return type(source)._from_packed(
+        source._values.index_select(0, rows),
+        new_offsets,
+        physical_shape,
+        permutation=source._permutation,
+        ragged_dims=source._ragged_dims if source._ragged_dims_explicit else None,
+        batch_first=source.batch_first,
+        padding_value=source.padding_value,
+        mask_value=source.mask_value,
+        pin_memory=source._pin_memory,
+        outer_size=type(source)._logical_shape_from_physical_shape(physical_shape, new_offsets, source.batch_first),
+        packed_sizes=lengths,
+        element_shapes=element_shapes,
+        validate=False,
+    )
+
+
+def _packed_sole_ragged_dim(source: NestedTensor, dim_adj: int) -> bool:
+    r"""Whether ``dim_adj`` is the layout's only ragged dim and leads the packed order.
+
+    A slice along it renumbers packed dim 0 and nothing else, so the sample's new row count is
+    the span's length. With a second ragged level the row count is a product of two extents and
+    the span no longer describes it.
+    """
+    return source._ragged_rank == 1 and _packed_inner_ragged_dim(source, dim_adj)
+
+
+def _packed_without_dim(source: NestedTensor, dim_adj: int, values: Tensor) -> NestedTensor:
+    r"""Rebuild after a static per-element dim has been consumed, renumbering the layout."""
+    keep_dims = tuple(dim for dim in range(int(source._physical_shape.size(1))) if dim != dim_adj)
+    shape, packed_sizes, element_shapes = source._shape_meta_from_components(keep_dims=keep_dims)
+    return _packed_with_shape(
+        source,
+        values,
+        shape,
+        source._logical_shape_from_components(keep_dims=keep_dims),
+        permutation=tuple(dim - 1 if dim > dim_adj else dim for dim in source._permutation if dim != dim_adj),
+        packed_sizes=packed_sizes,
+        element_shapes=element_shapes,
+    )
+
+
 def _same_batch_meta(lhs: NestedTensor, rhs: NestedTensor) -> bool:
     if len(lhs) != len(rhs) or lhs.batch_first != rhs.batch_first:
         return False
@@ -4287,6 +4442,90 @@ def squeeze_dim(func, args, kwargs):
         packed_sizes=out_packed_sizes,
         element_shapes=out_element_shapes,
     )
+
+
+def narrow_nested(source: NestedTensor, dim: int, start, length: int) -> NestedTensor:
+    r"""
+    Keep ``length`` positions of ``dim``, counting from ``start``.
+
+    ``dim`` numbers the *logical* shape, whose batch dim has no per-element counterpart and
+    whose remaining dims are the per-element ones. Handing that number to a dense kernel over
+    ``_values`` reads whichever axis happens to sit there, which is a different dimension for
+    every layout that is not the canonical leading-ragged one.
+
+    Args:
+        source: The NestedTensor to narrow.
+        dim: The logical dimension to narrow.
+        start: First position to keep. Negative counts from the end of ``dim``.
+        length: How many positions to keep.
+
+    Returns:
+        NestedTensor: The narrowed result.
+    """
+    from .nested_tensor import NestedTensor
+
+    if isinstance(start, Tensor):
+        if start.numel() != 1:
+            raise RuntimeError("narrow(): start must be a scalar")
+        start = int(start.item())
+    start = int(start)
+    length = int(length)
+    if length < 0:
+        raise RuntimeError(f"narrow(): length must be non-negative, but got {length}")
+    dim = _normalize_dim(dim, source.dim())
+    if dim < 0 or dim >= source.dim():
+        raise IndexError(
+            f"Dimension out of range (expected to be in range of [{-source.dim()}, {source.dim() - 1}], but got {dim})"
+        )
+    batch_dim = _get_batch_dim(source)
+    if dim == batch_dim:
+        batch_size = len(source)
+        if start < 0:
+            start += batch_size
+        if start < 0 or start + length > batch_size:
+            raise RuntimeError(f"start ({start}) + length ({length}) exceeds dimension size ({batch_size}).")
+        return _packed_batch_slice(source, start, length, "torch.narrow")
+
+    dim_adj = _translate_dim(source, dim)
+    values_dim = _packed_static_dim(source, dim_adj)
+    if values_dim is not None:
+        extent = int(source._values.shape[values_dim])
+        resolved = start + extent if start < 0 else start
+        if resolved < 0 or resolved + length > extent:
+            raise RuntimeError(f"start ({start}) + length ({length}) exceeds dimension size ({extent}).")
+        return _packed_static_slice(source, dim_adj, resolved, length)
+
+    if _packed_sole_ragged_dim(source, dim_adj) and source._packed_sizes is not None:
+        extents = _resolved_packed_sizes(source, "torch.narrow")
+        starts = []
+        for position, extent in enumerate(extents):
+            resolved = start + extent if start < 0 else start
+            if resolved < 0 or resolved + length > extent:
+                raise RuntimeError(
+                    f"start ({start}) + length ({length}) exceeds dimension size ({extent}) "
+                    f"for NestedTensor element {position}."
+                )
+            starts.append(resolved)
+        return _packed_ragged_slice(source, dim_adj, starts, [length] * len(starts))
+
+    _check_execution_guard(_ExecutionGuardKind.EAGER_FALLBACK, "aten_functions.narrow_nested")
+    if _is_compiling():
+        _compile_unsupported("torch.narrow", "an outer ragged dim has no packed span")
+    return NestedTensor(
+        [element.narrow(dim_adj, start, length) for element in source._storage],
+        **source._meta(),
+    )
+
+
+@NestedTensorAtenRegistry.implement(aten.narrow.default)
+@NestedTensorAtenRegistry.implement(aten.narrow_copy.default)
+def narrow(func, args, kwargs):
+    r"""Narrow along a logical dim; the per-element index is not a packed axis."""
+    source = args[0]
+    dim = args[1] if len(args) > 1 else kwargs["dim"]
+    start = args[2] if len(args) > 2 else kwargs["start"]
+    length = args[3] if len(args) > 3 else kwargs["length"]
+    return narrow_nested(source, dim, start, length)
 
 
 @NestedTensorAtenRegistry.implement(aten.transpose.int)

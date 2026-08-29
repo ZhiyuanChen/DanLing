@@ -576,6 +576,23 @@ class TestDeclaredRaggedDims:
 
         assert_close(values.grad, torch.zeros_like(values))
 
+    def test_ragged_tensor_split_matches_dense_cut_semantics(self):
+        cuts = [4, 1]
+        nested = NestedTensor(
+            [torch.arange(5.0), torch.arange(10.0, 15.0)],
+            ragged_dims=(0,),
+        )
+
+        actual = torch.tensor_split(nested, cuts, dim=1)
+        expected = [torch.tensor_split(element, cuts) for element in nested]
+
+        for part_index, part in enumerate(actual):
+            for element_index, element in enumerate(part):
+                assert_close(element, expected[element_index][part_index])
+        assert [part.shape for part in torch.tensor_split(nested[:0], cuts, dim=1)] == [
+            part[:0].shape for part in actual
+        ]
+
     def test_shape_changing_ops_remap_declared_ragged_dims(self):
         elements = [torch.randn(2, 2, 3), torch.randn(2, 2, 3)]
         nested = NestedTensor(elements, ragged_dims=(0, 1))

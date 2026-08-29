@@ -851,6 +851,216 @@ def broadcast_tensors(*tensors):
     return tuple(outputs)
 
 
+@NestedTensorFuncRegistry.implement(torch.narrow)
+def narrow(input: NestedTensor, dim: int, start, length: int):
+    r"""
+    Returns a narrowed view of the input along one dimension.
+    See also [torch.narrow][].
+
+    ``dim`` numbers the logical shape, so the batch dimension selects samples and every other
+    dimension selects positions inside each element.
+
+    Args:
+        input: The input NestedTensor.
+        dim: The logical dimension to narrow.
+        start: First position to keep. Negative counts back from the end of ``dim``.
+        length: How many positions to keep.
+
+    Returns:
+        NestedTensor: The narrowed result.
+
+    Examples:
+        >>> import torch
+        >>> from danling.tensors import NestedTensor
+        >>> nt = NestedTensor(torch.arange(6.0).reshape(3, 2), torch.arange(10.0).reshape(5, 2))
+
+        The batch dimension selects whole samples:
+        >>> [tuple(part.shape) for part in torch.narrow(nt, 0, 0, 1)]
+        [(3, 2)]
+
+        A per-element dimension narrows every sample:
+        >>> [tuple(part.shape) for part in torch.narrow(nt, 2, 0, 1)]
+        [(3, 1), (5, 1)]
+    """
+    from .aten_functions import narrow_nested
+
+    return narrow_nested(input, dim, start, length)
+
+
+def _split_spans(extent: int, split_size_or_sections, op_name: str) -> tuple[tuple[int, int], ...]:
+    r"""Return the ``(start, length)`` spans ``torch.split`` cuts an axis of ``extent`` into."""
+    if isinstance(split_size_or_sections, int):
+        if split_size_or_sections <= 0:
+            raise ValueError("split_size must be a positive integer.")
+        if extent == 0:
+            return ((0, 0),)
+        return tuple(
+            (start, builtins.min(split_size_or_sections, extent - start))
+            for start in range(0, extent, split_size_or_sections)
+        )
+    if not isinstance(split_size_or_sections, (list, tuple)):
+        raise TypeError(f"split_size_or_sections must be int or a sequence of ints, got {type(split_size_or_sections)}")
+    spans = []
+    start = 0
+    for section in split_size_or_sections:
+        section = int(section)
+        if section < 0:
+            raise ValueError("split sections must be non-negative.")
+        spans.append((start, section))
+        start += section
+    if start != extent:
+        raise ValueError(f"{op_name} sections do not sum to the dimension size {extent}.")
+    return tuple(spans)
+
+
+def _chunk_spans(extent: int, chunks: int) -> tuple[tuple[int, int], ...]:
+    r"""Return the ``(start, length)`` spans ``torch.chunk`` cuts an axis of ``extent`` into."""
+    if chunks <= 0:
+        raise ValueError("chunks must be a positive integer.")
+    if extent == 0:
+        # An empty axis still yields the requested number of empty chunks, unlike ``split``.
+        return ((0, 0),) * chunks
+    size = -(-extent // chunks)
+    return tuple((start, builtins.min(size, extent - start)) for start in range(0, extent, size))
+
+
+def _tensor_split_spans(extent: int, indices_or_sections, op_name: str, even: bool) -> tuple[tuple[int, int], ...]:
+    r"""Return the ``(start, length)`` spans ``torch.tensor_split`` cuts an axis of ``extent`` into."""
+    if isinstance(indices_or_sections, Tensor):
+        if indices_or_sections.dim() == 0:
+            indices_or_sections = int(indices_or_sections.item())
+        else:
+            indices_or_sections = [int(index) for index in indices_or_sections.tolist()]
+    if isinstance(indices_or_sections, int):
+        sections = indices_or_sections
+        if sections <= 0:
+            raise ValueError(f"{op_name} expects a positive number of sections, but got {sections}.")
+        if even and extent % sections:
+            raise RuntimeError(
+                f"{op_name} attempted to split along dimension of size {extent}, "
+                f"which is not divisible by {sections}."
+            )
+        base, remainder = divmod(extent, sections)
+        spans = []
+        start = 0
+        for index in range(sections):
+            length = base + (1 if index < remainder else 0)
+            spans.append((start, length))
+            start += length
+        return tuple(spans)
+    cuts = [int(index) for index in indices_or_sections]
+    bounds = [0]
+    for cut in cuts:
+        if cut < 0:
+            cut += extent
+        bounds.append(builtins.min(builtins.max(cut, 0), extent))
+    bounds.append(extent)
+    return tuple(
+        (bounds[index], builtins.max(bounds[index + 1] - bounds[index], 0)) for index in range(len(bounds) - 1)
+    )
+
+
+def _split_like(input: NestedTensor, dim: int, spans_for, op_name: str):
+    r"""
+    Cut ``input`` along one logical dim into the spans ``spans_for`` reports for an extent.
+
+    ``split``, ``chunk`` and ``tensor_split`` differ only in where they cut, and the packed
+    layout is what decides how a cut is executed. A ragged dim has a different extent in every
+    sample, so the spans are recomputed per sample and the parts line up only when every sample
+    yields the same number of them -- which is why the uniform-count check lives here rather
+    than in any one operator.
+    """
+    from .aten_functions import (
+        _is_fake_tensor,
+        _packed_batch_slice,
+        _packed_ragged_slice,
+        _packed_sole_ragged_dim,
+        _packed_static_dim,
+        _packed_static_slice,
+        _resolved_packed_sizes,
+    )
+    from .nested_tensor import NestedTensor
+
+    dim = _normalize_dim(dim, input.dim())
+    batch_dim = _get_batch_dim(input)
+    if dim == batch_dim:
+        spans = spans_for(len(input))
+        return tuple(_packed_batch_slice(input, start, length, op_name) for start, length in spans)
+
+    dim_adj = _translate_dim(input, dim)
+    values_dim = _packed_static_dim(input, dim_adj)
+    if values_dim is not None:
+        spans = spans_for(int(input._values.shape[values_dim]))
+        return tuple(_packed_static_slice(input, dim_adj, start, length) for start, length in spans)
+
+    if len(input) == 0 and input._ragged_dims_explicit:
+        extent = int(input._max_physical_dims()[dim_adj])
+        sole_ragged = _packed_sole_ragged_dim(input, dim_adj)
+        outputs = []
+        for start, length in spans_for(extent):
+            if sole_ragged:
+                outputs.append(
+                    type(input)._from_packed(
+                        input._values,
+                        input._offsets,
+                        input._physical_shape,
+                        permutation=input._permutation,
+                        ragged_dims=input._ragged_dims,
+                        batch_first=input.batch_first,
+                        padding_value=input.padding_value,
+                        mask_value=input.mask_value,
+                        pin_memory=input._pin_memory,
+                        outer_size=input._logical_shape_from_components(replace_dims={dim_adj: length}),
+                        packed_sizes=(),
+                        element_shapes=(),
+                        ragged_offsets=(input._offsets,),
+                        validate=False,
+                    )
+                )
+                continue
+            selectors = [slice(None)] * int(input._physical_shape.size(1))
+            selectors[dim_adj] = slice(start, start + length)
+            output = input._empty_batch_basic_index(tuple(selectors))
+            assert output is not None
+            outputs.append(output)
+        return tuple(outputs)
+
+    if _packed_sole_ragged_dim(input, dim_adj):
+        per_sample = [spans_for(extent) for extent in _resolved_packed_sizes(input, op_name)]
+        counts = [len(spans) for spans in per_sample]
+        if len(set(counts)) > 1:
+            raise ValueError(
+                f"{op_name} along a ragged dim requires uniform per-element {op_name} counts, "
+                f"but got counts {counts}."
+            )
+        return tuple(
+            _packed_ragged_slice(
+                input,
+                dim_adj,
+                [spans[index][0] for spans in per_sample],
+                [spans[index][1] for spans in per_sample],
+            )
+            for index in range(counts[0])
+        )
+
+    _check_execution_guard(_ExecutionGuardKind.EAGER_FALLBACK, f"torch_functions.{op_name}")
+    if _is_compiling() or _is_fake_tensor(input._offsets):
+        _compile_unsupported(op_name, "an outer ragged dim has no packed span")
+    storage = input._storage
+    if not storage:
+        return (NestedTensor([], **input._meta(include_dtype=True)),)
+    per_element = [
+        [element.narrow(dim_adj, start, length) for start, length in spans_for(int(element.shape[dim_adj]))]
+        for element in storage
+    ]
+    counts = [len(parts) for parts in per_element]
+    if len(set(counts)) > 1:
+        raise ValueError(
+            f"{op_name} along a ragged dim requires uniform per-element {op_name} counts, but got counts {counts}."
+        )
+    return tuple(NestedTensor([parts[index] for parts in per_element], **input._meta()) for index in range(counts[0]))
+
+
 @NestedTensorFuncRegistry.implement(torch.chunk)
 def chunk(input: NestedTensor, chunks: int, dim: int = 0):
     r"""
@@ -886,42 +1096,70 @@ def chunk(input: NestedTensor, chunks: int, dim: int = 0):
         >>> parts[0][0].shape
         torch.Size([3, 2])
     """
-    from .nested_tensor import NestedTensor
-
-    dim = _normalize_dim(dim, input.dim())
-    batch_dim = _get_batch_dim(input)
-
     if chunks <= 0:
         raise ValueError("chunks must be a positive integer.")
+    return _split_like(input, dim, lambda extent: _chunk_spans(extent, chunks), "chunk")
 
-    # ── Batch dim chunk ──
-    if dim == batch_dim:
-        storage = input._storage
-        if not storage:
-            return ()
-        chunk_size = (len(storage) + chunks - 1) // chunks
-        return tuple(
-            NestedTensor(storage[i : i + chunk_size], **input._meta())  # noqa: E203
-            for i in range(0, len(storage), chunk_size)
-        )
 
-    # ── Non-batch dim chunk ──
-    storage = input._storage
-    if not storage:
-        return ()
+@NestedTensorFuncRegistry.implement(torch.tensor_split)
+def tensor_split(input: NestedTensor, indices_or_sections, dim: int = 0):
+    r"""
+    Splits a tensor into multiple sub-tensors, allowing uneven sections.
+    See also [torch.tensor_split][].
 
-    elem_dim = _translate_dim(input, dim)
-    chunk_results = [torch.chunk(t, chunks, dim=elem_dim) for t in storage]
-    chunk_counts = [len(parts) for parts in chunk_results]
-    num_chunks = chunk_counts[0]
-    if any(count != num_chunks for count in chunk_counts[1:]):
-        raise ValueError(
-            "torch.chunk along non-batch dim requires uniform per-element chunk counts, "
-            f"but got counts {chunk_counts}."
-        )
-    return tuple(
-        NestedTensor([chunk_results[i][k] for i in range(len(storage))], **input._meta()) for k in range(num_chunks)
+    Args:
+        input: The input NestedTensor.
+        indices_or_sections: Number of sections, or the indices to cut at.
+        dim: Logical dimension along which to split.
+
+    Returns:
+        tuple[NestedTensor, ...]: Tuple of NestedTensor parts.
+
+    Examples:
+        >>> import torch
+        >>> from danling.tensors import NestedTensor
+        >>> nt = NestedTensor(torch.arange(6.0).reshape(3, 2), torch.arange(10.0).reshape(5, 2))
+        >>> [len(part) for part in torch.tensor_split(nt, 2, dim=0)]
+        [1, 1]
+        >>> [tuple(part.shape) for part in torch.tensor_split(nt, 2, dim=2)[0]]
+        [(3, 1), (5, 1)]
+    """
+    return _split_like(
+        input,
+        dim,
+        lambda extent: _tensor_split_spans(extent, indices_or_sections, "tensor_split", even=False),
+        "tensor_split",
     )
+
+
+def _axis_split(input: NestedTensor, indices_or_sections, dim: int, op_name: str, min_dim: int):
+    r"""Shared body of ``vsplit``/``hsplit``/``dsplit``, which are ``tensor_split`` on a fixed axis."""
+    if input.dim() < min_dim:
+        raise RuntimeError(f"torch.{op_name} requires a tensor with at least {min_dim} dimension(s)")
+    return _split_like(
+        input,
+        dim,
+        lambda extent: _tensor_split_spans(extent, indices_or_sections, op_name, even=True),
+        op_name,
+    )
+
+
+@NestedTensorFuncRegistry.implement(torch.vsplit)
+def vsplit(input: NestedTensor, indices_or_sections):
+    r"""Split along logical dimension 0. See also [torch.vsplit][]."""
+    return _axis_split(input, indices_or_sections, 0, "vsplit", 2)
+
+
+@NestedTensorFuncRegistry.implement(torch.hsplit)
+def hsplit(input: NestedTensor, indices_or_sections):
+    r"""Split along logical dimension 1. See also [torch.hsplit][]."""
+    return _axis_split(input, indices_or_sections, 0 if input.dim() == 1 else 1, "hsplit", 1)
+
+
+@NestedTensorFuncRegistry.implement(torch.dsplit)
+def dsplit(input: NestedTensor, indices_or_sections):
+    r"""Split along logical dimension 2. See also [torch.dsplit][]."""
+    return _axis_split(input, indices_or_sections, 2, "dsplit", 3)
 
 
 @NestedTensorFuncRegistry.implement(torch.split)
@@ -968,53 +1206,7 @@ def split(input: NestedTensor, split_size_or_sections, dim: int = 0):
         >>> torch.equal(parts[0][0], a[:, :3]) and torch.equal(parts[0][1], b[:, :3])
         True
     """
-    from .nested_tensor import NestedTensor
-
-    dim = _normalize_dim(dim, input.dim())
-    batch_dim = _get_batch_dim(input)
-
-    # ── Batch dim split ──
-    if dim == batch_dim:
-        if isinstance(split_size_or_sections, int):
-            split_size = split_size_or_sections
-            if split_size <= 0:
-                raise ValueError("split_size must be a positive integer.")
-            return tuple(input[i : i + split_size] for i in range(0, len(input), split_size))  # noqa: E203
-
-        if not isinstance(split_size_or_sections, (list, tuple)):
-            raise TypeError(
-                f"split_size_or_sections must be int or a sequence of ints, got {type(split_size_or_sections)}"
-            )
-
-        chunks = []
-        start = 0
-        for section in split_size_or_sections:
-            if section < 0:
-                raise ValueError("split sections must be non-negative.")
-            end = start + int(section)
-            chunks.append(input[start:end])
-            start = end
-        if start != len(input):
-            raise ValueError("split sections do not sum to the NestedTensor batch size.")
-        return tuple(chunks)
-
-    # ── Non-batch dim split ──
-    storage = input._storage
-    if not storage:
-        return (NestedTensor([], **input._meta(include_dtype=True)),)
-
-    elem_dim = _translate_dim(input, dim)
-    split_results = [torch.split(t, split_size_or_sections, dim=elem_dim) for t in storage]
-    split_counts = [len(parts) for parts in split_results]
-    num_chunks = split_counts[0]
-    if any(count != num_chunks for count in split_counts[1:]):
-        raise ValueError(
-            "torch.split along non-batch dim requires uniform per-element split counts, "
-            f"but got counts {split_counts}."
-        )
-    return tuple(
-        NestedTensor([split_results[i][k] for i in range(len(storage))], **input._meta()) for k in range(num_chunks)
-    )
+    return _split_like(input, dim, lambda extent: _split_spans(extent, split_size_or_sections, "split"), "split")
 
 
 @NestedTensorFuncRegistry.implement(torch.stack, compile_safe=True)
@@ -1174,22 +1366,19 @@ def unbind(input: NestedTensor, dim: int = 0):
         return input._storage
     # A static dim has the same extent in every element, so it splits into uniform slices that each
     # keep the original raggedness. A ragged dim varies per element and has no such uniform split.
-    element_dim = dim - 1 if dim > batch_dim else dim
+    element_dim = _translate_dim(input, dim)
     if element_dim in input._varying_dims:
         raise NotImplementedError(
             "torch.unbind for NestedTensor supports the batch dimension or a static (non-ragged) dimension, "
             "not a ragged dimension."
         )
-    parts = [element.unbind(element_dim) for element in input._storage]
-    meta = dict(input._meta())
-    declared = meta.get("ragged_dims")
-    if declared is not None:
-        # Removing an element dimension renumbers every dimension after it, so a declared
-        # topology has to be projected onto the reduced rank. Passing the source's indices
-        # through unchanged makes them describe the wrong axes, and any index equal to the
-        # old rank falls outside it entirely.
-        meta["ragged_dims"] = tuple(d - 1 if d > element_dim else d for d in declared)
-    return [type(input)([part[index] for part in parts], **meta) for index in range(input.size(dim))]
+    from .aten_functions import _packed_static_dim, _packed_without_dim
+
+    # The dim is static, so it owns one packed axis and unbinding it hands back one packed
+    # buffer per position. Each keeps the source's raggedness with that axis removed, which
+    # renumbers every declared or inferred dim above it.
+    values_dim = _packed_static_dim(input, element_dim)
+    return [_packed_without_dim(input, element_dim, values) for values in input._values.unbind(values_dim)]
 
 
 # Dropout & Sampling
@@ -5364,6 +5553,12 @@ for _alias_method, _alias_func in (
     (torch.Tensor.addcmul, torch.addcmul),
     (torch.Tensor.split, torch.split),
     (torch.Tensor.chunk, torch.chunk),
+    (torch.Tensor.narrow, torch.narrow),
+    (torch.Tensor.tensor_split, torch.tensor_split),
+    (torch.Tensor.vsplit, torch.vsplit),
+    (torch.Tensor.hsplit, torch.hsplit),
+    (torch.Tensor.dsplit, torch.dsplit),
+    (torch.Tensor.unbind, torch.unbind),
     (torch.Tensor.lerp, torch.lerp),
     (torch.Tensor.matmul, torch.matmul),
     (torch.Tensor.softmax, torch.softmax),
