@@ -1991,6 +1991,7 @@ def take(input: NestedTensor, index, *, out=None):
 if hasattr(torch, "take_along_dim"):
 
     @NestedTensorFuncRegistry.implement(torch.take_along_dim)
+    @NestedTensorFuncRegistry.implement(torch.Tensor.take_along_dim)
     def take_along_dim(input: NestedTensor, indices, dim=None):
         r"""
         Selects values from `input` at the 1-dimensional indices from `indices` along the given `dim`.
@@ -2014,34 +2015,32 @@ if hasattr(torch, "take_along_dim"):
             >>> torch.equal(out, ref)
             True
         """
+        from .aten_functions import _gather_equivalent_index
+        from .aten_functions import gather as _aten_gather
         from .nested_tensor import NestedTensor
 
-        if dim is None:
-            aligned_indices = input._maybe_exact_shape_nested_like(indices)
-            if aligned_indices is not None:
-                indices = aligned_indices
-            if isinstance(indices, NestedTensor):
-                if len(input) != len(indices):
-                    raise ValueError(
-                        "NestedTensor batch length mismatch between input and indices: "
-                        f"input={len(input)}, indices={len(indices)}"
-                    )
-                return NestedTensor(
-                    torch.take_along_dim(t, i, dim=None) for t, i in zip(input._storage, indices._storage)
-                )
-            indices_device = indices if indices.device == input.device else indices.to(device=input.device)
-            return NestedTensor(torch.take_along_dim(t, indices_device, dim=None) for t in input._storage)
-
-        dim_adj = _translate_non_batch_dim(input, dim, name="take_along_dim")
+        dim_adj = None if dim is None else _translate_non_batch_dim(input, dim, name="take_along_dim")
         aligned_indices = input._maybe_exact_shape_nested_like(indices)
         if aligned_indices is not None:
             indices = aligned_indices
+        if isinstance(indices, NestedTensor) and len(input) != len(indices):
+            raise ValueError(
+                "NestedTensor batch length mismatch between input and indices: "
+                f"input={len(input)}, indices={len(indices)}"
+            )
+
+        # Reading along a dim is gathering along it once the two operands agree everywhere else,
+        # so hand the whole packed repertoire of ``gather`` to ``take_along_dim`` instead of
+        # keeping a second, loop-only implementation of the same operator.
+        if (
+            dim_adj is not None
+            and isinstance(indices, NestedTensor)
+            and _gather_equivalent_index(input, indices, dim_adj)
+        ):
+            return _aten_gather(torch.ops.aten.gather.default, (input, dim, indices), {})
+
+        _check_execution_guard(_ExecutionGuardKind.EAGER_FALLBACK, "torch_functions.take_along_dim")
         if isinstance(indices, NestedTensor):
-            if len(input) != len(indices):
-                raise ValueError(
-                    "NestedTensor batch length mismatch between input and indices: "
-                    f"input={len(input)}, indices={len(indices)}"
-                )
             return NestedTensor(
                 torch.take_along_dim(t, i, dim=dim_adj) for t, i in zip(input._storage, indices._storage)
             )

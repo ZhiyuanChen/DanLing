@@ -132,6 +132,18 @@ class TestGatherParity:
             [torch.gather(element, element_dim, index) for element, index in zip(elements, indices)],
         )
 
+    @case_params(cases_named("leading-ragged", "trailing-ragged", "batch-second"))
+    def test_take_along_dim(self, case_id, shapes, element_dim, metadata):
+        elements = build_elements(shapes)
+        indices = build_indices(shapes, element_dim)
+        dim = logical_dim(element_dim, metadata.get("batch_first", True))
+
+        output = torch.take_along_dim(NT(elements, **metadata), NT(indices, **metadata), dim=dim)
+
+        assert_matches(
+            output,
+            [torch.take_along_dim(element, index, dim=element_dim) for element, index in zip(elements, indices)],
+        )
 
     @case_params(cases_named("leading-ragged", "multi-ragged-outer", "static-tail", "batch-second"))
     def test_index_select(self, case_id, shapes, element_dim, metadata):
@@ -147,6 +159,26 @@ class TestGatherParity:
         )
 
 
+    def test_projected_layout(self):
+        projected = projected_case()
+        elements = list(projected)
+        shapes = [tuple(element.shape) for element in elements]
+        indices = build_indices(shapes, 1)
+        index = NT(indices, ragged_dims=(1,))
+        selected = select_index(shapes, 1)
+
+        assert_matches(
+            torch.gather(projected, 2, index),
+            [torch.gather(element, 1, idx) for element, idx in zip(elements, indices)],
+        )
+        assert_matches(
+            torch.take_along_dim(projected, index, dim=2),
+            [torch.take_along_dim(element, idx, dim=1) for element, idx in zip(elements, indices)],
+        )
+        assert_matches(
+            torch.index_select(projected, 2, selected),
+            [torch.index_select(element, 1, selected) for element in elements],
+        )
 
     def test_gather_index_may_have_a_different_output_shape(self):
         shapes = [(3, 4), (5, 4), (2, 4)]
@@ -224,7 +256,7 @@ class TestCrossTopologyRowSelection:
             return [torch.gather(element, 1, sample_index) for element, sample_index in zip(elements, index)]
         return [torch.take_along_dim(element, sample_index, dim=1) for element, sample_index in zip(elements, index)]
 
-    @pytest.mark.parametrize("operation", ["gather"])
+    @pytest.mark.parametrize("operation", ["gather", "take_along_dim"])
     def test_static_prefix_matches_dense_reference_without_fallback(self, operation):
         elements, source, index = cross_topology_row_case(
             (4, 3),
@@ -244,7 +276,7 @@ class TestCrossTopologyRowSelection:
         assert output.ragged_dims == (1,)
         assert_matches(output, expected)
 
-    @pytest.mark.parametrize("operation", ["gather"])
+    @pytest.mark.parametrize("operation", ["gather", "take_along_dim"])
     def test_static_prefix_with_fake_tensors(self, operation):
         fake_tensor = pytest.importorskip("torch._subclasses.fake_tensor")
         symbolic_shapes = pytest.importorskip("torch.fx.experimental.symbolic_shapes")

@@ -1357,6 +1357,42 @@ def _single_ragged_gather_supported(source: NestedTensor, index: NestedTensor, d
     )
 
 
+def _gather_equivalent_index(source: NestedTensor, index: NestedTensor, dim_adj: int) -> bool:
+    r"""
+    Whether ``take_along_dim`` along ``dim_adj`` is exactly ``gather`` for these operands.
+
+    ``take_along_dim`` broadcasts its two arguments against each other on every dimension but
+    the one it reads, while ``gather`` reads the index as given. They coincide -- and the packed
+    gather paths become available -- once nothing else is left to broadcast.
+    """
+    if source._values.dim() != index._values.dim():
+        return False
+    if _single_ragged_gather_supported(source, index, dim_adj):
+        rank = int(source._physical_shape.size(1))
+        if rank != int(index._physical_shape.size(1)):
+            return False
+        retained_dims = [axis for axis in range(rank) if axis != dim_adj]
+        source_shape = source._physical_shape[:, retained_dims]
+        index_shape = index._physical_shape[:, retained_dims].to(device=source_shape.device)
+        runtime_assert = _is_compiling() or _is_fake_tensor(source_shape) or _is_fake_tensor(index_shape)
+        if not type(source)._meta_tensor_equal(
+            source_shape,
+            index_shape,
+            "take_along_dim requires matching sizes outside the selected dimension",
+            runtime_assert=runtime_assert,
+        ):
+            return False
+    elif not source._has_same_structure(index):
+        return False
+    read_axis = _packed_static_dim(source, dim_adj)
+    if read_axis is None:
+        read_axis = 0
+    return all(
+        axis == read_axis or size == other
+        for axis, (size, other) in enumerate(zip(source._values.shape, index._values.shape))
+    )
+
+
 def _packed_gather_output(source: NestedTensor, index: NestedTensor, out_values: Tensor) -> NestedTensor:
     r"""
     Rebuild the result of a packed gather, which is shaped like the index rather than the source.
