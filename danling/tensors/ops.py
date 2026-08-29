@@ -25,7 +25,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import torch
 from torch import Tensor
@@ -357,7 +357,20 @@ def _metadata_dense_alignment(nt: NestedTensor, shape: tuple[int, ...]) -> tuple
     return tuple(aligned)
 
 
-def _dense_alignment(nt: NestedTensor, other: Tensor) -> tuple[int, ...] | None:
+class _DenseReading(NamedTuple):
+    r"""What a dense operand means against a NestedTensor.
+
+    ``aligned`` places the operand's extents on the *logical* dimensions. ``batch_leads`` says
+    the operand spells the batch first in its own buffer, which is what the one-slab-per-sample
+    reading always does however the layout orders its dimensions: reaching logical order from
+    there is a move, not a reinterpretation.
+    """
+
+    aligned: tuple[int, ...]
+    batch_leads: bool
+
+
+def _dense_alignment(nt: NestedTensor, other: Tensor) -> _DenseReading | None:
     r"""
     Decide what a dense operand means against ``nt``, or refuse when it means two things.
 
@@ -370,9 +383,9 @@ def _dense_alignment(nt: NestedTensor, other: Tensor) -> tuple[int, ...] | None:
 
     Where the two agree there is nothing to decide. Where only one of them describes a shape the
     packed values can serve, that one is the answer. Where both describe different results the
-    operand is genuinely ambiguous -- a ``[B, 1, L]`` operand against elements ``[H, ragged]``
-    puts its trailing axis on the ragged dim under one reading and on ``H`` under the other --
-    and guessing is how a silently wrong answer gets produced, so it raises instead.
+    operand is genuinely ambiguous -- a ``[2, 1, D]`` operand against elements ``[H, ragged, D]``
+    whose ``H`` is also 2 puts its leading axis on the batch under one reading and on ``H`` under
+    the other -- and guessing is how a silently wrong answer gets produced, so it raises instead.
     """
     shape = tuple(int(size) for size in other.shape)
     logical = _logical_dense_alignment(nt, shape)
@@ -387,15 +400,31 @@ def _dense_alignment(nt: NestedTensor, other: Tensor) -> tuple[int, ...] | None:
             f"{tuple(nt.shape)}: it right-aligns as {logical} and also reads as one slab per "
             f"sample {metadata}. Reshape the operand to the reading you mean."
         )
-    return logical if logical is not None else metadata
+    if logical is not None:
+        return _DenseReading(logical, False)
+    return None if metadata is None else _DenseReading(metadata, True)
 
 
-def _dense_alignment_to_values(nt: NestedTensor, other: Tensor, aligned: tuple[int, ...]) -> Tensor | None:
-    r"""Rewrite an aligned dense operand into the packed axis order of ``nt._values``."""
-    view = other.reshape(aligned)
+def _dense_reading_batch_first(nt: NestedTensor, reading: _DenseReading, other: Tensor) -> Tensor:
+    r"""View an aligned dense operand as ``[batch, *element dims]``, in element order.
+
+    The logical alignment is the operand's own axes with singletons inserted, so a reshape
+    reaches it -- *except* under the one-slab-per-sample reading of a layout whose batch is not
+    the leading logical dimension. There the alignment holds a static extent in front of the
+    batch while the operand holds the batch in front of everything, and reinterpreting the
+    buffer would hand each sample the slab of whichever sample shares its column.
+    """
+    aligned = reading.aligned
     batch_dim = _get_batch_dim(nt)
-    if batch_dim != 0:
-        view = view.movedim(batch_dim, 0)
+    batch_first = (aligned[batch_dim], *aligned[:batch_dim], *aligned[batch_dim + 1 :])
+    if reading.batch_leads:
+        return other.reshape(batch_first)
+    return other.reshape(aligned).movedim(batch_dim, 0)
+
+
+def _dense_alignment_to_values(nt: NestedTensor, other: Tensor, reading: _DenseReading) -> Tensor | None:
+    r"""Rewrite an aligned dense operand into the packed axis order of ``nt._values``."""
+    view = _dense_reading_batch_first(nt, reading, other)
     view = view.permute((0, *(1 + dim for dim in nt._permutation)))
     ragged_rank = len(nt._ragged_dims)
     batch_extent = int(view.shape[0])
@@ -441,10 +470,10 @@ def _resolve_dense_for_values(nt: NestedTensor, other) -> Tensor | None:
     if other.shape == nt._values.shape:
         return other
 
-    aligned = _dense_alignment(nt, other)
-    if aligned is None:
+    reading = _dense_alignment(nt, other)
+    if reading is None:
         return None
-    return _dense_alignment_to_values(nt, other, aligned)
+    return _dense_alignment_to_values(nt, other, reading)
 
 
 def _dense_operand_for_element(input: NestedTensor, other: Tensor, index: int, element: Tensor) -> Tensor | None:
@@ -454,9 +483,15 @@ def _dense_operand_for_element(input: NestedTensor, other: Tensor, index: int, e
     This is the per-element counterpart of :func:`_dense_alignment` and reads a dense shape the
     same way: the batch dimension participates only when the operand carries an axis there, and
     an axis whose extent is the padded maximum of a ragged dim names positions along it, so the
-    element takes the leading slice of that axis. Returns ``None`` when nothing aligns.
+    element takes the leading slice of that axis. A ``[B, *static_tail]`` operand is one slab per
+    sample here too -- it is the same contract, and ``torch.broadcast_tensors`` reaching this
+    helper rather than the packed resolver must not make it a different one. Returns ``None``
+    when nothing aligns.
     """
     batch_dim = _get_batch_dim(input)
+    reading = _dense_alignment(input, other)
+    if reading is not None and reading.batch_leads:
+        other = _dense_reading_batch_first(input, reading, other).select(0, index)
     if other.dim() == input.dim():
         extent = other.shape[batch_dim]
         if extent == len(input):

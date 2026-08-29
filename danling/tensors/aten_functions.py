@@ -322,10 +322,10 @@ def _resolve_ternary_other(source, other):
         # ``_values`` as elementwise on the packed rows, which for a ternary op would silently
         # accept a tensor that no element broadcasts against. Only the alignment applies here.
         candidate = other if other.device == device else other.to(device=device)
-        aligned = _dense_alignment(source, candidate)
-        if aligned is None:
+        reading = _dense_alignment(source, candidate)
+        if reading is None:
             return _UNRESOLVED
-        resolved = _dense_alignment_to_values(source, candidate, aligned)
+        resolved = _dense_alignment_to_values(source, candidate, reading)
         return _UNRESOLVED if resolved is None else resolved
     return other
 

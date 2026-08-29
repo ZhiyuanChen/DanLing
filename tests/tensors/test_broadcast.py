@@ -127,6 +127,36 @@ class TestDenseBroadcast:
 
         assert_elements_close(output, [operation(element, operand) for element in elements])
 
+    @pytest.mark.parametrize(
+        ("elements", "metadata", "operand", "expected"),
+        [
+            (
+                build_elements([(2, 5), (4, 5)]),
+                {"ragged_dims": (0,)},
+                operand_for((2, 1, 5)),
+                lambda elements, operand: [element + operand[index] for index, element in enumerate(elements)],
+            ),
+            (
+                build_elements([(3, 2, 5), (3, 4, 5)]),
+                {"ragged_dims": (1,)},
+                operand_for((2, 3, 1, 5)),
+                lambda elements, operand: [element + operand[index] for index, element in enumerate(elements)],
+            ),
+            (
+                [torch.arange(float(2 * length * 3)).reshape(2, length, 3) for length in (3, 5, 2)],
+                {"batch_first": False, "ragged_dims": (1,)},
+                torch.arange(18.0).reshape(3, 2, 3),
+                lambda elements, operand: [
+                    element + operand[index].unsqueeze(1) for index, element in enumerate(elements)
+                ],
+            ),
+        ],
+        ids=["canonical", "middle-ragged", "batch-second"],
+    )
+    def test_per_sample_dense_operand(self, elements, metadata, operand, expected):
+        output = NestedTensor(elements, **metadata) + operand
+
+        assert_elements_close(output, expected(elements, operand))
 
     @broadcast_case_params(broadcast_cases_named("leading-ragged", "batch-second"))
     def test_reversed_operand_order(self, case_id, shapes, metadata, operand_shape):
@@ -155,8 +185,59 @@ class TestDenseBroadcast:
         assert_elements_close(output, [element + operand for element in elements])
 
 
+class TestAmbiguousOperands:
+
+    def test_ambiguous_shape_raises(self):
+        nested = NestedTensor(
+            [torch.randn(2, length, 5) for length in (3, 4)],
+            ragged_dims=(1,),
+        )
+
+        with pytest.raises(NotImplementedError, match="ambiguous"):
+            nested + torch.randn(2, 1, 5)
+
+    def test_explicit_spellings_disambiguate_shared_and_per_sample_operands(self):
+        elements = [torch.randn(2, length, 5) for length in (3, 4)]
+        nested = NestedTensor(elements, ragged_dims=(1,))
+        ambiguous = torch.randn(2, 1, 5)
+        per_sample = ambiguous.reshape(2, 1, 1, 5)
+        shared = ambiguous.reshape(1, 2, 1, 5)
+
+        assert_elements_close(
+            nested + per_sample,
+            [element + per_sample[index] for index, element in enumerate(elements)],
+        )
+        assert_elements_close(nested + shared, [element + shared[0] for element in elements])
+
+    def test_batch_sized_static_tail_is_not_mistaken_for_a_batch_axis(self):
+        elements = [torch.zeros(length, 2, 4) for length in (2, 3)]
+        operand = torch.arange(8.0).reshape(2, 4)
+
+        output = NestedTensor(elements) + operand
+
+        assert_elements_close(output, [element + operand for element in elements])
 
 
+class TestBroadcastTensors:
+
+    def test_per_sample_operand(self):
+        elements = [torch.ones(3, 5), torch.ones(4, 5)]
+        operand = torch.arange(10.0).reshape(2, 5)
+
+        _, spread = torch.broadcast_tensors(NestedTensor(elements), operand)
+
+        assert_elements_close(
+            spread,
+            [operand[index].expand(rows, 5) for index, rows in enumerate((3, 4))],
+        )
+
+    def test_shared_tail_operand(self):
+        elements = [torch.zeros(rows, 2, 4) for rows in (2, 3)]
+        operand = torch.arange(8.0).reshape(2, 4)
+
+        _, spread = torch.broadcast_tensors(NestedTensor(elements), operand)
+
+        assert_elements_close(spread, [operand.expand_as(element) for element in elements])
 
 
 class TestLayoutPreservation:
@@ -345,6 +426,27 @@ class TestWhereAndTernary:
             [torch.where(dense_condition[index], element, torch.zeros(())) for index, element in enumerate(elements)],
         )
 
+    @pytest.mark.parametrize("operation", ["addcmul", "addcdiv", "lerp"])
+    def test_addc_family_per_sample_operand(self, operation):
+        elements = [torch.rand(3, length, 5) + 1.0 for length in (2, 4)]
+        nested = NestedTensor(elements, ragged_dims=(1,))
+        operand = torch.rand(2, 1, 1, 1)
+
+        if operation == "lerp":
+            output = torch.lerp(nested, nested * 2, operand)
+            expected = [torch.lerp(element, element * 2, operand[index]) for index, element in enumerate(elements)]
+        elif operation == "addcmul":
+            output = torch.addcmul(nested, nested, operand, value=2.0)
+            expected = [
+                torch.addcmul(element, element, operand[index], value=2.0) for index, element in enumerate(elements)
+            ]
+        else:
+            output = torch.addcdiv(nested, nested, operand, value=2.0)
+            expected = [
+                torch.addcdiv(element, element, operand[index], value=2.0) for index, element in enumerate(elements)
+            ]
+
+        assert_elements_close(output, expected)
 
 
 class TestInPlace:
@@ -360,6 +462,18 @@ class TestInPlace:
         getattr(target, operation)(operand)
 
         assert_elements_close(target, expected)
+
+    def test_per_sample_operand(self):
+        elements = [torch.randn(3, length, 5) for length in (2, 4)]
+        operand = torch.rand(2, 1, 1, 5)
+        target = NestedTensor(elements, ragged_dims=(1,))
+
+        target.add_(operand)
+
+        assert_elements_close(
+            target,
+            [element + operand[index] for index, element in enumerate(elements)],
+        )
 
 
 class TestNestedViewAlignment:
