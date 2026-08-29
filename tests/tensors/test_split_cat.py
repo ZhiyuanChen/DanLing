@@ -299,11 +299,39 @@ class TestCat:
         left = NT([torch.randn(3, 4), torch.randn(5, 4)])
         right = NT([torch.randn(3, 6), torch.randn(5, 6)])
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="cannot make element dimension"):
             torch.cat((left, right), dim=0)
 
+    @pytest.mark.parametrize(
+        "groups",
+        [
+            [[(4, 3), (4, 5)], [(4, 2)]],
+            [[(3, 4), (5, 4)], [(4, 3), (4, 5)]],
+        ],
+        ids=["single-sample", "different-inferred-orders"],
+    )
+    def test_batch_dimension_merges_compatible_inferred_layouts(self, groups):
+        elements = []
+        operands = []
+        for position, shapes in enumerate(groups):
+            group = build_elements(shapes, offset=7.0 * position)
+            elements.extend(group)
+            operands.append(NT(group))
 
+        assert_matches(torch.cat(operands, dim=0), elements)
 
+    def test_accepts_a_dense_batch_operand(self):
+        elements = build_elements([(4, 3), (4, 5)])
+        dense = build_elements([(4, 2)], offset=7.0)[0]
+
+        assert_matches(torch.cat((NT(elements), dense), dim=0), [*elements, dense])
+
+    def test_refuses_to_invent_a_ragged_dimension(self):
+        left = build_elements([(2, 3), (1, 3)])
+        right = build_elements([(2, 4), (1, 4)], offset=7.0)
+
+        with pytest.raises(ValueError, match="no operand varies"):
+            torch.cat((NT(left), NT(right)), dim=0)
 
 
 class TestStack:

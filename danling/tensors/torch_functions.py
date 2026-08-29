@@ -64,6 +64,7 @@ from .ops import (
     _ExecutionGuardKind,
     _get_batch_dim,
     _is_compiling,
+    _logical_dim_for_element_dim,
     _map_storage_serial,
     _normalize_dim,
     _physical_to_values_dim,
@@ -439,6 +440,31 @@ def equal(input: NestedTensor, other: NestedTensor | Tensor) -> bool:
 # Concatenation & Splitting
 
 
+def _reject_batch_cat_that_ragged_a_shared_static_dim(operands: Sequence) -> None:
+    r"""Refuse a batch concatenation that would vary a dimension none of its operands varies.
+
+    Every other layout disagreement survives the rebuild: the elements are what concatenate,
+    and a ragged dim is re-derived from all of them together. A dimension that is static in
+    each operand at a different extent is the exception -- no batch holds both widths, so the
+    merged shape would be one no operand has and no dense ``torch.cat`` would produce.
+    """
+    ranks = {int(operand._physical_shape.size(1)) for operand in operands}
+    if len(ranks) != 1:
+        # Elements of different rank have no common concatenation either; the rebuild says so
+        # in the constructor's own words rather than guessing which dimension was meant.
+        return
+    for element_dim in range(ranks.pop()):
+        if any(element_dim in operand._ragged_dims for operand in operands):
+            continue
+        extents = {int(operand.shape[_logical_dim_for_element_dim(operand, element_dim)]) for operand in operands}
+        if len(extents) > 1:
+            raise ValueError(
+                "torch.cat along the batch dimension cannot make element dimension "
+                f"{element_dim} ragged when no operand varies it, but the operands hold it at "
+                f"{sorted(extents)}; got shapes {[tuple(operand.shape) for operand in operands]}."
+            )
+
+
 @NestedTensorFuncRegistry.implement(torch.cat)
 def cat(tensors: tuple[Tensor | NestedTensor, ...], dim: int = 0):
     r"""
@@ -514,15 +540,22 @@ def cat(tensors: tuple[Tensor | NestedTensor, ...], dim: int = 0):
         if len(operands) == 1:
             return operands[0]
         merged = NestedTensor._cat_batch_packed(operands)
-        if merged is None:
-            # Merging incompatible layouts would turn a dim that is static in every operand
-            # into a ragged one, which dense torch rejects outright: the result would report a
-            # shape no operand has and would lose the packed path for every later operator.
-            raise ValueError(
-                "torch.cat along the batch dimension requires NestedTensor operands to share a packed layout, "
-                f"but got shapes {[tuple(operand.shape) for operand in operands]}."
-            )
-        return merged
+        if merged is not None:
+            return merged
+        # The packed merge needs one shared layout; concatenation itself does not. A batch of
+        # one, or one whose lengths happen to be equal, infers a ragged dim from nothing, so
+        # layouts that disagree only by inference still describe samples that belong in one
+        # batch. Rebuild those from the elements. What has no concatenation at all is a
+        # dimension every operand holds fixed at conflicting extents -- the result would report
+        # a ragged dim no operand has, which is the shape dense torch rejects outright.
+        _reject_batch_cat_that_ragged_a_shared_static_dim(operands)
+        _check_execution_guard(_ExecutionGuardKind.EAGER_FALLBACK, "torch_functions.cat")
+        if _is_compiling():
+            _compile_unsupported("torch.cat along the batch dimension", "the operand layouts differ and are rebuilt")
+        rebuilt: list = []
+        for operand in operands:
+            rebuilt.extend(operand._storage)
+        return NestedTensor(rebuilt, **ref._meta())
 
     first: NestedTensor = ref  # the first NestedTensor input (tensors[0] may be dense)
     nt_lengths = [len(t) for t in tensors if isinstance(t, NestedTensor)]
