@@ -159,6 +159,29 @@ class TestGatherParity:
             [torch.index_select(element, element_dim, index) for element in elements],
         )
 
+    def test_method_forms(self):
+        shapes = [(3, 4), (5, 4), (2, 4)]
+        elements = build_elements(shapes)
+        indices = build_indices(shapes, 0)
+        nested, index = NT(elements), NT(indices)
+
+        assert_matches(
+            nested.gather(1, index),
+            [torch.gather(element, 0, idx) for element, idx in zip(elements, indices)],
+        )
+        assert_matches(
+            torch.gather(nested, 1, index, sparse_grad=True),
+            [torch.gather(element, 0, idx, sparse_grad=True) for element, idx in zip(elements, indices)],
+        )
+        assert_matches(
+            nested.take_along_dim(index, dim=1),
+            [torch.take_along_dim(element, idx, dim=0) for element, idx in zip(elements, indices)],
+        )
+        selected = torch.tensor([1, 0])
+        assert_matches(
+            nested.index_select(1, selected),
+            [torch.index_select(element, 0, selected) for element in elements],
+        )
 
     def test_projected_layout(self):
         projected = projected_case()
@@ -425,6 +448,16 @@ class TestGatherErrors:
         with pytest.raises(IndexError, match="out of bounds"):
             torch.index_select(NT(elements), 1, torch.tensor([bad_index]))
 
+    @pytest.mark.parametrize("operation", ["gather", "take_along_dim"])
+    def test_nested_index_cannot_address_the_batch_dimension(self, operation):
+        elements = [torch.zeros(3, 4), torch.zeros(2, 4)]
+        indices = [torch.zeros(3, 4, dtype=torch.long), torch.zeros(2, 4, dtype=torch.long)]
+
+        with pytest.raises(ValueError, match="batch dimension"):
+            if operation == "gather":
+                torch.gather(NT(elements), 0, NT(indices))
+            else:
+                torch.take_along_dim(NT(elements), NT(indices), dim=0)
 
     def test_nested_index_batch_lengths_must_match(self):
         elements = [torch.zeros(3, 4), torch.zeros(2, 4)]
@@ -434,6 +467,39 @@ class TestGatherErrors:
             torch.gather(NT(elements), 1, NT(indices))
 
 
+class TestAdditionalSpellings:
+
+    def test_take_along_dim_without_a_dimension_flattens_each_element(self):
+        elements = build_elements([(3, 4), (5, 4), (2, 4)])
+        indices = [torch.tensor([0, 3, 5]), torch.tensor([1, 2]), torch.tensor([7])]
+
+        output = torch.take_along_dim(NT(elements), NT(indices), dim=None)
+
+        assert_matches(
+            output,
+            [torch.take_along_dim(element, index, dim=None) for element, index in zip(elements, indices)],
+        )
+
+    def test_take_along_dim_broadcasts_a_dense_index(self):
+        elements = build_elements([(3, 4), (5, 4), (2, 4)])
+        dense = torch.zeros((1, 4), dtype=torch.long)
+
+        for output in (
+            torch.take_along_dim(NT(elements), dense, dim=1),
+            NT(elements).take_along_dim(dense, dim=1),
+        ):
+            assert_matches(
+                output,
+                [torch.take_along_dim(element, dense, dim=0) for element in elements],
+            )
+
+    def test_index_select_on_the_batch_dimension(self):
+        elements = build_elements([(3, 4), (5, 4), (2, 4)])
+        index = torch.tensor([2, 0, 2])
+
+        output = torch.index_select(NT(elements), 0, index)
+
+        assert_matches(output, [elements[position] for position in index.tolist()])
 
 
 
