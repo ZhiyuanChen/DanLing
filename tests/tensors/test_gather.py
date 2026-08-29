@@ -318,7 +318,31 @@ class TestDenseIndex:
         ]
         assert_matches(output, expected)
 
+    @pytest.mark.parametrize(
+        ("dim", "dense"),
+        [
+            (1, torch.zeros(2, 4, dtype=torch.long)),
+            (2, torch.tensor([[3, 2, 1, 0]])),
+        ],
+        ids=["ragged-dim", "static-dim"],
+    )
+    def test_shared_dense_index(self, dim, dense):
+        elements = build_elements([(3, 4), (5, 4), (2, 4)])
 
+        output = torch.gather(NT(elements), dim, dense)
+
+        assert_matches(
+            output,
+            [torch.gather(element, dim - 1, dense) for element in elements],
+        )
+
+    def test_index_taller_than_a_sample_is_valid_when_reading_the_ragged_dim(self):
+        elements = build_elements([(3, 4), (5, 4), (2, 4)])
+        dense = torch.ones(6, 4, dtype=torch.long)
+
+        output = torch.gather(NT(elements), 1, dense)
+
+        assert_matches(output, [torch.gather(element, 0, dense) for element in elements])
 
 
 class TestGatherErrors:

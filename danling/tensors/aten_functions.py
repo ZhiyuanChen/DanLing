@@ -1335,6 +1335,9 @@ def gather(func, args, kwargs):
             storage.append(func(tensor, dim_adj, idx, sparse_grad=sparse_grad, **kwargs))
         return type(source)(storage, **source._meta())
 
+    if isinstance(index, Tensor) and _shared_index_gather_supported(source, dim_adj, index):
+        return _shared_index_gather(source, dim, dim_adj, index, func, sparse_grad, kwargs)
+
     _check_execution_guard(_ExecutionGuardKind.EAGER_FALLBACK, "aten_functions.gather")
     storage = []
     for tensor in source._storage:
@@ -1354,6 +1357,82 @@ def _single_ragged_gather_supported(source: NestedTensor, index: NestedTensor, d
         and source._permutation == index._permutation
         and source._values.dim() == index._values.dim()
         and _packed_inner_ragged_dim(source, dim_adj)
+    )
+
+
+def _shared_index_gather_supported(source: NestedTensor, dim_adj: int, index: Tensor) -> bool:
+    r"""
+    Whether one dense index can be replayed against every sample without unpacking the batch.
+
+    A dense index is not split across the batch: every sample reads the same positions, so the
+    result is uniform and each sample contributes the same number of packed rows. That only
+    describes a packed buffer while a single ragged level leads the layout, and only while the
+    index fits inside the shortest sample -- an index reaching past a segment would be answered
+    out of its neighbour instead of raising, so the ranges are checked before the kernel runs.
+    """
+    ragged_dims = source._ragged_dims
+    if len(ragged_dims) != 1 or not _has_single_packed_ragged_dim(source, ragged_dims[0]):
+        return False
+    rank = int(source._physical_shape.size(1))
+    if index.dim() != rank or len(source) == 0:
+        return False
+    if _is_fake_tensor(source._values) or _is_fake_tensor(source._offsets):
+        return False
+    # Every dim the gather does not read is addressed positionally, so it has to fit the shortest
+    # sample: ``gather`` reads the index as given rather than broadcasting it, and a ragged dim
+    # that overran would be answered out of the next sample.
+    lengths = source._offsets[1:] - source._offsets[:-1]
+    sizes = source._physical_shape
+    for dim in range(rank):
+        if dim == dim_adj:
+            continue
+        limit = int(lengths.min()) if dim == ragged_dims[0] else int(sizes[:, dim].min())
+        if int(index.shape[dim]) > limit:
+            return False
+    return True
+
+
+def _shared_index_gather(source: NestedTensor, dim, dim_adj: int, index: Tensor, func, sparse_grad, kwargs):
+    r"""Gather every sample with the same dense index, on the packed values."""
+    from .segmented import align_rows
+
+    ragged_dim = source._ragged_dims[0]
+    batch_size = len(source)
+    count = int(index.shape[ragged_dim])
+    offsets = source._offsets.to(device=source._values.device, dtype=torch.long)
+    # The index arrives in per-element order; the packed rows enumerate it in permutation order,
+    # once per sample.
+    packed_index = index.to(device=source._values.device, dtype=torch.long).permute(source._permutation)
+    packed_index = (
+        packed_index.unsqueeze(0).expand(batch_size, *packed_index.shape).reshape(-1, *packed_index.shape[1:])
+    )
+    starts = torch.repeat_interleave(offsets[:-1], count, output_size=batch_size * count)
+
+    values_dim = _packed_static_dim(source, dim_adj)
+    if values_dim is not None:
+        # Only the first ``count`` rows of each sample can be read, so narrow to them and let the
+        # kernel run on the static axis it was asked for.
+        rows = starts + torch.arange(count, device=starts.device).repeat(batch_size)
+        out_values = func(
+            source._values.index_select(0, rows), values_dim, packed_index, sparse_grad=sparse_grad, **kwargs
+        )
+    else:
+        lengths = torch.repeat_interleave(offsets[1:] - offsets[:-1], count, output_size=batch_size * count)
+        _check_segment_index_bounds(packed_index, lengths, dim, "gather")
+        out_values = func(
+            source._values, 0, align_rows(starts, packed_index) + packed_index, sparse_grad=sparse_grad, **kwargs
+        )
+
+    element_shape = tuple(int(size) for size in index.shape)
+    new_physical_shape = source._physical_shape.new_tensor(element_shape).reshape(1, -1).expand(batch_size, -1).clone()
+    return _packed_with_shape(
+        source,
+        out_values,
+        new_physical_shape,
+        offsets=torch.arange(batch_size + 1, device=source._offsets.device, dtype=source._offsets.dtype) * count,
+        permutation=source._permutation,
+        packed_sizes=(count,) * batch_size,
+        element_shapes=(element_shape,) * batch_size,
     )
 
 
