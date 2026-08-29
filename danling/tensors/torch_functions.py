@@ -1592,6 +1592,7 @@ def index_put(input: NestedTensor, indices, values, accumulate: bool = False):
 
 
 @NestedTensorFuncRegistry.implement(torch.index_select)
+@NestedTensorFuncRegistry.implement(torch.Tensor.index_select)
 def index_select(input: NestedTensor, dim: int, index: Tensor):
     r"""
     Returns a new tensor which indexes the `input` tensor along dimension `dim` using the entries in
@@ -1616,19 +1617,12 @@ def index_select(input: NestedTensor, dim: int, index: Tensor):
         >>> torch.equal(out, ref)
         True
     """
-    dim = _normalize_dim(dim, input.dim())
-    batch_dim = _get_batch_dim(input)
-    if dim == batch_dim:
-        return torch.ops.aten.index_select.default(input, dim, index)
+    # Run the packed handler here, where ``input._values`` still carry autograd, rather than
+    # re-dispatching the aten op on the NestedTensor. The handler resolves the packed axis for
+    # every dimension, so there is nothing left for this level to decide.
+    from .aten_functions import index_select as _aten_index_select
 
-    dim_adj = _translate_dim(input, dim)
-    if dim_adj > 0 and input._values.dim() > dim_adj:
-        return torch.ops.aten.index_select.default(input, dim, index)
-
-    from .nested_tensor import NestedTensor
-
-    index_device = index.to(dtype=torch.long, device=input.device)
-    return NestedTensor(torch.index_select(t, dim_adj, index_device) for t in input._storage)
+    return _aten_index_select(torch.ops.aten.index_select.default, (input, dim, index), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.masked_fill)

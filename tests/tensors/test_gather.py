@@ -133,6 +133,18 @@ class TestGatherParity:
         )
 
 
+    @case_params(cases_named("leading-ragged", "multi-ragged-outer", "static-tail", "batch-second"))
+    def test_index_select(self, case_id, shapes, element_dim, metadata):
+        elements = build_elements(shapes)
+        index = select_index(shapes, element_dim)
+        dim = logical_dim(element_dim, metadata.get("batch_first", True))
+
+        output = torch.index_select(NT(elements, **metadata), dim, index)
+
+        assert_matches(
+            output,
+            [torch.index_select(element, element_dim, index) for element in elements],
+        )
 
 
 
@@ -298,6 +310,12 @@ class TestGatherErrors:
         with pytest.raises(IndexError, match="out of bounds"):
             torch.gather(NT(elements), 1, NT(indices))
 
+    @pytest.mark.parametrize("bad_index", [-1, 5])
+    def test_index_select_out_of_range_raises(self, bad_index):
+        elements = [torch.zeros(3, 4), torch.zeros(2, 4)]
+
+        with pytest.raises(IndexError, match="out of bounds"):
+            torch.index_select(NT(elements), 1, torch.tensor([bad_index]))
 
 
     def test_nested_index_batch_lengths_must_match(self):
@@ -344,6 +362,19 @@ class TestGatherCompile:
             [torch.gather(element, 1, index) for element, index in zip(elements, indices)],
         )
 
+    def test_index_select_fullgraph(self):
+        shapes = [(3, 4), (5, 4), (2, 4)]
+        elements = build_elements(shapes)
+        index = torch.tensor([1, 0])
+        compiled = torch.compile(
+            lambda input_, index_: torch.index_select(input_, 1, index_),
+            backend="aot_eager",
+            fullgraph=True,
+        )
+
+        output = compiled(NT(elements, ragged_dims=(0,)), index)
+
+        assert_matches(output, [torch.index_select(element, 0, index) for element in elements])
 
     def test_projected_gather_fullgraph(self):
         projected = projected_case()

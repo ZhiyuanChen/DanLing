@@ -1681,10 +1681,54 @@ def index_select(func, args, kwargs):
         )
 
     dim_adj = _translate_dim(source, dim)
-    if dim_adj > 0 and source._values.dim() > dim_adj:
-        out_values = func(source._values, dim_adj, index_device, **kwargs)
+    # ``dim_adj`` numbers per-element dims; ``_values`` numbers the permuted, ragged-collapsed
+    # ones. Passing ``dim_adj`` straight through selects along whichever axis happens to sit at
+    # that position and then stamps the *requested* dim with the new size, so the values and the
+    # metadata disagree and the tensor only fails later, on unpacking.
+    values_dim = _packed_static_dim(source, dim_adj)
+    if values_dim is not None:
+        out_values = func(source._values, values_dim, index_device, **kwargs)
         return _packed_new_dim_size(source, out_values, dim_adj, index_device.numel())
+    if _packed_inner_ragged_dim(source, dim_adj):
+        return _packed_segment_index_select(source, dim_adj, index_device)
     return per_element_fallback(func, (source, dim_adj, index_device), kwargs)
+
+
+def _packed_segment_index_select(source: NestedTensor, dim_adj: int, index: Tensor) -> NestedTensor:
+    r"""
+    Select the same positions out of every segment along the innermost ragged dim.
+
+    A packed row steps along that dim one position at a time, so the whole batch is one
+    ``index_select`` over rows: every segment contributes its own starting row plus the caller's
+    positions. Selecting ``k`` of them leaves each segment ``k`` rows long, so the dim survives
+    with a uniform extent and the segment boundaries move to a multiple of ``k``.
+    """
+    offsets = _inner_segment_offsets(source)
+    count = int(index.numel())
+    if count and offsets.numel() > 1 and not (_is_fake_tensor(source._values) or _is_fake_tensor(index)):
+        shortest = int((offsets[1:] - offsets[:-1]).min())
+        if bool(((index < 0) | (index >= shortest)).any()):
+            raise IndexError(f"index_select: index is out of bounds for dimension {dim_adj} with size {shortest}")
+    rows = (offsets[:-1].unsqueeze(1) + index.reshape(1, -1)).reshape(-1)
+    new_physical_shape, _, element_shapes = source._shape_meta_from_components(replace_dims={int(dim_adj): count})
+    # One segment per sample under a single ragged level; under two, the level above says how
+    # many segments each sample owns, and each of them is now ``count`` rows long.
+    if source._ragged_rank <= 1:
+        groups = torch.arange(len(source) + 1, device=source._offsets.device, dtype=source._offsets.dtype)
+    else:
+        groups = source._ragged_level_offsets(0)
+    return _packed_with_shape(
+        source,
+        source._values.index_select(0, rows),
+        new_physical_shape,
+        source._logical_shape_from_components(replace_dims={int(dim_adj): count}),
+        offsets=groups * count,
+        permutation=source._permutation,
+        # Recomputing the packed sizes without naming the ragged dims would read whichever dim
+        # leads each element shape, which is a ragged one only under an identity layout.
+        packed_sizes=None if element_shapes is None else source._packed_sizes_like(element_shapes, source._ragged_dims),
+        element_shapes=element_shapes,
+    )
 
 
 #: Returned by :func:`_packed_scatter_src` for a ``src`` the packed buffer cannot express.
