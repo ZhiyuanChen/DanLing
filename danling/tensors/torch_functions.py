@@ -1725,7 +1725,7 @@ def masked_scatter(input: NestedTensor, mask, source):
         >>> torch.equal(out, ref)
         True
     """
-    from .aten_functions import _masked_scatter_source_consumption_matches
+    from .aten_functions import _masked_scatter_packed_supported
     from .nested_tensor import NestedTensor
 
     aligned_mask = input._maybe_exact_shape_nested_like(mask)
@@ -1746,15 +1746,13 @@ def masked_scatter(input: NestedTensor, mask, source):
     if (
         isinstance(mask, NestedTensor)
         and isinstance(source, NestedTensor)
-        and input._has_same_layout(mask)
-        and _masked_scatter_source_consumption_matches(mask, source)
+        and _masked_scatter_packed_supported(input, mask, source)
     ):
-        # Packed masked_scatter is only correct when the source stream is partitioned by the
-        # same per-element boundaries as the mask's True-count consumption. Dense Tensor
-        # sources intentionally stay on the fallback path because eager semantics reuse them
-        # independently for each element rather than consuming one global packed stream.
+        # Dense Tensor mask or source stay on the fallback path: eager semantics replay them
+        # independently for each element rather than consuming one packed stream.
         return torch.ops.aten.masked_scatter.default(input, mask, source)
 
+    _check_execution_guard(_ExecutionGuardKind.EAGER_FALLBACK, "torch_functions.masked_scatter")
     storage = []
     for i, t in enumerate(input._storage):
         m = mask._storage[i] if isinstance(mask, NestedTensor) else mask

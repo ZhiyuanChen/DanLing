@@ -232,5 +232,69 @@ def build_masked_case(shapes, *, exact_source):
     return bases, masks, sources
 
 
+class TestMaskedScatter:
+
+    @pytest.mark.parametrize(
+        ("case_id", "shapes", "metadata"),
+        MASKED_CASES,
+        ids=[case[0] for case in MASKED_CASES],
+    )
+    def test_matches_dense_reference(self, case_id, shapes, metadata):
+        bases, masks, sources = build_masked_case(shapes, exact_source=True)
+        source_metadata = {key: value for key, value in metadata.items() if key != "ragged_dims"}
+
+        output = torch.masked_scatter(
+            NT(bases, **metadata),
+            NT(masks, **metadata),
+            NT(sources, **source_metadata),
+        )
+
+        assert_matches(
+            output,
+            [torch.masked_scatter(base, mask, source) for base, mask, source in zip(bases, masks, sources)],
+        )
+
+    def test_oversized_source_matches_dense_reference(self):
+        shapes = [(3, 4), (2, 4)]
+        bases, masks, sources = build_masked_case(shapes, exact_source=False)
+
+        output = torch.masked_scatter(NT(bases), NT(masks), NT(sources))
+
+        assert_matches(
+            output,
+            [torch.masked_scatter(base, mask, source) for base, mask, source in zip(bases, masks, sources)],
+        )
+
+    def test_fullgraph(self):
+        bases = [torch.zeros(3, 4), torch.zeros(2, 4)]
+        masks = [
+            torch.tensor([[1, 0, 1, 0], [0, 1, 0, 1], [1, 1, 0, 0]], dtype=torch.bool),
+            torch.tensor([[1, 0, 0, 1], [0, 1, 1, 0]], dtype=torch.bool),
+        ]
+        sources = [torch.arange(1.0, 7.0), torch.arange(11.0, 15.0)]
+        compiled = torch.compile(
+            lambda input_, mask_, source_: torch.masked_scatter(input_, mask_, source_),
+            backend="aot_eager",
+            fullgraph=True,
+        )
+
+        output = compiled(
+            NT(bases, ragged_dims=(0,)),
+            NT(masks, ragged_dims=(0,)),
+            NT(sources, ragged_dims=(0,)),
+        )
+
+        assert_matches(
+            output,
+            [torch.masked_scatter(base, mask, source) for base, mask, source in zip(bases, masks, sources)],
+        )
+
+    def test_short_source_raises(self):
+        bases = [torch.zeros(3), torch.zeros(2)]
+        masks = [torch.tensor([True, True, True]), torch.tensor([True, False])]
+        sources = [torch.tensor([1.0]), torch.tensor([2.0])]
+
+        with pytest.raises(RuntimeError, match="source < number of ones in mask"):
+            torch.masked_scatter(NT(bases), NT(masks), NT(sources))
 
 

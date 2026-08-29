@@ -900,19 +900,76 @@ def _per_element_true_counts(mask: NestedTensor) -> Tensor:
     return prefix.index_select(0, offsets[1:]) - prefix.index_select(0, offsets[:-1])
 
 
-def _masked_scatter_source_consumption_matches(mask: NestedTensor, source: NestedTensor) -> bool:
+def _masked_scatter_supply_suffices(mask: NestedTensor, source: NestedTensor) -> bool:
     r"""
-    Check whether packed ``masked_scatter`` preserves per-element source consumption.
+    Check that every element of ``source`` supplies the scalars its own mask element selects.
 
-    The packed path is only valid when each element of ``source`` contributes exactly as
-    many scalars as the corresponding mask element consumes. Fake tensors do not expose
-    concrete mask values, so this returns ``False`` under fake tensor mode.
+    Dense ``masked_scatter`` consumes a prefix of the source and ignores the rest, so a surplus
+    is legal and only a shortfall is an error. Fake tensors expose no mask values to count, so
+    tracing accepts the packed path and leaves the shortfall to be caught eagerly.
     """
-    if len(mask) != len(source) or _is_fake_tensor(mask._values) or _is_fake_tensor(source._values):
+    if len(mask) != len(source):
         return False
+    if _is_fake_tensor(mask._values) or _is_fake_tensor(source._values):
+        return True
     source_numel = _per_element_numel(source).to(device=mask._values.device)
-    mask_true = _per_element_true_counts(mask)
-    return bool(torch.equal(source_numel, mask_true))
+    return bool(torch.all(_per_element_true_counts(mask) <= source_numel))
+
+
+def _masked_scatter_packed_supported(input: NestedTensor, mask: NestedTensor, source: NestedTensor) -> bool:
+    r"""
+    Check that packed ``masked_scatter`` reads the source in the order dense semantics demand.
+
+    Dense ``masked_scatter`` walks the destination in row-major order and takes the next source
+    scalar at every selected position. Packed storage keeps each element contiguous but stores
+    it under the packed permutation, so packed order and element row-major order are the same
+    sequence only under an identity permutation. Under any other permutation the packed pass
+    would hand the right values to the wrong positions and return without complaint.
+    """
+    if not input._has_same_layout(mask):
+        # A broadcast mask is valid per element but not packed-safe: the source stream would
+        # need counts from the broadcast mask, not from the stored pre-broadcast values.
+        return False
+    if not (_is_packed_identity(input) and _is_packed_identity(source)):
+        return False
+    return _masked_scatter_supply_suffices(mask, source)
+
+
+def _packed_masked_scatter(input: NestedTensor, mask: NestedTensor, source: NestedTensor) -> Tensor:
+    r"""
+    Fill ``input``'s selected positions from ``source`` without unpacking either side.
+
+    Each element consumes its own slice of the source, so the position a packed scalar reads
+    from is its rank among the selected positions of its *element*: a global running count of
+    selected positions, less the count standing at that element's first flat position. Both
+    sides being packed, those flat boundaries are just offsets scaled by the static tail.
+
+    The source buffer carries one spare trailing slot so unselected positions have somewhere
+    harmless to point; without it an all-``False`` mask or an empty source would index an
+    empty buffer.
+    """
+    from .segmented import align_rows
+
+    values = input._values
+    mask_values = mask._values.to(device=values.device)
+    source_values = source._values.to(device=values.device, dtype=values.dtype)
+    flat_mask = mask_values.reshape(-1)
+    flat_source = source_values.reshape(-1)
+
+    selected = flat_mask.to(torch.long).cumsum(0)
+    rank = selected - flat_mask.to(torch.long)
+    standing = torch.cat((selected.new_zeros(1), selected))
+
+    offsets = input._offsets.to(device=values.device, dtype=torch.long)
+    source_offsets = source._offsets.to(device=values.device, dtype=torch.long)
+    element_rank = standing.index_select(0, offsets[:-1] * math.prod(values.shape[1:]))
+    element_start = source_offsets[:-1] * math.prod(source_values.shape[1:])
+
+    rows = align_rows(input.packed_batch_indices(device=values.device), mask_values).reshape(-1)
+    read = element_start.index_select(0, rows) + rank - element_rank.index_select(0, rows)
+    read = torch.where(flat_mask, read, torch.zeros_like(read))
+    spare = torch.cat((flat_source, flat_source.new_zeros(1)))
+    return torch.where(flat_mask, spare.index_select(0, read), values.reshape(-1)).reshape(values.shape)
 
 
 def _plain_filled_by_nested_mask(source, mask, value, func, kwargs):
@@ -1071,10 +1128,12 @@ def nonzero(func, args, kwargs):
 
 
 def _masked_scatter_handler(func, args, kwargs):
-    r"""Dispatch handler for masked_scatter with exact per-element source-consumption boundaries."""
+    r"""Dispatch handler for masked_scatter, reading the source stream in packed order."""
     from .nested_tensor import NestedTensor
 
     input_tensor, mask, source = args[0], args[1], args[2]
+    if kwargs:
+        raise TypeError(f"NestedTensor: {func} got unexpected arguments {kwargs!r}")
 
     aligned_mask = input_tensor._maybe_exact_shape_nested_like(mask)
     if aligned_mask is not None:
@@ -1094,20 +1153,12 @@ def _masked_scatter_handler(func, args, kwargs):
             "NestedTensor batch length mismatch between input and source: "
             f"input={len(input_tensor)}, source={len(source)}"
         )
-    if not input_tensor._has_same_layout(mask):
-        # Broadcasted masks are valid per element but not packed-safe: the source stream would
-        # need counts from the broadcasted mask, not the stored pre-broadcast values.
-        raise NotImplementedError(f"NestedTensor: {func} requires exact-shape masks with matching packed layout")
-    if not _masked_scatter_source_consumption_matches(mask, source):
-        raise NotImplementedError(f"NestedTensor: {func} requires per-element source.numel() == mask.count_nonzero()")
-
-    mask_values = mask._values
-    if mask_values.device != input_tensor._values.device:
-        mask_values = mask_values.to(device=input_tensor._values.device)
-    source_values = source._values
-    if source_values.device != input_tensor._values.device:
-        source_values = source_values.to(device=input_tensor._values.device)
-    return input_tensor._packed_like_unchecked(func(input_tensor._values, mask_values, source_values, **kwargs))
+    if not _masked_scatter_packed_supported(input_tensor, mask, source):
+        raise NotImplementedError(
+            f"NestedTensor: {func} requires an exact-shape mask, an identity packed layout, "
+            "and a source that supplies every position its own mask element selects"
+        )
+    return input_tensor._packed_like_unchecked(_packed_masked_scatter(input_tensor, mask, source))
 
 
 # ---------------------------------------------------------------------------
