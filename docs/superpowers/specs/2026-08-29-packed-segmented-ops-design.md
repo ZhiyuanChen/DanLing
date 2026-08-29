@@ -21,6 +21,38 @@ registered operator inside
 Fixtures: elements of length `(3, 5, 2)`, so `total = 10` against a padded
 `3 x 5 = 15`.
 
+### This section understates the problem, in two known ways
+
+Both were found by a later audit and are recorded here because the method,
+not the conclusions, is what misled.
+
+**One guard of five.** `nested_execution_guard` takes five independent flags:
+`forbid_padded_materialization`, `forbid_iteration`, `forbid_storage_map`,
+`forbid_eager_fallback`, `forbid_dense_repack`. Only the first was used. An
+operator that loops over samples in Python trips `forbid_storage_map` and sails
+past the padding guard, so it was reported clean. Across 54 gaps a later audit
+reproduced, the guards actually tripped were `forbid_storage_map` 30 times and
+`forbid_eager_fallback` 6, against `forbid_padded_materialization` 4. The one
+flag measured here catches the rarest failure.
+
+**One fixture per operator.** `torch.gather` on 1-D ragged elements is a Python
+loop over `_storage`; on 2-D elements it calls `_packed_to_padded` twice. A
+single fixture reached one branch and the table below called the operator
+packed. The audit that found this used element rank 1-D through doubly-ragged,
+inferred against explicit `ragged_dims`, non-leading ragged dims,
+`batch_first=False`, single-sample, singleton and empty segments.
+
+The table below is therefore a **lower bound on operators that materialize
+padding**, and says nothing at all about operators that loop per sample. The
+later audit found 54 further gaps in `gather`, `scatter`, `split`/`cat` and
+dense-operand broadcast, 22 of which returned numerically wrong results rather
+than merely slow ones.
+
+Any future audit against this spec probes all five guards separately, on the
+full fixture matrix, and additionally checks `fullgraph` on a cleared
+`$TMPDIR/torchinductor_chenzhiyuan` — a stale Inductor cache was observed
+serving silently wrong compiled results.
+
 ### Confirmed padding materialization
 
 | Family | Operators |
