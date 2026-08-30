@@ -1664,6 +1664,7 @@ def embedding(
         permutation=input._permutation_after_replacing_trailing_dims(0, 1),
         packed_sizes=packed_sizes,
         element_shapes=element_shapes,
+        preserve_ragged_offsets=True,
     )
 
 

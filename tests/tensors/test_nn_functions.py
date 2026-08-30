@@ -816,6 +816,57 @@ class TestEmbeddingOps:
         reference = NT([F.embedding(t, weight) for t in nt_idx], **nt_idx._meta())
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
+    @pytest.mark.parametrize("ragged_dims", [(0, 1), (1, 0)])
+    def test_embedding_multi_ragged_values_and_vjp(
+        self,
+        device,
+        float_dtype,
+        ragged_dims,
+    ):
+        indices = NT(
+            [
+                torch.tensor([[1, 3, 5], [2, 4, 6]], dtype=torch.long, device=device),
+                torch.tensor([[0, 7], [8, 2], [6, 1]], dtype=torch.long, device=device),
+            ],
+            ragged_dims=ragged_dims,
+        )
+        weight = torch.randn(10, 4, device=device, dtype=float_dtype, requires_grad=True)
+        reference_weight = weight.detach().clone().requires_grad_()
+
+        output = F.embedding(indices, weight)
+
+        reference = F.embedding(indices.concat, reference_weight)
+        cotangent = torch.randn_like(reference)
+        output_gradient = torch.autograd.grad(output.concat, weight, cotangent)[0]
+        reference_gradient = torch.autograd.grad(reference, reference_weight, cotangent)[0]
+        assert output.ragged_dims == ragged_dims
+        assert [element.shape for element in output] == [torch.Size((2, 3, 4)), torch.Size((3, 2, 4))]
+        assert_close(output.concat, reference)
+        assert_close(output_gradient, reference_gradient)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_embedding_multi_ragged_compiles_with_vjp(self, device):
+        compiled = torch.compile(
+            lambda indices, weight: F.embedding(indices, weight).square().concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        indices = NT(
+            [torch.arange(6, device=device).reshape(2, 3), torch.arange(4, device=device).reshape(1, 4)],
+            ragged_dims=(0, 1),
+        )
+        weight = torch.randn(13, 4, device=device, requires_grad=True)
+        reference_weight = weight.detach().clone().requires_grad_()
+        output = compiled(indices, weight)
+        reference = F.embedding(indices.concat, reference_weight).square()
+        cotangent = torch.randn_like(reference)
+        output_gradient = torch.autograd.grad(output, weight, cotangent)[0]
+        reference_gradient = torch.autograd.grad(reference, reference_weight, cotangent)[0]
+        assert_close(output, reference)
+        assert_close(output_gradient, reference_gradient)
+
     def test_embedding_bag(self, device, float_dtype):
         weight = torch.randn(10, 4, device=device, dtype=float_dtype)
         nt_idx = NT(
