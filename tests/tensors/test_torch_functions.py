@@ -1048,6 +1048,108 @@ class TestEinsum:
         assert_close(result[0], torch.einsum("ij,ij->i", a1, a2))
         assert_close(result[1], torch.einsum("ij,ij->i", b1, b2))
 
+    @staticmethod
+    def _ligand_mpnn_einsum_inputs(
+        equation,
+        lengths,
+        *,
+        device="cpu",
+        dtype=None,
+        requires_grad=False,
+    ):
+        if equation == "bli,bli->bl":
+            lhs_template = NT(
+                [torch.empty(length, 4, device=device, dtype=dtype) for length in lengths],
+                ragged_dims=(0,),
+            )
+            rhs_template = NT(
+                [torch.empty(length, 4, device=device, dtype=dtype) for length in lengths],
+                ragged_dims=(0,),
+            )
+            lhs_values = torch.randn_like(lhs_template.concat, requires_grad=requires_grad)
+            rhs_values = torch.randn_like(rhs_template.concat, requires_grad=requires_grad)
+            reference = torch.einsum("xi,xi->x", lhs_values, rhs_values)
+        elif equation == "blqp,blyq->blyp":
+            lhs_template = NT(
+                [torch.empty(length, 3, 4, device=device, dtype=dtype) for length in lengths],
+                ragged_dims=(0,),
+            )
+            rhs_template = NT(
+                [torch.empty(length, 5, 3, device=device, dtype=dtype) for length in lengths],
+                ragged_dims=(0,),
+            )
+            lhs_values = torch.randn_like(lhs_template.concat, requires_grad=requires_grad)
+            rhs_values = torch.randn_like(rhs_template.concat, requires_grad=requires_grad)
+            reference = torch.einsum("xqp,xyq->xyp", lhs_values, rhs_values)
+        else:
+            raise AssertionError(f"unsupported test equation {equation}")
+        return lhs_template.packed_like(lhs_values), rhs_template.packed_like(rhs_values), reference
+
+    @pytest.mark.parametrize("equation", ["bli,bli->bl", "blqp,blyq->blyp"])
+    def test_ligand_mpnn_einsum_values_and_vjp(self, equation, device, float_dtype):
+        lhs, rhs, reference = self._ligand_mpnn_einsum_inputs(
+            equation,
+            (2, 5),
+            device=device,
+            dtype=float_dtype,
+            requires_grad=True,
+        )
+        lhs_values = lhs.concat
+        rhs_values = rhs.concat
+        if equation == "bli,bli->bl":
+            reference = torch.einsum("xi,xi->x", lhs_values, rhs_values)
+            expected_tail = ()
+        else:
+            reference = torch.einsum("xqp,xyq->xyp", lhs_values, rhs_values)
+            expected_tail = (5, 4)
+
+        output = torch.einsum(equation, lhs, rhs)
+
+        cotangent = torch.randn_like(reference)
+        output_gradients = torch.autograd.grad(
+            output.concat,
+            (lhs_values, rhs_values),
+            cotangent,
+        )
+        reference_gradients = torch.autograd.grad(reference, (lhs_values, rhs_values), cotangent)
+        assert output.concat.shape == (sum((2, 5)), *expected_tail)
+        assert output.ragged_dims == (0,)
+        assert_close(output.concat, reference)
+        for actual, expected in zip(output_gradients, reference_gradients):
+            assert_close(actual, expected)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize("equation", ["bli,bli->bl", "blqp,blyq->blyp"])
+    def test_ligand_mpnn_einsum_compiles_with_vjp(self, equation, device):
+        compiled = torch.compile(
+            lambda lhs_template, lhs_values, rhs_template, rhs_values: torch.einsum(
+                equation,
+                lhs_template.packed_like(lhs_values),
+                rhs_template.packed_like(rhs_values),
+            ).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        lhs, rhs, reference = self._ligand_mpnn_einsum_inputs(
+            equation,
+            (2, 3),
+            device=device,
+            requires_grad=True,
+        )
+        lhs_values = lhs.concat
+        rhs_values = rhs.concat
+        lhs_template = lhs.packed_like(torch.empty_like(lhs_values))
+        rhs_template = rhs.packed_like(torch.empty_like(rhs_values))
+        output = compiled(lhs_template, lhs_values, rhs_template, rhs_values)
+        cotangent = torch.randn_like(reference)
+        output_gradients = torch.autograd.grad(output, (lhs_values, rhs_values), cotangent)
+        reference_gradients = torch.autograd.grad(reference, (lhs_values, rhs_values), cotangent)
+        assert_close(output, reference)
+        for actual, expected in zip(output_gradients, reference_gradients):
+            assert_close(actual, expected)
+
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_einsum_matmul_equation_compile_fullgraph(self, device, float_dtype):
         a = torch.randn(2, 3, 4, device=device, dtype=float_dtype)

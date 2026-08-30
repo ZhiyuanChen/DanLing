@@ -77,6 +77,7 @@ from .ops import (
     _is_compiling,
     _map_storage_pair,
     _map_storage_serial,
+    _physical_to_values_dim,
     _run_layer_norm,
     _run_rms_norm,
     _translate_non_batch_dim,
@@ -2376,17 +2377,48 @@ def local_response_norm(
     return _nested_from_batch_leading_tensor(input, torch.where(valid, output, padding))
 
 
-@NestedTensorFuncRegistry.implement(F.normalize, compile_safe=False)
+def _normalize_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
+    r"""Return whether ``F.normalize`` can stay entirely on packed storage."""
+    if not args:
+        return False
+    input = args[0]
+    dim = kwargs.get("dim", args[2] if len(args) > 2 else 1)
+    out = kwargs.get("out", args[4] if len(args) > 4 else None)
+    if out is not None or not isinstance(dim, int):
+        return False
+    try:
+        physical_dim = _translate_non_batch_dim(input, dim)
+    except (IndexError, TypeError, ValueError):
+        return False
+    return _physical_to_values_dim(input, physical_dim) is not None
+
+
+@NestedTensorFuncRegistry.implement(
+    F.normalize,
+    compile_safe=True,
+    compile_guard=_normalize_compile_safe_inputs,
+)
 def normalize(input, p=2.0, dim=1, eps=1e-12, out=None):
-    r"""Apply ``F.normalize`` through one padded, mask-aware path that ignores NestedTensor padding."""
-    dim = dim if dim >= 0 else dim + input.dim()
-    _translate_non_batch_dim(input, dim)
+    r"""Normalize static dimensions on packed values, with a mask-aware eager ragged fallback."""
     if out is not None:
         raise NotImplementedError("F.normalize(..., out=...) is not supported on NestedTensor.")
+
+    logical_dim = dim if dim >= 0 else dim + input.dim()
+    physical_dim = _translate_non_batch_dim(input, logical_dim)
+    values_dim = _physical_to_values_dim(input, physical_dim)
+    if values_dim is not None:
+        normalized = F.normalize(input.concat, p=p, dim=values_dim, eps=eps, out=None)
+        return input.packed_like(normalized)
+
+    if _is_compiling():
+        _compile_unsupported(
+            "torch.nn.functional.normalize",
+            "only static dimensions that stay on packed storage are compile-safe",
+        )
     tensor = input.tensor
     valid = _nested_full_valid_mask(input, tensor)
     masked = torch.where(valid, tensor, torch.zeros((), dtype=tensor.dtype, device=tensor.device))
-    normalized = F.normalize(masked, p=p, dim=dim, eps=eps, out=None)
+    normalized = F.normalize(masked, p=p, dim=logical_dim, eps=eps, out=None)
     padding = torch.full_like(normalized, input.padding_value)
     return _nested_from_padded_tensor(input, torch.where(valid, normalized, padding))
 
@@ -2873,6 +2905,7 @@ NN_TIER_A_PACKED_COMPILE_SAFE_OPS: tuple = (
     F.embedding_bag,
     F.linear,
     F.layer_norm,
+    F.normalize,
     F.rms_norm,
 )
 
@@ -2902,7 +2935,6 @@ NN_TIER_B_EAGER_ONLY_OPS: tuple = (
     F.gumbel_softmax,
     F.grid_sample,
     F.local_response_norm,
-    F.normalize,
     F.one_hot,
     F.pairwise_distance,
     F.pdist,

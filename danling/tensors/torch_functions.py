@@ -2875,6 +2875,10 @@ def einsum(equation, *operands):
 
 def _einsum_packed_fastpath(equation: str, operands: tuple):
     r"""Handle common batch-aware NestedTensor einsum projections without per-element unpacking."""
+    if equation == "bli,bli->bl":
+        return _einsum_bli_bli_to_bl(*operands)
+    if equation == "blqp,blyq->blyp":
+        return _einsum_blqp_blyq_to_blyp(*operands)
     if equation in {"bls,hsk->bhlk", "bls,hsv->bhlv"}:
         return _einsum_bls_hso_to_bhlo(*operands)
     if equation == "bhk,bhlk->bhl":
@@ -2882,6 +2886,47 @@ def _einsum_packed_fastpath(equation: str, operands: tuple):
     if equation == "bhl,bhlv->bhv":
         return _einsum_bhl_bhlv_to_bhv(*operands)
     return None
+
+
+def _is_standard_rowwise_einsum_pair(lhs, rhs, *, rank: int) -> bool:
+    r"""Whether two operands share one canonical leading-ragged packed row topology."""
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(lhs, NestedTensor) or not isinstance(rhs, NestedTensor):
+        return False
+    if not lhs.batch_first or not rhs.batch_first:
+        return False
+    if lhs.ragged_dims != (0,) or rhs.ragged_dims != (0,):
+        return False
+    expected_order = tuple(range(rank))
+    if lhs.packed_dim_order != expected_order or rhs.packed_dim_order != expected_order:
+        return False
+    if lhs.concat.dim() != rank or rhs.concat.dim() != rank:
+        return False
+    # Structure equality compares only the ragged hierarchy/offsets.  Static
+    # tails deliberately differ for ``blqp,blyq->blyp`` and are checked by the
+    # equation-specific handler below.
+    return lhs._has_same_structure(rhs)
+
+
+def _einsum_bli_bli_to_bl(lhs, rhs):
+    r"""Packed fast path for the LigandMPNN rowwise inner product."""
+    if not _is_standard_rowwise_einsum_pair(lhs, rhs, rank=2):
+        return None
+    if lhs.concat.shape != rhs.concat.shape:
+        return None
+    values = torch.einsum("xi,xi->x", lhs.concat, rhs.concat)
+    return lhs.packed_with_static_tail(values)
+
+
+def _einsum_blqp_blyq_to_blyp(lhs, rhs):
+    r"""Packed fast path for the LigandMPNN rowwise query contraction."""
+    if not _is_standard_rowwise_einsum_pair(lhs, rhs, rank=3):
+        return None
+    if lhs.concat.shape[0] != rhs.concat.shape[0] or lhs.concat.shape[1] != rhs.concat.shape[2]:
+        return None
+    values = torch.einsum("xqp,xyq->xyp", lhs.concat, rhs.concat)
+    return lhs.packed_with_static_tail(values)
 
 
 def _source_packed_sizes(source) -> tuple:

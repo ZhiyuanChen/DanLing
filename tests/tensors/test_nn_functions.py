@@ -1828,6 +1828,74 @@ class TestNormalizeFunction:
         reference = NT([F.normalize(t, dim=0) for t in input], **input._meta())
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
+    def test_normalize_static_tail_values_and_vjp(self, device, float_dtype):
+        template = NT(
+            [
+                torch.empty(2, 4, device=device, dtype=float_dtype),
+                torch.empty(5, 4, device=device, dtype=float_dtype),
+            ],
+            ragged_dims=(0,),
+        )
+        values = torch.randn_like(template.concat, requires_grad=True)
+        input = template.packed_like(values)
+        reference = F.normalize(values, p=1.5, dim=-1, eps=0.25)
+        output = F.normalize(input, p=1.5, dim=-1, eps=0.25)
+
+        cotangent = torch.randn_like(reference)
+        output_gradient = torch.autograd.grad(output.concat, values, cotangent)[0]
+        reference_gradient = torch.autograd.grad(reference, values, cotangent)[0]
+        assert output.shape == input.shape
+        assert output.ragged_dims == input.ragged_dims
+        assert output.concat.shape == values.shape
+        assert_close(output.concat, reference, atol=1e-6, rtol=1e-6)
+        assert_close(output_gradient, reference_gradient, atol=1e-6, rtol=1e-6)
+
+    def test_normalize_static_tail_nonleading_ragged_layout_with_vjp(self, device, float_dtype):
+        template = NT(
+            [
+                torch.empty(2, 3, 4, device=device, dtype=float_dtype),
+                torch.empty(2, 5, 4, device=device, dtype=float_dtype),
+            ],
+            ragged_dims=(1,),
+        )
+        values = torch.randn_like(template.concat, requires_grad=True)
+        input = template.packed_like(values)
+        reference = F.normalize(values, dim=-1)
+
+        output = F.normalize(input, dim=-1)
+
+        cotangent = torch.randn_like(reference)
+        output_gradient = torch.autograd.grad(output.concat, values, cotangent)[0]
+        reference_gradient = torch.autograd.grad(reference, values, cotangent)[0]
+        assert output.ragged_dims == (1,)
+        assert output.shape == input.shape
+        assert_close(output.concat, reference)
+        assert_close(output_gradient, reference_gradient)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_normalize_static_tail_compiles_with_vjp(self, device):
+        compiled = torch.compile(
+            lambda template, values: F.normalize(
+                template.packed_like(values),
+                p=1.5,
+                dim=-1,
+                eps=0.25,
+            ).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        template = NT([torch.empty(2, 4), torch.empty(3, 4)], ragged_dims=(0,))
+        values = torch.randn_like(template.concat, device=device, requires_grad=True)
+        reference = F.normalize(values, p=1.5, dim=-1, eps=0.25)
+        output = compiled(template, values)
+        cotangent = torch.randn_like(reference)
+        output_gradient = torch.autograd.grad(output, values, cotangent)[0]
+        reference_gradient = torch.autograd.grad(reference, values, cotangent)[0]
+        assert_close(output, reference)
+        assert_close(output_gradient, reference_gradient)
+
 
 class TestOneHot:
 
