@@ -2514,6 +2514,31 @@ def where(condition, input, other):
     ref = next((v for v in (input, other, condition) if isinstance(v, NestedTensor)), None)
     if ref is None:
         return torch.where(condition, input, other)
+
+    if _needs_outer_autograd(condition, input, other):
+        # Enter aten through the outer wrappers so AOT owns the differentiable
+        # edges. Normalize weak Python scalars to 0-D tensors first: the
+        # ScalarOther/ScalarSelf overloads do not preserve that wrapper edge in
+        # compiled backward, while ``where.self`` does and has the same promoted
+        # result dtype.
+        value_tensors = [value for value in (input, other) if isinstance(value, Tensor)]
+        if len(value_tensors) == 1:
+            anchor = value_tensors[0]
+            anchor_values = anchor._values if isinstance(anchor, NestedTensor) else anchor
+            scalar = other if anchor is input else input
+            scalar_dtype = torch.result_type(anchor_values, scalar)
+            scalar_tensor = torch.scalar_tensor(scalar, dtype=scalar_dtype, device=ref.device)
+            if anchor is input:
+                other = scalar_tensor
+            else:
+                input = scalar_tensor
+        elif not value_tensors:
+            scalar_dtype = torch.result_type(input, other)
+            input = torch.scalar_tensor(input, dtype=scalar_dtype, device=ref.device)
+            other = torch.scalar_tensor(other, dtype=scalar_dtype, device=ref.device)
+        with torch._C.DisableTorchFunctionSubclass():
+            return torch.where(condition, input, other)
+
     from .aten_functions import _ternary_handler
 
     with suppress(NotImplementedError):
@@ -5749,9 +5774,7 @@ def _needs_outer_autograd(*operands) -> bool:
     from .nested_tensor import NestedTensor
 
     return (_is_compiling() or torch.is_grad_enabled()) and any(
-        isinstance(operand, NestedTensor)
-        and operand.requires_grad
-        and not operand._values.requires_grad
+        isinstance(operand, NestedTensor) and operand.requires_grad and not operand._values.requires_grad
         for operand in operands
     )
 

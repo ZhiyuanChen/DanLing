@@ -408,8 +408,80 @@ class TestWhereAndTernary:
         values = condition.concat
         return values.unsqueeze(1) if values.dim() == 2 else values
 
+    @pytest.mark.parametrize("condition_spelling", ["lower-rank", "unit-sample"])
+    def test_nested_where_matches_values_and_gradients(self, condition_spelling):
+        condition, unit, sampled, unit_values, sampled_values = self.sampled_operands(
+            (3, 5),
+            condition_spelling=condition_spelling,
+            requires_grad=True,
+        )
 
+        output = torch.where(condition, unit, sampled)
 
+        expected = torch.where(self.packed_condition(condition), unit_values, sampled_values)
+        cotangent = torch.randn_like(expected)
+        actual_gradients = torch.autograd.grad(
+            output.concat,
+            (unit_values, sampled_values),
+            cotangent,
+        )
+        expected_gradients = torch.autograd.grad(
+            expected,
+            (unit_values, sampled_values),
+            cotangent,
+        )
+        torch.testing.assert_close(output.concat, expected)
+        for actual, reference in zip(actual_gradients, expected_gradients):
+            torch.testing.assert_close(actual, reference)
+
+    def test_nested_where_supports_fake_tensor(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        condition, unit, sampled, _, _ = self.sampled_operands(
+            (3, 5),
+            condition_spelling="lower-rank",
+        )
+        mode = fake_tensor_mod.FakeTensorMode()
+
+        with mode:
+            output = torch.where(
+                mode.from_tensor(condition),
+                mode.from_tensor(unit),
+                mode.from_tensor(sampled),
+            )
+
+        assert fake_tensor_mod.is_fake(output.concat)
+        assert output.shape == (2, 4, 5, 3)
+
+    def test_nested_where_dynamic_fullgraph_with_gradient(self):
+        def consume(condition, unit, sampled):
+            return torch.where(condition, unit, sampled).concat.square().sum()
+
+        compiled = torch.compile(
+            consume,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        for lengths in ((2, 3), (3, 5)):
+            condition, unit, sampled, unit_values, sampled_values = self.sampled_operands(
+                lengths,
+                condition_spelling="lower-rank",
+                requires_grad=True,
+            )
+            expected_values = torch.where(
+                self.packed_condition(condition),
+                unit_values,
+                sampled_values,
+            )
+
+            output = compiled(condition, unit, sampled)
+
+            expected = expected_values.square().sum()
+            actual_gradients = torch.autograd.grad(output, (unit_values, sampled_values))
+            expected_gradients = torch.autograd.grad(expected, (unit_values, sampled_values))
+            torch.testing.assert_close(output, expected)
+            for actual, reference in zip(actual_gradients, expected_gradients):
+                torch.testing.assert_close(actual, reference)
 
     def test_where_with_dense_tail_and_condition(self):
         elements = [torch.randn(3, length, 5) for length in (2, 4)]

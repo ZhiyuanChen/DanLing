@@ -44,17 +44,18 @@ class TestArithmetic:
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_compiled_wrapper_outputs_chain_and_preserve_autograd(self):
-        template = NT([torch.empty(2, 3), torch.empty(4, 3)], ragged_dims=(0,))
-        values = torch.randn_like(template.concat, requires_grad=True)
-        nested = template.packed_like(values)
+        parts = (torch.randn(2, 3, requires_grad=True), torch.randn(4, 3, requires_grad=True))
+        nested = NT(parts, ragged_dims=(0,))
         producer = torch.compile(lambda tensor: tensor * 2, backend="aot_eager", fullgraph=True)
         consumer = torch.compile(torch.sin, backend="aot_eager", fullgraph=True)
 
         output = consumer(producer(nested))
-        actual_gradient = torch.autograd.grad(output.concat.sum(), values)[0]
+        gradients = torch.autograd.grad(output.concat.sum(), parts)
 
-        assert_close(output.concat, torch.sin(values * 2))
-        assert_close(actual_gradient, 2 * torch.cos(values * 2))
+        assert_close(output.concat, torch.sin(nested.concat * 2))
+        expected = 2 * torch.cos(nested.concat * 2)
+        for actual, wanted in zip(gradients, expected.split([2, 4])):
+            assert_close(actual, wanted)
 
     def test_concat_remains_read_only_for_users(self):
         nested = NT([torch.empty(2, 3), torch.empty(4, 3)], ragged_dims=(0,))

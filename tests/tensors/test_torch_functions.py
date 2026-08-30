@@ -3762,6 +3762,48 @@ class TestReductionOps:
         with nested_execution_guard(forbid_storage_map=True, forbid_padded_materialization=True):
             assert_close(torch.sum(nt, dim=1), reference)
 
+    def test_sampled_projected_mask_ragged_sum_values_and_vjp(self, device, float_dtype):
+        lengths = (3, 5)
+        samples = 2
+        channels = 3
+        template = NT(
+            [torch.empty(length, device=device, dtype=float_dtype) for length in lengths],
+            ragged_dims=(0,),
+        )
+        values = torch.randn_like(template.concat, requires_grad=True)
+        projected = template.packed_like(values).unsqueeze(-2).unsqueeze(-1).expand(-1, samples, -1, channels)
+
+        output = projected.sum(dim=-2, keepdim=True)
+
+        segment_sums = torch.stack([part.sum() for part in values.split(lengths)])
+        expected = segment_sums[:, None, None, None].expand(-1, samples, 1, channels)
+        cotangent = torch.randn_like(expected)
+        actual_grad = torch.autograd.grad(output, values, cotangent)[0]
+        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
+        assert output.shape == (2, samples, 1, channels)
+        assert_close(output, expected)
+        assert_close(actual_grad, expected_grad)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_sampled_projected_mask_ragged_sum_compiles_with_vjp(self, device):
+        def consume(template, values):
+            projected = template.packed_like(values).unsqueeze(-2).unsqueeze(-1).expand(-1, 2, -1, 3)
+            return projected.sum(dim=-2, keepdim=True)
+
+        compiled = torch.compile(consume, backend="aot_eager", fullgraph=True)
+        lengths = (3, 5)
+        template = NT([torch.empty(length, device=device) for length in lengths], ragged_dims=(0,))
+        values = torch.randn_like(template.concat, requires_grad=True)
+        output = compiled(template, values)
+
+        segment_sums = torch.stack([part.sum() for part in values.split(lengths)])
+        expected = segment_sums[:, None, None, None].expand(-1, 2, 1, 3)
+        cotangent = torch.randn_like(expected)
+        actual_grad = torch.autograd.grad(output, values, cotangent)[0]
+        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
+        assert_close(output, expected)
+        assert_close(actual_grad, expected_grad)
+
     def test_reduce_strided_ragged_last_dim(self, device, float_dtype):
         nt = NT(
             [

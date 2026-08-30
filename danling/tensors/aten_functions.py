@@ -46,6 +46,8 @@ from .ops import (
     ATEN_UNARY_ELEMENTWISE_OPS,
     NestedTensorAtenRegistry,
     _binary_op_maybe_tensor,
+    _broadcast_lower_rank_nested_to_values,
+    _broadcast_nested_to_values,
     _check_execution_guard,
     _compile_unsupported,
     _dense_alignment,
@@ -296,8 +298,9 @@ def _resolve_ternary_other(source, other):
     r"""
     Resolve a ternary-op operand against ``source``, or report that nothing packed applies.
 
-    This accepts the same layout-aligned NestedTensor and dense tensor cases as
-    ``_resolve_other``: a dense operand is read against the logical shape by
+    This accepts layout-aligned, singleton-prefix, and lower-rank NestedTensor
+    operands plus the same dense tensor cases as ``_resolve_other``. A dense
+    operand is read against the logical shape by
     :func:`_resolve_dense_for_values` and rewritten into packed axis order, which is what keeps
     a ``[B, 1, 1, C]`` operand a per-sample slab rather than an extra logical dimension.
     Returns ``_UNRESOLVED`` when the operand needs the per-element path; an operand whose shape
@@ -307,9 +310,14 @@ def _resolve_ternary_other(source, other):
 
     device = source._values.device
     if isinstance(other, NestedTensor):
-        if not source._has_same_structure(other):
+        if source._has_same_structure(other):
+            values = other._values
+            return values if values.device == device else values.to(device=device)
+        values = _broadcast_nested_to_values(source, other)
+        if values is None:
+            values = _broadcast_lower_rank_nested_to_values(source, other)
+        if values is None:
             return _UNRESOLVED
-        values = other._values
         return values if values.device == device else values.to(device=device)
     if isinstance(other, Tensor):
         if other.dim() == 0:
@@ -2935,6 +2943,18 @@ def _has_single_packed_ragged_dim(source: NestedTensor, dim_adj: int) -> bool:
     )
 
 
+def _has_segment_reducible_ragged_dim(source: NestedTensor, dim_adj: int) -> bool:
+    r"""Whether one ragged dimension leads packed values for a segmented reduction.
+
+    Unlike :func:`_has_single_packed_ragged_dim`, this permits the remaining
+    static dimensions to use any valid packed order.  Segmented reductions run
+    along packed axis 0 and restore that static tail to logical physical order
+    before returning a dense batch-major result.
+    """
+    permutation = tuple(source._permutation or tuple(range(int(source._physical_shape.size(1)))))
+    return source._varying_dims == (dim_adj,) and permutation[:1] == (dim_adj,)
+
+
 def _restore_segment_batch_dim(
     source: NestedTensor,
     output: Tensor,
@@ -2969,6 +2989,20 @@ def _format_segment_reduction(
     if keepdim:
         output = output.unsqueeze(1 + dim_adj)
     return _restore_segment_batch_dim(source, output, dim_adj, keepdim)
+
+
+def _format_permuted_segment_reduction(
+    source: NestedTensor,
+    output: Tensor,
+    dim_adj: int,
+    keepdim: bool,
+) -> Tensor:
+    r"""Restore a segmented output whose tail follows packed static order."""
+    logical_static = tuple(dim for dim in range(int(source._physical_shape.size(1))) if dim != dim_adj)
+    packed_static = source._static_dims
+    if packed_static != logical_static:
+        output = output.permute(0, *(1 + packed_static.index(dim) for dim in logical_static))
+    return _format_segment_reduction(source, output, dim_adj, keepdim)
 
 
 def _check_nonempty_extrema_segments(source: NestedTensor, func) -> None:
@@ -3132,7 +3166,7 @@ def _segment_reduce_ragged_dim(
     keepdim: bool,
     kwargs,
 ) -> Tensor | None:
-    if not _has_single_packed_ragged_dim(source, dim_adj):
+    if not _has_segment_reducible_ragged_dim(source, dim_adj):
         return None
 
     values = source._values
@@ -3150,7 +3184,7 @@ def _segment_reduce_ragged_dim(
             and not segment_values.dtype.is_complex
         ):
             out = segment_reduce(segment_values, reduce="sum", lengths=lengths)
-            return _format_segment_reduction(source, out, dim_adj, keepdim)
+            return _format_permuted_segment_reduction(source, out, dim_adj, keepdim)
         sample = func(values[:0], [0], False, **kwargs)
         out = sample.new_zeros((batch_size, *sample.shape))
         batch_idx = source.packed_batch_indices(device=values.device)
@@ -3165,7 +3199,7 @@ def _segment_reduce_ragged_dim(
             and not segment_values.dtype.is_complex
         ):
             out = segment_reduce(segment_values, reduce="mean", lengths=lengths)
-            return _format_segment_reduction(source, out, dim_adj, keepdim)
+            return _format_permuted_segment_reduction(source, out, dim_adj, keepdim)
         sample = func(values[:0], [0], False, **kwargs)
         out = sample.new_zeros((batch_size, *sample.shape))
         batch_idx = source.packed_batch_indices(device=values.device)
@@ -3179,7 +3213,7 @@ def _segment_reduce_ragged_dim(
         largest = func is aten.amax.default
         if segment_reduce is not None and values.dtype.is_floating_point:
             out = segment_reduce(values, reduce="max" if largest else "min", lengths=lengths)
-            return _format_segment_reduction(source, out, dim_adj, keepdim)
+            return _format_permuted_segment_reduction(source, out, dim_adj, keepdim)
         fill_value = _topk_fill_value(values.dtype, largest=largest)
         out = values.new_full((batch_size, *values.shape[1:]), fill_value)
         batch_idx = source.packed_batch_indices(device=values.device)
@@ -3188,7 +3222,7 @@ def _segment_reduce_ragged_dim(
     else:
         return None
 
-    return _format_segment_reduction(source, out, dim_adj, keepdim)
+    return _format_permuted_segment_reduction(source, out, dim_adj, keepdim)
 
 
 def _packed_new_ragged_size(
@@ -6046,19 +6080,29 @@ def _ternary_handler(func, args, kwargs):
     sources = [x for x in (a, b, c) if isinstance(x, NestedTensor)]
     if not sources:
         return func(*args, **kwargs)
-    ref = sources[0]
+    first_ref = sources[0]
     for other in sources[1:]:
-        if len(other) != len(ref):
-            raise ValueError(f"NestedTensor batch length mismatch for {func}: expected {len(ref)}, got {len(other)}")
-    va = _resolve_ternary_other(ref, a)
-    vb = _resolve_ternary_other(ref, b)
-    vc = _resolve_ternary_other(ref, c)
-    if any(value is _UNRESOLVED for value in (va, vb, vc)):
+        if len(other) != len(first_ref):
+            raise ValueError(
+                f"NestedTensor batch length mismatch for {func}: expected {len(first_ref)}, got {len(other)}"
+            )
+
+    resolved = None
+    ref = first_ref
+    for candidate in sources:
+        candidate_values = tuple(_resolve_ternary_other(candidate, operand) for operand in (a, b, c))
+        if all(value is not _UNRESOLVED for value in candidate_values):
+            ref = candidate
+            resolved = candidate_values
+            break
+
+    if resolved is None:
         # Preserve dense parity when a packed fast path cannot prove per-element
         # broadcasting semantics for every plain Tensor operand.
         if len(ref) == 0:
             return per_element_fallback(func, args, kwargs)
         return _ternary_per_element(func, args, kwargs, ref)
+    va, vb, vc = resolved
     out_values = func(va, vb, vc, **kwargs)
     if tuple(out_values.shape[1:]) == tuple(ref._values.shape[1:]):
         return ref._packed_like_unchecked(out_values)

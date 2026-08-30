@@ -234,7 +234,7 @@ class NestedTensor(torch.Tensor):
     _allow_aot_concat_update: bool
     _RAGGED_OFFSETS_PREFIX = "_ragged_offsets_"
     _SERIALIZATION_VERSION = 3
-    _AOT_CACHE_HASH_VERSION = 2
+    _AOT_CACHE_HASH_VERSION = 3
 
     # Construction & Initialization
 
@@ -335,7 +335,7 @@ class NestedTensor(torch.Tensor):
             ragged_offsets=ragged_offsets,
         )
         if torch.is_grad_enabled() and values.requires_grad:
-            return _PackedLikeAutograd.apply(values, result)
+            return _PackedLikeAutograd.apply(values, _PackedStructureReference(result))
         return result
 
     def __init__(self, *args, **kwargs):
@@ -3143,7 +3143,7 @@ class NestedTensor(torch.Tensor):
     def _packed_like_unchecked(self, packed_values: Tensor) -> Self:
         r"""Rebuild from compatible packed values, preserving compiled autograd edges."""
         if _is_compiling() or (torch.is_grad_enabled() and packed_values.requires_grad):
-            return _PackedLikeAutograd.apply(packed_values, self)
+            return _PackedLikeAutograd.apply(packed_values, _PackedStructureReference(self))
         return self._packed_like_unchecked_raw(packed_values)
 
     def packed_like(self, packed_values: Tensor) -> Self:
@@ -3216,7 +3216,7 @@ class NestedTensor(torch.Tensor):
         ):
             result._cached_hierarchical_offsets = self._cached_hierarchical_offsets
         if torch.is_grad_enabled() and packed_values.requires_grad:
-            return _PackedLikeAutograd.apply(packed_values, result)
+            return _PackedLikeAutograd.apply(packed_values, _PackedStructureReference(result))
         return result
 
     def packed_with_static_tail(self, packed_values: Tensor) -> Self:
@@ -5418,13 +5418,23 @@ class NestedTensor(torch.Tensor):
         return NestedTensorAtenRegistry[op](op, (self, dim), kwargs)
 
 
+class _PackedStructureReference:
+    r"""Non-Tensor carrier for layout metadata used by the packed autograd bridge."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: NestedTensor) -> None:
+        self.value = value
+
+
 class _PackedLikeAutograd(torch.autograd.Function):
     r"""Attach a derived packed tensor to a wrapper produced inside a compiled graph."""
 
     @staticmethod
-    def forward(ctx, packed_values: Tensor, reference: NestedTensor) -> NestedTensor:
-        ctx.save_for_backward(reference)
+    def forward(ctx, packed_values: Tensor, structure: _PackedStructureReference) -> NestedTensor:
+        ctx.structure = structure
         ctx.packed_shape = packed_values.shape
+        reference = structure.value
         result = reference._packed_like_unchecked_raw(packed_values)
         max_length_binding = vars(reference).get("_compile_max_length_binding")
         if max_length_binding is not None:
@@ -5433,7 +5443,7 @@ class _PackedLikeAutograd(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output: NestedTensor):
-        (reference,) = ctx.saved_tensors
+        reference = ctx.structure.value
         values_grad = grad_output._values if isinstance(grad_output, NestedTensor) else grad_output
         reference_static = reference._static_dims
         if isinstance(grad_output, NestedTensor):

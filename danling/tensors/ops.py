@@ -642,6 +642,8 @@ def _binary_dense_padded_broadcast(input, other, op, reverse, extra_args, extra_
 def _can_broadcast_nested_to(
     target: NestedTensor,
     source: NestedTensor,
+    *,
+    allow_target_static_broadcast: bool = False,
 ) -> bool:
     r"""Return whether ``source`` can be aligned to ``target`` in packed coordinates.
 
@@ -681,9 +683,28 @@ def _can_broadcast_nested_to(
     if any(dim not in source_static for dim in omitted_ragged):
         return False
 
+    from torch.fx.experimental.symbolic_shapes import statically_known_true
+
+    for dim in omitted_ragged:
+        source_extent = source._values.shape[1 + source_static.index(dim)]
+        if statically_known_true(source_extent != 1):
+            return False
+
     remaining_source_static = tuple(dim for dim in source_static if dim not in omitted_ragged)
     target_static = target._static_dims
-    return len(remaining_source_static) == len(target_static) and set(remaining_source_static) == set(target_static)
+    if len(remaining_source_static) != len(target_static) or set(remaining_source_static) != set(target_static):
+        return False
+    for dim in target_static:
+        source_extent = source._values.shape[1 + source_static.index(dim)]
+        target_extent = target._values.shape[1 + target_static.index(dim)]
+        source_is_not_singleton = statically_known_true(source_extent != 1)
+        target_is_not_singleton = statically_known_true(target_extent != 1)
+        if source_is_not_singleton and (
+            (not allow_target_static_broadcast or target_is_not_singleton)
+            and statically_known_true(source_extent != target_extent)
+        ):
+            return False
+    return True
 
 
 def _broadcast_condition_matches(condition, *operands: NestedTensor) -> bool:
@@ -783,7 +804,11 @@ def _broadcast_nested_to_values(
     allow_target_static_broadcast: bool = False,
 ) -> Tensor | None:
     r"""Align ``source`` with ``target._values`` without padding or storage mapping."""
-    if not _can_broadcast_nested_to(target, source):
+    if not _can_broadcast_nested_to(
+        target,
+        source,
+        allow_target_static_broadcast=allow_target_static_broadcast,
+    ):
         return None
 
     source_ragged_set = set(source._ragged_dims)
@@ -838,7 +863,15 @@ def _has_same_ragged_structure(target: NestedTensor, source: NestedTensor) -> bo
     for lhs, rhs in zip(target_offsets, source_offsets):
         if lhs.shape != rhs.shape:
             return False
-        if not _is_fake_tensor(lhs) and not _is_fake_tensor(rhs) and not bool(torch.equal(lhs, rhs)):
+        if _is_compiling() or _is_fake_tensor(lhs) or _is_fake_tensor(rhs):
+            if not type(target)._meta_tensor_equal(
+                lhs,
+                rhs,
+                "NestedTensor broadcast requires matching ragged offsets",
+                runtime_assert=True,
+            ):
+                return False
+        elif not bool(torch.equal(lhs, rhs)):
             return False
     return True
 
@@ -891,7 +924,7 @@ def _broadcast_lower_rank_nested_to_values(target: NestedTensor, source: NestedT
         else:
             tail.append(1)
     values = source._values.permute((0, *axes))
-    return values.reshape(int(values.shape[0]), *tail)
+    return values.reshape(values.shape[0], *tail)
 
 
 def _single_element_logical_view(input: NestedTensor) -> Tensor:
@@ -919,7 +952,7 @@ def _binary_single_element_nested_broadcast(
         return None
     if _is_fake_tensor(target._values) or _is_fake_tensor(source._values):
         return None
-    if not _can_broadcast_nested_to(target, source):
+    if not _can_broadcast_nested_to(target, source, allow_target_static_broadcast=True):
         return None
 
     omitted_ragged = target._ragged_dims[: -len(source._ragged_dims)]
@@ -1154,7 +1187,15 @@ def _binary_op_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
             return False
         if input._has_same_structure(other):
             return True
-        if _can_broadcast_nested_to(input, other) or _can_broadcast_nested_to(other, input):
+        if _can_broadcast_nested_to(
+            input,
+            other,
+            allow_target_static_broadcast=True,
+        ) or _can_broadcast_nested_to(
+            other,
+            input,
+            allow_target_static_broadcast=True,
+        ):
             return True
         return _can_broadcast_lower_rank_nested_to(input, other) or _can_broadcast_lower_rank_nested_to(other, input)
 
