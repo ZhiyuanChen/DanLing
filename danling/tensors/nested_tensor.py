@@ -1198,7 +1198,7 @@ class NestedTensor(torch.Tensor):
         self._cached_packed_offsets = None
         self._cached_ragged_level_offsets = None
 
-    def _mark_tensor_backed_dynamic_dims(self) -> None:
+    def _mark_tensor_backed_dynamic_dims(self, *, mark_values: bool = True) -> None:
         r"""Mark packed and logical ragged extents dynamic without guarded user state."""
         ragged_offsets = self._persistent_ragged_offsets()
         if ragged_offsets is None:
@@ -1215,7 +1215,8 @@ class NestedTensor(torch.Tensor):
         for physical_dim in self._ragged_dims:
             logical_dim = physical_dim + 1 if self.batch_first or physical_dim > 0 else physical_dim
             maybe_mark_dynamic(self, logical_dim)
-        maybe_mark_dynamic(self._values, 0)
+        if mark_values:
+            maybe_mark_dynamic(self._values, 0)
         for level_offsets in ragged_offsets:
             maybe_mark_dynamic(level_offsets, 0)
 
@@ -1303,6 +1304,7 @@ class NestedTensor(torch.Tensor):
         ragged_offsets: tuple[Tensor, ...] | None = None,
         validate: bool = True,
         materialize_python_metadata: bool = True,
+        mark_values_dynamic: bool = True,
     ) -> Self:
         r"""Construct a NestedTensor directly from packed representation."""
         # offsets and shape_tensor MUST live on CPU to avoid implicit CUDA syncs
@@ -1436,7 +1438,7 @@ class NestedTensor(torch.Tensor):
             result._element_shapes = element_shapes
             cls._install_persistent_ragged_offsets(result, resolved_ragged_offsets)
             result._invalidate_transient_caches()
-        result._mark_tensor_backed_dynamic_dims()
+        result._mark_tensor_backed_dynamic_dims(mark_values=mark_values_dynamic)
         if validate:
             cls._validate_packed_metadata(
                 result._values,
@@ -3547,6 +3549,9 @@ class NestedTensor(torch.Tensor):
         else:
             logical_shape = torch.Size((max_length, len(self), max_length, *static_tail))
         pin_memory = bool(packed_values.device.type == "cpu" and packed_values.is_pinned())
+        # Both ragged axes and their offsets already carry the dynamic shape contract. Marking
+        # caller-owned packed storage here would mutate a compiled graph input after Dynamo has
+        # installed its guards, forcing an otherwise unnecessary second compilation.
         result = type(self)._from_packed(
             packed_values,
             outer_offsets,
@@ -3563,6 +3568,7 @@ class NestedTensor(torch.Tensor):
             ragged_offsets=(level_zero_offsets, level_one_offsets),
             validate=False,
             materialize_python_metadata=False,
+            mark_values_dynamic=False,
         )
         if symbolic_lengths:
             result._max_length_binding = result._offsets.new_empty(()).expand(max_length)
@@ -5259,6 +5265,17 @@ class NestedTensor(torch.Tensor):
 
         return cdist(self, other, p, compute_mode)
 
+    def cumprod(self, dim: int, *, dtype: torch.dtype | None = None) -> NestedTensor:
+        r"""Compute cumulative products through the traceable packed segmented path.
+
+        The explicit method keeps gradients connected to prebuilt packed leaves across
+        AOTAutograd/Inductor. As with :meth:`cdist`, consume or return ``result.concat`` at a
+        compiled training boundary because PyTorch detaches newly returned wrapper children.
+        """
+        op = torch.ops.aten.cumprod.default
+        kwargs = {} if dtype is None else {"dtype": dtype}
+        return NestedTensorAtenRegistry[op](op, (self, dim), kwargs)
+
 
 _cdist_eager = NestedTensor.cdist
 
@@ -5282,14 +5299,6 @@ def _traceable_cdist(
 NestedTensor.cdist = _traceable_cdist  # type: ignore[method-assign]
 
 
-def _cumprod_method(self: NestedTensor, dim: int, *, dtype: torch.dtype | None = None) -> NestedTensor:
-    r"""Compute cumulative products through the traceable packed segmented path."""
-    op = torch.ops.aten.cumprod.default
-    kwargs = {} if dtype is None else {"dtype": dtype}
-    return NestedTensorAtenRegistry[op](op, (self, dim), kwargs)
-
-
-NestedTensor.cumprod = _cumprod_method  # type: ignore[attr-defined]
 _cumprod_eager = NestedTensor.cumprod
 
 

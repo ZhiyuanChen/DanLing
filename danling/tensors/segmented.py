@@ -244,22 +244,43 @@ torch.library.register_autograd(
 
 def _segment_lengths(offsets: Tensor, total: int) -> list[int]:
     r"""Validate packed offsets and return concrete runtime segment lengths."""
+    if offsets.dim() != 1:
+        raise ValueError("segmented offsets must be one-dimensional")
+    if offsets.device.type != "cpu":
+        raise ValueError("segmented offsets must be a CPU tensor")
+    if offsets.dtype != torch.long:
+        raise TypeError("segmented offsets must use torch.int64")
     positions = [int(offset) for offset in offsets.tolist()]
-    if not positions or positions[0] != 0 or positions[-1] != total:
+    if not positions or positions[0] != 0:
+        raise ValueError("segmented offsets must start at zero")
+    if any(left > right for left, right in zip(positions, positions[1:])):
+        raise ValueError("segmented offsets must be nondecreasing")
+    if positions[-1] != total:
         raise ValueError("segmented offsets must cover the packed values exactly")
     return [right - left for left, right in zip(positions, positions[1:])]
 
 
 @torch.library.custom_op("danling::_segmented_cumprod_backward", mutates_args=())
-def segmented_cumprod_backward(grad_output: Tensor, values: Tensor, offsets: Tensor, output: Tensor) -> Tensor:
+def segmented_cumprod_backward(
+    grad_output: Tensor,
+    values: Tensor,
+    offsets: Tensor,
+    output: Tensor,
+) -> Tensor:
+    r"""Apply native cumprod's first-order VJP independently to packed segments."""
     lengths = _segment_lengths(offsets, values.shape[0])
+    if grad_output.shape != values.shape or output.shape != values.shape:
+        raise ValueError("segmented cumprod values, output, and gradient must have the same shape")
     grad_values = torch.empty_like(values)
     start = 0
     for length in lengths:
         if length:
             segment = values.narrow(0, start, length)
             grad_segment = torch.ops.aten.cumprod_backward.default(
-                grad_output.narrow(0, start, length), segment, 0, output.narrow(0, start, length)
+                grad_output.narrow(0, start, length),
+                segment,
+                0,
+                output.narrow(0, start, length),
             )
             grad_values.narrow(0, start, length).copy_(grad_segment)
         start += length
@@ -267,19 +288,34 @@ def segmented_cumprod_backward(grad_output: Tensor, values: Tensor, offsets: Ten
 
 
 @segmented_cumprod_backward.register_fake
-def _segmented_cumprod_backward_fake(grad_output: Tensor, values: Tensor, offsets: Tensor, output: Tensor) -> Tensor:
+def _segmented_cumprod_backward_fake(
+    grad_output: Tensor,
+    values: Tensor,
+    offsets: Tensor,
+    output: Tensor,
+) -> Tensor:
     del grad_output, offsets, output
     return torch.empty_like(values)
 
 
 @torch.library.custom_op("danling::_segmented_cumprod", mutates_args=())
 def segmented_cumprod(values: Tensor, offsets: Tensor) -> Tensor:
+    r"""Run native cumprod independently over packed variable-length segments.
+
+    Calling the device's native kernel per segment preserves its accumulation order, including
+    device-specific rounding, underflow, zero, and non-finite behavior. The custom-op boundary
+    keeps the data-dependent segment loop opaque to full-graph compilation without padding.
+    """
     lengths = _segment_lengths(offsets, values.shape[0])
     output = torch.empty_like(values)
     start = 0
     for length in lengths:
         if length:
-            torch.ops.aten.cumprod.out(values.narrow(0, start, length), 0, out=output.narrow(0, start, length))
+            torch.ops.aten.cumprod.out(
+                values.narrow(0, start, length),
+                0,
+                out=output.narrow(0, start, length),
+            )
         start += length
     return output
 
