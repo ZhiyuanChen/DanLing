@@ -1381,6 +1381,32 @@ class TestModuleIntegration:
         assert_close(layer.weight.grad, reference_layer.weight.grad)
         assert_close(layer.bias.grad, reference_layer.bias.grad)
 
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_compiled_linear_module_dynamic_fullgraph_gradients(self, device):
+        layer = nn.Linear(3, 4).to(device)
+        reference_layer = nn.Linear(3, 4).to(device)
+        reference_layer.load_state_dict(layer.state_dict())
+        compiled = torch.compile(layer, backend="aot_eager", fullgraph=True, dynamic=True)
+
+        for lengths in ((2, 4), (3, 1, 5)):
+            elements = [torch.randn(length, 3, device=device, requires_grad=True) for length in lengths]
+            reference_elements = [element.detach().clone().requires_grad_() for element in elements]
+
+            output = compiled(NT(elements, ragged_dims=(0,))).concat
+            reference = torch.cat([reference_layer(element) for element in reference_elements])
+            assert_close(output, reference)
+
+            output.square().sum().backward()
+            reference.square().sum().backward()
+
+            for actual, expected in zip(elements, reference_elements, strict=True):
+                assert_close(actual.grad, expected.grad)
+            assert_close(layer.weight.grad, reference_layer.weight.grad)
+            assert_close(layer.bias.grad, reference_layer.bias.grad)
+
+            layer.zero_grad(set_to_none=True)
+            reference_layer.zero_grad(set_to_none=True)
+
     @pytest.mark.parametrize(
         "module_factory",
         [

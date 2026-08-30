@@ -230,9 +230,11 @@ class NestedTensor(torch.Tensor):
     _cached_packed_local_indices: dict[tuple[int, str, torch.dtype, tuple[int, ...]], Tensor] | None
     _cached_packed_offsets: dict[tuple[str, torch.dtype, tuple[int, ...]], Tensor] | None
     _cached_ragged_level_offsets: dict[tuple[int, str, torch.dtype, tuple[int, ...]], Tensor] | None
+    _aot_concat_projection: Tensor | None
+    _allow_aot_concat_update: bool
     _RAGGED_OFFSETS_PREFIX = "_ragged_offsets_"
     _SERIALIZATION_VERSION = 3
-    _AOT_CACHE_HASH_VERSION = 1
+    _AOT_CACHE_HASH_VERSION = 2
 
     # Construction & Initialization
 
@@ -332,6 +334,8 @@ class NestedTensor(torch.Tensor):
             element_shapes=result._element_shapes,
             ragged_offsets=ragged_offsets,
         )
+        if torch.is_grad_enabled() and values.requires_grad:
+            return _PackedLikeAutograd.apply(values, result)
         return result
 
     def __init__(self, *args, **kwargs):
@@ -1198,6 +1202,8 @@ class NestedTensor(torch.Tensor):
         self._cached_packed_local_indices = None
         self._cached_packed_offsets = None
         self._cached_ragged_level_offsets = None
+        self._aot_concat_projection = None
+        self._allow_aot_concat_update = False
 
     def _mark_tensor_backed_dynamic_dims(self, *, mark_values: bool = True) -> None:
         r"""Mark packed and logical ragged extents dynamic without guarded user state."""
@@ -1528,11 +1534,11 @@ class NestedTensor(torch.Tensor):
         inner_tensors = [name for name in ("_values", "_offsets", "_physical_shape") if name in instance_attrs]
         if "_compile_max_length_binding" in instance_attrs:
             inner_tensors.append("_max_length_binding")
-        # ``concat`` is the public alias of ``_values``.  Keep both names in
-        # the flatten contract so Dynamo can source-track ``result.concat``
-        # when ``result`` is a wrapper created inside the graph.  Without the
-        # alias, Dynamo sees a sourceless FakeTensor after an elementwise,
-        # view, or ``packed_like`` rebuild and cannot continue tracing.
+        # Dynamo cannot source-track a Tensor returned by a wrapper property on
+        # its own, so the public packed projection remains an explicit child
+        # beside its raw storage. AOT may rewrite this alias when coercing a
+        # runtime tangent's memory format; the one-shot setter below handles
+        # that update without replacing ``_values``.
         if "_values" in instance_attrs:
             inner_tensors.append("concat")
         if not inner_tensors:
@@ -1544,6 +1550,8 @@ class NestedTensor(torch.Tensor):
             inner_tensors.extend(type(self)._ragged_offset_names(len(ragged_offsets)))
         tensor_backed_layout = ragged_offsets is not None
         return inner_tensors, {
+            "requires_grad": self.requires_grad,
+            "allow_aot_concat_update": vars(self).get("_allow_aot_concat_update", False),
             "batch_first": getattr(self, "batch_first", True),
             "padding_value": getattr(self, "padding_value", 0.0),
             "mask_value": getattr(self, "mask_value", False),
@@ -1559,6 +1567,9 @@ class NestedTensor(torch.Tensor):
         values = inner_tensors.get("_values", inner_tensors.get("_flatten_sentinel"))
         if values is None:
             raise RuntimeError("NestedTensor requires _values during tensor unflatten.")
+        ctx = dict(ctx)
+        wrapper_requires_grad = bool(ctx.pop("requires_grad", values.requires_grad))
+        allow_aot_concat_update = bool(ctx.pop("allow_aot_concat_update", False))
 
         offsets = inner_tensors.get("_offsets")
         shape_tensor = inner_tensors.get("_physical_shape")
@@ -1604,8 +1615,11 @@ class NestedTensor(torch.Tensor):
                 ragged_offsets=ragged_offsets,
                 **ctx,
             )
+            if torch.Tensor.requires_grad.__get__(result) != wrapper_requires_grad:
+                torch.Tensor.requires_grad.__set__(result, wrapper_requires_grad)
             if max_length_binding is not None:
                 result._max_length_binding = max_length_binding
+            result._allow_aot_concat_update = allow_aot_concat_update
             return result
 
         result = torch.Tensor._make_wrapper_subclass(
@@ -1613,7 +1627,7 @@ class NestedTensor(torch.Tensor):
             torch.Size(outer_size),
             dtype=values.dtype,
             device=values.device,
-            requires_grad=values.requires_grad,
+            requires_grad=wrapper_requires_grad,
         )
         result._values = values
         if offsets is not None:
@@ -1648,8 +1662,21 @@ class NestedTensor(torch.Tensor):
         if max_length_binding is not None:
             result._max_length_binding = max_length_binding
         result._invalidate_transient_caches()
+        result._allow_aot_concat_update = allow_aot_concat_update
         result._mark_tensor_backed_dynamic_dims()
         return result
+
+    def __coerce_tangent_metadata__(self):
+        r"""Allow one AOT-only update of the flattened packed alias."""
+        self._allow_aot_concat_update = True
+        return self
+
+    def __coerce_same_metadata_as_tangent__(self, expected_meta, expected_type=None):
+        r"""Apply the one-shot alias marker expected by AOT's runtime tangent."""
+        if expected_type is not None and expected_type is not type(self):
+            return None
+        self._allow_aot_concat_update = bool(expected_meta.get("allow_aot_concat_update", False))
+        return self
 
     # ------------------------------------------------------------------
     # Dispatch
@@ -2131,11 +2158,11 @@ class NestedTensor(torch.Tensor):
         batch_idx, local_idx = self._packed_batch_local_indices(flat_idx, device=target_device, dtype=dtype)
         varying_dims = self._varying_dims
         coords = self._packed_varying_coords(batch_idx, local_idx, device=target_device, dtype=dtype)
+        coord_by_dim = dict(zip(varying_dims, coords))
 
         dense_index: list[Tensor | slice] = [batch_idx]
-        coord_iter = iter(coords)
         for dim in range(self._physical_shape.size(1)):
-            dense_index.append(next(coord_iter) if dim in varying_dims else slice(None))
+            dense_index.append(coord_by_dim[dim] if dim in coord_by_dim else slice(None))
         return tuple(dense_index)
 
     def _physical_shape_like_batch_dense(self, batch_dense_shape: Sequence[int]) -> Tensor:
@@ -2614,7 +2641,38 @@ class NestedTensor(torch.Tensor):
             >>> nested_tensor.concat.shape
             torch.Size([202, 1, 5])
         """
+        aot_projection = vars(self).get("_aot_concat_projection")
+        if aot_projection is not None:
+            return aot_projection
+        # Eager results already carry their history on ``_values`` and retain
+        # the historical identity contract.  A wrapper returned across an AOT
+        # boundary instead owns the autograd edge while its flattened child is
+        # detached.  Bridge that edge back to packed values on demand.
+        outer_grad_fn = self.grad_fn
+        if outer_grad_fn is not None and not self._values.requires_grad:
+            return _project_packed_values(self)
         return self._values
+
+    @concat.setter
+    def concat(self, values: Tensor) -> None:
+        # AOTAutograd may coerce a tangent alias to a contiguous memory
+        # format while reconstructing flattened subclass children.  Keep that
+        # projection separate: the raw packed tangent remains the value that
+        # the wrapper's backward consumes.
+        if not vars(self).get("_allow_aot_concat_update", False):
+            raise AttributeError("NestedTensor.concat is read-only")
+        self._allow_aot_concat_update = False
+        if (
+            not isinstance(values, Tensor)
+            or isinstance(values, NestedTensor)
+            or values.shape != self._values.shape
+            or values.dtype != self._values.dtype
+            or values.device != self._values.device
+            or values.requires_grad
+            or values.grad_fn is not None
+        ):
+            raise AttributeError("Invalid AOT tangent projection for NestedTensor.concat")
+        self._aot_concat_projection = values
 
     @property
     def packed_dim_order(self) -> tuple[int, ...]:
@@ -3056,8 +3114,8 @@ class NestedTensor(torch.Tensor):
             varying_dims, _ = type(self)._pack_layout_from_declared_ragged_dims(element_shapes, ragged_dims)
         return tuple(type(self)._packed_size_from_shape(shape, varying_dims) for shape in element_shapes)
 
-    def _packed_like_unchecked(self, packed_values: Tensor) -> Self:
-        r"""Rebuild from packed values when the caller already proved shape compatibility."""
+    def _packed_like_unchecked_raw(self, packed_values: Tensor) -> Self:
+        r"""Rebuild directly when the caller already proved shape compatibility."""
         result = type(self)._from_packed(
             packed_values,
             self._offsets,
@@ -3081,6 +3139,12 @@ class NestedTensor(torch.Tensor):
         ):
             result._cached_hierarchical_offsets = self._cached_hierarchical_offsets
         return result
+
+    def _packed_like_unchecked(self, packed_values: Tensor) -> Self:
+        r"""Rebuild from compatible packed values, preserving compiled autograd edges."""
+        if _is_compiling() or (torch.is_grad_enabled() and packed_values.requires_grad):
+            return _PackedLikeAutograd.apply(packed_values, self)
+        return self._packed_like_unchecked_raw(packed_values)
 
     def packed_like(self, packed_values: Tensor) -> Self:
         r"""Wrap packed values with this ``NestedTensor``'s structure.
@@ -3151,6 +3215,8 @@ class NestedTensor(torch.Tensor):
             and result._physical_shape is self._physical_shape
         ):
             result._cached_hierarchical_offsets = self._cached_hierarchical_offsets
+        if torch.is_grad_enabled() and packed_values.requires_grad:
+            return _PackedLikeAutograd.apply(packed_values, result)
         return result
 
     def packed_with_static_tail(self, packed_values: Tensor) -> Self:
@@ -4629,15 +4695,21 @@ class NestedTensor(torch.Tensor):
     @property
     def requires_grad(self) -> bool:  # type: ignore[override]
         r"""Whether gradient computation is enabled for this tensor."""
-        values = vars(self).get("_values")
-        if isinstance(values, Tensor):
-            return values.requires_grad
-        return torch.Tensor.requires_grad.__get__(self)
+        return super().requires_grad
 
     @requires_grad.setter
     def requires_grad(self, value: bool):
         r"""Enable or disable gradient computation for this tensor."""
-        self._values.requires_grad_(value)
+        if super().requires_grad == value:
+            return
+        values = vars(self).get("_values")
+        if not self.is_leaf:
+            raise RuntimeError("you can only change requires_grad flags of leaf variables")
+        if isinstance(values, Tensor) and values.requires_grad != value and not values.is_leaf:
+            raise RuntimeError("you can only change requires_grad flags of leaf variables")
+        torch.Tensor.requires_grad.__set__(self, value)  # type: ignore[attr-defined]
+        if isinstance(values, Tensor) and values.requires_grad != value:
+            values.requires_grad_(value)
 
     # ------------------------------------------------------------------
     # State management
@@ -5328,9 +5400,8 @@ class NestedTensor(torch.Tensor):
         contract. Unlike the built-in spelling, Dynamo can inline this explicit
         NestedTensor handler, so AOT/Inductor preserve gradients to prebuilt
         packed leaves when the result is consumed inside the compiled region.
-        PyTorch currently detaches newly computed wrapper-subclass children if
-        a compiled function returns only the wrapper; return or consume
-        ``result.concat`` at that boundary when training.
+        Wrapper-only compiled outputs retain their outer autograd edge, and
+        :attr:`concat` projects that edge back to packed values without padding.
         """
         from .torch_functions import cdist
 
@@ -5339,13 +5410,82 @@ class NestedTensor(torch.Tensor):
     def cumprod(self, dim: int, *, dtype: torch.dtype | None = None) -> NestedTensor:
         r"""Compute cumulative products through the traceable packed segmented path.
 
-        The explicit method keeps gradients connected to prebuilt packed leaves across
-        AOTAutograd/Inductor. As with :meth:`cdist`, consume or return ``result.concat`` at a
-        compiled training boundary because PyTorch detaches newly returned wrapper children.
+        The explicit method keeps gradients connected to prebuilt packed leaves
+        across AOTAutograd/Inductor, including wrapper-only compiled outputs.
         """
         op = torch.ops.aten.cumprod.default
         kwargs = {} if dtype is None else {"dtype": dtype}
         return NestedTensorAtenRegistry[op](op, (self, dim), kwargs)
+
+
+class _PackedLikeAutograd(torch.autograd.Function):
+    r"""Attach a derived packed tensor to a wrapper produced inside a compiled graph."""
+
+    @staticmethod
+    def forward(ctx, packed_values: Tensor, reference: NestedTensor) -> NestedTensor:
+        ctx.save_for_backward(reference)
+        ctx.packed_shape = packed_values.shape
+        result = reference._packed_like_unchecked_raw(packed_values)
+        max_length_binding = vars(reference).get("_compile_max_length_binding")
+        if max_length_binding is not None:
+            result._max_length_binding = max_length_binding
+        return result
+
+    @staticmethod
+    def backward(ctx, grad_output: NestedTensor):
+        (reference,) = ctx.saved_tensors
+        values_grad = grad_output._values if isinstance(grad_output, NestedTensor) else grad_output
+        reference_static = reference._static_dims
+        if isinstance(grad_output, NestedTensor):
+            grad_static = grad_output._static_dims
+            packed_tangent = grad_output._ragged_dims == reference._ragged_dims and set(grad_static) == set(
+                reference_static
+            )
+        else:
+            grad_static = ()
+            packed_tangent = False
+        if packed_tangent:
+            packed_order = (0, *(1 + grad_static.index(dim) for dim in reference_static))
+            values_grad = values_grad.permute(packed_order)
+        elif values_grad.shape != ctx.packed_shape:
+            packed_grad = reference._dense_to_packed_values(values_grad)
+            if packed_grad is None:
+                raise RuntimeError(
+                    "NestedTensor could not project the wrapper tangent back to packed values: "
+                    f"got tangent shape {tuple(values_grad.shape)} for packed shape {tuple(ctx.packed_shape)}"
+                )
+            values_grad = packed_grad
+        return values_grad, None
+
+
+class _PackedValuesAutograd(torch.autograd.Function):
+    r"""Project a wrapper-owned autograd edge back onto its packed values."""
+
+    @staticmethod
+    def forward(ctx, input: NestedTensor) -> Tensor:
+        ctx.save_for_backward(input)
+        values = input._values
+        from torch._subclasses.functional_tensor import FunctionalTensor
+
+        outer_grad_fn = input.grad_fn
+        if isinstance(values, FunctionalTensor) or type(outer_grad_fn).__name__ == "CompiledFunctionBackward":
+            return values
+        projected = values.view_as(values)
+        from torch._dynamo import maybe_mark_dynamic
+
+        maybe_mark_dynamic(projected, 0)
+        return projected
+
+    @staticmethod
+    def backward(ctx, grad_values: Tensor):
+        (input,) = ctx.saved_tensors
+        return input._packed_like_unchecked_raw(grad_values)
+
+
+@torch.compiler.allow_in_graph
+def _project_packed_values(input: NestedTensor) -> Tensor:
+    r"""Give Dynamo an explicit source for the wrapper-to-packed projection."""
+    return _PackedValuesAutograd.apply(input)
 
 
 _cdist_eager = NestedTensor.cdist

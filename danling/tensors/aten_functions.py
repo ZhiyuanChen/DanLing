@@ -1282,7 +1282,7 @@ def gather(func, args, kwargs):
                 "gather",
                 row_batch_indices=index.packed_batch_indices(device=source._values.device),
             )
-            out_values = func(source._values, 0, packed_index, sparse_grad=sparse_grad, **kwargs)
+            out_values = func(source.concat, 0, packed_index, sparse_grad=sparse_grad, **kwargs)
             return _packed_gather_output(source, index, out_values)
 
         if _multi_ragged_outer_gather_supported(source, index, dim_adj):
@@ -1482,7 +1482,7 @@ def _packed_gather_output(source: NestedTensor, index: NestedTensor, out_values:
     the output takes the index's element shapes. Carrying them across rather than recovering them
     from the physical shape also keeps an empty segment's rank, which trailing-zero trimming drops.
     """
-    return type(source)._from_packed(
+    result = type(source)._from_packed(
         out_values,
         index._offsets,
         index._physical_shape,
@@ -1498,6 +1498,9 @@ def _packed_gather_output(source: NestedTensor, index: NestedTensor, out_values:
         ragged_offsets=index._persistent_ragged_offsets(),
         validate=False,
     )
+    if torch.is_grad_enabled() and out_values.requires_grad:
+        return result._packed_like_unchecked(out_values)
+    return result
 
 
 def _index_write_like(source, dim, index, src, apply_fn, op_name: str):
@@ -2297,7 +2300,7 @@ def _packed_with_shape(
             # layout to the tensor-backed compile contract without consulting
             # per-element Python shape caches.
             ragged_offsets = (offsets,)
-    return type(source)._from_packed(
+    result = type(source)._from_packed(
         new_values,
         offsets,
         new_physical_shape,
@@ -2313,6 +2316,7 @@ def _packed_with_shape(
         ragged_offsets=ragged_offsets,
         validate=False,
     )
+    return result._packed_like_unchecked(new_values)
 
 
 def _packed_with_tail_from_values(source: NestedTensor, new_values: Tensor) -> NestedTensor:
@@ -4314,7 +4318,7 @@ def _packed_metadata_permute(source: NestedTensor, tensor_dims: tuple[int, ...])
     )
     return _packed_with_shape(
         source,
-        source._values,
+        source.concat,
         out_shape,
         out_logical,
         permutation=new_packed_order,
@@ -4701,11 +4705,7 @@ def unsqueeze(func, args, kwargs):
         raise ValueError("Cannot unsqueeze at or before the batch dimension for NestedTensor.")
 
     dim_adj = dim - 1
-    ones = torch.ones(
-        (source._physical_shape.size(0), 1),
-        dtype=source._physical_shape.dtype,
-        device=source._physical_shape.device,
-    )
+    ones = torch.ones_like(source._physical_shape[:, :1])
     out_shape = torch.cat(
         (source._physical_shape[:, :dim_adj], ones, source._physical_shape[:, dim_adj:]),
         dim=1,
@@ -4733,7 +4733,7 @@ def unsqueeze(func, args, kwargs):
     packed_static.insert(packed_position, dim_adj)
     new_static = tuple(packed_static)
     packed_dim = 1 + packed_position
-    out_values = func(source._values, packed_dim, **kwargs)
+    out_values = func(source.concat, packed_dim, **kwargs)
     out_element_shapes = None
     if source._element_shapes is not None:
         out_element_shapes = tuple(shape[:dim_adj] + (1,) + shape[dim_adj:] for shape in source._element_shapes)

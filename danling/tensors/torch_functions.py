@@ -4798,7 +4798,7 @@ def expand(input: NestedTensor, *sizes) -> NestedTensor:
     packed_targets = [-1]
     for dim in input._static_dims:
         packed_targets.append(elem_sizes[dim])
-    output_values = input._values.expand(*packed_targets)
+    output_values = input.concat.expand(*packed_targets)
     replacements = {
         int(dim): output_values.shape[1 + packed_axis] for packed_axis, dim in enumerate(input._static_dims)
     }
@@ -5258,6 +5258,9 @@ def unsqueeze(input: NestedTensor, dim: int):
     batch_dim = _get_batch_dim(input)
     if dim <= batch_dim:
         raise ValueError("Cannot unsqueeze at or before the batch dimension for NestedTensor.")
+    if _needs_outer_autograd(input):
+        with torch._C.DisableTorchFunctionSubclass():
+            return torch.unsqueeze(input, dim)
     from .aten_functions import unsqueeze as _aten_unsqueeze
 
     return _aten_unsqueeze(torch.ops.aten.unsqueeze.default, (input, dim), {})
@@ -5725,29 +5728,49 @@ def topk(input: NestedTensor, k, dim: int | None = None, largest: bool = True, s
 
 
 def _elementwise_unary_handler(input, *args, _fn=None, **kwargs):
-    r"""Apply a unary elementwise op directly to packed _values, bypassing aten decomposition."""
+    r"""Apply a unary op while preserving wrapper-owned compiled autograd edges."""
 
+    if _needs_outer_autograd(input):
+        with torch._C.DisableTorchFunctionSubclass():
+            return _fn(input, *args, **kwargs)
     return input._packed_like_unchecked(_fn(input._values, *args, **kwargs))
 
 
 def _elementwise_binary_handler(input, other, *args, _fn=None, **kwargs):
     r"""Apply a binary elementwise op handling NT+NT, NT+scalar, and NT+dense conversions."""
+    if _needs_outer_autograd(input, other):
+        with torch._C.DisableTorchFunctionSubclass():
+            return _fn(input, other, *args, **kwargs)
     return _binary_op_maybe_tensor(input, other, _fn, *args, **kwargs)
 
 
-def _commutative_mul_handler(input, other, *args, **kwargs):
-    r"""Keep the packed differentiable operand first for dense-left multiplication.
+def _needs_outer_autograd(*operands) -> bool:
+    r"""Whether a wrapper owns an autograd edge that its raw child does not."""
+    from .nested_tensor import NestedTensor
 
-    AOTAutograd does not currently retain the inner-tensor edge when a wrapper
-    subclass is the right operand of the public ``torch.mul`` call.  Multiplication
-    is commutative, so canonicalize ``dense * nested`` before entering the shared
-    packed handler.  Eager numerics and ordinary ``nested * dense`` dispatch stay
-    unchanged.
+    return (_is_compiling() or torch.is_grad_enabled()) and any(
+        isinstance(operand, NestedTensor)
+        and operand.requires_grad
+        and not operand._values.requires_grad
+        for operand in operands
+    )
+
+
+def _commutative_mul_handler(input, other, *args, **kwargs):
+    r"""Canonicalize the wrapper operand, then redispatch below torch-function.
+
+    The aten redispatch lets Autograd attach the multiplication edge to the
+    wrapper itself.  Calling the packed helper directly is numerically correct
+    in eager mode, but leaves a wrapper-only AOT output disconnected from its
+    packed values.
     """
     from .nested_tensor import NestedTensor
 
     if not isinstance(input, NestedTensor) and isinstance(other, NestedTensor):
         input, other = other, input
+    if _needs_outer_autograd(input, other):
+        with torch._C.DisableTorchFunctionSubclass():
+            return torch.mul(input, other, *args, **kwargs)
     return _binary_op_maybe_tensor(input, other, torch.mul, *args, **kwargs)
 
 
@@ -5813,7 +5836,7 @@ def _inplace_binary_torch_handler(self, other, *args, _fn=None, **kwargs):
 
 # Python dunder wrappers → torch.func (e.g. __floordiv__ doesn't go through C++ method)
 # NOTE: Do NOT register __rsub__, __rtruediv__, __rmod__, __rfloordiv__ here —
-# they have reversed semantics that _binary_op_maybe_tensor can't distinguish.
+# their reversed semantics require their dedicated registrations.
 TORCH_DUNDER_WRAPPER_TO_FUNC = {
     torch.Tensor.__floordiv__: torch.floor_divide,
 }

@@ -42,6 +42,26 @@ random.seed(1016)
 
 class TestArithmetic:
 
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_compiled_wrapper_outputs_chain_and_preserve_autograd(self):
+        template = NT([torch.empty(2, 3), torch.empty(4, 3)], ragged_dims=(0,))
+        values = torch.randn_like(template.concat, requires_grad=True)
+        nested = template.packed_like(values)
+        producer = torch.compile(lambda tensor: tensor * 2, backend="aot_eager", fullgraph=True)
+        consumer = torch.compile(torch.sin, backend="aot_eager", fullgraph=True)
+
+        output = consumer(producer(nested))
+        actual_gradient = torch.autograd.grad(output.concat.sum(), values)[0]
+
+        assert_close(output.concat, torch.sin(values * 2))
+        assert_close(actual_gradient, 2 * torch.cos(values * 2))
+
+    def test_concat_remains_read_only_for_users(self):
+        nested = NT([torch.empty(2, 3), torch.empty(4, 3)], ragged_dims=(0,))
+
+        with pytest.raises(AttributeError, match="read-only"):
+            nested.concat = torch.empty_like(nested.concat)
+
     @pytest.mark.parametrize(
         "i",
         [
@@ -1162,6 +1182,36 @@ class TestToDtype:
         assert output.dtype == target_dtype
         assert [element.shape for element in output] == [element.shape for element in nested]
         assert_close(output.concat, torch.cat(elements).to(target_dtype))
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize("target_dtype", [torch.float32, torch.float64])
+    def test_to_dtype_dynamic_fullgraph_vjp(self, target_dtype):
+        compiled = torch.compile(
+            lambda nested: nested.to(target_dtype),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        for lengths in ((2, 4), (3, 1, 5)):
+            elements = [torch.randn(length, 3, requires_grad=True) for length in lengths]
+            reference_elements = [element.detach().clone().requires_grad_() for element in elements]
+            nested = NT(elements, ragged_dims=(0,))
+            reference = torch.cat(reference_elements).to(target_dtype)
+
+            output = compiled(nested)
+            cotangent = torch.randn_like(reference)
+            gradients = torch.autograd.grad(output.concat, elements, cotangent)
+            reference_gradients = torch.autograd.grad(reference, reference_elements, cotangent)
+
+            assert output.dtype == target_dtype
+            assert output.ragged_dims == nested.ragged_dims
+            assert [element.shape for element in output] == [element.shape for element in nested]
+            assert_close(output.concat, reference)
+            for actual, expected in zip(gradients, reference_gradients, strict=True):
+                assert_close(actual, expected)
+
+
 class TestCopySemantics:
 
     def test_shallow_copy_shares_data(self):

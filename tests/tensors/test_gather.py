@@ -372,6 +372,44 @@ class TestCrossTopologyRowSelection:
         assert output.shape == expanded_index.shape
         assert output.element_sizes().shape == expanded_index.element_sizes().shape
 
+    @pytest.mark.parametrize("operation", ["gather", "take_along_dim"])
+    def test_static_prefix_dynamic_fullgraph_wrapper_gradients(self, operation):
+        compiled = torch.compile(
+            lambda source, index: self.select(operation, source, index),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        cases = [
+            ((4, 3), (torch.tensor([3, 1]), torch.tensor([2]))),
+            ((5, 2), (torch.tensor([4, 2, 0]), torch.tensor([1]))),
+        ]
+
+        for truth_lengths, selected_rows in cases:
+            inference_elements, inference_source, inference_index = cross_topology_row_case(
+                truth_lengths, selected_rows, requires_grad=False
+            )
+            inference_output = compiled(inference_source, inference_index)
+            assert_matches(
+                inference_output,
+                self.dense_reference(operation, inference_elements, list(inference_index)),
+            )
+
+            elements, source, index = cross_topology_row_case(truth_lengths, selected_rows)
+            output = compiled(source, index)
+            reference_elements = [element.detach().clone().requires_grad_() for element in elements]
+            expected = self.dense_reference(operation, reference_elements, list(index))
+
+            assert output.ragged_dims == (1,)
+            assert_matches(output, expected)
+
+            cotangent = torch.randn_like(output.concat)
+            actual_gradients = torch.autograd.grad(output.concat, elements, cotangent)
+            expected_concat = NT(expected, ragged_dims=(1,)).concat
+            expected_gradients = torch.autograd.grad(expected_concat, reference_elements, cotangent)
+            for actual, reference in zip(actual_gradients, expected_gradients, strict=True):
+                torch.testing.assert_close(actual, reference)
+
 
 class TestDenseLookupNestedIndex:
 

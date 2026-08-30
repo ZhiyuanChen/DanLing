@@ -1894,7 +1894,7 @@ def linear(input: NestedTensor, weight: Tensor, bias: Tensor | None = None) -> N
         if is_static_vector:
             from .aten_functions import _from_uniform_batched_output
 
-            new_values = F.linear(input._values.reshape(len(input), in_features), weight, bias)
+            new_values = F.linear(input.concat.reshape(len(input), in_features), weight, bias)
             return _from_uniform_batched_output(input, new_values)
     if input._values.dim() >= 2:
         from .aten_functions import _packed_new_last_dim, _packed_with_shape
@@ -1902,9 +1902,10 @@ def linear(input: NestedTensor, weight: Tensor, bias: Tensor | None = None) -> N
         last_dim = int(input._physical_shape.size(1)) - 1
         values_dim = _physical_to_values_dim(input, last_dim)
         if values_dim is not None:
-            values = input._values.movedim(values_dim, -1)
+            packed_values = input.concat
+            values = packed_values.movedim(values_dim, -1)
             new_values = F.linear(values, weight, bias)
-            if values_dim == input._values.dim() - 1:
+            if values_dim == packed_values.dim() - 1:
                 return _packed_new_last_dim(input, new_values, weight.shape[0])
             output_size = int(weight.shape[0])
             shape, packed_sizes, element_shapes = input._shape_meta_from_components(

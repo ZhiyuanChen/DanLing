@@ -377,11 +377,11 @@ each packed sample. It therefore preserves native rounding, underflow, zero,
 and non-finite behavior without padding or reassociating the product. Eager
 `torch.cumprod(input, dim)` remains supported.
 
-The result can remain a `NestedTensor` throughout a compiled model. At a
-compiled/eager training boundary, consume or return `result.concat`: current
-PyTorch detaches newly computed wrapper-subclass children when the compiled
-function returns only the wrapper, a general wrapper-output limitation rather
-than an operator dispatch limitation.
+The result can remain a `NestedTensor` throughout a compiled model or cross a
+compiled/eager training boundary as a wrapper-only output. DanLing preserves
+the outer wrapper's AOTAutograd edge and projects it back to `result.concat`
+without padding or copying, so both wrapper outputs and direct packed outputs
+remain differentiable.
 They intentionally do not expose the general private packed constructor.
 
 `packed_offsets()` returns the boundaries of complete logical batch elements
