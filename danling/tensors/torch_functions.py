@@ -5735,6 +5735,36 @@ def _elementwise_binary_handler(input, other, *args, _fn=None, **kwargs):
     return _binary_op_maybe_tensor(input, other, _fn, *args, **kwargs)
 
 
+def _commutative_mul_handler(input, other, *args, **kwargs):
+    r"""Keep the packed differentiable operand first for dense-left multiplication.
+
+    AOTAutograd does not currently retain the inner-tensor edge when a wrapper
+    subclass is the right operand of the public ``torch.mul`` call.  Multiplication
+    is commutative, so canonicalize ``dense * nested`` before entering the shared
+    packed handler.  Eager numerics and ordinary ``nested * dense`` dispatch stay
+    unchanged.
+    """
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(input, NestedTensor) and isinstance(other, NestedTensor):
+        input, other = other, input
+    return _binary_op_maybe_tensor(input, other, torch.mul, *args, **kwargs)
+
+
+for _mul_entrypoint in (
+    torch.mul,
+    torch.Tensor.mul,
+    torch.Tensor.__mul__,
+    torch.Tensor.__rmul__,
+):
+    NestedTensorFuncRegistry.register(
+        _mul_entrypoint,
+        _commutative_mul_handler,
+        compile_safe=True,
+        compile_guard=_binary_op_compile_safe,
+    )
+
+
 def _make_simple_reduce_handler(extra_kwargs):
     r"""Factory for simple reduction handlers that delegate to _reduce."""
 

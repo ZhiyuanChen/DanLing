@@ -51,6 +51,46 @@ def _run_or_expect_unsupported(nested_call, tensor_call):
 
 class TestArithmeticFunctions:
 
+    def test_dense_left_mul_sampled_layout_values_and_vjp(self):
+        template = NT(
+            [torch.empty(2, 4, 3), torch.empty(2, 6, 3)],
+            ragged_dims=(1,),
+        )
+        values = torch.randn_like(template.concat, requires_grad=True)
+        scale = torch.randn(2, 2, 1, 1)
+        nested = template.packed_like(values)
+
+        dense_left = scale * nested
+        nested_left = nested * scale
+
+        cotangent = torch.randn_like(values)
+        dense_left_grad = torch.autograd.grad(dense_left.concat, values, cotangent, retain_graph=True)[0]
+        nested_left_grad = torch.autograd.grad(nested_left.concat, values, cotangent)[0]
+        assert_close(dense_left.concat, nested_left.concat)
+        assert_close(dense_left_grad, nested_left_grad)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_dense_left_mul_sampled_layout_compiles_with_vjp(self):
+        def consume(template, values, scale):
+            nested = template.packed_like(values)
+            return (scale * nested).concat, (nested * scale).concat
+
+        compiled = torch.compile(consume, backend="aot_eager", fullgraph=True, dynamic=True)
+        template = NT([torch.empty(2, length, 3) for length in (4, 6)], ragged_dims=(1,))
+        values = torch.randn_like(template.concat, requires_grad=True)
+        eager_values = values.detach().clone().requires_grad_()
+        scale = torch.randn(2, 2, 1, 1)
+        dense_left, nested_left = compiled(template, values, scale)
+        eager_dense_left, eager_nested_left = consume(template, eager_values, scale)
+
+        assert_close(dense_left, eager_dense_left)
+        assert_close(nested_left, eager_nested_left)
+        loss = dense_left.square().sum() + nested_left.square().sum()
+        eager_loss = eager_dense_left.square().sum() + eager_nested_left.square().sum()
+        expected_gradient = torch.autograd.grad(eager_loss, eager_values)[0]
+        actual_gradient = torch.autograd.grad(loss, values)[0]
+        assert_close(actual_gradient, expected_gradient)
+
     def test_dense_broadcast_expands_only_static_tail(self):
         nested = NT([torch.randn(2, 1), torch.randn(3, 1)])
 
