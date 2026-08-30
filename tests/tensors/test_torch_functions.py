@@ -849,6 +849,46 @@ class TestDimensionTransforms:
         reference = NT([torch.squeeze(t, dim=-1) for t in nt], **nt._meta())
         assert_close(output, reference)
 
+    def test_squeeze_sample_axis_values_and_vjp(self, device, float_dtype):
+        template = NT(
+            [
+                torch.empty(1, 2, 3, device=device, dtype=float_dtype),
+                torch.empty(1, 5, 3, device=device, dtype=float_dtype),
+            ],
+            ragged_dims=(1,),
+        )
+        values = torch.randn_like(template.concat, requires_grad=True)
+        sampled = template.packed_like(values)
+        expected = values.squeeze(1)
+
+        output = sampled.squeeze(-3)
+
+        cotangent = torch.randn_like(expected)
+        actual_grad = torch.autograd.grad(output.concat, values, cotangent)[0]
+        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
+        assert output.ragged_dims == (0,)
+        assert output.concat.shape == (7, 3)
+        assert_close(output.concat, expected)
+        assert_close(actual_grad, expected_grad)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_squeeze_sample_axis_compiles_with_vjp(self, device):
+        compiled = torch.compile(
+            lambda template, values: template.packed_like(values).squeeze(-3).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        template = NT([torch.empty(1, length, 3, device=device) for length in (2, 3)], ragged_dims=(1,))
+        values = torch.randn_like(template.concat, requires_grad=True)
+        expected = values.squeeze(1)
+        output = compiled(template, values)
+        cotangent = torch.randn_like(expected)
+        actual_grad = torch.autograd.grad(output, values, cotangent)[0]
+        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
+        assert_close(output, expected)
+        assert_close(actual_grad, expected_grad)
+
     def test_transpose_swaps_last_two_element_dims(self, device, float_dtype):
         nt = NT(
             [
