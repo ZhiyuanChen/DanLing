@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Callable
 
 import torch
 from torch import Tensor
@@ -33,7 +32,7 @@ from danling.tensors import NestedTensor
 from danling.utils import get_world_size
 
 from .functional.utils import MetricFunc
-from .preprocess import base_preprocess
+from .preprocess import Preprocess, base_preprocess
 from .state import MetricState
 from .utils import RoundDict, infer_device, iter_metric_funcs, merge_metric_entries
 
@@ -83,7 +82,7 @@ class GlobalMetrics:
     def __init__(
         self,
         *metric_funcs,
-        preprocess: Callable = base_preprocess,
+        preprocess: Preprocess = base_preprocess,
         distributed: bool = True,
         device: torch.device | str | None = None,
         **meters,
