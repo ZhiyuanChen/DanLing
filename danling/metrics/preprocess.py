@@ -20,7 +20,7 @@
 # pylint: disable=redefined-builtin
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import torch
 from torch import Tensor
@@ -29,13 +29,15 @@ from danling.tensors import NestedTensor
 
 from .functional.utils import infer_task
 
+Preprocess = Callable[[Tensor | NestedTensor | Sequence, Tensor | NestedTensor | Sequence], tuple[Tensor, Tensor]]
+
 
 def base_preprocess(
     input: Tensor | NestedTensor | Sequence,
     target: Tensor | NestedTensor | Sequence,
     ignore_index: int | None = None,
     ignore_nan: bool = False,
-):
+) -> tuple[Tensor, Tensor]:
     """
     Basic preprocessing function for metric inputs and targets.
 
@@ -109,13 +111,10 @@ def _align_nested_tensors(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
 ) -> tuple[Tensor, Tensor]:
-    input_is_nested = isinstance(input, NestedTensor)
-    target_is_nested = isinstance(target, NestedTensor)
-
-    if input_is_nested or target_is_nested:
-        if input_is_nested and not target_is_nested:
+    if isinstance(input, NestedTensor) or isinstance(target, NestedTensor):
+        if isinstance(input, NestedTensor) and not isinstance(target, NestedTensor):
             target = input.nested_like(target, strict=False)
-        elif target_is_nested and not input_is_nested:
+        elif isinstance(target, NestedTensor) and not isinstance(input, NestedTensor):
             input = target.nested_like(input, strict=False)
         if isinstance(input, NestedTensor):
             input = input.concat
@@ -138,7 +137,7 @@ def preprocess_regression(
     target: Tensor | NestedTensor | Sequence,
     num_outputs: int = 1,
     ignore_nan: bool = True,
-):
+) -> tuple[Tensor, Tensor]:
     input, target = base_preprocess(input, target, ignore_nan=False, ignore_index=None)
     if not target.is_floating_point():
         raise TypeError(f"Regression targets must be floating point tensors, but got {target.dtype}.")
@@ -173,7 +172,7 @@ def preprocess_classification(
     num_labels: int | None = None,
     num_classes: int | None = None,
     ignore_index: int | None = -100,
-):
+) -> tuple[Tensor, Tensor]:
     if task is None:
         task = infer_task(num_classes, num_labels)
     if task == "binary":
@@ -189,7 +188,7 @@ def preprocess_binary(
     input: Tensor | NestedTensor | Sequence,
     target: Tensor | NestedTensor | Sequence,
     ignore_index: int | None = -100,
-):
+) -> tuple[Tensor, Tensor]:
     input, target = base_preprocess(input, target, ignore_index=None, ignore_nan=False)
     input, target = input.flatten(), target.flatten()
     if ignore_index is not None:
@@ -205,7 +204,7 @@ def preprocess_multiclass(
     target: Tensor | NestedTensor | Sequence,
     num_classes: int,
     ignore_index: int | None = -100,
-):
+) -> tuple[Tensor, Tensor]:
     input, target = base_preprocess(input, target, ignore_index=None, ignore_nan=False)
     input, target = input.reshape(-1, num_classes), target.flatten()
     if ignore_index is not None:
@@ -221,7 +220,7 @@ def preprocess_multilabel(
     target: Tensor | NestedTensor | Sequence,
     num_labels: int,
     ignore_index: int | None = -100,
-):
+) -> tuple[Tensor, Tensor]:
     input, target = base_preprocess(input, target, ignore_index=None, ignore_nan=False)
     input, target = input.reshape(-1, num_labels), target.reshape(-1, num_labels)
     if ignore_index is not None:

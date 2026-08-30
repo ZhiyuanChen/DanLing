@@ -208,12 +208,17 @@ def build_function_map(
             "mcc": partial(matthews_corrcoef, task="multilabel", num_labels=num_labels, ignore_index=ignore_index),
         }
     if task == "regression":
+
+        def regression_error(preds, targets, *, squared: bool):
+            values = (preds - targets).square().mean() if num_outputs == 1 else (preds - targets).square().mean(dim=0)
+            return values if squared else values.sqrt()
+
         return {
             "pearson": lambda p, t: tmf.pearson_corrcoef(p, t).mean(),
             "spearman": lambda p, t: tmf.spearman_corrcoef(p, t).mean(),
             "r2": tmf.r2_score,
-            "mse": partial(tmf.mean_squared_error, squared=True, num_outputs=num_outputs),
-            "rmse": partial(tmf.mean_squared_error, squared=False, num_outputs=num_outputs),
+            "mse": partial(regression_error, squared=True),
+            "rmse": partial(regression_error, squared=False),
         }
     raise ValueError(f"Unsupported task: {task}")
 

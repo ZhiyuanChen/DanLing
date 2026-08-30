@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from operator import index
 from typing import Literal
 
@@ -41,42 +42,63 @@ class Registry(Registry_):
             raise ValueError(f"{name} must be a positive integer, but got {value!r}")
         return value
 
-    def build(
-        self,
-        type: str,
+    @staticmethod
+    def init(
+        cls: Callable[..., GlobalMetrics | StreamMetrics],
+        *args: object,
         mode: Literal["global", "stream"] = "global",
         num_labels: int | None = None,
         num_classes: int | None = None,
         num_outputs: int | None = None,
-        **kwargs,
+        **kwargs: object,
     ) -> GlobalMetrics | StreamMetrics:
-        type = type.lower()
-        if type == "multilabel":
+        """Construct a registered metric factory with validated task dimensions.
+
+        Args:
+            cls: Registered metric factory selected by ``build``.
+            *args: Factory positional arguments after the normalized task dimension,
+                if any. Binary factories accept metric descriptors directly.
+            mode: Dataset-level or streaming accumulation.
+            num_labels: Multilabel width; also accepted as the task output width
+                for multiclass and regression factories.
+            num_classes: Multiclass width, which must agree with ``num_labels``
+                when both are supplied.
+            num_outputs: Regression width, which must agree with ``num_labels``
+                when both are supplied. Defaults to one output.
+            **kwargs: Remaining arguments forwarded to the factory.
+
+        Returns:
+            GlobalMetrics | StreamMetrics: The configured metric collection.
+
+        Raises:
+            ValueError: Required dimensions are absent, nonpositive or conflicting.
+        """
+        if cls is multilabel_metrics:
             if num_classes is not None and num_labels is not None and num_classes != num_labels:
                 raise ValueError(
                     f"num_classes and num_labels must match when both are provided, got {num_classes} and {num_labels}"
                 )
-            num_labels = self._require_positive_int("num_labels", num_labels)
-            return self.init(self.lookup(type), mode=mode, num_labels=num_labels, **kwargs)
-        if type == "multiclass":
+            num_labels = Registry._require_positive_int("num_labels", num_labels)
+            return cls(num_labels, *args, mode=mode, **kwargs)
+        if cls is multiclass_metrics:
             if num_classes is not None and num_labels is not None and num_classes != num_labels:
                 raise ValueError(
                     f"num_classes and num_labels must match when both are provided, got {num_classes} and {num_labels}"
                 )
             if num_classes is None:
                 num_classes = num_labels
-            num_classes = self._require_positive_int("num_classes", num_classes)
-            return self.init(self.lookup(type), mode=mode, num_classes=num_classes, **kwargs)
-        if type == "regression":
+            num_classes = Registry._require_positive_int("num_classes", num_classes)
+            return cls(num_classes, *args, mode=mode, **kwargs)
+        if cls is regression_metrics:
             if num_outputs is not None and num_labels is not None and num_outputs != num_labels:
                 raise ValueError(
                     f"num_outputs and num_labels must match when both are provided, got {num_outputs} and {num_labels}"
                 )
             if num_outputs is None:
                 num_outputs = num_labels if num_labels is not None else 1
-            num_outputs = self._require_positive_int("num_outputs", num_outputs)
-            return self.init(self.lookup(type), mode=mode, num_outputs=num_outputs, **kwargs)
-        return self.init(self.lookup(type), mode=mode, **kwargs)
+            num_outputs = Registry._require_positive_int("num_outputs", num_outputs)
+            return cls(num_outputs, *args, mode=mode, **kwargs)
+        return cls(*args, mode=mode, **kwargs)
 
 
 METRICS = Registry(key="type")

@@ -116,9 +116,9 @@ def binary_metrics(
         *metric_funcs: Custom metric functions. When provided, defaults are not added.
         ignore_index: Value in target to ignore.
         distributed: Whether global metrics should synchronise across processes.
-        device: Optional storage device for global artifacts.
+        device (torch.device | str | None): Optional device for global artifacts or stream-meter reductions.
         preprocess: Optional preprocess override passed to the metrics constructor.
-        **metrics: Custom metrics as MetricFunc descriptors.
+        **metrics (MetricFunc): Custom named metric descriptors.
     """
     lazy_import.check()
     mode = _normalize_mode(mode)
