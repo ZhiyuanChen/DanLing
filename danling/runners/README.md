@@ -205,10 +205,14 @@ DanLing now uses a stable run layout with per-attempt timestamps:
 
 - `workspace.lineage`: top-level lineage namespace
 - `code_id`: git code identity (`<short_sha>` for clean trees, `<short_sha>-d<diff_sha10>` when dirty) appended to `workspace.lineage` when available
-- `config_id`: deterministic hash of canonical config (`hash(config)` derived)
+- `config_id`: low 48 bits of `config.fingerprint()` as 12 lowercase hexadecimal digits, cached on first access
 - `id`: stable run identifier, defaults to `code_id-config_id` when git metadata is available and `config_id` otherwise
 - `timestamp`: per-attempt runtime timestamp
 - `workspace.experiment`: experiment label used in the default runner name and W&B group; it is not a path segment unless user code includes it in `workspace.dir`
+
+`config.fingerprint()` recomputes an unsigned 64-bit integer from the first eight bytes
+of SHA-1 over the UTF-8 canonical YAML (big-endian byte order). Configurations remain
+mutable and unhashable. Runtime-only settings are omitted by `canonical()`.
 
 By default:
 

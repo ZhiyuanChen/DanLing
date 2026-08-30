@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from danling.runners import RunnerConfig
 from danling.runners.config import (
     CheckpointConfig,
@@ -162,7 +164,7 @@ def test_runner_config_identity_ignores_fault_tolerance_runtime_policy() -> None
     )
 
     assert config_a.canonical() == config_b.canonical()
-    assert hash(config_a) == hash(config_b)
+    assert config_a.fingerprint() == config_b.fingerprint()
 
 
 def test_runner_config_exposes_runtime_sections() -> None:
@@ -491,3 +493,14 @@ def test_runner_config_accepts_fsdp_options() -> None:
     assert dict(config.fsdp.mixed_precision_policy) == {"param_dtype": "bf16"}
     assert dict(config.fsdp.offload_policy) == {"pin_memory": True}
     assert list(config.fsdp.ignored_params) == ["weight"]
+
+
+def test_config_fingerprint_tracks_content():
+    config = RunnerConfig()
+    fingerprint = config.fingerprint()
+    assert isinstance(fingerprint, int)
+    assert 0 <= fingerprint < 2**64
+    config["seed"] = 123456
+    assert config.fingerprint() != fingerprint
+    with pytest.raises(TypeError, match="unhashable"):
+        hash(config)
