@@ -4714,8 +4714,25 @@ def unsqueeze(func, args, kwargs):
     physical_dims.insert(dim_adj, 1)
     shifted_varying = tuple(dim + 1 if dim >= dim_adj else dim for dim in source._varying_dims)
     shifted_static = tuple(dim + 1 if dim >= dim_adj else dim for dim in source._static_dims)
-    new_static = tuple(sorted((*shifted_static, dim_adj)))
-    packed_dim = 1 + new_static.index(dim_adj)
+    packed_static = list(shifted_static)
+    previous_dim = dim_adj - 1
+    following_dim = dim_adj + 1
+    if previous_dim in packed_static:
+        packed_position = packed_static.index(previous_dim) + 1
+    elif following_dim in packed_static:
+        packed_position = packed_static.index(following_dim)
+    else:
+        previous_static = max((static_dim for static_dim in packed_static if static_dim < dim_adj), default=None)
+        following_static = min((static_dim for static_dim in packed_static if static_dim > dim_adj), default=None)
+        if previous_static is not None:
+            packed_position = packed_static.index(previous_static) + 1
+        elif following_static is not None:
+            packed_position = packed_static.index(following_static)
+        else:
+            packed_position = 0
+    packed_static.insert(packed_position, dim_adj)
+    new_static = tuple(packed_static)
+    packed_dim = 1 + packed_position
     out_values = func(source._values, packed_dim, **kwargs)
     out_element_shapes = None
     if source._element_shapes is not None:

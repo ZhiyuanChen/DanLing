@@ -1102,6 +1102,50 @@ class TestLinear:
         reference = NT([F.linear(t, weight, bias) for t in input], **input._meta())
         assert_close(output, reference)
 
+    def test_permuted_static_features_values_and_vjp(self, device, float_dtype):
+        template = NT(
+            [torch.empty(2, 78, 2, device=device), torch.empty(5, 78, 2, device=device)],
+            ragged_dims=(0,),
+        )
+        values = torch.randn_like(template.concat, dtype=float_dtype, requires_grad=True)
+        weight = torch.randn(8, 78, device=device, dtype=float_dtype, requires_grad=True)
+        bias = torch.randn(8, device=device, dtype=float_dtype, requires_grad=True)
+        input = template.packed_like(values).movedim(2, 3)
+        expected = F.linear(values.movedim(1, 2), weight, bias)
+
+        output = F.linear(input, weight, bias)
+
+        leaves = (values, weight, bias)
+        cotangent = torch.randn_like(expected)
+        actual_gradients = torch.autograd.grad(output.concat, leaves, cotangent, retain_graph=True)
+        expected_gradients = torch.autograd.grad(expected, leaves, cotangent)
+        assert output.shape == torch.Size((2, 5, 2, 8))
+        assert output.ragged_dims == (0,)
+        assert_close(output.concat, expected)
+        for actual, reference in zip(actual_gradients, expected_gradients, strict=True):
+            assert_close(actual, reference)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_permuted_static_features_compile_with_vjp(self, device):
+        def run(template, values, weight, bias):
+            input = template.packed_like(values).movedim(2, 3)
+            return F.linear(input, weight, bias).concat
+
+        compiled = torch.compile(run, backend="aot_eager", fullgraph=True, dynamic=True)
+        template = NT([torch.empty(2, 78, 2), torch.empty(3, 78, 2)], ragged_dims=(0,))
+        values = torch.randn_like(template.concat, device=device, requires_grad=True)
+        weight = torch.randn(8, 78, device=device, requires_grad=True)
+        bias = torch.randn(8, device=device, requires_grad=True)
+        expected = F.linear(values.movedim(1, 2), weight, bias)
+        output = compiled(template, values, weight, bias)
+        leaves = (values, weight, bias)
+        cotangent = torch.randn_like(expected)
+        actual_gradients = torch.autograd.grad(output, leaves, cotangent)
+        expected_gradients = torch.autograd.grad(expected, leaves, cotangent)
+        assert_close(output, expected)
+        for actual, reference in zip(actual_gradients, expected_gradients, strict=True):
+            assert_close(actual, reference)
+
 
 class TestLpPool:
 

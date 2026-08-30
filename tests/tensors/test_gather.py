@@ -218,8 +218,6 @@ class TestGatherParity:
         )
 
 
-
-
 class TestNarrowIndex:
 
     def test_different_source_and_index_shapes(self):
@@ -373,6 +371,75 @@ class TestCrossTopologyRowSelection:
         assert output.ragged_dims == (1,)
         assert output.shape == expanded_index.shape
         assert output.element_sizes().shape == expanded_index.element_sizes().shape
+
+
+class TestDenseLookupNestedIndex:
+
+    def test_values_shape_and_source_gradient(self):
+        lookup = torch.randn(120, requires_grad=True)
+        indices = NT(
+            [torch.tensor([[0, 3], [7, -1]]), torch.tensor([[4, 9], [2, 6], [1, 8]])],
+            ragged_dims=(0,),
+        )
+        expected = lookup[indices.concat]
+
+        output = lookup[indices]
+
+        cotangent = torch.randn_like(expected)
+        actual_gradient = torch.autograd.grad(output.concat, lookup, cotangent, retain_graph=True)[0]
+        expected_gradient = torch.autograd.grad(expected, lookup, cotangent)[0]
+        assert output.shape == indices.shape
+        assert output.ragged_dims == indices.ragged_dims
+        torch.testing.assert_close(output.concat, expected)
+        torch.testing.assert_close(actual_gradient, expected_gradient)
+
+    @pytest.mark.parametrize("values", [[0, 12], [0.0, 1.0]], ids=["bounds", "dtype"])
+    def test_error_matches_dense_indexing(self, values):
+        lookup = torch.arange(12.0)
+        index = NT([torch.tensor(values)])
+
+        with pytest.raises(IndexError):
+            _ = lookup[index]
+
+    def test_external_fake_index(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        template = NT(
+            [torch.empty(2, 2, dtype=torch.long), torch.empty(3, 2, dtype=torch.long)],
+            ragged_dims=(0,),
+        )
+
+        with fake_tensor_mod.FakeTensorMode():
+            lookup = torch.empty(120)
+            indices = template.packed_like(torch.empty(template.concat.shape, dtype=torch.long))
+            output = lookup[indices]
+
+        assert fake_tensor_mod.is_fake(output.concat)
+        assert output.shape == (2, 3, 2)
+        assert output.ragged_dims == (0,)
+
+    def test_dynamic_fullgraph_with_source_gradient(self):
+        compiled = torch.compile(
+            lambda lookup, template, values: lookup[template.packed_like(values)].concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        for lengths in ((2, 3), (3, 5)):
+            lookup = torch.randn(120, requires_grad=True)
+            template = NT(
+                [torch.empty(length, 2, dtype=torch.long) for length in lengths],
+                ragged_dims=(0,),
+            )
+            values = torch.arange(template.concat.numel(), dtype=torch.long).reshape(template.concat.shape) % 120
+            expected = lookup[values]
+
+            output = compiled(lookup, template, values)
+
+            cotangent = torch.randn_like(expected)
+            actual_gradient = torch.autograd.grad(output, lookup, cotangent, retain_graph=True)[0]
+            expected_gradient = torch.autograd.grad(expected, lookup, cotangent)[0]
+            torch.testing.assert_close(output, expected)
+            torch.testing.assert_close(actual_gradient, expected_gradient)
 
 
 class TestDenseIndex:

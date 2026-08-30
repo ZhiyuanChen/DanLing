@@ -625,10 +625,31 @@ def _cat_packed_non_batch(tensors, first: NestedTensor, dim_adj: int):
         return None
     if any(tensor.batch_first != first.batch_first or tensor.device != first.device for tensor in tensors):
         return None
-    if any(tensor._permutation != first._permutation for tensor in tensors):
-        return None
     if any(tensor._values.dim() != first._values.dim() for tensor in tensors):
         return None
+
+    aligned_tensors = []
+    target_static = first._static_dims
+    for tensor in tensors:
+        if tensor._permutation == first._permutation:
+            aligned_tensors.append(tensor)
+            continue
+        if tensor._ragged_dims != first._ragged_dims or set(tensor._static_dims) != set(target_static):
+            return None
+        values_order = (0, *(1 + tensor._static_dims.index(dim) for dim in target_static))
+        aligned_tensors.append(
+            _packed_with_shape(
+                tensor,
+                tensor._values.permute(values_order),
+                tensor._physical_shape,
+                tensor._logical_shape,
+                permutation=first._permutation,
+                packed_sizes=tensor._packed_sizes,
+                element_shapes=tensor._element_shapes,
+                preserve_ragged_offsets=True,
+            )
+        )
+    tensors = tuple(aligned_tensors)
 
     values_dim = _packed_static_dim(first, dim_adj)
     if values_dim is not None:
@@ -1626,6 +1647,25 @@ def feature_alpha_dropout(input: NestedTensor, p: float = 0.5, train: bool = Fal
 
 
 # Indexing & Masking
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.__getitem__, compile_safe=True)
+def getitem(input: Tensor, index):
+    r"""Index a one-dimensional dense lookup table with packed long indices."""
+    from .aten_functions import per_element_fallback
+    from .nested_tensor import NestedTensor
+
+    nested_index = index[0] if isinstance(index, tuple) and len(index) == 1 else index
+    if (
+        isinstance(input, Tensor)
+        and not isinstance(input, NestedTensor)
+        and input.dim() == 1
+        and isinstance(nested_index, NestedTensor)
+        and nested_index.dtype not in (torch.bool, torch.uint8)
+    ):
+        return nested_index._packed_like_unchecked(input[nested_index._values])
+    indices = list(index) if isinstance(index, tuple) else [index]
+    return per_element_fallback(torch.ops.aten.index.Tensor, (input, indices), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.gather)
@@ -3137,6 +3177,54 @@ def inner(input, other, *, out=None):
 def inverse(input):
     r"""Apply [torch.inverse][] to each element of a NestedTensor."""
     return torch.ops.aten.inverse.default(input)
+
+
+def _packed_cross(input: NestedTensor, other: NestedTensor, dim: int) -> NestedTensor:
+    r"""Apply a cross product on one static packed axis for matching layouts."""
+    from .aten_functions import per_element_fallback
+
+    dim = _normalize_dim(dim, input.dim())
+    if not isinstance(other, type(input)) or not input._has_same_layout(other) or dim == _get_batch_dim(input):
+        dim_adj = _translate_dim(input, dim)
+        return per_element_fallback(
+            torch.ops.aten.linalg_cross.default,
+            (input, other),
+            {"dim": dim_adj},
+        )
+    dim_adj = _translate_dim(input, dim)
+    values_dim = _physical_to_values_dim(input, dim_adj)
+    if values_dim is None:
+        return per_element_fallback(
+            torch.ops.aten.linalg_cross.default,
+            (input, other),
+            {"dim": dim_adj},
+        )
+    return input._packed_like_unchecked(torch.linalg.cross(input._values, other._values, dim=values_dim))
+
+
+@NestedTensorFuncRegistry.implement(torch.cross, compile_safe=True)
+def cross(input: NestedTensor, other: NestedTensor, dim: int | None = None, *, out=None) -> NestedTensor:
+    r"""Apply :func:`torch.cross` directly to matching packed values."""
+    if out is not None:
+        raise NotImplementedError("NestedTensor torch.cross does not support out=")
+    if dim is None:
+        candidates = []
+        for physical_dim in input._static_dims:
+            values_dim = _physical_to_values_dim(input, physical_dim)
+            if values_dim is not None and input._values.shape[values_dim] == 3:
+                candidates.append(physical_dim)
+        if not candidates:
+            raise RuntimeError("no dimension of size 3 in input")
+        dim = _logical_dim_for_element_dim(input, candidates[0])
+    return _packed_cross(input, other, dim)
+
+
+@NestedTensorFuncRegistry.implement(torch.linalg.cross, compile_safe=True)
+def linalg_cross(input: NestedTensor, other: NestedTensor, *, dim: int = -1, out=None) -> NestedTensor:
+    r"""Apply :func:`torch.linalg.cross` directly to matching packed values."""
+    if out is not None:
+        raise NotImplementedError("NestedTensor torch.linalg.cross does not support out=")
+    return _packed_cross(input, other, dim)
 
 
 @NestedTensorFuncRegistry.implement(torch.linalg.cholesky)

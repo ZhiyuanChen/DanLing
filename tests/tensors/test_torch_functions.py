@@ -1002,6 +1002,58 @@ class TestDimensionTransforms:
         assert output.batch_first is False
         assert output.tensor.shape == torch.Size([2, 1, 1])
 
+    def test_unsqueeze_after_moved_static_axis_rbf_values_and_vjp(self, device, float_dtype):
+        lengths = (3, 5)
+        template = NT(
+            [torch.empty(length, 5, 2, device=device) for length in lengths],
+            ragged_dims=(0,),
+        )
+        values = torch.randn_like(template.concat, dtype=float_dtype, requires_grad=True)
+        source = template.packed_like(values)
+        centers = torch.linspace(2, 22, 2, device=device, dtype=float_dtype)
+
+        moved = source.movedim(2, 3)
+        expanded = moved.unsqueeze(-1)
+        output = torch.exp(-(((expanded - centers) / 10) ** 2)).flatten(start_dim=-2)
+
+        parts = values.split(lengths)
+        references = tuple(
+            torch.exp(-(((part.movedim(1, 2).unsqueeze(-1) - centers) / 10) ** 2)).flatten(start_dim=-2)
+            for part in parts
+        )
+        expected = torch.cat(tuple(reference.movedim(1, 2) for reference in references))
+        cotangent = torch.randn_like(expected)
+        actual_grad = torch.autograd.grad(output.concat, values, cotangent, retain_graph=True)[0]
+        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
+
+        assert output.shape == torch.Size((2, 5, 2, 10))
+        assert output.ragged_dims == (0,)
+        assert_close(output.concat, expected)
+        assert_close(actual_grad, expected_grad)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_unsqueeze_after_moved_static_axis_compiles(self, device):
+        def run(template, values, centers):
+            source = template.packed_like(values).movedim(2, 3).unsqueeze(-1)
+            return torch.exp(-(((source - centers) / 10) ** 2)).flatten(start_dim=-2).concat
+
+        compiled = torch.compile(run, backend="aot_eager", fullgraph=True, dynamic=True)
+        centers = torch.linspace(2, 22, 2, device=device)
+        lengths = (2, 3)
+        template = NT([torch.empty(length, 5, 2, device=device) for length in lengths], ragged_dims=(0,))
+        values = torch.randn_like(template.concat, requires_grad=True)
+        output = compiled(template, values, centers)
+        references = tuple(
+            torch.exp(-(((part.movedim(1, 2).unsqueeze(-1) - centers) / 10) ** 2)).flatten(start_dim=-2)
+            for part in values.split(lengths)
+        )
+        expected = torch.cat(tuple(reference.movedim(1, 2) for reference in references))
+        cotangent = torch.randn_like(expected)
+        actual_grad = torch.autograd.grad(output, values, cotangent, retain_graph=True)[0]
+        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
+        assert_close(output, expected)
+        assert_close(actual_grad, expected_grad)
+
     def test_movedim(self, device, float_dtype):
         a = torch.randn(3, 4, 5, device=device, dtype=float_dtype)
         b = torch.randn(2, 4, 5, device=device, dtype=float_dtype)
@@ -2366,6 +2418,52 @@ class TestLikeCreators:
 
 class TestLinalgOps:
     """Tests for torch.linalg ops registered in torch_functions.py."""
+
+    def test_cross_static_tail_values_and_vjp(self, device, float_dtype):
+        template = NT(
+            [torch.empty(2, 3, device=device), torch.empty(5, 3, device=device)],
+            ragged_dims=(0,),
+        )
+        lhs_values = torch.randn_like(template.concat, dtype=float_dtype, requires_grad=True)
+        rhs_values = torch.randn_like(template.concat, dtype=float_dtype, requires_grad=True)
+        lhs = template.packed_like(lhs_values)
+        rhs = template.packed_like(rhs_values)
+        reference = torch.cross(lhs_values, rhs_values, dim=-1)
+
+        output = torch.cross(lhs, rhs, dim=-1)
+        linalg_output = torch.linalg.cross(lhs, rhs, dim=-1)
+
+        cotangent = torch.randn_like(reference)
+        actual_gradients = torch.autograd.grad(output.concat, (lhs_values, rhs_values), cotangent)
+        expected_gradients = torch.autograd.grad(reference, (lhs_values, rhs_values), cotangent)
+        assert output.ragged_dims == (0,)
+        assert_close(output.concat, reference)
+        assert_close(linalg_output.concat, reference)
+        for actual, expected in zip(actual_gradients, expected_gradients, strict=True):
+            assert_close(actual, expected)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_cross_static_tail_compiles_with_vjp(self, device):
+        compiled = torch.compile(
+            lambda template, lhs, rhs: torch.cross(
+                template.packed_like(lhs),
+                template.packed_like(rhs),
+                dim=-1,
+            ).concat,
+            backend="aot_eager",
+            fullgraph=True,
+        )
+        template = NT([torch.empty(length, 3, device=device) for length in (2, 5)], ragged_dims=(0,))
+        lhs = torch.randn_like(template.concat, requires_grad=True)
+        rhs = torch.randn_like(template.concat, requires_grad=True)
+        reference = torch.cross(lhs, rhs, dim=-1)
+        output = compiled(template, lhs, rhs)
+        cotangent = torch.randn_like(reference)
+        actual_gradients = torch.autograd.grad(output, (lhs, rhs), cotangent)
+        expected_gradients = torch.autograd.grad(reference, (lhs, rhs), cotangent)
+        assert_close(output, reference)
+        for actual, expected in zip(actual_gradients, expected_gradients, strict=True):
+            assert_close(actual, expected)
 
     def test_linalg_cholesky(self, device, float_dtype):
         # Create positive-definite matrices

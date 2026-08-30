@@ -1476,6 +1476,80 @@ class TestIndexing:
 
         assert_close(output, expected)
 
+    def test_basic_newaxis_index_preserves_values_and_vjp(self):
+        template = NT(
+            [torch.empty(2, 5, 3), torch.empty(4, 5, 3)],
+            ragged_dims=(0,),
+        )
+        values = torch.randn_like(template.concat, requires_grad=True)
+        atoms = template.packed_like(values)
+        expected = values[:, None, :, None, :]
+
+        output = atoms[:, :, None, :, None]
+
+        cotangent = torch.randn_like(expected)
+        actual_grad = torch.autograd.grad(output.concat, values, cotangent)[0]
+        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
+        assert output.shape == torch.Size((2, 4, 1, 5, 1, 3))
+        assert output.ragged_dims == (0,)
+        assert_close(output.concat, expected)
+        assert_close(actual_grad, expected_grad)
+
+    def test_static_and_newaxis_indices_support_fake_tensor(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        coordinates = NT(
+            [torch.empty(2, 5, 3), torch.empty(4, 5, 3)],
+            ragged_dims=(0,),
+        )
+
+        with fake_tensor_mod.FakeTensorMode() as mode:
+            fake_coordinates = mode.from_tensor(coordinates)
+            indexed = fake_coordinates[:, :, 0]
+            expanded = fake_coordinates[:, :, None, :, None]
+
+        assert fake_tensor_mod.is_fake(indexed.concat)
+        assert indexed.concat.shape == (6, 3)
+        assert indexed.ragged_dims == (0,)
+        assert fake_tensor_mod.is_fake(expanded.concat)
+        assert expanded.concat.shape == (6, 1, 5, 1, 3)
+        assert expanded.ragged_dims == (0,)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_static_and_newaxis_indices_support_fullgraph_backward(self):
+        compiled = torch.compile(
+            lambda template, values: (
+                template.packed_like(values)[:, :, 0].concat,
+                template.packed_like(values)[:, :, None, :, None].concat,
+            ),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        for lengths in ((2, 3), (3, 5)):
+            template = NT([torch.empty(length, 5, 3) for length in lengths], ragged_dims=(0,))
+            values = torch.randn_like(template.concat, requires_grad=True)
+            expected_indexed = values[:, 0]
+            expected_expanded = values[:, None, :, None, :]
+
+            indexed, expanded = compiled(template, values)
+
+            indexed_cotangent = torch.randn_like(expected_indexed)
+            expanded_cotangent = torch.randn_like(expected_expanded)
+            actual_grad = torch.autograd.grad(
+                (indexed, expanded),
+                values,
+                (indexed_cotangent, expanded_cotangent),
+            )[0]
+            expected_grad = torch.autograd.grad(
+                (expected_indexed, expected_expanded),
+                values,
+                (indexed_cotangent, expanded_cotangent),
+            )[0]
+            assert_close(indexed, expected_indexed)
+            assert_close(expanded, expected_expanded)
+            assert_close(actual_grad, expected_grad)
+
     @pytest.mark.parametrize("position", [3, -4])
     def test_static_tail_integer_index_preserves_bounds_errors(self, position):
         coordinates = NT([torch.empty(2, 3), torch.empty(5, 3)], ragged_dims=(0,))

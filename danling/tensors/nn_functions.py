@@ -1897,10 +1897,34 @@ def linear(input: NestedTensor, weight: Tensor, bias: Tensor | None = None) -> N
             new_values = F.linear(input._values.reshape(len(input), in_features), weight, bias)
             return _from_uniform_batched_output(input, new_values)
     if input._values.dim() >= 2:
-        from .aten_functions import _packed_new_last_dim
+        from .aten_functions import _packed_new_last_dim, _packed_with_shape
 
-        new_values = F.linear(input._values, weight, bias)
-        return _packed_new_last_dim(input, new_values, weight.shape[0])
+        last_dim = int(input._physical_shape.size(1)) - 1
+        values_dim = _physical_to_values_dim(input, last_dim)
+        if values_dim is not None:
+            values = input._values.movedim(values_dim, -1)
+            new_values = F.linear(values, weight, bias)
+            if values_dim == input._values.dim() - 1:
+                return _packed_new_last_dim(input, new_values, weight.shape[0])
+            output_size = int(weight.shape[0])
+            shape, packed_sizes, element_shapes = input._shape_meta_from_components(
+                replace_dims={last_dim: output_size}
+            )
+            permutation = (
+                *input._ragged_dims,
+                *(dim for dim in input._static_dims if dim != last_dim),
+                last_dim,
+            )
+            return _packed_with_shape(
+                input,
+                new_values,
+                shape,
+                input._logical_shape_from_components(replace_dims={last_dim: output_size}),
+                permutation=permutation,
+                packed_sizes=packed_sizes,
+                element_shapes=element_shapes,
+                preserve_ragged_offsets=True,
+            )
     if _is_compiling():
         _compile_unsupported("torch.nn.functional.linear", "only packed rank >= 2 inputs are compile-safe")
     return _apply_per_element(input, F.linear, weight, bias)

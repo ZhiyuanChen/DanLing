@@ -294,6 +294,32 @@ class TestCat:
 
         assert_matches(output, [torch.cat((element, element), dim=1) for element in elements])
 
+    def test_aligns_static_orders_and_gradients(self):
+        lengths = (3, 5)
+        left_template = NT([torch.empty(length, 10, 2) for length in lengths], ragged_dims=(0,))
+        middle_template = NT([torch.empty(length, 2, 64) for length in lengths], ragged_dims=(0,))
+        right_template = NT([torch.empty(length, 2, 4) for length in lengths], ragged_dims=(0,))
+        left_values = torch.randn_like(left_template.concat, requires_grad=True)
+        middle_values = torch.randn_like(middle_template.concat, requires_grad=True)
+        right_values = torch.randn_like(right_template.concat, requires_grad=True)
+        left = left_template.packed_like(left_values).movedim(2, 3)
+        middle = middle_template.packed_like(middle_values)
+        right = right_template.packed_like(right_values)
+        expected = torch.cat(
+            (left_values, middle_values.movedim(1, 2), right_values.movedim(1, 2)),
+            dim=1,
+        )
+
+        output = torch.cat((left, middle, right), dim=-1)
+
+        leaves = (left_values, middle_values, right_values)
+        cotangent = torch.randn_like(expected)
+        actual_gradients = torch.autograd.grad(output.concat, leaves, cotangent)
+        expected_gradients = torch.autograd.grad(expected, leaves, cotangent)
+        assert output.shape == torch.Size((2, 5, 2, 78))
+        torch.testing.assert_close(output.concat, expected)
+        for actual, reference in zip(actual_gradients, expected_gradients):
+            torch.testing.assert_close(actual, reference)
 
     def test_batch_dimension_validates_static_extents(self):
         left = NT([torch.randn(3, 4), torch.randn(5, 4)])
@@ -465,6 +491,35 @@ class TestCompile:
 
             assert_matches(output, [*left, *right])
 
+    def test_static_order_aligned_cat_dynamic_fullgraph_with_gradient(self):
+        def run(left_template, left, middle_template, middle, right_template, right):
+            left_nested = left_template.packed_like(left).movedim(2, 3)
+            middle_nested = middle_template.packed_like(middle)
+            right_nested = right_template.packed_like(right)
+            return torch.cat((left_nested, middle_nested, right_nested), dim=-1).concat
+
+        compiled = torch.compile(run, backend="aot_eager", fullgraph=True, dynamic=True)
+        for lengths in ((2, 3), (3, 5)):
+            left_template = NT([torch.empty(length, 10, 2) for length in lengths], ragged_dims=(0,))
+            middle_template = NT([torch.empty(length, 2, 64) for length in lengths], ragged_dims=(0,))
+            right_template = NT([torch.empty(length, 2, 4) for length in lengths], ragged_dims=(0,))
+            left = torch.randn_like(left_template.concat, requires_grad=True)
+            middle = torch.randn_like(middle_template.concat, requires_grad=True)
+            right = torch.randn_like(right_template.concat, requires_grad=True)
+            expected = torch.cat(
+                (left, middle.movedim(1, 2), right.movedim(1, 2)),
+                dim=1,
+            )
+
+            output = compiled(left_template, left, middle_template, middle, right_template, right)
+
+            leaves = (left, middle, right)
+            cotangent = torch.randn_like(expected)
+            actual_gradients = torch.autograd.grad(output, leaves, cotangent, retain_graph=True)
+            expected_gradients = torch.autograd.grad(expected, leaves, cotangent)
+            torch.testing.assert_close(output, expected)
+            for actual, reference in zip(actual_gradients, expected_gradients):
+                torch.testing.assert_close(actual, reference)
 
 
 class TestAutograd:

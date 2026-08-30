@@ -4031,7 +4031,7 @@ class NestedTensor(torch.Tensor):
         physical_rank = int(self._physical_shape.size(1))
         if len(rest) > physical_rank:
             return None
-        selectors = (*rest, *((slice(None),) for _ in range(physical_rank - len(rest))))
+        selectors = tuple(rest) + (slice(None),) * (physical_rank - len(rest))
         integer_dims = [dim for dim, selector in enumerate(selectors) if type(selector) is int]
         if len(integer_dims) != 1:
             return None
@@ -4055,7 +4055,34 @@ class NestedTensor(torch.Tensor):
         from .aten_functions import _packed_without_dim
 
         values = self._values.select(values_dim, int(selectors[physical_dim]))
-        return _packed_without_dim(self, physical_dim, values)
+        return cast(Self, _packed_without_dim(self, physical_dim, values))
+
+    def _packed_newaxis_index(self, rest: tuple) -> Self | None:
+        r"""Insert basic ``None`` axes without unpacking an untouched batch."""
+        if not self.batch_first or not any(selector is None for selector in rest):
+            return None
+        physical_rank = int(self._physical_shape.size(1))
+        consumed = sum(selector is not None for selector in rest)
+        if consumed > physical_rank:
+            return None
+        selectors = tuple(rest) + (slice(None),) * (physical_rank - consumed)
+        if any(
+            selector is not None
+            and not (
+                isinstance(selector, slice)
+                and selector.start is None
+                and selector.stop is None
+                and selector.step is None
+            )
+            for selector in selectors
+        ):
+            return None
+
+        result = self
+        for logical_dim, selector in enumerate(selectors, start=1):
+            if selector is None:
+                result = result.unsqueeze(logical_dim)
+        return result
 
     def _empty_batch_like(self) -> Self:
         r"""Return a source-derived empty batch without discarding element-rank topology."""
@@ -4242,6 +4269,9 @@ class NestedTensor(torch.Tensor):
                 _is_compiling() or _is_fake_tensor(self._offsets) or _is_fake_tensor(self._physical_shape)
             )
             if symbolic_tensor_metadata and batch_index == slice(None) and rest:
+                newaxis_output = self._packed_newaxis_index(tuple(rest))
+                if newaxis_output is not None:
+                    return newaxis_output
                 integer_output = self._packed_static_integer_index(tuple(rest))
                 if integer_output is not None:
                     return integer_output
@@ -4282,6 +4312,9 @@ class NestedTensor(torch.Tensor):
                     if static_position is not None:
                         return static_position
                 if isinstance(batch_index, slice) and batch_index == slice(None) and rest:
+                    newaxis_output = self._packed_newaxis_index(tuple(rest))
+                    if newaxis_output is not None:
+                        return newaxis_output
                     integer_output = self._packed_static_integer_index(tuple(rest))
                     if integer_output is not None:
                         return integer_output
