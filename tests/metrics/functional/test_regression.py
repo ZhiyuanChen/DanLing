@@ -75,9 +75,9 @@ class TestRegressionMetrics:
         expected_pearson = tmf.pearson_corrcoef(preds, targets).mean()
         expected_spearman = tmf.spearman_corrcoef(preds, targets).mean()
         expected_r2 = tmf.r2_score(preds, targets)
-        expected_mse = tmf.mean_squared_error(preds, targets, squared=True, num_outputs=2)
-        expected_rmse = tmf.mean_squared_error(preds, targets, squared=False, num_outputs=2)
-        expected_mae = tmf.mean_absolute_error(preds, targets, num_outputs=2)
+        expected_mse = (preds - targets).square().mean(dim=0)
+        expected_rmse = expected_mse.sqrt()
+        expected_mae = (preds - targets).abs().mean(dim=0)
 
         assert_metric_close(pearson()(state), expected_pearson)
         assert_metric_close(spearman()(state), expected_spearman)
@@ -85,6 +85,12 @@ class TestRegressionMetrics:
         assert_metric_close(mse(num_outputs=2)(state), expected_mse)
         assert_metric_close(rmse(num_outputs=2)(state), expected_rmse)
         assert_metric_close(mae(num_outputs=2)(state), expected_mae)
+
+    @pytest.mark.parametrize("metric", [mse, rmse, mae])
+    def test_error_metrics_reject_mismatched_num_outputs(self, metric) -> None:
+        state = MetricState(preds=torch.ones(3, 2), targets=torch.ones(3, 2))
+        with pytest.raises(ValueError):
+            metric(num_outputs=3)(state)
 
     def test_correlation_metrics_support_multioutput_reductions(self, device) -> None:
         preds = PREDS.to(device)

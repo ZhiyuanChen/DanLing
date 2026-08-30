@@ -30,7 +30,7 @@ from danling.tensors import NestedTensor
 
 from .average_meter import AverageMeter, AverageMeters
 from .functional.utils import MetricFunc
-from .preprocess import base_preprocess
+from .preprocess import Preprocess, base_preprocess
 from .state import MetricState
 from .utils import infer_metric_name, iter_metric_funcs, merge_metric_entries
 
@@ -199,9 +199,10 @@ class StreamMetrics(AverageMeters):
         count: Dictionary of counts from all meters
 
     Args:
-        *args: Metric functions to register as meters
+        *metric_funcs (MetricFunc | Callable | Sequence[MetricFunc | Callable]): Metric functions or sequences of them.
+            Meter names are inferred from the functions or descriptors.
         preprocess: Preprocessing function to apply to inputs before computing metrics
-        **meters: Named MetricMeter instances or metric functions
+        **meters (MetricMeter | MetricFunc | Callable): Named meters, metric descriptors or metric functions.
 
     Examples:
         >>> import torch
@@ -235,14 +236,14 @@ class StreamMetrics(AverageMeters):
             Metric tracker that stores the complete prediction and target history.
     """
 
-    preprocess = base_preprocess
+    preprocess: Preprocess
     meter_cls = MetricMeter  # type: ignore[assignment]
 
     # Construction
     def __init__(
         self,
         *metric_funcs,
-        preprocess: Callable = base_preprocess,
+        preprocess: Preprocess = base_preprocess,
         distributed: bool = True,
         device: torch.device | str | None = None,
         **meters,
@@ -313,7 +314,7 @@ class StreamMetrics(AverageMeters):
                 the inferred batch size.
         """
 
-        input, target = self.preprocess(input, target)  # type: ignore[arg-type]
+        input, target = self.preprocess(input, target)
         if isinstance(input, (Tensor, NestedTensor)):
             input = input.detach()
         if isinstance(target, (Tensor, NestedTensor)):

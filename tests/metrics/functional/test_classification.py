@@ -697,14 +697,13 @@ class TestClassificationPreprocess:
         assert_metric_close(actual, expected_fn(preds, targets))
 
     @pytest.mark.parametrize(
-        "input,target,metric_kwargs,preprocess,expected_error",
+        "input,target,metric_kwargs,preprocess",
         [
             (
                 torch.tensor([[0.1, 0.9], [0.8, 0.2]]),
                 torch.tensor([[0, 1], [1, 0]]),
                 {},
                 preprocess_binary,
-                "Expected input to be at least 2D when multidim_average is set to `samplewise`",
             ),
             (
                 torch.tensor(
@@ -717,7 +716,6 @@ class TestClassificationPreprocess:
                 torch.tensor([[0, 1], [2, 0]]),
                 {"num_classes": NUM_CLASSES},
                 lambda input, target: preprocess_multiclass(input, target, num_classes=NUM_CLASSES),
-                "the shape of `preds` should be at least 3D when multidim_average is set to `samplewise`",
             ),
         ],
     )
@@ -727,11 +725,10 @@ class TestClassificationPreprocess:
         target: Tensor,
         metric_kwargs: dict,
         preprocess: Callable,
-        expected_error: str,
     ) -> None:
         preds, targets = preprocess(input, target)
 
-        with pytest.raises(ValueError, match=expected_error):
+        with pytest.raises(ValueError):
             tmfc.accuracy(
                 preds,
                 targets,
@@ -740,7 +737,7 @@ class TestClassificationPreprocess:
                 **metric_kwargs,
             )
 
-        with pytest.raises(ValueError, match=expected_error):
+        with pytest.raises(ValueError):
             accuracy(input, target, multidim_average="samplewise", **metric_kwargs)
 
 

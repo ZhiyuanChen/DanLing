@@ -19,8 +19,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable
 from math import nan
+from typing import TYPE_CHECKING
 
 import torch
 from torch import Tensor
@@ -31,6 +32,9 @@ from typing_extensions import Self
 from danling.utils import get_world_size
 
 from .utils import MetersBase, RoundDict, infer_device
+
+if TYPE_CHECKING:
+    from _typeshed import SupportsKeysAndGetItem
 
 
 class AverageMeter:
@@ -84,6 +88,7 @@ class AverageMeter:
             Memory-efficient metric tracker that averages metrics batch-by-batch.
     """
 
+    _tensor_template: Tensor | None = None
     _local_value: float | Tensor = 0.0
     _local_n: int = 0
     _local_sum: float | Tensor = 0.0
@@ -558,13 +563,16 @@ class AverageMeters(MetersBase):
 
     # Mutation
     def update(
-        self, *args: Mapping[str, int | float | Tensor], **values: int | float | Tensor
+        self,
+        *args: SupportsKeysAndGetItem[str, int | float | Tensor] | Iterable[tuple[str, int | float | Tensor]],
+        **values: int | float | Tensor,
     ) -> None:  # pylint: disable=W0237
         r"""
         Updates the average and current value in all meters.
 
         Args:
-            values: Mapping or keyword values to be added to the corresponding meters.
+            *args: One mapping or iterable of name/value pairs.
+            **values: Keyword values to add to the corresponding meters.
         """  # noqa: E501
 
         if args:

@@ -30,6 +30,22 @@ class TestMetricsRegistry:
     def test_build_is_case_insensitive(self):
         assert isinstance(METRICS.build("BINARY", distributed=False), GlobalMetrics)
 
+    def test_build_accepts_config_mapping(self):
+        config = {"type": "MULTICLASS", "num_classes": 3, "mode": "global"}
+        metrics = METRICS.build(config, mode="stream", distributed=False)
+        assert isinstance(metrics, StreamMetrics)
+        assert config == {"type": "MULTICLASS", "num_classes": 3, "mode": "global"}
+
+    def test_build_accepts_type_keyword(self):
+        assert isinstance(METRICS.build(type="binary", distributed=False), GlobalMetrics)
+
+    def test_build_forwards_metric_arguments(self):
+        from danling.metrics.functional import binary_accuracy
+
+        metric = binary_accuracy()
+        metrics = METRICS.build("binary", metric, distributed=False)
+        assert metrics.metrics == {metric.name: metric}
+
     def test_build_respects_mode(self):
         assert isinstance(METRICS.build("BINARY", distributed=False), GlobalMetrics)
         assert isinstance(METRICS.build("binary", mode="stream", distributed=False), StreamMetrics)
