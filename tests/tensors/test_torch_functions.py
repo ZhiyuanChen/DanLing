@@ -1491,8 +1491,60 @@ class TestExpand:
             ]
         )
         output = nt.expand(-1, -1, 4, -1)
-        reference = NT([t.expand(-1, 4, -1) for t in nt], **nt._meta())
+        reference = NT([t.expand(-1, 4, -1) for t in nt], **reference_options(nt))
         assert_close(output, reference)
+
+    def test_expand_sample_axis_values_and_vjp(self, device, float_dtype):
+        template = NT(
+            [
+                torch.empty(3, 3, device=device, dtype=float_dtype),
+                torch.empty(5, 3, device=device, dtype=float_dtype),
+            ]
+        )
+        values = torch.randn_like(template.concat, requires_grad=True)
+        reference_positions = template.packed_like(values)
+
+        sampled = reference_positions.unsqueeze(-3).expand(
+            len(reference_positions), 4, reference_positions.shape[-2], 3
+        )
+
+        expected = values.unsqueeze(1).expand(-1, 4, -1)
+        assert sampled.concat.shape == (8, 4, 3)
+        assert sampled.ragged_dims == (1,)
+        assert_close(sampled.concat, expected)
+
+        cotangent = torch.randn_like(expected)
+        actual_grad = torch.autograd.grad(sampled.concat, values, cotangent)[0]
+        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
+        assert_close(actual_grad, expected_grad)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_expand_sample_axis_compiles_with_vjp(self, device):
+        def consume(template, values):
+            reference_positions = template.packed_like(values)
+            sampled = reference_positions.unsqueeze(-3).expand(
+                reference_positions.shape[0], 4, reference_positions.shape[-2], reference_positions.shape[-1]
+            )
+            return sampled.concat.square().sum()
+
+        compiled = torch.compile(consume, backend="aot_eager", fullgraph=True, dynamic=True)
+        template = NT([torch.empty(length, 3, device=device) for length in (2, 3)], ragged_dims=(0,))
+        values = torch.randn_like(template.concat, requires_grad=True)
+        loss = compiled(template, values)
+        gradient = torch.autograd.grad(loss, values)[0]
+        assert_close(loss, values.square().sum() * 4)
+        assert_close(gradient, 8 * values)
+
+    def test_expand_rejects_ragged_change(self):
+        reference_positions = NT([torch.empty(1, 3), torch.empty(2, 3)], ragged_dims=(0,))
+        sampled = reference_positions.unsqueeze(-3)
+        with pytest.raises(RuntimeError, match="cannot change a ragged dimension"):
+            sampled.expand(-1, 4, 7, -1)
+
+    def test_expand_rejects_non_singleton_static_change(self):
+        nt = NT([torch.empty(2, 2, 3), torch.empty(3, 2, 3)], ragged_dims=(0,))
+        with pytest.raises(RuntimeError):
+            nt.expand(-1, -1, 4, -1)
 
     @pytest.mark.parametrize("batch", [1, 3])
     def test_expand_rejects_batch_change(self, batch):

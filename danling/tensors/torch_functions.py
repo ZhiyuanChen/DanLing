@@ -4671,32 +4671,79 @@ NestedTensorFuncRegistry.register(
 )
 
 
-@NestedTensorFuncRegistry.implement(torch.Tensor.expand)
+@NestedTensorFuncRegistry.implement(torch.Tensor.expand, compile_safe=True)
 def expand(input: NestedTensor, *sizes) -> NestedTensor:
     r"""
-    Expand a NestedTensor per element. See also [torch.Tensor.expand][].
+    Expand singleton static element axes directly on packed storage.
 
-    The batch-size argument is dropped and the remaining target sizes are applied to each
-    element with standard broadcasting (use ``-1`` to keep ragged/unchanged dims). Adding
-    new leading dimensions is not supported for NestedTensor.
+    The batch and ragged axes retain the existing topology (use ``-1`` or their
+    current logical extent). Static axes follow ordinary dense ``expand`` rules,
+    so only singleton axes may grow. Adding new leading dimensions is not
+    supported for NestedTensor.
     """
-    from .nested_tensor import NestedTensor
+    from .aten_functions import _packed_with_shape
 
     if len(sizes) == 1 and isinstance(sizes[0], (list, tuple, torch.Size)):
-        sizes = tuple(int(s) for s in sizes[0])
+        sizes = tuple(sizes[0])
     if len(sizes) != input.dim():
         raise NotImplementedError(
             f"NestedTensor.expand expects {input.dim()} sizes (matching ndim) but got {len(sizes)}; "
             "adding new leading dimensions is not supported."
         )
     batch_dim = _get_batch_dim(input)
-    if sizes[batch_dim] not in (-1, len(input)):
+    if sizes[batch_dim] != -1 and sizes[batch_dim] != len(input):
         raise RuntimeError(
             f"NestedTensor.expand cannot change the batch dimension (size {len(input)}) "
             f"to {sizes[batch_dim]}; pass -1 or {len(input)} for the batch dim."
         )
     elem_sizes = tuple(size for index, size in enumerate(sizes) if index != batch_dim)
-    return NestedTensor((t.expand(*elem_sizes) for t in input._storage), **input._meta())
+    ragged_dims = set(input._varying_dims)
+    for dim in ragged_dims:
+        target = elem_sizes[dim]
+        current = input.shape[_logical_dim_for_element_dim(input, dim)]
+        if target != -1 and target != current:
+            raise RuntimeError(
+                "NestedTensor.expand cannot change a ragged dimension; "
+                f"dim {dim} has logical extent {current}, got target {target}. Pass -1 or {current}."
+            )
+
+    packed_targets = [-1]
+    for dim in input._static_dims:
+        packed_targets.append(elem_sizes[dim])
+    output_values = input._values.expand(*packed_targets)
+    replacements = {
+        int(dim): output_values.shape[1 + packed_axis] for packed_axis, dim in enumerate(input._static_dims)
+    }
+
+    # Explicit layouts already carry every row split needed by a graph-safe
+    # rebuild. An inferred single-ragged layout can be promoted because its
+    # sample offsets are the complete topology. Keep arbitrary inferred
+    # multi-ragged eager layouts on their existing Python metadata contract.
+    tensor_backed = input._ragged_dims_explicit or len(input._ragged_dims) == 1
+    if tensor_backed:
+        output_shape = input._physical_shape.clone()
+        for dim, size in replacements.items():
+            output_shape[:, dim] = size
+        output_packed_sizes = None
+        output_element_shapes = None
+        explicit_ragged_dims = input._ragged_dims
+    else:
+        output_shape, output_packed_sizes, output_element_shapes = input._shape_meta_from_components(
+            replace_dims=replacements
+        )
+        explicit_ragged_dims = None
+
+    return _packed_with_shape(
+        input,
+        output_values,
+        output_shape,
+        input._logical_shape_from_components(replace_dims=replacements),
+        permutation=input._permutation,
+        packed_sizes=output_packed_sizes,
+        element_shapes=output_element_shapes,
+        preserve_ragged_offsets=True,
+        force_explicit_ragged_dims=explicit_ragged_dims,
+    )
 
 
 def _normalize_new_size(shape: tuple, kwargs: dict | None = None) -> tuple:

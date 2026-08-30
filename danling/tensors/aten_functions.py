@@ -2266,6 +2266,7 @@ def _packed_with_shape(
     packed_sizes: tuple[int, ...] | None = None,
     element_shapes: tuple[tuple[int, ...], ...] | None = None,
     preserve_ragged_offsets: bool = False,
+    force_explicit_ragged_dims: tuple[int, ...] | None = None,
 ) -> NestedTensor:
     r"""Rebuild a NestedTensor with explicit ``_physical_shape`` and logical shape."""
     source_offsets = offsets is None or offsets is source._offsets
@@ -2278,17 +2279,24 @@ def _packed_with_shape(
     output_permutation = permutation
     if output_permutation is None and int(new_physical_shape.size(1)) == len(source._permutation):
         output_permutation = source._permutation
-    declared_ragged_dims = None
-    if source._ragged_dims_explicit and output_permutation is not None:
+    declared_ragged_dims = force_explicit_ragged_dims
+    if declared_ragged_dims is None and source._ragged_dims_explicit and output_permutation is not None:
         output_ragged_rank = int(new_physical_shape.size(1)) - max(new_values.dim() - 1, 0)
         declared_ragged_dims = tuple(int(dim) for dim in output_permutation[:output_ragged_rank])
     ragged_offsets = None
     if (
         preserve_ragged_offsets
         and source_offsets
+        and declared_ragged_dims is not None
         and type(source)._is_tensor_backed_layout(output_permutation, declared_ragged_dims)
     ):
         ragged_offsets = source._persistent_ragged_offsets()
+        if ragged_offsets is None and len(declared_ragged_dims) == 1 and source_offsets:
+            # A single packed ragged level is completely described by the sample
+            # offsets.  View-like operations may therefore promote an inferred
+            # layout to the tensor-backed compile contract without consulting
+            # per-element Python shape caches.
+            ragged_offsets = (offsets,)
     return type(source)._from_packed(
         new_values,
         offsets,
