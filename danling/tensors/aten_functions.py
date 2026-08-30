@@ -2602,6 +2602,7 @@ def _packed_without_dim(source: NestedTensor, dim_adj: int, values: Tensor) -> N
         permutation=tuple(dim - 1 if dim > dim_adj else dim for dim in source._permutation if dim != dim_adj),
         packed_sizes=packed_sizes,
         element_shapes=element_shapes,
+        preserve_ragged_offsets=True,
     )
 
 

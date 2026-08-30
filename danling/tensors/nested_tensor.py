@@ -46,6 +46,7 @@ from .ops import (
     _compile_unsupported,
     _ExecutionGuardKind,
     _is_compiling,
+    _physical_to_values_dim,
 )
 
 try:
@@ -4025,6 +4026,37 @@ class NestedTensor(torch.Tensor):
             validate=False,
         )
 
+    def _packed_static_integer_index(self, rest: tuple) -> Self | None:
+        r"""Consume one static element axis directly on packed values."""
+        physical_rank = int(self._physical_shape.size(1))
+        if len(rest) > physical_rank:
+            return None
+        selectors = (*rest, *((slice(None),) for _ in range(physical_rank - len(rest))))
+        integer_dims = [dim for dim, selector in enumerate(selectors) if type(selector) is int]
+        if len(integer_dims) != 1:
+            return None
+        physical_dim = integer_dims[0]
+        if any(
+            not (
+                type(selector) is int
+                or (
+                    isinstance(selector, slice)
+                    and selector.start is None
+                    and selector.stop is None
+                    and selector.step is None
+                )
+            )
+            for selector in selectors
+        ):
+            return None
+        values_dim = _physical_to_values_dim(self, physical_dim)
+        if values_dim is None:
+            return None
+        from .aten_functions import _packed_without_dim
+
+        values = self._values.select(values_dim, int(selectors[physical_dim]))
+        return _packed_without_dim(self, physical_dim, values)
+
     def _empty_batch_like(self) -> Self:
         r"""Return a source-derived empty batch without discarding element-rank topology."""
         outer_size = list(self._logical_shape)
@@ -4210,6 +4242,9 @@ class NestedTensor(torch.Tensor):
                 _is_compiling() or _is_fake_tensor(self._offsets) or _is_fake_tensor(self._physical_shape)
             )
             if symbolic_tensor_metadata and batch_index == slice(None) and rest:
+                integer_output = self._packed_static_integer_index(tuple(rest))
+                if integer_output is not None:
+                    return integer_output
                 first_selector = rest[0]
                 if isinstance(first_selector, int):
                     _compile_unsupported(
@@ -4243,13 +4278,16 @@ class NestedTensor(torch.Tensor):
                     and rest
                     and isinstance(rest[0], int)
                 ):
-                    selected = self._batch_select_static_position(rest[0], tuple(rest[1:]))
-                    if selected is not None:
-                        return selected
+                    static_position = self._batch_select_static_position(rest[0], tuple(rest[1:]))
+                    if static_position is not None:
+                        return static_position
                 if isinstance(batch_index, slice) and batch_index == slice(None) and rest:
-                    selected = self._packed_physical_slice(tuple(rest))
-                    if selected is not None:
-                        return selected
+                    integer_output = self._packed_static_integer_index(tuple(rest))
+                    if integer_output is not None:
+                        return integer_output
+                    slice_output = self._packed_physical_slice(tuple(rest))
+                    if slice_output is not None:
+                        return slice_output
                     empty_output = self._empty_batch_basic_index(tuple(rest))
                     if empty_output is not None:
                         return empty_output

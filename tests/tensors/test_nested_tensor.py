@@ -1448,6 +1448,41 @@ class TestIndexing:
         assert ragged_dims == (0, 1)
         assert_close(actual_grad, expected_grad)
 
+    @pytest.mark.parametrize("position", [0, -1])
+    def test_static_tail_integer_index_preserves_values_and_vjp(self, position):
+        template = NT([torch.empty(2, 3), torch.empty(5, 3)], ragged_dims=(0,))
+        values = torch.randn_like(template.concat, requires_grad=True)
+        coordinates = template.packed_like(values)
+        expected = values[:, position]
+
+        output = coordinates[:, :, position]
+
+        cotangent = torch.randn_like(expected)
+        actual_grad = torch.autograd.grad(output.concat, values, cotangent)[0]
+        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
+        assert type(output) is NestedTensor
+        assert [tuple(element.shape) for element in output] == [(2,), (5,)]
+        assert_close(output.concat, expected)
+        assert_close(actual_grad, expected_grad)
+
+    def test_boolean_scalar_index_keeps_dense_semantics(self):
+        coordinates = NT(
+            [torch.arange(6).reshape(2, 3), torch.arange(15).reshape(5, 3)],
+            ragged_dims=(0,),
+        )
+
+        output = coordinates[:, :, True]
+        expected = NT([element[:, True] for element in coordinates], ragged_dims=(0,))
+
+        assert_close(output, expected)
+
+    @pytest.mark.parametrize("position", [3, -4])
+    def test_static_tail_integer_index_preserves_bounds_errors(self, position):
+        coordinates = NT([torch.empty(2, 3), torch.empty(5, 3)], ragged_dims=(0,))
+
+        with pytest.raises(IndexError):
+            _ = coordinates[:, :, position]
+
     def test_getitem_preserves_state(self):
         nested_tensor = NestedTensor(
             [torch.tensor([[1, 2], [3, 4]]), torch.tensor([[5, 6]])],
