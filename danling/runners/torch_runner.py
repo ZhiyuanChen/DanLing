@@ -570,7 +570,13 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         Set up TensorBoard SummaryWriter.
         """
 
-        from torch.utils.tensorboard.writer import SummaryWriter  # pylint: disable=C0415
+        try:
+            from torch.utils.tensorboard.writer import SummaryWriter  # pylint: disable=C0415
+        except ImportError as error:
+            raise ImportError(
+                "TensorBoard logging requires the optional TensorBoard dependencies; "
+                "install them with `pip install 'danling[tensorboard]'`."
+            ) from error
 
         tensorboard_config = self.config.tensorboard
         for key in ("log_dir", "comment", "purge_step", "max_queue", "flush_secs", "filename_suffix"):

@@ -1027,6 +1027,24 @@ class TestTorchRunnerCheckpointInterop:
         finally:
             runner.close()
 
+    @pytest.mark.skipif(
+        importlib.util.find_spec("tensorboard") is not None,
+        reason="requires an environment without the optional TensorBoard dependency",
+    )
+    def test_tensorboard_missing_dependency_has_actionable_error(self, tmp_path: Path) -> None:
+        runner = TinyTorchRunner(
+            {
+                "logging.enabled": False,
+                "workspace.root": str(tmp_path),
+                "tensorboard.enabled": False,
+            }
+        )
+        try:
+            with pytest.raises(ImportError, match=r"danling\[tensorboard\]"):
+                runner.init_tensorboard()
+        finally:
+            runner.close()
+
     def test_read_config_accepts_dcp_directory(self, tmp_path: Path) -> None:
         runner = DcpConfigTorchRunner(
             {

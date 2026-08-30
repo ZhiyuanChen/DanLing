@@ -51,6 +51,7 @@ optional-dependencies.deepspeed = [
 ]
 optional-dependencies.jax = [ "flax", "jax" ]
 optional-dependencies.mlflow = [ "mlflow" ]
+optional-dependencies.tensorboard = [ "tensorboard", "torch" ]
 optional-dependencies.tensorflow = [ "tensorflow" ]
 optional-dependencies.torch = [
   "torch",
