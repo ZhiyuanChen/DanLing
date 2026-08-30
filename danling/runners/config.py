@@ -302,7 +302,7 @@ class ProfilingConfig(chanfig.Config):
     use_cuda: Optional[bool] = None
     post_processing_timeout_seconds: Optional[float] = None
     trace_dir: str = "profiles"
-    operator_table_rows: int = 100
+    operator_table_rows: int = 100  # Zero skips CPU aggregation during GPU-job shutdown.
 
 
 class HeartbeatConfig(chanfig.Config):
@@ -650,6 +650,9 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
         - [`chanfig.Config`](https://github.com/ultmaster/chanfig): Base config implementation.
     """
 
+    # Defining mapping equality disables inherited hashing for this mutable class.
+    __eq__ = dict.__eq__
+
     stack: str = "auto"
     name: Optional[str] = None
 
@@ -741,6 +744,16 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
             canonical.pop("parallel", None)
         return canonical
 
-    def __hash__(self) -> int:
+    def fingerprint(self) -> int:
+        """Return an unsigned 64-bit fingerprint of the current canonical config.
+
+        Hash the UTF-8 canonical YAML with SHA-1 and interpret its first eight
+        bytes as a big-endian integer. Runtime-only settings are excluded by
+        ``canonical()``. The configuration remains mutable and unhashable;
+        this method recomputes the fingerprint on each call.
+
+        Returns:
+            int: A value in ``[0, 2**64)`` derived from the current canonical YAML.
+        """
         digest = hashlib.sha1(self.canonical().yamls().encode("utf-8")).digest()
         return int.from_bytes(digest[:8], byteorder="big", signed=False)

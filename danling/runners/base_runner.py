@@ -250,9 +250,9 @@ class BaseRunner(metaclass=MetaRunner):
 
     @cached_property
     def config_id(self) -> str:
-        """Stable semantic config identity for this runner."""
+        """Cache the low 48 fingerprint bits as 12 lowercase hex digits on first access."""
 
-        return format(hash(self.config) & ((1 << 48) - 1), "012x")
+        return format(self.config.fingerprint() & ((1 << 48) - 1), "012x")
 
     @property
     def id(self) -> str:
@@ -471,7 +471,7 @@ class BaseRunner(metaclass=MetaRunner):
 
         return f"{prefix} [{steps}/{length}]\t{self.format_result(result)}"
 
-    def format_result(self, result: RoundDict[str, Any], format_spec: str = ".4f") -> str:
+    def format_result(self, result: Mapping[str, Any], format_spec: str = ".4f") -> str:
         return format_result(result, format_spec=format_spec)
 
     @staticmethod
@@ -629,7 +629,7 @@ class BaseRunner(metaclass=MetaRunner):
         else:
             print(message, force=True)  # type: ignore[call-overload]
 
-    def flatten_result(self, result: Mapping[str, Any]) -> FlatDict[str, Any]:
+    def flatten_result(self, result: Mapping[str, Any]) -> FlatDict:
         flat_result = FlatDict()
 
         def add_score(tag: str, score: Any) -> None:
@@ -639,7 +639,7 @@ class BaseRunner(metaclass=MetaRunner):
             if isinstance(score, Mapping):
                 nested = RoundDict(score)
                 nested.setattr("separator", "/")
-                for nested_name, nested_score in nested.dict(flatten=True).items():
+                for nested_name, nested_score in cast(Mapping[str, object], nested.dict(flatten=True)).items():
                     add_score(f"{tag}/{nested_name}", nested_score)
                 return
 
@@ -652,7 +652,7 @@ class BaseRunner(metaclass=MetaRunner):
 
         flattened = RoundDict(result)
         flattened.setattr("separator", "/")
-        for name, score in flattened.dict(flatten=True).items():
+        for name, score in cast(Mapping[str, object], flattened.dict(flatten=True)).items():
             add_score(str(name), score)
 
         return flat_result

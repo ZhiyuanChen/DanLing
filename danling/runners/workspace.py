@@ -122,7 +122,8 @@ def _delegate_print(
     force: bool = False,
     **kwargs: Any,
 ) -> None:
-    if printer is builtins.__dict__.get("print"):
+    current_printer = builtins.print
+    if printer is current_printer:
         printer(*args, sep=sep, end=end, file=file, flush=flush, **kwargs)
         return
     try:
@@ -205,8 +206,9 @@ class _PrintPatchGuard:
         if router is None:
             return
         router.active = False
+        previous = router.previous
         if builtins.print is router:
-            cast(Any, builtins).print = _active_print_target(router.previous)
+            cast(Any, builtins).print = _active_print_target(previous)
 
 
 def _active_print_target(printer: Any) -> Any:
