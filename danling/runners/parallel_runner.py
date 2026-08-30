@@ -709,8 +709,8 @@ class ParallelRunner(TorchRunner):
                 root_reshard_after_forward,
                 pipeline_enabled=self.pipeline_degree > 1,
             )
-        root = fully_shard(model, **root_kwargs)
-        return root
+        fully_shard(model, **root_kwargs)
+        return model
 
     def apply_fsdp_to_modules(self, model: nn.Module, fsdp_kwargs: Mapping[str, Any]) -> tuple[nn.Module, ...]:
         """Shard explicitly configured submodules before sharding the root."""
@@ -727,7 +727,8 @@ class ParallelRunner(TorchRunner):
         kwargs = dict(fsdp_kwargs)
         wrapped: list[nn.Module] = []
         for module in matches:
-            wrapped.append(fully_shard(module, **kwargs))
+            fully_shard(module, **kwargs)
+            wrapped.append(module)
         return tuple(wrapped)
 
     @staticmethod

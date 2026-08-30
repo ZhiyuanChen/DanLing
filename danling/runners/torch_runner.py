@@ -540,7 +540,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             return
         profiler_context.__exit__(None, None, None)
         operator_table_path = None
-        if profiler is not None and trace_dir is not None:
+        if profiler is not None and trace_dir is not None and operator_table_rows > 0:
             operator_table_path = os.path.join(trace_dir, "operator_table.txt")
             try:
                 try:
@@ -570,7 +570,13 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         Set up TensorBoard SummaryWriter.
         """
 
-        from torch.utils.tensorboard.writer import SummaryWriter  # pylint: disable=C0415
+        try:
+            from torch.utils.tensorboard.writer import SummaryWriter  # pylint: disable=C0415
+        except ImportError as error:
+            raise ImportError(
+                "TensorBoard logging requires the optional TensorBoard dependencies; "
+                "install them with `pip install 'danling[tensorboard]'`."
+            ) from error
 
         tensorboard_config = self.config.tensorboard
         for key in ("log_dir", "comment", "purge_step", "max_queue", "flush_secs", "filename_suffix"):
@@ -1107,7 +1113,9 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         split_kwargs = NestedDict({k: v for k, v in dataloader_config.items() if k in self.datasets})
         if self.config.deterministic and default_kwargs.get("worker_init_fn") is None:
             default_kwargs["worker_init_fn"] = _seed_dataloader_worker
-        if self.config.deterministic and default_kwargs.get("generator") is None and self.config.seed is not None:
+        # Worker/iterator seeds must not consume the model RNG when a loader is
+        # rebuilt on checkpoint resume, even with nondeterministic kernels.
+        if default_kwargs.get("generator") is None and self.config.seed is not None:
             generator = torch.Generator()
             generator.manual_seed(int(self.config.seed) + int(self.rank))
             default_kwargs["generator"] = generator
@@ -1873,26 +1881,17 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
     def _iter_train_batches(self, loader: Any) -> Iterator[tuple[int, Any, bool]]:
         iterator = iter(enumerate(loader))
-        try:
-            current = next(iterator)
-        except StopIteration:
-            return
-
-        while True:
-            try:
-                next_item = next(iterator)
-            except StopIteration:
-                next_item = None
-
+        current = next(iterator, None)
+        while current is not None:
             iteration, data = current
             next_micro_step = self.train_state.micro_step + 1
             reaches_accum_boundary = self.accum_steps <= 1 or next_micro_step % self.accum_steps == 0
-            will_flush = reaches_accum_boundary or next_item is None
-            yield iteration, data, will_flush
-
-            if next_item is None:
-                break
-            current = next_item
+            # Only peek when a partial accumulation window needs an end-of-loader
+            # check. At optimizer/checkpoint boundaries the loader must describe
+            # the last consumed batch, without an uncheckpointed lookahead batch.
+            next_item = None if reaches_accum_boundary else next(iterator, None)
+            yield iteration, data, reaches_accum_boundary or next_item is None
+            current = next(iterator, None) if reaches_accum_boundary else next_item
 
     def _resolve_requested_splits(
         self,

@@ -24,6 +24,7 @@ import logging
 from pathlib import Path
 
 import pytest
+from git import Actor, Repo
 
 from danling.runners.base_runner import BaseRunner
 from danling.runners.utils import get_git_hash
@@ -64,7 +65,7 @@ def _expected_base_dir(tmp_path: Path, lineage: str) -> Path:
 
 
 def _config_hash(runner: MinimalRunner) -> str:
-    return format(hash(runner.config) & ((1 << 48) - 1), "012x")
+    return format(runner.config.fingerprint() & ((1 << 48) - 1), "012x")
 
 
 def _expected_id(runner: MinimalRunner) -> str:
@@ -114,7 +115,16 @@ def test_runner_workspace_checkpoint_dir_uses_ckpt_dir(tmp_path: Path) -> None:
         runner.close()
 
 
-def test_runner_workspace_writes_metadata_files(tmp_path: Path) -> None:
+def test_runner_workspace_writes_metadata_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repository = Repo.init(tmp_path / "repository")
+    tracked = Path(repository.working_tree_dir) / "tracked.txt"
+    tracked.write_text("original\n", encoding="utf-8")
+    repository.index.add([str(tracked)])
+    actor = Actor("Workspace Test", "workspace@example.invalid")
+    repository.index.commit("Initial content", author=actor, committer=actor)
+    tracked.write_text("changed\n", encoding="utf-8")
+    monkeypatch.chdir(repository.working_tree_dir)
+
     runner = MinimalRunner(_config(tmp_path, epochs=1))
     try:
         metadata_dir = _expected_base_dir(tmp_path, "lineage-a") / _expected_id(runner) / "metadata"
@@ -122,6 +132,9 @@ def test_runner_workspace_writes_metadata_files(tmp_path: Path) -> None:
         assert (metadata_dir / "config.canonical.yaml").exists()
         assert (metadata_dir / "git.yaml").exists()
         assert (metadata_dir / "git.diff").exists()
+        git_diff = (metadata_dir / "git.diff").read_text(encoding="utf-8")
+        assert "-original" in git_diff
+        assert "+changed" in git_diff
     finally:
         runner.close()
 
