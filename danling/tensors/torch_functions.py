@@ -3732,10 +3732,10 @@ if hasattr(torch, "rms_norm"):
 # Reductions
 
 
-# Table-driven: simple reductions that delegate entirely to _reduce
+# Table-driven reductions
+TORCH_BOOLEAN_REDUCE_OPS = [torch.all, torch.any]
+
 TORCH_SIMPLE_REDUCE_OPS = [
-    (torch.all, {"fill_value": True}),
-    (torch.any, {"fill_value": False}),
     (torch.prod, {}),
     (torch.sum, {"fill_value": 0}),
 ]
@@ -5822,6 +5822,38 @@ def _make_simple_reduce_handler(extra_kwargs):
     return _handler
 
 
+def _boolean_reduce_handler(input, dim=None, keepdim=False, *, _fn=None, **kwargs):
+    r"""Route public boolean reductions through the packed aten dispatcher."""
+    out = kwargs.pop("out", None)
+    if out is not None:
+        raise NotImplementedError(f"NestedTensor: {_fn.__name__} with out= is not supported")
+    if kwargs:
+        names = ", ".join(sorted(kwargs))
+        raise TypeError(f"NestedTensor: {_fn.__name__} got unexpected keyword argument(s): {names}")
+    if dim is None:
+        return _reduce_none(input, _fn, keepdim=keepdim)
+    if isinstance(dim, torch.SymInt):
+        dim = int(dim)
+    if not isinstance(dim, int) and len(dim) == 0:
+        truth = input._values.ne(0)
+        values = truth.to(input._values.dtype) if input._values.dtype == torch.uint8 else truth
+        return input._packed_like_unchecked(values)
+    dims = [dim] if isinstance(dim, int) else list(dim)
+    normalized_dims = [_normalize_dim(item, input.dim()) for item in dims]
+    if len(set(normalized_dims)) != len(normalized_dims):
+        raise RuntimeError("dim appears multiple times in the list of dims")
+    if len(normalized_dims) > 1 and _get_batch_dim(input) in normalized_dims:
+        fill_value = _fn is not torch.any
+        return _reduce(input, _fn, normalized_dims, keepdim, fill_value=fill_value)
+    op = torch.ops.aten.any.dims if _fn is torch.any else torch.ops.aten.all.dims
+    if len(normalized_dims) == 1:
+        return op(input, normalized_dims, keepdim)
+    result = input
+    for item in sorted(normalized_dims, reverse=True):
+        result = op(result, [item], keepdim)
+    return result
+
+
 _INPLACE_TO_VALUES_OP = {
     torch.Tensor.add_: torch.Tensor.add_,
     torch.Tensor.sub_: torch.Tensor.sub_,
@@ -5903,6 +5935,7 @@ _TORCH_HANDLER_TABLE: list[tuple] = [
     # _inplace_binary_torch_handler — converts operands before aten in-place dispatch
     *((op, _inplace_binary_torch_handler) for op, _ in TORCH_INPLACE_METHOD_MAP.items()),
     # _make_simple_reduce_handler — simple reductions delegating to _reduce
+    *((op, _boolean_reduce_handler) for op in TORCH_BOOLEAN_REDUCE_OPS if op not in NestedTensorFuncRegistry),
     *(
         (op, _make_simple_reduce_handler(extra))
         for op, extra in TORCH_SIMPLE_REDUCE_OPS

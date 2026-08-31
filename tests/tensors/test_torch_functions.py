@@ -17,6 +17,8 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
+from functools import partial
+
 import pytest
 import torch
 from torch.nn import functional as F
@@ -27,6 +29,23 @@ from tests.tensors.utils import assert_close, low_precision_cuda_tolerances, nes
 NT = NestedTensor
 
 
+_BOOLEAN_REDUCTION_CASES = [
+    pytest.param(((2, 3), (4, 3)), (0,), 1, 0, "any", False, id="leading-ragged-any"),
+    pytest.param(((2, 3), (4, 3)), (0,), 2, 1, "all", False, id="single-static-all"),
+    pytest.param(((2, 4, 2), (3, 2, 2)), (0, 1), 1, 0, "any", False, id="multi-first-any"),
+    pytest.param(((2, 4, 2), (3, 2, 2)), (0, 1), 1, 0, "all", True, id="multi-first-all-keepdim"),
+    pytest.param(((2, 4, 2), (3, 2, 2)), (0, 1), 2, 1, "all", False, id="multi-second-all"),
+    pytest.param(((2, 4, 2), (3, 2, 2)), (0, 1), 2, 1, "any", True, id="multi-second-any-keepdim"),
+    pytest.param(((2, 4, 2), (3, 2, 2)), (0, 1), 3, 2, "all", True, id="multi-static-all-keepdim"),
+]
+
+_BOOLEAN_GRAPH_CASES = [
+    case
+    for case in _BOOLEAN_REDUCTION_CASES
+    if case.id in {"leading-ragged-any", "multi-first-all-keepdim", "multi-second-any-keepdim"}
+]
+
+
 def reference_options(source: NestedTensor) -> dict:
     r"""Return public construction options for an elementwise reference."""
     return {
@@ -34,6 +53,22 @@ def reference_options(source: NestedTensor) -> dict:
         "padding_value": source.padding_value,
         "mask_value": source.mask_value,
     }
+
+
+def boolean_reduction_elements(shapes, operation, device=None):
+    elements = [torch.full(shape, operation == "all", device=device, dtype=torch.bool) for shape in shapes]
+    for element in elements:
+        element[(0,) * element.dim()] = operation == "any"
+    return elements
+
+
+def ragged_reduction_reference(parts, ragged_dims, element_dim, keepdim):
+    if all(part.shape == parts[0].shape for part in parts[1:]):
+        return torch.stack(parts)
+    output_ragged_dims = tuple(
+        axis if keepdim else axis - (axis > element_dim) for axis in ragged_dims if axis != element_dim
+    )
+    return NT(parts, ragged_dims=output_ragged_dims)
 
 
 def _run_or_expect_unsupported(nested_call, tensor_call):
@@ -3060,6 +3095,116 @@ class TestRandomOps:
 
 class TestReductionOps:
 
+    @pytest.mark.parametrize(
+        ("shapes", "ragged_dims", "dim", "element_dim", "operation", "keepdim"), _BOOLEAN_REDUCTION_CASES
+    )
+    def test_boolean_ragged_reduction_matches_per_sample(
+        self, device, shapes, ragged_dims, dim, element_dim, operation, keepdim
+    ):
+        elements = boolean_reduction_elements(shapes, operation, device)
+        nested = NT(elements, ragged_dims=ragged_dims)
+        function = getattr(torch, operation)
+
+        output = (
+            nested.any(dim=dim, keepdim=keepdim) if operation == "any" else torch.all(nested, dim=dim, keepdim=keepdim)
+        )
+        reference_parts = [function(element, dim=element_dim, keepdim=keepdim) for element in elements]
+        reference = ragged_reduction_reference(reference_parts, ragged_dims, element_dim, keepdim)
+
+        if isinstance(reference, NT):
+            assert output.ragged_dims == reference.ragged_dims
+            assert_close(output.element_sizes(), reference.element_sizes())
+        assert_close(output, reference)
+
+        if len(ragged_dims) > 1 and keepdim:
+            broadcast = torch.logical_and(nested, output)
+            broadcast_reference = NT(
+                [torch.logical_and(element, part) for element, part in zip(elements, reference_parts)],
+                ragged_dims=ragged_dims,
+            )
+            assert_close(broadcast, broadcast_reference)
+
+    @pytest.mark.parametrize(
+        ("shapes", "ragged_dims", "dim", "element_dim", "operation", "keepdim"), _BOOLEAN_GRAPH_CASES
+    )
+    def test_boolean_ragged_reduction_supports_fake_tensor(
+        self, shapes, ragged_dims, dim, element_dim, operation, keepdim
+    ):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        symbolic_shapes = pytest.importorskip("torch.fx.experimental.symbolic_shapes")
+        nested = NT([torch.empty(shape, dtype=torch.bool) for shape in shapes], ragged_dims=ragged_dims)
+        function = getattr(torch, operation)
+
+        shape_env = symbolic_shapes.ShapeEnv(allow_dynamic_output_shape_ops=True)
+        with fake_tensor_mod.FakeTensorMode(shape_env=shape_env) as mode:
+            output = function(mode.from_tensor(nested), dim=dim, keepdim=keepdim)
+
+        assert fake_tensor_mod.is_fake(output.concat if isinstance(output, NT) else output)
+        reference_parts = [
+            function(torch.empty(shape, dtype=torch.bool), dim=element_dim, keepdim=keepdim) for shape in shapes
+        ]
+        reference = ragged_reduction_reference(reference_parts, ragged_dims, element_dim, keepdim)
+        assert output.shape == reference.shape
+        if isinstance(reference, NT):
+            assert output.ragged_dims == reference.ragged_dims
+            assert output.element_sizes().shape == reference.element_sizes().shape
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize(
+        ("shapes", "ragged_dims", "dim", "element_dim", "operation", "keepdim"), _BOOLEAN_GRAPH_CASES
+    )
+    def test_boolean_ragged_reduction_compiles_fullgraph(
+        self, device, shapes, ragged_dims, dim, element_dim, operation, keepdim
+    ):
+        elements = boolean_reduction_elements(shapes, operation, device)
+        nested = NT(elements, ragged_dims=ragged_dims)
+        function = getattr(torch, operation)
+        reducer = partial(function, dim=dim, keepdim=keepdim)
+        reference_parts = [function(element, dim=element_dim, keepdim=keepdim) for element in elements]
+        reference = ragged_reduction_reference(reference_parts, ragged_dims, element_dim, keepdim)
+
+        if len(ragged_dims) > 1 and keepdim:
+
+            def consume(structure, values):
+                source = structure.packed_like(values)
+                return torch.logical_and(source, reducer(source)).concat
+
+            expected = NT(
+                [torch.logical_and(element, part) for element, part in zip(elements, reference_parts)],
+                ragged_dims=ragged_dims,
+            ).concat
+        elif isinstance(reference, NT):
+
+            def consume(structure, values):
+                return reducer(structure.packed_like(values)).concat
+
+            expected = reference.concat
+        else:
+
+            def consume(structure, values):
+                return reducer(structure.packed_like(values))
+
+            expected = reference
+
+        compiled = torch.compile(consume, backend="aot_eager", fullgraph=True, dynamic=True)
+
+        assert_close(compiled(nested, nested.concat), expected)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_boolean_multi_ragged_tuple_dim_compiles_fullgraph(self):
+        elements = boolean_reduction_elements(((2, 4, 2), (3, 2, 2)), "any")
+        nested = NT(elements, ragged_dims=(0, 1))
+        compiled = torch.compile(
+            lambda structure, values: torch.any(structure.packed_like(values), dim=(1, 2)),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+        output = compiled(nested, nested.concat)
+        reference = torch.stack([torch.any(element, dim=(0, 1)) for element in elements])
+        assert_close(output, reference)
+
     def test_all_any_multi_dim_reduction_ignores_padding(self, device, float_dtype):
         nt = NestedTensor(
             [
@@ -3361,24 +3506,50 @@ class TestReductionOps:
         assert_close(variance, variance_reference)
         assert_close(mean, mean_reference)
 
+    @pytest.mark.parametrize("operation", [torch.sum, torch.mean, torch.amax, torch.amin])
     @pytest.mark.parametrize(("dim", "element_dim"), [(1, 0), (2, 1)])
-    def test_multi_ragged_keepdim_reduction_broadcasts_back(self, device, float_dtype, dim, element_dim):
+    def test_multi_ragged_keepdim_reduction_broadcasts_back(self, device, float_dtype, operation, dim, element_dim):
         elements = [
             torch.randn(2, 3, 4, device=device, dtype=float_dtype),
             torch.randn(4, 2, 4, device=device, dtype=float_dtype),
         ]
         nested = NT(elements, ragged_dims=(0, 1))
 
-        reduced = nested.sum(dim=dim, keepdim=True)
+        reduced = operation(nested, dim=dim, keepdim=True)
         output = nested + reduced
-        references = [element + element.sum(dim=element_dim, keepdim=True) for element in elements]
+        reduced_references = [operation(element, dim=element_dim, keepdim=True) for element in elements]
+        references = [element + reduced for element, reduced in zip(elements, reduced_references)]
 
-        assert [element.shape for element in reduced] == [
-            element.sum(dim=element_dim, keepdim=True).shape for element in elements
-        ]
+        assert [element.shape for element in reduced] == [element.shape for element in reduced_references]
         assert output.ragged_dims == (0, 1)
         for actual, expected in zip(output, references):
             assert_close(actual, expected)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize(("dim", "element_dim"), [(1, 0), (2, 1)])
+    def test_multi_ragged_keepdim_sum_and_broadcast_compile_dynamic_fullgraph(self, dim, element_dim):
+        if dim == 1:
+
+            def consume(structure, values):
+                source = structure.packed_like(values)
+                return (source + source.sum(dim=1, keepdim=True)).concat
+
+        else:
+
+            def consume(structure, values):
+                source = structure.packed_like(values)
+                return (source + source.sum(dim=2, keepdim=True)).concat
+
+        compiled = torch.compile(consume, backend="aot_eager", fullgraph=True, dynamic=True)
+        for shapes in (((2, 3, 4), (4, 2, 4)), ((3, 2, 4), (1, 5, 4))):
+            elements = [torch.randn(shape) for shape in shapes]
+            nested = NT(elements, ragged_dims=(0, 1))
+            expected = NT(
+                [element + element.sum(dim=element_dim, keepdim=True) for element in elements],
+                ragged_dims=(0, 1),
+            )
+
+            assert_close(compiled(nested, nested.concat), expected.concat)
 
     def test_multi_ragged_var_mean_and_vector_norm_preserve_grad(self, device, float_dtype):
         leaves = [
