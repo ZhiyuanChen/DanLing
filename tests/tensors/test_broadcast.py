@@ -521,6 +521,196 @@ class TestWhereAndTernary:
         assert_elements_close(output, expected)
 
 
+class TestComplementarySingletonBroadcast:
+
+    @staticmethod
+    def _operands(lengths=(2, 3), channels=4):
+        row_template = NestedTensor(
+            [torch.empty(length, 1, channels) for length in lengths],
+            ragged_dims=(0,),
+        )
+        column_template = NestedTensor(
+            [torch.empty(1, length, channels) for length in lengths],
+            ragged_dims=(1,),
+        )
+        row_values = torch.randn_like(row_template.concat, requires_grad=True)
+        column_values = torch.randn_like(column_template.concat, requires_grad=True)
+        return row_template, column_template, row_values, column_values
+
+    @staticmethod
+    def _dense_result(operation, row_values, column_values, lengths, reverse):
+        elements = []
+        for row, column in zip(row_values.split(lengths), column_values.split(lengths)):
+            column = column.transpose(0, 1)
+            elements.append(operation(column, row) if reverse else operation(row, column))
+        return torch.cat([element.flatten(0, 1) for element in elements])
+
+    @pytest.mark.parametrize(
+        ("operation", "reverse"),
+        [(torch.add, False), (torch.sub, True)],
+        ids=("add", "column-minus-row"),
+    )
+    def test_values_and_vjp_match_per_element(self, operation, reverse):
+        lengths = (2, 3)
+        row_template, column_template, row_values, column_values = self._operands(lengths)
+        row = row_template.packed_like(row_values)
+        column = column_template.packed_like(column_values)
+
+        output = operation(column, row) if reverse else operation(row, column)
+
+        reference_row = row_values.detach().clone().requires_grad_()
+        reference_column = column_values.detach().clone().requires_grad_()
+        expected = self._dense_result(operation, reference_row, reference_column, lengths, reverse)
+        cotangent = torch.randn_like(expected)
+        actual_gradients = torch.autograd.grad(output.concat, (row_values, column_values), cotangent)
+        expected_gradients = torch.autograd.grad(expected, (reference_row, reference_column), cotangent)
+        torch.testing.assert_close(output.concat, expected)
+        assert output.ragged_dims == (0, 1)
+        assert output.element_sizes().tolist() == [[length, length, 4] for length in lengths]
+        for actual, reference in zip(actual_gradients, expected_gradients):
+            torch.testing.assert_close(actual, reference)
+
+    def test_supports_fake_tensor(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        row_template, column_template, _, _ = self._operands()
+        mode = fake_tensor_mod.FakeTensorMode()
+        row = row_template.packed_like(mode.from_tensor(torch.empty_like(row_template.concat)))
+        column = column_template.packed_like(mode.from_tensor(torch.empty_like(column_template.concat)))
+
+        output = row + column
+
+        assert fake_tensor_mod.is_fake(output.concat)
+        assert output.concat.shape == (13, 4)
+        assert output.shape == (2, 3, 3, 4)
+        assert output.ragged_dims == (0, 1)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_aot_eager_fullgraph_vjp_matches_per_element(self):
+        lengths = (2, 3)
+        row_template, column_template, row_values, column_values = self._operands(lengths)
+        reference_row = row_values.detach().clone().requires_grad_()
+        reference_column = column_values.detach().clone().requires_grad_()
+
+        def subtract(row_structure, column_structure, packed_row, packed_column):
+            row = row_structure.packed_like(packed_row)
+            column = column_structure.packed_like(packed_column)
+            return (column - row).concat
+
+        compiled = torch.compile(subtract, backend="aot_eager", fullgraph=True)
+        output = compiled(row_template, column_template, row_values, column_values)
+        expected = self._dense_result(torch.sub, reference_row, reference_column, lengths, True)
+        cotangent = torch.randn_like(expected)
+        actual_gradients = torch.autograd.grad(output, (row_values, column_values), cotangent)
+        expected_gradients = torch.autograd.grad(expected, (reference_row, reference_column), cotangent)
+        torch.testing.assert_close(output, expected)
+        for actual, reference in zip(actual_gradients, expected_gradients):
+            torch.testing.assert_close(actual, reference)
+
+    @staticmethod
+    def _static_prefix_input(lengths, *, requires_grad=True):
+        return [torch.randn(length, requires_grad=requires_grad) for length in lengths]
+
+    @staticmethod
+    def _static_prefix_reference(parts, prefix=4):
+        elements = []
+        for part in parts:
+            expanded = part.unsqueeze(0).expand(prefix, -1)
+            elements.append(expanded.unsqueeze(-1) + expanded.unsqueeze(-2))
+        return NestedTensor(elements, ragged_dims=(1, 2)).concat
+
+    def test_static_prefix_matches_per_element_under_strict_execution(self):
+        lengths = (2, 3)
+        parts = self._static_prefix_input(lengths)
+        reference_parts = [part.detach().clone().requires_grad_() for part in parts]
+        source = NestedTensor(parts, ragged_dims=(0,))
+
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            expanded = source.unsqueeze(-2).expand(-1, 4, -1)
+            output = expanded.unsqueeze(-1) + expanded.unsqueeze(-2)
+
+        expected = self._static_prefix_reference(reference_parts)
+        cotangent = torch.randn_like(expected)
+        actual_gradients = torch.autograd.grad(output.concat, parts, cotangent)
+        expected_gradients = torch.autograd.grad(expected, reference_parts, cotangent)
+
+        assert output.ragged_dims == (1, 2)
+        assert output.element_sizes().tolist() == [[4, length, length] for length in lengths]
+        torch.testing.assert_close(output.concat, expected)
+        for actual, reference in zip(actual_gradients, expected_gradients):
+            torch.testing.assert_close(actual, reference)
+
+    def test_static_prefix_supports_fake_tensor(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        symbolic_shapes = pytest.importorskip("torch.fx.experimental.symbolic_shapes")
+        lengths = (2, 3)
+        source = NestedTensor([torch.empty(length) for length in lengths], ragged_dims=(0,))
+        shape_env = symbolic_shapes.ShapeEnv(allow_dynamic_output_shape_ops=True)
+        with fake_tensor_mod.FakeTensorMode(shape_env=shape_env) as mode:
+            fake_source = mode.from_tensor(source)
+            expanded = fake_source.unsqueeze(-2).expand(-1, 4, -1)
+            output = expanded.unsqueeze(-1) + expanded.unsqueeze(-2)
+
+        assert fake_tensor_mod.is_fake(output.concat)
+        assert output.shape[:2] == (2, 4)
+        assert output.shape[-2] == output.shape[-1]
+        assert output.ragged_dims == (1, 2)
+        assert output.element_sizes().shape == (2, 3)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_static_prefix_dynamic_fullgraph_vjp(self):
+        def square(source):
+            expanded = source.unsqueeze(-2).expand(-1, 4, -1)
+            return torch.relu(expanded.unsqueeze(-1) + expanded.unsqueeze(-2))
+
+        compiled = torch.compile(square, backend="aot_eager", fullgraph=True, dynamic=True)
+        for lengths in ((2, 3), (1, 4, 2)):
+            parts = self._static_prefix_input(lengths)
+            reference_parts = [part.detach().clone().requires_grad_() for part in parts]
+            source = NestedTensor(parts, ragged_dims=(0,))
+
+            output = compiled(source)
+            expected = self._static_prefix_reference(reference_parts).relu()
+            cotangent = torch.randn_like(expected)
+            actual_gradients = torch.autograd.grad(output.concat, parts, cotangent)
+            expected_gradients = torch.autograd.grad(expected, reference_parts, cotangent)
+
+            assert output.ragged_dims == (1, 2)
+            assert output.element_sizes().tolist() == [[4, length, length] for length in lengths]
+            torch.testing.assert_close(output.concat, expected)
+            for actual, reference in zip(actual_gradients, expected_gradients, strict=True):
+                torch.testing.assert_close(actual, reference)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_static_prefix_channel_tail_dynamic_fullgraph_vjp(self):
+        def square(source):
+            return torch.relu(source.unsqueeze(-2) + source.unsqueeze(-3))
+
+        compiled = torch.compile(square, backend="aot_eager", fullgraph=True, dynamic=True)
+        for lengths in ((2, 3), (1, 4, 2)):
+            parts = [torch.randn(2, length, 3, requires_grad=True) for length in lengths]
+            reference_parts = [part.detach().clone().requires_grad_() for part in parts]
+            source = NestedTensor(parts, ragged_dims=(1,))
+
+            output = compiled(source)
+            expected_parts = [torch.relu(part.unsqueeze(-2) + part.unsqueeze(-3)) for part in reference_parts]
+            expected = NestedTensor(expected_parts, ragged_dims=(1, 2)).concat
+            cotangent = torch.randn_like(expected)
+            actual_gradients = torch.autograd.grad(output.concat, parts, cotangent)
+            expected_gradients = torch.autograd.grad(expected, reference_parts, cotangent)
+
+            assert output.ragged_dims == (1, 2)
+            assert output.element_sizes().tolist() == [[2, length, length, 3] for length in lengths]
+            torch.testing.assert_close(output.concat, expected)
+            for actual, reference in zip(actual_gradients, expected_gradients, strict=True):
+                torch.testing.assert_close(actual, reference)
+
+
 class TestInPlace:
 
     @pytest.mark.parametrize("operation", ["add_", "sub_", "mul_"])

@@ -927,6 +927,161 @@ def _broadcast_lower_rank_nested_to_values(target: NestedTensor, source: NestedT
     return values.reshape(values.shape[0], *tail)
 
 
+@torch.library.custom_op("danling::_complementary_square_indices", mutates_args=())
+def _complementary_square_indices(lengths: Tensor) -> tuple[Tensor, Tensor]:
+    r"""Build row-major packed indices for per-sample square products."""
+    lengths = lengths.to(dtype=torch.long)
+    square_sizes = lengths.square()
+    total = int(square_sizes.sum().item())
+    offsets = torch.nn.functional.pad(lengths.cumsum(0), (1, 0))
+    square_offsets = torch.nn.functional.pad(square_sizes.cumsum(0), (1, 0))
+    batch = torch.repeat_interleave(
+        torch.arange(lengths.numel(), device=lengths.device),
+        square_sizes,
+        output_size=total,
+    )
+    starts = torch.repeat_interleave(square_offsets[:-1], square_sizes, output_size=total)
+    local = torch.arange(total, device=lengths.device) - starts
+    width = lengths[batch]
+    row = offsets[batch] + torch.div(local, width, rounding_mode="floor")
+    column = offsets[batch] + local.remainder(width)
+    return row, column
+
+
+@_complementary_square_indices.register_fake
+def _complementary_square_indices_fake(lengths: Tensor) -> tuple[Tensor, Tensor]:
+    ctx = torch.library.get_ctx()
+    total = ctx.new_dynamic_size(min=0)
+    index = lengths.new_empty((total,), dtype=torch.long)
+    return index, index.new_empty(index.shape)
+
+
+def _complementary_singleton_square_operands(
+    lhs: NestedTensor,
+    rhs: NestedTensor,
+    *,
+    allow_static_prefix: bool = False,
+) -> tuple[NestedTensor, NestedTensor] | None:
+    r"""Return row- and column-varying operands of an adjacent square broadcast."""
+    if lhs.batch_first != rhs.batch_first or len(lhs) != len(rhs):
+        return None
+    rank = int(lhs._physical_shape.size(1))
+    if rank < 2 or int(rhs._physical_shape.size(1)) != rank:
+        return None
+
+    if len(lhs._ragged_dims) != 1 or len(rhs._ragged_dims) != 1:
+        return None
+    lhs_ragged = lhs._ragged_dims[0]
+    rhs_ragged = rhs._ragged_dims[0]
+    if rhs_ragged == lhs_ragged + 1:
+        row, column = lhs, rhs
+    elif lhs_ragged == rhs_ragged + 1:
+        row, column = rhs, lhs
+    else:
+        return None
+
+    row_dim = row._ragged_dims[0]
+    if row_dim and not allow_static_prefix:
+        return None
+    row_order = (row_dim, *range(row_dim), *range(row_dim + 1, rank))
+    column_order = (row_dim + 1, *range(row_dim + 1), *range(row_dim + 2, rank))
+    if row._permutation != row_order or column._permutation != column_order:
+        return None
+    if row._values.dim() != rank or column._values.dim() != rank:
+        return None
+    singleton_axis = row_dim + 1
+    if row._values.shape[singleton_axis] != 1 or column._values.shape[singleton_axis] != 1:
+        return None
+
+    row_sizes = row._packed_sizes
+    column_sizes = column._packed_sizes
+    if row_sizes is not None and column_sizes is not None and tuple(row_sizes) != tuple(column_sizes):
+        return None
+    return row, column
+
+
+def _restore_complementary_square_prefix(result: NestedTensor, prefix_rank: int) -> NestedTensor:
+    r"""Move a square result's static prefix back ahead of its two ragged dimensions."""
+    if prefix_rank == 0:
+        return result
+
+    from .aten_functions import _packed_metadata_permute
+
+    rank = int(result._physical_shape.size(1))
+    tensor_dims = (*range(2, 2 + prefix_rank), 0, 1, *range(2 + prefix_rank, rank))
+    rebuilt = _packed_metadata_permute(result, tensor_dims)
+    assert rebuilt is not None
+    max_length_binding = vars(result).get("_compile_max_length_binding")
+    if max_length_binding is not None:
+        rebuilt._max_length_binding = max_length_binding
+    return rebuilt
+
+
+def _binary_complementary_singleton_square(
+    lhs: NestedTensor,
+    rhs: NestedTensor,
+    op,
+    extra_args,
+    extra_kwargs,
+    *,
+    allow_static_prefix: bool = False,
+) -> NestedTensor | None:
+    r"""Broadcast adjacent ``(..., N_i, 1, ...)`` operands without unpacking."""
+    operands = _complementary_singleton_square_operands(
+        lhs,
+        rhs,
+        allow_static_prefix=allow_static_prefix,
+    )
+    if operands is None:
+        return None
+    row, column = operands
+
+    from .aten_functions import _is_fake_tensor
+
+    fake = _is_fake_tensor(row._values) or _is_fake_tensor(column._values)
+    symbolic_fake = any(
+        getattr(getattr(values, "fake_mode", None), "shape_env", None) is not None
+        for values in (row._values, column._values)
+    )
+    retained_sizes = row._packed_sizes
+    graph_mode = _is_compiling() or symbolic_fake or (fake and retained_sizes is None)
+    if fake and not graph_mode and retained_sizes is not None:
+        lengths_tuple = tuple(int(length) for length in retained_sizes)
+        total = sum(length * length for length in lengths_tuple)
+        row_index = row._values.new_empty((total,), dtype=torch.long)
+        column_index = column._values.new_empty((total,), dtype=torch.long)
+    else:
+        if not _has_same_ragged_structure(row, column):
+            return None
+        offsets = row.packed_offsets(dtype=torch.long)
+        lengths = offsets[1:] - offsets[:-1]
+        row_index, column_index = _complementary_square_indices(lengths)
+        row_index = row_index.to(device=row._values.device)
+        column_index = column_index.to(device=column._values.device)
+
+    prefix_rank = row._ragged_dims[0]
+    singleton_axis = prefix_rank + 1
+    row_values = row.concat.select(singleton_axis, 0).index_select(0, row_index)
+    column_values = column.concat.select(singleton_axis, 0).index_select(0, column_index)
+    lhs_values, rhs_values = (row_values, column_values) if lhs is row else (column_values, row_values)
+    result_values = op(lhs_values, rhs_values, *extra_args, **extra_kwargs)
+
+    if fake and not graph_mode:
+        from torch._subclasses.fake_tensor import unset_fake_temporarily
+
+        if retained_sizes is None:
+            return None
+        with unset_fake_temporarily():
+            length_tensor = torch.tensor(retained_sizes, dtype=torch.long)
+            result = row.packed_with_square_lengths(result_values, length_tensor)
+    else:
+        result = row.packed_with_square_lengths(result_values, lengths)
+    result = _restore_complementary_square_prefix(result, prefix_rank)
+    if result_values.requires_grad:
+        return result._packed_like_unchecked(result_values)
+    return result
+
+
 def _single_element_logical_view(input: NestedTensor) -> Tensor:
     r"""View one packed element in logical dimension order without storage mapping."""
     element_shape = tuple(int(size) for size in input._physical_shape[0].tolist())
@@ -1071,6 +1226,17 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
                 return input._packed_like_unchecked(new_values)
             return _packed_with_static_tail_from_values(input, new_values)
 
+        square = _binary_complementary_singleton_square(
+            input,
+            other,
+            op,
+            extra_args,
+            extra_kwargs,
+            allow_static_prefix=True,
+        )
+        if square is not None:
+            return square
+
         single_element = _binary_single_element_nested_broadcast(
             input,
             other,
@@ -1186,6 +1352,8 @@ def _binary_op_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
         if len(input) != len(other):
             return False
         if input._has_same_structure(other):
+            return True
+        if _complementary_singleton_square_operands(input, other, allow_static_prefix=True) is not None:
             return True
         if _can_broadcast_nested_to(
             input,

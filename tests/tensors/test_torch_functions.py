@@ -23,8 +23,7 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from danling.tensors import NestedTensor
-from danling.tensors.ops import nested_execution_guard
+from danling.tensors import NestedTensor, nested_execution_guard
 from danling.tensors.torch_functions import (
     cat,
     flatten,
@@ -2829,6 +2828,91 @@ class TestMatrixMultiplication:
             atol=atol,
             rtol=rtol,
         )
+
+    @staticmethod
+    def _complementary_matmul_inputs(lengths, device):
+        left = [torch.randn(length, 3, 2, device=device, requires_grad=True) for length in lengths]
+        right = [torch.randn(length, 2, 1, device=device, requires_grad=True) for length in lengths]
+        return left, right
+
+    @staticmethod
+    def _complementary_matmul_reference(left, right):
+        outputs = [torch.matmul(lhs.unsqueeze(1), rhs.unsqueeze(0)) for lhs, rhs in zip(left, right)]
+        return torch.cat([output.flatten(0, 1) for output in outputs])
+
+    def test_complementary_ragged_matmul_matches_per_element_and_preserves_gradients(self, device):
+        lengths = (2, 4)
+        left_parts, right_parts = self._complementary_matmul_inputs(lengths, device)
+        reference_left = [part.detach().clone().requires_grad_() for part in left_parts]
+        reference_right = [part.detach().clone().requires_grad_() for part in right_parts]
+        left = NT(left_parts, ragged_dims=(0,)).unsqueeze(2)
+        right = NT(right_parts, ragged_dims=(0,)).unsqueeze(2).transpose(1, 2)
+
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            output = torch.matmul(left, right)
+
+        reference = self._complementary_matmul_reference(reference_left, reference_right)
+        cotangent = torch.randn_like(reference)
+        actual_gradients = torch.autograd.grad(output.concat, (*left_parts, *right_parts), cotangent)
+        expected_gradients = torch.autograd.grad(reference, (*reference_left, *reference_right), cotangent)
+
+        assert output.ragged_dims == (0, 1)
+        assert output.element_sizes().tolist() == [[length, length, 3, 1] for length in lengths]
+        assert_close(output.concat, reference)
+        for actual, expected in zip(actual_gradients, expected_gradients, strict=True):
+            assert_close(actual, expected)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_complementary_ragged_matmul_dynamic_fullgraph(self, device):
+        def pairwise_matmul(left, right):
+            return torch.matmul(left.unsqueeze(2), right.unsqueeze(2).transpose(1, 2))
+
+        compiled = torch.compile(pairwise_matmul, backend="aot_eager", fullgraph=True, dynamic=True)
+
+        for lengths in ((2, 3), (1, 4, 2)):
+            left_parts, right_parts = self._complementary_matmul_inputs(lengths, device)
+            left_parts = [part.detach() for part in left_parts]
+            right_parts = [part.detach() for part in right_parts]
+
+            output = compiled(NT(left_parts, ragged_dims=(0,)), NT(right_parts, ragged_dims=(0,)))
+            reference = self._complementary_matmul_reference(left_parts, right_parts)
+
+            assert output.ragged_dims == (0, 1)
+            assert output.element_sizes().tolist() == [[length, length, 3, 1] for length in lengths]
+            assert_close(output.concat, reference)
+
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_complementary_ragged_matmul_dynamic_fullgraph_wrapper_gradients(self, device):
+        def pairwise_matmul(left, right):
+            return torch.matmul(left.unsqueeze(2), right.unsqueeze(2).transpose(1, 2))
+
+        compiled = torch.compile(pairwise_matmul, backend="aot_eager", fullgraph=True, dynamic=True)
+
+        for lengths in ((2, 3), (1, 4, 2)):
+            left_parts, right_parts = self._complementary_matmul_inputs(lengths, device)
+            reference_left = [part.detach().clone().requires_grad_() for part in left_parts]
+            reference_right = [part.detach().clone().requires_grad_() for part in right_parts]
+            left = NT(left_parts, ragged_dims=(0,))
+            right = NT(right_parts, ragged_dims=(0,))
+
+            output = compiled(left, right)
+            reference = self._complementary_matmul_reference(reference_left, reference_right)
+            cotangent = torch.randn_like(reference)
+            actual_gradients = torch.autograd.grad(output.concat, (*left_parts, *right_parts), cotangent)
+            expected_gradients = torch.autograd.grad(reference, (*reference_left, *reference_right), cotangent)
+
+            assert isinstance(output, NestedTensor)
+            assert output.ragged_dims == (0, 1)
+            assert output.element_sizes().tolist() == [[length, length, 3, 1] for length in lengths]
+            assert_close(output.concat, reference)
+            for actual, expected in zip(actual_gradients, expected_gradients, strict=True):
+                assert_close(actual, expected)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_addmm_compile_fullgraph_tensor_lhs(self, device, float_dtype):

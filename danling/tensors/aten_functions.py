@@ -45,11 +45,13 @@ from .ops import (
     ATEN_BINARY_ELEMENTWISE_OPS,
     ATEN_UNARY_ELEMENTWISE_OPS,
     NestedTensorAtenRegistry,
+    _binary_complementary_singleton_square,
     _binary_op_maybe_tensor,
     _broadcast_lower_rank_nested_to_values,
     _broadcast_nested_to_values,
     _check_execution_guard,
     _compile_unsupported,
+    _complementary_singleton_square_operands,
     _dense_alignment,
     _dense_alignment_to_values,
     _dense_operand_for_element,
@@ -2818,8 +2820,13 @@ def _matmul_has_packed_path(lhs, rhs) -> bool:
 
     if isinstance(lhs, NestedTensor):
         if isinstance(rhs, NestedTensor):
-            return (lhs._has_same_structure(rhs) and lhs._values.dim() > 2 and rhs._values.dim() > 2) or (
-                _packed_jagged_matmul_kind(lhs, rhs) is not None
+            return (
+                (lhs._has_same_structure(rhs) and lhs._values.dim() > 2 and rhs._values.dim() > 2)
+                or (_packed_jagged_matmul_kind(lhs, rhs) is not None)
+                or (
+                    lhs._values.dim() == rhs._values.dim() == 4
+                    and _complementary_singleton_square_operands(lhs, rhs) is not None
+                )
             )
         return isinstance(rhs, Tensor) and lhs._values.dim() >= 2 and rhs.dim() <= 2
     if isinstance(rhs, NestedTensor):
@@ -3924,6 +3931,10 @@ def matmul(func, args, kwargs):
             jagged = _packed_jagged_matmul(lhs, rhs)
             if jagged is not None:
                 return jagged
+            if lhs._values.dim() == rhs._values.dim() == 4:
+                square = _binary_complementary_singleton_square(lhs, rhs, torch.bmm, (), kwargs)
+                if square is not None:
+                    return square
             if lhs._has_same_structure(rhs) and lhs._values.dim() > 2 and rhs._values.dim() > 2:
                 return _packed_with_tail_from_values(lhs, func(lhs._values, rhs._values, **kwargs))
             return per_element_fallback(func, args, kwargs)
