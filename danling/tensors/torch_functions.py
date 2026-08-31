@@ -5696,7 +5696,7 @@ def sort(input: NestedTensor, dim: int = -1, descending: bool = False, stable: b
         stable: If True, preserves the relative order of equal elements.
 
     Returns:
-        tuple[NestedTensor, NestedTensor]: A tuple of (sorted values, indices).
+        namedtuple: A (values, indices) namedtuple.
 
     Examples:
         >>> import torch
@@ -5708,8 +5708,10 @@ def sort(input: NestedTensor, dim: int = -1, descending: bool = False, stable: b
         True
     """
     if stable is None:
-        return torch.ops.aten.sort.default(input, dim, descending)
-    return torch.ops.aten.sort.stable(input, stable=stable, dim=dim, descending=descending)
+        values, indices = torch.ops.aten.sort.default(input, dim, descending)
+    else:
+        values, indices = torch.ops.aten.sort.stable(input, stable=stable, dim=dim, descending=descending)
+    return torch.return_types.sort((values, indices))
 
 
 @NestedTensorFuncRegistry.implement(torch.topk)

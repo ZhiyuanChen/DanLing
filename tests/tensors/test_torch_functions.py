@@ -4961,12 +4961,12 @@ class TestSegmentedSort:
         elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 0, 5)]
         nested = NT(elements, ragged_dims=(0,))
 
-        values, indices = torch.sort(nested, dim=1)
+        result = torch.sort(nested, dim=1)
         expected = [torch.sort(element, dim=0) for element in elements]
 
-        assert_close(values, NT([item.values for item in expected], ragged_dims=(0,)))
-        assert_close(indices, NT([item.indices for item in expected], ragged_dims=(0,)))
-        assert_close(torch.argsort(nested, dim=1), indices)
+        assert_close(result.values, NT([item.values for item in expected], ragged_dims=(0,)))
+        assert_close(result.indices, NT([item.indices for item in expected], ragged_dims=(0,)))
+        assert_close(torch.argsort(nested, dim=1), result.indices)
 
     def test_topk_values_indices_and_errors_match_dense(self, device, float_dtype):
         elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 5, 4)]
@@ -4984,9 +4984,9 @@ class TestSegmentedSort:
         elements = [torch.randn(2, n, 3, device=device, dtype=float_dtype) for n in (3, 5)]
         nested = NT(elements, ragged_dims=(1,))
 
-        values, indices = torch.sort(nested, dim=2)
+        result = torch.sort(nested, dim=2)
 
-        assert values.ragged_dims == (1,)
+        assert result.values.ragged_dims == (1,)
         assert_close(result.values, NT([torch.sort(element, dim=1).values for element in elements], ragged_dims=(1,)))
         assert_close(
             result.indices,
@@ -5001,7 +5001,7 @@ class TestSegmentedSort:
         )
 
         def run(value):
-            sorted_values = torch.sort(value, dim=1)[0]
+            sorted_values = torch.sort(value, dim=1).values
             top_values = torch.topk(value, 2, dim=1).values
             return sorted_values.concat, top_values.concat
 
