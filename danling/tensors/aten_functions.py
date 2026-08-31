@@ -467,6 +467,9 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
     dim = _normalize_dim(dims[0], source.dim())
     batch_dim = _get_batch_dim(source)
     if dim == batch_dim:
+        boolean_reduced = _packed_boolean_batch_reduction(func, source, keepdim)
+        if boolean_reduced is not None:
+            return boolean_reduced
         reduced = torch.stack([_call(t, none_dim, False) for t in source._storage])
         if keepdim:
             return reduced.unsqueeze(batch_dim)
@@ -481,6 +484,12 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
             dim_adj,
             keepdim,
         )
+    boolean_reduced = _packed_boolean_ragged_reduction(func, source, dim_adj, keepdim)
+    if boolean_reduced is not None:
+        return boolean_reduced
+    numeric_reduced = _packed_numeric_ragged_reduction(func, source, dim_adj, keepdim, kwargs)
+    if numeric_reduced is not None:
+        return numeric_reduced
     if source._ragged_rank > 1:
         # Multiple ragged levels collapse into one packed dim in ``_values``, so a per-element dim index no
         # longer maps onto the packed layout; reduce per element, where each item still carries its full rank.
@@ -509,6 +518,26 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
         return _restore_segment_batch_dim(source, output, dim_adj, keepdim)
 
     return _reduce_non_ragged_packed(source, _call(source._values, [dim_adj], keepdim), dim_adj, keepdim)
+
+
+@NestedTensorAtenRegistry.implement(aten.any.dim, compile_safe=True)
+@NestedTensorAtenRegistry.implement(aten.any.dims, compile_safe=True)
+@NestedTensorAtenRegistry.implement(aten.all.dim, compile_safe=True)
+@NestedTensorAtenRegistry.implement(aten.all.dims, compile_safe=True)
+def boolean_dim_reduction(func, args, kwargs):
+    r"""Handle ``any`` and ``all`` dimension reductions on packed values."""
+    source, dims, keepdim = _extract_dim_keepdim(args, kwargs, None)
+    is_any = func in (aten.any.dim, aten.any.dims)
+    packed_func = aten.any.dims if is_any else aten.all.dims
+    return _dim_reduction_dispatch(
+        packed_func,
+        source,
+        dims,
+        keepdim,
+        kwargs,
+        ragged_fill=not is_any,
+        none_dim=None,
+    )
 
 
 @NestedTensorAtenRegistry.implement(aten.argmax.default)
@@ -3179,6 +3208,250 @@ def _segment_vector_norm_ragged_dim(
     elif dim_adj is not None and keepdim:
         out = out.unsqueeze(1 + dim_adj)
     return _from_uniform_batched_output(source, out)
+
+
+def _boolean_reduction_kind(func) -> tuple[str, bool] | None:
+    if func in (aten.any.dim, aten.any.dims):
+        return "amax", False
+    if func in (aten.all.dim, aten.all.dims):
+        return "amin", True
+    return None
+
+
+def _boolean_values(values: Tensor) -> Tensor:
+    truth = values.ne(0)
+    return truth.to(values.dtype) if values.dtype == torch.uint8 else truth
+
+
+def _packed_boolean_batch_reduction(func, source: NestedTensor, keepdim: bool) -> Tensor | None:
+    reduction = _boolean_reduction_kind(func)
+    if reduction is None:
+        return None
+    reduce, identity = reduction
+    values = _boolean_values(source._values)
+    tail_dims = list(range(1, values.dim()))
+    rows = aten.any.dims(values, tail_dims, False) if not identity else aten.all.dims(values, tail_dims, False)
+    output = rows.new_full((len(source),), identity)
+    output = output.scatter_reduce(0, source.packed_batch_indices(device=rows.device), rows, reduce, include_self=True)
+    if keepdim:
+        output = output.unsqueeze(_get_batch_dim(source))
+    return output
+
+
+def _tensor_backed_ragged_offsets(
+    physical_shape: Tensor,
+    ragged_dims: tuple[int, ...],
+    *,
+    dtype: torch.dtype,
+) -> tuple[Tensor, ...]:
+    parent_counts = torch.ones(physical_shape.size(0), dtype=torch.long, device=physical_shape.device)
+    offsets: list[Tensor] = []
+    for dim in ragged_dims:
+        widths = torch.repeat_interleave(physical_shape[:, dim].to(torch.long), parent_counts)
+        level_offsets = torch.cat((widths.new_zeros(1, dtype=dtype), widths.to(dtype).cumsum(0)))
+        offsets.append(level_offsets)
+        parent_counts = parent_counts * physical_shape[:, dim].to(torch.long)
+    return tuple(offsets)
+
+
+@torch.library.custom_op("danling::_ragged_reduction_size_binding", mutates_args=())
+def _ragged_reduction_size_binding(group_counts: Tensor) -> Tensor:
+    total = int(group_counts.sum().item())
+    return group_counts.new_empty((total, 0), dtype=torch.long)
+
+
+@_ragged_reduction_size_binding.register_fake
+def _ragged_reduction_size_binding_fake(group_counts: Tensor) -> Tensor:
+    total = torch.library.get_ctx().new_dynamic_size(min=0)
+    return group_counts.new_empty((total, 0), dtype=torch.long)
+
+
+def _packed_ragged_reduction_groups(
+    source: NestedTensor,
+    dim_adj: int,
+    *,
+    device: torch.device,
+) -> tuple[tuple[int, ...], Tensor, Tensor, int]:
+    r"""Return retained ragged dims, per-sample group counts, row groups, and output size."""
+    remaining_ragged = tuple(dim for dim in source._varying_dims if dim != dim_adj)
+    if remaining_ragged:
+        physical_group_counts = source._physical_shape[:, list(remaining_ragged)].prod(dim=1)
+    else:
+        physical_group_counts = torch.ones(
+            source._physical_shape.size(0),
+            dtype=torch.long,
+            device=source._physical_shape.device,
+        )
+
+    shape_device = source._physical_shape.to(device=device, dtype=torch.long)
+    group_counts = physical_group_counts.to(device=device, dtype=torch.long)
+    group_offsets = torch.cat((group_counts.new_zeros(1), group_counts.cumsum(0)))
+    batch_idx, local_idx = source._packed_batch_local_indices(device=device, dtype=torch.long)
+    varying_coords = source._packed_varying_coords(
+        batch_idx,
+        local_idx,
+        device=device,
+        dtype=torch.long,
+    )
+    local_group = torch.zeros_like(batch_idx)
+    for physical_dim, coord in zip(source._varying_dims, varying_coords):
+        if physical_dim == dim_adj:
+            continue
+        radix = shape_device[:, physical_dim].index_select(0, batch_idx)
+        local_group = local_group * radix + coord
+    groups = group_offsets.index_select(0, batch_idx) + local_group
+
+    if not remaining_ragged:
+        output_size = len(source)
+    elif dim_adj == source._varying_dims[-1]:
+        output_size = source._ragged_level_offsets(-1).numel() - 1
+    else:
+        size_binding = _ragged_reduction_size_binding(physical_group_counts)
+        output_size = size_binding.shape[0]
+    return remaining_ragged, physical_group_counts, groups, output_size
+
+
+def _wrap_packed_ragged_reduction(
+    source: NestedTensor,
+    output: Tensor,
+    dim_adj: int,
+    keepdim: bool,
+    remaining_ragged: tuple[int, ...],
+    physical_group_counts: Tensor,
+) -> Tensor | NestedTensor:
+    r"""Rebuild the dense or packed layout produced by one ragged-axis reduction."""
+    if not remaining_ragged:
+        return _format_permuted_segment_reduction(source, output, dim_adj, keepdim)
+
+    if keepdim:
+        physical_shape, packed_sizes, element_shapes = source._shape_meta_from_components(replace_dims={dim_adj: 1})
+        logical_shape = source._logical_shape_from_components(replace_dims={dim_adj: 1})
+        permutation = (*remaining_ragged, dim_adj, *source._static_dims)
+        ragged_dims = remaining_ragged
+        output = output.unsqueeze(1)
+    else:
+        keep_dims = tuple(dim for dim in range(source._physical_shape.size(1)) if dim != dim_adj)
+        physical_shape, packed_sizes, element_shapes = source._shape_meta_from_components(keep_dims=keep_dims)
+        logical_shape = source._logical_shape_from_components(keep_dims=keep_dims)
+        permutation = source._project_permutation(keep_dims=keep_dims)
+        ragged_dims = tuple(keep_dims.index(dim) for dim in remaining_ragged)
+
+    offsets = torch.cat(
+        (
+            source._offsets.new_zeros(1),
+            physical_group_counts.to(source._offsets.dtype).cumsum(0),
+        )
+    )
+    ragged_offsets = (
+        (offsets,)
+        if len(ragged_dims) == 1
+        else _tensor_backed_ragged_offsets(physical_shape, ragged_dims, dtype=source._offsets.dtype)
+    )
+    return type(source)._from_packed(
+        output,
+        offsets,
+        physical_shape,
+        permutation=permutation,
+        ragged_dims=ragged_dims,
+        batch_first=source.batch_first,
+        padding_value=source.padding_value,
+        mask_value=source.mask_value,
+        pin_memory=source._pin_memory,
+        outer_size=logical_shape,
+        packed_sizes=packed_sizes,
+        element_shapes=element_shapes,
+        ragged_offsets=ragged_offsets,
+        validate=False,
+    )
+
+
+def _packed_boolean_ragged_reduction(
+    func,
+    source: NestedTensor,
+    dim_adj: int,
+    keepdim: bool,
+) -> Tensor | NestedTensor | None:
+    reduction = _boolean_reduction_kind(func)
+    if reduction is None or dim_adj not in source._varying_dims:
+        return None
+    reduce, identity = reduction
+    values = _boolean_values(source._values)
+    remaining_ragged, physical_group_counts, groups, output_size = _packed_ragged_reduction_groups(
+        source,
+        dim_adj,
+        device=values.device,
+    )
+    output = values.new_full((output_size, *values.shape[1:]), identity)
+    scatter_index = groups.reshape(-1, *([1] * (values.dim() - 1))).expand_as(values)
+    output = output.scatter_reduce(0, scatter_index, values, reduce, include_self=True)
+    return _wrap_packed_ragged_reduction(
+        source,
+        output,
+        dim_adj,
+        keepdim,
+        remaining_ragged,
+        physical_group_counts,
+    )
+
+
+def _packed_numeric_ragged_reduction(
+    func,
+    source: NestedTensor,
+    dim_adj: int,
+    keepdim: bool,
+    kwargs,
+) -> Tensor | NestedTensor | None:
+    r"""Reduce a multi-ragged axis directly over packed row groups."""
+    if source._ragged_rank < 2 or dim_adj not in source._varying_dims:
+        return None
+    if func not in (aten.sum.dim_IntList, aten.mean.dim, aten.amax.default, aten.amin.default):
+        return None
+
+    values = source._values
+    remaining_ragged, physical_group_counts, groups, output_size = _packed_ragged_reduction_groups(
+        source,
+        dim_adj,
+        device=values.device,
+    )
+
+    if func in (aten.sum.dim_IntList, aten.mean.dim):
+        sample = func(values[:0], [0], False, **kwargs)
+        output = sample.new_zeros((output_size, *sample.shape))
+        add_values = values if values.dtype == output.dtype else values.to(dtype=output.dtype)
+        output = output.index_add(0, groups, add_values)
+        if func is aten.mean.dim:
+            counts = groups.new_zeros((output_size,))
+            counts = counts.index_add(0, groups, torch.ones_like(groups))
+            output = output / counts.reshape(-1, *([1] * (output.dim() - 1)))
+    else:
+        if values.dtype.is_complex:
+            return None
+        largest = func is aten.amax.default
+        torch._assert_async(
+            torch.all(source._physical_shape[:, dim_adj] > 0),
+            "amax/amin cannot reduce an empty ragged dimension",
+        )
+        output = values.new_full(
+            (output_size, *values.shape[1:]),
+            _topk_fill_value(values.dtype, largest=largest),
+        )
+        scatter_index = groups.reshape(-1, *([1] * (values.dim() - 1))).expand_as(values)
+        output = output.scatter_reduce(
+            0,
+            scatter_index,
+            values,
+            "amax" if largest else "amin",
+            include_self=False,
+        )
+
+    return _wrap_packed_ragged_reduction(
+        source,
+        output,
+        dim_adj,
+        keepdim,
+        remaining_ragged,
+        physical_group_counts,
+    )
 
 
 def _segment_reduce_ragged_dim(
