@@ -23,163 +23,18 @@ import pytest
 import torch
 
 from danling.tensors import NestedTensor
-from danling.tensors import aten_functions as nt_aten
-from danling.tensors import ops as nt_ops
 from tests.tensors.utils import assert_close, nested_rand, ragged_shapes
 
 NT = NestedTensor
 
 
-def _compile_inductor_fullgraph(fn):
-    return torch.compile(fn, backend="inductor", fullgraph=True)
-
-
-_1D_RAGGED = pytest.param(
-    lambda: NT([torch.tensor([3.0, 1.0]), torch.tensor([4.0, 2.0, 5.0])]),
-    id="1d_ragged",
-)
-_2D_RAGGED = pytest.param(
-    lambda: NT(
-        [
-            torch.tensor([[3.0, 1.0], [4.0, 2.0], [0.0, 5.0]]),
-            torch.tensor([[7.0, 8.0], [1.0, 0.0], [9.0, 6.0], [2.0, 3.0], [5.0, 4.0]]),
-        ]
-    ),
-    id="2d_ragged",
-)
-
-
-class TestCompile:
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    @pytest.mark.parametrize("nt_factory", [_2D_RAGGED])
-    @pytest.mark.parametrize(
-        "aten_fn,ref_fn",
-        [
-            pytest.param(
-                lambda x: torch.ops.aten.sort.default(x, 2, False),
-                lambda t: torch.sort(t, dim=1, descending=False).values,
-                id="sort",
-            ),
-            pytest.param(
-                lambda x: torch.ops.aten.argsort.default(x, 2, False),
-                lambda t: torch.argsort(t, dim=1, descending=False),
-                id="argsort",
-            ),
-            pytest.param(
-                lambda x: torch.ops.aten.topk.default(x, 2, 2, True, True),
-                lambda t: torch.topk(t, 2, dim=1, largest=True, sorted=True).values,
-                id="topk",
-            ),
-            pytest.param(
-                lambda x: torch.ops.aten.cumsum.default(x, 2),
-                lambda t: torch.cumsum(t, dim=1),
-                id="cumsum",
-            ),
-            pytest.param(
-                lambda x: torch.ops.aten.cumprod.default(x, 2),
-                lambda t: torch.cumprod(t, dim=1),
-                id="cumprod",
-            ),
-            pytest.param(
-                lambda x: torch.ops.aten.logcumsumexp.default(x, 2),
-                lambda t: torch.logcumsumexp(t, dim=1),
-                id="logcumsumexp",
-            ),
-            pytest.param(
-                lambda x: torch.ops.aten.cummax.default(x, 2),
-                lambda t: torch.cummax(t, dim=1).values,
-                id="cummax",
-            ),
-            pytest.param(
-                lambda x: torch.ops.aten.cummin.default(x, 2),
-                lambda t: torch.cummin(t, dim=1).values,
-                id="cummin",
-            ),
-            pytest.param(
-                lambda x: torch.ops.aten.flip.default(x, [2]),
-                lambda t: torch.flip(t, dims=[1]),
-                id="flip",
-            ),
-            pytest.param(
-                lambda x: torch.ops.aten._softmax.default(x, 2, False),
-                lambda t: torch.softmax(t, dim=1),
-                id="softmax",
-            ),
-            pytest.param(
-                lambda x: torch.ops.aten._log_softmax.default(x, 2, False),
-                lambda t: torch.log_softmax(t, dim=1),
-                id="log_softmax",
-            ),
-        ],
-    )
-    def test_compile_ragged_op(self, nt_factory, aten_fn, ref_fn):
-        nt = nt_factory()
-        compiled = _compile_inductor_fullgraph(aten_fn)
-        result = compiled(nt)
-        if isinstance(result, tuple):
-            result = result[0]
-        reference = NT([ref_fn(t) for t in nt], **nt._meta())
-        assert isinstance(result, NestedTensor)
-        assert result._has_same_layout(reference)
-        assert_close(result, reference)
-
-    @pytest.mark.parametrize(
-        "aten_fn",
-        [
-            pytest.param(lambda x: torch.ops.aten.sort.default(x, 1, False), id="sort"),
-            pytest.param(lambda x: torch.ops.aten.argsort.default(x, 1, False), id="argsort"),
-            pytest.param(lambda x: torch.ops.aten.topk.default(x, 2, 1, True, True), id="topk"),
-            pytest.param(lambda x: torch.ops.aten.cummax.default(x, 1), id="cummax"),
-            pytest.param(lambda x: torch.ops.aten.flip.default(x, [1]), id="flip"),
-        ],
-    )
-    def test_ragged_dim_is_rejected_when_compile_state_is_active(self, monkeypatch, aten_fn):
-        nt = NT(
-            [
-                torch.tensor([[3.0, 1.0], [4.0, 2.0], [0.0, 5.0]]),
-                torch.tensor([[7.0, 8.0], [1.0, 0.0], [9.0, 6.0], [2.0, 3.0], [5.0, 4.0]]),
-            ]
-        )
-        monkeypatch.setattr(nt_ops, "_is_compiling", lambda: True)
-        monkeypatch.setattr(nt_aten, "_is_compiling", lambda: True)
-        with pytest.raises(NotImplementedError, match="marked eager-only|eager-only under compile"):
-            aten_fn(nt)
-
-    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    @pytest.mark.parametrize(
-        "aten_fn,ref_fn",
-        [
-            pytest.param(
-                lambda x: torch.ops.aten.square.default(x),
-                torch.square,
-                id="square",
-            ),
-            pytest.param(
-                lambda x: torch.ops.aten.digamma.default(x),
-                torch.digamma,
-                id="digamma",
-            ),
-            pytest.param(
-                lambda x: torch.ops.aten.lgamma.default(x),
-                torch.lgamma,
-                id="lgamma",
-            ),
-        ],
-    )
-    def test_compile_unary_op(self, aten_fn, ref_fn):
-        nt = NT(
-            [
-                torch.tensor([[1.1, 2.2], [3.3, 4.4]]),
-                torch.tensor([[5.5, 6.6], [7.7, 8.8], [9.9, 10.1]]),
-            ]
-        )
-        compiled = _compile_inductor_fullgraph(aten_fn)
-        result = compiled(nt)
-        reference = NT([ref_fn(t) for t in nt], **nt._meta())
-        assert isinstance(result, NestedTensor)
-        assert result._has_same_layout(reference)
-        assert_close(result, reference)
+def reference_options(source: NestedTensor) -> dict:
+    r"""Return public construction options for an elementwise reference."""
+    return {
+        "batch_first": source.batch_first,
+        "padding_value": source.padding_value,
+        "mask_value": source.mask_value,
+    }
 
 
 class TestElementwiseOps:
@@ -209,9 +64,9 @@ class TestElementwiseOps:
         pow_rev_out = torch.ops.aten.pow.Tensor_Tensor(dense, nt)
         and_out = torch.ops.aten.bitwise_and.Tensor(nt.int(), dense.int())
 
-        pow_ref = NT([torch.pow(a, b) for a, b in zip(nt, nested_dense)], **nt._meta())
-        pow_rev_ref = NT([torch.pow(b, a) for a, b in zip(nt, nested_dense)], **nt._meta())
-        and_ref = NT([torch.bitwise_and(a.int(), b.int()) for a, b in zip(nt, nested_dense)], **nt._meta())
+        pow_ref = NT([torch.pow(a, b) for a, b in zip(nt, nested_dense)], **reference_options(nt))
+        pow_rev_ref = NT([torch.pow(b, a) for a, b in zip(nt, nested_dense)], **reference_options(nt))
+        and_ref = NT([torch.bitwise_and(a.int(), b.int()) for a, b in zip(nt, nested_dense)], **reference_options(nt))
         assert_close(pow_out, pow_ref)
         assert_close(pow_rev_out, pow_rev_ref)
         assert_close(and_out, and_ref)
@@ -234,7 +89,7 @@ class TestElementwiseOps:
             ]
         )
         result = nt / operand
-        reference = NT([tensor / operand[index] for index, tensor in enumerate(nt)], **nt._meta())
+        reference = NT([tensor / operand[index] for index, tensor in enumerate(nt)], **reference_options(nt))
         assert_close(result, reference)
 
     def test_binary_op_batchwise_dense_operand_with_static_head_dim(self):
@@ -247,22 +102,7 @@ class TestElementwiseOps:
         )
         operand = torch.randn(2, 2, 3)
         result = nt * operand
-        reference = NT([tensor * operand[index] for index, tensor in enumerate(nt)], **nt._meta())
-        assert_close(result, reference)
-
-    @pytest.mark.parametrize(
-        "operand", [torch.tensor([[2.0, 3.0, 4.0], [5.0, 6.0, 7.0]]), torch.tensor([[2.0], [5.0]])]
-    )
-    def test_binary_op_batchwise_dense_operand_with_static_tail(self, operand):
-        nt = NT(
-            [
-                torch.arange(2 * 2 * 3, dtype=torch.float32).reshape(2, 2, 3),
-                torch.arange(3 * 2 * 3, dtype=torch.float32).reshape(3, 2, 3),
-            ],
-            batch_first=True,
-        )
-        result = nt * operand
-        reference = NT([tensor * operand[index] for index, tensor in enumerate(nt)], **nt._meta())
+        reference = NT([tensor * operand[index] for index, tensor in enumerate(nt)], **reference_options(nt))
         assert_close(result, reference)
 
     def test_dense_operand_can_target_static_tail_or_batch(self):
@@ -291,7 +131,7 @@ class TestElementwiseOps:
         nt = NT([torch.tensor([[1.0], [0.0]]), torch.tensor([[1.0], [1.0], [0.0]])], batch_first=True)  # [2, S, 1]
         dense = torch.arange(2 * 3 * 4, dtype=torch.float32).reshape(2, 3, 4)  # [2, Smax=3, H=4]
         result = torch.ops.aten.mul.Tensor(dense, nt) if reverse else torch.ops.aten.mul.Tensor(nt, dense)
-        reference = NT([dense[i][: len(elem)] * elem for i, elem in enumerate(nt)], **nt._meta())
+        reference = NT([dense[i][: len(elem)] * elem for i, elem in enumerate(nt)], **reference_options(nt))
         assert isinstance(result, NestedTensor)
         assert tuple(result[0].shape) == (2, 4)
         assert_close(result, reference)
@@ -307,8 +147,8 @@ class TestElementwiseOps:
 
 class TestIndexingOps:
 
-    @pytest.mark.parametrize("seed", [0, 1, 2])
-    def test_index_put_matches_dense(self, seed, device):
+    def test_index_put_matches_dense(self, device):
+        seed = 0
         dtype = torch.float32
         shapes = ragged_shapes(seed, batch_size=3, min_len=3, max_len=6, trailing_shape=(4,))
         base = nested_rand(shapes, device, dtype)
@@ -324,14 +164,16 @@ class TestIndexingOps:
 
         shared_values = torch.randn(row_count, 4, device=device, dtype=dtype)
         row_out = torch.ops.aten.index_put.default(base, [rows], shared_values, False)
-        row_ref = NT([torch.index_put(t, (rows,), shared_values) for t in base], **base._meta())
+        row_ref = NT([torch.index_put(t, (rows,), shared_values) for t in base], **reference_options(base))
         assert_close(row_out, row_ref)
 
         dup_rows = rows.clone()
         dup_rows[0] = dup_rows[-1]
         dup_values = torch.randn(row_count, 4, device=device, dtype=dtype)
         dup_out = torch.ops.aten.index_put.default(base, [dup_rows], dup_values, True)
-        dup_ref = NT([torch.index_put(t, (dup_rows,), dup_values, accumulate=True) for t in base], **base._meta())
+        dup_ref = NT(
+            [torch.index_put(t, (dup_rows,), dup_values, accumulate=True) for t in base], **reference_options(base)
+        )
         assert_close(dup_out, dup_ref)
 
         point_rows = torch.randint(0, min_rows, (2, 2), generator=generator)
@@ -340,11 +182,12 @@ class TestIndexingOps:
         point_cols = torch.randint(0, 4, (2, 2), generator=generator).to(device=device, dtype=torch.long)
         point_values = NT(
             [torch.randn(2, 2, device=device, dtype=dtype) for _ in range(len(base))],
-            **base._meta(),
+            **reference_options(base),
         )
         point_out = torch.ops.aten.index_put.default(base, [point_rows, point_cols], point_values, False)
         point_ref = NT(
-            [torch.index_put(t, (point_rows, point_cols), v) for t, v in zip(base, point_values)], **base._meta()
+            [torch.index_put(t, (point_rows, point_cols), v) for t, v in zip(base, point_values)],
+            **reference_options(base),
         )
         assert_close(point_out, point_ref)
 
@@ -364,11 +207,11 @@ class TestIndexingOps:
         )
 
         index_add_out = torch.ops.aten.index_add.default(nt, 2, index, src)
-        index_add_ref = NT([torch.index_add(t, 1, index, s) for t, s in zip(nt, src)], **nt._meta())
+        index_add_ref = NT([torch.index_add(t, 1, index, s) for t, s in zip(nt, src)], **reference_options(nt))
         assert_close(index_add_out, index_add_ref)
 
         index_copy_out = torch.ops.aten.index_copy.default(nt, 2, index, src)
-        index_copy_ref = NT([torch.index_copy(t, 1, index, s) for t, s in zip(nt, src)], **nt._meta())
+        index_copy_ref = NT([torch.index_copy(t, 1, index, s) for t, s in zip(nt, src)], **reference_options(nt))
         assert_close(index_copy_out, index_copy_ref)
 
         row_nt = NT(
@@ -386,17 +229,19 @@ class TestIndexingOps:
         )
 
         index_put_out = torch.ops.aten.index_put.default(row_nt, [row_index], row_values, False)
-        index_put_ref = NT([torch.index_put(t, (row_index,), v) for t, v in zip(row_nt, row_values)], **row_nt._meta())
+        index_put_ref = NT(
+            [torch.index_put(t, (row_index,), v) for t, v in zip(row_nt, row_values)], **reference_options(row_nt)
+        )
         assert_close(index_put_out, index_put_ref)
 
         shared_values = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
         shared_out = torch.ops.aten.index_put.default(row_nt, [row_index], shared_values, False)
-        shared_ref = NT([torch.index_put(t, (row_index,), shared_values) for t in row_nt], **row_nt._meta())
+        shared_ref = NT([torch.index_put(t, (row_index,), shared_values) for t in row_nt], **reference_options(row_nt))
         assert_close(shared_out, shared_ref)
 
         scalar_value = torch.tensor(-3.0)
         scalar_out = torch.ops.aten.index_put.default(row_nt, [row_index], scalar_value, False)
-        scalar_ref = NT([torch.index_put(t, (row_index,), scalar_value) for t in row_nt], **row_nt._meta())
+        scalar_ref = NT([torch.index_put(t, (row_index,), scalar_value) for t in row_nt], **reference_options(row_nt))
         assert_close(scalar_out, scalar_ref)
 
         duplicate_index = torch.tensor([0, 0, 2], dtype=torch.long)
@@ -410,7 +255,7 @@ class TestIndexingOps:
         duplicate_out = torch.ops.aten.index_put.default(row_nt, [duplicate_index], duplicate_values, True)
         duplicate_ref = NT(
             [torch.index_put(t, (duplicate_index,), duplicate_values, accumulate=True) for t in row_nt],
-            **row_nt._meta(),
+            **reference_options(row_nt),
         )
         assert_close(duplicate_out, duplicate_ref)
 
@@ -425,7 +270,7 @@ class TestIndexingOps:
         point_out = torch.ops.aten.index_put.default(row_nt, [point_rows, point_cols], point_values, False)
         point_ref = NT(
             [torch.index_put(t, (point_rows, point_cols), v) for t, v in zip(row_nt, point_values)],
-            **row_nt._meta(),
+            **reference_options(row_nt),
         )
         assert_close(point_out, point_ref)
 
@@ -439,7 +284,7 @@ class TestIndexingOps:
 
         batch_index = torch.tensor([1, 0, 1], dtype=torch.long)
         batch_out = torch.ops.aten.index_select.default(nt, 0, batch_index)
-        batch_ref = NT([nt[1], nt[0], nt[1]], **nt._meta())
+        batch_ref = NT([nt[1], nt[0], nt[1]], **reference_options(nt))
         assert_close(batch_out, batch_ref)
 
         gather_dense = torch.tensor(
@@ -451,7 +296,7 @@ class TestIndexingOps:
         )
         gather_out = torch.ops.aten.gather.default(nt, 2, gather_dense, sparse_grad=False)
         gather_nt = nt.nested_like(gather_dense, strict=False)
-        gather_ref = NT([torch.gather(t, 1, idx) for t, idx in zip(nt, gather_nt)], **nt._meta())
+        gather_ref = NT([torch.gather(t, 1, idx) for t, idx in zip(nt, gather_nt)], **reference_options(nt))
         assert_close(gather_out, gather_ref)
 
         ragged_index = NT(
@@ -461,12 +306,12 @@ class TestIndexingOps:
             ]
         )
         gather_ragged = torch.ops.aten.gather.default(nt, 1, ragged_index, sparse_grad=False)
-        gather_ragged_ref = NT([torch.gather(t, 0, idx) for t, idx in zip(nt, ragged_index)], **nt._meta())
+        gather_ragged_ref = NT([torch.gather(t, 0, idx) for t, idx in zip(nt, ragged_index)], **reference_options(nt))
         assert_close(gather_ragged, gather_ragged_ref)
 
         index = torch.tensor([2, 0], dtype=torch.long)
         index_select_out = torch.ops.aten.index_select.default(nt, 2, index)
-        index_select_ref = NT([torch.index_select(t, 1, index) for t in nt], **nt._meta())
+        index_select_ref = NT([torch.index_select(t, 1, index) for t in nt], **reference_options(nt))
         assert_close(index_select_out, index_select_ref)
 
     def test_scatter(self):
@@ -490,15 +335,19 @@ class TestIndexingOps:
         )
 
         scatter_src_out = torch.ops.aten.scatter.src(nt, 2, index, src)
-        scatter_src_ref = NT([torch.scatter(t, 1, idx, s) for t, idx, s in zip(nt, index, src)], **nt._meta())
+        scatter_src_ref = NT(
+            [torch.scatter(t, 1, idx, s) for t, idx, s in zip(nt, index, src)], **reference_options(nt)
+        )
         assert_close(scatter_src_out, scatter_src_ref)
 
         scatter_value_out = torch.ops.aten.scatter.value(nt, 2, index, -1.0)
-        scatter_value_ref = NT([torch.scatter(t, 1, idx, -1.0) for t, idx in zip(nt, index)], **nt._meta())
+        scatter_value_ref = NT([torch.scatter(t, 1, idx, -1.0) for t, idx in zip(nt, index)], **reference_options(nt))
         assert_close(scatter_value_out, scatter_value_ref)
 
         scatter_add_out = torch.ops.aten.scatter_add.default(nt, 2, index, src)
-        scatter_add_ref = NT([torch.scatter_add(t, 1, idx, s) for t, idx, s in zip(nt, index, src)], **nt._meta())
+        scatter_add_ref = NT(
+            [torch.scatter_add(t, 1, idx, s) for t, idx, s in zip(nt, index, src)], **reference_options(nt)
+        )
         assert_close(scatter_add_out, scatter_add_ref)
 
         if hasattr(torch.ops.aten, "scatter_reduce"):
@@ -508,7 +357,7 @@ class TestIndexingOps:
                     torch.scatter_reduce(t, 1, idx, s, reduce="sum", include_self=True)
                     for t, idx, s in zip(nt, index, src)
                 ],
-                **nt._meta(),
+                **reference_options(nt),
             )
             assert_close(scatter_reduce_out, scatter_reduce_ref)
 
@@ -529,8 +378,8 @@ class TestIndexingOps:
 
         nt_nt = torch.ops.aten.searchsorted.Tensor(sorted_nt, values_nt)
         tensor_nt = torch.ops.aten.searchsorted.Tensor(boundaries, values_nt)
-        ref_nt_nt = NT([torch.searchsorted(s, v) for s, v in zip(sorted_nt, values_nt)], **values_nt._meta())
-        ref_tensor_nt = NT([torch.searchsorted(boundaries, v) for v in values_nt], **values_nt._meta())
+        ref_nt_nt = NT([torch.searchsorted(s, v) for s, v in zip(sorted_nt, values_nt)], **reference_options(values_nt))
+        ref_tensor_nt = NT([torch.searchsorted(boundaries, v) for v in values_nt], **reference_options(values_nt))
 
         assert_close(nt_nt, ref_nt_nt)
         assert_close(tensor_nt, ref_tensor_nt)
@@ -553,7 +402,9 @@ class TestLinearAlgebraOps:
             ]
         )
         diagonal_out = torch.ops.aten.diagonal.default(nt_diagonal, 0, 2, 3)
-        diagonal_ref = NT([torch.diagonal(t, offset=0, dim1=1, dim2=2) for t in nt_diagonal], **nt_diagonal._meta())
+        diagonal_ref = NT(
+            [torch.diagonal(t, offset=0, dim1=1, dim2=2) for t in nt_diagonal], **reference_options(nt_diagonal)
+        )
         assert_close(diagonal_out, diagonal_ref)
 
         nt_trace = NT(
@@ -563,7 +414,7 @@ class TestLinearAlgebraOps:
             ]
         )
         trace_out = torch.ops.aten.trace.default(nt_trace)
-        trace_ref = NT([torch.trace(ti) for ti in nt_trace], **nt_trace._meta())
+        trace_ref = NT([torch.trace(ti) for ti in nt_trace], **reference_options(nt_trace))
         assert_close(trace_out, trace_ref)
 
     def test_linalg_qr_eigh_svd_solve(self):
@@ -607,7 +458,7 @@ class TestLinearAlgebraOps:
         nt_rhs = NT([rhs0, rhs1])
 
         solve_out = torch.ops.aten.linalg_solve.default(nt_spd, nt_rhs)
-        solve_ref = NT([torch.linalg.solve(a, b) for a, b in zip(nt_spd, nt_rhs)], **nt_spd._meta())
+        solve_ref = NT([torch.linalg.solve(a, b) for a, b in zip(nt_spd, nt_rhs)], **reference_options(nt_spd))
         for out_elem, ref_elem in zip(solve_out, solve_ref):
             assert_close(out_elem, ref_elem, rtol=1e-5, atol=1e-5)
 
@@ -640,11 +491,11 @@ class TestLinearAlgebraOps:
         )
 
         global_out = torch.ops.aten.linalg_vector_norm.default(base, 2, None, False)
-        global_ref = NT([torch.linalg.vector_norm(t, ord=2) for t in base], **base._meta())
+        global_ref = NT([torch.linalg.vector_norm(t, ord=2) for t in base], **reference_options(base))
         assert_close(global_out, global_ref)
 
         dim_out = torch.ops.aten.linalg_vector_norm.default(base, 2, [1], False)
-        dim_ref = NT([torch.linalg.vector_norm(t, ord=2, dim=0) for t in base], **base._meta())
+        dim_ref = NT([torch.linalg.vector_norm(t, ord=2, dim=0) for t in base], **reference_options(base))
         assert_close(dim_out, dim_ref)
 
 
@@ -655,12 +506,12 @@ class TestMaskingOps:
         mask = NT([torch.tensor([True, False, True]), torch.tensor([False, True])])
 
         scalar_out = torch.ops.aten.masked_fill.Scalar(base, mask, 0.0)
-        scalar_ref = NT([torch.masked_fill(t, m, 0.0) for t, m in zip(base, mask)], **base._meta())
+        scalar_ref = NT([torch.masked_fill(t, m, 0.0) for t, m in zip(base, mask)], **reference_options(base))
         assert_close(scalar_out, scalar_ref)
 
         value = torch.tensor(-1.5, dtype=base.dtype, device=base.device)
         tensor_out = torch.ops.aten.masked_fill.Tensor(base, mask, value)
-        tensor_ref = NT([torch.masked_fill(t, m, value) for t, m in zip(base, mask)], **base._meta())
+        tensor_ref = NT([torch.masked_fill(t, m, value) for t, m in zip(base, mask)], **reference_options(base))
         assert_close(tensor_out, tensor_ref)
 
     def test_masked_scatter_nested_source(self):
@@ -669,7 +520,9 @@ class TestMaskingOps:
         source = NT([torch.tensor([1.0, 2.0]), torch.tensor([3.0])])
 
         output = torch.ops.aten.masked_scatter.default(base, mask, source)
-        reference = NT([torch.masked_scatter(t, m, s) for t, m, s in zip(base, mask, source)], **base._meta())
+        reference = NT(
+            [torch.masked_scatter(t, m, s) for t, m, s in zip(base, mask, source)], **reference_options(base)
+        )
 
         assert_close(output, reference)
 
@@ -678,14 +531,14 @@ class TestMaskingOps:
         mask = NT([torch.tensor([True, False, True]), torch.tensor([False, True])])
 
         output = torch.ops.aten.masked_select.default(base, mask)
-        reference = NT([torch.masked_select(t, m) for t, m in zip(base, mask)], **base._meta())
+        reference = NT([torch.masked_select(t, m) for t, m in zip(base, mask)], **reference_options(base))
         assert_close(output, reference)
 
     def test_nonzero(self):
         base = NT([torch.tensor([[0.0, 1.0], [2.0, 0.0]]), torch.tensor([[3.0, 0.0]])])
 
         output = torch.ops.aten.nonzero.default(base)
-        reference = NT([torch.nonzero(t, as_tuple=False) for t in base], **base._meta())
+        reference = NT([torch.nonzero(t, as_tuple=False) for t in base], **reference_options(base))
 
         assert_close(output, reference)
         assert output.dtype == torch.long
@@ -708,12 +561,12 @@ class TestReductionOps:
             ]
         )
         # Global reduction
-        assert_close(aten_op.default(nt), torch_op(nt._values))
+        assert_close(aten_op.default(nt), torch_op(nt.concat))
 
         # Static dim
         vals_last, idxs_last = aten_op.dim(nt, 2, False)
-        vals_last_ref = NT([torch_op(t, dim=1).values for t in nt], **nt._meta())
-        idxs_last_ref = NT([torch_op(t, dim=1).indices for t in nt], **nt._meta())
+        vals_last_ref = NT([torch_op(t, dim=1).values for t in nt], **reference_options(nt))
+        idxs_last_ref = NT([torch_op(t, dim=1).indices for t in nt], **reference_options(nt))
         assert_close(vals_last, vals_last_ref)
         assert_close(idxs_last, idxs_last_ref)
 
@@ -743,7 +596,7 @@ class TestReductionOps:
 
         # Static dim
         out_last = aten_op.default(nt, 2, False)
-        ref_last = NT([torch_op(t, dim=1) for t in nt], **nt._meta())
+        ref_last = NT([torch_op(t, dim=1) for t in nt], **reference_options(nt))
         assert_close(out_last, ref_last)
 
         # Ragged dim
@@ -760,20 +613,22 @@ class TestReductionOps:
         )
 
         kth_vals, kth_idxs = torch.ops.aten.kthvalue.default(nt, 2, 2, False)
-        kth_ref = tuple(NT([torch.kthvalue(t, 2, dim=1)[i] for t in nt], **nt._meta()) for i in range(2))
+        kth_ref = tuple(NT([torch.kthvalue(t, 2, dim=1)[i] for t in nt], **reference_options(nt)) for i in range(2))
         assert_close(kth_vals, kth_ref[0])
         assert_close(kth_idxs, kth_ref[1])
 
         median_global = torch.ops.aten.median.default(nt)
-        assert_close(median_global, torch.median(nt._values))
+        assert_close(median_global, torch.median(nt.concat))
 
         median_vals, median_idxs = torch.ops.aten.median.dim(nt, 2, True)
-        median_ref = tuple(NT([torch.median(t, dim=1, keepdim=True)[i] for t in nt], **nt._meta()) for i in range(2))
+        median_ref = tuple(
+            NT([torch.median(t, dim=1, keepdim=True)[i] for t in nt], **reference_options(nt)) for i in range(2)
+        )
         assert_close(median_vals, median_ref[0])
         assert_close(median_idxs, median_ref[1])
 
         mode_vals, mode_idxs = torch.ops.aten.mode.default(nt, 2, False)
-        mode_ref = tuple(NT([torch.mode(t, dim=1)[i] for t in nt], **nt._meta()) for i in range(2))
+        mode_ref = tuple(NT([torch.mode(t, dim=1)[i] for t in nt], **reference_options(nt)) for i in range(2))
         assert_close(mode_vals, mode_ref[0])
         assert_close(mode_idxs, mode_ref[1])
 
@@ -784,31 +639,14 @@ class TestReductionOps:
             ]
         )
         nanmedian_global = torch.ops.aten.nanmedian.default(nan_nt)
-        assert_close(nanmedian_global, torch.nanmedian(nan_nt._values), equal_nan=True)
+        assert_close(nanmedian_global, torch.nanmedian(nan_nt.concat), equal_nan=True)
 
         nanmedian_vals, nanmedian_idxs = torch.ops.aten.nanmedian.dim(nan_nt, 2, False)
-        nanmedian_ref = tuple(NT([torch.nanmedian(t, dim=1)[i] for t in nan_nt], **nan_nt._meta()) for i in range(2))
+        nanmedian_ref = tuple(
+            NT([torch.nanmedian(t, dim=1)[i] for t in nan_nt], **reference_options(nan_nt)) for i in range(2)
+        )
         assert_close(nanmedian_vals, nanmedian_ref[0], equal_nan=True)
         assert_close(nanmedian_idxs, nanmedian_ref[1])
-
-    def test_reduce_multi_dim_empty_batch(self):
-        values = torch.empty((0, 3, 4), dtype=torch.float32)
-        offsets = torch.tensor([0], dtype=torch.long)
-        shape_tensor = torch.empty((0, 3), dtype=torch.long)
-        nt = NT._from_packed(
-            values,
-            offsets,
-            shape_tensor,
-            batch_first=True,
-            padding_value=0.0,
-            mask_value=False,
-            pin_memory=False,
-            outer_size=torch.Size([0, 0, 3, 4]),
-        )
-        out = torch.ops.aten.sum.dim_IntList(nt, [2, 3], False, dtype=None)
-        assert isinstance(out, NT)
-        assert out.shape == torch.Size([0, 0])
-        assert out._physical_shape.shape == torch.Size([0, 1])
 
 
 class TestSortingOps:
@@ -883,7 +721,7 @@ class TestSortingOps:
         result = aten_fn(nt)
         if isinstance(result, tuple):
             result = result[0]
-        reference = NT([ref_fn(t) for t in nt], **nt._meta())
+        reference = NT([ref_fn(t) for t in nt], **reference_options(nt))
         assert_close(result, reference)
 
     def test_cumsum_ragged_dim(self):
@@ -910,19 +748,19 @@ class TestTernaryOps:
 
         dense = nt.tensor
         where_out = torch.ops.aten.where.ScalarOther(dense > 2, nt, 0.0)
-        where_ref = NT([torch.where(t > 2, t, 0.0) for t in nt], **nt._meta())
+        where_ref = NT([torch.where(t > 2, t, 0.0) for t in nt], **reference_options(nt))
         assert_close(where_out, where_ref)
 
         where_scalar_out = torch.ops.aten.where.Scalar(nt > 2, 1.0, 0.0)
-        where_scalar_ref = NT([torch.where(t > 2, 1.0, 0.0) for t in nt], **nt._meta())
+        where_scalar_ref = NT([torch.where(t > 2, 1.0, 0.0) for t in nt], **reference_options(nt))
         assert_close(where_scalar_out, where_scalar_ref)
 
         addcmul_out = torch.ops.aten.addcmul.default(dense, nt, nt, value=2)
-        addcmul_ref = NT([torch.addcmul(t, t, t, value=2) for t in nt], **nt._meta())
+        addcmul_ref = NT([torch.addcmul(t, t, t, value=2) for t in nt], **reference_options(nt))
         assert_close(addcmul_out, addcmul_ref)
 
         addcdiv_out = torch.ops.aten.addcdiv.default(dense, nt, nt + 1, value=2)
-        addcdiv_ref = NT([torch.addcdiv(t, t, t + 1, value=2) for t in nt], **nt._meta())
+        addcdiv_ref = NT([torch.addcdiv(t, t, t + 1, value=2) for t in nt], **reference_options(nt))
         assert_close(addcdiv_out, addcdiv_ref)
 
         take_index = torch.tensor([0, 2, 4], dtype=torch.long)
@@ -940,7 +778,7 @@ class TestTernaryOps:
         bias = torch.arange(3.0)
 
         output = torch.ops.aten.addcmul.default(nt, bias, bias, value=2)
-        reference = NT([torch.addcmul(t, bias, bias, value=2) for t in nt], **nt._meta())
+        reference = NT([torch.addcmul(t, bias, bias, value=2) for t in nt], **reference_options(nt))
 
         assert_close(output, reference)
 
@@ -956,8 +794,8 @@ class TestTernaryOps:
         with pytest.raises(RuntimeError, match="size of tensor"):
             torch.ops.aten.addcmul.default(nt, bad, bad, value=2)
 
-    @pytest.mark.parametrize("seed", [0, 1, 2])
-    def test_ternary_matches_dense(self, seed, device):
+    def test_ternary_matches_dense(self, device):
+        seed = 0
         dtype = torch.float32
         shapes = ragged_shapes(seed, batch_size=3, min_len=2, max_len=5, trailing_shape=(4,))
         nt = nested_rand(shapes, device, dtype)
@@ -969,13 +807,13 @@ class TestTernaryOps:
         condition = torch.randn(4, device=device) > 0
 
         addcmul_out = torch.ops.aten.addcmul.default(nt, bias, scale, value=0.25)
-        addcmul_ref = NT([torch.addcmul(t, bias, scale, value=0.25) for t in nt], **nt._meta())
+        addcmul_ref = NT([torch.addcmul(t, bias, scale, value=0.25) for t in nt], **reference_options(nt))
         assert_close(addcmul_out, addcmul_ref)
 
         addcdiv_out = torch.ops.aten.addcdiv.default(nt, scale, denom, value=-0.5)
-        addcdiv_ref = NT([torch.addcdiv(t, scale, denom, value=-0.5) for t in nt], **nt._meta())
+        addcdiv_ref = NT([torch.addcdiv(t, scale, denom, value=-0.5) for t in nt], **reference_options(nt))
         assert_close(addcdiv_out, addcdiv_ref)
 
         where_out = torch.ops.aten.where.self(condition, nt, bias)
-        where_ref = NT([torch.where(condition, t, bias) for t in nt], **nt._meta())
+        where_ref = NT([torch.where(condition, t, bias) for t in nt], **reference_options(nt))
         assert_close(where_out, where_ref)

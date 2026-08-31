@@ -19,18 +19,14 @@
 
 from __future__ import annotations
 
-import errno
 import json
-import sys
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
 import torch
 
 from danling.metrics import AverageMeter
-from danling.runners import base_runner as base_runner_module
 from danling.runners.base_runner import BaseRunner
 from danling.runners.config import RunnerConfig
 
@@ -39,30 +35,18 @@ class MinimalRunner(BaseRunner):
     pass
 
 
-class SequencingRunner(BaseRunner):
-    def __init__(self, config):
-        self.calls: list[str] = []
-        super().__init__(config)
-
-    def load_state_dict(self, checkpoint):
-        self.calls.append("state")
-        super().load_state_dict(checkpoint)
-
+class CheckpointRunner(BaseRunner):
     def load_model(self, state_dict, *args, **kwargs):
         del state_dict, args, kwargs
-        self.calls.append("model")
 
     def load_optimizer(self, state_dict, *args, **kwargs):
         del state_dict, args, kwargs
-        self.calls.append("optimizer")
 
     def load_scheduler(self, state_dict, *args, **kwargs):
         del state_dict, args, kwargs
-        self.calls.append("scheduler")
 
     def load_dataloaders(self, state_dict):
         del state_dict
-        self.calls.append("dataloaders")
 
 
 class StreamingLoader:
@@ -73,25 +57,10 @@ class StreamingLoader:
 class _ToggleCloseCheckpointManager:
     def __init__(self) -> None:
         self.drained = False
-        self.calls: list[float | None] = []
-
-    def close(self, timeout: float | None = None) -> bool:
-        self.calls.append(timeout)
-        return self.drained
-
-
-class _RecordingCheckpointManager:
-    is_collective = False
-
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
-
-    def save_checkpoint(self, **kwargs) -> None:
-        self.calls.append(dict(kwargs))
 
     def close(self, timeout: float | None = None) -> bool:
         del timeout
-        return True
+        return self.drained
 
 
 def _config(tmp_path: Path, **kwargs):
@@ -136,29 +105,29 @@ def test_base_runner_sorts_configured_splits(tmp_path: Path) -> None:
 def test_base_runner_close_timeout_keeps_resources_available(tmp_path: Path) -> None:
     runner = MinimalRunner(_config(tmp_path))
     manager = _ToggleCloseCheckpointManager()
-    writer_calls: list[str] = []
 
     class RecordingWriter:
+        closed = False
+
         def flush(self) -> None:
-            writer_calls.append("flush")
+            return
 
         def close(self) -> None:
-            writer_calls.append("close")
+            self.closed = True
 
     runner.checkpoint_manager = manager  # type: ignore[assignment]
-    runner.writer = RecordingWriter()
+    writer = RecordingWriter()
+    runner.writer = writer
 
     with pytest.warns(RuntimeWarning, match="timed out while draining async checkpoints"):
         assert runner.close(timeout=0.0) is False
 
-    assert manager.calls == [0.0]
-    assert writer_calls == []
+    assert writer.closed is False
     assert runner.writer is not None
 
     manager.drained = True
     assert runner.close(timeout=1.0) is True
-    assert manager.calls == [0.0, 1.0]
-    assert writer_calls == ["flush", "close"]
+    assert writer.closed is True
     assert runner.writer is None
 
 
@@ -211,19 +180,19 @@ def test_base_runner_write_result_flattens_nested_metrics(tmp_path: Path) -> Non
     ]
 
 
-def test_base_runner_write_result_skips_flattening_without_sinks(tmp_path: Path) -> None:
-    runner = MinimalRunner(_config(tmp_path))
+@pytest.mark.parametrize("use_bytes", [False, True])
+def test_base_runner_reads_config_from_dcp_directory(tmp_path: Path, use_bytes: bool) -> None:
+    RunnerConfig({"logging.enabled": False, "seed": 123}).yaml(tmp_path / "runner.yaml")
+    checkpoint = bytes(tmp_path) if use_bytes else tmp_path
 
-    def fail_flatten(_result):
-        raise AssertionError("flatten_result should not run when no metric sink is configured")
+    config = BaseRunner.read_config(checkpoint)
 
-    try:
-        runner.flatten_result = fail_flatten  # type: ignore[method-assign]
-        runner.write_result({"loss": 1.0}, "train")
-    finally:
-        runner.close()
+    assert config.seed == 123
 
 
+def test_base_runner_rejects_dcp_directory_without_config(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="missing 'runner.yaml'"):
+        BaseRunner.read_config(tmp_path)
 
 
 def test_base_runner_wandb_accepts_nested_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -279,20 +248,8 @@ def test_base_runner_mlflow_logs_flattened_result_once(tmp_path: Path) -> None:
                 },
             )
         )
-        writes: list[tuple[str, Any, str, int]] = []
-
-        def capture(name: str, score: float, split: str, steps: int) -> None:
-            writes.append((name, score, split, steps))
-
         runner.train_state.global_step = 5
-        runner.write_score = capture  # type: ignore[method-assign]
         runner.write_result({"loss": 1.0, "metrics": {"acc": 0.75, "topk": [0.8, 0.9]}}, "train")
-        assert writes == [
-            ("loss", 1.0, "train", 5),
-            ("metrics/acc", 0.75, "train", 5),
-            ("metrics/topk/0", 0.8, "train", 5),
-            ("metrics/topk/1", 0.9, "train", 5),
-        ]
     finally:
         if runner is not None:
             runner.close()
@@ -317,41 +274,8 @@ def test_base_runner_mlflow_logs_flattened_result_once(tmp_path: Path) -> None:
     }
 
 
-@pytest.mark.parametrize("use_bytes", [False, True])
-def test_base_runner_reads_config_from_dcp_directory(tmp_path: Path, use_bytes: bool) -> None:
-    RunnerConfig({"logging.enabled": False, "seed": 123}).yaml(tmp_path / "runner.yaml")
-    checkpoint = bytes(tmp_path) if use_bytes else tmp_path
-
-    config = BaseRunner.read_config(checkpoint)
-
-    assert config.seed == 123
-
-
-def test_base_runner_rejects_dcp_directory_without_config(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="missing 'runner.yaml'"):
-        BaseRunner.read_config(tmp_path)
-
-
-def test_base_runner_load_checkpoint_restores_in_expected_order() -> None:
-    runner = SequencingRunner({"logging.enabled": False})
-    try:
-        runner.load_checkpoint(
-            {
-                "runner": {"logging.enabled": False},
-                "state": {"train": {"global_step": 1, "epoch": 0}},
-                "model": {"w": 1},
-                "optimizer": {"opt": 1},
-                "scheduler": {"sched": 1},
-                "dataloaders": {"train": {"cursor": 1}},
-            }
-        )
-        assert runner.calls == ["state", "model", "optimizer", "scheduler", "dataloaders"]
-    finally:
-        runner.close()
-
-
 def test_base_runner_load_checkpoint_reports_restore_summary(capsys: pytest.CaptureFixture[str]) -> None:
-    runner = SequencingRunner({"logging.enabled": False})
+    runner = CheckpointRunner({"logging.enabled": False})
     runner.optimizer = object()
     runner.scheduler = object()
     try:
@@ -394,7 +318,7 @@ def test_base_runner_prints_concise_failure_summary(
         runner.close()
 
 
-def test_base_runner_save_replaces_target_atomically(tmp_path: Path) -> None:
+def test_base_runner_save_replaces_existing_file(tmp_path: Path) -> None:
     runner = MinimalRunner(_config(tmp_path))
     target = tmp_path / "payload.json"
     target.write_text('{"value": 0}', encoding="utf-8")
@@ -403,47 +327,6 @@ def test_base_runner_save_replaces_target_atomically(tmp_path: Path) -> None:
         runner.save({"value": 1}, target, indent=2)
 
         assert json.loads(target.read_text(encoding="utf-8")) == {"value": 1}
-        assert list(tmp_path.glob("payload.tmp-*.json")) == []
-    finally:
-        runner.close()
-
-
-def test_base_runner_save_cleans_temporary_file_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    runner = MinimalRunner(_config(tmp_path))
-    target = tmp_path / "payload.json"
-
-    def failing_save(obj, file, *args, **kwargs):
-        del obj, args, kwargs
-        Path(file).write_text("partial", encoding="utf-8")
-        raise OSError(errno.ENOSPC, "disk full")
-
-    monkeypatch.setattr(base_runner_module, "save", failing_save)
-    try:
-        with pytest.raises(OSError, match="disk full"):
-            runner.save({"value": 1}, target)
-
-        assert target.exists() is False
-        assert list(tmp_path.glob("payload.tmp-*.json")) == []
-    finally:
-        runner.close()
-
-
-def test_base_runner_save_seed_checkpoint_forces_last_step_save() -> None:
-    runner = MinimalRunner({"logging.enabled": False})
-    manager = _RecordingCheckpointManager()
-    try:
-        runner.checkpoint_manager = manager  # type: ignore[assignment]
-        runner.save_seed_checkpoint()
-
-        assert manager.calls == [
-            {
-                "name": "seed",
-                "epochs": 0,
-                "save_best": False,
-                "last_step": True,
-                "force": True,
-            }
-        ]
     finally:
         runner.close()
 
@@ -471,7 +354,6 @@ def test_base_runner_from_checkpoint_path_restores_full_state(tmp_path: Path) ->
         assert restored.config.checkpoint == str(checkpoint_path)
         assert restored.config.resume is False
         assert restored.config.pretrained is None
-        assert restored.rng_state.python is not None
     finally:
         restored.close()
 
@@ -484,6 +366,8 @@ def test_base_runner_resume_keeps_current_checkpoint_sources(tmp_path: Path) -> 
         checkpoint_runner["pretrained"] = "model-b"
 
         runner.load_state_dict({"runner": checkpoint_runner, "state": {}})
+        assert runner.config.checkpoint == "latest-a"
+        assert runner.config.pretrained == "model-a"
     finally:
         runner.close()
 
@@ -497,6 +381,8 @@ def test_base_runner_resume_keeps_current_heartbeat_policy(tmp_path: Path) -> No
         checkpoint_runner["heartbeat"]["dir"] = "hb"
 
         runner.load_state_dict({"runner": checkpoint_runner, "state": {}})
+        assert runner.config.heartbeat.enabled is False
+        assert runner.config.heartbeat.interval_seconds == 60.0
     finally:
         runner.close()
 

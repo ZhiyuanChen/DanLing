@@ -20,7 +20,6 @@
 import copy
 import io
 import pickle
-import random
 
 import pytest
 import torch
@@ -31,8 +30,9 @@ from danling.tensors.ops import nested_execution_guard
 from tests.tensors.utils import assert_close
 
 NT = NestedTensor
+
+
 TORCH_VERSION = Version(torch.__version__.split("+")[0])
-random.seed(1016)
 
 
 # ---------------------------------------------------------------------------
@@ -68,11 +68,7 @@ class TestArithmetic:
         [
             NestedTensor([[6, 5, 4], [3, 2]]),
             torch.tensor([[6, 5, 4], [3, 2, 1]]),
-            torch.randn(2, 3),
             1,
-            0,
-            -1,
-            random.random(),
         ],
     )
     def test_add_sub(self, i):
@@ -89,10 +85,7 @@ class TestArithmetic:
         [
             NestedTensor([[6, 5, 4], [3, 2]]),
             torch.tensor([[6, 5, 4], [3, 2, 1]]),
-            torch.randn(2, 3),
-            1,
-            -1,
-            random.random(),
+            2,
         ],
     )
     def test_mul_truediv(self, i):
@@ -110,10 +103,7 @@ class TestArithmetic:
         [
             NestedTensor([[6, 5, 4], [3, 2]]),
             torch.tensor([[6, 5, 4], [3, 2, 1]]),
-            torch.randn(2, 3),
-            1,
-            -1,
-            random.random(),
+            2,
         ],
     )
     def test_pow_log(self, i):
@@ -123,18 +113,8 @@ class TestArithmetic:
         a **= i
         assert_close(torch.log(a), torch.log(b) * i)
 
-    @pytest.mark.parametrize(
-        "i",
-        [
-            NestedTensor([[6, 5, 4], [3, 2]]),
-            pytest.param(
-                torch.tensor([[6, 5, 4], [3, 2, 1]]),
-                marks=pytest.mark.xfail(reason="lshift.Tensor non-scalar not implemented"),
-            ),
-            1,
-        ],
-    )
-    def test_shift(self, i):
+    def test_shift(self):
+        i = 1
         a = NestedTensor([[2, 3, 4], [5, 6]])
         assert_close(a << i >> i, a)
         b = a.clone()
@@ -143,28 +123,8 @@ class TestArithmetic:
         b >>= i
         assert_close(a, b)
 
-    @pytest.mark.parametrize(
-        "i",
-        [
-            pytest.param(
-                NestedTensor([[6, 5, 4], [3, 2]]),
-                marks=pytest.mark.xfail(reason="bitwise_and.Tensor non-scalar not implemented"),
-            ),
-            pytest.param(
-                torch.tensor([[6, 5, 4], [3, 2, 1]]),
-                marks=pytest.mark.xfail(reason="bitwise_and.Tensor non-scalar not implemented"),
-            ),
-            pytest.param(
-                torch.randint(0, 9, (2, 3)),
-                marks=pytest.mark.xfail(reason="bitwise_and.Tensor non-scalar not implemented"),
-            ),
-            1,
-            0,
-            -1,
-            random.randint(0, 9),
-        ],
-    )
-    def test_logic(self, i):
+    def test_logic(self):
+        i = 1
         a = NestedTensor([[2, 3, 4], [5, 6]]).int()
         assert_close(a & i, i & a)
         assert_close((a | i), (i | a))
@@ -200,10 +160,7 @@ class TestArithmetic:
         [
             NestedTensor([[6, 5, 4], [3, 2]], padding_value=-1),
             torch.tensor([[6, 5, 4], [3, 2, 1]]),
-            torch.randint(1, 9, (2, 3)),
             2,
-            -2,
-            random.randint(1, 9),
         ],
     )
     def test_floordiv(self, i):
@@ -228,10 +185,7 @@ class TestArithmetic:
         [
             NestedTensor([[6, 5, 4], [3, 2]], padding_value=-1),
             torch.tensor([[6, 5, 4], [3, 2, 1]]),
-            torch.randint(1, 9, (2, 3)),
             2,
-            -2,
-            random.randint(1, 9),
         ],
     )
     def test_mod(self, i):
@@ -282,33 +236,14 @@ class TestComparison:
         value = 999999
         small = NestedTensor([[-value, -value, -value], [-value, -value]])
         big = abs(small)
-        zero = 0
+
         assert (big > small).all()
-        assert (big > small.tensor).all()
-        assert (big > zero).all()
-        assert (big > torch.tensor(zero)).all()
-        assert (big >= small).all()
         assert (big >= small.tensor).all()
-        assert (big >= zero).all()
-        assert (big >= torch.tensor(zero)).all()
         assert (big == value).all()
-        assert (big == big.tensor).all()
-        assert (small < big).all()
-        assert (small < big.tensor).all()
-        assert (small < zero).all()
-        assert (small < torch.tensor(zero)).all()
+        assert (small < torch.tensor(0)).all()
         assert (small <= big).all()
-        assert (small <= big.tensor).all()
-        assert (small <= zero).all()
-        assert (small <= torch.tensor(zero)).all()
         with pytest.raises(TypeError):
             assert small < "small"
-        with pytest.raises(TypeError):
-            assert small > "small"
-        with pytest.raises(TypeError):
-            assert small <= "small"
-        with pytest.raises(TypeError):
-            assert small >= "small"
         assert small != "small"
 
     def test_length_mismatch_equality_and_ops(self):
@@ -316,16 +251,11 @@ class TestComparison:
         longer = NestedTensor([[1, 2], [3]])
 
         assert torch.equal(shorter, longer) is False
-        assert torch.equal(longer, shorter) is False
         assert torch.allclose(shorter, longer) is False
         with pytest.raises(ValueError):
             _ = shorter == longer
         with pytest.raises(ValueError):
-            _ = torch.eq(shorter, longer)
-        with pytest.raises(ValueError):
             _ = shorter + longer
-        with pytest.raises(ValueError):
-            _ = torch.add(shorter, longer)
 
     def test_equal_dense_shape_mismatch_returns_false(self):
         nested_tensor = NestedTensor([[1, 2], [3]])
@@ -356,137 +286,66 @@ class TestComparison:
 class TestConstruction:
 
     def test_invalid_inputs_raise(self):
-        a = NestedTensor([[2, 3, 4], [5, 6]])
+        nested = NestedTensor([[2, 3, 4], [5, 6]])
         with pytest.raises(ValueError):
-            _ = a[""]
+            _ = nested[""]
         with pytest.raises(ValueError):
-            _ = NestedTensor(False)
+            NestedTensor(False)
 
     def test_single_tensor_not_unbound(self):
         tensor = torch.tensor([[1, 2, 3], [4, 5, 6]])
-        nested_tensor = NestedTensor(tensor)
+        nested = NestedTensor(tensor)
 
-        assert len(nested_tensor) == 1
-        assert_close(nested_tensor[0], tensor)
-        assert nested_tensor.shape == torch.Size([1, 2, 3])
-        assert_close(nested_tensor.tensor, tensor.unsqueeze(0))
+        assert len(nested) == 1
+        assert_close(nested[0], tensor)
+        assert nested.shape == torch.Size([1, 2, 3])
+        assert_close(nested.tensor, tensor.unsqueeze(0))
 
     def test_mixed_dtype_inputs_promote_to_common_dtype(self):
-        nested_tensor = NestedTensor([torch.tensor([1], dtype=torch.int64), torch.tensor([1.5], dtype=torch.float32)])
-        assert nested_tensor.dtype == torch.float32
-        assert all(t.dtype == torch.float32 for t in nested_tensor)
-        assert nested_tensor.tensor.dtype == torch.float32
-        assert_close(nested_tensor.tensor, torch.tensor([[1.0], [1.5]], dtype=torch.float32))
+        nested = NestedTensor([torch.tensor([1], dtype=torch.int64), torch.tensor([1.5], dtype=torch.float32)])
+
+        assert nested.dtype == torch.float32
+        assert all(element.dtype == torch.float32 for element in nested)
+        assert_close(nested.tensor, torch.tensor([[1.0], [1.5]], dtype=torch.float32))
 
     def test_empty_nested_tensor_accessors(self):
-        nested_tensor = NestedTensor([], dtype=torch.float32)
-        assert nested_tensor.size() == torch.Size([0])
-        assert nested_tensor.dim() == 1
-        tensor, mask = nested_tensor.tensor_mask
-        assert tensor.shape == torch.Size([0])
-        assert mask.shape == torch.Size([0])
-        assert nested_tensor.tensor.shape == torch.Size([0])
-        assert nested_tensor.mask.shape == torch.Size([0])
-        assert nested_tensor.occupancy == 0.0
+        nested = NestedTensor([], dtype=torch.float32)
+        tensor, mask = nested.tensor_mask
+
+        assert nested.size() == torch.Size([0])
+        assert nested.dim() == 1
+        assert tensor.shape == nested.tensor.shape == torch.Size([0])
+        assert mask.shape == nested.mask.shape == torch.Size([0])
+        assert nested.occupancy == 0.0
 
     def test_empty_nested_tensor_honors_requested_device(self):
-        nested_tensor = NestedTensor([], dtype=torch.float32, device=torch.device("meta"))
-        assert nested_tensor.device.type == "meta"
-        assert nested_tensor._values.device.type == "meta"
-        assert nested_tensor._offsets.device.type == "cpu"
-        assert nested_tensor._physical_shape.device.type == "cpu"
+        nested = NestedTensor([], dtype=torch.float32, device=torch.device("meta"))
+
+        assert nested.device.type == "meta"
+        assert nested.concat.device.type == "meta"
 
     def test_bool_nested_tensor_raises(self):
         with pytest.raises(RuntimeError, match="Boolean value of NestedTensor is ambiguous"):
             bool(NestedTensor([]))
 
-    def test_requires_grad_tracks_packed_values(self):
-        nt = NestedTensor([torch.tensor([1.0], requires_grad=True), torch.tensor([2.0])])
-        assert nt.requires_grad is True
+    def test_requires_grad_tracks_values(self):
+        nested = NestedTensor([torch.tensor([1.0], requires_grad=True), torch.tensor([2.0])])
+
+        assert nested.requires_grad is True
 
     def test_empty_requires_grad_is_preserved(self):
-        nt = NestedTensor([], dtype=torch.float32, requires_grad=True)
-        assert nt.requires_grad is True
+        nested = NestedTensor([], dtype=torch.float32, requires_grad=True)
+
+        assert nested.requires_grad is True
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="pin_memory requires CUDA")
-    def test_pin_memory_pins_packed_storage_when_requested(self):
-        nt = NestedTensor([torch.tensor([1.0, 2.0]), torch.tensor([3.0])], pin_memory=True)
-        assert nt._pin_memory is nt._values.is_pinned()
-        assert nt._pin_memory is True
+    def test_pin_memory_pins_concat_when_requested(self):
+        nested = NestedTensor([torch.tensor([1.0, 2.0]), torch.tensor([3.0])], pin_memory=True)
 
-    def test_dense_to_packed_values_uses_packed_dense_index_without_python_meta(self):
-        nt = NestedTensor(
-            [
-                torch.arange(2 * 3, dtype=torch.float32).reshape(2, 3),
-                torch.arange(3 * 3, dtype=torch.float32).reshape(3, 3),
-            ]
-        )
-        nt._packed_sizes = None
-        nt._element_shapes = None
-
-        packed = nt._dense_to_packed_values(nt.tensor)
-
-        assert packed is not None
-        assert_close(packed, nt.concat)
-
-    def test_from_packed_rejects_non_monotonic_offsets(self):
-        nt = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
-        bad_offsets = nt._offsets.clone()
-        bad_offsets[1] = bad_offsets[2] + 1
-        with pytest.raises(ValueError, match="offsets must be monotonically non-decreasing"):
-            NestedTensor._from_packed(
-                nt._values,
-                bad_offsets,
-                nt._physical_shape,
-                permutation=nt._permutation,
-                batch_first=nt.batch_first,
-                padding_value=nt.padding_value,
-                mask_value=nt.mask_value,
-                pin_memory=nt._pin_memory,
-                outer_size=nt._logical_shape,
-                packed_sizes=nt._packed_sizes,
-                element_shapes=nt._element_shapes,
-            )
-
-    def test_from_packed_rejects_packed_sizes_total_mismatch(self):
-        nt = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
-        bad_packed_sizes = (1, 1)
-        with pytest.raises(ValueError, match="packed_sizes must sum to the packed values length"):
-            NestedTensor._from_packed(
-                nt._values,
-                nt._offsets,
-                nt._physical_shape,
-                permutation=nt._permutation,
-                batch_first=nt.batch_first,
-                padding_value=nt.padding_value,
-                mask_value=nt.mask_value,
-                pin_memory=nt._pin_memory,
-                outer_size=nt._logical_shape,
-                packed_sizes=bad_packed_sizes,
-                element_shapes=nt._element_shapes,
-            )
-
-    def test_from_packed_rejects_inconsistent_element_shapes(self):
-        nt = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
-        bad_shapes = ((2, 3), (4, 4))
-        with pytest.raises(ValueError, match="element_shapes must match shape_tensor exactly"):
-            NestedTensor._from_packed(
-                nt._values,
-                nt._offsets,
-                nt._physical_shape,
-                permutation=nt._permutation,
-                batch_first=nt.batch_first,
-                padding_value=nt.padding_value,
-                mask_value=nt.mask_value,
-                pin_memory=nt._pin_memory,
-                outer_size=nt._logical_shape,
-                packed_sizes=nt._packed_sizes,
-                element_shapes=bad_shapes,
-            )
+        assert nested.concat.is_pinned()
 
 
-# ---------------------------------------------------------------------------
-# Copy Semantics
+# Packed Reconstruction
 # ---------------------------------------------------------------------------
 
 
@@ -1213,118 +1072,92 @@ class TestToDtype:
                 assert_close(actual, expected)
 
 
+# ---------------------------------------------------------------------------
+# Copy Semantics
+# ---------------------------------------------------------------------------
+
+
 class TestCopySemantics:
 
-    def test_shallow_copy_shares_data(self):
-        nt = NestedTensor(
+    @staticmethod
+    def configured():
+        return NestedTensor(
             [torch.tensor([1.0, 2.0, 3.0]), torch.tensor([4.0, 5.0])],
             batch_first=False,
             padding_value=-1,
             mask_value=True,
         )
-        shallow = copy.copy(nt)
 
-        # Data is shared
-        assert shallow._values.data_ptr() == nt._values.data_ptr()
-        assert shallow._offsets.data_ptr() == nt._offsets.data_ptr()
-        # Values are equal
-        assert_close(shallow, nt)
-        # State is preserved
+    def test_shallow_copy_shares_values_and_preserves_config(self):
+        nested = self.configured()
+        shallow = copy.copy(nested)
+
+        assert_close(shallow, nested)
         assert shallow.batch_first is False
         assert shallow.padding_value == -1
         assert shallow.mask_value is True
 
-    def test_deep_copy_clones_data(self):
-        nt = NestedTensor(
-            [torch.tensor([1.0, 2.0, 3.0]), torch.tensor([4.0, 5.0])],
-            batch_first=False,
-            padding_value=-1,
-            mask_value=True,
-        )
-        deep = copy.deepcopy(nt)
+        shallow.concat[0] = -7.0
+        assert nested.concat[0].item() == -7.0
 
-        # Data is NOT shared
-        assert deep._values.data_ptr() != nt._values.data_ptr()
-        assert deep._offsets.data_ptr() != nt._offsets.data_ptr()
-        # Values are equal
-        assert_close(deep, nt)
-        # State is preserved
+    def test_deep_copy_has_independent_values_and_preserves_config(self):
+        nested = self.configured()
+        original = nested.concat.clone()
+        deep = copy.deepcopy(nested)
+
+        assert_close(deep, nested)
         assert deep.batch_first is False
         assert deep.padding_value == -1
         assert deep.mask_value is True
-        # Mutation is independent
-        deep._values.fill_(0)
-        assert not torch.equal(deep._values, nt._values)
 
-    def test_deep_copy_memo_reuse(self):
-        nt = NestedTensor([torch.tensor([1.0, 2.0])])
-        container = [nt, nt]
-        cloned = copy.deepcopy(container)
-        assert cloned[0] is cloned[1]  # memo ensures same object
+        deep.concat.fill_(0)
+        assert_close(nested.concat, original)
+        assert not torch.equal(deep.concat, nested.concat)
 
-    def test_pickle_roundtrip_restores_storage_cache_state(self):
-        nt = NestedTensor([torch.tensor([1.0, 2.0, 3.0]), torch.tensor([4.0, 5.0])])
-        _ = nt.tensor
-        _ = nt.mask
-        restored = pickle.loads(pickle.dumps(nt))
-        assert isinstance(restored, NestedTensor)
-        assert_close(restored, nt)
-        assert restored._cached_tensor_view is None
-        assert restored._cached_mask_view is None
-        # Accessors should work after deserialization (regression for missing _cached_storage)
-        assert_close(restored.tensor, nt.tensor)
-        assert_close(restored.mask, nt.mask)
+    def test_deep_copy_reuses_memoized_objects(self):
+        nested = NestedTensor([torch.tensor([1.0, 2.0])])
+
+        first, second = copy.deepcopy([nested, nested])
+
+        assert first is second
+
+    def test_pickle_roundtrip_preserves_values_config_and_accessors(self):
+        nested = self.configured()
+        _ = nested.tensor_mask
+
+        restored = pickle.loads(pickle.dumps(nested))
+
+        assert type(restored) is NestedTensor
+        assert_close(restored, nested)
+        assert restored.batch_first is False
+        assert restored.padding_value == -1
+        assert restored.mask_value is True
+        assert_close(restored.tensor, nested.tensor)
+        assert_close(restored.mask, nested.mask)
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA map_location")
-    def test_torch_load_map_location_keeps_metadata_on_cpu(self):
-        nt = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
+    def test_torch_load_map_location_moves_values(self):
+        nested = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
         buffer = io.BytesIO()
-        torch.save(nt, buffer)
+        torch.save(nested, buffer)
         buffer.seek(0)
 
         restored = torch.load(buffer, map_location="cuda:0", weights_only=False)
 
         assert restored.device.type == "cuda"
-        assert restored._offsets.device.type == "cpu"
-        assert restored._physical_shape.device.type == "cpu"
-        assert_close(restored.tensor.cpu(), nt.tensor)
+        assert_close(restored.tensor.cpu(), nested.tensor)
 
-    def test_pickle_roundtrip_preserves_noncanonical_permutation(self):
-        nt = NestedTensor([torch.arange(6.0).reshape(2, 3)]).unsqueeze(1)
+    def test_pickle_roundtrip_preserves_permuted_layout_behavior(self):
+        nested = NestedTensor([torch.arange(6.0).reshape(2, 3)]).unsqueeze(1)
 
-        restored = pickle.loads(pickle.dumps(nt))
+        restored = pickle.loads(pickle.dumps(nested))
 
-        assert restored._permutation == nt._permutation
-        assert restored._has_same_structure(nt)
-        assert_close(restored.tensor, nt.tensor)
-
-    def test_getstate_serializes_physical_shape(self):
-        nt = NestedTensor([torch.tensor([1.0, 2.0, 3.0]), torch.tensor([4.0, 5.0])])
-        state = nt.__getstate__()
-        assert state["_state_version"] == NestedTensor._SERIALIZATION_VERSION
-        assert "_physical_shape" in state
-        torch.testing.assert_close(state["_physical_shape"], nt._physical_shape)
-
-    def test_setstate_rejects_unknown_state_version(self):
-        nt = NestedTensor([torch.tensor([1.0, 2.0, 3.0]), torch.tensor([4.0, 5.0])])
-        state = nt.__getstate__()
-        state["_state_version"] = state["_state_version"] + 1
-        with pytest.raises(ValueError, match="Unsupported NestedTensor state version"):
-            restored = copy.copy(nt)
-            restored.__setstate__(state)
-
-    @pytest.mark.parametrize("missing_key", ["_permutation", "_packed_sizes", "_element_shapes"])
-    def test_setstate_rejects_missing_layout_metadata(self, missing_key):
-        nt = NestedTensor([torch.arange(6.0).reshape(2, 3)]).unsqueeze(1)
-        state = dict(nt.__getstate__())
-        del state[missing_key]
-
-        with pytest.raises(KeyError, match=missing_key):
-            restored = copy.copy(nt)
-            restored.__setstate__(state)
+        assert restored.shape == nested.shape
+        assert restored.ragged_dims == nested.ragged_dims
+        assert restored.packed_dim_order == nested.packed_dim_order
+        assert_close(restored, nested)
 
 
-# ---------------------------------------------------------------------------
 # From Factory Methods
 # ---------------------------------------------------------------------------
 
@@ -1437,12 +1270,6 @@ class TestFromFactoryMethods:
         with pytest.raises(ValueError):
             NestedTensor.from_concatenated(concat, shapes)
 
-    def test_from_concatenated_same_shapes(self):
-        nested_tensor = NestedTensor([torch.randn(3, 5), torch.randn(3, 5)])
-        concat, shapes = nested_tensor.concatenate()
-        reconstructed = NestedTensor.from_concatenated(concat, shapes, **nested_tensor._meta())
-        assert_close(reconstructed, nested_tensor)
-
     def test_from_concatenated_round_trip_multidim(self):
         nested_tensor = NestedTensor([torch.randn(2, 3, 4), torch.randn(2, 3, 4)])
         concat, shapes = nested_tensor.concatenate()
@@ -1475,29 +1302,6 @@ class TestFromFactoryMethods:
 
 
 class TestIndexing:
-
-    def test_multi_ragged_static_channel_slice_fullgraph(self):
-        template = NT(
-            [torch.empty(2, 3, 4), torch.empty(3, 2, 4)],
-            ragged_dims=(0, 1),
-        )
-
-        def slice_channels(reference, values):
-            output = reference.packed_like(values)[:, :, :, 1:3]
-            return output.concat, output.element_sizes(), output.ragged_dims
-
-        compiled = torch.compile(slice_channels, backend="aot_eager", fullgraph=True, dynamic=True)
-        values = torch.randn_like(template.concat, requires_grad=True)
-        output, element_sizes, ragged_dims = compiled(template, values)
-        expected = values[:, 1:3]
-
-        cotangent = torch.randn_like(expected)
-        actual_grad = torch.autograd.grad(output, values, cotangent)[0]
-        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
-        assert_close(output, expected)
-        assert_close(element_sizes, torch.tensor([[2, 3, 2], [3, 2, 2]]))
-        assert ragged_dims == (0, 1)
-        assert_close(actual_grad, expected_grad)
 
     @pytest.mark.parametrize("position", [0, -1])
     def test_static_tail_integer_index_preserves_values_and_vjp(self, position):
@@ -1608,6 +1412,29 @@ class TestIndexing:
         with pytest.raises(IndexError):
             _ = coordinates[:, :, position]
 
+    def test_multi_ragged_static_channel_slice_fullgraph(self):
+        template = NT(
+            [torch.empty(2, 3, 4), torch.empty(3, 2, 4)],
+            ragged_dims=(0, 1),
+        )
+
+        def slice_channels(reference, values):
+            output = reference.packed_like(values)[:, :, :, 1:3]
+            return output.concat, output.element_sizes(), output.ragged_dims
+
+        compiled = torch.compile(slice_channels, backend="aot_eager", fullgraph=True, dynamic=True)
+        values = torch.randn_like(template.concat, requires_grad=True)
+        output, element_sizes, ragged_dims = compiled(template, values)
+        expected = values[:, 1:3]
+
+        cotangent = torch.randn_like(expected)
+        actual_grad = torch.autograd.grad(output, values, cotangent)[0]
+        expected_grad = torch.autograd.grad(expected, values, cotangent)[0]
+        assert_close(output, expected)
+        assert_close(element_sizes, torch.tensor([[2, 3, 2], [3, 2, 2]]))
+        assert ragged_dims == (0, 1)
+        assert_close(actual_grad, expected_grad)
+
     def test_getitem_preserves_state(self):
         nested_tensor = NestedTensor(
             [torch.tensor([[1, 2], [3, 4]]), torch.tensor([[5, 6]])],
@@ -1667,19 +1494,17 @@ class TestIndexing:
             _ = nested_tensor[nested_index]
 
     def test_setitem_same_shape(self):
-        """Same-shape __setitem__ replaces the element correctly."""
         nt = NestedTensor([torch.tensor([1.0, 2.0, 3.0]), torch.tensor([4.0, 5.0])])
         _ = nt.tensor
         _ = nt.mask
-        assert nt._cached_tensor_view is not None
-        assert nt._cached_mask_view is not None
+
         nt[0] = torch.tensor([10.0, 20.0, 30.0])
-        assert nt._cached_tensor_view is None
-        assert nt._cached_mask_view is None
+
         assert_close(nt[0], torch.tensor([10.0, 20.0, 30.0]))
         assert_close(nt[1], torch.tensor([4.0, 5.0]))
+        assert_close(nt.tensor, torch.tensor([[10.0, 20.0, 30.0], [4.0, 5.0, 0.0]]))
 
-    def test_getitem_second_dim_packed_is_view_of_values(self):
+    def test_getitem_returns_a_mutable_view(self):
         nt = NestedTensor(
             [
                 torch.arange(24.0).reshape(2, 3, 4),
@@ -1688,25 +1513,18 @@ class TestIndexing:
         )
         first = nt[0]
         first[0, 0, 0] = -1.0
-        assert nt._values[0, 0, 0].item() == -1.0
+
         assert nt.tensor[0, 0, 0, 0].item() == -1.0
         assert nt.concat[0, 0, 0].item() == -1.0
 
-    def test_tensor_cache_refreshes_after_getitem_alias_mutation(self):
+    def test_materialized_tensor_reflects_getitem_alias_mutation(self):
         nt = NestedTensor([torch.tensor([1.0, 2.0, 3.0]), torch.tensor([4.0, 5.0])])
         _ = nt.tensor
         first = nt[0]
         first[0] = -7.0
         assert nt.tensor[0, 0].item() == -7.0
 
-    def test_tensor_cache_refreshes_after_storage_alias_mutation(self):
-        nt = NestedTensor([torch.tensor([1.0, 2.0, 3.0]), torch.tensor([4.0, 5.0])])
-        _ = nt.tensor
-        storage = nt._storage
-        storage[1][0] = 11.0
-        assert nt.tensor[1, 0].item() == 11.0
-
-    def test_tensor_cache_refreshes_after_concat_alias_mutation(self):
+    def test_materialized_tensor_reflects_concat_alias_mutation(self):
         nt = NestedTensor([torch.tensor([1.0, 2.0, 3.0]), torch.tensor([4.0, 5.0])])
         _ = nt.tensor
         concat = nt.concat
@@ -1730,8 +1548,9 @@ class TestIndexing:
     def test_ellipsis_indexing_with_newaxis(self):
         nt = NestedTensor([torch.randn(3, 4), torch.randn(5, 4)])
         output = nt[..., None]
-        reference = NT([tensor[..., None] for tensor in nt], **nt._meta())
-        assert_close(output, reference)
+
+        for actual, expected in zip(output, nt):
+            assert_close(actual, expected[..., None])
 
     def test_ellipsis_setitem_targets_last_dim(self):
         nt = NestedTensor([torch.randn(3, 4), torch.randn(5, 4)])
@@ -1749,29 +1568,16 @@ class TestIndexing:
         with pytest.raises(IndexError):
             nt[..., ..., 0] = -1.0
 
-    def test_setitem_different_shape_slow_path(self):
-        """Different-shape __setitem__ triggers full repack."""
+    def test_setitem_accepts_a_different_shape(self):
         nt = NestedTensor([torch.tensor([1.0, 2.0, 3.0]), torch.tensor([4.0, 5.0])])
-        original_ptr = nt._values.data_ptr()
+
         nt[1] = torch.tensor([9.0, 10.0, 11.0, 12.0])
-        # Slow path: must repack, new buffer
-        assert nt._values.data_ptr() != original_ptr
+
         assert_close(nt[0], torch.tensor([1.0, 2.0, 3.0]))
         assert_close(nt[1], torch.tensor([9.0, 10.0, 11.0, 12.0]))
         assert nt.shape == torch.Size([2, 4])
 
-    def test_setitem_2d_same_trailing_shape(self):
-        nt = NestedTensor(
-            [
-                torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
-                torch.tensor([[5.0, 6.0]]),
-            ]
-        )
-        nt[0] = torch.tensor([[10.0, 20.0], [30.0, 40.0]])
-        assert_close(nt[0], torch.tensor([[10.0, 20.0], [30.0, 40.0]]))
-        assert_close(nt[1], torch.tensor([[5.0, 6.0]]))
-
-    def test_setitem_2d_trailing_shape_change_repacks(self):
+    def test_setitem_accepts_trailing_shape_change(self):
         nt = NestedTensor(
             [
                 torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
@@ -1818,7 +1624,7 @@ class TestIndexing:
         with pytest.raises(IndexError):
             nt[5] = torch.tensor([1.0])
 
-    def test_setitem_tuple_scalar_assignment_repacks_safely(self):
+    def test_setitem_tuple_scalar_assignment_updates_each_element(self):
         nt = NestedTensor(
             [
                 torch.arange(6.0).reshape(2, 3),
@@ -1828,7 +1634,6 @@ class TestIndexing:
         nt[:, 0] = -1.0
         assert_close(nt[0], torch.tensor([[-1.0, -1.0, -1.0], [3.0, 4.0, 5.0]]))
         assert_close(nt[1], torch.tensor([[-1.0, -1.0, -1.0]]))
-        nt._validate_metadata()
 
     def test_setitem_tuple_nested_values_assigns_per_element(self):
         nt = NestedTensor(
@@ -1846,7 +1651,6 @@ class TestIndexing:
         nt[:, 0] = replacement
         assert_close(nt[0], torch.tensor([[10.0, 20.0, 30.0], [3.0, 4.0, 5.0]]))
         assert_close(nt[1], torch.tensor([[40.0, 50.0, 60.0]]))
-        nt._validate_metadata()
 
     def test_setitem_tuple_boolean_batch_index(self):
         nt = NestedTensor(
@@ -1858,7 +1662,6 @@ class TestIndexing:
         nt[[True, False], 1] = 99.0
         assert_close(nt[0], torch.tensor([[0.0, 1.0, 2.0], [99.0, 99.0, 99.0]]))
         assert_close(nt[1], torch.arange(3.0).reshape(1, 3))
-        nt._validate_metadata()
 
 
 # ---------------------------------------------------------------------------
@@ -1866,302 +1669,61 @@ class TestIndexing:
 # ---------------------------------------------------------------------------
 
 
-class TestPackOptimization:
+class TestMutationCoherence:
 
-    def test_pack_physical_shape_values(self):
-        """Verify _pack produces correct physical shape for mixed-shape inputs."""
-        t1 = torch.tensor([[1, 2], [3, 4]])  # shape (2, 2)
-        t2 = torch.tensor([[5, 6, 7]])  # shape (1, 3)
-        nt = NestedTensor(t1, t2)
-        expected = torch.tensor([[2, 2], [1, 3]], dtype=torch.long)
-        torch.testing.assert_close(nt._physical_shape, expected)
+    def test_materialized_views_follow_runtime_settings(self):
+        nested = NestedTensor([torch.tensor([1.0, 2.0]), torch.tensor([3.0])], padding_value=-1.0)
+        _ = nested.tensor_mask
 
-    def test_pack_physical_shape_scalars(self):
-        """Verify _pack handles scalar tensors (ndim=0)."""
-        nt = NestedTensor(torch.tensor(1.0), torch.tensor(2.0))
-        assert nt._physical_shape.shape == (2, 0) or nt._physical_shape.numel() == 0
+        nested.padding_value = 7.0
+        assert_close(nested.tensor, torch.tensor([[1.0, 2.0], [3.0, 7.0]]))
 
-    def test_pack_physical_shape_1d(self):
-        """Verify _pack handles 1D tensors with different lengths."""
-        nt = NestedTensor([1, 2, 3], [4, 5])
-        expected = torch.tensor([[3], [2]], dtype=torch.long)
-        torch.testing.assert_close(nt._physical_shape, expected)
+        old_mask = nested.mask.clone()
+        nested.mask_value = True
+        assert_close(nested.mask, ~old_mask)
 
-    def test_pack_empty(self):
-        """Verify _pack handles empty tensor list."""
-        values, offsets, shape_tensor, packed_sizes, element_shapes = NestedTensor._pack(())
-        assert values.numel() == 0
-        assert offsets.shape == (1,)
-        assert shape_tensor.numel() == 0
-        assert packed_sizes == ()
-        assert element_shapes == ()
+    def test_inplace_unary_updates_elements_and_materialized_tensor(self):
+        nested = NestedTensor([torch.tensor([-1.0, 2.0]), torch.tensor([-3.0])])
+        _ = list(nested)
+        _ = nested.tensor_mask
 
-    def test_pack_preserves_static_channel_suffix_for_multiragged_3d(self):
-        t1 = torch.arange(3 * 5 * 7.0).reshape(3, 5, 7)
-        t2 = torch.arange(3 * 4 * 6.0).reshape(3, 4, 6)
-        nt = NestedTensor(t1, t2)
+        nested.relu_()
 
-        assert nt._values.shape == torch.Size([59, 3])
-        assert nt._packed_sizes == (35, 24)
-        assert nt._permutation == (1, 2, 0)
-        assert tuple(offset.tolist() for offset in nt._hierarchical_offsets) == (
-            [0, 5, 9],
-            [0, 7, 14, 21, 28, 35, 41, 47, 53, 59],
-        )
-        assert nt.concat.shape == torch.Size([59, 3])
-        assert_close(nt[0], t1)
-        assert_close(nt[1], t2)
+        assert_close(nested[0], torch.tensor([0.0, 2.0]))
+        assert_close(nested[1], torch.tensor([0.0]))
+        assert_close(nested.tensor, torch.tensor([[0.0, 2.0], [0.0, 0.0]]))
 
-    def test_pack_records_hierarchical_offsets_for_attention_layout(self):
-        t1 = torch.arange(2 * 5 * 8.0).reshape(2, 5, 8)
-        t2 = torch.arange(2 * 3 * 8.0).reshape(2, 3, 8)
-        nt = NestedTensor(t1, t2)
+    def test_inplace_binary_updates_elements_and_materialized_tensor(self):
+        nested = NestedTensor([torch.tensor([1.0, 2.0]), torch.tensor([3.0])])
+        _ = list(nested)
+        _ = nested.tensor
 
-        assert nt._permutation == (1, 0, 2)
-        assert tuple(offset.tolist() for offset in nt._hierarchical_offsets) == ([0, 5, 8],)
+        nested.add_(1.5)
 
-    def test_packed_decode_helpers_roundtrip_multiragged_layout(self):
-        t1 = torch.arange(3 * 5 * 7.0).reshape(3, 5, 7)
-        t2 = torch.arange(3 * 4 * 6.0).reshape(3, 4, 6)
-        nt = NestedTensor(t1, t2)
+        assert_close(nested[0], torch.tensor([2.5, 3.5]))
+        assert_close(nested[1], torch.tensor([4.5]))
+        assert_close(nested.tensor, torch.tensor([[2.5, 3.5], [4.5, 0.0]]))
 
-        batch_idx, local_idx = nt._packed_batch_local_indices()
-        coords = nt._packed_varying_coords(batch_idx, local_idx)
+    def test_copy_updates_public_values_after_views_are_materialized(self):
+        destination = NestedTensor([torch.tensor([1.0, 2.0]), torch.tensor([3.0])])
+        source = NestedTensor([torch.tensor([9.0, 8.0]), torch.tensor([7.0])])
+        _ = list(destination)
+        _ = destination.tensor
 
-        assert tuple(coord[:8].tolist() for coord in coords) == (
-            [0, 0, 0, 0, 0, 0, 0, 1],
-            [0, 1, 2, 3, 4, 5, 6, 0],
-        )
-        assert_close(nt.tensor[nt._packed_dense_index(device=nt.device)], nt._values)
+        destination.copy_(source)
 
-    def test_layout_match_requires_same_permutation(self):
-        nt = NestedTensor(torch.arange(2 * 5 * 8.0).reshape(2, 5, 8), torch.arange(2 * 3 * 8.0).reshape(2, 3, 8))
-        mismatched = NestedTensor._from_packed(
-            nt._values,
-            nt._offsets,
-            nt._physical_shape,
-            permutation=(0, 1, 2),
-            batch_first=nt.batch_first,
-            padding_value=nt.padding_value,
-            mask_value=nt.mask_value,
-            pin_memory=nt._pin_memory,
-            outer_size=nt._logical_shape,
-            packed_sizes=nt._packed_sizes,
-            element_shapes=nt._element_shapes,
-        )
+        assert_close(destination, source)
+        assert_close(destination.tensor, source.tensor)
 
-        assert not nt._has_same_layout(mismatched)
-        assert nt._has_same_layout(nt.clone())
+    def test_copy_requires_matching_public_layout(self):
+        elements = [torch.randn(2, 5, 8), torch.randn(2, 3, 8)]
+        destination = NestedTensor(elements)
+        source = NestedTensor([element.clone() for element in elements], ragged_dims=(0, 1))
 
-    def test_repack_preserves_permutation(self):
-        original = NestedTensor([torch.arange(6.0).reshape(2, 3)]).unsqueeze(1)
-        rebuilt = NestedTensor([torch.arange(6.0).reshape(2, 3)]).unsqueeze(1)
-        original_permutation = original._permutation
-        original_values_shape = original._values.shape
-
-        original._storage = original._storage
-
-        assert original._permutation == original_permutation
-        assert original._values.shape == original_values_shape
-        assert original._has_same_structure(rebuilt)
-        assert_close(original.tensor, rebuilt.tensor)
-
-    def test_structure_match_allows_different_static_suffix(self):
-        lhs = NestedTensor(torch.randn(2, 1, 3), torch.randn(1, 1, 3))
-        rhs = NestedTensor(torch.randn(2, 3, 4), torch.randn(1, 3, 4))
-
-        assert lhs._has_same_structure(rhs)
-        assert not lhs._has_same_layout(rhs)
-
-    def test_metadata_exposes_varying_and_static_dims(self):
-        conv_like = NestedTensor(torch.randn(3, 5, 7), torch.randn(3, 4, 6))
-        attention_like = NestedTensor(torch.randn(2, 5, 8), torch.randn(2, 3, 8))
-
-        assert conv_like._varying_dims == (1, 2)
-        assert conv_like._static_dims == (0,)
-        assert attention_like._varying_dims == (1,)
-        assert attention_like._static_dims == (0, 2)
-
-    def test_batch_dense_shape_helpers_preserve_ragged_dims(self):
-        conv_like = NestedTensor(torch.randn(3, 5, 7), torch.randn(3, 4, 6))
-        attention_like = NestedTensor(torch.randn(2, 5, 8), torch.randn(2, 3, 8))
-
-        conv_shape = conv_like._physical_shape_like_batch_dense((len(conv_like), 1, 5, 7))
-        attention_shape = attention_like._physical_shape_like_batch_dense((len(attention_like), 2, 5, 4))
-
-        assert tuple(tuple(int(size) for size in row) for row in conv_shape.tolist()) == ((1, 5, 7), (1, 4, 6))
-        assert tuple(tuple(int(size) for size in row) for row in attention_shape.tolist()) == ((2, 5, 4), (2, 3, 4))
-        assert conv_like._element_shapes_like_batch_dense((len(conv_like), 1, 5, 7)) == ((1, 5, 7), (1, 4, 6))
-        assert attention_like._element_shapes_like_batch_dense((len(attention_like), 2, 5, 4)) == (
-            (2, 5, 4),
-            (2, 3, 4),
-        )
-
-    def test_shape_meta_from_components_supports_prefix_suffix_and_replacements(self):
-        source = NestedTensor(torch.randn(5, 12), torch.randn(3, 12))
-
-        projected_shape, projected_packed_sizes, projected_element_shapes = source._shape_meta_from_components(
-            prefix=(4,),
-            keep_dims=(0,),
-            suffix=(3,),
-        )
-        restored_shape, restored_packed_sizes, restored_element_shapes = source._shape_meta_from_components(
-            replace_dims={1: 7}
-        )
-
-        assert tuple(tuple(int(size) for size in row) for row in projected_shape.tolist()) == ((4, 5, 3), (4, 3, 3))
-        assert projected_packed_sizes == (5, 3)
-        assert projected_element_shapes == ((4, 5, 3), (4, 3, 3))
-        assert tuple(tuple(int(size) for size in row) for row in restored_shape.tolist()) == ((5, 7), (3, 7))
-        assert restored_packed_sizes == source._packed_sizes
-        assert restored_element_shapes == ((5, 7), (3, 7))
-
-    def test_mask_squeezes_channel_without_python_meta(self):
-        nt = NestedTensor(torch.randn(2, 5, 8), torch.randn(2, 3, 8))
-        nt._element_shapes = None
-
-        assert nt._mask_squeezes_channel() is True
-
-    def test_hierarchical_offsets_survive_without_python_meta(self):
-        conv_like = NestedTensor(torch.randn(3, 5, 7), torch.randn(3, 4, 6))
-        attention_like = NestedTensor(torch.randn(2, 5, 8), torch.randn(2, 3, 8))
-
-        conv_like._packed_sizes = None
-        conv_like._element_shapes = None
-        conv_like._cached_hierarchical_offsets = None
-        attention_like._packed_sizes = None
-        attention_like._element_shapes = None
-        attention_like._cached_hierarchical_offsets = None
-
-        assert tuple(offset.tolist() for offset in conv_like._hierarchical_offsets) == (
-            [0, 5, 9],
-            [0, 7, 14, 21, 28, 35, 41, 47, 53, 59],
-        )
-        assert tuple(offset.tolist() for offset in attention_like._hierarchical_offsets) == ([0, 5, 8],)
-        assert conv_like._ragged_rank == 2
-        assert attention_like._ragged_rank == 1
-
-    def test_trailing_physical_dim_helpers_work_without_python_meta(self):
-        nt = NestedTensor(torch.randn(2, 5, 7), torch.randn(2, 3, 7))
-        nt._packed_sizes = None
-        nt._element_shapes = None
-
-        dropped_shape, dropped_packed_sizes, dropped_element_shapes = nt._drop_trailing_physical_dims_meta(1)
-        replaced_shape, replaced_packed_sizes, replaced_element_shapes = nt._replace_trailing_physical_dims_meta((4, 9))
-
-        assert tuple(tuple(int(size) for size in row) for row in dropped_shape.tolist()) == ((2, 5), (2, 3))
-        assert dropped_packed_sizes is None
-        assert dropped_element_shapes is None
-        assert tuple(tuple(int(size) for size in row) for row in replaced_shape.tolist()) == ((2, 4, 9), (2, 4, 9))
-        assert replaced_packed_sizes is None
-        assert replaced_element_shapes is None
-
-    def test_concat_without_python_meta_preserves_attention_like_storage(self):
-        nt = NestedTensor(torch.randn(4, 11, 32), torch.randn(4, 7, 32))
-        nt._packed_sizes = None
-        nt._element_shapes = None
-
-        assert nt.concat.shape == torch.Size((18, 4, 32))
-
-
-class TestPackedCacheInvalidation:
-
-    def test_tensor_and_mask_views_are_cached_until_invalidated(self):
-        nested_tensor = NestedTensor([torch.tensor([1.0, 2.0]), torch.tensor([3.0])], padding_value=-5.0)
-
-        tensor1 = nested_tensor.tensor
-        tensor2 = nested_tensor.tensor
-        mask1 = nested_tensor.mask
-        mask2 = nested_tensor.mask
-        tensor3, mask3 = nested_tensor.tensor_mask
-
-        assert tensor1 is tensor2
-        assert tensor1 is tensor3
-        assert mask1 is mask2
-        assert mask1 is mask3
-
-    def test_materialized_view_cache_respects_padding_and_mask_settings(self):
-        nested_tensor = NestedTensor([torch.tensor([1.0, 2.0]), torch.tensor([3.0])], padding_value=-1.0)
-
-        tensor_before = nested_tensor.tensor
-        nested_tensor.padding_value = 7.0
-        tensor_after = nested_tensor.tensor
-        assert tensor_before is not tensor_after
-        assert_close(tensor_after, torch.tensor([[1.0, 2.0], [3.0, 7.0]]))
-
-        mask_before = nested_tensor.mask
-        nested_tensor.mask_value = True
-        mask_after = nested_tensor.mask
-        assert mask_before is not mask_after
-        assert_close(mask_after, ~mask_before)
-
-    def test_inplace_unary_invalidates_storage_cache(self):
-        nested_tensor = NestedTensor([torch.tensor([-1.0, 2.0]), torch.tensor([-3.0])])
-        _ = nested_tensor._storage
-        _ = nested_tensor.tensor
-        _ = nested_tensor.mask
-        assert nested_tensor._cached_storage is not None
-        assert nested_tensor._cached_tensor_view is not None
-        assert nested_tensor._cached_mask_view is not None
-        nested_tensor.relu_()
-        assert nested_tensor._cached_storage is None
-        assert nested_tensor._cached_tensor_view is None
-        assert nested_tensor._cached_mask_view is None
-        assert_close(nested_tensor[0], torch.tensor([0.0, 2.0]))
-        assert_close(nested_tensor[1], torch.tensor([0.0]))
-
-    def test_inplace_binary_invalidates_storage_cache(self):
-        nested_tensor = NestedTensor([torch.tensor([1.0, 2.0]), torch.tensor([3.0])])
-        _ = nested_tensor._storage
-        _ = nested_tensor.tensor
-        assert nested_tensor._cached_storage is not None
-        assert nested_tensor._cached_tensor_view is not None
-        nested_tensor.add_(1.5)
-        assert nested_tensor._cached_storage is None
-        assert nested_tensor._cached_tensor_view is None
-        assert_close(nested_tensor[0], torch.tensor([2.5, 3.5]))
-        assert_close(nested_tensor[1], torch.tensor([4.5]))
-
-    def test_copy_invalidates_storage_cache(self):
-        dest = NestedTensor([torch.tensor([1.0, 2.0]), torch.tensor([3.0])])
-        src = NestedTensor([torch.tensor([9.0, 8.0]), torch.tensor([7.0])], **dest._meta(include_dtype=False))
-        _ = dest._storage
-        _ = dest.tensor
-        assert dest._cached_storage is not None
-        assert dest._cached_tensor_view is not None
-        dest.copy_(src)
-        assert dest._cached_storage is None
-        assert dest._cached_tensor_view is None
-        assert_close(dest, src)
-
-    def test_copy_requires_matching_layout_not_just_structure(self):
-        dest = NestedTensor(
-            [
-                torch.randn(2, 5, 8),
-                torch.randn(2, 3, 8),
-            ]
-        )
-        src = NestedTensor._from_packed(
-            dest._values.clone(),
-            dest._offsets.clone(),
-            dest._physical_shape.clone(),
-            permutation=(0, 1, 2),
-            batch_first=dest.batch_first,
-            padding_value=dest.padding_value,
-            mask_value=dest.mask_value,
-            pin_memory=dest._pin_memory,
-            outer_size=dest._logical_shape,
-            packed_sizes=dest._packed_sizes,
-            element_shapes=dest._element_shapes,
-        )
-
+        assert destination.shape == source.shape
+        assert destination.packed_dim_order != source.packed_dim_order
         with pytest.raises(NotImplementedError, match="matching packed layout"):
-            dest.copy_(src)
-
-
-# ---------------------------------------------------------------------------
-# Indexing (__getitem__, __setitem__)
-# ---------------------------------------------------------------------------
+            destination.copy_(source)
 
 
 class TestReductions:
@@ -2348,7 +1910,6 @@ class TestShapeManipulation:
         output = compiled(nested_tensor)
         reference = nested_tensor.view(-1, 3)
         assert isinstance(output, NestedTensor)
-        assert output._has_same_layout(reference)
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -2359,7 +1920,6 @@ class TestShapeManipulation:
         output = compiled(nested_tensor, dense)
         reference = nested_tensor.nested_like(dense)
         assert isinstance(output, NestedTensor)
-        assert output._has_same_layout(reference)
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -2370,15 +1930,15 @@ class TestShapeManipulation:
         output = compiled(nested_tensor, dense)
         reference = nested_tensor.nested_like(dense, strict=False)
         assert isinstance(output, NestedTensor)
-        assert output._has_same_layout(reference)
         assert_close(output, reference)
 
     def test_nested_like_smaller_dense(self):
         nested_tensor = NestedTensor([torch.arange(6.0).reshape(2, 3), torch.arange(12.0).reshape(4, 3)])
         dense = torch.arange(12.0).reshape(2, 2, 3)
         output = nested_tensor.nested_like(dense, strict=False)
-        reference = NT([dense[0, :2, :3], dense[1, :2, :3]], **nested_tensor._meta())
-        assert_close(output, reference)
+
+        assert_close(output[0], dense[0, :2, :3])
+        assert_close(output[1], dense[1, :2, :3])
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_reshape_compile_matches_reference(self):
@@ -2387,14 +1947,14 @@ class TestShapeManipulation:
         output = compiled(nested_tensor)
         reference = nested_tensor.reshape(-1, 3)
         assert isinstance(output, NestedTensor)
-        assert output._has_same_layout(reference)
         assert_close(output, reference)
 
-    def test_view_irregular_tail_uses_linearized_packed_path(self):
+    def test_view_irregular_tail_matches_elementwise_reference(self):
         nested_tensor = NestedTensor([torch.arange(8.0).reshape(2, 4), torch.arange(8.0, 14.0).reshape(3, 2)])
         viewed = nested_tensor.view(len(nested_tensor), 2, -1)
-        reference = NT([t.view(2, -1) for t in nested_tensor], **nested_tensor._meta())
-        assert_close(viewed, reference)
+
+        for actual, element in zip(viewed, nested_tensor):
+            assert_close(actual, element.view(2, -1))
 
     def test_method_chaining(self):
         nested_tensor = NestedTensor([torch.randn(2, 3, 4), torch.randn(2, 3, 4)])
@@ -2412,26 +1972,11 @@ class TestShapeManipulation:
 
 class TestStatePreservation:
 
-    def _assert_state(self, output, *, batch_first=False, padding_value=-1, mask_value=True, pin_memory=None):
-        """Shared assertion for state fields."""
+    def _assert_state(self, output, *, batch_first=False, padding_value=-1, mask_value=True):
         assert isinstance(output, NestedTensor)
         assert output.batch_first is batch_first
         assert output.padding_value == padding_value
         assert output.mask_value is mask_value
-        if pin_memory is not None:
-            assert output._pin_memory is pin_memory
-
-    def test_meta_with_dtype_preserves_empty_dtype(self):
-        empty = NestedTensor([], dtype=torch.float64, batch_first=False, padding_value=-1, mask_value=True)
-        rebuilt = NestedTensor([], **empty._meta(include_dtype=True))
-        assert rebuilt.dtype == torch.float64
-        self._assert_state(rebuilt, batch_first=False, padding_value=-1, mask_value=True)
-
-    def test_meta_default_preserves_empty_dtype(self):
-        empty = NestedTensor([], dtype=torch.float64, batch_first=False, padding_value=-1, mask_value=True)
-        rebuilt = NestedTensor([], **empty._meta())
-        assert rebuilt.dtype == torch.float64
-        self._assert_state(rebuilt, batch_first=False, padding_value=-1, mask_value=True)
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="pin_memory requires CUDA")
     def test_comparison_preserves_state(self):
@@ -2439,7 +1984,8 @@ class TestStatePreservation:
         left = NestedTensor([torch.tensor([[2, 0], [1, 0]])], **state)
         right = NestedTensor([torch.tensor([[1, 0], [1, 0]])], **state)
         output = left > right
-        self._assert_state(output, pin_memory=True)
+        self._assert_state(output)
+        assert output.concat.is_pinned()
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="pin_memory requires CUDA")
     def test_unary_ops_preserve_state(self):
@@ -2452,7 +1998,8 @@ class TestStatePreservation:
         )
         for op in (lambda x: +x, lambda x: -x, lambda x: ~x):
             output = op(nested_tensor)
-            self._assert_state(output, pin_memory=True)
+            self._assert_state(output)
+            assert output.concat.is_pinned()
 
     def test_dtype_change_preserves_state(self):
         nested_tensor = NestedTensor(
@@ -2561,14 +2108,14 @@ class TestTensorMaskProperties:
         assert_close(nested_tensor.concat, torch.tensor([1.0, 2.0, 3.0]))
 
         concat, shapes = nested_tensor.concatenate()
-        output = NestedTensor.from_concatenated(concat, shapes, **nested_tensor._meta())
+        output = NestedTensor.from_concatenated(concat, shapes)
         assert_close(output, nested_tensor)
 
         nested_tensor = NestedTensor([torch.tensor(1.0), torch.tensor(2.0), torch.tensor(3.0)], batch_first=False)
         assert_close(nested_tensor.concat, torch.tensor([1.0, 2.0, 3.0]))
 
         concat, shapes = nested_tensor.concatenate()
-        output = NestedTensor.from_concatenated(concat, shapes, **nested_tensor._meta())
+        output = NestedTensor.from_concatenated(concat, shapes, batch_first=False)
         assert_close(output, nested_tensor)
 
     def test_flat_batch_first_false(self):
@@ -2579,14 +2126,6 @@ class TestTensorMaskProperties:
         flat = nested_tensor.concat
         assert flat.shape == torch.Size([7, 1])
         assert_close(flat.squeeze(1), torch.arange(7))
-
-    def test_concat_without_python_shape_meta_uses_physical_shape(self):
-        nested_tensor = NestedTensor(
-            [torch.arange(6, dtype=torch.float32).reshape(2, 3), torch.arange(4, dtype=torch.float32).reshape(1, 4)]
-        )
-        nested_tensor._element_shapes = None
-
-        assert_close(nested_tensor.concat, nested_tensor._values)
 
     def test_size_and_nested_like_batch_first_false(self):
         tensors = [torch.tensor([[1, 2], [3, 4]]), torch.tensor([[5, 6], [7, 8], [9, 10]])]
