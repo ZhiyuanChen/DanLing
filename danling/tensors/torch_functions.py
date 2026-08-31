@@ -2046,7 +2046,7 @@ def masked_fill(input: NestedTensor, mask, value):
         >>> torch.equal(out, ref)
         True
     """
-    from .aten_functions import _plain_filled_by_nested_mask
+    from .aten_functions import _packed_masked_fill_supported, _plain_filled_by_nested_mask
     from .nested_tensor import NestedTensor
 
     if not isinstance(input, NestedTensor) and isinstance(mask, NestedTensor):
@@ -2059,12 +2059,12 @@ def masked_fill(input: NestedTensor, mask, value):
             raise ValueError(
                 "NestedTensor batch length mismatch between input and mask: " f"input={len(input)}, mask={len(mask)}"
             )
-        # The aten handler is valid whenever the mask shares the packed layout.
-        # Broader broadcasted mask cases intentionally stay per-element.
+        # A mask with the same ragged rows may still broadcast a singleton
+        # static tail directly over the packed values.
         masked_fill_op = (
             torch.ops.aten.masked_fill.Tensor if isinstance(value, Tensor) else torch.ops.aten.masked_fill.Scalar
         )
-        if input._has_same_layout(mask):
+        if _packed_masked_fill_supported(input, mask):
             return masked_fill_op(input, mask, value)
         return NestedTensor(torch.masked_fill(t, m, value) for t, m in zip(input._storage, mask._storage))
     if not isinstance(mask, Tensor):

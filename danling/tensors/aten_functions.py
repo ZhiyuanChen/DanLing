@@ -993,6 +993,21 @@ def _plain_filled_by_nested_mask(source, mask, value, func, kwargs):
     return type(mask)(results, **mask._meta())
 
 
+def _packed_masked_fill_supported(source: NestedTensor, mask: NestedTensor) -> bool:
+    r"""Return whether ``mask`` broadcasts directly over ``source``'s packed rows."""
+    if not source._has_same_structure(mask):
+        return False
+    if source._values.dim() != mask._values.dim():
+        return False
+
+    from torch.fx.experimental.symbolic_shapes import statically_known_true
+
+    return all(
+        statically_known_true(mask_size == 1) or statically_known_true(mask_size == source_size)
+        for source_size, mask_size in zip(source._values.shape[1:], mask._values.shape[1:])
+    )
+
+
 def _masked_fill_handler(func, args, kwargs):
     r"""Dispatch handler for masked_fill: packed fast path + per-element broadcast fallback."""
     from .nested_tensor import NestedTensor
@@ -1000,7 +1015,7 @@ def _masked_fill_handler(func, args, kwargs):
     source, mask, value = args[0], args[1], args[2]
     if not isinstance(source, NestedTensor) and isinstance(mask, NestedTensor):
         return _plain_filled_by_nested_mask(source, mask, value, func, kwargs)
-    if isinstance(mask, NestedTensor) and source._has_same_layout(mask):
+    if isinstance(mask, NestedTensor) and _packed_masked_fill_supported(source, mask):
         return source._packed_like_unchecked(func(source._values, mask._values, value, **kwargs))
     aligned = source._maybe_exact_shape_nested_like(mask)
     if aligned is not None:

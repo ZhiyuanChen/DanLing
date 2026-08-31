@@ -2215,6 +2215,41 @@ class TestIndexingWriteOps:
             for index, length in enumerate(lengths):
                 assert_close(output[index], reference[index, :length])
 
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    def test_masked_fill_multi_ragged_singleton_mask_fullgraph(self, device, float_dtype):
+        shapes = ((2, 3, 4), (3, 2, 4))
+        template = NT([torch.empty(shape, device=device, dtype=float_dtype) for shape in shapes], ragged_dims=(0, 1))
+        values = torch.randn_like(template.concat, requires_grad=True)
+        nested = template.packed_like(values)
+        masks = [torch.rand(*shape[:-1], 1, device=device) > 0.5 for shape in shapes]
+        mask = NT(masks, ragged_dims=(0, 1))
+
+        eager = torch.masked_fill(nested, mask, -7.0)
+        compiled = torch.compile(
+            lambda input_, condition: torch.masked_fill(input_, condition, -7.0).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        output = compiled(nested, mask)
+        packed_lengths = tuple(shape[0] * shape[1] for shape in shapes)
+        elements = [part.reshape(shape) for part, shape in zip(values.split(packed_lengths), shapes)]
+        reference = torch.cat(
+            [
+                torch.masked_fill(element, condition, -7.0).reshape(-1, shape[-1])
+                for element, condition, shape in zip(elements, masks, shapes)
+            ]
+        )
+        cotangent = torch.randn_like(reference)
+        actual_gradient = torch.autograd.grad(output, values, cotangent, retain_graph=True)[0]
+        expected_gradient = torch.autograd.grad(reference, values, cotangent)[0]
+
+        assert eager.ragged_dims == (0, 1)
+        assert eager.element_sizes().tolist() == [list(shape) for shape in shapes]
+        assert_close(eager.concat, reference)
+        assert_close(output, reference)
+        assert_close(actual_gradient, expected_gradient)
+
     def test_masked_fill_dense_source_ragged_mask(self, device, float_dtype):
         bias = torch.randn(2, 4, 3, 3, device=device, dtype=float_dtype)
         mask = NT(
