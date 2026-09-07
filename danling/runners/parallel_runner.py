@@ -69,9 +69,7 @@ with try_import() as activation_checkpoint:
     from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
         apply_activation_checkpointing as apply_torch_activation_checkpointing,
     )
-    from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
-        checkpoint_wrapper,
-    )
+    from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 
 
 class _ParallelDataLoaderDict(DataLoaderDict):
