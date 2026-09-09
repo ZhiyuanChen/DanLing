@@ -18,7 +18,8 @@
 # See the LICENSE file for more details.
 
 from functools import partial
-from typing import Sequence
+from operator import index
+from typing import Sequence, SupportsIndex
 
 from torch import nn
 
@@ -26,9 +27,16 @@ from .dense import Dense
 
 
 class MLP(nn.Module):
+    """Construct a multilayer perceptron from integer feature widths.
+
+    Pass widths as positional arguments or as one sequence, including the input
+    and output widths. At least two widths are required. With ``linear_output``,
+    the final layer is a plain linear projection; preceding layers use ``Dense``.
+    """
+
     def __init__(
         self,
-        *features: Sequence[int],
+        *features: SupportsIndex | Sequence[SupportsIndex],
         norm: str = "LayerNorm",
         activation: str = "ReLU",
         dropout: float = 0.1,
@@ -38,10 +46,14 @@ class MLP(nn.Module):
         linear_output: bool = True,
     ) -> None:
         super().__init__()
-        if len(features) == 1 and isinstance(features, Sequence):
-            features = features[0]  # type: ignore[assignment]
-        if not len(features) > 1:
-            raise ValueError(f"`features` of MLP should have at least 2 elements, but got {len(features)}")
+        feature_sizes = features[0] if len(features) == 1 and isinstance(features[0], Sequence) else features
+        widths: list[int] = []
+        for size in feature_sizes:
+            if not isinstance(size, SupportsIndex):
+                raise TypeError("MLP feature sizes must be integers; pass sizes separately or as one sequence.")
+            widths.append(index(size))
+        if len(widths) < 2:
+            raise ValueError(f"`features` of MLP should have at least 2 elements, but got {len(widths)}")
         dense = partial(
             Dense,
             norm=norm,
@@ -51,11 +63,12 @@ class MLP(nn.Module):
             bias=bias,
             residual=residual,
         )
+        layers: list[nn.Module]
         if linear_output:
-            layers = [dense(in_features, out_features) for in_features, out_features in zip(features, features[1:-1])]  # type: ignore[arg-type] # noqa: E501
-            layers.append(nn.Linear(features[-2], features[-1], bias=bias))
+            layers = [dense(in_features, out_features) for in_features, out_features in zip(widths, widths[1:-1])]
+            layers.append(nn.Linear(widths[-2], widths[-1], bias=bias))
         else:
-            layers = [dense(in_features, out_features) for in_features, out_features in zip(features, features[1:])]  # type: ignore[arg-type] # noqa: E501
+            layers = [dense(in_features, out_features) for in_features, out_features in zip(widths, widths[1:])]
         self.layers = nn.Sequential(*layers)
 
     def forward(self, x):
