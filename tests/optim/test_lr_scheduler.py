@@ -17,6 +17,7 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
+import pytest
 import torch
 from torch import optim
 
@@ -64,3 +65,34 @@ def test_linear():
 def test_constant():
     assert _get_lrs("constant", "percentile") == LR_CONSTANT_100
     assert _get_lrs("constant", "numerical") == LR_CONSTANT_100
+
+
+@pytest.mark.parametrize("scaling", ["percentile", "numerical"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_tensor_lr_schedule(scaling, dtype):
+    initial_lr = torch.tensor(1.0, dtype=dtype)
+    optimizer = optim.SGD([torch.nn.Parameter(torch.ones(1))], lr=initial_lr)
+    scheduler = LRScheduler(
+        optimizer,
+        total_steps=10,
+        final_lr_ratio=0.1,
+        method="linear",
+        scaling=scaling,
+        warmup_steps=0,
+        cooldown_steps=0,
+        min_lr=0.2,
+    )
+    for step in range(1, 11):
+        progress = step / 10
+        expected = max(0.2, 0.1**progress if scaling == "percentile" else 1 - 0.9 * progress)
+        for _ in range(2):
+            actual = scheduler.get_lr()[0]
+            assert isinstance(actual, torch.Tensor)
+            assert actual.dtype == dtype
+            torch.testing.assert_close(actual, torch.tensor(expected, dtype=dtype))
+        assert optimizer.param_groups[0]["lr"] is initial_lr
+        torch.testing.assert_close(initial_lr, torch.tensor(expected, dtype=dtype))
+        torch.testing.assert_close(scheduler.base_lrs[0], torch.tensor(1.0, dtype=dtype))
+        if step < 10:
+            optimizer.step()
+            scheduler.step()
