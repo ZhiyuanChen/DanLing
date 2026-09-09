@@ -49,8 +49,10 @@ def test_dense_without_residual_uses_output_features():
     assert outputs.shape == (2, 4)
 
 
-def test_mlp_forward_shape():
-    model = MLP(8, 16, 4, dropout=0.0)
+@pytest.mark.parametrize("features", [(8, 16, 4), ([8, 16, 4],), ((8, 16, 4),)])
+@pytest.mark.parametrize("linear_output", [True, False])
+def test_mlp_forward_shape(features, linear_output):
+    model = MLP(*features, dropout=0.0, linear_output=linear_output)
     inputs = torch.randn(3, 8)
 
     outputs = model(inputs)
@@ -58,6 +60,12 @@ def test_mlp_forward_shape():
     assert outputs.shape == (3, 4)
 
 
-def test_mlp_requires_multiple_feature_sizes():
+@pytest.mark.parametrize("features", [(), (8,), ([8],)])
+def test_mlp_requires_multiple_feature_sizes(features):
     with pytest.raises(ValueError, match="at least 2 elements"):
-        MLP([8])
+        MLP(*features)
+
+
+def test_mlp_rejects_mixed_sizes():
+    with pytest.raises(TypeError, match="feature sizes must be integers"):
+        MLP(8, [16, 4])

@@ -151,14 +151,12 @@ class TransformerDecoder(nn.Module):
         gradient_checkpoint: bool = False,
     ) -> Tuple[Tensor, Tensor]:
         output = tgt
-        # attn_weights is set to torch.empty(0, requires_grad=False) to avoid errors in DDP
-        attn_weights = [] if need_weights else torch.empty(0, requires_grad=False)
+        collected_weights: list[Tensor] = []
 
         for layer in self.layers:
-            if gradient_checkpoint and self.training:
-                layer = partial(checkpoint, layer)
-                need_weights = torch.tensor(need_weights)
-            output, weights = layer(
+            layer_forward = partial(checkpoint, layer) if gradient_checkpoint and self.training else layer
+            layer_need_weights = torch.tensor(need_weights) if gradient_checkpoint and self.training else need_weights
+            output, weights = layer_forward(
                 output,
                 mem,
                 tgt_bias,
@@ -167,12 +165,12 @@ class TransformerDecoder(nn.Module):
                 mem_bias,
                 mem_mask,
                 mem_key_padding_mask,
-                need_weights,
+                layer_need_weights,
             )
             if need_weights:
-                attn_weights.append(weights)
+                collected_weights.append(weights)
 
-        if need_weights:
-            attn_weights = torch.stack(attn_weights).cpu().detach()
+        # Keep an empty Tensor when weights are disabled for DDP.
+        attn_weights = torch.stack(collected_weights).cpu().detach() if need_weights else torch.empty(0)
 
         return output, attn_weights
