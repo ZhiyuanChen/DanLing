@@ -37,17 +37,14 @@
       
       
         
-          <link rel="alternate" href="./" hreflang="en">
+          <link rel="alternate" href="/" hreflang="en">
         
-          <link rel="alternate" href="../zh/tensors/" hreflang="zh">
+          <link rel="alternate" href="/index.zh/" hreflang="zh">
         
       
-      
-        <link rel="alternate" type="application/rss+xml" title="RSS feed" href="../feed_rss_created.xml">
-        <link rel="alternate" type="application/rss+xml" title="RSS feed of updated content" href="../feed_rss_updated.xml">
       
       <link rel="icon" href="../assets/images/logo.ico">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -55,7 +52,7 @@
       
     
     
-      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -194,13 +191,13 @@
       <ul class="md-select__list">
         
           <li class="md-select__item">
-            <a href="./" hreflang="en" class="md-select__link">
+            <a href="/" hreflang="en" class="md-select__link">
               English
             </a>
           </li>
         
           <li class="md-select__item">
-            <a href="../zh/tensors/" hreflang="zh" class="md-select__link">
+            <a href="/index.zh/" hreflang="zh" class="md-select__link">
               汉语
             </a>
           </li>
@@ -435,6 +432,28 @@
     
   
   About
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../index.zh/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  中文
 
         </a>
       </li>
@@ -1026,6 +1045,69 @@
   
 
     
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+      
+        
+        
+      
+    
+    <li class="md-nav__item md-nav__item--pruned md-nav__item--nested">
+      
+        
+  
+  
+  
+    <a href="../index.zh/" class="md-nav__link">
+      
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    中文
+  
+
+    
+  </span>
+  
+  
+
+      
+        <span class="md-nav__icon md-icon"></span>
+      
+    </a>
+  
+
+      
+    </li>
+  
+
+    
   </ul>
 </nav>
                   </div>
@@ -1313,6 +1395,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#danling.tensors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tensor API
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1370,119 +1463,119 @@ The core feature is the <a class="autorefs autorefs-internal" title="&lt;code cl
 </ul>
 <h2 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
 <h3 id="creating-a-nestedtensor">Creating a NestedTensor<a class="headerlink" href="#creating-a-nestedtensor" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-1"> 1</a></span>
-<span class="normal"><a href="#__codelineno-0-2"> 2</a></span>
-<span class="normal"><a href="#__codelineno-0-3"> 3</a></span>
-<span class="normal"><a href="#__codelineno-0-4"> 4</a></span>
-<span class="normal"><a href="#__codelineno-0-5"> 5</a></span>
-<span class="normal"><a href="#__codelineno-0-6"> 6</a></span>
-<span class="normal"><a href="#__codelineno-0-7"> 7</a></span>
-<span class="normal"><a href="#__codelineno-0-8"> 8</a></span>
-<span class="normal"><a href="#__codelineno-0-9"> 9</a></span>
-<span class="normal"><a href="#__codelineno-0-10">10</a></span>
-<span class="normal"><a href="#__codelineno-0-11">11</a></span>
-<span class="normal"><a href="#__codelineno-0-12">12</a></span>
-<span class="normal"><a href="#__codelineno-0-13">13</a></span>
-<span class="normal"><a href="#__codelineno-0-14">14</a></span>
-<span class="normal"><a href="#__codelineno-0-15">15</a></span>
-<span class="normal"><a href="#__codelineno-0-16">16</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensor</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3"></a>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4"></a><span class="c1"># Create from a list of tensors with different lengths</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5"></a><span class="n">tensor1</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">])</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6"></a><span class="n">tensor2</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([</span><span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">])</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7"></a><span class="n">nested</span> <span class="o">=</span> <span class="n">NestedTensor</span><span class="p">(</span><span class="n">tensor1</span><span class="p">,</span> <span class="n">tensor2</span><span class="p">)</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8"></a>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9"></a><span class="c1"># Access properties</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10"></a><span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">tensor</span><span class="p">)</span>  <span class="c1"># Padded tensor: [[1, 2, 3], [4, 5, 0]]</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11"></a><span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">mask</span><span class="p">)</span>    <span class="c1"># Mask: [[True, True, True], [True, True, False]]</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12"></a><span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">concat</span><span class="p">)</span>  <span class="c1"># Concatenated: [1, 2, 3, 4, 5]</span>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13"></a>
-</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14"></a><span class="c1"># Index operations</span>
-</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15"></a><span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>      <span class="c1"># First tensor: [1, 2, 3]</span>
-</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16"></a><span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">:])</span>  <span class="c1"># Slice: NestedTensor([[2, 3], [5]])</span>
-</span></code></pre></div></td></tr></table></div>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 1</span>
+<span class="normal"> 2</span>
+<span class="normal"> 3</span>
+<span class="normal"> 4</span>
+<span class="normal"> 5</span>
+<span class="normal"> 6</span>
+<span class="normal"> 7</span>
+<span class="normal"> 8</span>
+<span class="normal"> 9</span>
+<span class="normal">10</span>
+<span class="normal">11</span>
+<span class="normal">12</span>
+<span class="normal">13</span>
+<span class="normal">14</span>
+<span class="normal">15</span>
+<span class="normal">16</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensor</span>
+
+<span class="c1"># Create from a list of tensors with different lengths</span>
+<span class="n">tensor1</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">])</span>
+<span class="n">tensor2</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([</span><span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">])</span>
+<span class="n">nested</span> <span class="o">=</span> <span class="n">NestedTensor</span><span class="p">(</span><span class="n">tensor1</span><span class="p">,</span> <span class="n">tensor2</span><span class="p">)</span>
+
+<span class="c1"># Access properties</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">tensor</span><span class="p">)</span>  <span class="c1"># Padded tensor: [[1, 2, 3], [4, 5, 0]]</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">mask</span><span class="p">)</span>    <span class="c1"># Mask: [[True, True, True], [True, True, False]]</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">concat</span><span class="p">)</span>  <span class="c1"># Concatenated: [1, 2, 3, 4, 5]</span>
+
+<span class="c1"># Index operations</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>      <span class="c1"># First tensor: [1, 2, 3]</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">:])</span>  <span class="c1"># Slice: NestedTensor([[2, 3], [5]])</span>
+</code></pre></div></td></tr></table></div>
 <h3 id="creating-from-non-tensor-data">Creating from Non-Tensor Data<a class="headerlink" href="#creating-from-non-tensor-data" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-1-1">1</a></span>
-<span class="normal"><a href="#__codelineno-1-2">2</a></span>
-<span class="normal"><a href="#__codelineno-1-3">3</a></span>
-<span class="normal"><a href="#__codelineno-1-4">4</a></span>
-<span class="normal"><a href="#__codelineno-1-5">5</a></span>
-<span class="normal"><a href="#__codelineno-1-6">6</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensor</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2"></a>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3"></a><span class="c1"># Create directly from lists</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4"></a><span class="n">nested</span> <span class="o">=</span> <span class="n">NestedTensor</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span> <span class="p">[</span><span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">])</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5"></a><span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="p">)</span>  <span class="c1"># NestedTensor([[1, 2, 3], [4, 5]])</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6"></a><span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>  <span class="c1"># [[1, 2, 3], [4, 5]]</span>
-</span></code></pre></div></td></tr></table></div>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1</span>
+<span class="normal">2</span>
+<span class="normal">3</span>
+<span class="normal">4</span>
+<span class="normal">5</span>
+<span class="normal">6</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensor</span>
+
+<span class="c1"># Create directly from lists</span>
+<span class="n">nested</span> <span class="o">=</span> <span class="n">NestedTensor</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span> <span class="p">[</span><span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">])</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="p">)</span>  <span class="c1"># NestedTensor([[1, 2, 3], [4, 5]])</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>  <span class="c1"># [[1, 2, 3], [4, 5]]</span>
+</code></pre></div></td></tr></table></div>
 <h3 id="converting-to-torchnested_tensor">Converting to torch.nested_tensor<a class="headerlink" href="#converting-to-torchnested_tensor" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-2-1">1</a></span>
-<span class="normal"><a href="#__codelineno-2-2">2</a></span>
-<span class="normal"><a href="#__codelineno-2-3">3</a></span>
-<span class="normal"><a href="#__codelineno-2-4">4</a></span>
-<span class="normal"><a href="#__codelineno-2-5">5</a></span>
-<span class="normal"><a href="#__codelineno-2-6">6</a></span>
-<span class="normal"><a href="#__codelineno-2-7">7</a></span>
-<span class="normal"><a href="#__codelineno-2-8">8</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensor</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3"></a>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4"></a><span class="n">nested</span> <span class="o">=</span> <span class="n">NestedTensor</span><span class="p">([</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">,</span> <span class="mf">3.0</span><span class="p">],</span> <span class="p">[</span><span class="mf">4.0</span><span class="p">,</span> <span class="mf">5.0</span><span class="p">])</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5"></a>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6"></a><span class="c1"># Convert to PyTorch&#39;s native nested tensor</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7"></a><span class="n">native</span> <span class="o">=</span> <span class="n">nested</span><span class="o">.</span><span class="n">to_torch_nested</span><span class="p">()</span>
-</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8"></a><span class="nb">print</span><span class="p">(</span><span class="nb">type</span><span class="p">(</span><span class="n">native</span><span class="p">))</span>  <span class="c1"># &lt;class &#39;torch.Tensor&#39;&gt; (nested layout)</span>
-</span></code></pre></div></td></tr></table></div>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1</span>
+<span class="normal">2</span>
+<span class="normal">3</span>
+<span class="normal">4</span>
+<span class="normal">5</span>
+<span class="normal">6</span>
+<span class="normal">7</span>
+<span class="normal">8</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensor</span>
+
+<span class="n">nested</span> <span class="o">=</span> <span class="n">NestedTensor</span><span class="p">([</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">,</span> <span class="mf">3.0</span><span class="p">],</span> <span class="p">[</span><span class="mf">4.0</span><span class="p">,</span> <span class="mf">5.0</span><span class="p">])</span>
+
+<span class="c1"># Convert to PyTorch's native nested tensor</span>
+<span class="n">native</span> <span class="o">=</span> <span class="n">nested</span><span class="o">.</span><span class="n">to_torch_nested</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="nb">type</span><span class="p">(</span><span class="n">native</span><span class="p">))</span>  <span class="c1"># &lt;class 'torch.Tensor'&gt; (nested layout)</span>
+</code></pre></div></td></tr></table></div>
 <h2 id="working-with-nestedtensor">Working with NestedTensor<a class="headerlink" href="#working-with-nestedtensor" title="Permanent link">&para;</a></h2>
 <h3 id="operations">Operations<a class="headerlink" href="#operations" title="Permanent link">&para;</a></h3>
 <p>NestedTensor supports many PyTorch operations:</p>
-<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-3-1"> 1</a></span>
-<span class="normal"><a href="#__codelineno-3-2"> 2</a></span>
-<span class="normal"><a href="#__codelineno-3-3"> 3</a></span>
-<span class="normal"><a href="#__codelineno-3-4"> 4</a></span>
-<span class="normal"><a href="#__codelineno-3-5"> 5</a></span>
-<span class="normal"><a href="#__codelineno-3-6"> 6</a></span>
-<span class="normal"><a href="#__codelineno-3-7"> 7</a></span>
-<span class="normal"><a href="#__codelineno-3-8"> 8</a></span>
-<span class="normal"><a href="#__codelineno-3-9"> 9</a></span>
-<span class="normal"><a href="#__codelineno-3-10">10</a></span>
-<span class="normal"><a href="#__codelineno-3-11">11</a></span>
-<span class="normal"><a href="#__codelineno-3-12">12</a></span>
-<span class="normal"><a href="#__codelineno-3-13">13</a></span>
-<span class="normal"><a href="#__codelineno-3-14">14</a></span>
-<span class="normal"><a href="#__codelineno-3-15">15</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1"></a><span class="c1"># Arithmetic operations</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2"></a><span class="n">result</span> <span class="o">=</span> <span class="n">nested</span> <span class="o">+</span> <span class="mi">10</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3"></a><span class="n">result</span> <span class="o">=</span> <span class="n">nested</span> <span class="o">*</span> <span class="mi">2</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4"></a>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5"></a><span class="c1"># Type conversion</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6"></a><span class="n">float_nested</span> <span class="o">=</span> <span class="n">nested</span><span class="o">.</span><span class="n">float</span><span class="p">()</span>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7"></a><span class="n">half_nested</span> <span class="o">=</span> <span class="n">nested</span><span class="o">.</span><span class="n">half</span><span class="p">()</span>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8"></a>
-</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9"></a><span class="c1"># Device movement</span>
-</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10"></a><span class="n">gpu_nested</span> <span class="o">=</span> <span class="n">nested</span><span class="o">.</span><span class="n">cuda</span><span class="p">()</span>
-</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11"></a><span class="n">cpu_nested</span> <span class="o">=</span> <span class="n">gpu_nested</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span>
-</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12"></a>
-</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13"></a><span class="c1"># Shape operations</span>
-</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14"></a><span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>  <span class="c1"># torch.Size([2, 3])</span>
-</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15"></a><span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">size</span><span class="p">(</span><span class="mi">0</span><span class="p">))</span>  <span class="c1"># 2</span>
-</span></code></pre></div></td></tr></table></div>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 1</span>
+<span class="normal"> 2</span>
+<span class="normal"> 3</span>
+<span class="normal"> 4</span>
+<span class="normal"> 5</span>
+<span class="normal"> 6</span>
+<span class="normal"> 7</span>
+<span class="normal"> 8</span>
+<span class="normal"> 9</span>
+<span class="normal">10</span>
+<span class="normal">11</span>
+<span class="normal">12</span>
+<span class="normal">13</span>
+<span class="normal">14</span>
+<span class="normal">15</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="c1"># Arithmetic operations</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">nested</span> <span class="o">+</span> <span class="mi">10</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">nested</span> <span class="o">*</span> <span class="mi">2</span>
+
+<span class="c1"># Type conversion</span>
+<span class="n">float_nested</span> <span class="o">=</span> <span class="n">nested</span><span class="o">.</span><span class="n">float</span><span class="p">()</span>
+<span class="n">half_nested</span> <span class="o">=</span> <span class="n">nested</span><span class="o">.</span><span class="n">half</span><span class="p">()</span>
+
+<span class="c1"># Device movement</span>
+<span class="n">gpu_nested</span> <span class="o">=</span> <span class="n">nested</span><span class="o">.</span><span class="n">cuda</span><span class="p">()</span>
+<span class="n">cpu_nested</span> <span class="o">=</span> <span class="n">gpu_nested</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span>
+
+<span class="c1"># Shape operations</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>  <span class="c1"># torch.Size([2, 3])</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">size</span><span class="p">(</span><span class="mi">0</span><span class="p">))</span>  <span class="c1"># 2</span>
+</code></pre></div></td></tr></table></div>
 <h3 id="unpacking">Unpacking<a class="headerlink" href="#unpacking" title="Permanent link">&para;</a></h3>
 <p>You can easily convert back to original tensors:</p>
-<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-4-1">1</a></span>
-<span class="normal"><a href="#__codelineno-4-2">2</a></span>
-<span class="normal"><a href="#__codelineno-4-3">3</a></span>
-<span class="normal"><a href="#__codelineno-4-4">4</a></span>
-<span class="normal"><a href="#__codelineno-4-5">5</a></span>
-<span class="normal"><a href="#__codelineno-4-6">6</a></span>
-<span class="normal"><a href="#__codelineno-4-7">7</a></span>
-<span class="normal"><a href="#__codelineno-4-8">8</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1"></a><span class="c1"># Get as a list of lists</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2"></a><span class="n">data</span> <span class="o">=</span> <span class="n">nested</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3"></a>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4"></a><span class="c1"># Get as a tuple of (padded_tensor, mask)</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5"></a><span class="n">tensor</span><span class="p">,</span> <span class="n">mask</span> <span class="o">=</span> <span class="n">nested</span><span class="o">.</span><span class="n">tensor_mask</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6"></a>
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7"></a><span class="c1"># Access individual items</span>
-</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8"></a><span class="n">first_item</span> <span class="o">=</span> <span class="n">nested</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>  <span class="c1"># Returns the first tensor</span>
-</span></code></pre></div></td></tr></table></div>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1</span>
+<span class="normal">2</span>
+<span class="normal">3</span>
+<span class="normal">4</span>
+<span class="normal">5</span>
+<span class="normal">6</span>
+<span class="normal">7</span>
+<span class="normal">8</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="c1"># Get as a list of lists</span>
+<span class="n">data</span> <span class="o">=</span> <span class="n">nested</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+
+<span class="c1"># Get as a tuple of (padded_tensor, mask)</span>
+<span class="n">tensor</span><span class="p">,</span> <span class="n">mask</span> <span class="o">=</span> <span class="n">nested</span><span class="o">.</span><span class="n">tensor_mask</span>
+
+<span class="c1"># Access individual items</span>
+<span class="n">first_item</span> <span class="o">=</span> <span class="n">nested</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>  <span class="c1"># Returns the first tensor</span>
+</code></pre></div></td></tr></table></div>
 <h2 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h2>
 <p>NestedTensor uses a <strong>packed representation</strong> that stores all variable-length elements concatenated into a single contiguous tensor, tracked by offset metadata:</p>
 <ul>
@@ -1497,32 +1590,32 @@ The core feature is the <a class="autorefs autorefs-internal" title="&lt;code cl
 <p><strong>Level 2 — Torch function dispatch</strong> (<code>torch_functions.py</code>, 217 ops): Intercepts <code>torch.*</code> calls via <code>__torch_function__</code>. Handles ops that need dimension translation (e.g., <code>torch.flatten</code>, <code>torch.softmax</code> with non-default dim), multi-operand dispatch (e.g., <code>torch.einsum</code>), per-element matrix ops (e.g., <code>torch.det</code>, <code>torch.linalg.svd</code>), and fused attention (<code>torch._native_multi_head_attention</code>, <code>torch._transformer_encoder_layer_fwd</code>).</p>
 <p><strong>Level 3 — NN function dispatch</strong> (<code>nn_functions.py</code>, 113 ops): Also via <code>__torch_function__</code>, handles <code>torch.nn.functional.*</code> ops including convolutions, pooling, normalization, attention, embedding, activations (F.relu, F.gelu, F.silu, &hellip;), and loss functions. Transformer-hot ops use packed fast paths; activation handlers strip inplace flags to preserve autograd on the wrapper subclass.</p>
 <p><strong>Fallback</strong>: Any aten op without an explicit handler falls back to <code>per_element_fallback</code>, which unpacks to individual tensors, applies the op element-by-element, and repacks. Under <code>torch.compile</code>, DanLing prefers explicit failure over silently entering those eager-only fallbacks.</p>
-<div class="language-text highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Text Only</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-5-1"> 1</a></span>
-<span class="normal"><a href="#__codelineno-5-2"> 2</a></span>
-<span class="normal"><a href="#__codelineno-5-3"> 3</a></span>
-<span class="normal"><a href="#__codelineno-5-4"> 4</a></span>
-<span class="normal"><a href="#__codelineno-5-5"> 5</a></span>
-<span class="normal"><a href="#__codelineno-5-6"> 6</a></span>
-<span class="normal"><a href="#__codelineno-5-7"> 7</a></span>
-<span class="normal"><a href="#__codelineno-5-8"> 8</a></span>
-<span class="normal"><a href="#__codelineno-5-9"> 9</a></span>
-<span class="normal"><a href="#__codelineno-5-10">10</a></span>
-<span class="normal"><a href="#__codelineno-5-11">11</a></span>
-<span class="normal"><a href="#__codelineno-5-12">12</a></span>
-<span class="normal"><a href="#__codelineno-5-13">13</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1"></a>torch.some_op(nested_tensor)
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2"></a>    │
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3"></a>    ▼
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4"></a>__torch_function__  ──── handler in TorchFuncRegistry? ──── yes ──→ dispatch
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5"></a>    │ no
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6"></a>    ▼
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7"></a>aten decomposition  (PyTorch lowers to aten ops)
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8"></a>    │
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9"></a>    ▼
-</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10"></a>__torch_dispatch__  ──── handler in NestedTensorAtenRegistry? ──── yes ──→ dispatch
-</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11"></a>    │ no
-</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12"></a>    ▼
-</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13"></a>per_element_fallback  (unpack → apply per element → repack)
-</span></code></pre></div></td></tr></table></div>
+<div class="language-text highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Text Only</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 1</span>
+<span class="normal"> 2</span>
+<span class="normal"> 3</span>
+<span class="normal"> 4</span>
+<span class="normal"> 5</span>
+<span class="normal"> 6</span>
+<span class="normal"> 7</span>
+<span class="normal"> 8</span>
+<span class="normal"> 9</span>
+<span class="normal">10</span>
+<span class="normal">11</span>
+<span class="normal">12</span>
+<span class="normal">13</span></pre></div></td><td class="code"><div><pre><span></span><code>torch.some_op(nested_tensor)
+    │
+    ▼
+__torch_function__  ──── handler in TorchFuncRegistry? ──── yes ──→ dispatch
+    │ no
+    ▼
+aten decomposition  (PyTorch lowers to aten ops)
+    │
+    ▼
+__torch_dispatch__  ──── handler in NestedTensorAtenRegistry? ──── yes ──→ dispatch
+    │ no
+    ▼
+per_element_fallback  (unpack → apply per element → repack)
+</code></pre></div></td></tr></table></div>
 <h3 id="key-internal-helpers">Key Internal Helpers<a class="headerlink" href="#key-internal-helpers" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>_from_packed(values, offsets, shape_tensor, ...)</code>: Direct constructor from packed representation. Used by all aten handlers to build results without function call overhead.</li>
@@ -1531,184 +1624,304 @@ The core feature is the <a class="autorefs autorefs-internal" title="&lt;code cl
 </ul>
 <h2 id="integration-with-pytorch-dataloader">Integration with PyTorch DataLoader<a class="headerlink" href="#integration-with-pytorch-dataloader" title="Permanent link">&para;</a></h2>
 <p>The <code>PNTensor</code> class makes it easy to use <code>NestedTensor</code> with PyTorch&rsquo;s DataLoader:</p>
-<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-6-1"> 1</a></span>
-<span class="normal"><a href="#__codelineno-6-2"> 2</a></span>
-<span class="normal"><a href="#__codelineno-6-3"> 3</a></span>
-<span class="normal"><a href="#__codelineno-6-4"> 4</a></span>
-<span class="normal"><a href="#__codelineno-6-5"> 5</a></span>
-<span class="normal"><a href="#__codelineno-6-6"> 6</a></span>
-<span class="normal"><a href="#__codelineno-6-7"> 7</a></span>
-<span class="normal"><a href="#__codelineno-6-8"> 8</a></span>
-<span class="normal"><a href="#__codelineno-6-9"> 9</a></span>
-<span class="normal"><a href="#__codelineno-6-10">10</a></span>
-<span class="normal"><a href="#__codelineno-6-11">11</a></span>
-<span class="normal"><a href="#__codelineno-6-12">12</a></span>
-<span class="normal"><a href="#__codelineno-6-13">13</a></span>
-<span class="normal"><a href="#__codelineno-6-14">14</a></span>
-<span class="normal"><a href="#__codelineno-6-15">15</a></span>
-<span class="normal"><a href="#__codelineno-6-16">16</a></span>
-<span class="normal"><a href="#__codelineno-6-17">17</a></span>
-<span class="normal"><a href="#__codelineno-6-18">18</a></span>
-<span class="normal"><a href="#__codelineno-6-19">19</a></span>
-<span class="normal"><a href="#__codelineno-6-20">20</a></span>
-<span class="normal"><a href="#__codelineno-6-21">21</a></span>
-<span class="normal"><a href="#__codelineno-6-22">22</a></span>
-<span class="normal"><a href="#__codelineno-6-23">23</a></span>
-<span class="normal"><a href="#__codelineno-6-24">24</a></span>
-<span class="normal"><a href="#__codelineno-6-25">25</a></span>
-<span class="normal"><a href="#__codelineno-6-26">26</a></span>
-<span class="normal"><a href="#__codelineno-6-27">27</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">torch.utils.data</span><span class="w"> </span><span class="kn">import</span> <span class="n">Dataset</span><span class="p">,</span> <span class="n">DataLoader</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">PNTensor</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3"></a>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">VariableLengthDataset</span><span class="p">(</span><span class="n">Dataset</span><span class="p">):</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5"></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">data</span> <span class="o">=</span> <span class="n">data</span>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7"></a>
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8"></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__len__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9"></a>        <span class="k">return</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="p">)</span>
-</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10"></a>
-</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11"></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__getitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">idx</span><span class="p">):</span>
-</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12"></a>        <span class="c1"># Return a PNTensor; DataLoader collates it into NestedTensor.</span>
-</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13"></a>        <span class="k">return</span> <span class="n">PNTensor</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="p">[</span><span class="n">idx</span><span class="p">])</span>
-</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14"></a>
-</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15"></a><span class="c1"># Example usage</span>
-</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16"></a><span class="n">dataset</span> <span class="o">=</span> <span class="n">VariableLengthDataset</span><span class="p">([</span>
-</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17"></a>    <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span>
-</span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18"></a>    <span class="p">[</span><span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">],</span>
-</span><span id="__span-6-19"><a id="__codelineno-6-19" name="__codelineno-6-19"></a>    <span class="p">[</span><span class="mi">6</span><span class="p">,</span> <span class="mi">7</span><span class="p">,</span> <span class="mi">8</span><span class="p">,</span> <span class="mi">9</span><span class="p">]</span>
-</span><span id="__span-6-20"><a id="__codelineno-6-20" name="__codelineno-6-20"></a><span class="p">])</span>
-</span><span id="__span-6-21"><a id="__codelineno-6-21" name="__codelineno-6-21"></a><span class="n">dataloader</span> <span class="o">=</span> <span class="n">DataLoader</span><span class="p">(</span><span class="n">dataset</span><span class="p">,</span> <span class="n">batch_size</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
-</span><span id="__span-6-22"><a id="__codelineno-6-22" name="__codelineno-6-22"></a>
-</span><span id="__span-6-23"><a id="__codelineno-6-23" name="__codelineno-6-23"></a><span class="c1"># The batches are NestedTensor objects</span>
-</span><span id="__span-6-24"><a id="__codelineno-6-24" name="__codelineno-6-24"></a><span class="k">for</span> <span class="n">batch</span> <span class="ow">in</span> <span class="n">dataloader</span><span class="p">:</span>
-</span><span id="__span-6-25"><a id="__codelineno-6-25" name="__codelineno-6-25"></a>    <span class="nb">print</span><span class="p">(</span><span class="nb">type</span><span class="p">(</span><span class="n">batch</span><span class="p">))</span>  <span class="c1"># &lt;class &#39;danling.tensors.nested_tensor.NestedTensor&#39;&gt;</span>
-</span><span id="__span-6-26"><a id="__codelineno-6-26" name="__codelineno-6-26"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">batch</span><span class="o">.</span><span class="n">tensor</span><span class="p">)</span>  <span class="c1"># Padded tensor</span>
-</span><span id="__span-6-27"><a id="__codelineno-6-27" name="__codelineno-6-27"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">batch</span><span class="o">.</span><span class="n">mask</span><span class="p">)</span>    <span class="c1"># Mask</span>
-</span></code></pre></div></td></tr></table></div>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 1</span>
+<span class="normal"> 2</span>
+<span class="normal"> 3</span>
+<span class="normal"> 4</span>
+<span class="normal"> 5</span>
+<span class="normal"> 6</span>
+<span class="normal"> 7</span>
+<span class="normal"> 8</span>
+<span class="normal"> 9</span>
+<span class="normal">10</span>
+<span class="normal">11</span>
+<span class="normal">12</span>
+<span class="normal">13</span>
+<span class="normal">14</span>
+<span class="normal">15</span>
+<span class="normal">16</span>
+<span class="normal">17</span>
+<span class="normal">18</span>
+<span class="normal">19</span>
+<span class="normal">20</span>
+<span class="normal">21</span>
+<span class="normal">22</span>
+<span class="normal">23</span>
+<span class="normal">24</span>
+<span class="normal">25</span>
+<span class="normal">26</span>
+<span class="normal">27</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">torch.utils.data</span><span class="w"> </span><span class="kn">import</span> <span class="n">Dataset</span><span class="p">,</span> <span class="n">DataLoader</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">PNTensor</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">VariableLengthDataset</span><span class="p">(</span><span class="n">Dataset</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">data</span> <span class="o">=</span> <span class="n">data</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__len__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__getitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">idx</span><span class="p">):</span>
+        <span class="c1"># Return a PNTensor; DataLoader collates it into NestedTensor.</span>
+        <span class="k">return</span> <span class="n">PNTensor</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="p">[</span><span class="n">idx</span><span class="p">])</span>
+
+<span class="c1"># Example usage</span>
+<span class="n">dataset</span> <span class="o">=</span> <span class="n">VariableLengthDataset</span><span class="p">([</span>
+    <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span>
+    <span class="p">[</span><span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">],</span>
+    <span class="p">[</span><span class="mi">6</span><span class="p">,</span> <span class="mi">7</span><span class="p">,</span> <span class="mi">8</span><span class="p">,</span> <span class="mi">9</span><span class="p">]</span>
+<span class="p">])</span>
+<span class="n">dataloader</span> <span class="o">=</span> <span class="n">DataLoader</span><span class="p">(</span><span class="n">dataset</span><span class="p">,</span> <span class="n">batch_size</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
+
+<span class="c1"># The batches are NestedTensor objects</span>
+<span class="k">for</span> <span class="n">batch</span> <span class="ow">in</span> <span class="n">dataloader</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="nb">type</span><span class="p">(</span><span class="n">batch</span><span class="p">))</span>  <span class="c1"># &lt;class 'danling.tensors.nested_tensor.NestedTensor'&gt;</span>
+    <span class="nb">print</span><span class="p">(</span><span class="n">batch</span><span class="o">.</span><span class="n">tensor</span><span class="p">)</span>  <span class="c1"># Padded tensor</span>
+    <span class="nb">print</span><span class="p">(</span><span class="n">batch</span><span class="o">.</span><span class="n">mask</span><span class="p">)</span>    <span class="c1"># Mask</span>
+</code></pre></div></td></tr></table></div>
 <h2 id="advanced-usage">Advanced Usage<a class="headerlink" href="#advanced-usage" title="Permanent link">&para;</a></h2>
 <h3 id="custom-collation">Custom Collation<a class="headerlink" href="#custom-collation" title="Permanent link">&para;</a></h3>
 <p>If you need more control over collation:</p>
-<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-7-1"> 1</a></span>
-<span class="normal"><a href="#__codelineno-7-2"> 2</a></span>
-<span class="normal"><a href="#__codelineno-7-3"> 3</a></span>
-<span class="normal"><a href="#__codelineno-7-4"> 4</a></span>
-<span class="normal"><a href="#__codelineno-7-5"> 5</a></span>
-<span class="normal"><a href="#__codelineno-7-6"> 6</a></span>
-<span class="normal"><a href="#__codelineno-7-7"> 7</a></span>
-<span class="normal"><a href="#__codelineno-7-8"> 8</a></span>
-<span class="normal"><a href="#__codelineno-7-9"> 9</a></span>
-<span class="normal"><a href="#__codelineno-7-10">10</a></span>
-<span class="normal"><a href="#__codelineno-7-11">11</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">torch.utils.data</span><span class="w"> </span><span class="kn">import</span> <span class="n">DataLoader</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensor</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3"></a>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">custom_collate_fn</span><span class="p">(</span><span class="n">batch</span><span class="p">):</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5"></a>    <span class="k">return</span> <span class="n">NestedTensor</span><span class="p">(</span><span class="o">*</span><span class="n">batch</span><span class="p">)</span>
-</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6"></a>
-</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7"></a><span class="n">dataloader</span> <span class="o">=</span> <span class="n">DataLoader</span><span class="p">(</span>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8"></a>    <span class="n">dataset</span><span class="p">,</span>
-</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9"></a>    <span class="n">batch_size</span><span class="o">=</span><span class="mi">32</span><span class="p">,</span>
-</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10"></a>    <span class="n">collate_fn</span><span class="o">=</span><span class="n">custom_collate_fn</span>
-</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11"></a><span class="p">)</span>
-</span></code></pre></div></td></tr></table></div>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 1</span>
+<span class="normal"> 2</span>
+<span class="normal"> 3</span>
+<span class="normal"> 4</span>
+<span class="normal"> 5</span>
+<span class="normal"> 6</span>
+<span class="normal"> 7</span>
+<span class="normal"> 8</span>
+<span class="normal"> 9</span>
+<span class="normal">10</span>
+<span class="normal">11</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">torch.utils.data</span><span class="w"> </span><span class="kn">import</span> <span class="n">DataLoader</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensor</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">custom_collate_fn</span><span class="p">(</span><span class="n">batch</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">NestedTensor</span><span class="p">(</span><span class="o">*</span><span class="n">batch</span><span class="p">)</span>
+
+<span class="n">dataloader</span> <span class="o">=</span> <span class="n">DataLoader</span><span class="p">(</span>
+    <span class="n">dataset</span><span class="p">,</span>
+    <span class="n">batch_size</span><span class="o">=</span><span class="mi">32</span><span class="p">,</span>
+    <span class="n">collate_fn</span><span class="o">=</span><span class="n">custom_collate_fn</span>
+<span class="p">)</span>
+</code></pre></div></td></tr></table></div>
 <h3 id="working-with-pytorch-models">Working with PyTorch Models<a class="headerlink" href="#working-with-pytorch-models" title="Permanent link">&para;</a></h3>
 <p><code>NestedTensor</code> works natively with PyTorch&rsquo;s built-in transformer and vision models — no padding or masks needed:</p>
-<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-8-1"> 1</a></span>
-<span class="normal"><a href="#__codelineno-8-2"> 2</a></span>
-<span class="normal"><a href="#__codelineno-8-3"> 3</a></span>
-<span class="normal"><a href="#__codelineno-8-4"> 4</a></span>
-<span class="normal"><a href="#__codelineno-8-5"> 5</a></span>
-<span class="normal"><a href="#__codelineno-8-6"> 6</a></span>
-<span class="normal"><a href="#__codelineno-8-7"> 7</a></span>
-<span class="normal"><a href="#__codelineno-8-8"> 8</a></span>
-<span class="normal"><a href="#__codelineno-8-9"> 9</a></span>
-<span class="normal"><a href="#__codelineno-8-10">10</a></span>
-<span class="normal"><a href="#__codelineno-8-11">11</a></span>
-<span class="normal"><a href="#__codelineno-8-12">12</a></span>
-<span class="normal"><a href="#__codelineno-8-13">13</a></span>
-<span class="normal"><a href="#__codelineno-8-14">14</a></span>
-<span class="normal"><a href="#__codelineno-8-15">15</a></span>
-<span class="normal"><a href="#__codelineno-8-16">16</a></span>
-<span class="normal"><a href="#__codelineno-8-17">17</a></span>
-<span class="normal"><a href="#__codelineno-8-18">18</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">torch.nn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nn</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensor</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3"></a>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4"></a><span class="c1"># Variable-length sequences</span>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5"></a><span class="n">nt</span> <span class="o">=</span> <span class="n">NestedTensor</span><span class="p">([</span><span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">512</span><span class="p">),</span> <span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">7</span><span class="p">,</span> <span class="mi">512</span><span class="p">)])</span>
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6"></a>
-</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7"></a><span class="c1"># Passes directly through nn.TransformerEncoder, nn.Transformer, etc.</span>
-</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8"></a><span class="n">encoder</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">TransformerEncoder</span><span class="p">(</span>
-</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9"></a>    <span class="n">nn</span><span class="o">.</span><span class="n">TransformerEncoderLayer</span><span class="p">(</span><span class="n">d_model</span><span class="o">=</span><span class="mi">512</span><span class="p">,</span> <span class="n">nhead</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span> <span class="n">batch_first</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>
-</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10"></a>    <span class="n">num_layers</span><span class="o">=</span><span class="mi">6</span><span class="p">,</span>
-</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11"></a><span class="p">)</span>
-</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12"></a><span class="n">output</span> <span class="o">=</span> <span class="n">encoder</span><span class="p">(</span><span class="n">nt</span><span class="p">)</span>  <span class="c1"># NestedTensor — only real tokens computed</span>
-</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13"></a>
-</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14"></a><span class="c1"># Also works with torchvision models for variable-size images</span>
-</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15"></a><span class="kn">import</span><span class="w"> </span><span class="nn">torchvision.models</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">models</span>
-</span><span id="__span-8-16"><a id="__codelineno-8-16" name="__codelineno-8-16"></a><span class="n">resnet</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">resnet18</span><span class="p">()</span>
-</span><span id="__span-8-17"><a id="__codelineno-8-17" name="__codelineno-8-17"></a><span class="n">images</span> <span class="o">=</span> <span class="n">NestedTensor</span><span class="p">([</span><span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">224</span><span class="p">,</span> <span class="mi">224</span><span class="p">),</span> <span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">160</span><span class="p">,</span> <span class="mi">160</span><span class="p">)])</span>
-</span><span id="__span-8-18"><a id="__codelineno-8-18" name="__codelineno-8-18"></a><span class="n">features</span> <span class="o">=</span> <span class="n">resnet</span><span class="p">(</span><span class="n">images</span><span class="p">)</span>
-</span></code></pre></div></td></tr></table></div>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 1</span>
+<span class="normal"> 2</span>
+<span class="normal"> 3</span>
+<span class="normal"> 4</span>
+<span class="normal"> 5</span>
+<span class="normal"> 6</span>
+<span class="normal"> 7</span>
+<span class="normal"> 8</span>
+<span class="normal"> 9</span>
+<span class="normal">10</span>
+<span class="normal">11</span>
+<span class="normal">12</span>
+<span class="normal">13</span>
+<span class="normal">14</span>
+<span class="normal">15</span>
+<span class="normal">16</span>
+<span class="normal">17</span>
+<span class="normal">18</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">torch.nn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nn</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensor</span>
+
+<span class="c1"># Variable-length sequences</span>
+<span class="n">nt</span> <span class="o">=</span> <span class="n">NestedTensor</span><span class="p">([</span><span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">512</span><span class="p">),</span> <span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">7</span><span class="p">,</span> <span class="mi">512</span><span class="p">)])</span>
+
+<span class="c1"># Passes directly through nn.TransformerEncoder, nn.Transformer, etc.</span>
+<span class="n">encoder</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">TransformerEncoder</span><span class="p">(</span>
+    <span class="n">nn</span><span class="o">.</span><span class="n">TransformerEncoderLayer</span><span class="p">(</span><span class="n">d_model</span><span class="o">=</span><span class="mi">512</span><span class="p">,</span> <span class="n">nhead</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span> <span class="n">batch_first</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>
+    <span class="n">num_layers</span><span class="o">=</span><span class="mi">6</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">output</span> <span class="o">=</span> <span class="n">encoder</span><span class="p">(</span><span class="n">nt</span><span class="p">)</span>  <span class="c1"># NestedTensor — only real tokens computed</span>
+
+<span class="c1"># Also works with torchvision models for variable-size images</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">torchvision.models</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">models</span>
+<span class="n">resnet</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">resnet18</span><span class="p">()</span>
+<span class="n">images</span> <span class="o">=</span> <span class="n">NestedTensor</span><span class="p">([</span><span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">224</span><span class="p">,</span> <span class="mi">224</span><span class="p">),</span> <span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">160</span><span class="p">,</span> <span class="mi">160</span><span class="p">)])</span>
+<span class="n">features</span> <span class="o">=</span> <span class="n">resnet</span><span class="p">(</span><span class="n">images</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
 <p>For models that require padded input (e.g., HuggingFace transformers), materialize with <code>.tensor</code> and <code>.mask</code>:</p>
-<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-9-1">1</a></span>
-<span class="normal"><a href="#__codelineno-9-2">2</a></span>
-<span class="normal"><a href="#__codelineno-9-3">3</a></span>
-<span class="normal"><a href="#__codelineno-9-4">4</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1"></a><span class="n">outputs</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2"></a>    <span class="n">input_ids</span><span class="o">=</span><span class="n">nested_inputs</span><span class="o">.</span><span class="n">tensor</span><span class="p">,</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3"></a>    <span class="n">attention_mask</span><span class="o">=</span><span class="n">nested_inputs</span><span class="o">.</span><span class="n">mask</span>
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4"></a><span class="p">)</span>
-</span></code></pre></div></td></tr></table></div>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1</span>
+<span class="normal">2</span>
+<span class="normal">3</span>
+<span class="normal">4</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="n">outputs</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span>
+    <span class="n">input_ids</span><span class="o">=</span><span class="n">nested_inputs</span><span class="o">.</span><span class="n">tensor</span><span class="p">,</span>
+    <span class="n">attention_mask</span><span class="o">=</span><span class="n">nested_inputs</span><span class="o">.</span><span class="n">mask</span>
+<span class="p">)</span>
+</code></pre></div></td></tr></table></div>
 <h3 id="extending-with-new-operations">Extending with New Operations<a class="headerlink" href="#extending-with-new-operations" title="Permanent link">&para;</a></h3>
 <p>You can register new <code>torch.*</code> functions to work with NestedTensor:</p>
-<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-10-1">1</a></span>
-<span class="normal"><a href="#__codelineno-10-2">2</a></span>
-<span class="normal"><a href="#__codelineno-10-3">3</a></span>
-<span class="normal"><a href="#__codelineno-10-4">4</a></span>
-<span class="normal"><a href="#__codelineno-10-5">5</a></span>
-<span class="normal"><a href="#__codelineno-10-6">6</a></span>
-<span class="normal"><a href="#__codelineno-10-7">7</a></span>
-<span class="normal"><a href="#__codelineno-10-8">8</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors.ops</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensorFuncRegistry</span>
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3"></a>
-</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4"></a><span class="nd">@NestedTensorFuncRegistry</span><span class="o">.</span><span class="n">implement</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">my_custom_op</span><span class="p">)</span>
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5"></a><span class="k">def</span><span class="w"> </span><span class="nf">my_custom_op</span><span class="p">(</span><span class="nb">input</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
-</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors.aten_functions</span><span class="w"> </span><span class="kn">import</span> <span class="n">_packed_like</span>
-</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7"></a>    <span class="c1"># For elementwise ops, apply on packed _values:</span>
-</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8"></a>    <span class="k">return</span> <span class="n">_packed_like</span><span class="p">(</span><span class="nb">input</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">my_custom_op</span><span class="p">(</span><span class="nb">input</span><span class="o">.</span><span class="n">_values</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">))</span>
-</span></code></pre></div></td></tr></table></div>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1</span>
+<span class="normal">2</span>
+<span class="normal">3</span>
+<span class="normal">4</span>
+<span class="normal">5</span>
+<span class="normal">6</span>
+<span class="normal">7</span>
+<span class="normal">8</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors.ops</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensorFuncRegistry</span>
+
+<span class="nd">@NestedTensorFuncRegistry</span><span class="o">.</span><span class="n">implement</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">my_custom_op</span><span class="p">)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">my_custom_op</span><span class="p">(</span><span class="nb">input</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="c1"># Shape-preserving elementwise ops can reuse the reference structure.</span>
+    <span class="n">values</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">my_custom_op</span><span class="p">(</span><span class="nb">input</span><span class="o">.</span><span class="n">concat</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+    <span class="k">return</span> <span class="nb">input</span><span class="o">.</span><span class="n">packed_like</span><span class="p">(</span><span class="n">values</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
 <p>For ops that are purely elementwise on the packed data, register at the aten level instead:</p>
-<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-11-1"> 1</a></span>
-<span class="normal"><a href="#__codelineno-11-2"> 2</a></span>
-<span class="normal"><a href="#__codelineno-11-3"> 3</a></span>
-<span class="normal"><a href="#__codelineno-11-4"> 4</a></span>
-<span class="normal"><a href="#__codelineno-11-5"> 5</a></span>
-<span class="normal"><a href="#__codelineno-11-6"> 6</a></span>
-<span class="normal"><a href="#__codelineno-11-7"> 7</a></span>
-<span class="normal"><a href="#__codelineno-11-8"> 8</a></span>
-<span class="normal"><a href="#__codelineno-11-9"> 9</a></span>
-<span class="normal"><a href="#__codelineno-11-10">10</a></span>
-<span class="normal"><a href="#__codelineno-11-11">11</a></span>
-<span class="normal"><a href="#__codelineno-11-12">12</a></span>
-<span class="normal"><a href="#__codelineno-11-13">13</a></span>
-<span class="normal"><a href="#__codelineno-11-14">14</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors.ops</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensorAtenRegistry</span>
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2"></a><span class="n">aten</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">ops</span><span class="o">.</span><span class="n">aten</span>
-</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3"></a>
-</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">_my_handler</span><span class="p">(</span><span class="n">func</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">):</span>
-</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5"></a>    <span class="n">source</span> <span class="o">=</span> <span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
-</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6"></a>    <span class="k">return</span> <span class="nb">type</span><span class="p">(</span><span class="n">source</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
-</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7"></a>        <span class="n">func</span><span class="p">(</span><span class="n">source</span><span class="o">.</span><span class="n">_values</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">[</span><span class="mi">1</span><span class="p">:],</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">),</span>
-</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8"></a>        <span class="n">source</span><span class="o">.</span><span class="n">_offsets</span><span class="p">,</span> <span class="n">source</span><span class="o">.</span><span class="n">_physical_shape</span><span class="p">,</span>
-</span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9"></a>        <span class="n">batch_first</span><span class="o">=</span><span class="n">source</span><span class="o">.</span><span class="n">batch_first</span><span class="p">,</span> <span class="n">padding_value</span><span class="o">=</span><span class="n">source</span><span class="o">.</span><span class="n">padding_value</span><span class="p">,</span>
-</span><span id="__span-11-10"><a id="__codelineno-11-10" name="__codelineno-11-10"></a>        <span class="n">mask_value</span><span class="o">=</span><span class="n">source</span><span class="o">.</span><span class="n">mask_value</span><span class="p">,</span> <span class="n">pin_memory</span><span class="o">=</span><span class="n">source</span><span class="o">.</span><span class="n">_pin_memory</span><span class="p">,</span>
-</span><span id="__span-11-11"><a id="__codelineno-11-11" name="__codelineno-11-11"></a>        <span class="n">outer_size</span><span class="o">=</span><span class="n">source</span><span class="o">.</span><span class="n">_logical_shape</span><span class="p">,</span>
-</span><span id="__span-11-12"><a id="__codelineno-11-12" name="__codelineno-11-12"></a>    <span class="p">)</span>
-</span><span id="__span-11-13"><a id="__codelineno-11-13" name="__codelineno-11-13"></a>
-</span><span id="__span-11-14"><a id="__codelineno-11-14" name="__codelineno-11-14"></a><span class="n">NestedTensorAtenRegistry</span><span class="p">[</span><span class="n">aten</span><span class="o">.</span><span class="n">my_op</span><span class="o">.</span><span class="n">default</span><span class="p">]</span> <span class="o">=</span> <span class="n">_my_handler</span>
-</span></code></pre></div></td></tr></table></div>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1</span>
+<span class="normal">2</span>
+<span class="normal">3</span>
+<span class="normal">4</span>
+<span class="normal">5</span>
+<span class="normal">6</span>
+<span class="normal">7</span>
+<span class="normal">8</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">danling.tensors.ops</span><span class="w"> </span><span class="kn">import</span> <span class="n">NestedTensorAtenRegistry</span>
+<span class="n">aten</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">ops</span><span class="o">.</span><span class="n">aten</span>
+
+<span class="nd">@NestedTensorAtenRegistry</span><span class="o">.</span><span class="n">implement</span><span class="p">(</span><span class="n">aten</span><span class="o">.</span><span class="n">my_op</span><span class="o">.</span><span class="n">default</span><span class="p">,</span> <span class="n">compile_safe</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">_my_handler</span><span class="p">(</span><span class="n">func</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">):</span>
+    <span class="n">source</span> <span class="o">=</span> <span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="n">values</span> <span class="o">=</span> <span class="n">func</span><span class="p">(</span><span class="n">source</span><span class="o">.</span><span class="n">concat</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">[</span><span class="mi">1</span><span class="p">:],</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">source</span><span class="o">.</span><span class="n">packed_like</span><span class="p">(</span><span class="n">values</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+<p><code>packed_like</code> requires the packed output shape to remain unchanged. Operations
+that retain the ragged lengths but replace or add a static feature tail can use
+<code>packed_with_static_tail</code>:</p>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1</span>
+<span class="normal">2</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="n">atom_values</span> <span class="o">=</span> <span class="n">token_values</span><span class="o">.</span><span class="n">index_select</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">packed_atom_to_token</span><span class="p">)</span>
+<span class="n">atoms</span> <span class="o">=</span> <span class="n">atom_mapping</span><span class="o">.</span><span class="n">packed_with_static_tail</span><span class="p">(</span><span class="n">atom_values</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+<p>For a canonical reference, the ragged dimensions are a leading logical prefix,
+<code>packed_dim_order</code> is the identity, and the packed-value tail may have any
+rank. The packed leading dimension is unchanged, while
+<code>atom_values.shape[1:]</code> becomes the new static tail.</p>
+<p>An explicit tensor-backed layout with one non-leading logical ragged dimension
+may also replace its static dimensions, provided their packed rank does not
+change. Tail sizes follow <code>packed_dim_order</code> and return to their original
+logical positions. For example, sampled single representations remain
+sample-major logically while token-major in packed storage:</p>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1</span>
+<span class="normal">2</span>
+<span class="normal">3</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="n">single</span> <span class="o">=</span> <span class="n">NestedTensor</span><span class="p">(</span><span class="n">single_elements</span><span class="p">,</span> <span class="n">ragged_dims</span><span class="o">=</span><span class="p">(</span><span class="mi">1</span><span class="p">,))</span>  <span class="c1"># each (S, N_i, C)</span>
+<span class="n">output</span> <span class="o">=</span> <span class="n">single</span><span class="o">.</span><span class="n">packed_with_static_tail</span><span class="p">(</span><span class="n">output_values</span><span class="p">)</span>    <span class="c1"># (sum N_i, S, C_out)</span>
+<span class="c1"># each output element is (S, N_i, C_out), with packed_dim_order == (1, 0, 2)</span>
+</code></pre></div></td></tr></table></div>
+<p>Explicit ragged layouts retain tensor-backed row splits whenever
+<code>packed_dim_order</code> begins with <code>ragged_dims</code>. This includes an explicit leading
+single-ragged layout such as <code>ragged_dims=(0,)</code>; the ragged dimensions also need
+not be a leading logical prefix. For example, elements shaped <code>(1, H, N_i, N_i)</code>
+with <code>ragged_dims=(2, 3)</code> pack in <code>(2, 3, 0, 1)</code> order and remain tensor-backed.
+These row splits are available through
+<code>ragged_level_offsets(level)</code> and travel with <code>packed_like</code>, shape-preserving
+static-tail operations, autograd transforms, and serialization. Because
+per-sample lengths are tensor inputs rather than Python flatten metadata,
+fixed-rank layouts such as <code>(N_i, N_i, C)</code> and <code>(S, N_i, C)</code> can reuse one
+<code>torch.compile(dynamic=True)</code> graph across different <code>N_i</code>. This does not
+expose the private child names or add a general packed constructor. Inferred
+list construction without an explicit <code>ragged_dims</code> declaration keeps its
+existing Python-metadata contract.</p>
+<p>When an operator produces a new one-dimensional ragged topology, use a concrete
+CPU integer lengths tensor:</p>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1</span>
+<span class="normal">2</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="n">token_values</span> <span class="o">=</span> <span class="n">segmented_mean</span><span class="p">(</span><span class="n">atom_values</span><span class="p">,</span> <span class="n">packed_atom_to_token</span><span class="p">)</span>
+<span class="n">tokens</span> <span class="o">=</span> <span class="n">atoms</span><span class="o">.</span><span class="n">packed_with_lengths</span><span class="p">(</span><span class="n">token_values</span><span class="p">,</span> <span class="n">token_lengths</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+<p><code>packed_with_lengths</code> requires one non-negative length per batch element and
+<code>token_lengths.sum() == token_values.shape[0]</code>. It constructs a canonical
+leading ragged dimension and uses the remaining packed-value dimensions as the
+static tail.</p>
+<p>Square pair operators can rebuild two canonical ragged dimensions from the
+same lengths without materializing Python element shapes:</p>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1</span>
+<span class="normal">2</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="n">pair</span> <span class="o">=</span> <span class="n">reference</span><span class="o">.</span><span class="n">packed_with_square_lengths</span><span class="p">(</span><span class="n">pair_values</span><span class="p">,</span> <span class="n">token_lengths</span><span class="p">)</span>
+<span class="c1"># element i has shape (token_lengths[i], token_lengths[i], *pair_values.shape[1:])</span>
+</code></pre></div></td></tr></table></div>
+<p>Here <code>pair_values.shape[0]</code> must equal <code>token_lengths.square().sum()</code>. The
+result persistently carries both CSR row-split levels as tensor metadata, so a
+fixed batch size can reuse one dynamic compiled graph across different square
+layouts. Rectangular pair operators use two independent length vectors:</p>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1</span>
+<span class="normal">2</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="n">distances</span> <span class="o">=</span> <span class="n">reference</span><span class="o">.</span><span class="n">packed_with_rectangular_lengths</span><span class="p">(</span><span class="n">distance_values</span><span class="p">,</span> <span class="n">query_lengths</span><span class="p">,</span> <span class="n">key_lengths</span><span class="p">)</span>
+<span class="c1"># element i has shape (query_lengths[i], key_lengths[i], *distance_values.shape[1:])</span>
+</code></pre></div></td></tr></table></div>
+<p>Here the packed leading length is <code>(query_lengths * key_lengths).sum()</code> and
+both ragged maxima remain tensor-backed graph inputs. All three length-based
+reconstruction methods are zero-copy with respect
+to their packed values and preserve dtype, device, strides, pinning, subclass,
+runtime configuration, and autograd history. Reconstruction stores dynamic
+lengths in tensor-backed offsets and shape metadata rather than Python tuples,
+so its tracing cost does not grow with metadata rank. The current compiled
+contract covers structural index consumers, runtime-validated same-layout
+elementwise operations, static-tail broadcasting, and static-tail
+normalization. Tensor-backed view/index remapping, padding,
+<code>broadcast_tensors</code>, global-query <code>einsum</code>, and ragged-dimension softmax remain
+staged; these paths raise an explicit compile error instead of materializing
+Python metadata or silently assuming a layout.</p>
+<p>For pairwise distances between explicit canonical <code>(P_i, M)</code> and <code>(R_i, M)</code>
+elements, use <code>left.cdist(right)</code> in compiled code. A single-sample batch calls
+native <code>cdist</code> directly; larger compiled batches use a registered segmented
+operation that runs native <code>cdist</code> independently over the packed samples.
+Eager mode issues the same native calls directly to avoid custom-op dispatcher
+overhead. The result is
+reconstructed as <code>(P_i, R_i)</code> through the rectangular metadata above. It does not
+materialize padding, a cross-sample matrix, pair index tensors, or
+<code>sum(P_i * R_i) x M</code> gathered operands. Eager <code>torch.cdist(left, right)</code> remains
+supported, but the method form is the AOT/Inductor entry point because PyTorch
+treats the built-in function as an opaque graph leaf.</p>
+<p>For cumulative products along a canonical ragged dimension, use
+<code>input.cumprod(dim)</code> in compiled training code. The segmented operator invokes
+the current device&rsquo;s native <code>cumprod</code> and backward kernel independently for
+each packed sample. It therefore preserves native rounding, underflow, zero,
+and non-finite behavior without padding or reassociating the product. Eager
+<code>torch.cumprod(input, dim)</code> remains supported.</p>
+<p>The result can remain a <code>NestedTensor</code> throughout a compiled model or cross a
+compiled/eager training boundary as a wrapper-only output. DanLing preserves
+the outer wrapper&rsquo;s AOTAutograd edge and projects it back to <code>result.concat</code>
+without padding or copying, so both wrapper outputs and direct packed outputs
+remain differentiable.
+They intentionally do not expose the general private packed constructor.</p>
+<p><code>packed_offsets()</code> returns the boundaries of complete logical batch elements
+in the flattened leading dimension of <code>concat</code>. It is the public operator
+metadata interface for segmented kernels: for <code>(N_i, N_i, C)</code> elements it
+returns cumulative <code>N_i * N_i</code> cell counts, whereas
+<code>ragged_level_offsets(level)</code> returns row splits within the ragged hierarchy.
+The same contract applies to single-ragged and non-leading-ragged layouts.
+The canonical CPU integer tensor is returned without a copy; optional <code>device</code>
+and <code>dtype</code> conversions are cached on the <code>NestedTensor</code> instance. An explicit
+accelerator index is required for device caching; index-less device requests
+retain PyTorch&rsquo;s current-device semantics and are converted on every call.</p>
+<p><code>element_sizes()</code> returns the exact logical shape of every batch element as a
+CPU <code>torch.int64</code> tensor with shape <code>(batch_size, element_rank)</code>. Columns remain
+in logical element-dimension order regardless of <code>batch_first</code> or
+<code>packed_dim_order</code>, so zero-volume shapes such as <code>(0, 3)</code> and <code>(0, 7)</code> remain
+distinguishable even when their packed offsets coincide. The method returns the
+canonical tensor-backed metadata without a copy. It intentionally has no
+device or dtype conversion arguments; consumers that need another placement or
+integer width can apply <code>.to(...)</code> explicitly.</p>
+<p><code>torch.repeat_interleave(input, repeats, dim=batch_dim)</code> and
+<code>input.repeat_interleave(repeats, dim=batch_dim)</code> accept a non-negative integer
+<code>repeats</code> and duplicate complete logical batch elements in their original
+order. They repeat packed sample segments and every tensor-backed ragged
+row-split level directly, without padding or per-element Python dispatch.
+<code>input.repeat_batch(repeats)</code> is the equivalent explicit batch operation and
+the canonical AOTAutograd-safe entry for compiled model code. Explicit single-
+and multi-ragged layouts can reuse one
+<code>torch.compile(fullgraph=True, dynamic=True)</code> graph across different ragged
+lengths, and gradients from repeated samples accumulate into the original
+packed values. Tensor-valued batch repeat counts are intentionally unsupported;
+non-batch dimensions retain ordinary per-element <code>torch.repeat_interleave</code>
+semantics.</p>
+<p><code>packed_dim_order</code> exposes the read-only mapping from logical element dimensions
+to physical packed-storage order when an operator needs to validate its layout.</p>
+<p>Critical packed paths can use <code>nested_execution_guard</code> from <code>danling.tensors</code> in
+tests or diagnostics to reject iteration, per-element fallback, padded
+materialization, or dense repacking instead of silently accepting a slow path.</p>
 <h2 id="benchmarks">Benchmarks<a class="headerlink" href="#benchmarks" title="Permanent link">&para;</a></h2>
 <p>Benchmarked on a single NVIDIA B200 180GB GPU with PyTorch 2.11, bfloat16.</p>
 <p>Run with: <code>python scripts/benchmark_nested_tensor.py</code></p>
 <h3 id="imdb-training">IMDB Training<a class="headerlink" href="#imdb-training" title="Permanent link">&para;</a></h3>
-<p>Real workload benchmark from <a href="../../examples/tensors/imdb.py"><code>examples/tensors/imdb.py</code></a>, using a BERT-large-shaped <code>torch.nn.TransformerEncoder</code> on IMDB with long variable-length sequences.</p>
+<p>Real workload benchmark from <a href="https://github.com/ZhiyuanChen/DanLing/blob/f67c0f258da2d3ff42c6e850a250c1212f2ea5a9/examples/tensors/imdb.py"><code>examples/tensors/imdb.py</code></a>, using a BERT-large-shaped <code>torch.nn.TransformerEncoder</code> on IMDB with long variable-length sequences.</p>
 <p>Config: <code>bert-large-uncased</code>, 2 epochs, batch size <code>32</code>, max length <code>8192</code>, <code>d_model=1024</code>, <code>nhead=16</code>, <code>num_layers=24</code></p>
 <table>
 <thead>
@@ -2140,6 +2353,12 @@ The core feature is the <a class="autorefs autorefs-internal" title="&lt;code cl
 </tr>
 </tbody>
 </table>
+<h2 id="danling.tensors">Tensor API<a class="headerlink" href="#danling.tensors" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;NestedTensor&lt;/span&gt;" href="nested_tensor/#danling.tensors.nested_tensor.NestedTensor">NestedTensor</a>: variable-length tensor batches and their operations.</li>
+<li><a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-class&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-class-name&quot;&gt;PNTensor&lt;/span&gt;" href="pn_tensor/#danling.tensors.pn_tensor.PNTensor">PNTensor</a> and <a class="autorefs autorefs-internal" title="&lt;code class=&quot;doc-symbol doc-symbol-heading doc-symbol-function&quot;&gt;&lt;/code&gt;            &lt;span class=&quot;doc doc-object-name doc-function-name&quot;&gt;tensor&lt;/span&gt;" href="pn_tensor/#danling.tensors.pn_tensor.tensor">tensor</a>: tensor markers for collation.</li>
+<li><a href="functions/">Dispatch functions and registries</a>: supported dispatch layers and extension interfaces.</li>
+</ul>
 
 
 
@@ -2160,7 +2379,7 @@ The core feature is the <a class="autorefs autorefs-internal" title="&lt;code cl
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime" title="August 9, 2024 08:24:01 UTC">2024-08-09 08:24:01</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime" title="September 9, 2026 09:46:02 UTC">2026-09-09 09:46:02</span>
   </span>
 
     
@@ -2303,8 +2522,6 @@ The core feature is the <a class="autorefs autorefs-internal" title="&lt;code cl
       <div class="md-dialog__inner md-typeset"></div>
     </div>
     
-      <div class="md-progress" data-md-component="progress" role="progressbar"></div>
-    
     
       <div class="md-consent" data-md-component="consent" id="__consent" hidden>
         <div class="md-consent__overlay"></div>
@@ -2384,10 +2601,10 @@ The core feature is the <a class="autorefs autorefs-internal" title="&lt;code cl
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["announce.dismiss", "content.code.annotate", "content.code.copy", "content.code.select", "content.tabs.link", "content.tooltips", "header.autohide", "navigation.expand", "navigation.footer", "navigation.indexes", "navigation.instant", "navigation.instant.prefetch", "navigation.instant.progress", "navigation.prune", "navigation.sections", "navigation.tabs", "navigation.tabs.sticky", "navigation.top", "navigation.tracking", "search.highlight", "search.share", "search.suggest", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["announce.dismiss", "content.code.annotate", "content.code.copy", "content.code.select", "content.tabs.link", "content.tooltips", "header.autohide", "navigation.expand", "navigation.footer", "navigation.indexes", "navigation.prune", "navigation.sections", "navigation.tabs", "navigation.tabs.sticky", "navigation.top", "navigation.tracking", "search.highlight", "search.share", "search.suggest", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
       
         <script src="../javascripts/mathjax.js"></script>
       
