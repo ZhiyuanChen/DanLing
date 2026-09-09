@@ -116,8 +116,8 @@ def catch(  # pylint: disable=keyword-arg-before-vararg
         callback: Callback to be called when an error occurs.
             The first four arguments to `callback` are `exc`, `func`, `args`, `kwargs`.
             Additional arguments should be passed with `*callback_args` and `**callback_kwargs`.
-        callback_args: Arguments to be passed to `callback`.
-        callback_kwargs: Keyword arguments to be passed to `callback`.
+        *callback_args (object): Additional positional arguments passed to `callback`.
+        **callback_kwargs (object): Additional keyword arguments passed to `callback`.
 
     Examples:
         >>> def file_not_found(*args, **kwargs):
