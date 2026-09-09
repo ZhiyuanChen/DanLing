@@ -21,6 +21,7 @@ from math import cos, pi
 from typing import List, Optional
 from warnings import warn
 
+from torch import Tensor
 from torch.optim import Optimizer, lr_scheduler
 
 
@@ -38,7 +39,9 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
     You can alternate by passing `warmup_steps` and `cooldown_steps`, or disable them by setting them to 0.
 
     Args:
-        optimizer: Wrapped optimizer.
+        optimizer: Wrapped optimizer. Parameter-group learning rates may be floats
+            or scalar tensors. Tensor rates retain their dtype and device; querying
+            the schedule does not mutate the initial rates.
         total_steps: Total number of trainable steps.
         final_lr_ratio: Final learning rate ratio to initial learning rate.
             Defaults to 1e-3.
@@ -153,7 +156,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         self.cooldown_steps_begin = self.total_steps - self.cooldown_steps
         super().__init__(optimizer, last_epoch)
 
-    def get_lr(self) -> List[float]:
+    def get_lr(self) -> List[float | Tensor]:
         step_count = self._step_count
         if step_count > self.total_steps + 1 or step_count < 1:
             warn(
@@ -165,20 +168,25 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
 
     def _get_lr(
         self,
-        lr: float,
+        lr: float | Tensor,
         step_count: Optional[int] = None,
         progress: Optional[float] = None,
         warmup_ratio: Optional[float] = None,
         cooldown_ratio: Optional[float] = None,
         scaling: Optional[str] = None,
-    ) -> float:
+    ) -> float | Tensor:
         scaling = scaling or self.scaling
         step_count = step_count or self._step_count
         progress = progress or min(max(step_count / self.total_steps, 0.0), 1.0)
-        final_lr = self.final_lr if self.final_lr is not None else lr * self.final_lr_ratio  # type: ignore[operator]
+        final_lr: float | Tensor
+        if self.final_lr is not None:
+            final_lr = self.final_lr
+        else:
+            assert self.final_lr_ratio is not None
+            final_lr = lr * self.final_lr_ratio
         ratio = getattr(self, self.method)(progress)
         if scaling == "percentile":
-            lr *= pow(final_lr / lr, ratio)
+            lr = lr * pow(final_lr / lr, ratio)
         elif scaling == "numerical":
             lr = (1 - ratio) * (lr - final_lr) + final_lr
         else:
@@ -189,7 +197,7 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
         elif self.cooldown_steps > 0 and step_count > self.cooldown_steps_begin:
             cooldown_ratio = cooldown_ratio or 1 - (step_count - self.cooldown_steps_begin) / self.cooldown_steps
             lr = cooldown_ratio * (lr - self.min_lr) + self.min_lr
-        return max(self.min_lr, lr)
+        return lr.clamp_min(self.min_lr) if isinstance(lr, Tensor) else max(self.min_lr, lr)
 
     def linear(self, progress: float) -> float:
         return progress
