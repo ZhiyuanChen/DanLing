@@ -41,12 +41,17 @@ nav:
       - About: about/index.md
       - License: about/license.md
       - Privacy Notice: about/privacy.md
+  - 中文:
+      - 中文首页: index.zh.md
+      - 关于 DanLing: about/index.zh.md
+      - 许可协议: about/license.zh.md
+      - 隐私声明: about/privacy.zh.md
   # - Blog: blog/index.md
 
 theme:
   name: material
   custom_dir: overrides
-  language: "zh"
+  language: "en"
   palette:
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
@@ -77,9 +82,6 @@ theme:
     - navigation.expand
     - navigation.footer
     - navigation.indexes
-    - navigation.instant
-    - navigation.instant.prefetch
-    - navigation.instant.progress
     - navigation.prune
     - navigation.sections
     - navigation.tabs
@@ -94,6 +96,13 @@ theme:
   font: false
 
 extra:
+  alternate:
+    - name: English
+      link: /
+      lang: en
+    - name: 汉语
+      link: /index.zh/
+      lang: zh
   analytics:
     provider: google
     property: "G-RE7EKZ9T8D"
@@ -159,8 +168,6 @@ markdown_extensions:
       emoji_index: !!python/name:materialy.gemoji
       emoji_generator: !!python/name:materialy.to_png
   - pymdownx.highlight:
-      anchor_linenums: true
-      line_spans: __span
       pygments_lang_class: true
       auto_title: true
       linenums: true
@@ -186,20 +193,25 @@ markdown_extensions:
       permalink: true
 
 plugins:
-  - git-committers
+  - autorefs
   - mkdocstrings:
+      locale: en
       handlers:
         python:
+          paths:
+            - ..
           options:
+            docstring_style: google
             members_order: source
             parameter_headings: true
             show_root_heading: true
             show_symbol_type_heading: true
             show_symbol_type_toc: true
+            scoped_crossrefs: true
             separate_signature: true
             show_signature_annotations: true
             signature_crossrefs: true
-          import:
+          inventories:
             - https://docs.python.org/3/objects.inv
             - https://pytorch.org/docs/stable/objects.inv
             - https://huggingface.co/docs/transformers/master/en/objects.inv
@@ -207,30 +219,12 @@ plugins:
             - https://chanfig.danling.org/objects.inv
             - https://lightning.ai/docs/torchmetrics/stable/objects.inv
   - section-index
-  - i18n:
-      docs_structure: suffix
-      fallback_to_default: true
-      languages:
-        - locale: en
-          build: true
-          default: true
-          name: English
-        - locale: zh
-          build: true
-          default: false
-          name: 汉语
-      reconfigure_material: true
-      reconfigure_search: true
   - git-revision-date-localized:
       type: iso_datetime
-  - rss:
-      match_path: .*
-      date_from_meta:
-        as_creation: date
-      categories:
-        - categories
-        - tags
   - search:
+      lang:
+        - en
+        - zh
       separator: '[\s\u200b\-]'
   - tags
   # - typeset
