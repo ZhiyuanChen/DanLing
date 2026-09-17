@@ -26,7 +26,7 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
-from ..ops import _check_execution_guard, _ExecutionGuardKind
+from ..ops import _check_execution_guard, _ExecutionGuardKind, _per_element_unsupported
 from ._convolution import (
     _can_use_spatial_tile_convolution,
     _conv_output_size,
@@ -70,6 +70,16 @@ def conv2d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1, 
 # ---------------------------------------------------------------------------
 # Dispatch helpers
 # ---------------------------------------------------------------------------
+
+
+def _conv2d_pair(value) -> tuple[int, int] | None:
+    r"""Normalize integer spatial arguments without coercing invalid values."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value, value
+    if isinstance(value, (tuple, list)) and len(value) == 2:
+        if all(isinstance(item, int) and not isinstance(item, bool) for item in value):
+            return value[0], value[1]
+    return None
 
 
 def _packed_pointwise_conv2d_channel_dim(input: NestedTensor, weight, stride, padding, dilation, groups) -> int | None:
@@ -148,6 +158,7 @@ def _packed_pointwise_conv2d(
 
 def _per_element_conv2d(input: NestedTensor, *args, _fn=None, **kwargs) -> NestedTensor:
     _check_execution_guard(_ExecutionGuardKind.STORAGE_MAP, "_per_element_conv2d")
+    _per_element_unsupported(input, "conv2d")
     cls = type(input)
     if len(input) == 0:
         return cls([], **input._meta(include_dtype=True))
@@ -207,8 +218,10 @@ def _conv2d_spatial_tiles(
     return tiles
 
 
-def _auto_spatial_tile2d_config(_area_occupancy: float) -> tuple[int, int]:
-    return 64, 64
+def _auto_spatial_tile2d_config(output_shapes: tuple[tuple[int, ...], ...]) -> tuple[int, int]:
+    # Late backbone stages can be much smaller than 64x64. Keep the normal
+    # tile bound, but do not compute rows/columns beyond every sample's output.
+    return min(64, max(shape[1] for shape in output_shapes)), min(64, max(shape[2] for shape in output_shapes))
 
 
 def _auto_spatial_weight_tile2d_batch(_tile_shape: tuple[int, int], _area_occupancy: float) -> int:
@@ -234,15 +247,14 @@ def _cap_spatial_tile2d_batch_for_channels(
 
 
 def _resolve_spatial_tile2d_config(
-    input_shapes: tuple[tuple[int, ...], ...],
+    output_shapes: tuple[tuple[int, ...], ...],
     tile_size: int | tuple[int, int] | str,
     max_tiles_per_batch: int | str | None,
 ) -> tuple[tuple[int, int], int | None] | None:
-    area_occupancy = _spatial_tile_area_occupancy(input_shapes)
     if isinstance(tile_size, str):
         if tile_size != "auto":
             return None
-        tile_shape = _auto_spatial_tile2d_config(area_occupancy)
+        tile_shape = _auto_spatial_tile2d_config(output_shapes)
     else:
         if isinstance(tile_size, int):
             parsed_tile_shape = (int(tile_size), int(tile_size))
@@ -299,7 +311,23 @@ def _new_spatial_tile2d_tensor(
 
 if triton is not None:
 
-    @triton.jit
+    # Tile geometry follows the current batch, not the model's fixed structure.
+    # Keep its extents, counts, offsets and dependent strides out of the JIT key,
+    # including Triton's implicit scalar-value/alignment specialization. Channel
+    # counts and launch blocks remain static; channels-last kernels also retain
+    # their shape-independent channel/pixel strides for contiguous vector loads.
+    @triton.jit(
+        do_not_specialize=[
+            "tile_offset",
+            "total",
+            "tile_stride_n",
+            "tile_stride_c",
+            "tile_stride_h",
+            "tile_stride_w",
+            "input_tile_h",
+            "input_tile_w",
+        ]
+    )
     def _spatial_tile_pack_input_kernel(
         input_ptr,
         tile_ptr,
@@ -308,13 +336,13 @@ if triton is not None:
         shape_meta_ptr,
         tile_offset,
         total,
-        tile_stride_n: tl.constexpr,
-        tile_stride_c: tl.constexpr,
-        tile_stride_h: tl.constexpr,
-        tile_stride_w: tl.constexpr,
+        tile_stride_n,
+        tile_stride_c,
+        tile_stride_h,
+        tile_stride_w,
         in_channels: tl.constexpr,
-        input_tile_h: tl.constexpr,
-        input_tile_w: tl.constexpr,
+        input_tile_h,
+        input_tile_w,
         stride_h: tl.constexpr,
         stride_w: tl.constexpr,
         padding_h: tl.constexpr,
@@ -353,8 +381,16 @@ if triton is not None:
             mask=mask,
         )
 
-    # Retained for tuning; the production path currently favors the flat copy kernels.
-    @triton.jit
+    @triton.jit(
+        do_not_specialize=[
+            "tile_offset",
+            "tile_count",
+            "tile_stride_n",
+            "tile_stride_h",
+            "input_tile_h",
+            "input_tile_w",
+        ]
+    )
     def _spatial_tile_pack_input_channels_last_kernel(
         input_ptr,
         tile_ptr,
@@ -362,14 +398,14 @@ if triton is not None:
         input_offsets_ptr,
         shape_meta_ptr,
         tile_offset,
-        tile_count: tl.constexpr,
-        tile_stride_n: tl.constexpr,
+        tile_count,
+        tile_stride_n,
         tile_stride_c: tl.constexpr,
-        tile_stride_h: tl.constexpr,
+        tile_stride_h,
         tile_stride_w: tl.constexpr,
         in_channels: tl.constexpr,
-        input_tile_h: tl.constexpr,
-        input_tile_w: tl.constexpr,
+        input_tile_h,
+        input_tile_w,
         stride_h: tl.constexpr,
         stride_w: tl.constexpr,
         padding_h: tl.constexpr,
@@ -412,7 +448,17 @@ if triton is not None:
             mask=spatial_mask[:, None] & channel_mask[None, :] & (tile_local < tile_count),
         )
 
-    @triton.jit
+    @triton.jit(
+        do_not_specialize=[
+            "tile_offset",
+            "tile_stride_n",
+            "tile_stride_c",
+            "tile_stride_h",
+            "tile_stride_w",
+            "input_tile_h",
+            "input_tile_w",
+        ]
+    )
     def _spatial_tile_pack_input_local_kernel(
         input_ptr,
         tile_ptr,
@@ -420,13 +466,13 @@ if triton is not None:
         input_offsets_ptr,
         shape_meta_ptr,
         tile_offset,
-        tile_stride_n: tl.constexpr,
-        tile_stride_c: tl.constexpr,
-        tile_stride_h: tl.constexpr,
-        tile_stride_w: tl.constexpr,
+        tile_stride_n,
+        tile_stride_c,
+        tile_stride_h,
+        tile_stride_w,
         in_channels: tl.constexpr,
-        input_tile_h: tl.constexpr,
-        input_tile_w: tl.constexpr,
+        input_tile_h,
+        input_tile_w,
         stride_h: tl.constexpr,
         stride_w: tl.constexpr,
         padding_h: tl.constexpr,
@@ -464,7 +510,20 @@ if triton is not None:
             mask=mask,
         )
 
-    @triton.jit
+    @triton.jit(
+        do_not_specialize=[
+            "tile_offset",
+            "total",
+            "output_stride_n",
+            "output_stride_c",
+            "tile_stride_n",
+            "tile_stride_c",
+            "tile_stride_h",
+            "tile_stride_w",
+            "tile_h",
+            "tile_w",
+        ]
+    )
     def _spatial_tile_pack_output_kernel(
         output_ptr,
         tile_ptr,
@@ -473,15 +532,15 @@ if triton is not None:
         shape_meta_ptr,
         tile_offset,
         total,
-        output_stride_n: tl.constexpr,
-        output_stride_c: tl.constexpr,
-        tile_stride_n: tl.constexpr,
-        tile_stride_c: tl.constexpr,
-        tile_stride_h: tl.constexpr,
-        tile_stride_w: tl.constexpr,
+        output_stride_n,
+        output_stride_c,
+        tile_stride_n,
+        tile_stride_c,
+        tile_stride_h,
+        tile_stride_w,
         out_channels: tl.constexpr,
-        tile_h: tl.constexpr,
-        tile_w: tl.constexpr,
+        tile_h,
+        tile_w,
         block_size: tl.constexpr,
     ):
         offsets = tl.program_id(0) * block_size + tl.arange(0, block_size)
@@ -515,7 +574,18 @@ if triton is not None:
             mask=mask,
         )
 
-    @triton.jit
+    @triton.jit(
+        do_not_specialize=[
+            "tile_offset",
+            "tile_count",
+            "output_stride_n",
+            "output_stride_c",
+            "tile_stride_n",
+            "tile_stride_h",
+            "tile_h",
+            "tile_w",
+        ]
+    )
     def _spatial_tile_pack_output_channels_last_kernel(
         output_ptr,
         tile_ptr,
@@ -523,16 +593,16 @@ if triton is not None:
         output_offsets_ptr,
         shape_meta_ptr,
         tile_offset,
-        tile_count: tl.constexpr,
-        output_stride_n: tl.constexpr,
-        output_stride_c: tl.constexpr,
-        tile_stride_n: tl.constexpr,
+        tile_count,
+        output_stride_n,
+        output_stride_c,
+        tile_stride_n,
         tile_stride_c: tl.constexpr,
-        tile_stride_h: tl.constexpr,
+        tile_stride_h,
         tile_stride_w: tl.constexpr,
         out_channels: tl.constexpr,
-        tile_h: tl.constexpr,
-        tile_w: tl.constexpr,
+        tile_h,
+        tile_w,
         block_hw: tl.constexpr,
         block_c: tl.constexpr,
     ):
@@ -570,7 +640,19 @@ if triton is not None:
             mask=spatial_mask[:, None] & channel_mask[None, :] & (tile_local < tile_count),
         )
 
-    @triton.jit
+    @triton.jit(
+        do_not_specialize=[
+            "tile_offset",
+            "output_stride_n",
+            "output_stride_c",
+            "tile_stride_n",
+            "tile_stride_c",
+            "tile_stride_h",
+            "tile_stride_w",
+            "tile_h",
+            "tile_w",
+        ]
+    )
     def _spatial_tile_pack_output_local_kernel(
         output_ptr,
         tile_ptr,
@@ -578,15 +660,15 @@ if triton is not None:
         output_offsets_ptr,
         shape_meta_ptr,
         tile_offset,
-        output_stride_n: tl.constexpr,
-        output_stride_c: tl.constexpr,
-        tile_stride_n: tl.constexpr,
-        tile_stride_c: tl.constexpr,
-        tile_stride_h: tl.constexpr,
-        tile_stride_w: tl.constexpr,
+        output_stride_n,
+        output_stride_c,
+        tile_stride_n,
+        tile_stride_c,
+        tile_stride_h,
+        tile_stride_w,
         out_channels: tl.constexpr,
-        tile_h: tl.constexpr,
-        tile_w: tl.constexpr,
+        tile_h,
+        tile_w,
         block_size: tl.constexpr,
     ):
         tile_local = tl.program_id(0)
@@ -619,7 +701,18 @@ if triton is not None:
             mask=mask,
         )
 
-    @triton.jit
+    @triton.jit(
+        do_not_specialize=[
+            "tile_offset",
+            "total",
+            "tile_stride_n",
+            "tile_stride_c",
+            "tile_stride_h",
+            "tile_stride_w",
+            "tile_h",
+            "tile_w",
+        ]
+    )
     def _spatial_tile_scatter_output_kernel(
         tile_ptr,
         bias_ptr,
@@ -629,13 +722,13 @@ if triton is not None:
         shape_meta_ptr,
         tile_offset,
         total,
-        tile_stride_n: tl.constexpr,
-        tile_stride_c: tl.constexpr,
-        tile_stride_h: tl.constexpr,
-        tile_stride_w: tl.constexpr,
+        tile_stride_n,
+        tile_stride_c,
+        tile_stride_h,
+        tile_stride_w,
         out_channels: tl.constexpr,
-        tile_h: tl.constexpr,
-        tile_w: tl.constexpr,
+        tile_h,
+        tile_w,
         has_bias: tl.constexpr,
         block_size: tl.constexpr,
     ):
@@ -672,7 +765,7 @@ if triton is not None:
         output_pos = out_base + (out_y + local_y) * out_w + out_x + local_x
         tl.store(output_ptr + output_pos * out_channels + channel, values, mask=valid)
 
-    @triton.jit
+    @triton.jit(do_not_specialize=["tile_offset", "tile_count", "tile_stride_n", "tile_stride_h", "tile_h", "tile_w"])
     def _spatial_tile_scatter_output_channels_last_kernel(
         tile_ptr,
         bias_ptr,
@@ -681,14 +774,14 @@ if triton is not None:
         output_offsets_ptr,
         shape_meta_ptr,
         tile_offset,
-        tile_count: tl.constexpr,
-        tile_stride_n: tl.constexpr,
+        tile_count,
+        tile_stride_n,
         tile_stride_c: tl.constexpr,
-        tile_stride_h: tl.constexpr,
+        tile_stride_h,
         tile_stride_w: tl.constexpr,
         out_channels: tl.constexpr,
-        tile_h: tl.constexpr,
-        tile_w: tl.constexpr,
+        tile_h,
+        tile_w,
         has_bias: tl.constexpr,
         block_hw: tl.constexpr,
         block_c: tl.constexpr,
@@ -729,7 +822,17 @@ if triton is not None:
             mask=valid[:, None] & channel_mask[None, :],
         )
 
-    @triton.jit
+    @triton.jit(
+        do_not_specialize=[
+            "tile_offset",
+            "tile_stride_n",
+            "tile_stride_c",
+            "tile_stride_h",
+            "tile_stride_w",
+            "tile_h",
+            "tile_w",
+        ]
+    )
     def _spatial_tile_scatter_output_local_kernel(
         tile_ptr,
         bias_ptr,
@@ -738,13 +841,13 @@ if triton is not None:
         output_offsets_ptr,
         shape_meta_ptr,
         tile_offset,
-        tile_stride_n: tl.constexpr,
-        tile_stride_c: tl.constexpr,
-        tile_stride_h: tl.constexpr,
-        tile_stride_w: tl.constexpr,
+        tile_stride_n,
+        tile_stride_c,
+        tile_stride_h,
+        tile_stride_w,
         out_channels: tl.constexpr,
-        tile_h: tl.constexpr,
-        tile_w: tl.constexpr,
+        tile_h,
+        tile_w,
         has_bias: tl.constexpr,
         block_size: tl.constexpr,
     ):
@@ -780,7 +883,18 @@ if triton is not None:
         output_pos = out_base + (out_y + local_y) * out_w + out_x + local_x
         tl.store(output_ptr + output_pos * out_channels + channel, values, mask=valid)
 
-    @triton.jit
+    @triton.jit(
+        do_not_specialize=[
+            "tile_offset",
+            "total",
+            "tile_stride_n",
+            "tile_stride_c",
+            "tile_stride_h",
+            "tile_stride_w",
+            "input_tile_h",
+            "input_tile_w",
+        ]
+    )
     def _spatial_tile_scatter_input_kernel(
         tile_ptr,
         input_ptr,
@@ -789,17 +903,18 @@ if triton is not None:
         shape_meta_ptr,
         tile_offset,
         total,
-        tile_stride_n: tl.constexpr,
-        tile_stride_c: tl.constexpr,
-        tile_stride_h: tl.constexpr,
-        tile_stride_w: tl.constexpr,
+        tile_stride_n,
+        tile_stride_c,
+        tile_stride_h,
+        tile_stride_w,
         in_channels: tl.constexpr,
-        input_tile_h: tl.constexpr,
-        input_tile_w: tl.constexpr,
+        input_tile_h,
+        input_tile_w,
         stride_h: tl.constexpr,
         stride_w: tl.constexpr,
         padding_h: tl.constexpr,
         padding_w: tl.constexpr,
+        accumulate: tl.constexpr,
         block_size: tl.constexpr,
     ):
         offsets = tl.program_id(0) * block_size + tl.arange(0, block_size)
@@ -832,9 +947,22 @@ if triton is not None:
             other=0.0,
         )
         input_pos = in_base + input_y * in_w + input_x
-        tl.atomic_add(input_ptr + input_pos * in_channels + channel, values, sem="relaxed", mask=valid)
+        target = input_ptr + input_pos * in_channels + channel
+        if accumulate:
+            tl.atomic_add(target, values, sem="relaxed", mask=valid)
+        else:
+            tl.store(target, values, mask=valid)
 
-    @triton.jit
+    @triton.jit(
+        do_not_specialize=[
+            "tile_offset",
+            "tile_count",
+            "tile_stride_n",
+            "tile_stride_h",
+            "input_tile_h",
+            "input_tile_w",
+        ]
+    )
     def _spatial_tile_scatter_input_channels_last_kernel(
         tile_ptr,
         input_ptr,
@@ -842,18 +970,19 @@ if triton is not None:
         input_offsets_ptr,
         shape_meta_ptr,
         tile_offset,
-        tile_count: tl.constexpr,
-        tile_stride_n: tl.constexpr,
+        tile_count,
+        tile_stride_n,
         tile_stride_c: tl.constexpr,
-        tile_stride_h: tl.constexpr,
+        tile_stride_h,
         tile_stride_w: tl.constexpr,
         in_channels: tl.constexpr,
-        input_tile_h: tl.constexpr,
-        input_tile_w: tl.constexpr,
+        input_tile_h,
+        input_tile_w,
         stride_h: tl.constexpr,
         stride_w: tl.constexpr,
         padding_h: tl.constexpr,
         padding_w: tl.constexpr,
+        accumulate: tl.constexpr,
         block_hw: tl.constexpr,
         block_c: tl.constexpr,
     ):
@@ -893,14 +1022,24 @@ if triton is not None:
             other=0.0,
         )
         input_pos = in_base + input_y * in_w + input_x
-        tl.atomic_add(
-            input_ptr + input_pos[:, None] * in_channels + channel[None, :],
-            values,
-            sem="relaxed",
-            mask=valid[:, None] & channel_mask[None, :],
-        )
+        target = input_ptr + input_pos[:, None] * in_channels + channel[None, :]
+        write_mask = valid[:, None] & channel_mask[None, :]
+        if accumulate:
+            tl.atomic_add(target, values, sem="relaxed", mask=write_mask)
+        else:
+            tl.store(target, values, mask=write_mask)
 
-    @triton.jit
+    @triton.jit(
+        do_not_specialize=[
+            "tile_offset",
+            "tile_stride_n",
+            "tile_stride_c",
+            "tile_stride_h",
+            "tile_stride_w",
+            "input_tile_h",
+            "input_tile_w",
+        ]
+    )
     def _spatial_tile_scatter_input_local_kernel(
         tile_ptr,
         input_ptr,
@@ -908,17 +1047,18 @@ if triton is not None:
         input_offsets_ptr,
         shape_meta_ptr,
         tile_offset,
-        tile_stride_n: tl.constexpr,
-        tile_stride_c: tl.constexpr,
-        tile_stride_h: tl.constexpr,
-        tile_stride_w: tl.constexpr,
+        tile_stride_n,
+        tile_stride_c,
+        tile_stride_h,
+        tile_stride_w,
         in_channels: tl.constexpr,
-        input_tile_h: tl.constexpr,
-        input_tile_w: tl.constexpr,
+        input_tile_h,
+        input_tile_w,
         stride_h: tl.constexpr,
         stride_w: tl.constexpr,
         padding_h: tl.constexpr,
         padding_w: tl.constexpr,
+        accumulate: tl.constexpr,
         block_size: tl.constexpr,
     ):
         tile_local = tl.program_id(0)
@@ -950,7 +1090,11 @@ if triton is not None:
             other=0.0,
         )
         input_pos = in_base + input_y * in_w + input_x
-        tl.atomic_add(input_ptr + input_pos * in_channels + channel, values, sem="relaxed", mask=valid)
+        target = input_ptr + input_pos * in_channels + channel
+        if accumulate:
+            tl.atomic_add(target, values, sem="relaxed", mask=valid)
+        else:
+            tl.store(target, values, mask=valid)
 
 else:
     _spatial_tile_pack_input_kernel = None
@@ -1282,7 +1426,9 @@ def _scatter_spatial_tile2d_grad_input(
     shape_meta: Tensor | None = None,
     tile_meta: Tensor | None = None,
     channels_last: bool = False,
+    accumulate: bool = True,
 ) -> None:
+    r"""Scatter a chunk; disable accumulation only for globally disjoint input tiles."""
     if triton is not None and _has_cuda_tensors(input_offsets_device, shape_meta, tile_meta):
         input_tile_h, input_tile_w = input_tile_shape
         if (
@@ -1311,6 +1457,7 @@ def _scatter_spatial_tile2d_grad_input(
                 stride[1],
                 padding[0],
                 padding[1],
+                accumulate,
                 block_size,
             )
             return
@@ -1345,6 +1492,7 @@ def _scatter_spatial_tile2d_grad_input(
                 stride[1],
                 padding[0],
                 padding[1],
+                accumulate,
                 block_hw,
                 block_c,
             )
@@ -1372,6 +1520,7 @@ def _scatter_spatial_tile2d_grad_input(
             stride[1],
             padding[0],
             padding[1],
+            accumulate,
             block_size,
         )
         return
@@ -1390,12 +1539,17 @@ def _scatter_spatial_tile2d_grad_input(
             continue
         input_start = input_starts[batch]
         element_grad = grad_input_values[input_start : input_start + in_h * in_w].reshape(in_h, in_w, in_channels)
-        element_grad[src_y0 : src_y0 + copy_h, src_x0 : src_x0 + copy_w] += tile_grad_input[
+        target = element_grad[src_y0 : src_y0 + copy_h, src_x0 : src_x0 + copy_w]
+        contribution = tile_grad_input[
             tile_index,
             :,
             dst_y0 : dst_y0 + copy_h,
             dst_x0 : dst_x0 + copy_w,
         ].permute(1, 2, 0)
+        if accumulate:
+            target.add_(contribution)
+        else:
+            target.copy_(contribution)
 
 
 def _scatter_spatial_tile2d_output(
@@ -1748,6 +1902,11 @@ class _SpatialTileConv2dCudnnFunction(torch.autograd.Function):
         grad_weight = torch.zeros_like(weight) if ctx.needs_input_grad[1] else None
         grad_bias = grad_output_values.sum(dim=0) if ctx.has_bias and ctx.needs_input_grad[2] else None
         chunk_size = _spatial_tile_max_batch(max_tiles_per_batch, len(tiles))
+        # Output metadata admits only positive spatial extents, so every image
+        # contributes at least one tile. Equality proves exactly one per image,
+        # and their packed input segments are disjoint. Keep zero initialization
+        # for input positions not covered by that tile's receptive field.
+        accumulate_input_grad = len(tiles) != len(input_shapes)
 
         if grad_input is not None and (grad_weight is None or weight_max_tiles_per_batch != chunk_size):
             for chunk_start in range(0, len(tiles), chunk_size):
@@ -1788,6 +1947,7 @@ class _SpatialTileConv2dCudnnFunction(torch.autograd.Function):
                     shape_meta=shape_meta,
                     tile_meta=tile_meta,
                     channels_last=channels_last,
+                    accumulate=accumulate_input_grad,
                 )
 
         if grad_weight is not None and (grad_input is None or weight_max_tiles_per_batch != chunk_size):
@@ -1869,6 +2029,7 @@ class _SpatialTileConv2dCudnnFunction(torch.autograd.Function):
                     shape_meta=shape_meta,
                     tile_meta=tile_meta,
                     channels_last=channels_last,
+                    accumulate=accumulate_input_grad,
                 )
                 tile_input = _make_spatial_tile2d_input(
                     input_values,
@@ -1941,11 +2102,11 @@ def _spatial_tile_conv2d(
     """
     if triton is None or not _can_use_spatial_tile_convolution(input, weight, groups, rank=2, input_channel_dim=1):
         return None
-    if not isinstance(stride, int) or not isinstance(padding, int) or not isinstance(dilation, int):
+    stride_pair = _conv2d_pair(stride)
+    padding_pair = _conv2d_pair(padding)
+    dilation_pair = _conv2d_pair(dilation)
+    if stride_pair is None or padding_pair is None or dilation_pair is None:
         return None
-    stride_pair = (int(stride), int(stride))
-    padding_pair = (int(padding), int(padding))
-    dilation_pair = (int(dilation), int(dilation))
     if any(value <= 0 for value in (*stride_pair, *dilation_pair)):
         return None
     if padding_pair[0] < 0 or padding_pair[1] < 0:
@@ -1988,7 +2149,7 @@ def _spatial_tile_conv2d(
         )
 
     input_shapes = _resolve_element_shapes(input)
-    resolved_tile_config = _resolve_spatial_tile2d_config(input_shapes, tile_size, max_tiles_per_batch)
+    resolved_tile_config = _resolve_spatial_tile2d_config(output_shapes, tile_size, max_tiles_per_batch)
     if resolved_tile_config is None:
         return None
     tile_shape, resolved_max_tiles = resolved_tile_config
