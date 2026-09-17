@@ -27,7 +27,7 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
-from ..ops import _check_execution_guard, _ExecutionGuardKind, _is_compiling
+from ..ops import _check_execution_guard, _ExecutionGuardKind, _per_element_unsupported, _static_channels_match
 
 if TYPE_CHECKING:
     from ..nested_tensor import NestedTensor
@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
 def _per_element(input: NestedTensor, fn: Callable, *args, **kwargs) -> NestedTensor:
     _check_execution_guard(_ExecutionGuardKind.STORAGE_MAP, f"{fn.__name__}_per_element")
+    _per_element_unsupported(input, fn.__name__)
     cls = type(input)
     if len(input) == 0:
         return cls([], **input._meta(include_dtype=True))
@@ -47,10 +48,10 @@ def _has_static_input_channels(input: NestedTensor, channels: int, rank: int) ->
         return False
     if input._element_shapes is not None:
         return all(len(shape) == rank + 1 and int(shape[0]) == int(channels) for shape in input._element_shapes)
-    if _is_compiling():
-        return False
-    expected = torch.full_like(input._physical_shape[:, 0], int(channels))
-    return bool(torch.equal(input._physical_shape[:, 0], expected))
+    if 0 in input._static_dims:
+        # A declared static channel axis owns a packed axis; its extent is schema, not data.
+        return int(input.concat.shape[1 + input._static_dims.index(0)]) == int(channels)
+    return _static_channels_match(input._physical_shape, channels)
 
 
 def _packed_pointwise_conv_transpose_channel_dim(

@@ -100,3 +100,23 @@ def test_conv2d_invalid_bias_shape_matches_torch(device):
 
     with pytest.raises(RuntimeError):
         F.conv2d(input, weight, bias, padding=1)
+
+
+def test_compiled_conv2d_reports_unsupported(device):
+    # F.conv2d is registered eager-only: under compile the handler must fail explicitly
+    # instead of replaying per sample on a fake layout.
+    torch.compiler.reset()
+    compiled = torch.compile(
+        lambda template, values, weight: F.conv2d(template.packed_like(values), weight, padding=1),
+        backend="aot_eager",
+        fullgraph=True,
+        dynamic=True,
+    )
+    try:
+        template = NT([torch.randn(3, 11, 13, device=device), torch.randn(3, 7, 9, device=device)], ragged_dims=(1, 2))
+        values = template.concat.detach().requires_grad_()
+        weight = torch.randn(5, 3, 3, 3, device=device, requires_grad=True)
+        with pytest.raises(Exception, match="compile-safe path not implemented"):
+            compiled(template, values, weight)
+    finally:
+        torch.compiler.reset()

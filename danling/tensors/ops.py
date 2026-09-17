@@ -1263,14 +1263,17 @@ def _binary_complementary_singleton_rectangular(lhs, rhs, op, extra_args, extra_
     rows, columns = row_offsets.diff(), column_offsets.diff()
     device = row.concat.device
     fake = _is_fake_tensor(row.concat) or _is_fake_tensor(column.concat)
-    if fake and not _is_compiling():
-        if not any(
+    if (
+        fake
+        and not _is_compiling()
+        and not any(
             getattr(getattr(values, "fake_mode", None), "shape_env", None) is not None
             for values in (row.concat, column.concat)
-        ):
-            # Standalone FakeTensor without a shape environment cannot represent
-            # this data-dependent output. Retain the existing square fake path.
-            return None
+        )
+    ):
+        # Standalone FakeTensor without a shape environment cannot represent
+        # this data-dependent output. Retain the existing square fake path.
+        return None
     if _is_compiling() or fake:
         row_index, column_index = _complementary_rectangular_indices(
             rows, columns, device, row.concat.shape[0], column.concat.shape[0]

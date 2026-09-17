@@ -76,7 +76,7 @@ class TestDenseBinaryOperands:
         values = torch.randn(5, requires_grad=True)
         nt = NT([values[:2], values[2:]])
         with torch.no_grad():
-            tuple(nt)
+            _ = tuple(nt)
 
         index = NT([torch.tensor([1, 0]), torch.tensor([2, 1, 0])])
         output = torch.gather(nt, 1, index)
