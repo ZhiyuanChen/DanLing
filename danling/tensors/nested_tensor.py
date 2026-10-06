@@ -3581,6 +3581,8 @@ class NestedTensor(torch.Tensor):
             ragged_offsets=self._persistent_ragged_offsets(),
             validate=False,
         )
+        if not _is_compiling() and self._same_row_splits(result):
+            self._share_offset_caches(result)
         if (
             self._cached_hierarchical_offsets is not None
             and result._offsets is self._offsets

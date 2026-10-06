@@ -1095,6 +1095,51 @@ class TestPackedLike:
         assert output.device.type == "meta"
         assert output.concat is packed_values
 
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+    @pytest.mark.parametrize("requires_grad", [False, True])
+    def test_packed_like_cuda_graph_reuses_warmed_structural_offsets(self, requires_grad):
+        reference = NestedTensor([torch.empty(2, 2, 3), torch.empty(3, 3, 3)], ragged_dims=(0, 1))
+        values = torch.randn(reference.concat.shape, device="cuda", requires_grad=requires_grad)
+
+        def run():
+            wrapped = reference.packed_like(values)
+            rows = wrapped.ragged_level_offsets(0, device=values.device)
+            result = wrapped.concat.square().sum() * rows[1]
+            return (result, *torch.autograd.grad(result, values)) if requires_grad else (result,)
+
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(3):
+                run()
+        stream.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream=stream):
+            captured = run()
+        for factor in (0.5, 1.5):
+            with torch.no_grad():
+                values.mul_(factor)
+            graph.replay()
+            torch.cuda.synchronize()
+            assert_close(captured[0], values.square().sum() * 2)
+            if requires_grad:
+                assert_close(captured[1], values * 4)
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+    def test_packed_like_offset_conversion_observes_host_changes(self):
+        reference = NestedTensor([torch.empty(2, 3), torch.empty(4, 3)], ragged_dims=(0,))
+        values = torch.randn(reference.concat.shape, device="cuda")
+        first = reference.packed_like(values).packed_offsets(device=values.device)
+        offsets = reference.packed_offsets()
+        saved = offsets.clone()
+        offsets[1] = 3
+        changed = reference.packed_like(values).packed_offsets(device=values.device)
+        assert_close(first.cpu(), saved)
+        assert_close(changed.cpu(), offsets)
+        offsets.copy_(saved)
+        restored = reference.packed_like(values).packed_offsets(device=values.device)
+        assert_close(restored.cpu(), saved)
+
     def test_packed_like_rejects_invalid_values(self):
         reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
 
@@ -1117,14 +1162,24 @@ class TestPackedLike:
         assert_close(nested.element_sizes(), torch.tensor([[2, 2, 4], [3, 3, 4]]))
         assert_close(nested.packed_local_indices(level=0), torch.tensor([0, 1, 0, 1, 2]))
 
-    def test_packed_layout_accessors_support_empty_and_fake_tensors(self):
+    @pytest.mark.parametrize("warm_cuda", [False, True])
+    def test_packed_layout_accessors_support_empty_and_fake_tensors(self, warm_cuda):
         fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
         empty = NestedTensor([], dtype=torch.float32)
         reference = NestedTensor([torch.empty(2, 3), torch.empty(4, 3)])
+        if warm_cuda:
+            if not torch.cuda.is_available():
+                pytest.skip("CUDA is required to warm device metadata")
+            device = torch.device("cuda", torch.cuda.current_device())
+            reference.packed_offsets(device=device)
+            reference.ragged_level_offsets(0, device=device)
 
         with fake_tensor_mod.FakeTensorMode() as mode:
             fake = mode.from_tensor(reference)
             output = fake.packed_like(torch.empty_like(fake.concat))
+            if warm_cuda:
+                fake_offsets = output.ragged_level_offsets(0, device=device)
+                assert fake_tensor_mod.is_fake(fake_offsets)
 
         assert empty.element_sizes().shape == (0, 0)
         assert fake_tensor_mod.is_fake(output.concat)
