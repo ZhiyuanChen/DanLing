@@ -69,8 +69,6 @@ from .ops import (
     _normalize_dim,
     _physical_to_values_dim,
     _reduce,
-    _reduce_dim,
-    _reduce_dim_pair,
     _reduce_none,
     _reduce_none_pair,
     _run_layer_norm,
@@ -4149,7 +4147,28 @@ TORCH_SIMPLE_REDUCE_OPS = [
 ]
 
 
-@NestedTensorFuncRegistry.implement(torch.amax)
+def _extrema_values_reduce(input: NestedTensor, dim, keepdim: bool, op, aten_op):
+    r"""Share the global and logical-axis value extrema contracts."""
+    from .nested_tensor import NestedTensor
+
+    if dim is None:
+        return _reduce_none(input, op, keepdim=keepdim)
+    dims = list(dim) if isinstance(dim, (list, tuple)) else [dim]
+    if not dims:
+        # An explicit empty sequence retains the per-element global contract.
+        dims = [axis for axis in range(input.dim()) if axis != _get_batch_dim(input)] if input.dim() > 1 else []
+        output = (
+            NestedTensorAtenRegistry[aten_op](aten_op, (input, dims, False), {})
+            if dims
+            else aten_op(input.concat.reshape(len(input), 1), [1], False)
+        )
+        if isinstance(output, NestedTensor):
+            output = output.concat
+        return output.reshape(len(input), *([1] * (input.dim() - 1))) if keepdim else output
+    return NestedTensorAtenRegistry[aten_op](aten_op, (input, dims, keepdim), {})
+
+
+@NestedTensorFuncRegistry.implement(torch.amax, compile_safe=True)
 def amax(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: bool = False):
     r"""
     Returns the maximum value of each slice of the `input` tensor in the given dimension(s) `dim`.
@@ -4163,6 +4182,10 @@ def amax(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: b
     Returns:
         Tensor | NestedTensor: The maximum values.
 
+    Global and per-element axis reductions support ``torch.compile(fullgraph=True)``
+    on packed values, including joint static and ragged axes. Combining the batch
+    axis with other reduction axes remains unsupported.
+
     Examples:
         >>> import torch
         >>> from danling.tensors import NestedTensor
@@ -4170,18 +4193,10 @@ def amax(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: b
         >>> torch.allclose(torch.amax(nt, dim=1), torch.amax(nt.tensor, dim=1))
         True
     """
-    if dim is None:
-        return _reduce_none(input, torch.amax, keepdim=keepdim)
-    if isinstance(dim, (list, tuple)):
-        if len(dim) == 1:
-            dim = dim[0]
-        else:
-            return _reduce(input, torch.amax, dim, keepdim)
-    amax_op = torch.ops.aten.amax.default
-    return NestedTensorAtenRegistry[amax_op](amax_op, (input, [dim], keepdim), {})
+    return _extrema_values_reduce(input, dim, keepdim, torch.amax, torch.ops.aten.amax.default)
 
 
-@NestedTensorFuncRegistry.implement(torch.amin)
+@NestedTensorFuncRegistry.implement(torch.amin, compile_safe=True)
 def amin(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: bool = False):
     r"""
     Returns the minimum value of each slice of the `input` tensor in the given dimension(s) `dim`.
@@ -4202,18 +4217,10 @@ def amin(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: b
         >>> torch.allclose(torch.amin(nt, dim=1), torch.amin(nt.tensor, dim=1))
         True
     """
-    if dim is None:
-        return _reduce_none(input, torch.amin, keepdim=keepdim)
-    if isinstance(dim, (list, tuple)):
-        if len(dim) == 1:
-            dim = dim[0]
-        else:
-            return _reduce(input, torch.amin, dim, keepdim)
-    amin_op = torch.ops.aten.amin.default
-    return NestedTensorAtenRegistry[amin_op](amin_op, (input, [dim], keepdim), {})
+    return _extrema_values_reduce(input, dim, keepdim, torch.amin, torch.ops.aten.amin.default)
 
 
-@NestedTensorFuncRegistry.implement(torch.aminmax)
+@NestedTensorFuncRegistry.implement(torch.aminmax, compile_safe=True)
 def aminmax(input: NestedTensor, *, dim: int | None = None, keepdim: bool = False):
     r"""
     Computes the minimum and maximum values of the `input` tensor.
@@ -4236,11 +4243,11 @@ def aminmax(input: NestedTensor, *, dim: int | None = None, keepdim: bool = Fals
         >>> torch.equal(out_min, ref_min) and torch.equal(out_max, ref_max)
         True
     """
-    if dim is None:
-        return torch.return_types.aminmax(
-            (_reduce_none(input, torch.amin, keepdim=keepdim), _reduce_none(input, torch.amax, keepdim=keepdim))
-        )
-    return torch.return_types.aminmax(_reduce_dim_pair(input, torch.aminmax, dim, keepdim))
+    if isinstance(dim, torch.SymInt):
+        dim = int(dim)
+    aminmax_op = torch.ops.aten.aminmax.default
+    output = NestedTensorAtenRegistry[aminmax_op](aminmax_op, (input,), {"dim": dim, "keepdim": keepdim})
+    return torch.return_types.aminmax(output)
 
 
 @NestedTensorFuncRegistry.implement(torch.count_nonzero)
@@ -4343,7 +4350,7 @@ def logsumexp(input: NestedTensor, dim: int | Sequence[int], keepdim: bool = Fal
     return torch.ops.aten.logsumexp.default(input, dims, keepdim)
 
 
-@NestedTensorFuncRegistry.implement(torch.max)
+@NestedTensorFuncRegistry.implement(torch.max, compile_safe=True)
 def max(input: NestedTensor, dim: int | None = None, keepdim: bool = False):
     r"""
     Returns the maximum value of all elements in the ``input`` tensor.
@@ -4376,11 +4383,11 @@ def max(input: NestedTensor, dim: int | None = None, keepdim: bool = False):
     return torch.return_types.max((values, indices))
 
 
-@NestedTensorFuncRegistry.implement(torch.mean)
-@NestedTensorFuncRegistry.implement(torch.Tensor.mean)
+@NestedTensorFuncRegistry.implement(torch.mean, compile_safe=True)
+@NestedTensorFuncRegistry.implement(torch.Tensor.mean, compile_safe=True)
 def mean(
     input,
-    dim: int | None = None,
+    dim: int | Sequence[int] | None = None,
     keepdim: bool = False,
     *,
     dtype: torch.dtype | None = None,
@@ -4405,18 +4412,14 @@ def mean(
         >>> torch.allclose(torch.mean(nt, dim=1), torch.mean(nt.tensor, dim=1))
         True
     """
-    if dim is None:
+    if dim is None or isinstance(dim, (list, tuple)) and not dim:
         return _reduce_none(input, torch.mean, dtype=dtype, keepdim=keepdim)
     mean_dim = NestedTensorAtenRegistry[torch.ops.aten.mean.dim]
-    if isinstance(dim, int):
-        return mean_dim(torch.ops.aten.mean.dim, (input, [dim], keepdim), {"dtype": dtype})
-    if isinstance(dim, (list, tuple)):
-        dims = [dim[0]] if len(dim) == 1 else list(dim)
-        return mean_dim(torch.ops.aten.mean.dim, (input, dims, keepdim), {"dtype": dtype})
-    return _reduce_dim(input, torch.mean, dim, keepdim, dtype=dtype)
+    dims = list(dim) if isinstance(dim, (list, tuple)) else [dim]
+    return mean_dim(torch.ops.aten.mean.dim, (input, dims, keepdim), {"dtype": dtype})
 
 
-@NestedTensorFuncRegistry.implement(torch.min)
+@NestedTensorFuncRegistry.implement(torch.min, compile_safe=True)
 def min(input: NestedTensor, dim: int | None = None, keepdim: bool = False):
     r"""
     Returns the minimum value of all elements in the `input` tensor.
@@ -6493,6 +6496,7 @@ for _alias_method, _alias_func in (
     (torch.Tensor.log_softmax, torch.log_softmax),
     (torch.Tensor.amax, torch.amax),
     (torch.Tensor.amin, torch.amin),
+    (torch.Tensor.aminmax, torch.aminmax),
     (torch.Tensor.max, torch.max),
     (torch.Tensor.min, torch.min),
     (torch.Tensor.topk, torch.topk),

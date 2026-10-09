@@ -3527,29 +3527,72 @@ class TestReductionOps:
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     @pytest.mark.parametrize(("dim", "element_dim"), [(1, 0), (2, 1)])
-    def test_multi_ragged_keepdim_sum_and_broadcast_compile_dynamic_fullgraph(self, dim, element_dim):
+    @pytest.mark.parametrize("operation", [torch.sum, torch.amax, torch.amin, torch.mean])
+    def test_multi_ragged_keepdim_reduction_and_broadcast_compile_dynamic_fullgraph(self, dim, element_dim, operation):
         if dim == 1:
 
             def consume(structure, values):
                 source = structure.packed_like(values)
-                return (source + source.sum(dim=1, keepdim=True)).concat
+                return (source + operation(source, dim=1, keepdim=True)).concat
 
         else:
 
             def consume(structure, values):
                 source = structure.packed_like(values)
-                return (source + source.sum(dim=2, keepdim=True)).concat
+                return (source + operation(source, dim=2, keepdim=True)).concat
 
         compiled = torch.compile(consume, backend="aot_eager", fullgraph=True, dynamic=True)
         for shapes in (((2, 3, 4), (4, 2, 4)), ((3, 2, 4), (1, 5, 4))):
             elements = [torch.randn(shape) for shape in shapes]
             nested = NT(elements, ragged_dims=(0, 1))
             expected = NT(
-                [element + element.sum(dim=element_dim, keepdim=True) for element in elements],
+                [element + operation(element, dim=element_dim, keepdim=True) for element in elements],
                 ragged_dims=(0, 1),
             )
 
             assert_close(compiled(nested, nested.concat), expected.concat)
+
+    @pytest.mark.parametrize("dim", [(1, 2), (1, 3)])
+    @pytest.mark.parametrize("keepdim", [False, True])
+    @pytest.mark.parametrize("operation", [torch.amax, torch.amin, torch.mean])
+    def test_joint_axes_fullgraph_values_and_vjp(self, device, dim, keepdim, operation):
+        torch.compiler.reset()
+        scale = -1 if operation is torch.amin else 1
+        elements = [
+            torch.tensor([[[5, 2], [5, 1]], [[5, 2], [0, 0]]], device=device, dtype=torch.float64)
+            .mul_(scale)
+            .requires_grad_(),
+            torch.tensor([[[5, 3]], [[5, 1]], [[0, 3]]], device=device, dtype=torch.float64)
+            .mul_(scale)
+            .requires_grad_(),
+        ]
+        references = [element.detach().clone().requires_grad_() for element in elements]
+        nested = NT(elements, ragged_dims=(0, 1), padding_value=100)
+
+        def consume(template, values):
+            return operation(template.packed_like(values), dim=dim, keepdim=keepdim)
+
+        compiled = torch.compile(consume, backend="aot_eager", fullgraph=True, dynamic=True)
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            output = compiled(nested, nested.concat)
+            values = output.concat if isinstance(output, NestedTensor) else output
+            gradients = torch.autograd.grad(values.sum(), elements)
+        element_dims = tuple(axis - 1 for axis in dim)
+        expected_parts = [operation(element, dim=element_dims, keepdim=keepdim) for element in references]
+        if dim == (1, 2):
+            expected = torch.stack(expected_parts)
+        else:
+            expected = NT(expected_parts, ragged_dims=(1,) if keepdim else (0,), padding_value=100)
+        assert_close(output, expected)
+        wanted = torch.autograd.grad(sum(part.sum() for part in expected_parts), references)
+        for gradient, reference in zip(gradients, wanted):
+            assert_close(gradient, reference)
 
     def test_multi_ragged_var_mean_and_vector_norm_preserve_grad(self, device, float_dtype):
         leaves = [
@@ -3981,14 +4024,20 @@ class TestSelectionOps:
         with pytest.raises(IndexError, match="non-zero size"):
             getattr(torch, name)(nt, dim=1)
 
-    def test_max_ties_route_gradient_to_returned_index(self, device, float_dtype):
-        high = 2.0
+    @pytest.mark.parametrize("name", ["max", "min"])
+    def test_extrema_ties_route_gradient_to_returned_index(self, device, float_dtype, name):
+        torch.compiler.reset()
+        high = 2.0 if name == "max" else -2.0
         leaves = [
             torch.tensor([high, high, 0.0], device=device, dtype=float_dtype, requires_grad=True),
             torch.tensor([high, high], device=device, dtype=float_dtype, requires_grad=True),
         ]
         nt = NT(leaves)
-        output = torch.max(nt, dim=1)
+
+        def consume(template, values):
+            return getattr(template.packed_like(values), name)(dim=1)
+
+        output = torch.compile(consume, backend="aot_eager", fullgraph=True)(nt, nt.concat)
         assert_close(output.indices, torch.zeros(2, device=device, dtype=torch.long))
         loss = output.values.concat.sum() if isinstance(output.values, NestedTensor) else output.values.sum()
         grads = torch.autograd.grad(loss, leaves)

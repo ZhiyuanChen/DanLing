@@ -412,6 +412,11 @@ def _extract_dim_keepdim(args, kwargs, default_dim):
     return source, _parse_dims_arg(dim_arg), keepdim
 
 
+def _reduction_batch_dim(source: NestedTensor) -> int:
+    r"""Scalar elements have one logical batch axis regardless of batch_first."""
+    return 0 if source.dim() == 1 else _get_batch_dim(source)
+
+
 def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill, keepdim_kw=False, none_dim):
     r"""
     Shared 4-way dispatch for single-value dim reductions.
@@ -443,6 +448,40 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
 
     if len(dims) == 0:
         return _call(source.concat, none_dim, keepdim)
+
+    if func is aten.mean.dim:
+        for dim in dims:
+            if dim < -source.dim() or dim >= source.dim():
+                raise IndexError(
+                    f"Dimension out of range (expected to be in range of [{-source.dim()}, "
+                    f"{source.dim() - 1}], but got {dim})"
+                )
+        normalized_dims = tuple(_normalize_dim(dim, source.dim()) for dim in dims)
+        batch_dim = _reduction_batch_dim(source)
+        if len(normalized_dims) == 1 and normalized_dims[0] == batch_dim:
+            reduced = _packed_mean_reduction(source, range(source._physical_shape.size(1)), False, **kwargs)
+            return reduced.unsqueeze(batch_dim) if keepdim else reduced
+        if batch_dim not in normalized_dims:
+            dims_adj = _translate_dims(source, normalized_dims)
+            if any(dim in source._varying_dims for dim in dims_adj):
+                return _packed_mean_reduction(source, dims_adj, keepdim, **kwargs)
+
+    if func in (aten.amax.default, aten.amin.default):
+        for dim in dims:
+            if dim < -source.dim() or dim >= source.dim():
+                raise IndexError(
+                    f"Dimension out of range (expected to be in range of [{-source.dim()}, "
+                    f"{source.dim() - 1}], but got {dim})"
+                )
+        normalized_dims = tuple(_normalize_dim(dim, source.dim()) for dim in dims)
+        batch_dim = _reduction_batch_dim(source)
+        if len(normalized_dims) == 1 and normalized_dims[0] == batch_dim:
+            reduced = _packed_extrema_reduction(func, source, range(source._physical_shape.size(1)), False)
+            return reduced.unsqueeze(batch_dim) if keepdim else reduced
+        if batch_dim not in normalized_dims:
+            dims_adj = _translate_dims(source, normalized_dims)
+            if any(dim in source._varying_dims for dim in dims_adj):
+                return _packed_extrema_reduction(func, source, dims_adj, keepdim)
 
     if len(dims) > 1:
         try:
@@ -794,47 +833,69 @@ def _vector_norm_zero_padding_safe(ord_value) -> bool:
     return ord_float == 0.0 or ord_float > 0.0
 
 
-@NestedTensorAtenRegistry.implement(aten.max.dim)
-@NestedTensorAtenRegistry.implement(aten.min.dim)
+@NestedTensorAtenRegistry.implement(aten.max.dim, compile_safe=True)
+@NestedTensorAtenRegistry.implement(aten.min.dim, compile_safe=True)
 def max_min_dim_reduction(func, args, kwargs):
     r"""Handle ``max/min`` dim reductions, returning both values and indices."""
     source, dims, keepdim = _extract_dim_keepdim(args, kwargs, _MISSING)
     if not dims:
         raise TypeError("missing required argument 'dim'")
+    if dims[0] < -source.dim() or dims[0] >= source.dim():
+        raise IndexError("Dimension out of range")
     dim = _normalize_dim(dims[0], source.dim())
-    batch_dim = _get_batch_dim(source)
+    batch_dim = _reduction_batch_dim(source)
     largest = func is aten.max.dim
 
     if dim == batch_dim:
-        pairs = [func(t.reshape(-1), 0, False, **kwargs) for t in source._unpack()]
-        values = torch.stack([pair[0] for pair in pairs])
-        indices = torch.stack([pair[1] for pair in pairs])
+        values, indices = _packed_max_min_reduction(
+            source, range(source._physical_shape.size(1)), False, largest=largest
+        )
         if keepdim:
             values = values.unsqueeze(batch_dim)
             indices = indices.unsqueeze(batch_dim)
         return values, indices
 
     dim_adj = _translate_dim(source, dim)
-    segment_pair = _segment_max_min_ragged_dim(source, dim_adj, keepdim, largest=largest)
-    if segment_pair is not None:
-        return segment_pair
-
     values_dim = _physical_to_values_dim(source, dim_adj)
     if values_dim is None:
-        if not _has_single_packed_ragged_dim(source, dim_adj):
-            return per_element_fallback(func, (source, dim_adj, keepdim), kwargs)
-        fill_value = _topk_fill_value(source.concat.dtype, largest=largest)
-        padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=fill_value)
-        values, indices = func(padded, 1 + dim_adj, keepdim, **kwargs)
-        return (
-            _restore_segment_batch_dim(source, values, dim_adj, keepdim),
-            _restore_segment_batch_dim(source, indices, dim_adj, keepdim),
-        )
+        return _packed_max_min_reduction(source, (dim_adj,), keepdim, largest=largest)
 
     values, indices = func(source.concat, values_dim, keepdim, **kwargs)
     return (
         _reduce_non_ragged_packed(source, values, dim_adj, keepdim),
         _reduce_non_ragged_packed(source, indices, dim_adj, keepdim),
+    )
+
+
+@NestedTensorAtenRegistry.implement(aten.aminmax.default, compile_safe=True)
+def aminmax_reduction(func, args, kwargs):
+    r"""Compute extrema pairs with native global and static-axis reductions."""
+    source = args[0]
+    dim = kwargs.pop("dim", None)
+    keepdim = kwargs.pop("keepdim", False)
+    if dim is None:
+        minimum, maximum = func(source.concat, dim=None, keepdim=False, **kwargs)
+        if keepdim:
+            shape = (1,) * source.dim()
+            minimum, maximum = minimum.reshape(shape), maximum.reshape(shape)
+        return minimum, maximum
+    if dim < -source.dim() or dim >= source.dim():
+        raise IndexError("Dimension out of range")
+    dim = _normalize_dim(dim, source.dim())
+    batch_dim = _reduction_batch_dim(source)
+    if dim == batch_dim:
+        minimum, maximum = _packed_aminmax_reduction(source, range(source._physical_shape.size(1)), False)
+        if keepdim:
+            minimum, maximum = minimum.unsqueeze(batch_dim), maximum.unsqueeze(batch_dim)
+        return minimum, maximum
+    dim_adj = _translate_dim(source, dim)
+    values_dim = _physical_to_values_dim(source, dim_adj)
+    if values_dim is None:
+        return _packed_aminmax_reduction(source, (dim_adj,), keepdim)
+    minimum, maximum = func(source.concat, dim=values_dim, keepdim=keepdim, **kwargs)
+    return (
+        _reduce_non_ragged_packed(source, minimum, dim_adj, keepdim),
+        _reduce_non_ragged_packed(source, maximum, dim_adj, keepdim),
     )
 
 
@@ -3704,6 +3765,277 @@ def _packed_ragged_reduction_groups(
     return remaining_ragged, physical_group_counts, groups, output_size
 
 
+class _GroupedExtrema(torch.autograd.Function):
+    r"""Reduce packed groups with one tie denominator across all selected axes."""
+
+    @staticmethod
+    def forward(values: Tensor, groups: Tensor, output_size: int, largest: bool) -> Tensor:
+        result_dtype = values.dtype
+        # CUDA scatter_reduce supports uint8, while bool needs an integer carrier.
+        if result_dtype == torch.bool:
+            values = values.to(torch.uint8)
+        output = values.new_full((output_size, *values.shape[1:]), _topk_fill_value(values.dtype, largest))
+        index = groups.reshape(-1, *([1] * (values.dim() - 1))).expand_as(values)
+        return output.scatter_reduce(0, index, values, "amax" if largest else "amin", include_self=False).to(
+            result_dtype
+        )
+
+    @staticmethod
+    def setup_context(ctx, inputs, output) -> None:
+        values, groups, _, _ = inputs
+        ctx.save_for_backward(values, groups, output)
+
+    @staticmethod
+    def backward(ctx, grad_output: Tensor):
+        values, groups, output = ctx.saved_tensors
+        selected = output.index_select(0, groups)
+        mask = values == selected
+        counts = torch.zeros_like(output, dtype=torch.long).index_add(0, groups, mask.to(torch.long))
+        # Native amax/amin divide before applying their equality mask. A NaN
+        # maximum has no equal inputs, so the zero denominator deliberately
+        # yields NaN gradients for every member of that reduction group.
+        gradient = grad_output.index_select(0, groups) / counts.index_select(0, groups)
+        return gradient * mask, None, None, None
+
+
+def _canonical_packed_reduction_dims(source: NestedTensor, dims_adj: Sequence[int]) -> tuple[int, ...]:
+    r"""Specialize finite axis choices before using dimensions as metadata keys."""
+    rank = int(source._physical_shape.size(1))
+    requested_dims = tuple(dims_adj)
+    # Axis arguments may arrive as SymInts from a compiled closure. Selecting
+    # from the finite physical rank guards that axis choice and leaves ordinary
+    # integer coordinates for metadata dictionaries and permutations.
+    dims_adj = tuple(dim for dim in range(rank) if dim in requested_dims)
+    if len(dims_adj) != len(requested_dims):
+        raise RuntimeError("dim appears multiple times in the list of dims")
+    return dims_adj
+
+
+def _packed_reduction_groups(source: NestedTensor, dims_adj: Sequence[int], *, device: torch.device):
+    r"""Enumerate retained ragged coordinates and assign one group to every packed row."""
+    selected_ragged = tuple(dim for dim in source._varying_dims if dim in dims_adj)
+    remaining_ragged = tuple(dim for dim in source._varying_dims if dim not in dims_adj)
+    if remaining_ragged:
+        group_counts = source._physical_shape[:, list(remaining_ragged)].prod(dim=1)
+    else:
+        group_counts = source._offsets.new_ones((len(source),))
+    group_offsets = torch.cat((group_counts.new_zeros(1), group_counts.cumsum(0)))
+    batch, local = source._packed_batch_local_indices(device=device)
+    coordinates = source._packed_varying_coords(batch, local, device=device)
+    shape = source._physical_shape.to(device=device)
+    local_group = torch.zeros_like(batch)
+    for dim, coordinate in zip(source._varying_dims, coordinates):
+        if dim in remaining_ragged:
+            local_group = local_group * shape[batch, dim] + coordinate
+    groups = group_offsets.to(device=device).index_select(0, batch) + local_group
+    if not remaining_ragged:
+        output_size = len(source)
+    elif not selected_ragged:
+        output_size = source.concat.shape[0]
+    elif remaining_ragged == source._varying_dims[: len(remaining_ragged)]:
+        output_size = source._ragged_level_offsets(len(remaining_ragged)).numel() - 1
+    else:
+        output_size = _ragged_reduction_size_binding(group_counts).shape[0]
+    return remaining_ragged, group_counts, group_offsets, groups, output_size
+
+
+def _packed_extrema_reduction(func, source: NestedTensor, dims_adj: Sequence[int], keepdim: bool):
+    r"""Reduce static and ragged coordinates jointly without padded materialization."""
+    dims_adj = _canonical_packed_reduction_dims(source, dims_adj)
+    values = source.concat
+    rank = int(source._physical_shape.size(1))
+    if rank == 0:
+        return func(values.reshape(len(source), 1), [1], False)
+    if values.dtype.is_complex:
+        # Delegate the dtype error to the native extrema implementation.
+        return func(values, [0], False)
+
+    selected_ragged = tuple(dim for dim in source._varying_dims if dim in dims_adj)
+    remaining_ragged = tuple(dim for dim in source._varying_dims if dim not in dims_adj)
+    selected_static = tuple(dim for dim in source._static_dims if dim in dims_adj)
+    remaining_static = tuple(dim for dim in range(rank) if dim not in dims_adj and dim not in remaining_ragged)
+    for dim in selected_static:
+        if values.shape[1 + source._static_dims.index(dim)] == 0:
+            raise IndexError("amax/amin(): Expected reduction dim to have non-zero size.")
+    if selected_ragged:
+        torch._assert_async(
+            torch.all(source._physical_shape[:, list(selected_ragged)] > 0),
+            "amax/amin(): Expected reduction dim to have non-zero size.",
+        )
+
+    remaining_ragged, _, group_offsets, groups, output_size = _packed_reduction_groups(
+        source, dims_adj, device=values.device
+    )
+
+    order = (0, *(1 + source._static_dims.index(dim) for dim in (*selected_static, *remaining_static)))
+    ordered = values.permute(order)
+    reduction_size = math.prod(ordered.shape[1 : 1 + len(selected_static)])
+    kept_shape = ordered.shape[1 + len(selected_static) :]
+    contributions = ordered.reshape(ordered.shape[0] * reduction_size, *kept_shape)
+    groups = groups[:, None].expand(-1, reduction_size).reshape(-1)
+    output = _GroupedExtrema.apply(contributions, groups, output_size, func is aten.amax.default)
+    return _wrap_packed_reduction(source, output, dims_adj, keepdim, remaining_ragged, group_offsets)
+
+
+def _wrap_packed_reduction(source, output, dims_adj, keepdim, remaining_ragged, group_offsets):
+    r"""Restore logical static axes and retained packed coordinates after a joint reduction."""
+    values = source.concat
+    rank = int(source._physical_shape.size(1))
+    remaining_static = tuple(dim for dim in range(rank) if dim not in dims_adj and dim not in remaining_ragged)
+    if not remaining_ragged:
+        if keepdim:
+            shape = tuple(
+                1 if dim in dims_adj else values.shape[1 + source._static_dims.index(dim)] for dim in range(rank)
+            )
+            output = output.reshape(len(source), *shape)
+        return _restore_multi_dim_batch_dim(source, output, dims_adj, keepdim)
+
+    if keepdim:
+        replacements = dict.fromkeys(dims_adj, 1)
+        physical_shape, packed_sizes, element_shapes = source._shape_meta_from_components(replace_dims=replacements)
+        logical_shape = source._logical_shape_from_components(replace_dims=replacements)
+        ragged_dims = remaining_ragged
+        static_dims = tuple(dim for dim in range(rank) if dim not in remaining_ragged)
+        tail = tuple(1 if dim in dims_adj else values.shape[1 + source._static_dims.index(dim)] for dim in static_dims)
+        output = output.reshape(output.shape[0], *tail)
+        permutation = (*ragged_dims, *static_dims)
+    else:
+        keep_dims = tuple(dim for dim in range(rank) if dim not in dims_adj)
+        physical_shape, packed_sizes, element_shapes = source._shape_meta_from_components(keep_dims=keep_dims)
+        logical_shape = source._logical_shape_from_components(keep_dims=keep_dims)
+        ragged_dims = tuple(keep_dims.index(dim) for dim in remaining_ragged)
+        permutation = (*ragged_dims, *(keep_dims.index(dim) for dim in remaining_static))
+    offsets = group_offsets.to(dtype=source._offsets.dtype)
+    persistent_offsets = source._persistent_ragged_offsets()
+    if len(ragged_dims) == 1:
+        ragged_offsets = (offsets,)
+    elif persistent_offsets is not None and remaining_ragged == source._varying_dims[: len(remaining_ragged)]:
+        ragged_offsets = persistent_offsets[: len(remaining_ragged)]
+    else:
+        ragged_offsets = _tensor_backed_ragged_offsets(physical_shape, ragged_dims, dtype=source._offsets.dtype)
+    result = type(source)._from_packed(
+        output,
+        offsets,
+        physical_shape,
+        outer_size=logical_shape,
+        permutation=permutation,
+        ragged_dims=ragged_dims,
+        batch_first=source.batch_first,
+        padding_value=source.padding_value,
+        mask_value=source.mask_value,
+        pin_memory=source._pin_memory,
+        packed_sizes=packed_sizes,
+        element_shapes=element_shapes,
+        ragged_offsets=ragged_offsets,
+        validate=False,
+        mark_dynamic=False,
+    )
+    return result._packed_like_unchecked(output, reuse_wrapper=True)
+
+
+def _packed_max_min_reduction(source: NestedTensor, dims_adj: Sequence[int], keepdim: bool, *, largest: bool):
+    r"""Select the first logical extremum in each group and gather its original value."""
+    dims_adj = _canonical_packed_reduction_dims(source, dims_adj)
+    values = source.concat
+    rank = int(source._physical_shape.size(1))
+    if rank == 0:
+        return (aten.max.dim if largest else aten.min.dim)(values.reshape(len(source), 1), 1, False)
+    if values.dtype.is_complex:
+        return (aten.max.dim if largest else aten.min.dim)(values, 0, False)
+    selected_ragged = tuple(dim for dim in source._varying_dims if dim in dims_adj)
+    selected_static = tuple(dim for dim in range(rank) if dim in source._static_dims and dim in dims_adj)
+    remaining_static = tuple(dim for dim in range(rank) if dim in source._static_dims and dim not in dims_adj)
+    for dim in selected_static:
+        if values.shape[1 + source._static_dims.index(dim)] == 0:
+            raise IndexError("max/min(): Expected reduction dim to have non-zero size.")
+    if selected_ragged:
+        nonempty = torch.all(source._physical_shape[:, list(selected_ragged)] > 0)
+        if not _is_compiling() and not _is_fake_tensor(source._physical_shape):
+            if not bool(nonempty):
+                raise IndexError("max/min(): Expected reduction dim to have non-zero size.")
+        else:
+            torch._assert_async(nonempty, "max/min(): Expected reduction dim to have non-zero size.")
+    remaining_ragged, _, offsets, row_groups, output_size = _packed_reduction_groups(
+        source, dims_adj, device=values.device
+    )
+    order = (0, *(1 + source._static_dims.index(dim) for dim in (*selected_static, *remaining_static)))
+    ordered = values.permute(order)
+    reduction_size = math.prod(ordered.shape[1 : 1 + len(selected_static)])
+    contributions = ordered.reshape(ordered.shape[0] * reduction_size, *ordered.shape[1 + len(selected_static) :])
+    groups = row_groups[:, None].expand(-1, reduction_size).reshape(-1)
+    batch, local = source._packed_batch_local_indices(device=values.device)
+    coordinates = source._packed_varying_coords(batch, local, device=values.device)
+    if len(dims_adj) == 1 and dims_adj[0] in source._varying_dims:
+        local_indices = coordinates[source._varying_dims.index(dims_adj[0])]
+    else:
+        # Batch-axis max/min flatten each sample in logical element order.
+        # Packed row order can permute either static or ragged coordinates.
+        shape = source._physical_shape.to(device=values.device).index_select(0, batch)
+        static_indices = torch.arange(reduction_size, device=values.device)
+        local_indices = torch.zeros((values.shape[0], reduction_size), device=values.device, dtype=torch.long)
+        for dim in range(rank):
+            if dim in source._varying_dims:
+                coordinate = coordinates[source._varying_dims.index(dim)][:, None]
+            else:
+                position = selected_static.index(dim)
+                stride = math.prod(ordered.shape[2 + position : 1 + len(selected_static)])
+                coordinate = (static_indices // stride) % values.shape[1 + source._static_dims.index(dim)]
+            local_indices = local_indices * shape[:, dim : dim + 1] + coordinate
+        local_indices = local_indices.reshape(-1)
+    index_shape = (-1, *([1] * (contributions.dim() - 1)))
+    local_indices = local_indices.reshape(index_shape).expand_as(contributions)
+    scatter_index = groups.reshape(index_shape).expand_as(contributions)
+    extrema = _GroupedExtrema.forward(contributions.detach(), groups, output_size, largest)
+    matches = _matches_extrema(contributions, extrema.index_select(0, groups))
+    sentinel = torch.iinfo(torch.long).max
+    candidates = torch.where(matches, local_indices, sentinel)
+    indices = torch.full(extrema.shape, sentinel, device=values.device, dtype=torch.long)
+    indices = indices.scatter_reduce(0, scatter_index, candidates, "amin", include_self=True)
+    selected = matches & (local_indices == indices.index_select(0, groups))
+    positions = torch.arange(contributions.shape[0], device=values.device).reshape(index_shape).expand_as(contributions)
+    positions = torch.where(selected, positions, sentinel)
+    first = torch.full_like(indices, sentinel).scatter_reduce(0, scatter_index, positions, "amin", include_self=True)
+    output = contributions.gather(0, first)
+    return (
+        _wrap_packed_reduction(source, output, dims_adj, keepdim, remaining_ragged, offsets),
+        _wrap_packed_reduction(source, indices, dims_adj, keepdim, remaining_ragged, offsets),
+    )
+
+
+def _packed_aminmax_reduction(source: NestedTensor, dims_adj: Sequence[int], keepdim: bool):
+    r"""Compute packed extrema pairs with one tie denominator for each extremum."""
+    dims_adj = _canonical_packed_reduction_dims(source, dims_adj)
+    values = source.concat
+    rank = int(source._physical_shape.size(1))
+    if rank == 0:
+        return aten.aminmax.default(values.reshape(len(source), 1), dim=1)
+    if values.dtype.is_complex:
+        return aten.aminmax.default(values, dim=0)
+    selected_ragged = tuple(dim for dim in source._varying_dims if dim in dims_adj)
+    selected_static = tuple(dim for dim in source._static_dims if dim in dims_adj)
+    remaining_static = tuple(dim for dim in range(rank) if dim in source._static_dims and dim not in dims_adj)
+    for dim in selected_static:
+        if values.shape[1 + source._static_dims.index(dim)] == 0:
+            raise IndexError("aminmax(): Expected reduction dim to have non-zero size.")
+    if selected_ragged:
+        torch._assert_async(
+            torch.all(source._physical_shape[:, list(selected_ragged)] > 0),
+            "aminmax(): Expected reduction dim to have non-zero size.",
+        )
+    remaining_ragged, _, offsets, groups, output_size = _packed_reduction_groups(source, dims_adj, device=values.device)
+    order = (0, *(1 + source._static_dims.index(dim) for dim in (*selected_static, *remaining_static)))
+    ordered = values.permute(order)
+    reduction_size = math.prod(ordered.shape[1 : 1 + len(selected_static)])
+    contributions = ordered.reshape(ordered.shape[0] * reduction_size, *ordered.shape[1 + len(selected_static) :])
+    groups = groups[:, None].expand(-1, reduction_size).reshape(-1)
+    minimum = _GroupedExtrema.apply(contributions, groups, output_size, False)
+    maximum = _GroupedExtrema.apply(contributions, groups, output_size, True)
+    return (
+        _wrap_packed_reduction(source, minimum, dims_adj, keepdim, remaining_ragged, offsets),
+        _wrap_packed_reduction(source, maximum, dims_adj, keepdim, remaining_ragged, offsets),
+    )
+
+
 def _wrap_packed_ragged_reduction(
     source: NestedTensor,
     output: Tensor,
@@ -3797,6 +4129,38 @@ def _numeric_reduction_values(values: Tensor, dtype: torch.dtype, *, mean: bool)
         return values.float()
     values = values.to(dtype=dtype)
     return values.float() if low_precision else values
+
+
+def _packed_mean_reduction(
+    source: NestedTensor,
+    dims_adj: Sequence[int],
+    keepdim: bool,
+    *,
+    dtype: torch.dtype | None = None,
+):
+    r"""Sum selected static and ragged coordinates with one joint normalization count."""
+    dims_adj = _canonical_packed_reduction_dims(source, dims_adj)
+    values = source.concat
+    # Native mean determines the output dtype and rejects integer inputs unless an
+    # appropriate dtype was supplied. Accumulate half/bfloat16 sums before rounding.
+    sample = aten.mean.dim(values[:0], [0], False, dtype=dtype)
+    add_values = _numeric_reduction_values(values, sample.dtype, mean=True)
+    remaining_ragged, _, group_offsets, groups, output_size = _packed_reduction_groups(
+        source, dims_adj, device=values.device
+    )
+    selected_static = tuple(dim for dim in source._static_dims if dim in dims_adj)
+    remaining_static = tuple(
+        dim for dim in range(source._physical_shape.size(1)) if dim not in dims_adj and dim not in remaining_ragged
+    )
+    order = (0, *(1 + source._static_dims.index(dim) for dim in (*selected_static, *remaining_static)))
+    ordered = add_values.permute(order)
+    static_count = math.prod(ordered.shape[1 : 1 + len(selected_static)])
+    kept_shape = ordered.shape[1 + len(selected_static) :]
+    row_sums = ordered.reshape(ordered.shape[0], static_count, *kept_shape).sum(dim=1)
+    output = row_sums.new_zeros((output_size, *kept_shape)).index_add(0, groups, row_sums)
+    counts = groups.new_zeros((output_size,)).index_add(0, groups, torch.ones_like(groups)) * static_count
+    output = (output / counts.reshape(output_size, *([1] * len(kept_shape)))).to(dtype=sample.dtype)
+    return _wrap_packed_reduction(source, output, dims_adj, keepdim, remaining_ragged, group_offsets)
 
 
 def _packed_numeric_ragged_reduction(
