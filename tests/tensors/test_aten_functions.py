@@ -296,8 +296,14 @@ class TestIndexingOps:
             ],
             dtype=torch.long,
         )
-        gather_out = torch.ops.aten.gather.default(nt, 2, gather_dense, sparse_grad=False)
+        with pytest.raises(RuntimeError, match="index size exceeds"):
+            torch.ops.aten.gather.default(nt, 2, gather_dense, sparse_grad=False)
+        gather_valid = gather_dense[:, :2]
+        gather_out = torch.ops.aten.gather.default(nt, 2, gather_valid, sparse_grad=False)
+        gather_ref_dense = torch.stack([torch.gather(t, 1, idx) for t, idx in zip(nt, gather_valid)])
+        assert_close(gather_out, gather_ref_dense)
         gather_nt = nt.nested_like(gather_dense, strict=False)
+        gather_out = torch.ops.aten.gather.default(nt, 2, gather_nt, sparse_grad=False)
         gather_ref = NT([torch.gather(t, 1, idx) for t, idx in zip(nt, gather_nt)], **reference_options(nt))
         assert_close(gather_out, gather_ref)
 
