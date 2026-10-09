@@ -508,7 +508,14 @@ def _resolve_dense_for_values(nt: NestedTensor, other) -> Tensor | None:
     if len(nt) == 0 or nt.concat.dim() == 0:
         return None
 
-    if other.shape == nt.concat.shape:
+    from torch.fx.experimental.symbolic_shapes import statically_known_true
+
+    # A data-derived packed row count cannot be compared with a dense batch
+    # extent in Python. Use this shortcut only when equality is already known;
+    # otherwise resolve the operand through its logical/sample alignment.
+    if other.dim() == nt.concat.dim() and all(
+        statically_known_true(dense == packed) for dense, packed in zip(other.shape, nt.concat.shape)
+    ):
         return other
 
     reading = _dense_alignment(nt, other)

@@ -61,6 +61,33 @@ class TestDenseBinaryOperands:
         torch.testing.assert_close(output.concat, nt.concat * dense)
         assert [tuple(element.shape) for element in output] == [(2, 3), (4, 3)]
 
+    def test_data_derived_ragged_coordinates_divide_by_sample_noise_fullgraph(self, device):
+        def normalize(template, coordinates, lengths, noise):
+            packed = torch.repeat_interleave(coordinates, lengths.to(coordinates.device), dim=0)
+            ragged = template.packed_with_lengths(packed, lengths)
+            return (ragged / noise).concat
+
+        compiled = torch.compile(normalize, backend="aot_eager", fullgraph=True, dynamic=True)
+        template = NT([torch.empty(1, 3, device=device), torch.empty(1, 3, device=device)], ragged_dims=(0,))
+        for lengths in ((3, 5), (2, 4), (0, 2)):
+            coordinates = torch.randn(2, 3, device=device, dtype=torch.float64, requires_grad=True)
+            noise = torch.tensor([[0.7], [1.3]], device=device, dtype=torch.float64, requires_grad=True)
+            reference_coordinates = coordinates.detach().clone().requires_grad_()
+            reference_noise = noise.detach().clone().requires_grad_()
+            reference = torch.cat(
+                [
+                    reference_coordinates[index].expand(length, -1) / reference_noise[index]
+                    for index, length in enumerate(lengths)
+                ]
+            )
+            with _guard():
+                output = compiled(template, coordinates, torch.tensor(lengths), noise)
+            weights = torch.randn_like(output)
+            observed = torch.autograd.grad(output, (coordinates, noise), weights)
+            expected = torch.autograd.grad(reference, (reference_coordinates, reference_noise), weights)
+            torch.testing.assert_close(output, reference)
+            torch.testing.assert_close(observed, expected)
+
     def test_per_element_dense_broadcast(self):
         # (B, 1, ragged_N, C) against a (B, S, 1, C) term: each element pairs with its own slice.
         nt = NT([torch.randn(1, 2, 3), torch.randn(1, 4, 3)])
