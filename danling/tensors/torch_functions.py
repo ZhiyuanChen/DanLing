@@ -5297,6 +5297,99 @@ def expand(input: NestedTensor, *sizes) -> NestedTensor:
     )
 
 
+def _uniform_expand_as_target(source: NestedTensor, shape: torch.Size) -> NestedTensor:
+    r"""Describe a uniform dense target without reading or repacking its values."""
+    import math
+
+    batch_dim = 0 if source.dim() == 1 else _get_batch_dim(source)
+    if len(shape) != source.dim() or shape[batch_dim] != len(source):
+        raise RuntimeError("expand_as(): dense target must have matching logical rank and batch extent")
+    element_shape = tuple(size for dim, size in enumerate(shape) if dim != batch_dim)
+    count = math.prod(element_shape[dim] for dim in source._ragged_dims)
+    physical_shape = source._physical_shape.new_tensor(element_shape).reshape(1, len(element_shape))
+    physical_shape = physical_shape.expand(len(source), -1).clone()
+    offsets = torch.arange(len(source) + 1, dtype=source._offsets.dtype, device=source._offsets.device) * count
+    levels = []
+    parents = len(source)
+    for dim in source._ragged_dims:
+        width = element_shape[dim]
+        levels.append(torch.arange(parents + 1, dtype=offsets.dtype, device=offsets.device) * width)
+        parents *= width
+    packed_shape = (len(source) * count, *(element_shape[dim] for dim in source._static_dims))
+    placeholder = source.concat.new_empty(()).expand(packed_shape)
+    return type(source)._from_packed(
+        placeholder,
+        offsets,
+        physical_shape,
+        permutation=source._permutation,
+        ragged_dims=source._ragged_dims if source._ragged_dims_explicit else None,
+        ragged_offsets=tuple(levels) if levels else None,
+        outer_size=shape,
+        batch_first=source.batch_first,
+        padding_value=source.padding_value,
+        mask_value=source.mask_value,
+        pin_memory=False,
+        packed_sizes=(count,) * len(source),
+        element_shapes=(element_shape,) * len(source),
+        validate=False,
+        mark_dynamic=False,
+    )
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.expand_as, compile_safe=True)
+def expand_as(input, other):
+    r"""Expand to each true target element shape, retaining its packed coordinates."""
+    from .nested_tensor import NestedTensor
+    from .ops import _dense_alignment, _dense_alignment_to_values, _expand_nested_as_values, _resolve_dense_for_values
+
+    if not isinstance(other, Tensor):
+        raise TypeError("expand_as(): argument 'other' must be a Tensor")
+    if not isinstance(other, NestedTensor):
+        if not isinstance(input, NestedTensor):
+            return input.expand_as(other)
+        target = _uniform_expand_as_target(input, other.shape)
+    else:
+        target = other
+    if isinstance(input, NestedTensor):
+        values = _expand_nested_as_values(target, input)
+        configuration = input
+    else:
+        values = input if input.dim() == 0 else _resolve_dense_for_values(target, input)
+        if values is None:
+            # Empty target batches have no packed-value resolver, but logical
+            # singleton/static-tail alignment still determines an empty view.
+            reading = _dense_alignment(target, input)
+            values = None if reading is None else _dense_alignment_to_values(target, input, reading)
+        if values is None:
+            raise RuntimeError("expand_as(): dense input cannot expand to the NestedTensor target shape")
+        values = values.expand(target._packed_values.shape)
+        configuration = target
+    result = type(configuration)._from_packed(
+        values,
+        target._offsets,
+        target._physical_shape,
+        permutation=target._permutation,
+        ragged_dims=target._ragged_dims if target._ragged_dims_explicit else None,
+        ragged_offsets=target._persistent_ragged_offsets(),
+        outer_size=target.shape,
+        batch_first=target.batch_first,
+        padding_value=configuration.padding_value,
+        mask_value=configuration.mask_value,
+        pin_memory=configuration._pin_memory,
+        packed_sizes=target._packed_sizes,
+        element_shapes=target._element_shapes,
+        validate=False,
+        mark_dynamic=False,
+    )
+    if not _is_compiling() and target._same_row_splits(result):
+        target._share_offset_caches(result)
+    result = result._packed_like_unchecked(result._packed_values, reuse_wrapper=True)
+    binding = vars(target).get("_compile_max_length_binding")
+    if binding is not None:
+        result._max_length_binding = binding
+    return result
+
+
 def _normalize_new_size(shape: tuple, kwargs: dict | None = None) -> tuple:
     r"""
     Normalize ``new_*`` size arguments.

@@ -1221,6 +1221,49 @@ class TestFlattenUnflatten:
 
 class TestExpand:
 
+    def test_expand_as_uses_target_elements_with_mask_and_fullgraph_vjp(self, device):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+
+        def masked_expand(template, values, target, mask):
+            source = template.packed_like(values).expand_as(target)
+            return torch.where(mask.expand_as(target), source, 0).concat
+
+        compiled = torch.compile(masked_expand, backend="aot_eager", fullgraph=True, dynamic=True)
+        for sizes in (((3, 2), (5, 4)), ((2, 4), (4, 3))):
+            parts = [torch.randn(rows, 1, 1, device=device, dtype=torch.float64) for rows, _ in sizes]
+            template = NT(parts, ragged_dims=(0,))
+            values = template.concat.detach().requires_grad_()
+            reference_parts = [part.detach().requires_grad_() for part in parts]
+            target_parts = [torch.empty(rows, columns, 1, device=device) for rows, columns in sizes]
+            target = NT(target_parts, ragged_dims=(0, 1))
+            masks = [torch.rand(part.shape, device=device) > 0.4 for part in target_parts]
+            mask = NT(masks, ragged_dims=(0, 1))
+            dense_mask = torch.ones(len(target), 1, 1, 1, device=device, dtype=torch.bool)
+            with fake_tensor_mod.FakeTensorMode(allow_non_fake_inputs=True):
+                mask.expand_as(target)
+                dense_mask.expand_as(target)
+            reference = NT(
+                [
+                    torch.where(valid, part.expand_as(destination), 0)
+                    for part, destination, valid in zip(reference_parts, target_parts, masks)
+                ],
+                ragged_dims=(0, 1),
+            )
+            for operation in (masked_expand, compiled):
+                with nested_execution_guard(
+                    forbid_iteration=True,
+                    forbid_storage_map=True,
+                    forbid_eager_fallback=True,
+                    forbid_padded_materialization=True,
+                    forbid_dense_repack=True,
+                ):
+                    output = operation(template, values, target, mask)
+                assert_close(output, reference.concat)
+                weights = torch.randn_like(output)
+                gradient = torch.autograd.grad(output, values, weights)[0]
+                expected = torch.autograd.grad(reference.concat, reference_parts, weights, retain_graph=True)
+                assert_close(gradient, NT(expected, ragged_dims=(0,)).concat)
+
     def test_expand_static_singleton_dim(self, device, float_dtype):
         nt = NT(
             [

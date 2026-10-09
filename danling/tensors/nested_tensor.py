@@ -2256,12 +2256,13 @@ class NestedTensor(torch.Tensor):
     ) -> Tensor:
         r"""Return batch coordinates for packed values."""
         target_device = self.device if device is None else torch.device(device)
-        key = (str(target_device), dtype, self._shape_cache_token())
-        if self._cached_packed_batch_indices is not None:
+        token = self._offset_conversion_cache_token()
+        key = (str(target_device), dtype, token) if token is not None else None
+        if key is not None and self._cached_packed_batch_indices is not None:
             cached = self._cached_packed_batch_indices.get(key)
             if cached is not None:
                 return cached
-        elif not _is_fake_tensor(self._offsets) and not _is_compiling():
+        elif key is not None:
             self._cached_packed_batch_indices = {}
 
         packed_sizes = self._packed_sizes
@@ -2277,7 +2278,7 @@ class NestedTensor(torch.Tensor):
             total = self._packed_values.shape[0]
             batch_source = torch.arange(offsets.numel() - 1, dtype=dtype, device=target_device)
         batch_indices = torch.repeat_interleave(batch_source, lengths.to(target_device), output_size=total)
-        if self._cached_packed_batch_indices is not None:
+        if key is not None and self._cached_packed_batch_indices is not None:
             self._cached_packed_batch_indices[key] = batch_indices
         return batch_indices
 

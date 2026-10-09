@@ -922,6 +922,78 @@ def _broadcast_nested_to_values(
     return values
 
 
+def _expand_nested_as_values(target: NestedTensor, source: NestedTensor) -> Tensor:
+    r"""Read ``source`` at every packed coordinate of an authoritative target shape."""
+    if source.batch_first != target.batch_first or len(source) != len(target):
+        raise ValueError("expand_as(): NestedTensor operands must have matching batch lengths and batch placement")
+    shift = len(target._permutation) - len(source._permutation)
+    if shift < 0:
+        raise RuntimeError("expand_as(): source elements have more dimensions than target elements")
+    if (
+        shift == 0
+        and source._ragged_dims == target._ragged_dims
+        and source._permutation == target._permutation
+        and source._same_row_splits(target)
+    ):
+        return source.concat.expand(target.concat.shape)
+
+    source_shape = torch.nn.functional.pad(source._physical_shape, (shift, 0), value=1)
+    torch._assert_async(
+        torch.all((source_shape == target._physical_shape) | (source_shape == 1)),
+        "expand_as(): source elements cannot expand to target element shapes",
+    )
+    if len(target) == 0:
+        source_extents = (1,) * shift + source._max_physical_dims()
+        for size, requested in zip(source_extents, target._max_physical_dims()):
+            if not _broadcast_condition_matches((size == 1) | (size == requested), target, source):
+                raise RuntimeError("expand_as(): source elements cannot expand to target element shapes")
+
+    source_ragged = tuple(dim + shift for dim in source._ragged_dims)
+    # A source ragged axis can become a static target axis. Enumerate only
+    # those extra coordinates, then restore the target's packed static tail.
+    extra_dims = tuple(dim for dim in target._static_dims if dim in source_ragged)
+    extra_sizes = tuple(target.concat.shape[1 + target._static_dims.index(dim)] for dim in extra_dims)
+    factor = math.prod(extra_sizes)
+    rows = target.concat.shape[0] * factor
+    device = source.concat.device
+    batch, local = target._packed_batch_local_indices(device=device, dtype=torch.long)
+    target_coords = target._packed_varying_coords(batch, local, device=device, dtype=torch.long)
+    coordinates = {dim: coord.repeat_interleave(factor) for dim, coord in zip(target._ragged_dims, target_coords)}
+    batch = batch.repeat_interleave(factor)
+    extra_local = torch.arange(rows, device=device).remainder(factor)
+    for dim, width in reversed(tuple(zip(extra_dims, extra_sizes))):
+        coordinates[dim] = extra_local.remainder(width)
+        extra_local = torch.div(extra_local, width, rounding_mode="floor")
+
+    source_shape = source_shape.to(device=device)
+    source_local = torch.zeros_like(batch)
+    for dim in source_ragged:
+        width = source_shape[:, dim].index_select(0, batch)
+        source_local = source_local * width + torch.where(width == 1, 0, coordinates[dim])
+    indices = [source.packed_offsets(device=device)[batch] + source_local]
+    surviving_static = []
+    for physical_dim in source._static_dims:
+        dim = physical_dim + shift
+        if dim in target._ragged_dims:
+            width = source_shape[:, dim].index_select(0, batch)
+            indices.append(torch.where(width == 1, 0, coordinates[dim]))
+        else:
+            indices.append(slice(None))
+            surviving_static.append(dim)
+    values = source.concat[tuple(indices)]
+    remaining_static = tuple(dim for dim in target._static_dims if dim not in extra_dims)
+    present_static = tuple(dim for dim in remaining_static if dim in surviving_static)
+    values = values.permute((0, *(1 + surviving_static.index(dim) for dim in present_static)))
+    aligned_tail = tuple(
+        values.shape[1 + present_static.index(dim)] if dim in present_static else 1 for dim in remaining_static
+    )
+    target_tail = tuple(target.concat.shape[1 + target._static_dims.index(dim)] for dim in remaining_static)
+    values = values.reshape(rows, *aligned_tail).expand(rows, *target_tail)
+    values = values.reshape(target.concat.shape[0], *extra_sizes, *target_tail)
+    tail_order = (*extra_dims, *remaining_static)
+    return values.permute((0, *(1 + tail_order.index(dim) for dim in target._static_dims)))
+
+
 def _has_same_ragged_structure(target: NestedTensor, source: NestedTensor) -> bool:
     r"""Return whether two NestedTensors number their packed rows identically."""
     from .aten_functions import _is_fake_tensor
