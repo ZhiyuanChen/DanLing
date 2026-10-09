@@ -917,6 +917,52 @@ def dstack(tensors):
     return torch.cat(tuple(tensor.unsqueeze(-1) for tensor in tensors), dim=2)
 
 
+def _broadcast_same_structure_tensors_packed(tensors):
+    r"""Broadcast one packed topology and logically aligned dense operands."""
+    from .aten_functions import _packed_with_static_tail_from_values
+    from .nested_tensor import NestedTensor
+    from .ops import _resolve_dense_for_values
+
+    ref = next((tensor for tensor in tensors if isinstance(tensor, NestedTensor)), None)
+    if ref is None:
+        return None
+
+    nested = tuple(tensor for tensor in tensors if isinstance(tensor, NestedTensor))
+    if any(not ref._has_same_structure(tensor) for tensor in nested):
+        return None
+    common_values = torch.broadcast_tensors(*(tensor.concat for tensor in nested))
+    common_ref = ref
+    if common_values[0].shape[1:] != ref.concat.shape[1:]:
+        common_ref = _packed_with_static_tail_from_values(ref, common_values[0])
+
+    values = []
+    sources = []
+    for tensor in tensors:
+        if isinstance(tensor, NestedTensor):
+            value = tensor.concat
+            source = tensor
+        else:
+            if tensor.dim() == 0:
+                value = tensor
+            else:
+                value = _resolve_dense_for_values(common_ref, tensor)
+                if value is None:
+                    return None
+            source = ref
+        values.append(value)
+        sources.append(source)
+
+    broadcast_values = torch.broadcast_tensors(*values)
+    return tuple(
+        (
+            source._packed_like_unchecked(value)
+            if value.shape[1:] == source.concat.shape[1:]
+            else _packed_with_static_tail_from_values(source, value)
+        )
+        for source, value in zip(sources, broadcast_values)
+    )
+
+
 def _broadcast_nested_tensors_packed(tensors):
     r"""Broadcast same-batch NestedTensor operands directly in packed layout."""
     from .nested_tensor import NestedTensor
@@ -1118,7 +1164,7 @@ def _broadcast_nested_tensors_packed(tensors):
     return tuple(outputs)
 
 
-@NestedTensorFuncRegistry.implement(torch.broadcast_tensors)
+@NestedTensorFuncRegistry.implement(torch.broadcast_tensors, compile_safe=True)
 def broadcast_tensors(*tensors):
     r"""
     Broadcast a mix of NestedTensors / dense tensors, per element.
@@ -1129,6 +1175,12 @@ def broadcast_tensors(*tensors):
     its own ragged shape and re-nest. This is what makes a per-sample outer product such as
     ``torch.broadcast_tensors(nt.unsqueeze(1), nt.unsqueeze(2))`` yield ragged ``(L_i, L_i, ...)``
     grids rather than a uniform ``(L_max, L_max, ...)`` one.
+
+    Operands sharing one packed ragged topology broadcast their static axes
+    directly. Dense operands use the same logical alignment as binary
+    operations, including one scalar or static-tail slab per sample. This path
+    also supports tensor-backed layouts without per-element Python shapes and
+    fullgraph compilation; constructing a new ragged topology remains eager.
 
     Examples:
         >>> import torch
@@ -1153,7 +1205,14 @@ def broadcast_tensors(*tensors):
                 f"length, but got {len(t)} and {n}."
             )
 
-    packed = _broadcast_nested_tensors_packed(tensors)
+    packed = _broadcast_same_structure_tensors_packed(tensors)
+    if packed is None:
+        if _is_compiling():
+            _compile_unsupported(
+                "torch.broadcast_tensors",
+                "compile-safe broadcasting requires a common packed topology and alignable dense operands",
+            )
+        packed = _broadcast_nested_tensors_packed(tensors)
     if packed is not None:
         return packed
 

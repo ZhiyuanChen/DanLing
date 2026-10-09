@@ -17,6 +17,7 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
+import itertools
 from functools import partial
 
 import pytest
@@ -5030,3 +5031,230 @@ class TestTernaryAutograd:
             assert is_fake(output.concat)
             assert output.concat.shape == torch.Size((5, 4))
             assert [tuple(element.shape) for element in output] == [(2, 4), (3, 4)]
+
+
+class TestPackedMixedBroadcast:
+
+    @staticmethod
+    def _guard():
+        return nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        )
+
+    @pytest.mark.parametrize("tensor_backed", [False, True])
+    @pytest.mark.parametrize("lengths", [(3, 5), (0, 5), (3, 3)])
+    def test_sequence_tokens_and_batch_row_mask(self, device, tensor_backed, lengths):
+        parts = [torch.randn(length, 7, device=device, dtype=torch.float64, requires_grad=True) for length in lengths]
+        token_parts = [torch.arange(length, device=device) % 7 for length in lengths]
+        input = NestedTensor(parts, ragged_dims=(0,))
+        tokens = NestedTensor(token_parts, ragged_dims=(0,)).unsqueeze(-1)
+        if tensor_backed:
+            input = input.packed_with_lengths(input.concat, torch.tensor(lengths))
+            tokens = tokens.packed_with_lengths(tokens.concat, torch.tensor(lengths))
+            assert input._element_shapes is None and tokens._element_shapes is None
+        row_mask = torch.tensor([True, False], device=device).reshape(2, 1, 1)
+
+        with self._guard():
+            actual = torch.broadcast_tensors(input, tokens, row_mask)
+            selected = -actual[0].gather(-1, actual[1][..., :1]).squeeze(-1)
+            loss = selected.masked_fill(~actual[2][..., 0], 0).sum()
+            gradients = torch.autograd.grad(loss, parts, retain_graph=True)
+
+        references = [
+            torch.broadcast_tensors(part, token[:, None], row_mask[index])
+            for index, (part, token) in enumerate(zip(parts, token_parts))
+        ]
+        for operand_index, output in enumerate(actual):
+            assert output.ragged_dims == (0,)
+            assert output.element_sizes().tolist() == [[length, 7] for length in lengths]
+            for index, reference in enumerate(references):
+                torch.testing.assert_close(output[index], reference[operand_index])
+        reference_loss = sum(
+            -part.gather(-1, token[:, None]).sum() * row_mask[index, 0, 0]
+            for index, (part, token) in enumerate(zip(parts, token_parts))
+        )
+        for gradient, reference in zip(gradients, torch.autograd.grad(reference_loss, parts)):
+            torch.testing.assert_close(gradient, reference)
+
+    @pytest.mark.parametrize("tensor_backed", [False, True])
+    @pytest.mark.parametrize("batch_first", [False, True])
+    def test_sample_axis_static_tail_and_dense_gradients(self, device, tensor_backed, batch_first):
+        lengths = (3, 5)
+        parts = [
+            torch.randn(3, length, 1, device=device, dtype=torch.float64, requires_grad=True) for length in lengths
+        ]
+        input = NestedTensor(parts, ragged_dims=(1,), batch_first=batch_first, padding_value=-7, mask_value=False)
+        row_bias = torch.randn(2, 1, 1, 1, device=device, dtype=torch.float64, requires_grad=True)
+        head_bias = torch.randn(1, 3, 1, 7, device=device, dtype=torch.float64, requires_grad=True)
+        scalar = torch.randn((), device=device, dtype=torch.float64, requires_grad=True)
+        if not batch_first:
+            row_bias = row_bias.transpose(0, 1)
+            head_bias = head_bias.transpose(0, 1)
+        if tensor_backed:
+            # Keep the non-leading declared ragged layout but omit cached Python element shapes.
+            input = NestedTensor._from_packed(
+                input.concat,
+                input._offsets,
+                input._physical_shape,
+                permutation=input._permutation,
+                ragged_dims=input.ragged_dims,
+                batch_first=input.batch_first,
+                padding_value=input.padding_value,
+                mask_value=input.mask_value,
+                outer_size=input.shape,
+                validate=False,
+                materialize_python_metadata=False,
+            )
+            assert input._element_shapes is None
+
+        with self._guard():
+            output = torch.broadcast_tensors(scalar, row_bias, input, head_bias)
+            loss = sum((index + 1) * values.square().sum() for index, values in enumerate(output))
+            gradients = torch.autograd.grad(loss, (*parts, scalar, row_bias, head_bias), retain_graph=True)
+
+        references = [
+            torch.broadcast_tensors(
+                scalar,
+                row_bias[index] if batch_first else row_bias[:, index],
+                part,
+                head_bias[0] if batch_first else head_bias[:, 0],
+            )
+            for index, part in enumerate(parts)
+        ]
+        for operand_index, values in enumerate(output):
+            assert values.ragged_dims == (1,)
+            assert values.padding_value == -7 and values.mask_value is False
+            assert values.element_sizes().tolist() == [[3, length, 7] for length in lengths]
+            for index, reference in enumerate(references):
+                torch.testing.assert_close(values[index], reference[operand_index])
+        reference_loss = sum(
+            sum((index + 1) * value.square().sum() for index, value in enumerate(reference)) for reference in references
+        )
+        for gradient, reference in zip(
+            gradients, torch.autograd.grad(reference_loss, (*parts, scalar, row_bias, head_bias))
+        ):
+            torch.testing.assert_close(gradient, reference)
+
+    def test_nested_operands_keep_their_own_configuration(self, device):
+        parts = [torch.randn(length, 4, device=device) for length in (3, 5)]
+        first = NestedTensor(parts, ragged_dims=(0,), padding_value=-3, mask_value=False)
+        second = NestedTensor([part[:, :1] for part in parts], ragged_dims=(0,), padding_value=5, mask_value=True)
+        with self._guard():
+            actual = torch.broadcast_tensors(first, second, torch.tensor(2.0, device=device))
+        assert actual[0].padding_value == -3 and actual[0].mask_value is False
+        assert actual[1].padding_value == 5 and actual[1].mask_value is True
+        assert actual[2].padding_value == -3 and actual[2].mask_value is False
+        for input, output in zip((first, second), actual[:2]):
+            for index in range(2):
+                torch.testing.assert_close(output[index], input[index].expand_as(first[index]))
+
+    def test_ambiguous_dense_operand_retains_normal_error(self, device):
+        input = NestedTensor([torch.randn(2, length, 5, device=device) for length in (3, 5)], ragged_dims=(1,))
+        ambiguous = torch.randn(2, 1, 5, device=device)
+        with pytest.raises(NotImplementedError, match="ambiguous"):
+            torch.broadcast_tensors(input, ambiguous)
+
+    def test_all_nested_outer_broadcast_still_builds_real_grids(self, device):
+        parts = [torch.randn(length, 2, device=device, dtype=torch.float64, requires_grad=True) for length in (3, 5)]
+        input = NestedTensor(parts, ragged_dims=(0,))
+        with self._guard():
+            left, right = torch.broadcast_tensors(input.unsqueeze(1), input.unsqueeze(2))
+            gradients = torch.autograd.grad((left * right).sum(), parts, retain_graph=True)
+        assert left.ragged_dims == (0, 1) and right.ragged_dims == (0, 1)
+        assert left.element_sizes().tolist() == [[3, 3, 2], [5, 5, 2]]
+        references = [torch.broadcast_tensors(part[None], part[:, None]) for part in parts]
+        reference_loss = sum((lhs * rhs).sum() for lhs, rhs in references)
+        for actual, reference in zip(gradients, torch.autograd.grad(reference_loss, parts)):
+            torch.testing.assert_close(actual, reference)
+        for index, (lhs, rhs) in enumerate(references):
+            torch.testing.assert_close(left[index], lhs)
+            torch.testing.assert_close(right[index], rhs)
+
+    def test_tensor_backed_mixed_broadcast_fullgraph(self, device):
+        parts = [torch.randn(length, 7, device=device) for length in (3, 5)]
+        input = NestedTensor(parts, ragged_dims=(0,))
+        input = input.packed_with_lengths(input.concat, torch.tensor([3, 5]))
+        tokens = NestedTensor([torch.arange(length, device=device) % 7 for length in (3, 5)], ragged_dims=(0,))
+        tokens = tokens.unsqueeze(-1).packed_with_lengths(tokens.concat[:, None], torch.tensor([3, 5]))
+        mask = torch.tensor([True, False], device=device).reshape(2, 1, 1)
+        assert input._element_shapes is None and tokens._element_shapes is None
+
+        def forward(input, tokens, mask):
+            return tuple(value.concat for value in torch.broadcast_tensors(input, tokens, mask))
+
+        compiled = torch.compile(forward, backend="eager", fullgraph=True)
+        with self._guard():
+            actual = compiled(input, tokens, mask)
+        expected = forward(input, tokens, mask)
+        for output, reference in zip(actual, expected):
+            torch.testing.assert_close(output, reference)
+
+    @pytest.mark.parametrize("tensor_backed", [False, True])
+    def test_joint_static_shape_resolves_dense_reading_independently_of_operand_order(self, device, tensor_backed):
+        lengths = (3, 4)
+        first_parts = [
+            torch.randn(1, length, 5, device=device, dtype=torch.float64, requires_grad=True) for length in lengths
+        ]
+        second_parts = [
+            torch.randn(3, length, 5, device=device, dtype=torch.float64, requires_grad=True) for length in lengths
+        ]
+        first = NestedTensor(first_parts, ragged_dims=(1,))
+        second = NestedTensor(second_parts, ragged_dims=(1,))
+        dense = torch.randn(2, 1, 5, device=device, dtype=torch.float64, requires_grad=True)
+        if tensor_backed:
+
+            def tensor_layout(input):
+                return NestedTensor._from_packed(
+                    input.concat,
+                    input._offsets,
+                    input._physical_shape,
+                    permutation=input._permutation,
+                    ragged_dims=input.ragged_dims,
+                    batch_first=input.batch_first,
+                    outer_size=input.shape,
+                    validate=False,
+                    materialize_python_metadata=False,
+                )
+
+            first, second = tensor_layout(first), tensor_layout(second)
+            assert first._element_shapes is None and second._element_shapes is None
+
+        inputs = (first, second, dense)
+        leaves = (*first_parts, *second_parts, dense)
+        references = [
+            torch.broadcast_tensors(lhs, rhs, dense[index])
+            for index, (lhs, rhs) in enumerate(zip(first_parts, second_parts))
+        ]
+        reference_loss = sum(
+            sum((index + 1) * value.square().sum() for index, value in enumerate(values)) for values in references
+        )
+        reference_gradients = torch.autograd.grad(reference_loss, leaves, retain_graph=True)
+        for order in itertools.permutations(range(3)):
+            with self._guard():
+                outputs = torch.broadcast_tensors(*(inputs[index] for index in order))
+                canonical = tuple(outputs[order.index(index)] for index in range(3))
+                loss = sum((index + 1) * values.square().sum() for index, values in enumerate(canonical))
+                gradients = torch.autograd.grad(loss, leaves, retain_graph=True)
+            for operand_index, output in enumerate(canonical):
+                assert output.ragged_dims == (1,)
+                assert output.element_sizes().tolist() == [[3, length, 5] for length in lengths]
+                for element_index, values in enumerate(references):
+                    torch.testing.assert_close(output[element_index], values[operand_index])
+            for actual, expected in zip(gradients, reference_gradients):
+                torch.testing.assert_close(actual, expected)
+
+        if tensor_backed:
+
+            def forward(first, second, dense):
+                return tuple(output.concat for output in torch.broadcast_tensors(first, second, dense))
+
+            compiled = torch.compile(forward, backend="eager", fullgraph=True)
+            for lhs, rhs in ((first, second), (second, first)):
+                with self._guard():
+                    outputs = compiled(lhs, rhs, dense)
+                for actual, expected in zip(outputs, forward(lhs, rhs, dense)):
+                    torch.testing.assert_close(actual, expected)
