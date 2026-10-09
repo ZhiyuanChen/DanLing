@@ -302,6 +302,56 @@ class TestArithmeticFunctions:
         assert_close(lhs_grad, torch.ones_like(lhs_values))
         assert_close(rhs_grad, expected_rhs_grad)
 
+    def test_nested_broadcast_merges_ragged_axes_fullgraph_and_vjp(self, device):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+
+        def multiply(left, right):
+            return left * right, right * left
+
+        compiled = torch.compile(multiply, backend="aot_eager", fullgraph=True, dynamic=True)
+        for lhs_shapes, rhs_shapes in (
+            (((3, 1, 2, 3), (3, 1, 2, 3)), ((3, 2, 2, 3), (3, 4, 2, 3))),
+            (((1, 1, 2, 3), (4, 1, 2, 3)), ((4, 3, 2, 3), (4, 2, 2, 3))),
+        ):
+            lhs_parts = [torch.randn(shape, device=device, dtype=torch.float64) for shape in lhs_shapes]
+            rhs_parts = [torch.randn(shape, device=device, dtype=torch.float64) for shape in rhs_shapes]
+            lhs_template, rhs_template = NT(lhs_parts, ragged_dims=(0,)), NT(rhs_parts, ragged_dims=(1,))
+            lhs_values, rhs_values = (
+                template.concat.detach().requires_grad_() for template in (lhs_template, rhs_template)
+            )
+            lhs, rhs = lhs_template.packed_like(lhs_values), rhs_template.packed_like(rhs_values)
+            lhs_reference = [part.detach().requires_grad_() for part in lhs_parts]
+            rhs_reference = [part.detach().requires_grad_() for part in rhs_parts]
+            expected = NT([left * right for left, right in zip(lhs_reference, rhs_reference)], ragged_dims=(0, 1))
+            with fake_tensor_mod.FakeTensorMode() as mode:
+                fake_outputs = multiply(mode.from_tensor(lhs_template), mode.from_tensor(rhs_template))
+            for output in fake_outputs:
+                assert output.ragged_dims == (0, 1)
+                assert output.concat.shape == expected.concat.shape
+
+            for operation in (multiply, compiled):
+                with nested_execution_guard(
+                    forbid_iteration=True,
+                    forbid_storage_map=True,
+                    forbid_eager_fallback=True,
+                    forbid_padded_materialization=True,
+                    forbid_dense_repack=True,
+                ):
+                    output, reversed_output = operation(lhs, rhs)
+                for actual in (output, reversed_output):
+                    assert actual.ragged_dims == (0, 1)
+                    assert_close(actual.element_sizes(), expected.element_sizes())
+                    assert_close(actual.concat, expected.concat)
+                weights = torch.randn_like(expected.concat)
+                actual_grads = torch.autograd.grad(
+                    (output.concat, reversed_output.concat), (lhs_values, rhs_values), (weights, weights)
+                )
+                reference_grads = torch.autograd.grad(
+                    expected.concat, (*lhs_reference, *rhs_reference), weights, retain_graph=True
+                )
+                assert_close(actual_grads[0], 2 * NT(reference_grads[:2], ragged_dims=(0,)).concat)
+                assert_close(actual_grads[1], 2 * NT(reference_grads[2:], ragged_dims=(1,)).concat)
+
     def test_dense_vector_broadcast_rejects_ragged_final_physical_dim(self, device, float_dtype):
         parts = [
             torch.arange(4, device=device, dtype=float_dtype).reshape(4, 1),

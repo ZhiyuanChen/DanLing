@@ -37,7 +37,7 @@ def test_ragged_metadata_mismatch_is_rejected_eagerly():
     lhs = _square_pair((2, 4))
     rhs = _square_pair((4, 2))
 
-    with pytest.raises(RuntimeError, match="must match"):
+    with pytest.raises(RuntimeError, match="broadcast-compatible"):
         lhs + rhs
 
 
@@ -58,7 +58,13 @@ def test_ragged_metadata_supports_fake_tensor_operations():
         output = fake_pair + rebuilt
 
     assert fake_tensor_mod.is_fake(output.concat)
-    assert output.shape == pair.shape
+    assert output.ndim == pair.ndim
+    assert output.shape[0] == pair.shape[0]
+    assert output.shape[-1] == pair.shape[-1]
+    # The broadcast maxima depend on runtime lengths, but both square axes
+    # retain the same symbolic extent.
+    assert output.shape[1] == output.shape[2]
+    assert output.ragged_dims == pair.ragged_dims
 
 
 def test_compiled_ragged_metadata_checks_runtime_values():
@@ -73,5 +79,5 @@ def test_compiled_ragged_metadata_checks_runtime_values():
     compiled = torch.compile(consume, backend="aot_eager", fullgraph=True, dynamic=True)
 
     assert_close(compiled(pair, reference, values, torch.tensor([2, 4])), pair.concat + values)
-    with pytest.raises(RuntimeError, match="NestedTensor ragged offsets must match"):
+    with pytest.raises(RuntimeError, match="broadcast-compatible"):
         compiled(pair, reference, values, torch.tensor([4, 2]))

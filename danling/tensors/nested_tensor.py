@@ -1767,6 +1767,27 @@ class NestedTensor(torch.Tensor):
         if ragged_offsets is not None and len(ragged_offsets) > 1:
             inner_tensors.extend(type(self)._ragged_offset_names(len(ragged_offsets)))
         tensor_backed_layout = ragged_offsets is not None
+        packed_sizes = None if tensor_backed_layout else getattr(self, "_packed_sizes", ())
+        element_shapes = None if tensor_backed_layout else getattr(self, "_element_shapes", ())
+        if tensor_backed_layout and not _is_compiling():
+            from torch._subclasses.fake_tensor import FakeTensorMode
+
+            mode = _get_current_dispatch_mode()
+            if isinstance(mode, FakeTensorMode) and mode.shape_env is None:
+                # Standalone FakeTensor cannot represent a new data-derived
+                # packed extent. Read the original CPU metadata before fake
+                # conversion and keep it only in that conversion's context.
+                packed_sizes = getattr(self, "_packed_sizes", None)
+                element_shapes = getattr(self, "_element_shapes", None)
+                if packed_sizes is None and not _is_fake_tensor(self._offsets):
+                    splits = self._offsets.tolist()
+                    packed_sizes = tuple(end - start for start, end in zip(splits[:-1], splits[1:]))
+                if (
+                    element_shapes is None
+                    and "_physical_shape" in instance_attrs
+                    and not _is_fake_tensor(self._physical_shape)
+                ):
+                    element_shapes = tuple(tuple(row) for row in self._physical_shape.tolist())
         return inner_tensors, {
             "requires_grad": self.requires_grad,
             "is_aot_tangent": vars(self).get("_is_aot_tangent", False),
@@ -1774,8 +1795,8 @@ class NestedTensor(torch.Tensor):
             "padding_value": getattr(self, "padding_value", 0.0),
             "mask_value": getattr(self, "mask_value", False),
             "pin_memory": getattr(self, "_pin_memory", False),
-            "packed_sizes": None if tensor_backed_layout else getattr(self, "_packed_sizes", ()),
-            "element_shapes": None if tensor_backed_layout else getattr(self, "_element_shapes", ()),
+            "packed_sizes": packed_sizes,
+            "element_shapes": element_shapes,
             "permutation": permutation,
             "ragged_dims": ragged_dims,
         }
@@ -1821,6 +1842,14 @@ class NestedTensor(torch.Tensor):
                 ragged_offsets = tuple(inner_tensors[name] for name in names)
             elif preserve_tensor_metadata and ragged_rank == 1:
                 ragged_offsets = (offsets,)
+            elif (
+                ragged_rank > 1
+                and cls._is_tensor_backed_layout(ctx.get("permutation"), ctx.get("ragged_dims"))
+                and all(name in inner_tensors for name in cls._ragged_offset_names(ragged_rank))
+            ):
+                # Standalone fake geometry adds Python shape caches, but its
+                # supplied row-split children still own the same topology.
+                ragged_offsets = tuple(inner_tensors[name] for name in cls._ragged_offset_names(ragged_rank))
             else:
                 ragged_offsets = None
             result = cls._from_packed(

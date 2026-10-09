@@ -20,11 +20,13 @@ r"""Internal helpers shared across NestedTensor function registrations."""
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from enum import Enum, auto
+from itertools import accumulate
 from typing import TYPE_CHECKING, NamedTuple
 
 import torch
@@ -1354,6 +1356,156 @@ def _binary_single_element_nested_broadcast(
     return _packed_with_static_tail_from_values(target, packed_result)
 
 
+def _needs_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor) -> bool:
+    r"""Choose joint coordinates before directional paths can assert equal offsets."""
+    from .aten_functions import _is_fake_tensor
+
+    if (
+        lhs.batch_first != rhs.batch_first
+        or len(lhs) != len(rhs)
+        or lhs._physical_shape.size(1) != rhs._physical_shape.size(1)
+        or not (lhs._ragged_dims or rhs._ragged_dims)
+    ):
+        return False
+    # Keep the specialized Cartesian product for complementary singleton axes.
+    if (
+        _complementary_singleton_square_operands(lhs, rhs, allow_static_prefix=True, require_matching_lengths=False)
+        is not None
+    ):
+        return False
+    if lhs._ragged_dims != rhs._ragged_dims or lhs._permutation != rhs._permutation:
+        return True
+    if lhs._same_row_splits(rhs):
+        return False
+    # Independent partitions may match now and broadcast differently on the
+    # next invocation. Their equality is not a valid compile-time assumption.
+    if _is_compiling() or _is_fake_tensor(lhs.concat) or _is_fake_tensor(rhs.concat):
+        return True
+    return not lhs._has_same_structure(rhs)
+
+
+def _binary_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor, op, extra_args, extra_kwargs):
+    r"""Broadcast both packed inputs over the union of their ragged coordinates."""
+    from .aten_functions import _ragged_reduction_size_binding, _tensor_backed_ragged_offsets
+
+    lhs_ragged, rhs_ragged = set(lhs._ragged_dims), set(rhs._ragged_dims)
+    lhs_is_full = _has_retained_ragged_singleton_source(lhs, rhs)
+    rhs_is_full = _has_retained_ragged_singleton_source(rhs, lhs)
+    reference = lhs
+    if lhs_is_full != rhs_is_full:
+        reference = lhs if lhs_is_full else rhs
+    if lhs._ragged_dims == rhs._ragged_dims or lhs_ragged > rhs_ragged:
+        ragged_dims = lhs._ragged_dims
+    elif rhs_ragged > lhs_ragged:
+        ragged_dims = rhs._ragged_dims
+        reference = rhs
+    else:
+        if lhs_is_full != rhs_is_full:
+            ragged_dims = reference._ragged_dims
+        elif lhs_ragged == rhs_ragged:
+            ragged_dims = lhs._ragged_dims
+        else:
+            ragged_dims = tuple(sorted(lhs_ragged | rhs_ragged))
+    rank = lhs._physical_shape.size(1)
+    static_dims = tuple(dim for dim in range(rank) if dim not in ragged_dims)
+    lhs_shape, rhs_shape = lhs._physical_shape, rhs._physical_shape
+    compatible = (lhs_shape == rhs_shape) | (lhs_shape == 1) | (rhs_shape == 1)
+    torch._assert_async(compatible.all(), "NestedTensor per-element shapes are not broadcast-compatible")
+    physical_shape = torch.where(lhs_shape == 1, rhs_shape, lhs_shape)
+    counts = physical_shape[:, list(ragged_dims)].prod(1)
+    offsets = torch.cat((lhs._offsets.new_zeros(1), counts.to(lhs._offsets.dtype).cumsum(0)))
+    packed_sizes = element_shapes = None
+    known_ragged_offsets = None
+    if not _is_compiling() and lhs._element_shapes is not None and rhs._element_shapes is not None:
+        from torch._subclasses.fake_tensor import maybe_get_fake_mode
+
+        fake_mode = maybe_get_fake_mode(lhs.concat) or maybe_get_fake_mode(rhs.concat)
+        if fake_mode is not None and fake_mode.shape_env is None:
+            # Standalone FakeTensor has no dynamic size allocator. Its retained
+            # concrete shapes still describe the complete broadcast geometry.
+            element_shapes = tuple(
+                tuple(torch.broadcast_shapes(left, right))
+                for left, right in zip(lhs._element_shapes, rhs._element_shapes)
+            )
+            packed_sizes = tuple(math.prod(shape[dim] for dim in ragged_dims) for shape in element_shapes)
+            levels = type(lhs)._hierarchical_level_sizes_from_element_shapes(element_shapes, ragged_dims)
+            known_ragged_offsets = tuple(offsets.new_tensor((0, *accumulate(widths))) for widths in levels)
+    rows = sum(packed_sizes) if packed_sizes is not None else _ragged_reduction_size_binding(counts).shape[0]
+
+    device = lhs.concat.device
+    counts_device = counts.to(device=device)
+    batch = torch.repeat_interleave(torch.arange(len(lhs), device=device), counts_device, output_size=rows)
+    local = torch.arange(rows, device=device) - offsets.to(device=device)[batch]
+    shape_device = physical_shape.to(device=device)
+    coordinates: dict[int, Tensor] = {}
+    for dim in reversed(ragged_dims):
+        width = shape_device[:, dim].index_select(0, batch)
+        coordinates[dim] = local.remainder(width)
+        local = torch.div(local, width, rounding_mode="floor")
+
+    def aligned_values(source):
+        source_shape = source._physical_shape.to(device=device)
+        source_local = torch.zeros_like(batch)
+        for dim in source._ragged_dims:
+            width = source_shape[:, dim].index_select(0, batch)
+            coordinate = torch.where(width == 1, 0, coordinates[dim])
+            source_local = source_local * width + coordinate
+        index = source.packed_offsets(device=device)[batch] + source_local
+        indices = [index]
+        surviving_static = []
+        for dim in source._static_dims:
+            if dim in coordinates:
+                width = source_shape[:, dim].index_select(0, batch)
+                indices.append(torch.where(width == 1, 0, coordinates[dim]))
+            else:
+                indices.append(slice(None))
+                surviving_static.append(dim)
+        # A source's static axis can become a ragged output axis even when it
+        # is not singleton. Index it together with the packed row, rather than
+        # selecting zero or flattening across sample boundaries.
+        values = source.concat[tuple(indices)]
+        order = (0, *(1 + surviving_static.index(dim) for dim in static_dims))
+        return values.permute(order)
+
+    values = op(aligned_values(lhs), aligned_values(rhs), *extra_args, **extra_kwargs)
+    # For nonzero extents the maximum wins; zero broadcast with one stays
+    # zero. This expression also handles unbacked sizes without a value guard.
+    logical_extents = tuple(
+        torch.sym_min(torch.sym_max(left, right), left * right)
+        for left, right in zip(lhs._max_physical_dims(), rhs._max_physical_dims())
+    )
+    if len(lhs) == 0:
+        # There are no shape rows to validate retained extents for an empty batch.
+        for left, right in zip(lhs._max_physical_dims(), rhs._max_physical_dims()):
+            if not _broadcast_condition_matches((left == right) | (left == 1) | (right == 1), lhs, rhs):
+                raise ValueError("Empty NestedTensor operands have incompatible retained logical extents")
+    ragged_offsets = known_ragged_offsets
+    if ragged_offsets is None:
+        ragged_offsets = (
+            (offsets,)
+            if len(ragged_dims) == 1
+            else _tensor_backed_ragged_offsets(physical_shape, ragged_dims, dtype=offsets.dtype)
+        )
+    result = type(lhs)._from_packed(
+        values,
+        offsets,
+        physical_shape,
+        permutation=(*ragged_dims, *static_dims),
+        ragged_dims=ragged_dims,
+        ragged_offsets=ragged_offsets,
+        batch_first=reference.batch_first,
+        padding_value=reference.padding_value,
+        mask_value=reference.mask_value,
+        pin_memory=reference._pin_memory,
+        outer_size=lhs._logical_shape_from_physical_dims(logical_extents),
+        packed_sizes=packed_sizes,
+        element_shapes=element_shapes,
+        materialize_python_metadata=False,
+        validate=False,
+    )
+    return result._packed_like_unchecked(values)
+
+
 def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
     r"""
     Apply a binary op between a NestedTensor and a tensor/scalar/NestedTensor.
@@ -1367,8 +1519,9 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
       order, so a tail broadcast costs nothing and a per-sample operand costs one
       ``index_select``. This holds for permuted layouts too; the per-element loop below is
       reached only by shapes no packed reading serves.
-    - **Mismatched-layout NestedTensor ``other``**: packed while one operand's elements
-      right-align into the other's, and O(B) over ``_unpack()`` otherwise.
+    - **Mismatched-layout NestedTensor ``other``**: equal-rank operands are read through their
+      joint ragged coordinates. Lower-rank operands right-align into the wider packed layout
+      when possible, and use O(B) over ``_unpack()`` otherwise.
     """
     from .aten_functions import _is_fake_tensor, _packed_with_static_tail_from_values, _packed_with_tail_from_values
     from .nested_tensor import NestedTensor
@@ -1432,6 +1585,9 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
                 "NestedTensor batch length mismatch between input and other: " f"input={len(input)}, other={len(other)}"
             )
         lhs_v, rhs_v = (other.concat, input.concat) if reverse else (input.concat, other.concat)
+        if _needs_joint_ragged_broadcast(input, other):
+            lhs, rhs = (other, input) if reverse else (input, other)
+            return _binary_joint_ragged_broadcast(lhs, rhs, op, extra_args, extra_kwargs)
         # Retained singleton ragged dimensions are compatible broadcasts, not
         # equal topologies. Route them before _has_same_structure can add an
         # equality assertion for tensor-backed offsets in a compiled graph.
@@ -1596,6 +1752,8 @@ def _binary_op_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
     if isinstance(other, NestedTensor):
         if len(input) != len(other):
             return False
+        if _needs_joint_ragged_broadcast(input, other):
+            return True
         if _has_retained_ragged_singleton_source(input, other) or _has_retained_ragged_singleton_source(other, input):
             return True
         if input._has_same_structure(other):
