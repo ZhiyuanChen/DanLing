@@ -1313,11 +1313,34 @@ def gather(func, args, kwargs):
     else:
         sparse_grad = False if kw_sparse_grad is _MISSING else kw_sparse_grad
 
+    if dim < -source.dim() or dim >= source.dim():
+        raise IndexError(
+            f"Dimension out of range (expected to be in range of [{-source.dim()}, {source.dim() - 1}], but got {dim})"
+        )
     dim = _normalize_dim(dim, source.dim())
     batch_dim = _get_batch_dim(source)
     if dim == batch_dim:
         raise ValueError("gather along the batch dimension is not supported for NestedTensor.")
     dim_adj = _translate_dim(source, dim)
+
+    if isinstance(index, Tensor):
+        index_values = index.concat if isinstance(index, NestedTensor) else index
+        if index_values.numel() and index_values.dtype != torch.long:
+            # Rebasing ragged indices promotes them to the offsets' int64 dtype.
+            # Validate the original dtype with native gather first, including
+            # whichever integer dtypes this PyTorch version supports. Empty
+            # indices deliberately skip native gather's dtype checks.
+            func(source.concat.new_zeros(1), 0, index_values.new_zeros(1, device=source.concat.device))
+
+    if (
+        isinstance(index, Tensor)
+        and not isinstance(index, NestedTensor)
+        and index.dim() == source.dim()
+        and len(source._ragged_dims) == 1
+    ):
+        packed = _logical_batched_gather(source, dim, dim_adj, index, func, sparse_grad, kwargs)
+        if packed is not None:
+            return packed
 
     aligned_index = source._maybe_exact_shape_nested_like(index)
     if aligned_index is not None:
@@ -1331,7 +1354,7 @@ def gather(func, args, kwargs):
             )
 
         if _single_ragged_gather_supported(source, index, dim_adj):
-            index_values = index.concat.to(device=source.concat.device, dtype=torch.long)
+            index_values = index.concat.to(device=source.concat.device)
             packed_index = _segmented_row_index(
                 source,
                 index_values,
@@ -1343,7 +1366,7 @@ def gather(func, args, kwargs):
             return _packed_gather_output(source, index, out_values)
 
         if _multi_ragged_outer_gather_supported(source, index, dim_adj):
-            index_values = index.concat.to(device=source.concat.device, dtype=torch.long)
+            index_values = index.concat.to(device=source.concat.device)
             packed_index = _segmented_outer_row_index(source, index, index_values, dim, "gather")
             out_values = func(source.concat, 0, packed_index, sparse_grad=sparse_grad, **kwargs)
             return _packed_gather_output(source, index, out_values)
@@ -1359,7 +1382,7 @@ def gather(func, args, kwargs):
             if values_dim is not None:
                 out_values = func(source.concat, values_dim, index.concat, sparse_grad=sparse_grad, **kwargs)
                 return _packed_gather_output(source, index, out_values)
-            index_values = index.concat.to(device=source.concat.device, dtype=torch.long)
+            index_values = index.concat.to(device=source.concat.device)
             if _packed_inner_ragged_dim(source, dim_adj):
                 packed_index = _segmented_row_index(source, index_values, dim, "gather")
                 out_values = func(source.concat, 0, packed_index, sparse_grad=sparse_grad, **kwargs)
@@ -1459,7 +1482,7 @@ def _shared_index_gather(source: NestedTensor, dim, dim_adj: int, index: Tensor,
     offsets = source._offsets.to(device=source.concat.device, dtype=torch.long)
     # The index arrives in per-element order; the packed rows enumerate it in permutation order,
     # once per sample.
-    packed_index = index.to(device=source.concat.device, dtype=torch.long).permute(source._permutation)
+    packed_index = index.to(device=source.concat.device).permute(source._permutation)
     packed_index = (
         packed_index.unsqueeze(0).expand(batch_size, *packed_index.shape).reshape(-1, *packed_index.shape[1:])
     )
@@ -1491,6 +1514,88 @@ def _shared_index_gather(source: NestedTensor, dim, dim_adj: int, index: Tensor,
         packed_sizes=(count,) * batch_size,
         element_shapes=(element_shape,) * batch_size,
     )
+
+
+def _pack_uniform_logical_dense(source: NestedTensor, value: Tensor) -> NestedTensor:
+    r"""Pack a logical dense batch with its actual uniform per-element extents."""
+    batch_dim = _get_batch_dim(source)
+    batch_size = int(value.shape[batch_dim])
+    element_shape = tuple(int(size) for axis, size in enumerate(value.shape) if axis != batch_dim)
+    count = math.prod(element_shape[axis] for axis in source._ragged_dims)
+    batch_first = value.movedim(batch_dim, 0).permute(0, *(1 + dim for dim in source._permutation))
+    values = batch_first.reshape(batch_size * count, *(element_shape[axis] for axis in source._static_dims))
+    physical_shape = source._physical_shape.new_tensor(element_shape).reshape(1, -1).expand(batch_size, -1).clone()
+    logical_shape = (
+        (batch_size, *element_shape) if source.batch_first else (element_shape[0], batch_size, *element_shape[1:])
+    )
+    return _packed_with_shape(
+        source,
+        values,
+        physical_shape,
+        logical_shape,
+        offsets=torch.arange(batch_size + 1, device=source._offsets.device, dtype=source._offsets.dtype) * count,
+        permutation=source._permutation,
+        packed_sizes=(count,) * batch_size,
+        element_shapes=(element_shape,) * batch_size,
+    )
+
+
+def _logical_batched_gather(source: NestedTensor, dim, dim_adj: int, index: Tensor, func, sparse_grad, kwargs):
+    r"""Read a dense index's logical batch axis without replaying it inside each sample."""
+    ragged_dim = source._ragged_dims[0]
+    if not _packed_sole_ragged_dim(source, ragged_dim):
+        return None
+    batch_dim = _get_batch_dim(source)
+    batch_size = int(index.shape[batch_dim])
+    element_shape = tuple(int(size) for axis, size in enumerate(index.shape) if axis != batch_dim)
+    packed = _pack_uniform_logical_dense(source, index.to(device=source.concat.device))
+    index_values = packed.concat
+    count = element_shape[ragged_dim]
+    values_dim = _packed_static_dim(source, dim_adj)
+    if index_values.numel() == 0:
+        # Native gather returns an empty result before checking index extents
+        # or dtype. Reading packed values directly also avoids selecting rows
+        # that do not exist when an unselected empty axis makes the read empty.
+        values = func(
+            source.concat, 0 if values_dim is None else values_dim, index_values, sparse_grad=sparse_grad, **kwargs
+        )
+    else:
+        if batch_size > len(source):
+            raise RuntimeError("gather index batch extent exceeds the source batch extent")
+        for axis, size in enumerate(element_shape):
+            if axis != dim_adj:
+                torch._assert_async(
+                    torch.all(source._physical_shape[:batch_size, axis] >= size),
+                    "gather index size exceeds the source size outside the selected dimension",
+                )
+        rows = packed.packed_batch_indices(device=source.concat.device)
+        if values_dim is None:
+            rebased = _segmented_row_index(source, index_values, dim, "gather", row_batch_indices=rows)
+            values = func(source.concat, 0, rebased, sparse_grad=sparse_grad, **kwargs)
+        else:
+            starts = source._offsets.to(device=source.concat.device).index_select(0, rows)
+            local = torch.arange(batch_size * count, device=source.concat.device) % count
+            read_rows = starts + local
+            if sparse_grad:
+                # The sparse Jacobian must address the original packed source.
+                # An index_select before a sparse gather would receive a sparse
+                # gradient, which its backward cannot accumulate. Gather rows
+                # sparsely first, then perform the static-axis read with a dense
+                # intermediate gradient.
+                row_indices = read_rows.reshape(-1, *([1] * (source.concat.dim() - 1)))
+                row_indices = row_indices.expand(read_rows.shape[0], *source.concat.shape[1:])
+                selected = func(source.concat, 0, row_indices, sparse_grad=True, **kwargs)
+                values = func(selected, values_dim, index_values, sparse_grad=False, **kwargs)
+            else:
+                values = func(
+                    source.concat.index_select(0, read_rows), values_dim, index_values, sparse_grad=False, **kwargs
+                )
+    # A full logical dense index specifies a uniform output shape completely;
+    # the result has no remaining ragged axis to wrap. Restore its ordinary
+    # logical axis order, including a non-leading configured batch dimension.
+    packed_shape = tuple(element_shape[axis] for axis in source._permutation)
+    inverse = tuple(source._permutation.index(axis) for axis in range(len(element_shape)))
+    return values.reshape(batch_size, *packed_shape).permute(0, *(1 + axis for axis in inverse)).movedim(0, batch_dim)
 
 
 def _gather_equivalent_index(source: NestedTensor, index: NestedTensor, dim_adj: int) -> bool:

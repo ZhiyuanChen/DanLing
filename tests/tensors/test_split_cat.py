@@ -26,7 +26,7 @@ import math
 import pytest
 import torch
 
-from danling.tensors import NestedTensor
+from danling.tensors import NestedTensor, nested_execution_guard
 
 NT = NestedTensor
 
@@ -558,3 +558,131 @@ class TestAutograd:
 
         torch.testing.assert_close(left_values.grad, torch.ones(8, 4))
         torch.testing.assert_close(right_values.grad, torch.ones(6, 4))
+
+
+class TestMixedLogicalCat:
+
+    @staticmethod
+    def _guard():
+        return nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        )
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("static_axis", [False, True])
+    @pytest.mark.parametrize("tensor_backed", [False, True])
+    @pytest.mark.parametrize("reverse", [False, True])
+    def test_mixed_cat_actual_axis_and_padded_gradient(self, device, batch_first, static_axis, tensor_backed, reverse):
+        parts = [torch.randn(n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in (0, 2, 4)]
+        source = NestedTensor(parts, ragged_dims=(0,), batch_first=batch_first)
+        if tensor_backed:
+            source._packed_sizes = None
+            source._element_shapes = None
+        dense = torch.randn(
+            (3, 4, 2) if static_axis else (3, 1, 3), device=device, dtype=torch.float64, requires_grad=True
+        )
+        operand = dense if batch_first else dense.movedim(0, 1)
+        dim = 2 if static_axis else (1 if batch_first else 0)
+        with self._guard():
+            output = torch.cat((operand, source) if reverse else (source, operand), dim=dim)
+        additions = [dense[i, : part.shape[0]] if static_axis else dense[i] for i, part in enumerate(parts)]
+        wanted = [
+            torch.cat((addition, part) if reverse else (part, addition), dim=1 if static_axis else 0)
+            for part, addition in zip(parts, additions)
+        ]
+        torch.testing.assert_close(output.concat, torch.cat(wanted))
+        expected_shapes = torch.tensor([list(value.shape) for value in wanted])
+        torch.testing.assert_close(output.element_sizes().cpu(), expected_shapes)
+        cotangent = torch.linspace(-0.8, 1.2, output.concat.numel(), device=device, dtype=torch.float64).reshape_as(
+            output.concat
+        )
+        gradients = torch.autograd.grad(output.concat, (*parts, dense), cotangent, retain_graph=True)
+        references = torch.autograd.grad(torch.cat(wanted), (*parts, dense), cotangent)
+        for gradient, reference in zip(gradients, references, strict=True):
+            torch.testing.assert_close(gradient, reference)
+
+
+class TestRaggedAxisCat:
+
+    @staticmethod
+    def _guard():
+        return nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        )
+
+    @pytest.mark.parametrize("joining_axis", [0, 1, 2])
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("static_prefix", [True, False])
+    @pytest.mark.parametrize("reverse", [True, False])
+    @pytest.mark.parametrize("both_ragged", [True, False])
+    def test_cat_varying_join_membership_true_shapes_and_all_gradients(
+        self, device, joining_axis, batch_first, static_prefix, reverse, both_ragged
+    ):
+        left_shapes = [[0, 2, 3], [2, 3, 4], [3, 4, 2]]
+        right_shapes = [list(shape) for shape in left_shapes]
+        for index, shape in enumerate(right_shapes):
+            shape[joining_axis] = [2, 0, 1][index] if both_ragged else 1
+        left = [torch.randn(*shape, 2, device=device, dtype=torch.float64, requires_grad=True) for shape in left_shapes]
+        right = [
+            torch.randn(*shape, 2, device=device, dtype=torch.float64, requires_grad=True) for shape in right_shapes
+        ]
+        left_values = [value.movedim(-1, 0) for value in left] if static_prefix else left
+        right_values = [value.movedim(-1, 0) for value in right] if static_prefix else right
+        ragged_dims = (1, 2, 3) if static_prefix else (0, 1, 2)
+        element_join = joining_axis + int(static_prefix)
+        right_ragged = ragged_dims if both_ragged else tuple(axis for axis in ragged_dims if axis != element_join)
+        first = NestedTensor(left_values, ragged_dims=ragged_dims, batch_first=batch_first)
+        second = NestedTensor(right_values, ragged_dims=right_ragged, batch_first=batch_first)
+        for operand in (first, second):
+            operand._packed_sizes = None
+            operand._element_shapes = None
+        operands = (second, first) if reverse else (first, second)
+        logical_join = element_join + (1 if batch_first or element_join else 0)
+        with self._guard():
+            output = torch.cat(operands, dim=logical_join)
+        expected_parts = [
+            torch.cat((b, a) if reverse else (a, b), dim=element_join)
+            for a, b in zip(left_values, right_values, strict=True)
+        ]
+        expected = torch.cat(
+            [value.movedim(0, -1).flatten(0, 2) if static_prefix else value.flatten(0, 2) for value in expected_parts]
+        )
+        torch.testing.assert_close(output.concat, expected)
+        expected_sizes = torch.tensor([list(value.shape) for value in expected_parts])
+        torch.testing.assert_close(output.element_sizes().cpu(), expected_sizes)
+        assert output.ragged_dims == ragged_dims
+        assert output._packed_sizes is None and output._element_shapes is None
+        expected_outer = [max(shape[axis] for shape in expected_sizes.tolist()) for axis in range(4)]
+        expected_outer.insert(0 if batch_first else 1, 3)
+        assert tuple(output.shape) == tuple(expected_outer)
+        cotangent = torch.linspace(-0.8, 1.2, output.concat.numel(), device=device, dtype=torch.float64).reshape_as(
+            output.concat
+        )
+        gradients = torch.autograd.grad(output.concat, (*left, *right), cotangent, retain_graph=True)
+        references = torch.autograd.grad(expected, (*left, *right), cotangent)
+        for observed, wanted in zip(gradients, references, strict=True):
+            torch.testing.assert_close(observed, wanted)
+
+    def test_cat_reduction_identity_retains_double_ragged_topology(self, device):
+        parts = [torch.randn(2, 2, device=device), torch.randn(3, 3, device=device)]
+        source = NestedTensor(parts, ragged_dims=(0, 1))
+        with self._guard():
+            identity = torch.zeros_like(source.mean(dim=-1, keepdim=True))
+            output = torch.cat((source, identity), dim=-1)
+        expected = torch.cat([torch.cat((part, torch.zeros_like(part[:, :1])), dim=-1).flatten() for part in parts])
+        torch.testing.assert_close(output.concat, expected)
+        torch.testing.assert_close(output.element_sizes().cpu(), torch.tensor([[2, 3], [3, 4]]))
+
+    def test_cat_nonjoining_mismatch_is_an_ordinary_size_error(self, device):
+        left = NestedTensor([torch.ones(2, 3, device=device), torch.ones(4, 5, device=device)], ragged_dims=(0, 1))
+        right = NestedTensor([torch.ones(3, 1, device=device), torch.ones(4, 1, device=device)], ragged_dims=(0,))
+        with self._guard(), pytest.raises(RuntimeError, match="Sizes of tensors must match"):
+            torch.cat((left, right), dim=-1)

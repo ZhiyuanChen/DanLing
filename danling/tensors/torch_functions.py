@@ -621,10 +621,32 @@ def _cat_packed_non_batch(tensors, first: NestedTensor, dim_adj: int):
     from .aten_functions import _outer_size, _packed_sole_ragged_dim, _packed_static_dim, _packed_with_shape
     from .nested_tensor import NestedTensor
 
+    logical_shape = None
     if not all(isinstance(tensor, NestedTensor) for tensor in tensors):
-        return None
+        if builtins.sum(isinstance(tensor, NestedTensor) for tensor in tensors) == 1 and dim_adj in first._ragged_dims:
+            dense_extent = builtins.sum(
+                int(tensor.shape[_logical_dim_for_element_dim(first, dim_adj)])
+                for tensor in tensors
+                if not isinstance(tensor, NestedTensor)
+            )
+            logical_shape = first._logical_shape_from_components(
+                replace_dims={dim_adj: first._max_physical_dims()[dim_adj] + dense_extent}
+            )
+        packed_tensors = []
+        for tensor in tensors:
+            if isinstance(tensor, NestedTensor):
+                packed_tensors.append(tensor)
+            else:
+                packed = _cat_logical_dense_operand(first, tensor, dim_adj)
+                if packed is None:
+                    return None
+                packed_tensors.append(packed)
+        tensors = tuple(packed_tensors)
     if any(tensor.batch_first != first.batch_first or tensor.device != first.device for tensor in tensors):
         return None
+    ragged_result = _cat_packed_ragged_axis(tensors, dim_adj)
+    if ragged_result is not None:
+        return ragged_result
     if any(tensor.concat.dim() != first.concat.dim() for tensor in tensors):
         return None
 
@@ -676,7 +698,7 @@ def _cat_packed_non_batch(tensors, first: NestedTensor, dim_adj: int):
     device = first.concat.device
     # Offsets are the running sums of the segment lengths, so the output's offsets are the
     # operands' offsets added position by position -- no length has to be read back to Python.
-    new_offsets = first._offsets.clone()
+    new_offsets = tensors[0]._offsets.clone()
     for tensor in tensors[1:]:
         new_offsets = new_offsets + tensor._offsets
     # The row count is the sum of the operands' buffers, which is a shape, not a value.
@@ -701,8 +723,7 @@ def _cat_packed_non_batch(tensors, first: NestedTensor, dim_adj: int):
     values = torch.cat([tensor.concat for tensor in tensors], dim=0).index_select(0, source)
 
     physical_shape = first._physical_shape.clone()
-    for tensor in tensors[1:]:
-        physical_shape[:, dim_adj] += tensor._physical_shape[:, dim_adj]
+    physical_shape[:, dim_adj] = builtins.sum(tensor._physical_shape[:, dim_adj] for tensor in tensors)
     element_shapes = None
     if all(tensor._element_shapes is not None for tensor in tensors):
         element_shapes = tuple(
@@ -722,10 +743,139 @@ def _cat_packed_non_batch(tensors, first: NestedTensor, dim_adj: int):
         padding_value=first.padding_value,
         mask_value=first.mask_value,
         pin_memory=first._pin_memory,
-        outer_size=_outer_size(first, physical_shape, new_offsets, element_shapes),
+        outer_size=(
+            logical_shape
+            if logical_shape is not None
+            else _outer_size(first, physical_shape, new_offsets, element_shapes)
+        ),
         packed_sizes=packed_sizes,
         element_shapes=element_shapes,
         validate=False,
+    )
+
+
+def _cat_packed_ragged_axis(tensors: tuple[NestedTensor, ...], dim_adj: int):
+    r"""Concatenate packed rows when only the joining axis changes ragged membership.
+
+    The nonjoining element extents are identical. A static joining axis becomes
+    another packed coordinate by a view; all operands then map directly into the
+    common output row order, without rebuilding individual elements.
+    """
+    from .aten_functions import _is_fake_tensor, _packed_with_shape
+
+    reference = next((tensor for tensor in tensors if dim_adj in tensor._ragged_dims), None)
+    if reference is None:
+        return None
+    if all(tensor._ragged_dims == reference._ragged_dims and tensor._ragged_rank == 1 for tensor in tensors):
+        return None  # The existing sole-ragged-axis path needs only segment offsets.
+    nonjoining_ragged = set(reference._ragged_dims) - {dim_adj}
+    rank = int(reference._physical_shape.size(1))
+    if any(
+        set(tensor._ragged_dims) - {dim_adj} != nonjoining_ragged or int(tensor._physical_shape.size(1)) != rank
+        for tensor in tensors
+    ):
+        return None
+    other_dims = [axis for axis in range(rank) if axis != dim_adj]
+    runtime_assert = _is_compiling() or _is_fake_tensor(reference._physical_shape)
+    for tensor in tensors:
+        if not type(reference)._meta_tensor_equal(
+            reference._physical_shape[:, other_dims],
+            tensor._physical_shape[:, other_dims],
+            "Sizes of tensors must match except in the concatenation dimension",
+            runtime_assert=runtime_assert,
+        ):
+            raise RuntimeError("Sizes of tensors must match except in the concatenation dimension")
+
+    physical_shape = reference._physical_shape.clone()
+    physical_shape[:, dim_adj] = builtins.sum(tensor._physical_shape[:, dim_adj] for tensor in tensors)
+    packed_sizes_tensor = physical_shape[:, list(reference._ragged_dims)].prod(dim=-1)
+    offsets = F.pad(packed_sizes_tensor.cumsum(0), (1, 0))
+    # Changing true joining lengths changes their padded maximum. Reading that
+    # metadata remains the same eager contract as the existing rebuilt cat path.
+    if _is_compiling() or _is_fake_tensor(physical_shape):
+        _compile_unsupported("torch.cat", "the new joining-axis padded extent is data-dependent")
+    outer_size = reference._logical_shape_from_physical_dims(physical_shape.amax(dim=0).tolist())
+    device = reference.device
+    shape_device = physical_shape.to(device=device)
+    offsets_device = offsets.to(device=device)
+    joining_prefix = torch.zeros_like(physical_shape[:, dim_adj], device=device)
+    values = []
+    destinations = []
+    static_dims = reference._static_dims
+    for tensor in tensors:
+        batch, local = tensor._packed_batch_local_indices(device=device)
+        coordinates = dict(zip(tensor._varying_dims, tensor._packed_varying_coords(batch, local), strict=True))
+        if dim_adj in tensor._ragged_dims:
+            value_order = (0, *(1 + tensor._static_dims.index(axis) for axis in static_dims))
+            operand_values = tensor.concat.permute(value_order)
+        else:
+            joining_values_dim = 1 + tensor._static_dims.index(dim_adj)
+            value_order = (0, joining_values_dim, *(1 + tensor._static_dims.index(axis) for axis in static_dims))
+            operand_values = tensor.concat.permute(value_order)
+            joining_size = operand_values.shape[1]
+            batch = batch[:, None].expand(-1, joining_size).flatten()
+            coordinates = {
+                axis: coordinate[:, None].expand(-1, joining_size).flatten() for axis, coordinate in coordinates.items()
+            }
+            coordinates[dim_adj] = (
+                torch.arange(joining_size, device=device).expand(operand_values.shape[0], -1).flatten()
+            )
+            operand_values = operand_values.flatten(0, 1)
+        coordinates[dim_adj] = coordinates[dim_adj] + joining_prefix[batch]
+        destination = offsets_device[batch]
+        stride = torch.ones_like(destination)
+        for axis in reversed(reference._ragged_dims):
+            destination = destination + coordinates[axis] * stride
+            stride = stride * shape_device[batch, axis]
+        destinations.append(destination)
+        values.append(operand_values)
+        joining_prefix = joining_prefix + tensor._physical_shape[:, dim_adj].to(device=device)
+
+    merged = torch.cat(values, dim=0)
+    destination = torch.cat(destinations)
+    source = torch.empty_like(destination).scatter_(0, destination, torch.arange(merged.shape[0], device=device))
+    return _packed_with_shape(
+        reference,
+        merged.index_select(0, source),
+        physical_shape,
+        outer_size,
+        offsets=offsets,
+        permutation=reference._permutation,
+        force_explicit_ragged_dims=reference._ragged_dims,
+    )
+
+
+def _cat_logical_dense_operand(first: NestedTensor, tensor: Tensor, dim_adj: int):
+    r"""Pack one logical dense cat operand without treating its joining axis as padding."""
+    from .aten_functions import _pack_uniform_logical_dense, _packed_with_shape
+
+    if dim_adj in first._ragged_dims:
+        if len(first._ragged_dims) != 1:
+            return None
+        return _pack_uniform_logical_dense(first, tensor)
+
+    # A static concatenation axis changes only that tail extent. Other ragged
+    # coordinates retain the first operand's true topology, so read only those
+    # positions from the already-dense operand rather than its padded rows.
+    batch_dim = _get_batch_dim(first)
+    size = int(tensor.shape[_logical_dim_for_element_dim(first, dim_adj)])
+    view = tensor.movedim(batch_dim, 0).permute(0, *(1 + axis for axis in first._permutation))
+    if first._ragged_dims:
+        batch, local = first._packed_batch_local_indices(device=tensor.device)
+        coordinates = first._packed_varying_coords(batch, local, device=tensor.device)
+        values = view[(batch, *coordinates)]
+    else:
+        values = view
+    shape, packed_sizes, element_shapes = first._shape_meta_from_components(replace_dims={dim_adj: size})
+    return _packed_with_shape(
+        first,
+        values,
+        shape,
+        first._logical_shape_from_components(replace_dims={dim_adj: size}),
+        permutation=first._permutation,
+        packed_sizes=packed_sizes,
+        element_shapes=element_shapes,
+        preserve_ragged_offsets=True,
     )
 
 
@@ -1681,7 +1831,9 @@ def gather(input: NestedTensor, dim: int, index, *, sparse_grad: bool = False):
         index: Indices of elements to gather.
 
     Returns:
-        NestedTensor: The gathered result.
+        The gathered result. A full logical dense index specifies an ordinary dense
+        output of exactly its shape; a nested or shared per-element index retains
+        a NestedTensor result.
 
     Examples:
         >>> import torch
