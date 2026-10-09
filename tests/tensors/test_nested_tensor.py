@@ -1140,6 +1140,34 @@ class TestPackedLike:
         restored = reference.packed_like(values).packed_offsets(device=values.device)
         assert_close(restored.cpu(), saved)
 
+    def test_packed_like_real_offset_conversions_survive_fake_mode(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        reference = NestedTensor([torch.empty(2, 2, 3), torch.empty(3, 3, 3)], ragged_dims=(0, 1))
+        values = torch.randn_like(reference.concat)
+        # The first iteration starts cold; the second observes the eager conversions.
+        for _ in range(2):
+            with fake_tensor_mod.FakeTensorMode(allow_non_fake_inputs=True):
+                output = reference.packed_like(values)
+                assert fake_tensor_mod.is_fake(output.packed_offsets(dtype=torch.int32))
+                assert fake_tensor_mod.is_fake(output.ragged_level_offsets(0, dtype=torch.int32))
+            output = reference.packed_like(values)
+            assert_close(output.packed_offsets(dtype=torch.int32), torch.tensor([0, 4, 13], dtype=torch.int32))
+            assert_close(output.ragged_level_offsets(0, dtype=torch.int32), torch.tensor([0, 2, 5], dtype=torch.int32))
+
+    def test_packed_like_inference_warmed_offsets_support_autograd(self):
+        reference = NestedTensor([torch.empty(2, 3), torch.empty(4, 3)])
+        values = torch.randn(reference.concat.shape, requires_grad=True)
+        with torch.inference_mode():
+            reference.packed_offsets(dtype=torch.int32)
+            reference.ragged_level_offsets(dtype=torch.int32)
+        output = reference.packed_like(values)
+        squared = output.concat.square().sum()
+        loss = squared * output.packed_offsets(dtype=torch.int32)[1]
+        loss = loss + squared * output.ragged_level_offsets(dtype=torch.int32)[1]
+        gradient = torch.autograd.grad(loss, values)[0]
+        assert_close(loss, values.square().sum() * 4)
+        assert_close(gradient, values * 8)
+
     def test_packed_like_rejects_invalid_values(self):
         reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
 
