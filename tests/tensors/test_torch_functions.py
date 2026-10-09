@@ -3438,6 +3438,52 @@ class TestReductionOps:
         reference = torch.stack([torch.nansum(t) for t in nt])
         assert_close(output, reference)
 
+    @pytest.mark.parametrize("name", ["nanmean", "nansum"])
+    def test_nan_reductions_multi_ragged_fullgraph_vjp(self, device, name):
+        torch.compiler.reset()
+        parts = [
+            torch.tensor(
+                [
+                    [[float("nan"), 1, float("nan")], [1, 2, float("nan")]],
+                    [[float("nan"), float("inf"), float("nan")], [3, float("nan"), float("nan")]],
+                ],
+                device=device,
+                dtype=torch.float64,
+                requires_grad=True,
+            ),
+            torch.tensor(
+                [
+                    [[float("nan"), 2, float("nan")]],
+                    [[float("nan"), 4, float("nan")]],
+                    [[float("nan"), 6, float("nan")]],
+                ],
+                device=device,
+                dtype=torch.float64,
+                requires_grad=True,
+            ),
+        ]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=(0, 1))
+
+        def consume(template, values):
+            return getattr(template.packed_like(values), name)(dim=1).concat
+
+        compiled = torch.compile(consume, backend="aot_eager", fullgraph=True, dynamic=True)
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            actual = compiled(source, source.concat)
+            gradients = torch.autograd.grad(actual.sum(), parts)
+        expected = torch.cat([getattr(part, name)(dim=0) for part in references])
+        torch.testing.assert_close(actual, expected, equal_nan=True)
+        wanted = torch.autograd.grad(expected.sum(), references)
+        for gradient, reference in zip(gradients, wanted):
+            torch.testing.assert_close(gradient, reference, equal_nan=True)
+
     def test_prod_ignores_padding(self, device, float_dtype):
         nt = NestedTensor(
             [
@@ -3447,6 +3493,21 @@ class TestReductionOps:
         )
         output = torch.prod(nt)
         assert_close(output, torch.tensor(8.0, device=device, dtype=float_dtype))
+        torch.compiler.reset()
+        values = torch.tensor([0, 2, 3, 0, 0], device=device, dtype=float_dtype, requires_grad=True)
+        reference_values = values.detach().clone().requires_grad_()
+        template = NT([values[:3].detach(), values[3:].detach()], ragged_dims=(0,), padding_value=100)
+        compiled = torch.compile(
+            lambda structure, packed: structure.packed_like(packed).prod(dim=1),
+            backend="aot_eager",
+            fullgraph=True,
+        )
+        actual = compiled(template, values)
+        expected = torch.stack([reference_values[:3].prod(), reference_values[3:].prod()])
+        assert_close(actual, expected)
+        assert_close(
+            torch.autograd.grad(actual.sum(), values)[0], torch.autograd.grad(expected.sum(), reference_values)[0]
+        )
 
     def test_var_std_var_mean(self, device, float_dtype):
         nt = NestedTensor(
@@ -3554,7 +3615,7 @@ class TestReductionOps:
 
     @pytest.mark.parametrize("dim", [(1, 2), (1, 3)])
     @pytest.mark.parametrize("keepdim", [False, True])
-    @pytest.mark.parametrize("operation", [torch.amax, torch.amin, torch.mean])
+    @pytest.mark.parametrize("operation", [torch.amax, torch.amin, torch.mean, torch.var, torch.std])
     def test_joint_axes_fullgraph_values_and_vjp(self, device, dim, keepdim, operation):
         torch.compiler.reset()
         scale = -1 if operation is torch.amin else 1
@@ -3913,10 +3974,11 @@ class TestSelectionOps:
                 torch.tensor([4, 2], device=device, dtype=float_dtype),
             ]
         )
-        output = torch.argmax(nt)
+        torch.compiler.reset()
+        output = torch.compile(torch.argmax, backend="aot_eager", fullgraph=True)(nt)
         reference = torch.tensor([1, 0], device=device)
         assert_close(output, reference)
-        output = torch.argmin(nt)
+        output = torch.compile(torch.argmin, backend="aot_eager", fullgraph=True)(nt)
         reference = torch.tensor([0, 1], device=device)
         assert_close(output, reference)
 

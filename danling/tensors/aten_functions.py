@@ -449,6 +449,53 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
     if len(dims) == 0:
         return _call(source.concat, none_dim, keepdim)
 
+    if func in (aten.sum.dim_IntList, aten.nansum.default, aten.nanmean.default, aten.logsumexp.default):
+        for dim in dims:
+            if dim < -source.dim() or dim >= source.dim():
+                raise IndexError("Dimension out of range")
+        normalized_dims = tuple(_normalize_dim(dim, source.dim()) for dim in dims)
+        batch_dim = _reduction_batch_dim(source)
+        per_element_global = len(normalized_dims) == 1 and normalized_dims[0] == batch_dim
+        if per_element_global:
+            dims_adj = tuple(range(source._physical_shape.size(1)))
+        elif batch_dim not in normalized_dims:
+            dims_adj = _translate_dims(source, normalized_dims)
+        else:
+            dims_adj = None
+        if dims_adj is not None and (per_element_global or any(dim in source._varying_dims for dim in dims_adj)):
+            if func is aten.logsumexp.default:
+                output = _packed_logsumexp_reduction(source, dims_adj, False if per_element_global else keepdim)
+            else:
+                output = _packed_additive_reduction(
+                    func, source, dims_adj, False if per_element_global else keepdim, **kwargs
+                )
+            return output.unsqueeze(batch_dim) if per_element_global and keepdim else output
+
+    if func in (aten.var.correction, aten.std.correction):
+        for dim in dims:
+            if dim < -source.dim() or dim >= source.dim():
+                raise IndexError(
+                    f"Dimension out of range (expected to be in range of [{-source.dim()}, "
+                    f"{source.dim() - 1}], but got {dim})"
+                )
+        normalized_dims = tuple(_normalize_dim(dim, source.dim()) for dim in dims)
+        batch_dim = _reduction_batch_dim(source)
+        if len(normalized_dims) == 1 and normalized_dims[0] == batch_dim:
+            reduced, _ = _packed_stats_reduction(
+                source,
+                range(source._physical_shape.size(1)),
+                False,
+                correction=kwargs.get("correction"),
+                std=func is aten.std.correction,
+            )
+            return reduced.unsqueeze(batch_dim) if keepdim else reduced
+        if batch_dim not in normalized_dims:
+            dims_adj = _translate_dims(source, normalized_dims)
+            if any(dim in source._varying_dims for dim in dims_adj):
+                return _packed_stats_reduction(
+                    source, dims_adj, keepdim, correction=kwargs.get("correction"), std=func is aten.std.correction
+                )[0]
+
     if func is aten.mean.dim:
         for dim in dims:
             if dim < -source.dim() or dim >= source.dim():
@@ -582,51 +629,90 @@ def boolean_dim_reduction(func, args, kwargs):
     )
 
 
-@NestedTensorAtenRegistry.implement(aten.argmax.default)
-@NestedTensorAtenRegistry.implement(aten.argmin.default)
+@NestedTensorAtenRegistry.implement(aten.argmax.default, compile_safe=True)
+@NestedTensorAtenRegistry.implement(aten.argmin.default, compile_safe=True)
 def arg_extrema_reduction(func, args, kwargs):
     r"""Handle ``argmax/argmin`` for per-element global or dim reductions."""
     source, dims, keepdim = _extract_dim_keepdim(args, kwargs, None)
     largest = func is aten.argmax.default
+    values = source.concat
+    if (values.dtype == torch.bool or values.dtype.is_complex) and values.numel():
+        # Preserve native arg extrema dtype errors instead of inheriting the
+        # broader max/min dtype support of the shared index-selection kernel.
+        return func(values.reshape(-1), 0, False, **kwargs)
 
     if not dims:
-        output = torch.stack([func(t, **kwargs) for t in source._storage])
+        output = _packed_max_min_reduction(
+            source, range(source._physical_shape.size(1)), False, largest=largest, return_values=False
+        )
         if keepdim:
             output = output.unsqueeze(_get_batch_dim(source))
         return output
 
+    if dims[0] < -source.dim() or dims[0] >= source.dim():
+        raise IndexError("Dimension out of range")
     dim = _normalize_dim(dims[0], source.dim())
-    batch_dim = _get_batch_dim(source)
+    batch_dim = _reduction_batch_dim(source)
     if dim == batch_dim:
-        output = torch.stack([func(t, **kwargs) for t in source._storage])
+        output = _packed_max_min_reduction(
+            source, range(source._physical_shape.size(1)), False, largest=largest, return_values=False
+        )
         if keepdim:
             output = output.unsqueeze(batch_dim)
         return output
 
     dim_adj = _translate_dim(source, dim)
-    segment_indices = _segment_arg_extrema_ragged_dim(source, dim_adj, keepdim, largest=largest)
-    if segment_indices is not None:
-        return segment_indices
-
     values_dim = _physical_to_values_dim(source, dim_adj)
     if values_dim is None:
-        if not _has_single_packed_ragged_dim(source, dim_adj):
-            return per_element_fallback(func, (source, dim_adj, keepdim), kwargs)
-        fill_value = _topk_fill_value(source.concat.dtype, largest=largest)
-        padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=fill_value)
-        output = func(padded, 1 + dim_adj, keepdim, **kwargs)
-        return _restore_segment_batch_dim(source, output, dim_adj, keepdim)
+        return _packed_max_min_reduction(source, (dim_adj,), keepdim, largest=largest, return_values=False)
 
     out_values = func(source.concat, values_dim, keepdim, **kwargs)
     return _reduce_non_ragged_packed(source, out_values, dim_adj, keepdim)
 
 
-@NestedTensorAtenRegistry.implement(aten.count_nonzero.dim_IntList)
+@NestedTensorAtenRegistry.implement(aten.prod.default, compile_safe=True)
+def prod_global_reduction(func, args, kwargs):
+    r"""Reduce all true packed values with native product dtype and gradient semantics."""
+    return func(args[0].concat, **kwargs)
+
+
+@NestedTensorAtenRegistry.implement(aten.prod.dim_int, compile_safe=True)
+def prod_dim_reduction(func, args, kwargs):
+    r"""Reduce a logical product axis directly in static values or packed row groups."""
+    source, dims, keepdim = _extract_dim_keepdim(args, kwargs, _MISSING)
+    if not dims:
+        raise TypeError("missing required argument 'dim'")
+    dim = dims[0]
+    if dim < -source.dim() or dim >= source.dim():
+        raise IndexError("Dimension out of range")
+    dim = _normalize_dim(dim, source.dim())
+    batch_dim = _reduction_batch_dim(source)
+    if dim == batch_dim:
+        output = _packed_prod_reduction(source, range(source._physical_shape.size(1)), False, **kwargs)
+        return output.unsqueeze(batch_dim) if keepdim else output
+    dim_adj = _translate_dim(source, dim)
+    values_dim = _physical_to_values_dim(source, dim_adj)
+    if values_dim is None:
+        return _packed_prod_reduction(source, (dim_adj,), keepdim, **kwargs)
+    output = func(source.concat, values_dim, keepdim, **kwargs)
+    return _reduce_non_ragged_packed(source, output, dim_adj, keepdim)
+
+
+@NestedTensorAtenRegistry.implement(aten.count_nonzero.dim_IntList, compile_safe=True)
 def count_nonzero_dim_reduction(func, args, kwargs):
     r"""Handle ``count_nonzero`` dim reductions on packed values for common dim patterns."""
     source, dims, _ = _extract_dim_keepdim(args, kwargs, ())
     if len(dims) == 0:
         return aten.count_nonzero.default(source.concat, **kwargs)
+
+    for dim in dims:
+        if dim < -source.dim() or dim >= source.dim():
+            raise IndexError("Dimension out of range")
+    normalized_dims = tuple(_normalize_dim(dim, source.dim()) for dim in dims)
+    if _reduction_batch_dim(source) not in normalized_dims:
+        dims_adj = _translate_dims(source, normalized_dims)
+        if any(dim in source._varying_dims for dim in dims_adj):
+            return _packed_additive_reduction(func, source, dims_adj, False)
 
     if len(dims) > 1:
         dims_adj = _translate_dims(source, dims)
@@ -899,13 +985,33 @@ def aminmax_reduction(func, args, kwargs):
     )
 
 
-@NestedTensorAtenRegistry.implement(aten.var_mean.correction)
+@NestedTensorAtenRegistry.implement(aten.var_mean.correction, compile_safe=True)
 def var_mean_dim_reduction(func, args, kwargs):
     r"""Handle ``var_mean`` correction reductions via packed fastpaths where valid."""
     source, dims, keepdim = _extract_dim_keepdim(args, kwargs, None)
     if len(dims) == 0:
         out_var, out_mean = func(source.concat, None, keepdim=keepdim, **kwargs)
         return out_var, out_mean
+
+    for dim in dims:
+        if dim < -source.dim() or dim >= source.dim():
+            raise IndexError(
+                f"Dimension out of range (expected to be in range of [{-source.dim()}, "
+                f"{source.dim() - 1}], but got {dim})"
+            )
+    normalized_dims = tuple(_normalize_dim(dim, source.dim()) for dim in dims)
+    batch_dim = _reduction_batch_dim(source)
+    if len(normalized_dims) == 1 and normalized_dims[0] == batch_dim:
+        out_var, out_mean = _packed_stats_reduction(
+            source, range(source._physical_shape.size(1)), False, correction=kwargs.get("correction")
+        )
+        if keepdim:
+            return out_var.unsqueeze(batch_dim), out_mean.unsqueeze(batch_dim)
+        return out_var, out_mean
+    if batch_dim not in normalized_dims:
+        dims_adj = _translate_dims(source, normalized_dims)
+        if any(dim in source._varying_dims for dim in dims_adj):
+            return _packed_stats_reduction(source, dims_adj, keepdim, correction=kwargs.get("correction"))
 
     if len(dims) > 1:
         dims_adj = _translate_dims(source, dims)
@@ -949,6 +1055,91 @@ def var_mean_dim_reduction(func, args, kwargs):
     return (
         _reduce_non_ragged_packed(source, out_var, dim_adj, keepdim),
         _reduce_non_ragged_packed(source, out_mean, dim_adj, keepdim),
+    )
+
+
+class _GroupedStats(torch.autograd.Function):
+    r"""Compute joint centered moments and preserve native degenerate statistics gradients."""
+
+    @staticmethod
+    def forward(values: Tensor, groups: Tensor, output_size: int, correction, std: bool, variance_dtype, mean_dtype):
+        counts = groups.new_zeros((output_size,)).index_add(0, groups, torch.ones_like(groups))
+        count_shape = (output_size, *([1] * (values.dim() - 1)))
+        indices = torch.arange(values.shape[0], device=values.device)
+        first = groups.new_full((output_size,), values.shape[0]).scatter_reduce(
+            0, groups, indices, "amin", include_self=True
+        )
+        anchors = torch.cat((values, values.new_zeros((1, *values.shape[1:])))).index_select(0, first)
+        anchors = torch.where(anchors.isfinite(), anchors, 0)
+        shifted = values - anchors.index_select(0, groups)
+        sums = values.new_zeros((output_size, *values.shape[1:])).index_add(0, groups, shifted)
+        mean_shift = sums / counts.reshape(count_shape)
+        mean = anchors + mean_shift
+        centered = shifted - mean_shift.index_select(0, groups)
+        squares = centered.real.square() + centered.imag.square() if values.is_complex() else centered.square()
+        numerator = squares.new_zeros((output_size, *squares.shape[1:])).index_add(0, groups, squares)
+        degrees = counts.to(numerator.dtype) - correction
+        denominator = torch.where(degrees > 0, degrees, 0).reshape(count_shape)
+        variance = numerator / denominator
+        statistic = variance.sqrt() if std else variance
+        return statistic.to(variance_dtype), mean.to(mean_dtype)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        values, groups, _, correction, std, _, _ = inputs
+        statistic, mean = output
+        ctx.set_materialize_grads(False)
+        ctx.correction, ctx.std = correction, std
+        ctx.save_for_backward(values, groups, statistic, mean)
+
+    @staticmethod
+    def backward(ctx, grad_statistic, grad_mean):
+        values, groups, statistic, mean = ctx.saved_tensors
+        counts = groups.new_zeros((mean.shape[0],)).index_add(0, groups, torch.ones_like(groups))
+        count_shape = (mean.shape[0], *([1] * (values.dim() - 1)))
+        gradient = torch.zeros_like(values)
+        if grad_statistic is not None:
+            if ctx.std:
+                grad_statistic = torch.where(statistic == 0, 0, grad_statistic / (2 * statistic))
+            degrees = (counts.to(values.real.dtype) - ctx.correction).reshape(count_shape)
+            centered = values - mean.index_select(0, groups)
+            regular = (2 * grad_statistic / degrees).index_select(0, groups) * centered
+            degenerate = torch.where(centered == 0, float("nan"), float("inf"))
+            degenerate = (grad_statistic.index_select(0, groups) * degenerate).to(values.dtype)
+            gradient = torch.where(degrees.index_select(0, groups) <= 0, degenerate, regular)
+        if grad_mean is not None:
+            gradient = gradient + (grad_mean / counts.reshape(count_shape)).index_select(0, groups)
+        return gradient, None, None, None, None, None, None
+
+
+def _packed_stats_reduction(source, dims_adj, keepdim, *, correction=None, std=False):
+    r"""Reduce joint static/ragged moments with real variance for complex inputs."""
+    dims_adj = _canonical_packed_reduction_dims(source, dims_adj)
+    values = source.concat
+    sample = aten.mean.dim(values[:0], [0], False)
+    add_values = _numeric_reduction_values(values, sample.dtype, mean=True)
+    remaining_ragged, _, offsets, groups, output_size = _packed_reduction_groups(source, dims_adj, device=values.device)
+    selected_static = tuple(dim for dim in source._static_dims if dim in dims_adj)
+    remaining_static = tuple(
+        dim for dim in range(source._physical_shape.size(1)) if dim not in dims_adj and dim not in remaining_ragged
+    )
+    order = (0, *(1 + source._static_dims.index(dim) for dim in (*selected_static, *remaining_static)))
+    ordered = add_values.permute(order)
+    reduction_size = math.prod(ordered.shape[1 : 1 + len(selected_static)])
+    contributions = ordered.reshape(ordered.shape[0] * reduction_size, *ordered.shape[1 + len(selected_static) :])
+    groups = groups[:, None].expand(-1, reduction_size).reshape(-1)
+    statistic, mean = _GroupedStats.apply(
+        contributions,
+        groups,
+        output_size,
+        1 if correction is None else correction,
+        std,
+        sample.real.dtype,
+        sample.dtype,
+    )
+    return (
+        _wrap_packed_reduction(source, statistic.to(sample.real.dtype), dims_adj, keepdim, remaining_ragged, offsets),
+        _wrap_packed_reduction(source, mean.to(sample.dtype), dims_adj, keepdim, remaining_ragged, offsets),
     )
 
 
@@ -3685,8 +3876,18 @@ def _tensor_backed_ragged_offsets(
 ) -> tuple[Tensor, ...]:
     parent_counts = torch.ones(physical_shape.size(0), dtype=torch.long, device=physical_shape.device)
     offsets: list[Tensor] = []
-    for dim in ragged_dims:
-        widths = torch.repeat_interleave(physical_shape[:, dim].to(torch.long), parent_counts)
+    for level, dim in enumerate(ragged_dims):
+        if level == 0:
+            width_count = physical_shape.size(0)
+        else:
+            # Bind the returned offsets' complete length, rather than an
+            # intermediate width count whose affine ``u + 1`` cannot be
+            # recovered from wrapper children by Dynamo's output binding.
+            counts = torch.cat((parent_counts, parent_counts.new_ones(1)))
+            offset_count = _ragged_reduction_size_binding(counts).shape[0]
+            torch._check(offset_count >= 1)
+            width_count = offset_count - 1
+        widths = torch.repeat_interleave(physical_shape[:, dim].to(torch.long), parent_counts, output_size=width_count)
         level_offsets = torch.cat((widths.new_zeros(1, dtype=dtype), widths.to(dtype).cumsum(0)))
         offsets.append(level_offsets)
         parent_counts = parent_counts * physical_shape[:, dim].to(torch.long)
@@ -3933,13 +4134,16 @@ def _wrap_packed_reduction(source, output, dims_adj, keepdim, remaining_ragged, 
     return result._packed_like_unchecked(output, reuse_wrapper=True)
 
 
-def _packed_max_min_reduction(source: NestedTensor, dims_adj: Sequence[int], keepdim: bool, *, largest: bool):
+def _packed_max_min_reduction(
+    source: NestedTensor, dims_adj: Sequence[int], keepdim: bool, *, largest: bool, return_values: bool = True
+):
     r"""Select the first logical extremum in each group and gather its original value."""
     dims_adj = _canonical_packed_reduction_dims(source, dims_adj)
     values = source.concat
     rank = int(source._physical_shape.size(1))
     if rank == 0:
-        return (aten.max.dim if largest else aten.min.dim)(values.reshape(len(source), 1), 1, False)
+        output, indices = (aten.max.dim if largest else aten.min.dim)(values.reshape(len(source), 1), 1, False)
+        return (output, indices) if return_values else indices
     if values.dtype.is_complex:
         return (aten.max.dim if largest else aten.min.dim)(values, 0, False)
     selected_ragged = tuple(dim for dim in source._varying_dims if dim in dims_adj)
@@ -3991,6 +4195,8 @@ def _packed_max_min_reduction(source: NestedTensor, dims_adj: Sequence[int], kee
     candidates = torch.where(matches, local_indices, sentinel)
     indices = torch.full(extrema.shape, sentinel, device=values.device, dtype=torch.long)
     indices = indices.scatter_reduce(0, scatter_index, candidates, "amin", include_self=True)
+    if not return_values:
+        return _wrap_packed_reduction(source, indices, dims_adj, keepdim, remaining_ragged, offsets)
     selected = matches & (local_indices == indices.index_select(0, groups))
     positions = torch.arange(contributions.shape[0], device=values.device).reshape(index_shape).expand_as(contributions)
     positions = torch.where(selected, positions, sentinel)
@@ -4163,6 +4369,106 @@ def _packed_mean_reduction(
     return _wrap_packed_reduction(source, output, dims_adj, keepdim, remaining_ragged, group_offsets)
 
 
+class _MaskNaNs(torch.autograd.Function):
+    r"""Mask NaNs with the native nansum gradient, including an infinite upstream gradient."""
+
+    @staticmethod
+    def forward(values: Tensor) -> Tensor:
+        return torch.where(values.isnan(), 0, values)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output) -> None:
+        ctx.save_for_backward(inputs[0])
+
+    @staticmethod
+    def backward(ctx, gradient: Tensor):
+        (values,) = ctx.saved_tensors
+        return gradient * ~values.isnan()
+
+
+def _packed_additive_reduction(func, source, dims_adj, keepdim, *, dtype=None):
+    r"""Reduce native sums or masked sums/counts over actual packed coordinates."""
+    dims_adj = _canonical_packed_reduction_dims(source, dims_adj)
+    values = source.concat
+    count_nonzero = func is aten.count_nonzero.dim_IntList
+    nanmean = func is aten.nanmean.default
+    masked = func in (aten.nanmean.default, aten.nansum.default)
+    if count_nonzero:
+        result_dtype = torch.long
+        add_values = values.ne(0).long()
+    else:
+        # Validate dtype against the native operator before masking or casting.
+        sample = func(values[:0], [0], False, dtype=dtype)
+        result_dtype = sample.dtype
+        add_values = _MaskNaNs.apply(values) if masked else values
+        add_values = _numeric_reduction_values(add_values, result_dtype, mean=nanmean)
+        if result_dtype == torch.bool:
+            add_values = add_values.long()
+    remaining_ragged, _, offsets, groups, output_size = _packed_reduction_groups(source, dims_adj, device=values.device)
+    selected_static = tuple(dim for dim in source._static_dims if dim in dims_adj)
+    kept_static = tuple(
+        dim for dim in range(source._physical_shape.size(1)) if dim not in dims_adj and dim not in remaining_ragged
+    )
+    order = (0, *(1 + source._static_dims.index(dim) for dim in (*selected_static, *kept_static)))
+    ordered = add_values.permute(order)
+    width = math.prod(ordered.shape[1 : 1 + len(selected_static)])
+    tail = ordered.shape[1 + len(selected_static) :]
+    rows = ordered.reshape(ordered.shape[0], width, *tail).sum(dim=1, dtype=add_values.dtype)
+    output = rows.new_zeros((output_size, *tail)).index_add(0, groups, rows)
+    if nanmean:
+        valid = (~values.isnan()).permute(order).reshape(values.shape[0], width, *tail).long().sum(dim=1)
+        counts = valid.new_zeros((output_size, *tail)).index_add(0, groups, valid)
+        output = output / counts
+    output = output.to(dtype=result_dtype)
+    return _wrap_packed_reduction(source, output, dims_adj, keepdim, remaining_ragged, offsets)
+
+
+class _GroupedLogsumexp(torch.autograd.Function):
+    r"""Stable grouped log-sum-exp with the native rounded-output VJP."""
+
+    @staticmethod
+    def forward(values: Tensor, groups: Tensor, output_size: int) -> Tensor:
+        result_dtype = aten.logsumexp.default(values[:0], [0], False).dtype
+        accumulation = values.to(dtype=result_dtype)
+        if result_dtype in (torch.float16, torch.bfloat16):
+            accumulation = accumulation.float()
+        real = accumulation.real if accumulation.dtype.is_complex else accumulation
+        maximum = _GroupedExtrema.forward(real, groups, output_size, True)
+        shift = torch.where(maximum.abs().isinf(), 0, maximum)
+        terms = (accumulation - shift.index_select(0, groups)).exp()
+        total = terms.new_zeros((output_size, *terms.shape[1:])).index_add(0, groups, terms)
+        return (total.log() + shift).to(dtype=result_dtype)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output) -> None:
+        values, groups, _ = inputs
+        ctx.save_for_backward(values, groups, output)
+
+    @staticmethod
+    def backward(ctx, gradient: Tensor):
+        values, groups, output = ctx.saved_tensors
+        weights = (values - output.index_select(0, groups)).conj().exp()
+        return gradient.index_select(0, groups) * weights, None, None
+
+
+def _packed_logsumexp_reduction(source, dims_adj, keepdim):
+    r"""Contract all selected static and ragged axes in one stable reduction."""
+    dims_adj = _canonical_packed_reduction_dims(source, dims_adj)
+    values = source.concat
+    remaining_ragged, _, offsets, groups, output_size = _packed_reduction_groups(source, dims_adj, device=values.device)
+    selected_static = tuple(dim for dim in source._static_dims if dim in dims_adj)
+    kept_static = tuple(
+        dim for dim in range(source._physical_shape.size(1)) if dim not in dims_adj and dim not in remaining_ragged
+    )
+    order = (0, *(1 + source._static_dims.index(dim) for dim in (*selected_static, *kept_static)))
+    ordered = values.permute(order)
+    width = math.prod(ordered.shape[1 : 1 + len(selected_static)])
+    contributions = ordered.reshape(ordered.shape[0] * width, *ordered.shape[1 + len(selected_static) :])
+    groups = groups[:, None].expand(-1, width).reshape(-1)
+    output = _GroupedLogsumexp.apply(contributions, groups, output_size)
+    return _wrap_packed_reduction(source, output, dims_adj, keepdim, remaining_ragged, offsets)
+
+
 def _packed_numeric_ragged_reduction(
     func,
     source: NestedTensor,
@@ -4286,6 +4592,104 @@ def _segment_reduce_ragged_dim(
         return None
 
     return _format_permuted_segment_reduction(source, out, dim_adj, keepdim)
+
+
+def _sorted_group_products(values: Tensor, groups: Tensor, output_size: int) -> Tensor:
+    r"""Multiply complex groups with packed segmented scans instead of unsupported atomics."""
+    from .segmented import segmented_scan
+
+    order = torch.argsort(groups, stable=True)
+    sorted_groups = groups.index_select(0, order)
+    scanned = segmented_scan(values.index_select(0, order), sorted_groups, torch.mul)
+    positions = torch.arange(groups.shape[0], device=groups.device)
+    last = groups.new_full((output_size,), -1).scatter_reduce(0, sorted_groups, positions, "amax", include_self=True)
+    # Empty groups read the leading multiplicative identity, without filtering
+    # packed positions into another data-dependent output shape.
+    padded = torch.cat((values.new_ones((1, *values.shape[1:])), scanned), dim=0)
+    return padded.index_select(0, last + 1)
+
+
+def _exclusive_group_products(values: Tensor, groups: Tensor) -> Tensor:
+    r"""Multiply every other group member without dividing by zeros or infinities."""
+    from .segmented import segmented_scan
+
+    if values.shape[0] == 0:
+        return values.clone()
+    order = torch.argsort(groups, stable=True)
+    sorted_groups = groups.index_select(0, order)
+    sorted_values = values.index_select(0, order)
+    carrier = _numeric_reduction_values(sorted_values, sorted_values.dtype, mean=False)
+    forward = segmented_scan(carrier, sorted_groups, torch.mul)
+    reverse = segmented_scan(carrier.flip(0), sorted_groups.flip(0), torch.mul).flip(0)
+    ones = carrier.new_ones((1, *carrier.shape[1:]))
+    previous = torch.cat((ones, forward[:-1]), dim=0)
+    following = torch.cat((reverse[1:], ones), dim=0)
+    same_previous = torch.cat((groups.new_zeros(1, dtype=torch.bool), sorted_groups[1:] == sorted_groups[:-1]))
+    same_following = torch.cat((sorted_groups[:-1] == sorted_groups[1:], groups.new_zeros(1, dtype=torch.bool)))
+    shape = (-1, *([1] * (values.dim() - 1)))
+    previous = torch.where(same_previous.reshape(shape), previous, torch.ones_like(previous)).to(values.dtype)
+    following = torch.where(same_following.reshape(shape), following, torch.ones_like(following)).to(values.dtype)
+    inverse = torch.argsort(order)
+    return (previous * following).index_select(0, inverse)
+
+
+class _GroupedProduct(torch.autograd.Function):
+    r"""Native first-order product VJP, including zero-containing and complex groups."""
+
+    @staticmethod
+    def forward(values: Tensor, groups: Tensor, output_size: int) -> Tensor:
+        carrier = _numeric_reduction_values(values, values.dtype, mean=False)
+        if carrier.dtype.is_complex:
+            output = _sorted_group_products(carrier, groups, output_size)
+        else:
+            index = groups.reshape(-1, *([1] * (values.dim() - 1))).expand_as(values)
+            output = carrier.new_ones((output_size, *values.shape[1:]))
+            output = output.scatter_reduce(0, index, carrier, "prod", include_self=True)
+        return output.to(values.dtype)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output) -> None:
+        values, groups, _ = inputs
+        ctx.save_for_backward(values, groups, output)
+
+    @staticmethod
+    def backward(ctx, grad_output: Tensor):
+        values, groups, output = ctx.saved_tensors
+        zero_counts = torch.zeros_like(output, dtype=torch.long).index_add(0, groups, (values == 0).to(torch.long))
+        quotients = output.index_select(0, groups) / values
+        excluded = _exclusive_group_products(values, groups)
+        products = torch.where(zero_counts.index_select(0, groups) == 0, quotients, excluded)
+        return grad_output.index_select(0, groups) * products.conj(), None, None
+
+
+def _packed_prod_reduction(
+    source: NestedTensor,
+    dims_adj: Sequence[int],
+    keepdim: bool,
+    *,
+    dtype: torch.dtype | None = None,
+):
+    r"""Reduce products over selected packed coordinates, retaining empty-group identity."""
+    dims_adj = _canonical_packed_reduction_dims(source, dims_adj)
+    values = source.concat
+    sample = aten.prod.default(values[:0], dtype=dtype)
+    values = values.to(sample.dtype)
+    if source._physical_shape.size(1) == 0:
+        # Native scalar prod is an identity even for NaN/Inf gradients; turning
+        # it into a length-one vector would invoke the quotient VJP instead.
+        return values.reshape(len(source))
+    remaining_ragged, _, offsets, groups, output_size = _packed_reduction_groups(source, dims_adj, device=values.device)
+    selected_static = tuple(dim for dim in source._static_dims if dim in dims_adj)
+    remaining_static = tuple(
+        dim for dim in range(source._physical_shape.size(1)) if dim not in dims_adj and dim not in remaining_ragged
+    )
+    order = (0, *(1 + source._static_dims.index(dim) for dim in (*selected_static, *remaining_static)))
+    ordered = values.permute(order)
+    static_count = math.prod(ordered.shape[1 : 1 + len(selected_static)])
+    contributions = ordered.reshape(ordered.shape[0] * static_count, *ordered.shape[1 + len(selected_static) :])
+    groups = groups[:, None].expand(-1, static_count).reshape(-1)
+    output = _GroupedProduct.apply(contributions, groups, output_size)
+    return _wrap_packed_reduction(source, output, dims_adj, keepdim, remaining_ragged, offsets)
 
 
 def _packed_new_ragged_size(

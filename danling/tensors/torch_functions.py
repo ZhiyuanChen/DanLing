@@ -4250,7 +4250,7 @@ def aminmax(input: NestedTensor, *, dim: int | None = None, keepdim: bool = Fals
     return torch.return_types.aminmax(output)
 
 
-@NestedTensorFuncRegistry.implement(torch.count_nonzero)
+@NestedTensorFuncRegistry.implement(torch.count_nonzero, compile_safe=True)
 def count_nonzero(input: NestedTensor, dim: int | Sequence[int] | None = None):
     r"""
     Counts the number of non-zero values in the tensor `input` along the given `dim`.
@@ -4272,15 +4272,13 @@ def count_nonzero(input: NestedTensor, dim: int | Sequence[int] | None = None):
     """
     if dim is None:
         return torch.count_nonzero(input.concat)
-    if isinstance(dim, int):
-        dims = [dim]
-    else:
-        dims = list(dim)
-    batch_dim = _get_batch_dim(input)
+    dims = list(dim) if isinstance(dim, (list, tuple)) else [dim]
+    batch_dim = 0 if input.dim() == 1 else _get_batch_dim(input)
     for d in dims:
         if _normalize_dim(d, input.dim()) == batch_dim:
             raise ValueError("count_nonzero along the batch dimension is not supported for NestedTensor.")
-    return torch.ops.aten.count_nonzero.dim_IntList(input, dims)
+    count_op = torch.ops.aten.count_nonzero.dim_IntList
+    return NestedTensorAtenRegistry[count_op](count_op, (input, dims), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.dist)
@@ -4324,7 +4322,7 @@ def dist(input: NestedTensor, other: NestedTensor | Tensor, p=2):
     return torch.stack([torch.dist(x, y, p=p) for x, y in zip(input._storage, other._storage)])
 
 
-@NestedTensorFuncRegistry.implement(torch.logsumexp)
+@NestedTensorFuncRegistry.implement(torch.logsumexp, compile_safe=True)
 def logsumexp(input: NestedTensor, dim: int | Sequence[int], keepdim: bool = False):
     r"""
     Returns the log of summed exponentials of each row of the `input` tensor in the given dimension `dim`.
@@ -4346,8 +4344,12 @@ def logsumexp(input: NestedTensor, dim: int | Sequence[int], keepdim: bool = Fal
         >>> torch.allclose(torch.logsumexp(nt, dim=1), torch.logsumexp(nt.tensor, dim=1))
         True
     """
-    dims = [dim] if isinstance(dim, int) else list(dim)
-    return torch.ops.aten.logsumexp.default(input, dims, keepdim)
+    dims = list(dim) if isinstance(dim, (list, tuple)) else [dim]
+    lse_op = torch.ops.aten.logsumexp.default
+    if not dims:
+        output = lse_op(input.concat, [], keepdim)
+        return output.reshape((1,) * input.dim()) if keepdim else output
+    return NestedTensorAtenRegistry[lse_op](lse_op, (input, dims, keepdim), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.max, compile_safe=True)
@@ -4452,7 +4454,7 @@ def min(input: NestedTensor, dim: int | None = None, keepdim: bool = False):
     return torch.return_types.min((values, indices))
 
 
-@NestedTensorFuncRegistry.implement(torch.nanmean)
+@NestedTensorFuncRegistry.implement(torch.nanmean, compile_safe=True)
 def nanmean(
     input: NestedTensor,
     dim: int | Sequence[int] | None = None,
@@ -4480,13 +4482,14 @@ def nanmean(
         >>> torch.allclose(torch.nanmean(nt, dim=1), torch.nanmean(nt.tensor, dim=1))
         True
     """
-    if dim is None:
+    if dim is None or isinstance(dim, (list, tuple)) and not dim:
         return _reduce_none(input, torch.nanmean, dtype=dtype, keepdim=keepdim)
-    dims = [dim] if isinstance(dim, int) else list(dim)
-    return torch.ops.aten.nanmean.default(input, dims, keepdim, dtype=dtype)
+    dims = list(dim) if isinstance(dim, (list, tuple)) else [dim]
+    op = torch.ops.aten.nanmean.default
+    return NestedTensorAtenRegistry[op](op, (input, dims, keepdim), {"dtype": dtype})
 
 
-@NestedTensorFuncRegistry.implement(torch.nansum)
+@NestedTensorFuncRegistry.implement(torch.nansum, compile_safe=True)
 def nansum(
     input: NestedTensor,
     dim: int | Sequence[int] | None = None,
@@ -4514,10 +4517,11 @@ def nansum(
         >>> torch.allclose(torch.nansum(nt, dim=1), torch.nansum(nt.tensor, dim=1))
         True
     """
-    if dim is None:
+    if dim is None or isinstance(dim, (list, tuple)) and not dim:
         return _reduce_none(input, torch.nansum, dtype=dtype, keepdim=keepdim)
-    dims = [dim] if isinstance(dim, int) else list(dim)
-    return torch.ops.aten.nansum.default(input, dims, keepdim, dtype=dtype)
+    dims = list(dim) if isinstance(dim, (list, tuple)) else [dim]
+    op = torch.ops.aten.nansum.default
+    return NestedTensorAtenRegistry[op](op, (input, dims, keepdim), {"dtype": dtype})
 
 
 @NestedTensorFuncRegistry.implement(torch.numel)
@@ -4542,7 +4546,18 @@ def numel(input: NestedTensor) -> int:
     return input.numel()
 
 
-@NestedTensorFuncRegistry.implement(torch.std)
+@NestedTensorFuncRegistry.implement(torch.prod, compile_safe=True)
+def prod(input: NestedTensor, dim: int | None = None, keepdim: bool = False, *, dtype=None):
+    r"""Compute products on packed groups, retaining native zero and dtype behavior."""
+    if dim is None:
+        return _reduce_none(input, torch.prod, dtype=dtype, keepdim=keepdim)
+    if isinstance(dim, torch.SymInt):
+        dim = int(dim)
+    op = torch.ops.aten.prod.dim_int
+    return NestedTensorAtenRegistry[op](op, (input, dim, keepdim), {"dtype": dtype})
+
+
+@NestedTensorFuncRegistry.implement(torch.std, compile_safe=True)
 def std(
     input: NestedTensor,
     dim: int | Sequence[int] | None = None,
@@ -4570,10 +4585,11 @@ def std(
         >>> torch.allclose(torch.std(nt, dim=1), torch.std(nt.tensor, dim=1))
         True
     """
-    if dim is None:
+    if dim is None or isinstance(dim, (list, tuple)) and not dim:
         return _reduce_none(input, torch.std, keepdim=keepdim, correction=correction)
-    dims = [dim] if isinstance(dim, int) else list(dim)
-    return torch.ops.aten.std.correction(input, dims, correction=correction, keepdim=keepdim)
+    dims = list(dim) if isinstance(dim, (list, tuple)) else [dim]
+    op = torch.ops.aten.std.correction
+    return NestedTensorAtenRegistry[op](op, (input, dims), {"correction": correction, "keepdim": keepdim})
 
 
 @NestedTensorFuncRegistry.implement(torch.sum)
@@ -4598,7 +4614,7 @@ def sum(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: bo
     return sum_dim(torch.ops.aten.sum.dim_IntList, (input, [dim], keepdim), {"dtype": dtype})
 
 
-@NestedTensorFuncRegistry.implement(torch.var)
+@NestedTensorFuncRegistry.implement(torch.var, compile_safe=True)
 def var(
     input: NestedTensor,
     dim: int | Sequence[int] | None = None,
@@ -4627,13 +4643,14 @@ def var(
         >>> torch.allclose(torch.var(nt, dim=1), torch.var(nt.tensor, dim=1))
         True
     """
-    if dim is None:
+    if dim is None or isinstance(dim, (list, tuple)) and not dim:
         return _reduce_none(input, torch.var, keepdim=keepdim, correction=correction)
-    dims = [dim] if isinstance(dim, int) else list(dim)
-    return torch.ops.aten.var.correction(input, dims, correction=correction, keepdim=keepdim)
+    dims = list(dim) if isinstance(dim, (list, tuple)) else [dim]
+    op = torch.ops.aten.var.correction
+    return NestedTensorAtenRegistry[op](op, (input, dims), {"correction": correction, "keepdim": keepdim})
 
 
-@NestedTensorFuncRegistry.implement(torch.var_mean)
+@NestedTensorFuncRegistry.implement(torch.var_mean, compile_safe=True)
 def var_mean(
     input: NestedTensor,
     dim: int | Sequence[int] | None = None,
@@ -4663,9 +4680,9 @@ def var_mean(
         >>> torch.allclose(out[0], ref[0]) and torch.allclose(out[1], ref[1])
         True
     """
-    if dim is None:
+    if dim is None or isinstance(dim, (list, tuple)) and not dim:
         return _reduce_none_pair(input, torch.var_mean, keepdim=keepdim, correction=correction)
-    dims = [dim] if isinstance(dim, int) else list(dim)
+    dims = list(dim) if isinstance(dim, (list, tuple)) else [dim]
     var_mean_op = torch.ops.aten.var_mean.correction
     return NestedTensorAtenRegistry[var_mean_op](
         var_mean_op,
@@ -5779,7 +5796,7 @@ def softmax(input: NestedTensor, dim: int, dtype: torch.dtype | None = None) -> 
 # Sorting & Selection
 
 
-@NestedTensorFuncRegistry.implement(torch.argmax)
+@NestedTensorFuncRegistry.implement(torch.argmax, compile_safe=True)
 def argmax(input: NestedTensor, dim: int | None = None, keepdim: bool = False):
     r"""
     Returns the indices of the maximum value of all elements in the `input` tensor.
@@ -5800,10 +5817,13 @@ def argmax(input: NestedTensor, dim: int | None = None, keepdim: bool = False):
         >>> torch.equal(torch.argmax(nt, dim=1), torch.argmax(nt.tensor, dim=1))
         True
     """
-    return torch.ops.aten.argmax.default(input, dim, keepdim)
+    if isinstance(dim, torch.SymInt):
+        dim = int(dim)
+    op = torch.ops.aten.argmax.default
+    return NestedTensorAtenRegistry[op](op, (input, dim, keepdim), {})
 
 
-@NestedTensorFuncRegistry.implement(torch.argmin)
+@NestedTensorFuncRegistry.implement(torch.argmin, compile_safe=True)
 def argmin(input: NestedTensor, dim: int | None = None, keepdim: bool = False):
     r"""
     Returns the indices of the minimum value(s) of the flattened tensor or along a dimension This is the second value
@@ -5825,7 +5845,10 @@ def argmin(input: NestedTensor, dim: int | None = None, keepdim: bool = False):
         >>> torch.equal(torch.argmin(nt, dim=1), torch.argmin(nt.tensor, dim=1))
         True
     """
-    return torch.ops.aten.argmin.default(input, dim, keepdim)
+    if isinstance(dim, torch.SymInt):
+        dim = int(dim)
+    op = torch.ops.aten.argmin.default
+    return NestedTensorAtenRegistry[op](op, (input, dim, keepdim), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.argsort)
@@ -6497,6 +6520,15 @@ for _alias_method, _alias_func in (
     (torch.Tensor.amax, torch.amax),
     (torch.Tensor.amin, torch.amin),
     (torch.Tensor.aminmax, torch.aminmax),
+    (torch.Tensor.argmax, torch.argmax),
+    (torch.Tensor.argmin, torch.argmin),
+    (torch.Tensor.nanmean, torch.nanmean),
+    (torch.Tensor.nansum, torch.nansum),
+    (torch.Tensor.logsumexp, torch.logsumexp),
+    (torch.Tensor.count_nonzero, torch.count_nonzero),
+    (torch.Tensor.var, torch.var),
+    (torch.Tensor.std, torch.std),
+    (torch.Tensor.prod, torch.prod),
     (torch.Tensor.max, torch.max),
     (torch.Tensor.min, torch.min),
     (torch.Tensor.topk, torch.topk),
