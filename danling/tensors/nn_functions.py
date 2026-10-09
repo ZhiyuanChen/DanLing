@@ -1624,10 +1624,27 @@ NN_LOSS_OPS_3 = [
 ]
 
 
+def _cross_entropy_dense_values(reference: NestedTensor, tensor: Tensor) -> Tensor:
+    r"""Read native positions and align surviving dense axes with the packed layout."""
+    if not reference.batch_first and reference.dim() > 1:
+        tensor = tensor.movedim(1, 0)
+    values = tensor[reference._packed_dense_index(device=tensor.device)]
+    # Advanced indexing puts the packed position axis first, but leaves static axes in
+    # logical order. A movedim can retain a different static-axis order in concat.
+    static_dims = reference._static_dims
+    logical_static_dims = sorted(static_dims)
+    permutation = (
+        0,
+        *(1 + logical_static_dims.index(dim) for dim in static_dims),
+        *range(1 + len(static_dims), values.dim()),
+    )
+    return values.permute(permutation)
+
+
 @NestedTensorFuncRegistry.implement(F.cross_entropy)
 def cross_entropy(
-    input: NestedTensor,
-    target,
+    input: NestedTensor | Tensor,
+    target: NestedTensor | Tensor,
     weight=None,
     size_average=None,
     ignore_index: int = -100,
@@ -1636,57 +1653,100 @@ def cross_entropy(
     label_smoothing: float = 0.0,
 ):
     r"""
-    Cross entropy with the class axis LAST. See also [torch.nn.functional.cross_entropy][].
+    Cross entropy with PyTorch's logical class axis: dim 1, or dim 0 for a 1-D input.
 
-    Computed as ``-log_softmax(input, -1)[target]``, so it touches only the static class dim and is
-    structure-agnostic for any ragged layout: a doubly-ragged ``[.., N, N, C]`` pair, a sample axis
-    before the ragged dim ``[.., S, N, C]``, and so on. The generic loss path concatenates everything
-    into one ``(rows, C)`` matrix, which loses that structure for ``reduction='none'``.
+    For batched inputs, the class axis must be static and separate from the NestedTensor batch
+    axis. Remaining ragged axes are packed into positions and scored by the ordinary PyTorch kernel,
+    without padding or iterating through elements. Both class indices and class probabilities
+    support weighting, label smoothing and the dense operator's
+    reduction semantics. ``reduction='none'`` retains every target position's native topology.
 
-    The class axis is the last dim, the convention for logit NestedTensors, rather than dim 1 as in
-    the dense operator; for a 2-D ``(rows, C)`` input the two coincide. ``target`` holds class indices
-    and its shape is ``input``'s without the class dim. ``reduction='none'`` returns a NestedTensor
-    carrying ``input``'s structure minus the class dim; the other reductions return a scalar.
+    For sequence logits ``[B, L, C]``, move the classes to dim 1 before calling this function:
+    ``F.cross_entropy(logits.movedim(-1, 1), targets)``. The class-last convention formerly used
+    only by NestedTensor is deliberately not retained.
     """
+    from .aten_functions import _packed_without_dim
     from .nested_tensor import NestedTensor
+    from .ops import _broadcast_nested_to_values
+
+    if isinstance(weight, NestedTensor):
+        if weight.dim() != 1:
+            raise ValueError("Cross entropy class weights must be one-dimensional")
+        weight = weight.concat
+    if not isinstance(input, NestedTensor) and not isinstance(target, NestedTensor):
+        return F.cross_entropy(input, target, weight, size_average, ignore_index, reduce, reduction, label_smoothing)
 
     if not isinstance(input, NestedTensor):
-        return F.cross_entropy(input, target, weight, size_average, ignore_index, reduce, reduction, label_smoothing)
-    # The deprecated size_average/reduce aliases override ``reduction`` exactly as the dense op does.
-    if size_average is not None or reduce is not None:
-        averaged = True if size_average is None else bool(size_average)
-        reduced = True if reduce is None else bool(reduce)
-        reduction = "mean" if averaged and reduced else ("sum" if reduced else "none")
-    if reduction not in ("none", "mean", "sum"):
-        raise ValueError(f"{reduction} is not a valid value for reduction")
-    if label_smoothing != 0.0:
-        raise NotImplementedError("NestedTensor cross_entropy does not support label_smoothing")
+        # A nested target defines the positions to read from an existing dense input. This is
+        # indexing into supplied storage, not materializing padded NestedTensor storage.
+        expected_shape = input.shape if input.dim() == target.dim() else input.shape[:1] + input.shape[2:]
+        if target.shape != expected_shape:
+            raise ValueError("Cross entropy input and target shapes must match")
+        if input.dim() == target.dim():
+            packed_input = _cross_entropy_dense_values(target, input)
+            return cross_entropy(
+                target.packed_like(packed_input),
+                target,
+                weight,
+                size_average,
+                ignore_index,
+                reduce,
+                reduction,
+                label_smoothing,
+            )
+        if input.dim() != target.dim() + 1:
+            raise ValueError("Cross entropy input and target ranks do not match")
+        packed_input = _cross_entropy_dense_values(target, input.movedim(1, -1)).movedim(-1, 1)
+        output = F.cross_entropy(
+            packed_input, target.concat, weight, size_average, ignore_index, reduce, reduction, label_smoothing
+        )
+        return target.packed_like(output) if output.dim() else output
 
-    indices = target.long()
-    log_probs = torch.log_softmax(input, dim=-1)
-    # Ignored positions may carry any sentinel class, negative or past the class count, so replace
-    # exactly those before gathering. Everything else is passed through untouched: an out-of-range
-    # label that is not the ignore index must raise, the way the dense operator does, rather than
-    # being clamped into a valid class and scored silently.
-    valid = indices != ignore_index
-    gather_index = torch.where(valid, indices, torch.zeros_like(indices))
-    nll = -log_probs.gather(-1, gather_index.unsqueeze(-1)).squeeze(-1)
-    # Per-position weight is the class weight times the ignore_index validity mask, which reproduces
-    # the dense weighted result: 'sum' is sum_i w_i * nll_i and 'mean' divides that by sum_i w_i.
-    if weight is not None:
-        weight = weight.to(device=log_probs.device, dtype=log_probs.dtype)
-        per_position = F.embedding(gather_index, weight.unsqueeze(-1)).squeeze(-1)
+    if input.dim() == 1:
+        packed_target = target.concat if isinstance(target, NestedTensor) else target
+        return F.cross_entropy(
+            input.concat, packed_target, weight, size_average, ignore_index, reduce, reduction, label_smoothing
+        )
+
+    class_dim = _translate_non_batch_dim(input, 1, name="class axis")
+    values_dim = _physical_to_values_dim(input, class_dim)
+    if values_dim is None:
+        raise ValueError("Cross entropy requires a static class axis")
+    packed_input = input.concat.movedim(values_dim, 1)
+    probabilities = target.dim() == input.dim()
+    if probabilities:
+        reference = input
     else:
-        per_position = torch.ones_like(nll)
-    per_position = per_position * valid.to(nll.dtype)
-    nll = nll * per_position
-    if reduction == "sum":
-        return nll.sum()
-    if reduction == "mean":
-        # Not clamped: when every position is ignored the weight total is zero and the result is
-        # NaN, which is what the dense operator returns for an entirely ignored batch.
-        return nll.sum() / per_position.sum()
-    return nll
+        # Zero-class inputs still have a defined ignored-position loss. An empty sum builds
+        # the position-only metadata without indexing a class that does not exist.
+        positions = (
+            input.concat.select(values_dim, 0) if input.concat.size(values_dim) else input.concat.sum(values_dim)
+        )
+        reference = _packed_without_dim(input, class_dim, positions)
+    if isinstance(target, NestedTensor):
+        if reference._has_same_layout(target):
+            packed_target = target.concat
+        else:
+            if reference.batch_first != target.batch_first or not type(input)._meta_tensor_equal(
+                reference._physical_shape,
+                target._physical_shape,
+                "Cross entropy input and target element shapes must match",
+                runtime_assert=True,
+            ):
+                raise ValueError("Cross entropy input and target element shapes must match")
+            packed_target = _broadcast_nested_to_values(reference, target)
+    else:
+        if target.shape != reference.shape:
+            raise ValueError("Cross entropy input and target shapes must match")
+        packed_target = _cross_entropy_dense_values(reference, target)
+    if packed_target is None:
+        raise ValueError("Cross entropy input and target shapes must match")
+    if probabilities:
+        packed_target = packed_target.movedim(values_dim, 1)
+    output = F.cross_entropy(
+        packed_input, packed_target, weight, size_average, ignore_index, reduce, reduction, label_smoothing
+    )
+    return _packed_without_dim(input, class_dim, output) if output.dim() else output
 
 
 # Linear & Embeddings

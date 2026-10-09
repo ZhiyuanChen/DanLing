@@ -329,7 +329,7 @@ class TestClassificationLosses:
         targets = NT(
             [torch.tensor([0, 1], device=device, dtype=torch.long), torch.tensor([1], device=device, dtype=torch.long)]
         )
-        output = F.cross_entropy(logits, targets, reduction="sum")
+        output = F.cross_entropy(logits.movedim(-1, 1), targets, reduction="sum")
         reference_input = torch.cat(tuple(logits), dim=0)
         reference_target = torch.cat(tuple(targets), dim=0)
         reference = F.cross_entropy(reference_input, reference_target, reduction="sum")
@@ -2778,7 +2778,7 @@ class TestUnfoldFold:
 
 
 class TestCrossEntropy:
-    r"""Class-last cross entropy, which keeps ragged structure that the generic loss path flattens."""
+    r"""PyTorch class-axis cross entropy retaining native target positions."""
 
     @staticmethod
     def _logits_and_targets(device, float_dtype):
@@ -2794,11 +2794,11 @@ class TestCrossEntropy:
                 torch.randint(0, 5, (3,), device=device),
             ]
         )
-        return logits, targets
+        return logits.movedim(-1, 1), targets
 
     @pytest.mark.parametrize("reduction", ["mean", "sum"])
     def test_matches_dense_on_packed_rows(self, device, float_dtype, reduction):
-        # A 2-D element is (rows, C), where class-last and the dense class-dim-1 convention coincide.
+        # Logical input is (B, C, L); its packed rows are (sum(L), C).
         logits, targets = self._logits_and_targets(device, float_dtype)
         output = F.cross_entropy(logits, targets, reduction=reduction)
         reference = F.cross_entropy(logits.concat, targets.concat, reduction=reduction)
@@ -2829,7 +2829,7 @@ class TestCrossEntropy:
                 torch.randint(0, 5, (3, 3), device=device),
             ]
         )
-        output = F.cross_entropy(logits, targets, reduction="none")
+        output = F.cross_entropy(logits.movedim(-1, 1), targets, reduction="none")
         assert isinstance(output, NestedTensor)
         assert [tuple(element.shape) for element in output] == [(2, 2), (3, 3)]
 
@@ -2846,7 +2846,7 @@ class TestCrossEntropy:
         values = torch.randn(5, 5, device=device, dtype=float_dtype, requires_grad=True)
         logits = NestedTensor([values[:2], values[2:]])
         targets = NestedTensor([torch.randint(0, 5, (2,), device=device), torch.randint(0, 5, (3,), device=device)])
-        loss = F.cross_entropy(logits, targets)
+        loss = F.cross_entropy(logits.movedim(-1, 1), targets)
         assert loss.requires_grad
         loss.backward()
         assert values.grad is not None
@@ -2906,7 +2906,428 @@ class TestCrossEntropy:
             if device.type == "cuda":
                 torch.cuda.synchronize()
 
-    def test_rejects_label_smoothing(self, device, float_dtype):
+    def test_label_smoothing_matches_dense(self, device, float_dtype):
         logits, targets = self._logits_and_targets(device, float_dtype)
-        with pytest.raises(NotImplementedError, match="label_smoothing"):
-            F.cross_entropy(logits, targets, label_smoothing=0.1)
+        torch.testing.assert_close(
+            F.cross_entropy(logits, targets, label_smoothing=0.1),
+            F.cross_entropy(logits.concat, targets.concat, label_smoothing=0.1),
+        )
+
+    @pytest.mark.parametrize("layout", ["sequence", "samples", "pair", "classification"])
+    @pytest.mark.parametrize("reduction", ["none", "mean", "sum"])
+    @pytest.mark.parametrize("smoothing", [0.0, 0.1])
+    @pytest.mark.parametrize("weighted", [False, True])
+    @pytest.mark.parametrize("probabilities", [False, True])
+    def test_native_value_and_vjp(self, device, float_dtype, layout, reduction, smoothing, weighted, probabilities):
+        from danling.tensors.ops import nested_execution_guard
+
+        classes = 5
+        position_shapes = {
+            "sequence": [(0,), (2,), (5,)],
+            "samples": [(2, 0), (2, 2), (2, 5)],
+            "pair": [(0, 3), (2, 4), (5, 2)],
+            "classification": [(), (), ()],
+        }[layout]
+        ragged = {"sequence": (0,), "samples": (1,), "pair": (0, 1), "classification": ()}[layout]
+        elements = [
+            torch.randn(*shape, classes, device=device, dtype=float_dtype, requires_grad=True)
+            for shape in position_shapes
+        ]
+        logits = NestedTensor(elements, ragged_dims=ragged).movedim(-1, 1)
+        if probabilities:
+            targets = [torch.randn_like(element).softmax(-1).detach().requires_grad_() for element in elements]
+            native_target = NestedTensor(targets, ragged_dims=ragged).movedim(-1, 1)
+        else:
+            targets = [torch.randint(classes, shape, device=device) for shape in position_shapes]
+            # Give ignored positions a sentinel outside the vocabulary, including an entire element.
+            targets[1].fill_(999)
+            native_target = NestedTensor(targets, ragged_dims=ragged)
+            if layout == "pair":
+                # Identical logical targets with a different packed ragged-axis order.
+                native_target = NestedTensor([target.T for target in targets], ragged_dims=(0, 1)).transpose(-1, -2)
+        weight = torch.linspace(0.2, 1.1, classes, dtype=float_dtype, device=device) if weighted else None
+        kwargs = {
+            "weight": weight,
+            "label_smoothing": smoothing,
+            "reduction": reduction,
+            "ignore_index": -100 if probabilities else 999,
+        }
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            actual = F.cross_entropy(logits, native_target, **kwargs)
+            objective = actual.sum() if reduction == "none" else actual
+            leaves = elements + targets if probabilities else elements
+            actual_gradient = torch.autograd.grad(objective, leaves)
+
+        # Evaluate the complete equation independently in FP64 on the actual quantized data.
+        # Grouping half-precision element losses and weight sums before a global mean introduces
+        # an extra rounded denominator and can scale every reference gradient incorrectly.
+        reference_elements = [element.detach().double().requires_grad_() for element in elements]
+        reference_targets = (
+            [target.detach().double().requires_grad_() for target in targets] if probabilities else targets
+        )
+        reference_weight = weight.detach().double() if weighted else None
+        values, position_weights, gradient_scales = [], [], []
+        target_gradient_scales = []
+        for element, target in zip(reference_elements, reference_targets):
+            log_probabilities = element.log_softmax(-1)
+            if probabilities:
+                distribution = (1.0 - smoothing) * target + smoothing / classes
+                position_weights.append(torch.ones_like(target[..., 0]).reshape(-1))
+            else:
+                valid = target != 999
+                safe_target = torch.where(valid, target, 0)
+                distribution = (1.0 - smoothing) * F.one_hot(safe_target, classes).double() + smoothing / classes
+                distribution = torch.where(valid.unsqueeze(-1), distribution, 0.0)
+                selected_weight = (
+                    reference_weight[safe_target] if weighted else torch.ones_like(valid, dtype=torch.float64)
+                )
+                position_weights.append(torch.where(valid, selected_weight, 0.0).reshape(-1))
+            coefficient = distribution * reference_weight if weighted else distribution
+            values.append(-(coefficient * log_probabilities).sum(-1))
+            # Before cancellation, both terms of dL/dz = softmax(z) * sum(coefficient)
+            # - coefficient are bounded by this row's total coefficient mass.
+            gradient_scales.append(coefficient.sum(-1, keepdim=True).detach().expand_as(element))
+            if probabilities:
+                target_scale = (1.0 - smoothing) * log_probabilities.detach().abs()
+                target_gradient_scales.append(target_scale * reference_weight if weighted else target_scale)
+        reference = torch.cat([value.reshape(-1) for value in values]).sum()
+        denominator = torch.cat(position_weights).sum()
+        if reduction == "mean":
+            reference = reference / denominator
+            gradient_scales = [scale / denominator for scale in gradient_scales]
+            target_gradient_scales = [scale / denominator for scale in target_gradient_scales]
+        expected = NestedTensor(values, ragged_dims=ragged)
+        if reduction == "none":
+            assert isinstance(actual, NestedTensor)
+            torch.testing.assert_close(actual.element_sizes(), expected.element_sizes())
+            assert actual.ragged_dims == expected.ragged_dims
+            actual_values, expected_values = actual.concat, expected.concat
+        else:
+            actual_values, expected_values = actual, reference
+        reference_leaves = reference_elements + reference_targets if probabilities else reference_elements
+        expected_gradient = torch.autograd.grad(reference, reference_leaves)
+        if float_dtype in (torch.float16, torch.bfloat16):
+            # Native CE stores log probabilities, loss/weight totals and backward products in
+            # the requested dtype. Eight elementary roundings bound the composed coefficient,
+            # normalization and subtractive backward arithmetic: gamma_8 = 8u / (1 - 8u).
+            # Use the non-cancelled derivative scale rather than demanding a relative match
+            # to a tiny gradient; ignored rows must still be exactly zero.
+            info = torch.finfo(float_dtype)
+            unit_roundoff = info.eps / 2
+            gamma = 8 * unit_roundoff / (1 - 8 * unit_roundoff)
+            subnormal_step = info.tiny * info.eps
+            value_error = (actual_values.double() - expected_values).abs()
+            assert torch.all(value_error <= gamma * expected_values.abs() + subnormal_step)
+            for actual_grad, expected_grad, scale in zip(
+                actual_gradient, expected_gradient, gradient_scales + target_gradient_scales
+            ):
+                assert torch.all((actual_grad.double() - expected_grad).abs() <= gamma * scale + subnormal_step)
+                torch.testing.assert_close(
+                    actual_grad[scale == 0], torch.zeros_like(actual_grad[scale == 0]), atol=0.0, rtol=0.0
+                )
+        else:
+            # Retain the previous float32/float64 tolerances after rounding the FP64 equation
+            # to the result dtype. This checks the intended equation, not another grouped CE.
+            torch.testing.assert_close(actual_values, expected_values.to(float_dtype))
+            for actual_grad, expected_grad in zip(actual_gradient, expected_gradient):
+                torch.testing.assert_close(
+                    actual_grad,
+                    expected_grad.to(float_dtype),
+                    atol=1e-5 if float_dtype != torch.float64 else 1e-12,
+                    rtol=1e-5,
+                )
+
+    def test_all_ignored_returns_nan_and_zero_gradient(self, device, float_dtype):
+        elements = [torch.randn(n, 5, device=device, dtype=float_dtype, requires_grad=True) for n in (2, 4)]
+        logits = NestedTensor(elements).movedim(-1, 1)
+        targets = NestedTensor([torch.full((n,), 999, device=device) for n in (2, 4)])
+        loss = F.cross_entropy(logits, targets, ignore_index=999, label_smoothing=0.1)
+        assert loss.isnan()
+        for gradient in torch.autograd.grad(loss, elements):
+            torch.testing.assert_close(gradient, torch.zeros_like(gradient))
+
+    def test_class_last_is_not_silently_detected(self, device, float_dtype):
+        logits = NestedTensor(
+            [torch.randn(2, 5, device=device, dtype=float_dtype), torch.randn(3, 5, device=device, dtype=float_dtype)]
+        )
+        targets = NestedTensor(
+            [torch.zeros(2, dtype=torch.long, device=device), torch.zeros(3, dtype=torch.long, device=device)]
+        )
+        with pytest.raises(ValueError, match="static class axis"):
+            F.cross_entropy(logits, targets)
+
+    @pytest.mark.parametrize("probabilities", [False, True])
+    @pytest.mark.parametrize("reduction", ["none", "mean", "sum"])
+    def test_dense_input_reads_only_native_target_positions(self, device, float_dtype, probabilities, reduction):
+        from danling.tensors.ops import nested_execution_guard
+
+        lengths, classes = (0, 2, 5), 5
+        values = torch.randn(3, classes, 5, device=device, dtype=float_dtype, requires_grad=True)
+        if probabilities:
+            target_elements = [
+                torch.randn(classes, n, device=device, dtype=float_dtype).softmax(0).requires_grad_() for n in lengths
+            ]
+            targets = NestedTensor(target_elements, ragged_dims=(1,))
+        else:
+            target_elements = [torch.randint(classes, (n,), device=device) for n in lengths]
+            targets = NestedTensor(target_elements, ragged_dims=(0,))
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            result = F.cross_entropy(values, targets, label_smoothing=0.1, reduction=reduction)
+            actual = result.sum() if reduction == "none" else result
+            gradient = torch.autograd.grad(actual, values)[0]
+        reference_parts = [
+            F.cross_entropy(
+                values[i : i + 1, :, :n], target.unsqueeze(0), label_smoothing=0.1, reduction="none"
+            ).squeeze(0)
+            for i, (n, target) in enumerate(zip(lengths, target_elements))
+        ]
+        reference = sum(part.sum() for part in reference_parts)
+        if reduction == "mean":
+            reference = reference / sum(lengths)
+        if reduction == "none":
+            torch.testing.assert_close(result.concat, torch.cat(reference_parts))
+        else:
+            torch.testing.assert_close(result, reference)
+        torch.testing.assert_close(gradient, torch.autograd.grad(reference, values)[0])
+
+    @pytest.mark.parametrize("probabilities", [False, True])
+    def test_dense_targets_follow_logical_shape(self, device, float_dtype, probabilities):
+        from danling.tensors.ops import nested_execution_guard
+
+        elements = [torch.randn(n, 5, device=device, dtype=float_dtype, requires_grad=True) for n in (2, 5)]
+        logits = NestedTensor(elements, ragged_dims=(0,)).movedim(-1, 1)
+        targets = (
+            torch.randn(2, 5, 5, device=device, dtype=float_dtype).softmax(1)
+            if probabilities
+            else torch.randint(5, (2, 5), device=device)
+        )
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            result = F.cross_entropy(logits, targets, label_smoothing=0.1, reduction="sum")
+            gradient = torch.autograd.grad(result, elements)
+        reference = sum(
+            F.cross_entropy(
+                element.T.unsqueeze(0),
+                targets[i : i + 1, :, :n] if probabilities else targets[i : i + 1, :n],
+                label_smoothing=0.1,
+                reduction="sum",
+            )
+            for i, (n, element) in enumerate(zip((2, 5), elements))
+        )
+        torch.testing.assert_close(result, reference)
+        for actual, expected in zip(gradient, torch.autograd.grad(reference, elements)):
+            torch.testing.assert_close(actual, expected)
+        with pytest.raises(ValueError, match="shapes must match"):
+            F.cross_entropy(logits, targets[0], label_smoothing=0.1)
+
+    @pytest.mark.parametrize("classes", [3, 5])
+    @pytest.mark.parametrize("native_input", [False, True])
+    def test_mixed_probability_targets_preserve_static_axis_order(self, device, classes, native_input):
+        from danling.tensors.ops import nested_execution_guard
+
+        # Classes and the static position axis coincide in one case: a wrong permutation
+        # then has a valid shape and must still be detected by values and both VJPs.
+        elements = [
+            torch.randn(*shape, classes, dtype=torch.float64, device=device).requires_grad_()
+            for shape in [(2, 3, 3), (4, 2, 3)]
+        ]
+        if not native_input:
+            elements = [element.detach().softmax(-1).requires_grad_() for element in elements]
+        native = NestedTensor(elements, ragged_dims=(0, 1)).movedim(-1, 1).transpose(2, 3)
+        logical_elements = [element.movedim(-1, 0).transpose(1, 2) for element in elements]
+        dense = torch.randn(tuple(native.shape), dtype=torch.float64, device=device)
+        if native_input:
+            dense = dense.softmax(1)
+        dense.requires_grad_()
+        logits, targets = (native, dense) if native_input else (dense, native)
+        weights = torch.linspace(0.2, 1.1, classes, dtype=torch.float64, device=device)
+        kwargs = {"weight": weights, "label_smoothing": 0.17, "reduction": "none"}
+        leaves = elements + [dense]
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            result = F.cross_entropy(logits, targets, **kwargs)
+            actual_gradients = torch.autograd.grad(result.sum(), leaves)
+
+        # Form rows directly from each element's logical class axis and slice the supplied
+        # dense storage. This reference is independent of the NestedTensor packed permutation.
+        input_rows, target_rows, logical_shapes = [], [], []
+        for index, element in enumerate(logical_elements):
+            logical_shape = tuple(element.shape[1:])
+            slices = (index, slice(None), *(slice(0, extent) for extent in logical_shape))
+            dense_element = dense[slices]
+            input_element, target_element = (element, dense_element) if native_input else (dense_element, element)
+            input_rows.append(input_element.movedim(0, -1).reshape(-1, classes))
+            target_rows.append(target_element.movedim(0, -1).reshape(-1, classes))
+            logical_shapes.append(logical_shape)
+        expected = F.cross_entropy(torch.cat(input_rows), torch.cat(target_rows), **kwargs)
+        assert isinstance(result, NestedTensor)
+        assert result.ragged_dims == (1, 0)
+        assert [tuple(element.shape) for element in result] == logical_shapes
+        offset = 0
+        for actual_element, shape in zip(result, logical_shapes):
+            positions = math.prod(shape)
+            torch.testing.assert_close(actual_element, expected[offset : offset + positions].reshape(shape))
+            offset += positions
+        for actual, expected_gradient in zip(actual_gradients, torch.autograd.grad(expected.sum(), leaves)):
+            torch.testing.assert_close(actual, expected_gradient)
+
+    @pytest.mark.parametrize("probabilities", [False, True])
+    def test_one_dimensional_input_uses_class_axis_zero(self, device, float_dtype, probabilities):
+        values = torch.randn(5, device=device, dtype=float_dtype, requires_grad=True)
+        logits = NestedTensor(list(values.unbind()), ragged_dims=())
+        target = torch.randn_like(values).softmax(0) if probabilities else torch.tensor(2, device=device)
+        native_target = NestedTensor(list(target.unbind()), ragged_dims=()) if probabilities else target
+        output = F.cross_entropy(logits, native_target, label_smoothing=0.1)
+        reference = F.cross_entropy(values, target, label_smoothing=0.1)
+        torch.testing.assert_close(output, reference)
+        torch.testing.assert_close(torch.autograd.grad(output, values)[0], torch.autograd.grad(reference, values)[0])
+
+    @pytest.mark.parametrize("size_average,reduce", [(False, False), (False, True), (True, True)])
+    def test_legacy_reduction_aliases(self, device, float_dtype, size_average, reduce):
+        logits, targets = self._logits_and_targets(device, float_dtype)
+        with pytest.warns(UserWarning, match="size_average and reduce"):
+            output = F.cross_entropy(logits, targets, size_average=size_average, reduce=reduce, label_smoothing=0.1)
+        with pytest.warns(UserWarning, match="size_average and reduce"):
+            expected = F.cross_entropy(
+                logits.concat, targets.concat, size_average=size_average, reduce=reduce, label_smoothing=0.1
+            )
+        torch.testing.assert_close(output.concat if isinstance(output, NestedTensor) else output, expected)
+
+    def test_target_type_and_probability_ignore_errors_are_preserved(self, device, float_dtype):
+        logits, targets = self._logits_and_targets(device, float_dtype)
+        with pytest.raises(RuntimeError, match="Long"):
+            F.cross_entropy(logits, targets.short())
+        probabilities = logits.softmax(1)
+        with pytest.raises(RuntimeError, match="ignore_index"):
+            F.cross_entropy(logits, probabilities, ignore_index=1)
+
+    @pytest.mark.parametrize("reduction", ["none", "mean", "sum"])
+    def test_zero_classes_and_ignored_positions_follow_dense(self, device, float_dtype, reduction):
+        from danling.tensors.ops import nested_execution_guard
+
+        values = torch.empty(3, 0, device=device, dtype=float_dtype, requires_grad=True)
+        logits = NestedTensor(list(values.unbind()), ragged_dims=())
+        target_values = torch.full((3,), -100, device=device)
+        targets = NestedTensor(list(target_values.unbind()), ragged_dims=())
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            output = F.cross_entropy(logits, targets, reduction=reduction)
+            actual = output.sum() if reduction == "none" else output
+            gradient = torch.autograd.grad(actual, values)[0]
+        reference = F.cross_entropy(values, target_values, reduction=reduction)
+        torch.testing.assert_close(
+            output.concat if isinstance(output, NestedTensor) else output, reference, equal_nan=True
+        )
+        torch.testing.assert_close(gradient, torch.autograd.grad(reference.sum(), values)[0])
+
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize("unbatched", [False, True])
+    @pytest.mark.parametrize("probabilities", [False, True])
+    @pytest.mark.parametrize("smoothing", [0.0, 0.1])
+    @pytest.mark.parametrize("reduction", ["none", "mean", "sum"])
+    def test_native_class_weights_value_and_input_vjp(
+        self, device, float_dtype, native, unbatched, probabilities, smoothing, reduction
+    ):
+        from danling.tensors.ops import nested_execution_guard
+
+        values = torch.randn(2, 3, device=device, dtype=float_dtype, requires_grad=True)
+        target_values = values.detach().softmax(-1) if probabilities else torch.tensor([0, 2], device=device)
+        weights = torch.tensor([0.4, 0.7, 1.2], device=device, dtype=float_dtype)
+        native_weights = NestedTensor(list(weights.unbind()), ragged_dims=())
+        dense_input = values[0] if unbatched else values
+        dense_target = target_values[0] if unbatched else target_values
+        input = NestedTensor(list(dense_input.unbind()), ragged_dims=()) if native else dense_input
+        target = (
+            NestedTensor(list(dense_target.unbind()), ragged_dims=()) if native and dense_target.dim() else dense_target
+        )
+        with nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        ):
+            output = F.cross_entropy(
+                input, target, weight=native_weights, label_smoothing=smoothing, reduction=reduction
+            )
+            gradient = torch.autograd.grad(output.sum(), values)[0]
+        reference = F.cross_entropy(
+            dense_input, dense_target, weight=weights, label_smoothing=smoothing, reduction=reduction
+        )
+        torch.testing.assert_close(output.concat if isinstance(output, NestedTensor) else output, reference)
+        torch.testing.assert_close(gradient, torch.autograd.grad(reference.sum(), values)[0])
+
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize("probabilities", [False, True])
+    def test_native_class_weight_grad_follows_torch(self, device, float_dtype, native, probabilities):
+        values = torch.randn(2, 3, device=device, dtype=float_dtype, requires_grad=True)
+        target_values = values.detach().softmax(-1) if probabilities else torch.tensor([0, 2], device=device)
+        weights = torch.tensor([0.4, 0.7, 1.2], device=device, dtype=float_dtype, requires_grad=True)
+        native_weights = NestedTensor(list(weights.unbind()), ragged_dims=())
+        input = NestedTensor(list(values.unbind()), ragged_dims=()) if native else values
+        target = NestedTensor(list(target_values.unbind()), ragged_dims=()) if native else target_values
+        if not probabilities:
+            with pytest.raises(RuntimeError, match="not differentiable.*weight|weight.*requires_grad"):
+                F.cross_entropy(values, target_values, weight=weights, label_smoothing=0.1)
+            with pytest.raises(RuntimeError, match="not differentiable.*weight|weight.*requires_grad"):
+                F.cross_entropy(input, target, weight=native_weights, label_smoothing=0.1)
+            return
+        output = F.cross_entropy(input, target, weight=native_weights, label_smoothing=0.1)
+        reference = F.cross_entropy(values, target_values, weight=weights, label_smoothing=0.1)
+        torch.testing.assert_close(output, reference)
+        actual_gradients = torch.autograd.grad(output, (values, weights))
+        expected_gradients = torch.autograd.grad(reference, (values, weights))
+        for actual, expected in zip(actual_gradients, expected_gradients):
+            torch.testing.assert_close(actual, expected)
+
+    @pytest.mark.parametrize("probabilities", [False, True])
+    def test_native_class_weight_dtype_is_not_cast(self, device, float_dtype, probabilities):
+        values = torch.randn(2, 3, device=device, dtype=float_dtype)
+        target = values.softmax(-1) if probabilities else torch.tensor([0, 2], device=device)
+        weight_dtype = torch.float32 if float_dtype == torch.float64 else torch.float64
+        weights = torch.tensor([0.4, 0.7, 1.2], device=device, dtype=weight_dtype)
+        native_weights = NestedTensor(list(weights.unbind()), ragged_dims=())
+        if probabilities:
+            output = F.cross_entropy(values, target, weight=native_weights)
+            reference = F.cross_entropy(values, target, weight=weights)
+            assert output.dtype == reference.dtype
+            torch.testing.assert_close(output, reference)
+        else:
+            with pytest.raises(RuntimeError, match="scalar type|same dtype|expected.*type"):
+                F.cross_entropy(values, target, weight=weights)
+            with pytest.raises(RuntimeError, match="scalar type|same dtype|expected.*type"):
+                F.cross_entropy(values, target, weight=native_weights)
+
+    def test_native_class_weights_require_logical_vector(self, device, float_dtype):
+        values = torch.randn(2, 3, device=device, dtype=float_dtype)
+        target = torch.tensor([0, 2], device=device)
+        weights = NestedTensor([torch.ones(3, device=device, dtype=float_dtype)] * 2, ragged_dims=())
+        with pytest.raises(ValueError, match="class weights must be one-dimensional"):
+            F.cross_entropy(values, target, weight=weights)
