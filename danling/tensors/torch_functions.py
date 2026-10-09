@@ -3082,7 +3082,10 @@ def einsum(equation, *operands):
 
     The equation string describes the dimensions of individual elements
     (without the batch dimension). At least one operand must be a NestedTensor;
-    plain Tensor operands are broadcast to every element.
+    plain Tensor operands are broadcast to every element. A leading ellipsis retained by an
+    explicit output also supports native packed contractions over named static-tail axes. That
+    path preserves ragged row order and every logical static-prefix dimension inside
+    the ellipsis, with shared dense static-tail parameters remaining ordinary operands.
     """
     from .nested_tensor import NestedTensor
 
@@ -3147,8 +3150,216 @@ def einsum(equation, *operands):
     return NestedTensor(results, **ref._meta())
 
 
+def _einsum_prefix_layout(ref: NestedTensor, prefix_rank: int, dense_prefixes: tuple, shared_prefixes: tuple):
+    r"""Expand singleton packed coordinates retained by a dense ellipsis."""
+    from .aten_functions import _packed_with_shape
+
+    logical_rank = prefix_rank + 1
+    prefix = tuple(ref.shape[:logical_rank])
+    broadcast_prefix = torch.broadcast_shapes(prefix, *dense_prefixes)
+    batch_dim = _get_batch_dim(ref)
+    batch_size = broadcast_prefix[batch_dim]
+    shared_dims = {
+        dim: broadcast_prefix[_logical_dim_for_element_dim(ref, dim)]
+        for dim in ref.ragged_dims
+        if any(prefix[_logical_dim_for_element_dim(ref, dim)] != 1 for prefix in shared_prefixes)
+    }
+    replacements = {
+        dim: broadcast_prefix[_logical_dim_for_element_dim(ref, dim)]
+        for dim in ref.ragged_dims
+        if prefix[_logical_dim_for_element_dim(ref, dim)] == 1
+        and broadcast_prefix[_logical_dim_for_element_dim(ref, dim)] != 1
+    }
+    if batch_size == len(ref) and not replacements and not shared_dims:
+        return ref
+
+    shape = ref._physical_shape.expand(batch_size, -1).clone() if len(ref) == 1 else ref._physical_shape.clone()
+    factor = batch_size if len(ref) == 1 else 1
+    logical_shape = list(ref.shape)
+    logical_shape[batch_dim] = batch_size
+    for dim, size in replacements.items():
+        shape[:, dim] = torch.where(shape[:, dim] == 1, size, shape[:, dim])
+        factor *= size
+        logical_shape[_logical_dim_for_element_dim(ref, dim)] = size
+    for dim, size in shared_dims.items():
+        # A shared per-element operand follows ordinary broadcasting for each
+        # sample. Full logical dense operands instead crop their padded axes.
+        torch._assert_async(
+            torch.all((shape[:, dim] == 1) | (shape[:, dim] == size)),
+            "einsum(): shared dense ellipsis dimensions must broadcast with every element",
+        )
+        shape[:, dim] = size
+        logical_shape[_logical_dim_for_element_dim(ref, dim)] = size
+    counts = shape[:, list(ref.ragged_dims)].prod(dim=-1)
+    offsets = F.pad(counts.cumsum(0), (1, 0))
+    if shared_dims:
+        if all(dim in shared_dims for dim in ref.ragged_dims):
+            rows = batch_size
+            for dim in ref.ragged_dims:
+                rows *= shared_dims[dim]
+        else:
+            from .aten_functions import _ragged_reduction_size_binding
+
+            rows = _ragged_reduction_size_binding(counts).shape[0]
+    else:
+        rows = ref.concat.shape[0] * factor
+    placeholder = ref.concat.new_empty(()).expand(rows, *ref.concat.shape[1:])
+    return _packed_with_shape(
+        ref,
+        placeholder,
+        shape,
+        logical_shape,
+        offsets=offsets,
+        permutation=ref._permutation,
+        force_explicit_ragged_dims=ref.ragged_dims,
+    )
+
+
+def _einsum_prefix_values(source: NestedTensor, layout: NestedTensor):
+    r"""Read an operand at the expanded layout's actual packed coordinates."""
+    batch, local = layout._packed_batch_local_indices(device=source.device)
+    coordinates = layout._packed_varying_coords(batch, local, device=source.device)
+    source_batch = torch.zeros_like(batch) if len(source) == 1 else batch
+    shape = source._physical_shape.to(device=source.device).index_select(0, source_batch)
+    source_local = torch.zeros_like(local)
+    for dim, coordinate in zip(layout.ragged_dims, coordinates):
+        size = shape[:, dim]
+        source_local = source_local * size + torch.where(size == 1, 0, coordinate)
+    offsets = source._offsets.to(device=source.device).index_select(0, source_batch)
+    return source.concat.index_select(0, offsets + source_local)
+
+
+def _einsum_static_tail(equation: str, operands: tuple):
+    r"""Contract named static tails while retaining a common packed ellipsis prefix."""
+    from .aten_functions import _packed_with_shape
+    from .nested_tensor import NestedTensor
+    from .ops import _has_same_ragged_structure
+
+    if equation.count("->") != 1:
+        return None
+    inputs, output = equation.split("->")
+    terms = inputs.split(",")
+    if len(terms) != len(operands) or not output.startswith("..."):
+        return None
+    output_labels = output[3:]
+    if output_labels and not output_labels.isalpha():
+        return None
+    labels = [term[3:] if term.startswith("...") else term for term in terms]
+    if any(label and not label.isalpha() for label in labels):
+        return None
+    nested = [(index, operand) for index, operand in enumerate(operands) if isinstance(operand, NestedTensor)]
+    if not nested:
+        return None
+    ref_index, ref = nested[0]
+    prefix_rank = int(ref._physical_shape.size(1)) - len(labels[ref_index])
+    ragged_rank = len(ref.ragged_dims)
+    if any(dim >= prefix_rank for dim in ref.ragged_dims) or _get_batch_dim(ref) >= prefix_rank + 1:
+        return None
+    for index, operand in nested:
+        rank = int(operand._physical_shape.size(1))
+        if (
+            not terms[index].startswith("...")
+            or rank - len(labels[index]) != prefix_rank
+            or operand.batch_first != ref.batch_first
+            or operand.ragged_dims != ref.ragged_dims
+        ):
+            return None
+        if not _has_same_ragged_structure(ref, operand):
+            return None
+    # The packed ellipsis is one row axis plus every logical static-prefix axis.
+    # Read dense ellipses against their ordinary right-aligned logical coordinates, then
+    # gather the actual packed batch/ragged positions from that existing dense storage.
+    logical_prefix_rank = prefix_rank + 1
+    batch_dim = _get_batch_dim(ref)
+    dense_prefixes = {}
+    shared_prefixes = []
+    for index, (term, label, operand) in enumerate(zip(terms, labels, operands)):
+        if isinstance(operand, NestedTensor) or not term.startswith("..."):
+            continue
+        dense_prefix_rank = operand.dim() - len(label)
+        if dense_prefix_rank < 0 or dense_prefix_rank > logical_prefix_rank:
+            return None
+        prefix = tuple(operand.shape[:dense_prefix_rank])
+        if dense_prefix_rank <= prefix_rank:
+            # An ellipsis no wider than the element prefix describes a shared
+            # per-element operand. Insert the configured batch axis explicitly.
+            prefix = (1,) * (prefix_rank - dense_prefix_rank) + prefix
+            prefix = (*prefix[:batch_dim], 1, *prefix[batch_dim:])
+            shared_prefixes.append(prefix)
+        dense_prefixes[index] = prefix
+    layout = _einsum_prefix_layout(ref, prefix_rank, tuple(dense_prefixes.values()), tuple(shared_prefixes))
+    packed_operands = []
+    collapsed = [_get_batch_dim(ref), *(_logical_dim_for_element_dim(ref, dim) for dim in ref.ragged_dims)]
+    static_prefix = [dim for dim in range(logical_prefix_rank) if dim not in collapsed]
+    coordinates = None
+    for index, (term, label, operand) in enumerate(zip(terms, labels, operands)):
+        if isinstance(operand, NestedTensor):
+            # Logical static axes may have been permuted without repacking ragged rows.
+            static = tuple(dim for dim in range(int(operand._physical_shape.size(1))) if dim not in operand.ragged_dims)
+            order = (0, *(1 + operand._static_dims.index(dim) for dim in static))
+            values = operand.concat if layout is ref else _einsum_prefix_values(operand, layout)
+            packed_operands.append(values.permute(order))
+        elif term.startswith("..."):
+            dense_prefix_rank = operand.dim() - len(label)
+            aligned = dense_prefixes[index]
+            tail = tuple(operand.shape[dense_prefix_rank:])
+            order = (*collapsed, *static_prefix, *range(logical_prefix_rank, logical_prefix_rank + len(tail)))
+            dense_values = operand.reshape(*aligned, *tail).permute(order)
+            if all(aligned[dim] == 1 for dim in collapsed):
+                packed_operands.append(dense_values.flatten(0, len(collapsed) - 1))
+                continue
+            if coordinates is None:
+                batch, local = layout._packed_batch_local_indices(device=operand.device, dtype=torch.long)
+                coordinates = (
+                    batch,
+                    *layout._packed_varying_coords(batch, local, device=operand.device, dtype=torch.long),
+                )
+            indices = tuple(
+                coordinate if aligned[dim] != 1 else torch.zeros_like(coordinate)
+                for dim, coordinate in zip(collapsed, coordinates)
+            )
+            # Advanced indexing reads only true packed positions even when the provided
+            # dense prefix is strided; flattening it first could copy all padded positions.
+            packed_operands.append(dense_values[indices])
+        else:
+            packed_operands.append(operand)
+    values = torch.einsum(equation, *packed_operands)
+    ref = layout
+    if (
+        ragged_rank
+        and ref.ragged_dims == tuple(range(ragged_rank))
+        and ref.packed_dim_order == tuple(range(len(ref.packed_dim_order)))
+    ):
+        return ref.packed_with_static_tail(values)
+    # Keep all logical prefix positions and ragged row order. Only fixed prefix extents
+    # may broadcast; named output axes replace the old static tail.
+    prefix_static_dims = tuple(dim for dim in range(prefix_rank) if dim not in ref.ragged_dims)
+    prefix_sizes = values.shape[1 : 1 + len(prefix_static_dims)]
+    tail = values.shape[1 + len(prefix_static_dims) :]
+    replacements = dict(zip(prefix_static_dims, prefix_sizes))
+    metadata, packed_sizes, element_shapes = ref._shape_meta_from_components(
+        keep_dims=range(prefix_rank),
+        suffix=tail,
+        replace_dims=replacements,
+    )
+    permutation = (*ref.ragged_dims, *prefix_static_dims, *range(prefix_rank, prefix_rank + len(tail)))
+    return _packed_with_shape(
+        ref,
+        values,
+        metadata,
+        ref._logical_shape_from_components(keep_dims=range(prefix_rank), suffix=tail, replace_dims=replacements),
+        permutation=permutation,
+        packed_sizes=packed_sizes,
+        element_shapes=element_shapes,
+        preserve_ragged_offsets=True,
+    )
+
+
 def _einsum_packed_fastpath(equation: str, operands: tuple):
-    r"""Handle common batch-aware NestedTensor einsum projections without per-element unpacking."""
+    r"""Handle static-tail contractions and existing batch-aware packed projections."""
+    result = _einsum_static_tail(equation, operands)
+    if result is not None:
+        return result
     if equation == "bli,bli->bl":
         return _einsum_bli_bli_to_bl(*operands)
     if equation == "blqp,blyq->blyp":

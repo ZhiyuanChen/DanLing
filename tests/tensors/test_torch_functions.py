@@ -5033,6 +5033,373 @@ class TestTernaryAutograd:
             assert [tuple(element.shape) for element in output] == [(2, 4), (3, 4)]
 
 
+class TestPackedStaticTailEinsum:
+
+    @staticmethod
+    def _guard():
+        return nested_execution_guard(
+            forbid_iteration=True,
+            forbid_storage_map=True,
+            forbid_eager_fallback=True,
+            forbid_padded_materialization=True,
+            forbid_dense_repack=True,
+        )
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_dense_shared_prefix_expansion_and_vjps(self, device, batch_first):
+        parts = [torch.randn(n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in (1, 4)]
+        source = NestedTensor(parts, ragged_dims=(0,), batch_first=batch_first)
+        weight = torch.randn(4, 3, 2, device=device, dtype=torch.float64, requires_grad=True)
+        references = [torch.einsum("...c,...cd->...d", part, weight) for part in parts]
+        expected = torch.cat(references)
+        cotangent = torch.linspace(-0.8, 1.2, expected.numel(), device=device, dtype=torch.float64).reshape_as(expected)
+        with self._guard():
+            actual = torch.einsum("...c,...cd->...d", source, weight)
+            gradients = torch.autograd.grad(actual.concat, (*parts, weight), cotangent, retain_graph=True)
+        torch.testing.assert_close(actual.element_sizes().cpu(), torch.tensor([[4, 2], [4, 2]]))
+        torch.testing.assert_close(actual.concat, expected)
+        wanted = torch.autograd.grad(expected, (*parts, weight), cotangent)
+        for gradient, reference in zip(gradients, wanted):
+            torch.testing.assert_close(gradient, reference)
+
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("layout", ["sequence", "samples", "pair", "static"])
+    @pytest.mark.parametrize(
+        "equation",
+        [
+            "...c,...cd->...d",
+            "...ab,...bc->...ac",
+            "...ab->...ba",
+            "...aa->...",
+            "...c,...cd,de->...e",
+            "...c,cd->...d",
+        ],
+    )
+    def test_static_tail_values_all_operand_vjps(self, device, dtype, batch_first, layout, equation):
+        shapes, ragged = {
+            "sequence": ([(0,), (2,), (5,)], (0,)),
+            "samples": ([(0, 2), (2, 2), (5, 2)], (0,)),
+            "pair": ([(0, 3), (2, 4), (5, 2)], (0, 1)),
+            "static": ([(2,), (2,), (2,)], ()),
+        }[layout]
+        terms, output_term = equation.split("->")
+        terms = terms.split(",")
+        dimensions = {"a": 2, "b": 3, "c": 3, "d": 4, "e": 2}
+        operands, element_operands, leaves = [], [], []
+        for term in terms:
+            labels = term[3:] if term.startswith("...") else term
+            tail = tuple(dimensions[label] for label in labels)
+            if term.startswith("..."):
+                parts = [torch.randn(*shape, *tail, device=device, dtype=dtype, requires_grad=True) for shape in shapes]
+                operands.append(
+                    NestedTensor(parts, ragged_dims=ragged, batch_first=batch_first, padding_value=-7, mask_value=False)
+                )
+                element_operands.append(parts)
+                leaves.extend(parts)
+            else:
+                values = torch.randn(*tail, device=device, dtype=dtype, requires_grad=True)
+                operands.append(values)
+                element_operands.append([values] * len(shapes))
+                leaves.append(values)
+        references = [
+            torch.einsum(equation, *(parts[index] for parts in element_operands)) for index in range(len(shapes))
+        ]
+        cotangents = [torch.randn_like(value) for value in references]
+        cotangent = NestedTensor(cotangents, ragged_dims=ragged, batch_first=batch_first)
+        with self._guard():
+            actual = torch.einsum(equation, *operands)
+            gradients = torch.autograd.grad((actual * cotangent).sum(), leaves)
+        expected = NestedTensor(references, ragged_dims=ragged, batch_first=batch_first)
+        assert actual.batch_first is batch_first
+        assert actual.ragged_dims == ragged
+        assert actual.packed_dim_order == tuple(range(int(actual.element_sizes().size(1))))
+        assert actual.padding_value == -7 and actual.mask_value is False
+        torch.testing.assert_close(actual.element_sizes(), expected.element_sizes())
+        torch.testing.assert_close(actual.concat, expected.concat)
+        reference_gradients = torch.autograd.grad(
+            sum((value * cot).sum() for value, cot in zip(references, cotangents)), leaves
+        )
+        for gradient, reference in zip(gradients, reference_gradients):
+            torch.testing.assert_close(
+                gradient,
+                reference,
+                atol=1e-5 if dtype == torch.float32 else 1e-12,
+                rtol=1e-5 if dtype == torch.float32 else 1e-10,
+            )
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_shared_dense_ellipsis_preserves_static_prefix(self, device, batch_first):
+        shapes = [(0, 2, 3), (4, 2, 3)]
+        parts = [torch.randn(*shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+        source = NestedTensor(parts, ragged_dims=(0,), batch_first=batch_first)
+        weight = torch.randn(1, 1, 2, 3, 5, device=device, dtype=torch.float64, requires_grad=True)
+        with self._guard():
+            actual = torch.einsum("...c,...cd->...d", source, weight)
+            gradients = torch.autograd.grad(actual.sum(), [*parts, weight])
+        references = [torch.einsum("nsc,scd->nsd", part, weight[0, 0]) for part in parts]
+        expected = NestedTensor(references, ragged_dims=(0,), batch_first=batch_first)
+        torch.testing.assert_close(actual.element_sizes(), expected.element_sizes())
+        torch.testing.assert_close(actual.concat, expected.concat)
+        for gradient, reference in zip(
+            gradients, torch.autograd.grad(sum(part.sum() for part in references), [*parts, weight])
+        ):
+            torch.testing.assert_close(gradient, reference)
+
+    @pytest.mark.parametrize("layout", ["sequence", "pair"])
+    def test_einsum_fullgraph_dynamic_values_and_vjps(self, device, layout):
+        equation = "...c,...cd->...d"
+        ragged = (0,) if layout == "sequence" else (0, 1)
+        compiled = torch.compile(
+            lambda a, av, b, bv: torch.einsum(equation, a.packed_like(av), b.packed_like(bv)).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        for lengths in ((2, 4), (0, 5)):
+            prefix = [(n,) if layout == "sequence" else (n, 2) for n in lengths]
+            a = NestedTensor([torch.empty(*shape, 3, device=device) for shape in prefix], ragged_dims=ragged)
+            b = NestedTensor([torch.empty(*shape, 3, 4, device=device) for shape in prefix], ragged_dims=ragged)
+            av, bv = torch.randn_like(a.concat, requires_grad=True), torch.randn_like(b.concat, requires_grad=True)
+            with self._guard():
+                output = compiled(a, av, b, bv)
+                gradients = torch.autograd.grad(output.sum(), (av, bv))
+            reference = torch.einsum("tc,tcd->td", av, bv)
+            torch.testing.assert_close(output, reference)
+            for actual, expected in zip(gradients, torch.autograd.grad(reference.sum(), (av, bv))):
+                torch.testing.assert_close(actual, expected)
+
+    def test_named_ragged_axis_is_outside_static_tail_path(self, device):
+        values = NestedTensor([torch.randn(2, 3, device=device), torch.randn(4, 3, device=device)], ragged_dims=(0,))
+        with self._guard(), pytest.raises(RuntimeError, match="storage|iteration|unpack|fallback"):
+            torch.einsum("...nc->...c", values)
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("layout", ["sequence", "samples", "pair", "static"])
+    @pytest.mark.parametrize("dense_coordinates", ["batch", "ragged", "batch_ragged"])
+    def test_dense_ellipsis_reads_logical_prefix_and_parameter_vjp(
+        self, device, batch_first, layout, dense_coordinates
+    ):
+        shapes, ragged = {
+            "sequence": ([(0,), (2,), (5,)], (0,)),
+            "samples": ([(0, 2), (2, 2), (5, 2)], (0,)),
+            "pair": ([(0, 3), (2, 4), (5, 2)], (0, 1)),
+            "static": ([(2,), (2,), (2,)], ()),
+        }[layout]
+        parts = [torch.randn(*shape, 3, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+        source = NestedTensor(parts, ragged_dims=ragged, batch_first=batch_first)
+        prefix_rank = len(shapes[0]) + 1
+        batch_axis = 0 if batch_first else 1
+        prefix = list(source.shape[:prefix_rank])
+        for index in range(prefix_rank):
+            if index == batch_axis:
+                if dense_coordinates == "ragged":
+                    prefix[index] = 1
+            else:
+                element_axis = index if index < batch_axis else index - 1
+                if element_axis in ragged and dense_coordinates == "batch":
+                    prefix[index] = 1
+        weight = torch.randn(*prefix, 3, 4, device=device, dtype=torch.float64, requires_grad=True)
+        references = []
+        for index, (part, shape) in enumerate(zip(parts, shapes)):
+            local_weight = weight.select(batch_axis, index if prefix[batch_axis] != 1 else 0)
+            selectors = tuple(
+                slice(0, shape[axis]) if axis in ragged and local_weight.shape[axis] != 1 else slice(None)
+                for axis in range(len(shape))
+            )
+            references.append(torch.einsum("...c,...cd->...d", part, local_weight[selectors]))
+        cotangents = [torch.randn_like(value) for value in references]
+        cotangent = NestedTensor(cotangents, ragged_dims=ragged, batch_first=batch_first)
+        with self._guard():
+            actual = torch.einsum("...c,...cd->...d", source, weight)
+            gradients = torch.autograd.grad((actual * cotangent).sum(), [*parts, weight])
+        expected = NestedTensor(references, ragged_dims=ragged, batch_first=batch_first)
+        torch.testing.assert_close(actual.element_sizes(), expected.element_sizes())
+        torch.testing.assert_close(actual.concat, expected.concat)
+        reference_loss = sum((value * cot).sum() for value, cot in zip(references, cotangents))
+        for actual_gradient, expected_gradient in zip(gradients, torch.autograd.grad(reference_loss, [*parts, weight])):
+            torch.testing.assert_close(actual_gradient, expected_gradient, atol=1e-12, rtol=1e-10)
+
+    def test_dense_ellipsis_invalid_batch_size_raises_ordinary_broadcast_error(self, device):
+        source = NestedTensor([torch.randn(2, 3, device=device), torch.randn(4, 3, device=device)], ragged_dims=(0,))
+        weights = torch.randn(3, 1, 3, 5, device=device)
+        with self._guard(), pytest.raises(RuntimeError, match="broadcast|Shape mismatch"):
+            torch.einsum("...c,...cd->...d", source, weights)
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_dense_batch_ellipsis_fullgraph_values_and_parameter_vjp(self, device, batch_first):
+        compiled = torch.compile(
+            lambda a, av, weight: torch.einsum("...c,...cd->...d", a.packed_like(av), weight).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        for lengths in ((2, 4), (0, 5)):
+            source = NestedTensor(
+                [torch.empty(n, 3, device=device) for n in lengths], ragged_dims=(0,), batch_first=batch_first
+            )
+            values = torch.randn_like(source.concat, requires_grad=True)
+            weight_shape = (2, 1, 3, 4) if batch_first else (1, 2, 3, 4)
+            weights = torch.randn(*weight_shape, device=device, requires_grad=True)
+            with self._guard():
+                actual = compiled(source, values, weights)
+                actual_gradients = torch.autograd.grad(actual.sum(), (values, weights))
+            parts = values.split(lengths)
+            references = [
+                torch.einsum("xc,cd->xd", part, weights[index, 0] if batch_first else weights[0, index])
+                for index, part in enumerate(parts)
+            ]
+            reference = torch.cat(references)
+            torch.testing.assert_close(actual, reference)
+            for gradient, expected in zip(actual_gradients, torch.autograd.grad(reference.sum(), (values, weights))):
+                torch.testing.assert_close(gradient, expected)
+
+    def test_zero_static_contraction_and_empty_batch(self, device):
+        parts = [torch.empty(n, 0, device=device, requires_grad=True) for n in (0, 4)]
+        source = NestedTensor(parts, ragged_dims=(0,))
+        weight = torch.empty(0, 3, device=device, requires_grad=True)
+        with self._guard():
+            output = torch.einsum("...c,cd->...d", source, weight)
+            gradients = torch.autograd.grad(output.sum(), [*parts, weight])
+        torch.testing.assert_close(output.concat, torch.zeros(4, 3, device=device))
+        for gradient in gradients:
+            assert gradient.numel() == 0
+        empty = NestedTensor._from_packed(
+            torch.empty(0, 3, device=device),
+            torch.tensor([0]),
+            torch.empty(0, 2, dtype=torch.long),
+            permutation=(0, 1),
+            ragged_dims=(0,),
+            outer_size=torch.Size((0, 0, 3)),
+            packed_sizes=(),
+            element_shapes=(),
+            validate=False,
+        )
+        with self._guard():
+            output = torch.einsum("...c,cd->...d", empty, torch.empty(3, 4, device=device))
+        assert output.shape == (0, 0, 4) and output.concat.shape == (0, 4)
+
+    def test_fake_static_tail_preserves_metadata_without_data_reads(
+        self,
+    ):
+        from torch._subclasses.fake_tensor import FakeTensorMode
+
+        source = NestedTensor([torch.empty(2, 3), torch.empty(4, 3)], ragged_dims=(0,))
+        with FakeTensorMode() as mode, self._guard():
+            fake = mode.from_tensor(source)
+            weights = torch.empty(3, 5, device="cpu")
+            output = torch.einsum("...c,cd->...d", fake, weights)
+        assert output.shape == (2, 4, 5) and output.concat.shape == (6, 5)
+        assert output.ragged_dims == (0,)
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("layout", ["sample_first", "permuted_static", "permuted_ragged"])
+    @pytest.mark.parametrize("dense_weight", [False, True])
+    def test_mapped_static_axes_keep_ragged_row_order_and_parameter_vjps(
+        self, device, batch_first, layout, dense_weight
+    ):
+        shapes, ragged = {
+            "sample_first": ([(2, 0), (2, 4)], (1,)),
+            "permuted_static": ([(0, 2), (4, 2)], (0,)),
+            "permuted_ragged": ([(2, 0), (2, 4)], (1, 0)),
+        }[layout]
+        parts = [torch.randn(*shape, 3, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+        if layout == "permuted_static":
+            source = NestedTensor(
+                [part.transpose(-1, -2) for part in parts], ragged_dims=ragged, batch_first=batch_first
+            )
+            batch_axis = 0 if batch_first else 1
+            physical_order = (0, 2, 1)
+            logical = [dim if dim < batch_axis else dim + 1 for dim in physical_order]
+            logical.insert(batch_axis, batch_axis)
+            source = source.permute(*logical)
+            assert source.packed_dim_order != (0, 1, 2)
+        else:
+            source = NestedTensor(parts, ragged_dims=ragged, batch_first=batch_first)
+        if dense_weight:
+            batch_axis = 0 if batch_first else 1
+            prefix = [1] * 3
+            prefix[batch_axis] = len(parts)
+            weights = torch.randn(*prefix, 3, 4, device=device, dtype=torch.float64, requires_grad=True)
+            weight_parts = [weights.select(batch_axis, index).reshape(3, 4) for index in range(len(parts))]
+            leaves = [*parts, weights]
+        else:
+            weight_parts = [
+                torch.randn(*shape, 3, 4, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes
+            ]
+            weights = NestedTensor(weight_parts, ragged_dims=ragged, batch_first=batch_first)
+            leaves = [*parts, *weight_parts]
+        references = [torch.einsum("...c,...cd->...d", part, weight) for part, weight in zip(parts, weight_parts)]
+        cotangents = [torch.randn_like(value) for value in references]
+        cotangent = NestedTensor(cotangents, ragged_dims=ragged, batch_first=batch_first)
+        with self._guard():
+            output = torch.einsum("...c,...cd->...d", source, weights)
+            gradients = torch.autograd.grad((output * cotangent).sum(), leaves)
+        expected = NestedTensor(references, ragged_dims=ragged, batch_first=batch_first)
+        assert output.ragged_dims == ragged and output.batch_first is batch_first
+        torch.testing.assert_close(output.element_sizes(), expected.element_sizes())
+        torch.testing.assert_close(output.concat, expected.concat)
+        reference = sum((value * cot).sum() for value, cot in zip(references, cotangents))
+        for gradient, expected_gradient in zip(gradients, torch.autograd.grad(reference, leaves)):
+            torch.testing.assert_close(gradient, expected_gradient, atol=1e-12, rtol=1e-10)
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_nonleading_ragged_fullgraph_values_and_parameter_vjps(self, device, batch_first):
+        compiled = torch.compile(
+            lambda a, av, b, bv: torch.einsum("...c,...cd->...d", a.packed_like(av), b.packed_like(bv)).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        for lengths in ((2, 4), (0, 5)):
+            a = NestedTensor(
+                [torch.empty(2, n, 3, device=device) for n in lengths], ragged_dims=(1,), batch_first=batch_first
+            )
+            b = NestedTensor(
+                [torch.empty(2, n, 3, 4, device=device) for n in lengths], ragged_dims=(1,), batch_first=batch_first
+            )
+            av, bv = torch.randn_like(a.concat, requires_grad=True), torch.randn_like(b.concat, requires_grad=True)
+            with self._guard():
+                output = compiled(a, av, b, bv)
+                gradients = torch.autograd.grad(output.sum(), (av, bv))
+            reference = torch.einsum("tsc,tscd->tsd", av, bv)
+            torch.testing.assert_close(output, reference)
+            for actual, expected in zip(gradients, torch.autograd.grad(reference.sum(), (av, bv))):
+                torch.testing.assert_close(actual, expected)
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_permuted_static_fullgraph_values_and_dense_parameter_vjps(self, device, batch_first):
+        compiled = torch.compile(
+            lambda a, av, w: torch.einsum("...c,...cd->...d", a.packed_like(av), w).concat,
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        for lengths in ((2, 4), (0, 5)):
+            source = NestedTensor(
+                [torch.empty(n, 3, 2, device=device) for n in lengths], ragged_dims=(0,), batch_first=batch_first
+            )
+            source = source.permute(0, 1, 3, 2)
+            assert source.packed_dim_order == (0, 2, 1)
+            values = torch.randn_like(source.concat, requires_grad=True)
+            batch_axis = 0 if batch_first else 1
+            prefix = [1, 1, 1]
+            prefix[batch_axis] = 2
+            weights = torch.randn(*prefix, 3, 4, device=device, requires_grad=True)
+            with self._guard():
+                output = compiled(source, values, weights)
+                gradients = torch.autograd.grad(output.sum(), (values, weights))
+            parts = values.split(lengths)
+            references = [
+                torch.einsum("nsc,cd->nsd", part.transpose(1, 2), weights.select(batch_axis, index).reshape(3, 4))
+                for index, part in enumerate(parts)
+            ]
+            reference = torch.cat(references)
+            torch.testing.assert_close(output, reference)
+            for gradient, expected in zip(gradients, torch.autograd.grad(reference.sum(), (values, weights))):
+                torch.testing.assert_close(gradient, expected)
+
+
 class TestPackedMixedBroadcast:
 
     @staticmethod
