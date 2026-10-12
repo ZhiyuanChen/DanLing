@@ -3725,7 +3725,23 @@ class NestedTensor(torch.Tensor):
                 "single non-leading ragged dimension, "
                 f"got ragged_dims={self._ragged_dims} and packed_dim_order={self._permutation}"
             )
-        if packed_values.shape[0] != self.concat.shape[0]:
+        if _is_compiling():
+            from torch.fx.experimental.symbolic_shapes import statically_known_true
+
+            if not statically_known_true(packed_values.shape[0] == self.concat.shape[0]):
+                # An opaque CPU comparison preserves the check through AOT and keeps errors on the host.
+                packed_length = torch.scalar_tensor(packed_values.shape[0], dtype=torch.int64, device="cpu")
+                reference_length = torch.scalar_tensor(self.concat.shape[0], dtype=torch.int64, device="cpu")
+                torch._assert_async(
+                    _metadata_tensors_equal(packed_length, reference_length),
+                    "packed_values leading dimension must equal the reference packed length",
+                )
+        elif _is_fake_tensor(packed_values):
+            torch._check_value(
+                packed_values.shape[0] == self.concat.shape[0],
+                lambda: "packed_values leading dimension must equal the reference packed length",
+            )
+        elif packed_values.shape[0] != self.concat.shape[0]:
             raise ValueError(
                 "packed_values leading dimension must equal the reference packed length, "
                 f"got {packed_values.shape[0]} and expected {self.concat.shape[0]}"

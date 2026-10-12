@@ -1327,6 +1327,32 @@ class TestPackedWithStaticTail:
         assert_close(loss, packed_values.detach().square().sum())
         assert_close(packed_values.grad, 2 * packed_values)
 
+    @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("tail_width", [0, 3])
+    def test_packed_with_static_tail_fullgraph_validates_dynamic_packed_length(self, device, backend, tail_width):
+        torch.compiler.reset()
+        reference = NestedTensor([torch.empty(2, device=device), torch.empty(4, device=device)])
+
+        def select_and_rebuild(ref, values, mask):
+            return ref.packed_with_static_tail(values[mask]).concat.square().sum()
+
+        with torch._dynamo.config.patch(capture_dynamic_output_shape_ops=True):
+            compiled = torch.compile(select_and_rebuild, backend=backend, fullgraph=True, dynamic=True)
+            for requires_grad in (True, False):
+                values = torch.randn(8, tail_width, device=device, requires_grad=requires_grad)
+                mask = torch.arange(8, device=device) < 6
+                loss = compiled(reference, values, mask)
+                expected = values[mask].square().sum()
+
+                assert_close(loss, expected)
+                if requires_grad:
+                    gradient = torch.autograd.grad(loss, values)[0]
+                    assert_close(gradient, torch.autograd.grad(expected, values)[0])
+                for length in (5, 7):
+                    with pytest.raises(RuntimeError, match="reference packed length"):
+                        compiled(reference, values, torch.arange(8, device=device) < length)
+
 
 class TestPackedWithLengths:
 
