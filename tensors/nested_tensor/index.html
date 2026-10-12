@@ -9915,7 +9915,23 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
 <span class="normal">5849</span>
 <span class="normal">5850</span>
 <span class="normal">5851</span>
-<span class="normal">5852</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">NestedTensor</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">):</span>
+<span class="normal">5852</span>
+<span class="normal">5853</span>
+<span class="normal">5854</span>
+<span class="normal">5855</span>
+<span class="normal">5856</span>
+<span class="normal">5857</span>
+<span class="normal">5858</span>
+<span class="normal">5859</span>
+<span class="normal">5860</span>
+<span class="normal">5861</span>
+<span class="normal">5862</span>
+<span class="normal">5863</span>
+<span class="normal">5864</span>
+<span class="normal">5865</span>
+<span class="normal">5866</span>
+<span class="normal">5867</span>
+<span class="normal">5868</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">NestedTensor</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    A container for variable-length tensors that enables efficient batch operations.</span>
 
@@ -13497,7 +13513,23 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
                 <span class="s2">"single non-leading ragged dimension, "</span>
                 <span class="sa">f</span><span class="s2">"got ragged_dims=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_ragged_dims</span><span class="si">}</span><span class="s2"> and packed_dim_order=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_permutation</span><span class="si">}</span><span class="s2">"</span>
             <span class="p">)</span>
-        <span class="k">if</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]:</span>
+        <span class="k">if</span> <span class="n">_is_compiling</span><span class="p">():</span>
+            <span class="kn">from</span><span class="w"> </span><span class="nn">torch.fx.experimental.symbolic_shapes</span><span class="w"> </span><span class="kn">import</span> <span class="n">statically_known_true</span>
+
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">statically_known_true</span><span class="p">(</span><span class="n">packed_values</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]):</span>
+                <span class="c1"># An opaque CPU comparison preserves the check through AOT and keeps errors on the host.</span>
+                <span class="n">packed_length</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">scalar_tensor</span><span class="p">(</span><span class="n">packed_values</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">"cpu"</span><span class="p">)</span>
+                <span class="n">reference_length</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">scalar_tensor</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">"cpu"</span><span class="p">)</span>
+                <span class="n">torch</span><span class="o">.</span><span class="n">_assert_async</span><span class="p">(</span>
+                    <span class="n">_metadata_tensors_equal</span><span class="p">(</span><span class="n">packed_length</span><span class="p">,</span> <span class="n">reference_length</span><span class="p">),</span>
+                    <span class="s2">"packed_values leading dimension must equal the reference packed length"</span><span class="p">,</span>
+                <span class="p">)</span>
+        <span class="k">elif</span> <span class="n">_is_fake_tensor</span><span class="p">(</span><span class="n">packed_values</span><span class="p">):</span>
+            <span class="n">torch</span><span class="o">.</span><span class="n">_check_value</span><span class="p">(</span>
+                <span class="n">packed_values</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span>
+                <span class="k">lambda</span><span class="p">:</span> <span class="s2">"packed_values leading dimension must equal the reference packed length"</span><span class="p">,</span>
+            <span class="p">)</span>
+        <span class="k">elif</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]:</span>
             <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
                 <span class="s2">"packed_values leading dimension must equal the reference packed length, "</span>
                 <span class="sa">f</span><span class="s2">"got </span><span class="si">{</span><span class="n">packed_values</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2"> and expected </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2">"</span>
@@ -18885,7 +18917,23 @@ mismatched packed leading dimension.</p>
 <span class="normal">3793</span>
 <span class="normal">3794</span>
 <span class="normal">3795</span>
-<span class="normal">3796</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">packed_with_static_tail</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">packed_values</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
+<span class="normal">3796</span>
+<span class="normal">3797</span>
+<span class="normal">3798</span>
+<span class="normal">3799</span>
+<span class="normal">3800</span>
+<span class="normal">3801</span>
+<span class="normal">3802</span>
+<span class="normal">3803</span>
+<span class="normal">3804</span>
+<span class="normal">3805</span>
+<span class="normal">3806</span>
+<span class="normal">3807</span>
+<span class="normal">3808</span>
+<span class="normal">3809</span>
+<span class="normal">3810</span>
+<span class="normal">3811</span>
+<span class="normal">3812</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">packed_with_static_tail</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">packed_values</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Wrap packed values after replacing this tensor's static tail.</span>
 
 <span class="sd">    This operation preserves every declared ragged level and replaces all</span>
@@ -18956,7 +19004,23 @@ mismatched packed leading dimension.</p>
             <span class="s2">"single non-leading ragged dimension, "</span>
             <span class="sa">f</span><span class="s2">"got ragged_dims=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_ragged_dims</span><span class="si">}</span><span class="s2"> and packed_dim_order=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_permutation</span><span class="si">}</span><span class="s2">"</span>
         <span class="p">)</span>
-    <span class="k">if</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]:</span>
+    <span class="k">if</span> <span class="n">_is_compiling</span><span class="p">():</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">torch.fx.experimental.symbolic_shapes</span><span class="w"> </span><span class="kn">import</span> <span class="n">statically_known_true</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">statically_known_true</span><span class="p">(</span><span class="n">packed_values</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]):</span>
+            <span class="c1"># An opaque CPU comparison preserves the check through AOT and keeps errors on the host.</span>
+            <span class="n">packed_length</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">scalar_tensor</span><span class="p">(</span><span class="n">packed_values</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">"cpu"</span><span class="p">)</span>
+            <span class="n">reference_length</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">scalar_tensor</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">"cpu"</span><span class="p">)</span>
+            <span class="n">torch</span><span class="o">.</span><span class="n">_assert_async</span><span class="p">(</span>
+                <span class="n">_metadata_tensors_equal</span><span class="p">(</span><span class="n">packed_length</span><span class="p">,</span> <span class="n">reference_length</span><span class="p">),</span>
+                <span class="s2">"packed_values leading dimension must equal the reference packed length"</span><span class="p">,</span>
+            <span class="p">)</span>
+    <span class="k">elif</span> <span class="n">_is_fake_tensor</span><span class="p">(</span><span class="n">packed_values</span><span class="p">):</span>
+        <span class="n">torch</span><span class="o">.</span><span class="n">_check_value</span><span class="p">(</span>
+            <span class="n">packed_values</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span>
+            <span class="k">lambda</span><span class="p">:</span> <span class="s2">"packed_values leading dimension must equal the reference packed length"</span><span class="p">,</span>
+        <span class="p">)</span>
+    <span class="k">elif</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
             <span class="s2">"packed_values leading dimension must equal the reference packed length, "</span>
             <span class="sa">f</span><span class="s2">"got </span><span class="si">{</span><span class="n">packed_values</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2"> and expected </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2">"</span>
@@ -19193,23 +19257,7 @@ or does not sum to the packed leading dimension.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3798</span>
-<span class="normal">3799</span>
-<span class="normal">3800</span>
-<span class="normal">3801</span>
-<span class="normal">3802</span>
-<span class="normal">3803</span>
-<span class="normal">3804</span>
-<span class="normal">3805</span>
-<span class="normal">3806</span>
-<span class="normal">3807</span>
-<span class="normal">3808</span>
-<span class="normal">3809</span>
-<span class="normal">3810</span>
-<span class="normal">3811</span>
-<span class="normal">3812</span>
-<span class="normal">3813</span>
-<span class="normal">3814</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3814</span>
 <span class="normal">3815</span>
 <span class="normal">3816</span>
 <span class="normal">3817</span>
@@ -19323,7 +19371,23 @@ or does not sum to the packed leading dimension.</p>
 <span class="normal">3925</span>
 <span class="normal">3926</span>
 <span class="normal">3927</span>
-<span class="normal">3928</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">packed_with_lengths</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">packed_values</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">lengths</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
+<span class="normal">3928</span>
+<span class="normal">3929</span>
+<span class="normal">3930</span>
+<span class="normal">3931</span>
+<span class="normal">3932</span>
+<span class="normal">3933</span>
+<span class="normal">3934</span>
+<span class="normal">3935</span>
+<span class="normal">3936</span>
+<span class="normal">3937</span>
+<span class="normal">3938</span>
+<span class="normal">3939</span>
+<span class="normal">3940</span>
+<span class="normal">3941</span>
+<span class="normal">3942</span>
+<span class="normal">3943</span>
+<span class="normal">3944</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">packed_with_lengths</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">packed_values</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">lengths</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Wrap packed values with new leading ragged lengths.</span>
 
 <span class="sd">    ``lengths`` defines one canonical leading ragged dimension and</span>
@@ -19623,23 +19687,7 @@ dimension.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3930</span>
-<span class="normal">3931</span>
-<span class="normal">3932</span>
-<span class="normal">3933</span>
-<span class="normal">3934</span>
-<span class="normal">3935</span>
-<span class="normal">3936</span>
-<span class="normal">3937</span>
-<span class="normal">3938</span>
-<span class="normal">3939</span>
-<span class="normal">3940</span>
-<span class="normal">3941</span>
-<span class="normal">3942</span>
-<span class="normal">3943</span>
-<span class="normal">3944</span>
-<span class="normal">3945</span>
-<span class="normal">3946</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3946</span>
 <span class="normal">3947</span>
 <span class="normal">3948</span>
 <span class="normal">3949</span>
@@ -19777,7 +19825,23 @@ dimension.</p>
 <span class="normal">4081</span>
 <span class="normal">4082</span>
 <span class="normal">4083</span>
-<span class="normal">4084</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">packed_with_square_lengths</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">packed_values</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">lengths</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
+<span class="normal">4084</span>
+<span class="normal">4085</span>
+<span class="normal">4086</span>
+<span class="normal">4087</span>
+<span class="normal">4088</span>
+<span class="normal">4089</span>
+<span class="normal">4090</span>
+<span class="normal">4091</span>
+<span class="normal">4092</span>
+<span class="normal">4093</span>
+<span class="normal">4094</span>
+<span class="normal">4095</span>
+<span class="normal">4096</span>
+<span class="normal">4097</span>
+<span class="normal">4098</span>
+<span class="normal">4099</span>
+<span class="normal">4100</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">packed_with_square_lengths</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">packed_values</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">lengths</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Wrap packed values as canonical square ragged elements.</span>
 
 <span class="sd">    ``lengths`` defines two canonical ragged dimensions with equal sizes,</span>
@@ -20068,23 +20132,7 @@ its autograd history directly.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4086</span>
-<span class="normal">4087</span>
-<span class="normal">4088</span>
-<span class="normal">4089</span>
-<span class="normal">4090</span>
-<span class="normal">4091</span>
-<span class="normal">4092</span>
-<span class="normal">4093</span>
-<span class="normal">4094</span>
-<span class="normal">4095</span>
-<span class="normal">4096</span>
-<span class="normal">4097</span>
-<span class="normal">4098</span>
-<span class="normal">4099</span>
-<span class="normal">4100</span>
-<span class="normal">4101</span>
-<span class="normal">4102</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4102</span>
 <span class="normal">4103</span>
 <span class="normal">4104</span>
 <span class="normal">4105</span>
@@ -20213,7 +20261,23 @@ its autograd history directly.</p>
 <span class="normal">4228</span>
 <span class="normal">4229</span>
 <span class="normal">4230</span>
-<span class="normal">4231</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">packed_with_rectangular_lengths</span><span class="p">(</span>
+<span class="normal">4231</span>
+<span class="normal">4232</span>
+<span class="normal">4233</span>
+<span class="normal">4234</span>
+<span class="normal">4235</span>
+<span class="normal">4236</span>
+<span class="normal">4237</span>
+<span class="normal">4238</span>
+<span class="normal">4239</span>
+<span class="normal">4240</span>
+<span class="normal">4241</span>
+<span class="normal">4242</span>
+<span class="normal">4243</span>
+<span class="normal">4244</span>
+<span class="normal">4245</span>
+<span class="normal">4246</span>
+<span class="normal">4247</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">packed_with_rectangular_lengths</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span>
     <span class="n">packed_values</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>
     <span class="n">row_lengths</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>
@@ -20464,23 +20528,7 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4233</span>
-<span class="normal">4234</span>
-<span class="normal">4235</span>
-<span class="normal">4236</span>
-<span class="normal">4237</span>
-<span class="normal">4238</span>
-<span class="normal">4239</span>
-<span class="normal">4240</span>
-<span class="normal">4241</span>
-<span class="normal">4242</span>
-<span class="normal">4243</span>
-<span class="normal">4244</span>
-<span class="normal">4245</span>
-<span class="normal">4246</span>
-<span class="normal">4247</span>
-<span class="normal">4248</span>
-<span class="normal">4249</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4249</span>
 <span class="normal">4250</span>
 <span class="normal">4251</span>
 <span class="normal">4252</span>
@@ -20537,7 +20585,23 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 <span class="normal">4303</span>
 <span class="normal">4304</span>
 <span class="normal">4305</span>
-<span class="normal">4306</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">nested_like</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tensor</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">strict</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">NestedTensor</span><span class="p">:</span>
+<span class="normal">4306</span>
+<span class="normal">4307</span>
+<span class="normal">4308</span>
+<span class="normal">4309</span>
+<span class="normal">4310</span>
+<span class="normal">4311</span>
+<span class="normal">4312</span>
+<span class="normal">4313</span>
+<span class="normal">4314</span>
+<span class="normal">4315</span>
+<span class="normal">4316</span>
+<span class="normal">4317</span>
+<span class="normal">4318</span>
+<span class="normal">4319</span>
+<span class="normal">4320</span>
+<span class="normal">4321</span>
+<span class="normal">4322</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">nested_like</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tensor</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">strict</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">NestedTensor</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    Create a new `NestedTensor` from a `Tensor`.</span>
 <span class="sd">    The newly created `NestedTensor` will have the same shape as current `NestedTensor`.</span>
@@ -20650,22 +20714,22 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4325</span>
-<span class="normal">4326</span>
-<span class="normal">4327</span>
-<span class="normal">4328</span>
-<span class="normal">4329</span>
-<span class="normal">4330</span>
-<span class="normal">4331</span>
-<span class="normal">4332</span>
-<span class="normal">4333</span>
-<span class="normal">4334</span>
-<span class="normal">4335</span>
-<span class="normal">4336</span>
-<span class="normal">4337</span>
-<span class="normal">4338</span>
-<span class="normal">4339</span>
-<span class="normal">4340</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">to_torch_nested</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tensor</span><span class="p">:</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4341</span>
+<span class="normal">4342</span>
+<span class="normal">4343</span>
+<span class="normal">4344</span>
+<span class="normal">4345</span>
+<span class="normal">4346</span>
+<span class="normal">4347</span>
+<span class="normal">4348</span>
+<span class="normal">4349</span>
+<span class="normal">4350</span>
+<span class="normal">4351</span>
+<span class="normal">4352</span>
+<span class="normal">4353</span>
+<span class="normal">4354</span>
+<span class="normal">4355</span>
+<span class="normal">4356</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">to_torch_nested</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tensor</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    Create a `torch.nested.nested_tensor` object from `self`.</span>
 
@@ -20705,11 +20769,11 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4342</span>
-<span class="normal">4343</span>
-<span class="normal">4344</span>
-<span class="normal">4345</span>
-<span class="normal">4346</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">unbind</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Tensor</span><span class="p">,</span> <span class="o">...</span><span class="p">]:</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4358</span>
+<span class="normal">4359</span>
+<span class="normal">4360</span>
+<span class="normal">4361</span>
+<span class="normal">4362</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">unbind</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Tensor</span><span class="p">,</span> <span class="o">...</span><span class="p">]:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    Unbind the NestedTensor.</span>
 <span class="sd">    """</span>
@@ -20738,23 +20802,7 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4748</span>
-<span class="normal">4749</span>
-<span class="normal">4750</span>
-<span class="normal">4751</span>
-<span class="normal">4752</span>
-<span class="normal">4753</span>
-<span class="normal">4754</span>
-<span class="normal">4755</span>
-<span class="normal">4756</span>
-<span class="normal">4757</span>
-<span class="normal">4758</span>
-<span class="normal">4759</span>
-<span class="normal">4760</span>
-<span class="normal">4761</span>
-<span class="normal">4762</span>
-<span class="normal">4763</span>
-<span class="normal">4764</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4764</span>
 <span class="normal">4765</span>
 <span class="normal">4766</span>
 <span class="normal">4767</span>
@@ -20879,7 +20927,23 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 <span class="normal">4886</span>
 <span class="normal">4887</span>
 <span class="normal">4888</span>
-<span class="normal">4889</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__getitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">index</span><span class="p">:</span> <span class="n">_Index</span> <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">_Index</span><span class="p">,</span> <span class="o">...</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">Tensor</span> <span class="o">|</span> <span class="n">NestedTensor</span><span class="p">:</span>
+<span class="normal">4889</span>
+<span class="normal">4890</span>
+<span class="normal">4891</span>
+<span class="normal">4892</span>
+<span class="normal">4893</span>
+<span class="normal">4894</span>
+<span class="normal">4895</span>
+<span class="normal">4896</span>
+<span class="normal">4897</span>
+<span class="normal">4898</span>
+<span class="normal">4899</span>
+<span class="normal">4900</span>
+<span class="normal">4901</span>
+<span class="normal">4902</span>
+<span class="normal">4903</span>
+<span class="normal">4904</span>
+<span class="normal">4905</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__getitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">index</span><span class="p">:</span> <span class="n">_Index</span> <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">_Index</span><span class="p">,</span> <span class="o">...</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">Tensor</span> <span class="o">|</span> <span class="n">NestedTensor</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Retrieve element(s) by index, slice, list, tuple, or tensor mask."""</span>
     <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">index</span><span class="p">,</span> <span class="nb">int</span><span class="p">):</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_storage</span><span class="p">[</span><span class="n">index</span><span class="p">]</span>
@@ -21109,23 +21173,7 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4891</span>
-<span class="normal">4892</span>
-<span class="normal">4893</span>
-<span class="normal">4894</span>
-<span class="normal">4895</span>
-<span class="normal">4896</span>
-<span class="normal">4897</span>
-<span class="normal">4898</span>
-<span class="normal">4899</span>
-<span class="normal">4900</span>
-<span class="normal">4901</span>
-<span class="normal">4902</span>
-<span class="normal">4903</span>
-<span class="normal">4904</span>
-<span class="normal">4905</span>
-<span class="normal">4906</span>
-<span class="normal">4907</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4907</span>
 <span class="normal">4908</span>
 <span class="normal">4909</span>
 <span class="normal">4910</span>
@@ -21278,7 +21326,23 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 <span class="normal">5057</span>
 <span class="normal">5058</span>
 <span class="normal">5059</span>
-<span class="normal">5060</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__setitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">index</span><span class="p">:</span> <span class="n">_Index</span> <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">_Index</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span> <span class="n">value</span><span class="p">:</span> <span class="n">Tensor</span> <span class="o">|</span> <span class="nb">int</span> <span class="o">|</span> <span class="nb">float</span> <span class="o">|</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">5060</span>
+<span class="normal">5061</span>
+<span class="normal">5062</span>
+<span class="normal">5063</span>
+<span class="normal">5064</span>
+<span class="normal">5065</span>
+<span class="normal">5066</span>
+<span class="normal">5067</span>
+<span class="normal">5068</span>
+<span class="normal">5069</span>
+<span class="normal">5070</span>
+<span class="normal">5071</span>
+<span class="normal">5072</span>
+<span class="normal">5073</span>
+<span class="normal">5074</span>
+<span class="normal">5075</span>
+<span class="normal">5076</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__setitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">index</span><span class="p">:</span> <span class="n">_Index</span> <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">_Index</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span> <span class="n">value</span><span class="p">:</span> <span class="n">Tensor</span> <span class="o">|</span> <span class="nb">int</span> <span class="o">|</span> <span class="nb">float</span> <span class="o">|</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    Set values in the NestedTensor at the specified index.</span>
 
@@ -21472,24 +21536,24 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5274</span>
-<span class="normal">5275</span>
-<span class="normal">5276</span>
-<span class="normal">5277</span>
-<span class="normal">5278</span>
-<span class="normal">5279</span>
-<span class="normal">5280</span>
-<span class="normal">5281</span>
-<span class="normal">5282</span>
-<span class="normal">5283</span>
-<span class="normal">5284</span>
-<span class="normal">5285</span>
-<span class="normal">5286</span>
-<span class="normal">5287</span>
-<span class="normal">5288</span>
-<span class="normal">5289</span>
-<span class="normal">5290</span>
-<span class="normal">5291</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">__copy__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5290</span>
+<span class="normal">5291</span>
+<span class="normal">5292</span>
+<span class="normal">5293</span>
+<span class="normal">5294</span>
+<span class="normal">5295</span>
+<span class="normal">5296</span>
+<span class="normal">5297</span>
+<span class="normal">5298</span>
+<span class="normal">5299</span>
+<span class="normal">5300</span>
+<span class="normal">5301</span>
+<span class="normal">5302</span>
+<span class="normal">5303</span>
+<span class="normal">5304</span>
+<span class="normal">5305</span>
+<span class="normal">5306</span>
+<span class="normal">5307</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">__copy__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Shallow copy: new NestedTensor sharing underlying tensor data."""</span>
     <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="p">,</span>
@@ -21531,28 +21595,28 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5293</span>
-<span class="normal">5294</span>
-<span class="normal">5295</span>
-<span class="normal">5296</span>
-<span class="normal">5297</span>
-<span class="normal">5298</span>
-<span class="normal">5299</span>
-<span class="normal">5300</span>
-<span class="normal">5301</span>
-<span class="normal">5302</span>
-<span class="normal">5303</span>
-<span class="normal">5304</span>
-<span class="normal">5305</span>
-<span class="normal">5306</span>
-<span class="normal">5307</span>
-<span class="normal">5308</span>
-<span class="normal">5309</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5309</span>
 <span class="normal">5310</span>
 <span class="normal">5311</span>
 <span class="normal">5312</span>
 <span class="normal">5313</span>
-<span class="normal">5314</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">__deepcopy__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">memo</span><span class="p">):</span>
+<span class="normal">5314</span>
+<span class="normal">5315</span>
+<span class="normal">5316</span>
+<span class="normal">5317</span>
+<span class="normal">5318</span>
+<span class="normal">5319</span>
+<span class="normal">5320</span>
+<span class="normal">5321</span>
+<span class="normal">5322</span>
+<span class="normal">5323</span>
+<span class="normal">5324</span>
+<span class="normal">5325</span>
+<span class="normal">5326</span>
+<span class="normal">5327</span>
+<span class="normal">5328</span>
+<span class="normal">5329</span>
+<span class="normal">5330</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">__deepcopy__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">memo</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Deep copy: clones all tensor data."""</span>
     <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">clone</span><span class="p">(),</span>
@@ -21655,23 +21719,7 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5320</span>
-<span class="normal">5321</span>
-<span class="normal">5322</span>
-<span class="normal">5323</span>
-<span class="normal">5324</span>
-<span class="normal">5325</span>
-<span class="normal">5326</span>
-<span class="normal">5327</span>
-<span class="normal">5328</span>
-<span class="normal">5329</span>
-<span class="normal">5330</span>
-<span class="normal">5331</span>
-<span class="normal">5332</span>
-<span class="normal">5333</span>
-<span class="normal">5334</span>
-<span class="normal">5335</span>
-<span class="normal">5336</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5336</span>
 <span class="normal">5337</span>
 <span class="normal">5338</span>
 <span class="normal">5339</span>
@@ -21688,7 +21736,23 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 <span class="normal">5350</span>
 <span class="normal">5351</span>
 <span class="normal">5352</span>
-<span class="normal">5353</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">all</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">keepdim</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tensor</span><span class="p">:</span>
+<span class="normal">5353</span>
+<span class="normal">5354</span>
+<span class="normal">5355</span>
+<span class="normal">5356</span>
+<span class="normal">5357</span>
+<span class="normal">5358</span>
+<span class="normal">5359</span>
+<span class="normal">5360</span>
+<span class="normal">5361</span>
+<span class="normal">5362</span>
+<span class="normal">5363</span>
+<span class="normal">5364</span>
+<span class="normal">5365</span>
+<span class="normal">5366</span>
+<span class="normal">5367</span>
+<span class="normal">5368</span>
+<span class="normal">5369</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">all</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">keepdim</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tensor</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    Tests if all elements in NestedTensor evaluate to True.</span>
 
@@ -21759,18 +21823,18 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5355</span>
-<span class="normal">5356</span>
-<span class="normal">5357</span>
-<span class="normal">5358</span>
-<span class="normal">5359</span>
-<span class="normal">5360</span>
-<span class="normal">5361</span>
-<span class="normal">5362</span>
-<span class="normal">5363</span>
-<span class="normal">5364</span>
-<span class="normal">5365</span>
-<span class="normal">5366</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">any</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">keepdim</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tensor</span><span class="p">:</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5371</span>
+<span class="normal">5372</span>
+<span class="normal">5373</span>
+<span class="normal">5374</span>
+<span class="normal">5375</span>
+<span class="normal">5376</span>
+<span class="normal">5377</span>
+<span class="normal">5378</span>
+<span class="normal">5379</span>
+<span class="normal">5380</span>
+<span class="normal">5381</span>
+<span class="normal">5382</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">any</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">keepdim</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tensor</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    Tests if any elements in NestedTensor evaluate to True.</span>
 
@@ -21815,19 +21879,19 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5368</span>
-<span class="normal">5369</span>
-<span class="normal">5370</span>
-<span class="normal">5371</span>
-<span class="normal">5372</span>
-<span class="normal">5373</span>
-<span class="normal">5374</span>
-<span class="normal">5375</span>
-<span class="normal">5376</span>
-<span class="normal">5377</span>
-<span class="normal">5378</span>
-<span class="normal">5379</span>
-<span class="normal">5380</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">dim</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5384</span>
+<span class="normal">5385</span>
+<span class="normal">5386</span>
+<span class="normal">5387</span>
+<span class="normal">5388</span>
+<span class="normal">5389</span>
+<span class="normal">5390</span>
+<span class="normal">5391</span>
+<span class="normal">5392</span>
+<span class="normal">5393</span>
+<span class="normal">5394</span>
+<span class="normal">5395</span>
+<span class="normal">5396</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">dim</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    Number of dimension of the NestedTensor.</span>
 
@@ -21864,15 +21928,15 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5382</span>
-<span class="normal">5383</span>
-<span class="normal">5384</span>
-<span class="normal">5385</span>
-<span class="normal">5386</span>
-<span class="normal">5387</span>
-<span class="normal">5388</span>
-<span class="normal">5389</span>
-<span class="normal">5390</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mean</span><span class="p">(</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5398</span>
+<span class="normal">5399</span>
+<span class="normal">5400</span>
+<span class="normal">5401</span>
+<span class="normal">5402</span>
+<span class="normal">5403</span>
+<span class="normal">5404</span>
+<span class="normal">5405</span>
+<span class="normal">5406</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mean</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span>
     <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">keepdim</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
@@ -21914,16 +21978,16 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5404</span>
-<span class="normal">5405</span>
-<span class="normal">5406</span>
-<span class="normal">5407</span>
-<span class="normal">5408</span>
-<span class="normal">5409</span>
-<span class="normal">5410</span>
-<span class="normal">5411</span>
-<span class="normal">5412</span>
-<span class="normal">5413</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">numel</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5420</span>
+<span class="normal">5421</span>
+<span class="normal">5422</span>
+<span class="normal">5423</span>
+<span class="normal">5424</span>
+<span class="normal">5425</span>
+<span class="normal">5426</span>
+<span class="normal">5427</span>
+<span class="normal">5428</span>
+<span class="normal">5429</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">numel</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    Number of elements in the NestedTensor.</span>
 
@@ -22022,23 +22086,23 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5415</span>
-<span class="normal">5416</span>
-<span class="normal">5417</span>
-<span class="normal">5418</span>
-<span class="normal">5419</span>
-<span class="normal">5420</span>
-<span class="normal">5421</span>
-<span class="normal">5422</span>
-<span class="normal">5423</span>
-<span class="normal">5424</span>
-<span class="normal">5425</span>
-<span class="normal">5426</span>
-<span class="normal">5427</span>
-<span class="normal">5428</span>
-<span class="normal">5429</span>
-<span class="normal">5430</span>
-<span class="normal">5431</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">permute</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">dims</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5431</span>
+<span class="normal">5432</span>
+<span class="normal">5433</span>
+<span class="normal">5434</span>
+<span class="normal">5435</span>
+<span class="normal">5436</span>
+<span class="normal">5437</span>
+<span class="normal">5438</span>
+<span class="normal">5439</span>
+<span class="normal">5440</span>
+<span class="normal">5441</span>
+<span class="normal">5442</span>
+<span class="normal">5443</span>
+<span class="normal">5444</span>
+<span class="normal">5445</span>
+<span class="normal">5446</span>
+<span class="normal">5447</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">permute</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">dims</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    Apply permutation to each tensor in the NestedTensor.</span>
 
@@ -22079,9 +22143,9 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5433</span>
-<span class="normal">5434</span>
-<span class="normal">5435</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">moveaxis</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">destination</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5449</span>
+<span class="normal">5450</span>
+<span class="normal">5451</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">moveaxis</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">destination</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Move per-element dimensions to new positions."""</span>
     <span class="k">return</span> <span class="n">cast</span><span class="p">(</span><span class="n">Self</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">moveaxis</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">destination</span><span class="p">))</span>
 </code></pre></div></td></tr></table></div>
@@ -22108,9 +22172,9 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5437</span>
-<span class="normal">5438</span>
-<span class="normal">5439</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">movedim</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">destination</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5453</span>
+<span class="normal">5454</span>
+<span class="normal">5455</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">movedim</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">destination</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Alias for `moveaxis()`."""</span>
     <span class="k">return</span> <span class="n">cast</span><span class="p">(</span><span class="n">Self</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">movedim</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">destination</span><span class="p">))</span>
 </code></pre></div></td></tr></table></div>
@@ -22137,24 +22201,24 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5445</span>
-<span class="normal">5446</span>
-<span class="normal">5447</span>
-<span class="normal">5448</span>
-<span class="normal">5449</span>
-<span class="normal">5450</span>
-<span class="normal">5451</span>
-<span class="normal">5452</span>
-<span class="normal">5453</span>
-<span class="normal">5454</span>
-<span class="normal">5455</span>
-<span class="normal">5456</span>
-<span class="normal">5457</span>
-<span class="normal">5458</span>
-<span class="normal">5459</span>
-<span class="normal">5460</span>
-<span class="normal">5461</span>
-<span class="normal">5462</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">pin_memory</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span> <span class="o">|</span> <span class="nb">str</span> <span class="o">|</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5461</span>
+<span class="normal">5462</span>
+<span class="normal">5463</span>
+<span class="normal">5464</span>
+<span class="normal">5465</span>
+<span class="normal">5466</span>
+<span class="normal">5467</span>
+<span class="normal">5468</span>
+<span class="normal">5469</span>
+<span class="normal">5470</span>
+<span class="normal">5471</span>
+<span class="normal">5472</span>
+<span class="normal">5473</span>
+<span class="normal">5474</span>
+<span class="normal">5475</span>
+<span class="normal">5476</span>
+<span class="normal">5477</span>
+<span class="normal">5478</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">pin_memory</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span> <span class="o">|</span> <span class="nb">str</span> <span class="o">|</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Pin the underlying tensor memory for faster host-to-device transfer."""</span>
     <span class="k">return</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">pin_memory</span><span class="p">(</span><span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
@@ -22196,17 +22260,17 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5464</span>
-<span class="normal">5465</span>
-<span class="normal">5466</span>
-<span class="normal">5467</span>
-<span class="normal">5468</span>
-<span class="normal">5469</span>
-<span class="normal">5470</span>
-<span class="normal">5471</span>
-<span class="normal">5472</span>
-<span class="normal">5473</span>
-<span class="normal">5474</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">prod</span><span class="p">(</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5480</span>
+<span class="normal">5481</span>
+<span class="normal">5482</span>
+<span class="normal">5483</span>
+<span class="normal">5484</span>
+<span class="normal">5485</span>
+<span class="normal">5486</span>
+<span class="normal">5487</span>
+<span class="normal">5488</span>
+<span class="normal">5489</span>
+<span class="normal">5490</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">prod</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span>
     <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">keepdim</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
@@ -22241,10 +22305,10 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5476</span>
-<span class="normal">5477</span>
-<span class="normal">5478</span>
-<span class="normal">5479</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">requires_grad_</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">requires_grad</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">):</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5492</span>
+<span class="normal">5493</span>
+<span class="normal">5494</span>
+<span class="normal">5495</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">requires_grad_</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">requires_grad</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Enable or disable gradient computation in-place."""</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">requires_grad</span> <span class="o">=</span> <span class="n">requires_grad</span>
     <span class="k">return</span> <span class="bp">self</span>
@@ -22338,27 +22402,27 @@ integers or one tuple, list or <code>torch.Size</code>. <code>-1</code> infers a
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5481</span>
-<span class="normal">5482</span>
-<span class="normal">5483</span>
-<span class="normal">5484</span>
-<span class="normal">5485</span>
-<span class="normal">5486</span>
-<span class="normal">5487</span>
-<span class="normal">5488</span>
-<span class="normal">5489</span>
-<span class="normal">5490</span>
-<span class="normal">5491</span>
-<span class="normal">5492</span>
-<span class="normal">5493</span>
-<span class="normal">5494</span>
-<span class="normal">5495</span>
-<span class="normal">5496</span>
-<span class="normal">5497</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5497</span>
 <span class="normal">5498</span>
 <span class="normal">5499</span>
 <span class="normal">5500</span>
-<span class="normal">5501</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">reshape</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">shape</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
+<span class="normal">5501</span>
+<span class="normal">5502</span>
+<span class="normal">5503</span>
+<span class="normal">5504</span>
+<span class="normal">5505</span>
+<span class="normal">5506</span>
+<span class="normal">5507</span>
+<span class="normal">5508</span>
+<span class="normal">5509</span>
+<span class="normal">5510</span>
+<span class="normal">5511</span>
+<span class="normal">5512</span>
+<span class="normal">5513</span>
+<span class="normal">5514</span>
+<span class="normal">5515</span>
+<span class="normal">5516</span>
+<span class="normal">5517</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">reshape</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">shape</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    Reshape each tensor in the NestedTensor.</span>
 
@@ -22403,11 +22467,11 @@ integers or one tuple, list or <code>torch.Size</code>. <code>-1</code> infers a
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5503</span>
-<span class="normal">5504</span>
-<span class="normal">5505</span>
-<span class="normal">5506</span>
-<span class="normal">5507</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">repeat_batch</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">repeats</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">output_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5519</span>
+<span class="normal">5520</span>
+<span class="normal">5521</span>
+<span class="normal">5522</span>
+<span class="normal">5523</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">repeat_batch</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">repeats</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">output_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Repeat complete logical batch elements in interleaved order."""</span>
     <span class="kn">from</span><span class="w"> </span><span class="nn">.torch_functions</span><span class="w"> </span><span class="kn">import</span> <span class="n">_repeat_interleave_packed_batch</span>
 
@@ -22436,9 +22500,9 @@ integers or one tuple, list or <code>torch.Size</code>. <code>-1</code> infers a
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5509</span>
-<span class="normal">5510</span>
-<span class="normal">5511</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flatten</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">start_dim</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span> <span class="n">end_dim</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="o">-</span><span class="mi">1</span><span class="p">):</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5525</span>
+<span class="normal">5526</span>
+<span class="normal">5527</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flatten</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">start_dim</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span> <span class="n">end_dim</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="o">-</span><span class="mi">1</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Flatten each tensor in the NestedTensor."""</span>
     <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">flatten</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">start_dim</span><span class="o">=</span><span class="n">start_dim</span><span class="p">,</span> <span class="n">end_dim</span><span class="o">=</span><span class="n">end_dim</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
@@ -22525,23 +22589,7 @@ Defaults to <code>None</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5526</span>
-<span class="normal">5527</span>
-<span class="normal">5528</span>
-<span class="normal">5529</span>
-<span class="normal">5530</span>
-<span class="normal">5531</span>
-<span class="normal">5532</span>
-<span class="normal">5533</span>
-<span class="normal">5534</span>
-<span class="normal">5535</span>
-<span class="normal">5536</span>
-<span class="normal">5537</span>
-<span class="normal">5538</span>
-<span class="normal">5539</span>
-<span class="normal">5540</span>
-<span class="normal">5541</span>
-<span class="normal">5542</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5542</span>
 <span class="normal">5543</span>
 <span class="normal">5544</span>
 <span class="normal">5545</span>
@@ -22554,7 +22602,23 @@ Defaults to <code>None</code>.</p>
 <span class="normal">5552</span>
 <span class="normal">5553</span>
 <span class="normal">5554</span>
-<span class="normal">5555</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">size</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">torch</span><span class="o">.</span><span class="n">Size</span> <span class="o">|</span> <span class="nb">int</span><span class="p">:</span>
+<span class="normal">5555</span>
+<span class="normal">5556</span>
+<span class="normal">5557</span>
+<span class="normal">5558</span>
+<span class="normal">5559</span>
+<span class="normal">5560</span>
+<span class="normal">5561</span>
+<span class="normal">5562</span>
+<span class="normal">5563</span>
+<span class="normal">5564</span>
+<span class="normal">5565</span>
+<span class="normal">5566</span>
+<span class="normal">5567</span>
+<span class="normal">5568</span>
+<span class="normal">5569</span>
+<span class="normal">5570</span>
+<span class="normal">5571</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">size</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">torch</span><span class="o">.</span><span class="n">Size</span> <span class="o">|</span> <span class="nb">int</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    Returns the size of the self `NestedTensor`.</span>
 
@@ -22724,23 +22788,7 @@ Supports int, Sequence[int], or None. Negative dimensions are supported.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5557</span>
-<span class="normal">5558</span>
-<span class="normal">5559</span>
-<span class="normal">5560</span>
-<span class="normal">5561</span>
-<span class="normal">5562</span>
-<span class="normal">5563</span>
-<span class="normal">5564</span>
-<span class="normal">5565</span>
-<span class="normal">5566</span>
-<span class="normal">5567</span>
-<span class="normal">5568</span>
-<span class="normal">5569</span>
-<span class="normal">5570</span>
-<span class="normal">5571</span>
-<span class="normal">5572</span>
-<span class="normal">5573</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5573</span>
 <span class="normal">5574</span>
 <span class="normal">5575</span>
 <span class="normal">5576</span>
@@ -22759,7 +22807,23 @@ Supports int, Sequence[int], or None. Negative dimensions are supported.</p>
 <span class="normal">5589</span>
 <span class="normal">5590</span>
 <span class="normal">5591</span>
-<span class="normal">5592</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sum</span><span class="p">(</span>
+<span class="normal">5592</span>
+<span class="normal">5593</span>
+<span class="normal">5594</span>
+<span class="normal">5595</span>
+<span class="normal">5596</span>
+<span class="normal">5597</span>
+<span class="normal">5598</span>
+<span class="normal">5599</span>
+<span class="normal">5600</span>
+<span class="normal">5601</span>
+<span class="normal">5602</span>
+<span class="normal">5603</span>
+<span class="normal">5604</span>
+<span class="normal">5605</span>
+<span class="normal">5606</span>
+<span class="normal">5607</span>
+<span class="normal">5608</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sum</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span>
     <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="n">Sequence</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">keepdim</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
@@ -22828,16 +22892,16 @@ Supports int, Sequence[int], or None. Negative dimensions are supported.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5606</span>
-<span class="normal">5607</span>
-<span class="normal">5608</span>
-<span class="normal">5609</span>
-<span class="normal">5610</span>
-<span class="normal">5611</span>
-<span class="normal">5612</span>
-<span class="normal">5613</span>
-<span class="normal">5614</span>
-<span class="normal">5615</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">tolist</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">:</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5622</span>
+<span class="normal">5623</span>
+<span class="normal">5624</span>
+<span class="normal">5625</span>
+<span class="normal">5626</span>
+<span class="normal">5627</span>
+<span class="normal">5628</span>
+<span class="normal">5629</span>
+<span class="normal">5630</span>
+<span class="normal">5631</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">tolist</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    Convert a NestedTensor to a list of lists of values.</span>
 
@@ -22954,25 +23018,25 @@ Supports int, Sequence[int], or None. Negative dimensions are supported.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5617</span>
-<span class="normal">5618</span>
-<span class="normal">5619</span>
-<span class="normal">5620</span>
-<span class="normal">5621</span>
-<span class="normal">5622</span>
-<span class="normal">5623</span>
-<span class="normal">5624</span>
-<span class="normal">5625</span>
-<span class="normal">5626</span>
-<span class="normal">5627</span>
-<span class="normal">5628</span>
-<span class="normal">5629</span>
-<span class="normal">5630</span>
-<span class="normal">5631</span>
-<span class="normal">5632</span>
-<span class="normal">5633</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5633</span>
 <span class="normal">5634</span>
-<span class="normal">5635</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">transpose</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim0</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">dim1</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>  <span class="c1"># type: ignore[valid-type]</span>
+<span class="normal">5635</span>
+<span class="normal">5636</span>
+<span class="normal">5637</span>
+<span class="normal">5638</span>
+<span class="normal">5639</span>
+<span class="normal">5640</span>
+<span class="normal">5641</span>
+<span class="normal">5642</span>
+<span class="normal">5643</span>
+<span class="normal">5644</span>
+<span class="normal">5645</span>
+<span class="normal">5646</span>
+<span class="normal">5647</span>
+<span class="normal">5648</span>
+<span class="normal">5649</span>
+<span class="normal">5650</span>
+<span class="normal">5651</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">transpose</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim0</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">dim1</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>  <span class="c1"># type: ignore[valid-type]</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    Transpose dimensions dim0 and dim1 for each tensor in the NestedTensor.</span>
 
@@ -23015,9 +23079,9 @@ Supports int, Sequence[int], or None. Negative dimensions are supported.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5637</span>
-<span class="normal">5638</span>
-<span class="normal">5639</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">swapaxes</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">axis0</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">axis1</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5653</span>
+<span class="normal">5654</span>
+<span class="normal">5655</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">swapaxes</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">axis0</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">axis1</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Alias for `transpose()`."""</span>
     <span class="k">return</span> <span class="n">cast</span><span class="p">(</span><span class="n">Self</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">swapaxes</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">axis0</span><span class="p">,</span> <span class="n">axis1</span><span class="p">))</span>
 </code></pre></div></td></tr></table></div>
@@ -23044,9 +23108,9 @@ Supports int, Sequence[int], or None. Negative dimensions are supported.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5641</span>
-<span class="normal">5642</span>
-<span class="normal">5643</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">swapdims</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim0</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">dim1</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5657</span>
+<span class="normal">5658</span>
+<span class="normal">5659</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">swapdims</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim0</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">dim1</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Alias for `swapaxes()`."""</span>
     <span class="k">return</span> <span class="n">cast</span><span class="p">(</span><span class="n">Self</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">swapdims</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim0</span><span class="p">,</span> <span class="n">dim1</span><span class="p">))</span>
 </code></pre></div></td></tr></table></div>
@@ -23155,23 +23219,7 @@ coordinate system (where dim 0 is the batch dimension).</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5645</span>
-<span class="normal">5646</span>
-<span class="normal">5647</span>
-<span class="normal">5648</span>
-<span class="normal">5649</span>
-<span class="normal">5650</span>
-<span class="normal">5651</span>
-<span class="normal">5652</span>
-<span class="normal">5653</span>
-<span class="normal">5654</span>
-<span class="normal">5655</span>
-<span class="normal">5656</span>
-<span class="normal">5657</span>
-<span class="normal">5658</span>
-<span class="normal">5659</span>
-<span class="normal">5660</span>
-<span class="normal">5661</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5661</span>
 <span class="normal">5662</span>
 <span class="normal">5663</span>
 <span class="normal">5664</span>
@@ -23181,7 +23229,23 @@ coordinate system (where dim 0 is the batch dimension).</p>
 <span class="normal">5668</span>
 <span class="normal">5669</span>
 <span class="normal">5670</span>
-<span class="normal">5671</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">unsqueeze</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>  <span class="c1"># type: ignore[valid-type]</span>
+<span class="normal">5671</span>
+<span class="normal">5672</span>
+<span class="normal">5673</span>
+<span class="normal">5674</span>
+<span class="normal">5675</span>
+<span class="normal">5676</span>
+<span class="normal">5677</span>
+<span class="normal">5678</span>
+<span class="normal">5679</span>
+<span class="normal">5680</span>
+<span class="normal">5681</span>
+<span class="normal">5682</span>
+<span class="normal">5683</span>
+<span class="normal">5684</span>
+<span class="normal">5685</span>
+<span class="normal">5686</span>
+<span class="normal">5687</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">unsqueeze</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>  <span class="c1"># type: ignore[valid-type]</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    Unsqueeze each tensor in the NestedTensor by adding a singleton dimension at the specified position.</span>
 
@@ -23232,9 +23296,9 @@ coordinate system (where dim 0 is the batch dimension).</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5673</span>
-<span class="normal">5674</span>
-<span class="normal">5675</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">unflatten</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">sizes</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>  <span class="c1"># type: ignore[valid-type]</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5689</span>
+<span class="normal">5690</span>
+<span class="normal">5691</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">unflatten</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">sizes</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>  <span class="c1"># type: ignore[valid-type]</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Unflatten one dimension of each tensor in the NestedTensor."""</span>
     <span class="k">return</span> <span class="n">cast</span><span class="p">(</span><span class="n">Self</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">unflatten</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim</span><span class="p">,</span> <span class="n">sizes</span><span class="p">))</span>
 </code></pre></div></td></tr></table></div>
@@ -23261,9 +23325,9 @@ coordinate system (where dim 0 is the batch dimension).</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5677</span>
-<span class="normal">5678</span>
-<span class="normal">5679</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">roll</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">shifts</span><span class="p">,</span> <span class="n">dims</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5693</span>
+<span class="normal">5694</span>
+<span class="normal">5695</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">roll</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">shifts</span><span class="p">,</span> <span class="n">dims</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Roll each tensor in the NestedTensor along the given dimensions."""</span>
     <span class="k">return</span> <span class="n">cast</span><span class="p">(</span><span class="n">Self</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">roll</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">shifts</span><span class="p">,</span> <span class="n">dims</span><span class="o">=</span><span class="n">dims</span><span class="p">))</span>
 </code></pre></div></td></tr></table></div>
@@ -23290,9 +23354,9 @@ coordinate system (where dim 0 is the batch dimension).</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5681</span>
-<span class="normal">5682</span>
-<span class="normal">5683</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rot90</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dims</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5697</span>
+<span class="normal">5698</span>
+<span class="normal">5699</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rot90</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dims</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Rotate each tensor in the NestedTensor by 90 degrees in the given plane."""</span>
     <span class="k">return</span> <span class="n">cast</span><span class="p">(</span><span class="n">Self</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">rot90</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">dims</span><span class="p">)))</span>
 </code></pre></div></td></tr></table></div>
@@ -23389,23 +23453,7 @@ integers or one tuple, list or <code>torch.Size</code>. <code>-1</code> infers a
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5685</span>
-<span class="normal">5686</span>
-<span class="normal">5687</span>
-<span class="normal">5688</span>
-<span class="normal">5689</span>
-<span class="normal">5690</span>
-<span class="normal">5691</span>
-<span class="normal">5692</span>
-<span class="normal">5693</span>
-<span class="normal">5694</span>
-<span class="normal">5695</span>
-<span class="normal">5696</span>
-<span class="normal">5697</span>
-<span class="normal">5698</span>
-<span class="normal">5699</span>
-<span class="normal">5700</span>
-<span class="normal">5701</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5701</span>
 <span class="normal">5702</span>
 <span class="normal">5703</span>
 <span class="normal">5704</span>
@@ -23413,7 +23461,23 @@ integers or one tuple, list or <code>torch.Size</code>. <code>-1</code> infers a
 <span class="normal">5706</span>
 <span class="normal">5707</span>
 <span class="normal">5708</span>
-<span class="normal">5709</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">view</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">shape</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
+<span class="normal">5709</span>
+<span class="normal">5710</span>
+<span class="normal">5711</span>
+<span class="normal">5712</span>
+<span class="normal">5713</span>
+<span class="normal">5714</span>
+<span class="normal">5715</span>
+<span class="normal">5716</span>
+<span class="normal">5717</span>
+<span class="normal">5718</span>
+<span class="normal">5719</span>
+<span class="normal">5720</span>
+<span class="normal">5721</span>
+<span class="normal">5722</span>
+<span class="normal">5723</span>
+<span class="normal">5724</span>
+<span class="normal">5725</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">view</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">shape</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    View each tensor in the NestedTensor with a different shape.</span>
 
@@ -23497,29 +23561,29 @@ integers or one tuple, list or <code>torch.Size</code>. <code>-1</code> infers a
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5801</span>
-<span class="normal">5802</span>
-<span class="normal">5803</span>
-<span class="normal">5804</span>
-<span class="normal">5805</span>
-<span class="normal">5806</span>
-<span class="normal">5807</span>
-<span class="normal">5808</span>
-<span class="normal">5809</span>
-<span class="normal">5810</span>
-<span class="normal">5811</span>
-<span class="normal">5812</span>
-<span class="normal">5813</span>
-<span class="normal">5814</span>
-<span class="normal">5815</span>
-<span class="normal">5816</span>
-<span class="normal">5817</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5817</span>
 <span class="normal">5818</span>
 <span class="normal">5819</span>
 <span class="normal">5820</span>
 <span class="normal">5821</span>
 <span class="normal">5822</span>
-<span class="normal">5823</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">where</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">condition</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">other</span><span class="p">:</span> <span class="n">Tensor</span> <span class="o">|</span> <span class="nb">int</span> <span class="o">|</span> <span class="nb">float</span> <span class="o">|</span> <span class="nb">complex</span> <span class="o">|</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
+<span class="normal">5823</span>
+<span class="normal">5824</span>
+<span class="normal">5825</span>
+<span class="normal">5826</span>
+<span class="normal">5827</span>
+<span class="normal">5828</span>
+<span class="normal">5829</span>
+<span class="normal">5830</span>
+<span class="normal">5831</span>
+<span class="normal">5832</span>
+<span class="normal">5833</span>
+<span class="normal">5834</span>
+<span class="normal">5835</span>
+<span class="normal">5836</span>
+<span class="normal">5837</span>
+<span class="normal">5838</span>
+<span class="normal">5839</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">where</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">condition</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">other</span><span class="p">:</span> <span class="n">Tensor</span> <span class="o">|</span> <span class="nb">int</span> <span class="o">|</span> <span class="nb">float</span> <span class="o">|</span> <span class="nb">complex</span> <span class="o">|</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    Return a NestedTensor of elements selected from either self or other, depending on condition.</span>
 
@@ -23572,24 +23636,24 @@ Wrapper-only compiled outputs retain their outer autograd edge, and
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5825</span>
-<span class="normal">5826</span>
-<span class="normal">5827</span>
-<span class="normal">5828</span>
-<span class="normal">5829</span>
-<span class="normal">5830</span>
-<span class="normal">5831</span>
-<span class="normal">5832</span>
-<span class="normal">5833</span>
-<span class="normal">5834</span>
-<span class="normal">5835</span>
-<span class="normal">5836</span>
-<span class="normal">5837</span>
-<span class="normal">5838</span>
-<span class="normal">5839</span>
-<span class="normal">5840</span>
-<span class="normal">5841</span>
-<span class="normal">5842</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cdist</span><span class="p">(</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5841</span>
+<span class="normal">5842</span>
+<span class="normal">5843</span>
+<span class="normal">5844</span>
+<span class="normal">5845</span>
+<span class="normal">5846</span>
+<span class="normal">5847</span>
+<span class="normal">5848</span>
+<span class="normal">5849</span>
+<span class="normal">5850</span>
+<span class="normal">5851</span>
+<span class="normal">5852</span>
+<span class="normal">5853</span>
+<span class="normal">5854</span>
+<span class="normal">5855</span>
+<span class="normal">5856</span>
+<span class="normal">5857</span>
+<span class="normal">5858</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cdist</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span>
     <span class="n">other</span><span class="p">:</span> <span class="n">Tensor</span> <span class="o">|</span> <span class="n">NestedTensor</span><span class="p">,</span>
     <span class="n">p</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">2.0</span><span class="p">,</span>
@@ -23633,15 +23697,15 @@ across AOTAutograd/Inductor, including wrapper-only compiled outputs.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5844</span>
-<span class="normal">5845</span>
-<span class="normal">5846</span>
-<span class="normal">5847</span>
-<span class="normal">5848</span>
-<span class="normal">5849</span>
-<span class="normal">5850</span>
-<span class="normal">5851</span>
-<span class="normal">5852</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cumprod</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">dtype</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">dtype</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">NestedTensor</span><span class="p">:</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5860</span>
+<span class="normal">5861</span>
+<span class="normal">5862</span>
+<span class="normal">5863</span>
+<span class="normal">5864</span>
+<span class="normal">5865</span>
+<span class="normal">5866</span>
+<span class="normal">5867</span>
+<span class="normal">5868</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cumprod</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">dtype</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">dtype</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">NestedTensor</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Compute cumulative products through the traceable packed segmented path.</span>
 
 <span class="sd">    The explicit method keeps gradients connected to prebuilt packed leaves</span>
