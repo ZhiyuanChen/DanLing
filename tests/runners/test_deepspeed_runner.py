@@ -123,7 +123,7 @@ class TestDeepSpeedRunnerCheckpointPaths:
 
     def test_deepspeed_model_checkpoint_uses_model_only_file_export(self, tmp_path: Path) -> None:
         class PublishingModel:
-            module = nn.Linear(2, 1)
+            module = torch.compile(nn.Linear(2, 1), backend="eager")
 
             @staticmethod
             def save_checkpoint(*args, **kwargs) -> None:

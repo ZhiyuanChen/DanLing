@@ -246,6 +246,9 @@ def _ddp_compile_wrap_worker(rank: int, world_size: int) -> None:
     )
     try:
         assert runner.model is not None
+        native = runner.unwrap(runner.model)
+        assert isinstance(native, nn.Linear)
+        assert set(runner.state_dict()["model"]) == set(native.state_dict())
         initial_parameters = [parameter.detach().clone() for parameter in runner.model.parameters()]
         _prediction, loss = runner.train_step((torch.ones(2, 4), torch.zeros(2, 2)))
 
@@ -736,6 +739,46 @@ class TestTorchRunnerBootstrap:
 
 
 class TestTorchRunnerCheckpointInterop:
+
+    def test_compiled_wrappers_export_native_model_state(self, tmp_path: Path) -> None:
+        class NativeModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.module = nn.Linear(4, 2)
+                self._orig_mod = nn.Linear(4, 2)
+
+            def forward(self, values):
+                return self.module(values) + self._orig_mod(values)
+
+            def native_export(self):
+                return self.state_dict()
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        original = NativeModel().to(device)
+        compiled = torch.compile(original, backend="eager")
+        runner = NoOptimizerTorchRunner(
+            {"logging.enabled": False, "workspace.root": str(tmp_path), "ckpt.async_mode": "disabled"}
+        )
+        try:
+            for wrapped in (
+                original,
+                compiled,
+                nn.DataParallel(compiled),
+                torch.compile(nn.DataParallel(original), backend="eager"),
+            ):
+                native = runner.unwrap(wrapped)
+                assert native is original
+                torch.testing.assert_close(native.native_export(), original.state_dict())
+            runner.model = nn.DataParallel(compiled)
+            runner.save_model_checkpoint()
+            payload = torch.load(
+                Path(runner.workspace.checkpoint_dir) / "model.pth", map_location="cpu", weights_only=False
+            )
+            restored = NativeModel().to(device)
+            restored.load_state_dict(payload["model"], strict=True)
+            torch.testing.assert_close(restored.state_dict(), original.state_dict())
+        finally:
+            runner.close()
 
     @pytest.mark.skipif(
         importlib.util.find_spec("tensorboard") is not None,

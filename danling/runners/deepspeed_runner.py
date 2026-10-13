@@ -221,7 +221,12 @@ class DeepSpeedRunner(TorchRunner):
         return False
 
     def unwrap(self, model: Any) -> Any:
-        return getattr(model, "module", super().unwrap(model))
+        model = super().unwrap(model)
+        if isinstance(model, torch.nn.Module) and (
+            not ds.is_successful() or not isinstance(model, deepspeed.DeepSpeedEngine)
+        ):
+            return model
+        return super().unwrap(getattr(model, "module", model))
 
     def _backward(self, loss: torch.Tensor) -> None:
         """

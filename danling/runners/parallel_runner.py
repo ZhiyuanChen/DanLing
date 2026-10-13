@@ -839,11 +839,6 @@ class ParallelRunner(TorchRunner):
         prefixes = ("",) if len(parts) == 1 else tuple(f"part{index}." for index in range(len(parts)))
         yield from self._iter_unique_named_parameters(parts, prefixes)
 
-    def unwrap(self, model: nn.Module) -> nn.Module:
-        if FSDPModule is not None and isinstance(model, FSDPModule):
-            return getattr(model, "module", model)
-        return super().unwrap(model)
-
     def _train_no_sync_targets(self) -> tuple[nn.Module, ...]:
         fsdp_parts: list[nn.Module] = [
             module for module in (self.model_parts or []) if FSDPModule is not None and isinstance(module, FSDPModule)

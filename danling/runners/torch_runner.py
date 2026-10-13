@@ -773,8 +773,11 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             self.ema = self.ema.to(self.device)
 
     def unwrap(self, model: nn.Module) -> nn.Module:
-        if isinstance(model, (nn.parallel.DistributedDataParallel, nn.parallel.DataParallel)):
-            return model.module
+        """Return the native module beneath compile and data-parallel wrappers."""
+        from torch._dynamo.eval_frame import OptimizedModule
+
+        while isinstance(model, (OptimizedModule, nn.parallel.DistributedDataParallel, nn.parallel.DataParallel)):
+            model = model._orig_mod if isinstance(model, OptimizedModule) else model.module
         return model
 
     def _iter_unique_parameters(self, modules: Sequence[nn.Module]) -> Iterator[nn.Parameter]:
