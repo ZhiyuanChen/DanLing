@@ -103,7 +103,7 @@ def _from_pool_values(
     output_packed_sizes: tuple[int, ...],
     output_shapes: tuple[tuple[int, ...], ...],
 ) -> NestedTensor:
-    return type(input)._from_packed(
+    return type(input).from_packed(
         output_values,
         output_offsets,
         output_shape_tensor,

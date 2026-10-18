@@ -133,7 +133,7 @@ def _packed_pointwise_conv1d(
     if input._element_shapes is not None:
         element_shapes = tuple((out_channels, *shape[1:]) for shape in input._element_shapes)
 
-    return type(input)._from_packed(
+    return type(input).from_packed(
         output,
         input._offsets,
         shape_tensor,
@@ -1468,7 +1468,7 @@ def _spatial_tile_conv1d(
     total_out = int(output_offsets[-1].item())
     if total_out == 0:
         output_values = input.concat.new_empty((total_out, out_channels))
-        return type(input)._from_packed(
+        return type(input).from_packed(
             output_values,
             output_offsets,
             output_shape_tensor,
@@ -1578,7 +1578,7 @@ def _spatial_tile_conv1d(
             tile_meta=tile_meta,
         )
 
-    return type(input)._from_packed(
+    return type(input).from_packed(
         output_values,
         output_offsets,
         output_shape_tensor,

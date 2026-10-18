@@ -136,7 +136,7 @@ def _packed_pointwise_conv_transpose(
     if input._element_shapes is not None:
         element_shapes = tuple((out_channels, *shape[1:]) for shape in input._element_shapes)
 
-    return type(input)._from_packed(
+    return type(input).from_packed(
         output,
         input._offsets,
         shape_tensor,

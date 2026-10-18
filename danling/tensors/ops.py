@@ -1565,7 +1565,7 @@ def _binary_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor, op, ext
             if len(ragged_dims) == 1
             else _tensor_backed_ragged_offsets(physical_shape, ragged_dims, dtype=offsets.dtype)
         )
-    result = type(lhs)._from_packed(
+    result = type(lhs).from_packed(
         values,
         offsets,
         physical_shape,

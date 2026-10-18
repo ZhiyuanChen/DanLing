@@ -1354,7 +1354,7 @@ def masked_select(func, args, kwargs):
     if counts.numel() > 0:
         out_offsets[1:] = torch.cumsum(counts, dim=0)
     out_shape = counts.unsqueeze(1)
-    return type(source)._from_packed(
+    return type(source).from_packed(
         out_values,
         out_offsets,
         out_shape,
@@ -1402,7 +1402,7 @@ def nonzero(func, args, kwargs):
     out_offsets[1:] = torch.cumsum(counts_cpu, dim=0)
     rank_col = source._physical_shape.new_full((batch_size, 1), input_ndim)
     out_shape = torch.cat((counts_cpu.unsqueeze(1), rank_col), dim=1)
-    return type(source)._from_packed(
+    return type(source).from_packed(
         out_values,
         out_offsets,
         out_shape,
@@ -1896,7 +1896,7 @@ def _packed_gather_output(source: NestedTensor, index: NestedTensor, out_values:
     the output takes the index's element shapes. Carrying them across rather than recovering them
     from the physical shape also keeps an empty segment's rank, which trailing-zero trimming drops.
     """
-    result = type(source)._from_packed(
+    result = type(source).from_packed(
         out_values,
         index._offsets,
         index._physical_shape,
@@ -2195,7 +2195,7 @@ def index_select(func, args, kwargs):
         if source._element_shapes is not None:
             selected_element_shapes = tuple(source._element_shapes[i] for i in selected_indices)
 
-        return type(source)._from_packed(
+        return type(source).from_packed(
             out_values,
             out_offsets,
             out_shape,
@@ -2718,7 +2718,7 @@ def _packed_with_shape(
             # layout to the tensor-backed compile contract without consulting
             # per-element Python shape caches.
             ragged_offsets = (offsets,)
-    result = type(source)._from_packed(
+    result = type(source).from_packed(
         new_values,
         offsets,
         new_physical_shape,
@@ -2890,7 +2890,7 @@ def _packed_batch_slice(source: NestedTensor, start: int, length: int, op_name: 
     physical_shape = source._physical_shape[start : start + length]  # noqa: E203
     element_shapes = source._element_shapes
     sliced_shapes = None if element_shapes is None else element_shapes[start : start + length]  # noqa: E203
-    return type(source)._from_packed(
+    return type(source).from_packed(
         source.concat.narrow(0, row_start, row_count),
         offsets,
         physical_shape,
@@ -2966,7 +2966,7 @@ def _packed_ragged_slice(
             (*shape[:dim_adj], length, *shape[dim_adj + 1 :])  # noqa: E203
             for shape, length in zip(element_shapes, lengths)
         )
-    return type(source)._from_packed(
+    return type(source).from_packed(
         source.concat.index_select(0, rows),
         new_offsets,
         physical_shape,
@@ -2999,7 +2999,7 @@ def _packed_uniform_ragged_slice(source: NestedTensor, dim_adj: int, start: int,
     physical_shape[:, dim_adj] = length
     batch_size = source._offsets.shape[0] - 1
     new_offsets = torch.arange(batch_size + 1, dtype=source._offsets.dtype, device=source._offsets.device) * length
-    return type(source)._from_packed(
+    return type(source).from_packed(
         source.concat.index_select(0, rows.reshape(-1)),
         new_offsets,
         physical_shape,
@@ -4114,7 +4114,7 @@ def _wrap_packed_reduction(source, output, dims_adj, keepdim, remaining_ragged, 
         ragged_offsets = persistent_offsets[: len(remaining_ragged)]
     else:
         ragged_offsets = _tensor_backed_ragged_offsets(physical_shape, ragged_dims, dtype=source._offsets.dtype)
-    result = type(source)._from_packed(
+    result = type(source).from_packed(
         output,
         offsets,
         physical_shape,
@@ -4278,7 +4278,7 @@ def _wrap_packed_ragged_reduction(
         if len(ragged_dims) == 1
         else _tensor_backed_ragged_offsets(physical_shape, ragged_dims, dtype=source._offsets.dtype)
     )
-    return type(source)._from_packed(
+    return type(source).from_packed(
         output,
         offsets,
         physical_shape,
@@ -5635,7 +5635,7 @@ def flatten(func, args, kwargs):
                 outer_size = (
                     torch.Size((0, *max_dims)) if source.batch_first else torch.Size((max_dims[0], 0, *max_dims[1:]))
                 )
-                return type(source)._from_packed(
+                return type(source).from_packed(
                     source.concat,
                     type(source)._offsets_from_sizes((), dtype=source._offsets.dtype),
                     shape,
@@ -5682,7 +5682,7 @@ def flatten(func, args, kwargs):
                     if source.batch_first
                     else torch.Size((max_dims[0], len(row_shapes), *max_dims[1:]))
                 )
-                return type(source)._from_packed(
+                return type(source).from_packed(
                     values,
                     offsets,
                     shape,
@@ -6043,7 +6043,7 @@ def transpose(func, args, kwargs):
             raise ValueError("Cannot transpose the batch dimension with a non-sequence dimension for NestedTensor.")
         new_shape = list(source._logical_shape)
         new_shape[0], new_shape[1] = new_shape[1], new_shape[0]
-        return type(source)._from_packed(
+        return type(source).from_packed(
             source.concat,
             source._offsets,
             source._physical_shape,
@@ -7399,7 +7399,7 @@ def clone(func, args, kwargs):
     r"""Clone all internal tensors of a NestedTensor."""
     source = args[0]
     ragged_offsets = source._persistent_ragged_offsets()
-    return type(source)._from_packed(
+    return type(source).from_packed(
         source.concat.clone(),
         source._offsets.clone(),
         source._physical_shape.clone(),
@@ -7503,7 +7503,7 @@ def _constant_pad_packed_variable_last_dim(source: NestedTensor, pad: tuple[int,
 
     outer_size = list(source._logical_shape)
     outer_size[-1] += pad_width
-    return type(source)._from_packed(
+    return type(source).from_packed(
         output_values,
         new_offsets,
         shape_tensor,
@@ -7540,7 +7540,7 @@ def detach(func, args, kwargs):
         # including PyTorch's wrapper version sharing and checkpoint hooks.
         return source._packed_like_unchecked_raw(source.concat.detach())
     ragged_offsets = source._persistent_ragged_offsets()
-    return type(source)._from_packed(
+    return type(source).from_packed(
         source.concat.detach(),
         source._offsets.detach(),
         source._physical_shape.detach(),

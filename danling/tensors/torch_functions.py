@@ -28,7 +28,7 @@ registered handler.
 Handlers here use several strategies depending on the op's needs:
 
 * **Packed fast-path** — ops that work directly on the concatenated
-  ``concat`` tensor via ``NestedTensor._from_packed`` without knowing element
+  ``concat`` tensor via ``NestedTensor.from_packed`` without knowing element
   boundaries.
 * **Per-element dispatch** — ops that must be applied to each element
   individually via ``_map_storage_serial``, e.g. when dimension indices need
@@ -731,7 +731,7 @@ def _cat_packed_non_batch(tensors, first: NestedTensor, dim_adj: int):
     packed_sizes = None
     if all(tensor._packed_sizes is not None for tensor in tensors):
         packed_sizes = tuple(builtins.sum(sizes) for sizes in zip(*(t._packed_sizes for t in tensors)))
-    return NestedTensor._from_packed(
+    return NestedTensor.from_packed(
         values,
         new_offsets,
         physical_shape,
@@ -1143,7 +1143,7 @@ def _broadcast_nested_tensors_packed(tensors):
         if values is None:
             return None
         outputs.append(
-            type(tensor)._from_packed(
+            type(tensor).from_packed(
                 values,
                 output_offsets,
                 output_shape,
@@ -1382,7 +1382,7 @@ def _split_like(input: NestedTensor, dim: int, spans_for, op_name: str):
         for start, length in spans_for(extent):
             if sole_ragged:
                 outputs.append(
-                    type(input)._from_packed(
+                    type(input).from_packed(
                         input.concat,
                         input._offsets,
                         input._physical_shape,
@@ -4979,7 +4979,7 @@ def _repeat_interleave_packed_batch(
 
     logical_shape = list(input._logical_shape)
     logical_shape[_get_batch_dim(input)] = expected_output_size
-    return type(input)._from_packed(
+    return type(input).from_packed(
         output_values,
         output_offsets,
         output_shape,
@@ -5317,7 +5317,7 @@ def _uniform_expand_as_target(source: NestedTensor, shape: torch.Size) -> Nested
         parents *= width
     packed_shape = (len(source) * count, *(element_shape[dim] for dim in source._static_dims))
     placeholder = source.concat.new_empty(()).expand(packed_shape)
-    return type(source)._from_packed(
+    return type(source).from_packed(
         placeholder,
         offsets,
         physical_shape,
@@ -5364,7 +5364,7 @@ def expand_as(input, other):
             raise RuntimeError("expand_as(): dense input cannot expand to the NestedTensor target shape")
         values = values.expand(target._packed_values.shape)
         configuration = target
-    result = type(configuration)._from_packed(
+    result = type(configuration).from_packed(
         values,
         target._offsets,
         target._physical_shape,
@@ -5730,7 +5730,7 @@ def transpose(input: NestedTensor, dim0: int, dim1: int) -> NestedTensor:
             raise ValueError("Cannot transpose the batch dimension with a non-sequence dimension for NestedTensor.")
         new_shape = list(input._logical_shape)
         new_shape[0], new_shape[1] = new_shape[1], new_shape[0]
-        return type(input)._from_packed(
+        return type(input).from_packed(
             input.concat,
             input._offsets,
             input._physical_shape,

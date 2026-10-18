@@ -5468,7 +5468,7 @@ class TestPackedStaticTailEinsum:
         torch.testing.assert_close(output.concat, torch.zeros(4, 3, device=device))
         for gradient in gradients:
             assert gradient.numel() == 0
-        empty = NestedTensor._from_packed(
+        empty = NestedTensor.from_packed(
             torch.empty(0, 3, device=device),
             torch.tensor([0]),
             torch.empty(0, 2, dtype=torch.long),
@@ -5667,7 +5667,7 @@ class TestPackedMixedBroadcast:
             head_bias = head_bias.transpose(0, 1)
         if tensor_backed:
             # Keep the non-leading declared ragged layout but omit cached Python element shapes.
-            input = NestedTensor._from_packed(
+            input = NestedTensor.from_packed(
                 input.concat,
                 input._offsets,
                 input._physical_shape,
@@ -5779,7 +5779,7 @@ class TestPackedMixedBroadcast:
         if tensor_backed:
 
             def tensor_layout(input):
-                return NestedTensor._from_packed(
+                return NestedTensor.from_packed(
                     input.concat,
                     input._offsets,
                     input._physical_shape,

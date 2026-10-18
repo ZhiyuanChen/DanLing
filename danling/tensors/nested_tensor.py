@@ -636,7 +636,7 @@ class NestedTensor(torch.Tensor):
         if _is_fake_tensor(shape_tensor):
             if element_shapes is None:
                 _compile_unsupported(
-                    "NestedTensor._from_packed",
+                    "NestedTensor.from_packed",
                     "explicit multi-ragged FakeTensor rebuilds require concrete element shapes or persistent offsets",
                 )
             assert element_shapes is not None
@@ -644,7 +644,7 @@ class NestedTensor(torch.Tensor):
             return tuple(offsets.new_empty((len(sizes) + 1,), dtype=offsets.dtype) for sizes in level_sizes)
         if _is_compiling():
             _compile_unsupported(
-                "NestedTensor._from_packed",
+                "NestedTensor.from_packed",
                 "explicit multi-ragged rebuilds require persistent ragged offset tensors",
             )
         return cls._build_explicit_ragged_offsets(shape_tensor, ragged_dims, dtype=offsets.dtype)
@@ -1319,7 +1319,7 @@ class NestedTensor(torch.Tensor):
     def _layout_from_state(state: tuple, like: Tensor, packed_shape: torch.Size) -> NestedTensor:
         r"""Rebuild a layout wrapper from :meth:`_layout_state` around a zero-stride child on ``like``'s device."""
         cls, offsets, shape_tensor, permutation, ragged_dims, logical_shape, batch_first, padding, mask, splits = state
-        return cls._from_packed(
+        return cls.from_packed(
             like.new_empty(()).expand(packed_shape),
             offsets,
             shape_tensor,
@@ -1476,7 +1476,7 @@ class NestedTensor(torch.Tensor):
         return offsets.to(device=device, dtype=dtype)
 
     @classmethod
-    def _from_packed(
+    def from_packed(
         cls,
         values: Tensor,
         offsets: Tensor,
@@ -1512,11 +1512,11 @@ class NestedTensor(torch.Tensor):
 
         compiling = _is_compiling()
         if validate and compiling:
-            _compile_unsupported("NestedTensor._from_packed", "metadata validation is eager-only")
+            _compile_unsupported("NestedTensor.from_packed", "metadata validation is eager-only")
         if outer_size is not None:
             logical_shape = torch.Size(outer_size)
         elif compiling:
-            _compile_unsupported("NestedTensor._from_packed", "outer_size must be provided for compile-safe rebuilds")
+            _compile_unsupported("NestedTensor.from_packed", "outer_size must be provided for compile-safe rebuilds")
         else:
             logical_shape = cls._logical_shape_from_physical_shape(shape_tensor, offsets, batch_first)
         # An omitted permutation is resolved to ``ragged_dims`` followed by the static dims, which
@@ -1572,7 +1572,7 @@ class NestedTensor(torch.Tensor):
                 stored_element_shapes = None
         elif compiling and physical_rank > 0 and (packed_sizes is None or element_shapes is None):
             _compile_unsupported(
-                "NestedTensor._from_packed",
+                "NestedTensor.from_packed",
                 "per-element Python metadata may be omitted only for a tensor-backed layout",
             )
 
@@ -1815,7 +1815,7 @@ class NestedTensor(torch.Tensor):
         if offsets is not None and shape_tensor is not None:
             # During backward, outer_size may reflect a transposed view
             # (e.g., (seq, batch, hidden) from MHA's batch-dim transpose).
-            # Detect and correct so _from_packed validation passes.
+            # Detect and correct so from_packed validation passes.
             batch_size = len(offsets) - 1
             outer = tuple(outer_size)
             batch_first = ctx.get("batch_first", True)
@@ -1852,7 +1852,7 @@ class NestedTensor(torch.Tensor):
                 ragged_offsets = tuple(inner_tensors[name] for name in cls._ragged_offset_names(ragged_rank))
             else:
                 ragged_offsets = None
-            result = cls._from_packed(
+            result = cls.from_packed(
                 values,
                 offsets,
                 shape_tensor,
@@ -2636,7 +2636,7 @@ class NestedTensor(torch.Tensor):
         r"""Wrap one scalar per element using the canonical scalar-result metadata."""
         cls = type(self)
         offsets, shape, outer_size, packed_sizes, element_shapes = self._scalar_result_meta()
-        return cls._from_packed(
+        return cls.from_packed(
             values,
             offsets,
             shape,
@@ -2712,7 +2712,7 @@ class NestedTensor(torch.Tensor):
                 shape for tensor in tensors for shape in cast(tuple[tuple[int, ...], ...], tensor._element_shapes)
             )
 
-        return cls._from_packed(
+        return cls.from_packed(
             new_values,
             new_offsets,
             new_physical_shape,
@@ -3301,7 +3301,7 @@ class NestedTensor(torch.Tensor):
             torch.cumsum(torch.tensor(sizes, dtype=torch.long), dim=0, out=offsets[1:])
             shape_tensor = torch.tensor(element_shapes, dtype=torch.long)
             values = concat_tensor.clone(memory_format=torch.contiguous_format)
-            result = cls._from_packed(
+            result = cls.from_packed(
                 values,
                 offsets,
                 shape_tensor,
@@ -3532,7 +3532,7 @@ class NestedTensor(torch.Tensor):
             self._share_offset_caches(result)
             result._inherit_tensor_backed_dynamic_dims(self)
             return result
-        result = type(self)._from_packed(
+        result = type(self).from_packed(
             packed_values,
             self._offsets,
             self._physical_shape,
@@ -3626,7 +3626,7 @@ class NestedTensor(torch.Tensor):
                 f"got {packed_values.shape} and expected {self.concat.shape}"
             )
         pin_memory = bool(packed_values.device.type == "cpu" and packed_values.is_pinned())
-        result = type(self)._from_packed(
+        result = type(self).from_packed(
             packed_values,
             self._offsets,
             self._physical_shape,
@@ -3791,7 +3791,7 @@ class NestedTensor(torch.Tensor):
             packed_sizes = ()
             element_shapes = ()
         pin_memory = bool(packed_values.device.type == "cpu" and packed_values.is_pinned())
-        result = type(self)._from_packed(
+        result = type(self).from_packed(
             packed_values,
             self._offsets,
             physical_shape,
@@ -3921,7 +3921,7 @@ class NestedTensor(torch.Tensor):
         else:
             logical_shape = torch.Size((max_length, len(self), *static_tail))
         pin_memory = bool(packed_values.device.type == "cpu" and packed_values.is_pinned())
-        result = type(self)._from_packed(
+        result = type(self).from_packed(
             packed_values,
             offsets,
             physical_shape,
@@ -4075,7 +4075,7 @@ class NestedTensor(torch.Tensor):
         # Both ragged axes and their offsets already carry the dynamic shape contract. Marking
         # caller-owned packed storage here would mutate a compiled graph input after Dynamo has
         # installed its guards, forcing an otherwise unnecessary second compilation.
-        result = type(self)._from_packed(
+        result = type(self).from_packed(
             packed_values,
             outer_offsets,
             physical_shape,
@@ -4221,7 +4221,7 @@ class NestedTensor(torch.Tensor):
         else:
             logical_shape = torch.Size((max_rows, batch_size, max_columns, *static_tail))
         pin_memory = bool(packed_values.device.type == "cpu" and packed_values.is_pinned())
-        result = type(self)._from_packed(
+        result = type(self).from_packed(
             packed_values,
             outer_offsets,
             physical_shape,
@@ -4289,7 +4289,7 @@ class NestedTensor(torch.Tensor):
         values = self._dense_to_packed_values(tensor)
         if values is not None:
             element_shapes = self._element_shapes
-            return self.__class__._from_packed(
+            return self.__class__.from_packed(
                 values,
                 self._offsets,
                 self._physical_shape,
@@ -4536,7 +4536,7 @@ class NestedTensor(torch.Tensor):
                 new_physical_shape[:, dim] = new_physical_shape.new_tensor(packed_sizes)
             else:
                 new_physical_shape[:, dim] = size
-        return type(self)._from_packed(
+        return type(self).from_packed(
             values,
             offsets,
             new_physical_shape,
@@ -4616,7 +4616,7 @@ class NestedTensor(torch.Tensor):
         outer_size = list(self._logical_shape)
         batch_dim = type(self)._batch_dim_from_logical_shape(self._logical_shape, self.batch_first)
         outer_size[batch_dim] = 0
-        return type(self)._from_packed(
+        return type(self).from_packed(
             self.concat.narrow(0, 0, 0),
             self._offsets.new_zeros((1,)),
             self._physical_shape[:0],
@@ -4710,7 +4710,7 @@ class NestedTensor(torch.Tensor):
         offsets = self._offsets.new_zeros((1,))
         physical_shape = self._physical_shape.new_empty((0, len(projected_extents)))
         ragged_offsets = tuple(offsets for _ in ragged_dims) if ragged_dims else None
-        return type(self)._from_packed(
+        return type(self).from_packed(
             values,
             offsets,
             physical_shape,
@@ -5271,7 +5271,7 @@ class NestedTensor(torch.Tensor):
         serialized_ragged_offsets = state["_ragged_offsets"]
         if serialized_ragged_offsets is not None:
             serialized_ragged_offsets = tuple(level_offsets.cpu() for level_offsets in serialized_ragged_offsets)
-        return cls._from_packed(
+        return cls.from_packed(
             state["_packed_values"],
             state["_offsets"].cpu(),
             state["_physical_shape"].cpu(),
@@ -5289,7 +5289,7 @@ class NestedTensor(torch.Tensor):
 
     def __copy__(self):
         r"""Shallow copy: new NestedTensor sharing underlying tensor data."""
-        return self.__class__._from_packed(
+        return self.__class__.from_packed(
             self.concat,
             self._offsets,
             self._physical_shape,
@@ -5308,7 +5308,7 @@ class NestedTensor(torch.Tensor):
 
     def __deepcopy__(self, memo):
         r"""Deep copy: clones all tensor data."""
-        result = self.__class__._from_packed(
+        result = self.__class__.from_packed(
             self.concat.clone(),
             self._offsets.clone(),
             self._physical_shape.clone(),
@@ -5460,7 +5460,7 @@ class NestedTensor(torch.Tensor):
 
     def pin_memory(self, device: torch.device | str | int | None = None) -> Self:
         r"""Pin the underlying tensor memory for faster host-to-device transfer."""
-        return type(self)._from_packed(
+        return type(self).from_packed(
             self.concat.pin_memory(device=device),
             self._offsets,
             self._physical_shape,

@@ -114,7 +114,7 @@ def low_precision_cuda_tolerances(
 
 def packed_result(ref: NestedTensor, values: torch.Tensor) -> NestedTensor:
     r"""Reconstruct a NestedTensor from packed values using the metadata of *ref*."""
-    return NestedTensor._from_packed(
+    return NestedTensor.from_packed(
         values,
         ref._offsets,
         ref._physical_shape,

@@ -2283,7 +2283,7 @@ def _batch_norm_eval_packed_affine(
             return None
         output_values = _batch_norm_eval_values(values, running_mean, running_var, weight, bias, channel_dim, eps)
 
-    return type(input)._from_packed(
+    return type(input).from_packed(
         output_values,
         input._offsets,
         input._physical_shape,
@@ -2690,7 +2690,7 @@ def one_hot(input, num_classes: int = -1):
     element_shapes = None
     if input._element_shapes is not None:
         element_shapes = tuple((*shape, num_classes) for shape in input._element_shapes)
-    return type(input)._from_packed(
+    return type(input).from_packed(
         output_values,
         input._offsets,
         shape_tensor,
@@ -2765,7 +2765,7 @@ def _pad_packed_variable_last_dim(input: NestedTensor, pad: tuple[int, ...], val
             )
         packed_sizes = tuple(int(size) for size in new_sizes.tolist())
 
-    return type(input)._from_packed(
+    return type(input).from_packed(
         output_values,
         new_offsets,
         shape_tensor,
@@ -2957,7 +2957,7 @@ def _interpolate_packed_static_spatial(input, *args, _fn=None, **kwargs):
     if input._element_shapes is not None:
         element_shapes = tuple((shape[0], *output_spatial) for shape in input._element_shapes)
 
-    return type(input)._from_packed(
+    return type(input).from_packed(
         output_values,
         input._offsets,
         output_shape,
