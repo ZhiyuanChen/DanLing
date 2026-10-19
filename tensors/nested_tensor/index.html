@@ -1060,6 +1060,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#danling.tensors.nested_tensor.NestedTensor.from_packed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;from_packed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#danling.tensors.nested_tensor.NestedTensor.__coerce_tangent_metadata__" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2862,6 +2873,17 @@
         
       </ul>
     </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#danling.tensors.nested_tensor.NestedTensor.from_packed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;from_packed
+      
+    </span>
+  </a>
   
 </li>
         
@@ -10424,7 +10446,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
         <span class="k">if</span> <span class="n">_is_fake_tensor</span><span class="p">(</span><span class="n">shape_tensor</span><span class="p">):</span>
             <span class="k">if</span> <span class="n">element_shapes</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
                 <span class="n">_compile_unsupported</span><span class="p">(</span>
-                    <span class="s2">"NestedTensor._from_packed"</span><span class="p">,</span>
+                    <span class="s2">"NestedTensor.from_packed"</span><span class="p">,</span>
                     <span class="s2">"explicit multi-ragged FakeTensor rebuilds require concrete element shapes or persistent offsets"</span><span class="p">,</span>
                 <span class="p">)</span>
             <span class="k">assert</span> <span class="n">element_shapes</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
@@ -10432,7 +10454,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
             <span class="k">return</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">offsets</span><span class="o">.</span><span class="n">new_empty</span><span class="p">((</span><span class="nb">len</span><span class="p">(</span><span class="n">sizes</span><span class="p">)</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">offsets</span><span class="o">.</span><span class="n">dtype</span><span class="p">)</span> <span class="k">for</span> <span class="n">sizes</span> <span class="ow">in</span> <span class="n">level_sizes</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">_is_compiling</span><span class="p">():</span>
             <span class="n">_compile_unsupported</span><span class="p">(</span>
-                <span class="s2">"NestedTensor._from_packed"</span><span class="p">,</span>
+                <span class="s2">"NestedTensor.from_packed"</span><span class="p">,</span>
                 <span class="s2">"explicit multi-ragged rebuilds require persistent ragged offset tensors"</span><span class="p">,</span>
             <span class="p">)</span>
         <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_build_explicit_ragged_offsets</span><span class="p">(</span><span class="n">shape_tensor</span><span class="p">,</span> <span class="n">ragged_dims</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">offsets</span><span class="o">.</span><span class="n">dtype</span><span class="p">)</span>
@@ -11107,7 +11129,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
     <span class="k">def</span><span class="w"> </span><span class="nf">_layout_from_state</span><span class="p">(</span><span class="n">state</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">,</span> <span class="n">like</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">packed_shape</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Size</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">NestedTensor</span><span class="p">:</span>
 <span class="w">        </span><span class="sa">r</span><span class="sd">"""Rebuild a layout wrapper from :meth:`_layout_state` around a zero-stride child on ``like``'s device."""</span>
         <span class="bp">cls</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">shape_tensor</span><span class="p">,</span> <span class="n">permutation</span><span class="p">,</span> <span class="n">ragged_dims</span><span class="p">,</span> <span class="n">logical_shape</span><span class="p">,</span> <span class="n">batch_first</span><span class="p">,</span> <span class="n">padding</span><span class="p">,</span> <span class="n">mask</span><span class="p">,</span> <span class="n">splits</span> <span class="o">=</span> <span class="n">state</span>
-        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
             <span class="n">like</span><span class="o">.</span><span class="n">new_empty</span><span class="p">(())</span><span class="o">.</span><span class="n">expand</span><span class="p">(</span><span class="n">packed_shape</span><span class="p">),</span>
             <span class="n">offsets</span><span class="p">,</span>
             <span class="n">shape_tensor</span><span class="p">,</span>
@@ -11264,7 +11286,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
         <span class="k">return</span> <span class="n">offsets</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">)</span>
 
     <span class="nd">@classmethod</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">_from_packed</span><span class="p">(</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">from_packed</span><span class="p">(</span>
         <span class="bp">cls</span><span class="p">,</span>
         <span class="n">values</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>
         <span class="n">offsets</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>
@@ -11300,11 +11322,11 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
 
         <span class="n">compiling</span> <span class="o">=</span> <span class="n">_is_compiling</span><span class="p">()</span>
         <span class="k">if</span> <span class="n">validate</span> <span class="ow">and</span> <span class="n">compiling</span><span class="p">:</span>
-            <span class="n">_compile_unsupported</span><span class="p">(</span><span class="s2">"NestedTensor._from_packed"</span><span class="p">,</span> <span class="s2">"metadata validation is eager-only"</span><span class="p">)</span>
+            <span class="n">_compile_unsupported</span><span class="p">(</span><span class="s2">"NestedTensor.from_packed"</span><span class="p">,</span> <span class="s2">"metadata validation is eager-only"</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">outer_size</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">logical_shape</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">Size</span><span class="p">(</span><span class="n">outer_size</span><span class="p">)</span>
         <span class="k">elif</span> <span class="n">compiling</span><span class="p">:</span>
-            <span class="n">_compile_unsupported</span><span class="p">(</span><span class="s2">"NestedTensor._from_packed"</span><span class="p">,</span> <span class="s2">"outer_size must be provided for compile-safe rebuilds"</span><span class="p">)</span>
+            <span class="n">_compile_unsupported</span><span class="p">(</span><span class="s2">"NestedTensor.from_packed"</span><span class="p">,</span> <span class="s2">"outer_size must be provided for compile-safe rebuilds"</span><span class="p">)</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="n">logical_shape</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_logical_shape_from_physical_shape</span><span class="p">(</span><span class="n">shape_tensor</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">batch_first</span><span class="p">)</span>
         <span class="c1"># An omitted permutation is resolved to ``ragged_dims`` followed by the static dims, which</span>
@@ -11360,7 +11382,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
                 <span class="n">stored_element_shapes</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="k">elif</span> <span class="n">compiling</span> <span class="ow">and</span> <span class="n">physical_rank</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="p">(</span><span class="n">packed_sizes</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">element_shapes</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">):</span>
             <span class="n">_compile_unsupported</span><span class="p">(</span>
-                <span class="s2">"NestedTensor._from_packed"</span><span class="p">,</span>
+                <span class="s2">"NestedTensor.from_packed"</span><span class="p">,</span>
                 <span class="s2">"per-element Python metadata may be omitted only for a tensor-backed layout"</span><span class="p">,</span>
             <span class="p">)</span>
 
@@ -11603,7 +11625,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
         <span class="k">if</span> <span class="n">offsets</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">shape_tensor</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="c1"># During backward, outer_size may reflect a transposed view</span>
             <span class="c1"># (e.g., (seq, batch, hidden) from MHA's batch-dim transpose).</span>
-            <span class="c1"># Detect and correct so _from_packed validation passes.</span>
+            <span class="c1"># Detect and correct so from_packed validation passes.</span>
             <span class="n">batch_size</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">offsets</span><span class="p">)</span> <span class="o">-</span> <span class="mi">1</span>
             <span class="n">outer</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">outer_size</span><span class="p">)</span>
             <span class="n">batch_first</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"batch_first"</span><span class="p">,</span> <span class="kc">True</span><span class="p">)</span>
@@ -11640,7 +11662,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
                 <span class="n">ragged_offsets</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">inner_tensors</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_ragged_offset_names</span><span class="p">(</span><span class="n">ragged_rank</span><span class="p">))</span>
             <span class="k">else</span><span class="p">:</span>
                 <span class="n">ragged_offsets</span> <span class="o">=</span> <span class="kc">None</span>
-            <span class="n">result</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+            <span class="n">result</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
                 <span class="n">values</span><span class="p">,</span>
                 <span class="n">offsets</span><span class="p">,</span>
                 <span class="n">shape_tensor</span><span class="p">,</span>
@@ -12424,7 +12446,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
 <span class="w">        </span><span class="sa">r</span><span class="sd">"""Wrap one scalar per element using the canonical scalar-result metadata."""</span>
         <span class="bp">cls</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
         <span class="n">offsets</span><span class="p">,</span> <span class="n">shape</span><span class="p">,</span> <span class="n">outer_size</span><span class="p">,</span> <span class="n">packed_sizes</span><span class="p">,</span> <span class="n">element_shapes</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_scalar_result_meta</span><span class="p">()</span>
-        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
             <span class="n">values</span><span class="p">,</span>
             <span class="n">offsets</span><span class="p">,</span>
             <span class="n">shape</span><span class="p">,</span>
@@ -12500,7 +12522,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
                 <span class="n">shape</span> <span class="k">for</span> <span class="n">tensor</span> <span class="ow">in</span> <span class="n">tensors</span> <span class="k">for</span> <span class="n">shape</span> <span class="ow">in</span> <span class="n">cast</span><span class="p">(</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span> <span class="o">...</span><span class="p">],</span> <span class="n">tensor</span><span class="o">.</span><span class="n">_element_shapes</span><span class="p">)</span>
             <span class="p">)</span>
 
-        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
             <span class="n">new_values</span><span class="p">,</span>
             <span class="n">new_offsets</span><span class="p">,</span>
             <span class="n">new_physical_shape</span><span class="p">,</span>
@@ -13089,7 +13111,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
             <span class="n">torch</span><span class="o">.</span><span class="n">cumsum</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span><span class="n">sizes</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">long</span><span class="p">),</span> <span class="n">dim</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">out</span><span class="o">=</span><span class="n">offsets</span><span class="p">[</span><span class="mi">1</span><span class="p">:])</span>
             <span class="n">shape_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span><span class="n">element_shapes</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">long</span><span class="p">)</span>
             <span class="n">values</span> <span class="o">=</span> <span class="n">concat_tensor</span><span class="o">.</span><span class="n">clone</span><span class="p">(</span><span class="n">memory_format</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">contiguous_format</span><span class="p">)</span>
-            <span class="n">result</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+            <span class="n">result</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
                 <span class="n">values</span><span class="p">,</span>
                 <span class="n">offsets</span><span class="p">,</span>
                 <span class="n">shape_tensor</span><span class="p">,</span>
@@ -13320,7 +13342,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
             <span class="bp">self</span><span class="o">.</span><span class="n">_share_offset_caches</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
             <span class="n">result</span><span class="o">.</span><span class="n">_inherit_tensor_backed_dynamic_dims</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
             <span class="k">return</span> <span class="n">result</span>
-        <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
             <span class="n">packed_values</span><span class="p">,</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_offsets</span><span class="p">,</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_physical_shape</span><span class="p">,</span>
@@ -13414,7 +13436,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
                 <span class="sa">f</span><span class="s2">"got </span><span class="si">{</span><span class="n">packed_values</span><span class="o">.</span><span class="n">shape</span><span class="si">}</span><span class="s2"> and expected </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">shape</span><span class="si">}</span><span class="s2">"</span>
             <span class="p">)</span>
         <span class="n">pin_memory</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">packed_values</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">"cpu"</span> <span class="ow">and</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">is_pinned</span><span class="p">())</span>
-        <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
             <span class="n">packed_values</span><span class="p">,</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_offsets</span><span class="p">,</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_physical_shape</span><span class="p">,</span>
@@ -13579,7 +13601,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
             <span class="n">packed_sizes</span> <span class="o">=</span> <span class="p">()</span>
             <span class="n">element_shapes</span> <span class="o">=</span> <span class="p">()</span>
         <span class="n">pin_memory</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">packed_values</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">"cpu"</span> <span class="ow">and</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">is_pinned</span><span class="p">())</span>
-        <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
             <span class="n">packed_values</span><span class="p">,</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_offsets</span><span class="p">,</span>
             <span class="n">physical_shape</span><span class="p">,</span>
@@ -13709,7 +13731,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
         <span class="k">else</span><span class="p">:</span>
             <span class="n">logical_shape</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">Size</span><span class="p">((</span><span class="n">max_length</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="p">),</span> <span class="o">*</span><span class="n">static_tail</span><span class="p">))</span>
         <span class="n">pin_memory</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">packed_values</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">"cpu"</span> <span class="ow">and</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">is_pinned</span><span class="p">())</span>
-        <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
             <span class="n">packed_values</span><span class="p">,</span>
             <span class="n">offsets</span><span class="p">,</span>
             <span class="n">physical_shape</span><span class="p">,</span>
@@ -13863,7 +13885,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
         <span class="c1"># Both ragged axes and their offsets already carry the dynamic shape contract. Marking</span>
         <span class="c1"># caller-owned packed storage here would mutate a compiled graph input after Dynamo has</span>
         <span class="c1"># installed its guards, forcing an otherwise unnecessary second compilation.</span>
-        <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
             <span class="n">packed_values</span><span class="p">,</span>
             <span class="n">outer_offsets</span><span class="p">,</span>
             <span class="n">physical_shape</span><span class="p">,</span>
@@ -14009,7 +14031,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
         <span class="k">else</span><span class="p">:</span>
             <span class="n">logical_shape</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">Size</span><span class="p">((</span><span class="n">max_rows</span><span class="p">,</span> <span class="n">batch_size</span><span class="p">,</span> <span class="n">max_columns</span><span class="p">,</span> <span class="o">*</span><span class="n">static_tail</span><span class="p">))</span>
         <span class="n">pin_memory</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">packed_values</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">"cpu"</span> <span class="ow">and</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">is_pinned</span><span class="p">())</span>
-        <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
             <span class="n">packed_values</span><span class="p">,</span>
             <span class="n">outer_offsets</span><span class="p">,</span>
             <span class="n">physical_shape</span><span class="p">,</span>
@@ -14077,7 +14099,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
         <span class="n">values</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_dense_to_packed_values</span><span class="p">(</span><span class="n">tensor</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">values</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">element_shapes</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_element_shapes</span>
-            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
                 <span class="n">values</span><span class="p">,</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">_offsets</span><span class="p">,</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">_physical_shape</span><span class="p">,</span>
@@ -14324,7 +14346,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
                 <span class="n">new_physical_shape</span><span class="p">[:,</span> <span class="n">dim</span><span class="p">]</span> <span class="o">=</span> <span class="n">new_physical_shape</span><span class="o">.</span><span class="n">new_tensor</span><span class="p">(</span><span class="n">packed_sizes</span><span class="p">)</span>
             <span class="k">else</span><span class="p">:</span>
                 <span class="n">new_physical_shape</span><span class="p">[:,</span> <span class="n">dim</span><span class="p">]</span> <span class="o">=</span> <span class="n">size</span>
-        <span class="k">return</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+        <span class="k">return</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
             <span class="n">values</span><span class="p">,</span>
             <span class="n">offsets</span><span class="p">,</span>
             <span class="n">new_physical_shape</span><span class="p">,</span>
@@ -14404,7 +14426,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
         <span class="n">outer_size</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_logical_shape</span><span class="p">)</span>
         <span class="n">batch_dim</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_batch_dim_from_logical_shape</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_logical_shape</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">batch_first</span><span class="p">)</span>
         <span class="n">outer_size</span><span class="p">[</span><span class="n">batch_dim</span><span class="p">]</span> <span class="o">=</span> <span class="mi">0</span>
-        <span class="k">return</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+        <span class="k">return</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">narrow</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">),</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_offsets</span><span class="o">.</span><span class="n">new_zeros</span><span class="p">((</span><span class="mi">1</span><span class="p">,)),</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_physical_shape</span><span class="p">[:</span><span class="mi">0</span><span class="p">],</span>
@@ -14498,7 +14520,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
         <span class="n">offsets</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_offsets</span><span class="o">.</span><span class="n">new_zeros</span><span class="p">((</span><span class="mi">1</span><span class="p">,))</span>
         <span class="n">physical_shape</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_physical_shape</span><span class="o">.</span><span class="n">new_empty</span><span class="p">((</span><span class="mi">0</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">projected_extents</span><span class="p">)))</span>
         <span class="n">ragged_offsets</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">offsets</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="n">ragged_dims</span><span class="p">)</span> <span class="k">if</span> <span class="n">ragged_dims</span> <span class="k">else</span> <span class="kc">None</span>
-        <span class="k">return</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+        <span class="k">return</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
             <span class="n">values</span><span class="p">,</span>
             <span class="n">offsets</span><span class="p">,</span>
             <span class="n">physical_shape</span><span class="p">,</span>
@@ -15059,7 +15081,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
         <span class="n">serialized_ragged_offsets</span> <span class="o">=</span> <span class="n">state</span><span class="p">[</span><span class="s2">"_ragged_offsets"</span><span class="p">]</span>
         <span class="k">if</span> <span class="n">serialized_ragged_offsets</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">serialized_ragged_offsets</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">level_offsets</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span> <span class="k">for</span> <span class="n">level_offsets</span> <span class="ow">in</span> <span class="n">serialized_ragged_offsets</span><span class="p">)</span>
-        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
             <span class="n">state</span><span class="p">[</span><span class="s2">"_packed_values"</span><span class="p">],</span>
             <span class="n">state</span><span class="p">[</span><span class="s2">"_offsets"</span><span class="p">]</span><span class="o">.</span><span class="n">cpu</span><span class="p">(),</span>
             <span class="n">state</span><span class="p">[</span><span class="s2">"_physical_shape"</span><span class="p">]</span><span class="o">.</span><span class="n">cpu</span><span class="p">(),</span>
@@ -15077,7 +15099,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
 
     <span class="k">def</span><span class="w"> </span><span class="nf">__copy__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="w">        </span><span class="sa">r</span><span class="sd">"""Shallow copy: new NestedTensor sharing underlying tensor data."""</span>
-        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="p">,</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_offsets</span><span class="p">,</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_physical_shape</span><span class="p">,</span>
@@ -15096,7 +15118,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
 
     <span class="k">def</span><span class="w"> </span><span class="nf">__deepcopy__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">memo</span><span class="p">):</span>
 <span class="w">        </span><span class="sa">r</span><span class="sd">"""Deep copy: clones all tensor data."""</span>
-        <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">clone</span><span class="p">(),</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_offsets</span><span class="o">.</span><span class="n">clone</span><span class="p">(),</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_physical_shape</span><span class="o">.</span><span class="n">clone</span><span class="p">(),</span>
@@ -15248,7 +15270,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
 
     <span class="k">def</span><span class="w"> </span><span class="nf">pin_memory</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span> <span class="o">|</span> <span class="nb">str</span> <span class="o">|</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
 <span class="w">        </span><span class="sa">r</span><span class="sd">"""Pin the underlying tensor memory for faster host-to-device transfer."""</span>
-        <span class="k">return</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+        <span class="k">return</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">pin_memory</span><span class="p">(</span><span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_offsets</span><span class="p">,</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_physical_shape</span><span class="p">,</span>
@@ -16666,6 +16688,448 @@ without an explicit target device, or declared ragged dimensions are invalid.</p
 <div class="doc doc-object doc-function">
 
 
+<h4 id="danling.tensors.nested_tensor.NestedTensor.from_packed" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">from_packed</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+<a href="#danling.tensors.nested_tensor.NestedTensor.from_packed" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><span class="filename">Python</span><pre><span></span><code><span class="nf">from_packed</span><span class="p">(</span><span class="n"><span title="danling.tensors.nested_tensor.NestedTensor.from_packed(values)">values</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" title="&lt;code&gt;torch.Tensor&lt;/code&gt;" href="https://pytorch.org/docs/stable/tensors.html#torch.Tensor">Tensor</a></span><span class="p">,</span> <span class="n"><span title="danling.tensors.nested_tensor.NestedTensor.from_packed(offsets)">offsets</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" title="&lt;code&gt;torch.Tensor&lt;/code&gt;" href="https://pytorch.org/docs/stable/tensors.html#torch.Tensor">Tensor</a></span><span class="p">,</span> <span class="n"><span title="danling.tensors.nested_tensor.NestedTensor.from_packed(shape_tensor)">shape_tensor</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" title="&lt;code&gt;torch.Tensor&lt;/code&gt;" href="https://pytorch.org/docs/stable/tensors.html#torch.Tensor">Tensor</a></span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n"><span title="danling.tensors.nested_tensor.NestedTensor.from_packed(permutation)">permutation</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/stdtypes.html#tuple">tuple</a></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a></span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n"><span title="danling.tensors.nested_tensor.NestedTensor.from_packed(ragged_dims)">ragged_dims</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/stdtypes.html#tuple">tuple</a></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a></span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n"><span title="danling.tensors.nested_tensor.NestedTensor.from_packed(batch_first)">batch_first</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="n"><span title="danling.tensors.nested_tensor.NestedTensor.from_packed(padding_value)">padding_value</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#float">float</a></span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span> <span class="n"><span title="danling.tensors.nested_tensor.NestedTensor.from_packed(mask_value)">mask_value</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span> <span class="n"><span title="danling.tensors.nested_tensor.NestedTensor.from_packed(pin_memory)">pin_memory</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span> <span class="n"><span title="danling.tensors.nested_tensor.NestedTensor.from_packed(outer_size)">outer_size</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" title="&lt;code&gt;torch.Size&lt;/code&gt;" href="https://pytorch.org/docs/stable/size.html#torch.Size">Size</a></span> <span class="o">|</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/stdtypes.html#tuple">tuple</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n"><span title="danling.tensors.nested_tensor.NestedTensor.from_packed(packed_sizes)">packed_sizes</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/stdtypes.html#tuple">tuple</a></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a></span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n"><span title="danling.tensors.nested_tensor.NestedTensor.from_packed(element_shapes)">element_shapes</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/stdtypes.html#tuple">tuple</a></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/stdtypes.html#tuple">tuple</a></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a></span><span class="p">,</span> <span class="o">...</span><span class="p">],</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n"><span title="danling.tensors.nested_tensor.NestedTensor.from_packed(ragged_offsets)">ragged_offsets</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/stdtypes.html#tuple">tuple</a></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-external" title="&lt;code&gt;torch.Tensor&lt;/code&gt;" href="https://pytorch.org/docs/stable/tensors.html#torch.Tensor">Tensor</a></span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n"><span title="danling.tensors.nested_tensor.NestedTensor.from_packed(validate)">validate</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="n"><span title="danling.tensors.nested_tensor.NestedTensor.from_packed(materialize_python_metadata)">materialize_python_metadata</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="n"><span title="danling.tensors.nested_tensor.NestedTensor.from_packed(mark_dynamic)">mark_dynamic</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="n"><span title="danling.tensors.nested_tensor.NestedTensor.from_packed(mark_values_dynamic)">mark_values_dynamic</span></span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a></span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><span title="typing_extensions.Self">Self</span></span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Construct a NestedTensor directly from packed representation.</p>
+<p><code>mark_dynamic</code> hints Dynamo that the ragged extents may vary. Public factories and
+eager operator results need it; operator intermediates already inside a compiled
+region pass <code>False</code> (see :meth:<code>_mark_tensor_backed_dynamic_dims</code>).</p>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1478</span>
+<span class="normal">1479</span>
+<span class="normal">1480</span>
+<span class="normal">1481</span>
+<span class="normal">1482</span>
+<span class="normal">1483</span>
+<span class="normal">1484</span>
+<span class="normal">1485</span>
+<span class="normal">1486</span>
+<span class="normal">1487</span>
+<span class="normal">1488</span>
+<span class="normal">1489</span>
+<span class="normal">1490</span>
+<span class="normal">1491</span>
+<span class="normal">1492</span>
+<span class="normal">1493</span>
+<span class="normal">1494</span>
+<span class="normal">1495</span>
+<span class="normal">1496</span>
+<span class="normal">1497</span>
+<span class="normal">1498</span>
+<span class="normal">1499</span>
+<span class="normal">1500</span>
+<span class="normal">1501</span>
+<span class="normal">1502</span>
+<span class="normal">1503</span>
+<span class="normal">1504</span>
+<span class="normal">1505</span>
+<span class="normal">1506</span>
+<span class="normal">1507</span>
+<span class="normal">1508</span>
+<span class="normal">1509</span>
+<span class="normal">1510</span>
+<span class="normal">1511</span>
+<span class="normal">1512</span>
+<span class="normal">1513</span>
+<span class="normal">1514</span>
+<span class="normal">1515</span>
+<span class="normal">1516</span>
+<span class="normal">1517</span>
+<span class="normal">1518</span>
+<span class="normal">1519</span>
+<span class="normal">1520</span>
+<span class="normal">1521</span>
+<span class="normal">1522</span>
+<span class="normal">1523</span>
+<span class="normal">1524</span>
+<span class="normal">1525</span>
+<span class="normal">1526</span>
+<span class="normal">1527</span>
+<span class="normal">1528</span>
+<span class="normal">1529</span>
+<span class="normal">1530</span>
+<span class="normal">1531</span>
+<span class="normal">1532</span>
+<span class="normal">1533</span>
+<span class="normal">1534</span>
+<span class="normal">1535</span>
+<span class="normal">1536</span>
+<span class="normal">1537</span>
+<span class="normal">1538</span>
+<span class="normal">1539</span>
+<span class="normal">1540</span>
+<span class="normal">1541</span>
+<span class="normal">1542</span>
+<span class="normal">1543</span>
+<span class="normal">1544</span>
+<span class="normal">1545</span>
+<span class="normal">1546</span>
+<span class="normal">1547</span>
+<span class="normal">1548</span>
+<span class="normal">1549</span>
+<span class="normal">1550</span>
+<span class="normal">1551</span>
+<span class="normal">1552</span>
+<span class="normal">1553</span>
+<span class="normal">1554</span>
+<span class="normal">1555</span>
+<span class="normal">1556</span>
+<span class="normal">1557</span>
+<span class="normal">1558</span>
+<span class="normal">1559</span>
+<span class="normal">1560</span>
+<span class="normal">1561</span>
+<span class="normal">1562</span>
+<span class="normal">1563</span>
+<span class="normal">1564</span>
+<span class="normal">1565</span>
+<span class="normal">1566</span>
+<span class="normal">1567</span>
+<span class="normal">1568</span>
+<span class="normal">1569</span>
+<span class="normal">1570</span>
+<span class="normal">1571</span>
+<span class="normal">1572</span>
+<span class="normal">1573</span>
+<span class="normal">1574</span>
+<span class="normal">1575</span>
+<span class="normal">1576</span>
+<span class="normal">1577</span>
+<span class="normal">1578</span>
+<span class="normal">1579</span>
+<span class="normal">1580</span>
+<span class="normal">1581</span>
+<span class="normal">1582</span>
+<span class="normal">1583</span>
+<span class="normal">1584</span>
+<span class="normal">1585</span>
+<span class="normal">1586</span>
+<span class="normal">1587</span>
+<span class="normal">1588</span>
+<span class="normal">1589</span>
+<span class="normal">1590</span>
+<span class="normal">1591</span>
+<span class="normal">1592</span>
+<span class="normal">1593</span>
+<span class="normal">1594</span>
+<span class="normal">1595</span>
+<span class="normal">1596</span>
+<span class="normal">1597</span>
+<span class="normal">1598</span>
+<span class="normal">1599</span>
+<span class="normal">1600</span>
+<span class="normal">1601</span>
+<span class="normal">1602</span>
+<span class="normal">1603</span>
+<span class="normal">1604</span>
+<span class="normal">1605</span>
+<span class="normal">1606</span>
+<span class="normal">1607</span>
+<span class="normal">1608</span>
+<span class="normal">1609</span>
+<span class="normal">1610</span>
+<span class="normal">1611</span>
+<span class="normal">1612</span>
+<span class="normal">1613</span>
+<span class="normal">1614</span>
+<span class="normal">1615</span>
+<span class="normal">1616</span>
+<span class="normal">1617</span>
+<span class="normal">1618</span>
+<span class="normal">1619</span>
+<span class="normal">1620</span>
+<span class="normal">1621</span>
+<span class="normal">1622</span>
+<span class="normal">1623</span>
+<span class="normal">1624</span>
+<span class="normal">1625</span>
+<span class="normal">1626</span>
+<span class="normal">1627</span>
+<span class="normal">1628</span>
+<span class="normal">1629</span>
+<span class="normal">1630</span>
+<span class="normal">1631</span>
+<span class="normal">1632</span>
+<span class="normal">1633</span>
+<span class="normal">1634</span>
+<span class="normal">1635</span>
+<span class="normal">1636</span>
+<span class="normal">1637</span>
+<span class="normal">1638</span>
+<span class="normal">1639</span>
+<span class="normal">1640</span>
+<span class="normal">1641</span>
+<span class="normal">1642</span>
+<span class="normal">1643</span>
+<span class="normal">1644</span>
+<span class="normal">1645</span>
+<span class="normal">1646</span>
+<span class="normal">1647</span>
+<span class="normal">1648</span>
+<span class="normal">1649</span>
+<span class="normal">1650</span>
+<span class="normal">1651</span>
+<span class="normal">1652</span>
+<span class="normal">1653</span>
+<span class="normal">1654</span>
+<span class="normal">1655</span>
+<span class="normal">1656</span>
+<span class="normal">1657</span>
+<span class="normal">1658</span>
+<span class="normal">1659</span>
+<span class="normal">1660</span>
+<span class="normal">1661</span>
+<span class="normal">1662</span>
+<span class="normal">1663</span>
+<span class="normal">1664</span>
+<span class="normal">1665</span>
+<span class="normal">1666</span>
+<span class="normal">1667</span>
+<span class="normal">1668</span>
+<span class="normal">1669</span>
+<span class="normal">1670</span>
+<span class="normal">1671</span>
+<span class="normal">1672</span>
+<span class="normal">1673</span>
+<span class="normal">1674</span>
+<span class="normal">1675</span>
+<span class="normal">1676</span>
+<span class="normal">1677</span>
+<span class="normal">1678</span>
+<span class="normal">1679</span>
+<span class="normal">1680</span>
+<span class="normal">1681</span>
+<span class="normal">1682</span>
+<span class="normal">1683</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@classmethod</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">from_packed</span><span class="p">(</span>
+    <span class="bp">cls</span><span class="p">,</span>
+    <span class="n">values</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>
+    <span class="n">offsets</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>
+    <span class="n">shape_tensor</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">permutation</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">ragged_dims</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">batch_first</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+    <span class="n">padding_value</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
+    <span class="n">mask_value</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">pin_memory</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">outer_size</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Size</span> <span class="o">|</span> <span class="nb">tuple</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">packed_sizes</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">element_shapes</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">ragged_offsets</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Tensor</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">validate</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+    <span class="n">materialize_python_metadata</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+    <span class="n">mark_dynamic</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+    <span class="n">mark_values_dynamic</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">"""Construct a NestedTensor directly from packed representation.</span>
+
+<span class="sd">    ``mark_dynamic`` hints Dynamo that the ragged extents may vary. Public factories and</span>
+<span class="sd">    eager operator results need it; operator intermediates already inside a compiled</span>
+<span class="sd">    region pass ``False`` (see :meth:`_mark_tensor_backed_dynamic_dims`).</span>
+<span class="sd">    """</span>
+    <span class="c1"># offsets and shape_tensor MUST live on CPU to avoid implicit CUDA syncs</span>
+    <span class="c1"># when handlers call .item() / .tolist() on them.</span>
+    <span class="k">if</span> <span class="n">offsets</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">!=</span> <span class="s2">"cpu"</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"offsets must be on CPU, got </span><span class="si">{</span><span class="n">offsets</span><span class="o">.</span><span class="n">device</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">shape_tensor</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">!=</span> <span class="s2">"cpu"</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"shape_tensor must be on CPU, got </span><span class="si">{</span><span class="n">shape_tensor</span><span class="o">.</span><span class="n">device</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+
+    <span class="n">compiling</span> <span class="o">=</span> <span class="n">_is_compiling</span><span class="p">()</span>
+    <span class="k">if</span> <span class="n">validate</span> <span class="ow">and</span> <span class="n">compiling</span><span class="p">:</span>
+        <span class="n">_compile_unsupported</span><span class="p">(</span><span class="s2">"NestedTensor.from_packed"</span><span class="p">,</span> <span class="s2">"metadata validation is eager-only"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">outer_size</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">logical_shape</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">Size</span><span class="p">(</span><span class="n">outer_size</span><span class="p">)</span>
+    <span class="k">elif</span> <span class="n">compiling</span><span class="p">:</span>
+        <span class="n">_compile_unsupported</span><span class="p">(</span><span class="s2">"NestedTensor.from_packed"</span><span class="p">,</span> <span class="s2">"outer_size must be provided for compile-safe rebuilds"</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">logical_shape</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_logical_shape_from_physical_shape</span><span class="p">(</span><span class="n">shape_tensor</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">batch_first</span><span class="p">)</span>
+    <span class="c1"># An omitted permutation is resolved to ``ragged_dims`` followed by the static dims, which</span>
+    <span class="c1"># is tensor-backed by construction; an omitted ``ragged_dims`` is inferred below and then</span>
+    <span class="c1"># declared, so its layout is tensor-backed as well unless it turns out to be empty.</span>
+    <span class="n">tensor_backed_layout</span> <span class="o">=</span> <span class="n">ragged_dims</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="p">(</span>
+        <span class="n">permutation</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_is_tensor_backed_layout</span><span class="p">(</span><span class="n">permutation</span><span class="p">,</span> <span class="n">ragged_dims</span><span class="p">)</span>
+    <span class="p">)</span>
+    <span class="k">if</span> <span class="n">tensor_backed_layout</span><span class="p">:</span>
+        <span class="c1"># A tensor-backed layout is completely described by its metadata tensors; the</span>
+        <span class="c1"># per-element Python shape caches stay off it in eager exactly as under compile.</span>
+        <span class="n">materialize_python_metadata</span> <span class="o">=</span> <span class="kc">False</span>
+    <span class="k">if</span> <span class="n">packed_sizes</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">materialize_python_metadata</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">_is_fake_tensor</span><span class="p">(</span><span class="n">offsets</span><span class="p">):</span>
+        <span class="n">packed_sizes</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">size</span><span class="p">)</span> <span class="k">for</span> <span class="n">size</span> <span class="ow">in</span> <span class="p">(</span><span class="n">offsets</span><span class="p">[</span><span class="mi">1</span><span class="p">:]</span> <span class="o">-</span> <span class="n">offsets</span><span class="p">[:</span><span class="o">-</span><span class="mi">1</span><span class="p">])</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+    <span class="k">if</span> <span class="n">element_shapes</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">materialize_python_metadata</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">_is_fake_tensor</span><span class="p">(</span><span class="n">shape_tensor</span><span class="p">):</span>
+        <span class="n">element_shapes</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span><span class="bp">cls</span><span class="o">.</span><span class="n">_trim_shape</span><span class="p">(</span><span class="n">shape</span><span class="p">)</span> <span class="k">for</span> <span class="n">shape</span> <span class="ow">in</span> <span class="n">shape_tensor</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+
+    <span class="n">physical_rank</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">shape_tensor</span><span class="o">.</span><span class="n">size</span><span class="p">(</span><span class="mi">1</span><span class="p">))</span>
+    <span class="k">if</span> <span class="n">permutation</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">ragged_dims</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">resolved_permutation</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_permutation_from_physical_shape</span><span class="p">(</span><span class="n">shape_tensor</span><span class="p">,</span> <span class="n">element_shapes</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">resolved_ragged_dims</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_normalize_ragged_dims</span><span class="p">(</span><span class="n">ragged_dims</span><span class="p">,</span> <span class="n">physical_rank</span><span class="p">)</span>
+            <span class="n">resolved_permutation</span> <span class="o">=</span> <span class="n">resolved_ragged_dims</span> <span class="o">+</span> <span class="nb">tuple</span><span class="p">(</span>
+                <span class="n">dim</span> <span class="k">for</span> <span class="n">dim</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">physical_rank</span><span class="p">)</span> <span class="k">if</span> <span class="n">dim</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">resolved_ragged_dims</span>
+            <span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">resolved_permutation</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">dim</span><span class="p">)</span> <span class="k">for</span> <span class="n">dim</span> <span class="ow">in</span> <span class="n">permutation</span><span class="p">)</span>
+    <span class="n">resolved_ragged_dims</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_ragged_dims_from_packed_layout</span><span class="p">(</span>
+        <span class="n">values</span><span class="p">,</span>
+        <span class="n">physical_rank</span><span class="p">,</span>
+        <span class="n">resolved_permutation</span><span class="p">,</span>
+        <span class="n">ragged_dims</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="c1"># An inferred layout is declared once resolved (see ``__new__``).</span>
+    <span class="n">ragged_dims_explicit</span> <span class="o">=</span> <span class="n">ragged_dims</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">or</span> <span class="nb">bool</span><span class="p">(</span><span class="n">resolved_ragged_dims</span><span class="p">)</span>
+    <span class="n">resolved_ragged_offsets</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_resolve_persistent_ragged_offsets</span><span class="p">(</span>
+        <span class="n">offsets</span><span class="p">,</span>
+        <span class="n">shape_tensor</span><span class="p">,</span>
+        <span class="n">permutation</span><span class="o">=</span><span class="n">resolved_permutation</span><span class="p">,</span>
+        <span class="n">ragged_dims</span><span class="o">=</span><span class="n">resolved_ragged_dims</span> <span class="k">if</span> <span class="n">ragged_dims_explicit</span> <span class="k">else</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">ragged_offsets</span><span class="o">=</span><span class="n">ragged_offsets</span><span class="p">,</span>
+        <span class="n">element_shapes</span><span class="o">=</span><span class="n">element_shapes</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="c1"># The caller's Python metadata still validates the rebuild below; only the stored</span>
+    <span class="c1"># wrapper drops it for a tensor-backed layout.</span>
+    <span class="n">stored_packed_sizes</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">packed_sizes</span>
+    <span class="n">stored_element_shapes</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">element_shapes</span>
+    <span class="k">if</span> <span class="n">resolved_ragged_offsets</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="c1"># Standalone FakeTensor execution keeps them: fake values leave no other source of sizes.</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">compiling</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">_is_fake_tensor</span><span class="p">(</span><span class="n">values</span><span class="p">):</span>
+            <span class="n">stored_packed_sizes</span> <span class="o">=</span> <span class="kc">None</span>
+            <span class="n">stored_element_shapes</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="k">elif</span> <span class="n">compiling</span> <span class="ow">and</span> <span class="n">physical_rank</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="p">(</span><span class="n">packed_sizes</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">element_shapes</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">):</span>
+        <span class="n">_compile_unsupported</span><span class="p">(</span>
+            <span class="s2">"NestedTensor.from_packed"</span><span class="p">,</span>
+            <span class="s2">"per-element Python metadata may be omitted only for a tensor-backed layout"</span><span class="p">,</span>
+        <span class="p">)</span>
+
+    <span class="k">if</span> <span class="p">(</span>
+        <span class="ow">not</span> <span class="n">compiling</span>
+        <span class="ow">and</span> <span class="n">_is_fake_tensor</span><span class="p">(</span><span class="n">values</span><span class="p">)</span>
+        <span class="ow">and</span> <span class="ow">not</span> <span class="p">(</span><span class="n">_is_fake_tensor</span><span class="p">(</span><span class="n">offsets</span><span class="p">)</span> <span class="ow">and</span> <span class="n">_is_fake_tensor</span><span class="p">(</span><span class="n">shape_tensor</span><span class="p">))</span>
+    <span class="p">):</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">torch._subclasses.fake_tensor</span><span class="w"> </span><span class="kn">import</span> <span class="n">maybe_get_fake_mode</span>
+
+        <span class="n">fake_mode</span> <span class="o">=</span> <span class="n">maybe_get_fake_mode</span><span class="p">(</span><span class="n">values</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">fake_mode</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="c1"># Standalone FakeTensor execution has no shape environment to express</span>
+            <span class="c1"># data-dependent sizes, so the concrete row splits read here before the</span>
+            <span class="c1"># conversion stay on the wrapper as Python metadata.</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">_is_fake_tensor</span><span class="p">(</span><span class="n">offsets</span><span class="p">):</span>
+                <span class="k">if</span> <span class="n">stored_packed_sizes</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                    <span class="c1"># ``tolist`` reads memory directly; a sliced difference would dispatch a</span>
+                    <span class="c1"># real tensor through the active fake mode.</span>
+                    <span class="n">splits</span> <span class="o">=</span> <span class="n">offsets</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+                    <span class="n">stored_packed_sizes</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">end</span> <span class="o">-</span> <span class="n">start</span><span class="p">)</span> <span class="k">for</span> <span class="n">start</span><span class="p">,</span> <span class="n">end</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">splits</span><span class="p">[:</span><span class="o">-</span><span class="mi">1</span><span class="p">],</span> <span class="n">splits</span><span class="p">[</span><span class="mi">1</span><span class="p">:]))</span>
+                <span class="n">offsets</span> <span class="o">=</span> <span class="n">fake_mode</span><span class="o">.</span><span class="n">from_tensor</span><span class="p">(</span><span class="n">offsets</span><span class="p">,</span> <span class="n">static_shapes</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">trace</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">_is_fake_tensor</span><span class="p">(</span><span class="n">shape_tensor</span><span class="p">):</span>
+                <span class="k">if</span> <span class="n">stored_element_shapes</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                    <span class="n">rows</span> <span class="o">=</span> <span class="n">shape_tensor</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+                    <span class="n">stored_element_shapes</span> <span class="o">=</span> <span class="p">(</span>
+                        <span class="nb">tuple</span><span class="p">(</span><span class="nb">tuple</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">size</span><span class="p">)</span> <span class="k">for</span> <span class="n">size</span> <span class="ow">in</span> <span class="n">row</span><span class="p">)</span> <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">rows</span><span class="p">)</span>
+                        <span class="k">if</span> <span class="n">resolved_ragged_offsets</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+                        <span class="k">else</span> <span class="nb">tuple</span><span class="p">(</span><span class="bp">cls</span><span class="o">.</span><span class="n">_trim_shape</span><span class="p">(</span><span class="n">row</span><span class="p">)</span> <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">rows</span><span class="p">)</span>
+                    <span class="p">)</span>
+                <span class="n">shape_tensor</span> <span class="o">=</span> <span class="n">fake_mode</span><span class="o">.</span><span class="n">from_tensor</span><span class="p">(</span><span class="n">shape_tensor</span><span class="p">,</span> <span class="n">static_shapes</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">trace</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">resolved_ragged_offsets</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">resolved_ragged_offsets</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+                    <span class="n">resolved_ragged_offsets</span> <span class="o">=</span> <span class="p">(</span><span class="n">offsets</span><span class="p">,)</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">resolved_ragged_offsets</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span>
+                        <span class="p">(</span>
+                            <span class="n">level_offsets</span>
+                            <span class="k">if</span> <span class="n">_is_fake_tensor</span><span class="p">(</span><span class="n">level_offsets</span><span class="p">)</span>
+                            <span class="k">else</span> <span class="n">fake_mode</span><span class="o">.</span><span class="n">from_tensor</span><span class="p">(</span><span class="n">level_offsets</span><span class="p">,</span> <span class="n">static_shapes</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">trace</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+                        <span class="p">)</span>
+                        <span class="k">for</span> <span class="n">level_offsets</span> <span class="ow">in</span> <span class="n">resolved_ragged_offsets</span>
+                    <span class="p">)</span>
+
+    <span class="n">values</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_maybe_pin_values</span><span class="p">(</span><span class="n">values</span><span class="p">,</span> <span class="n">pin_memory</span><span class="p">)</span>
+    <span class="n">result</span><span class="p">:</span> <span class="n">Self</span>
+    <span class="k">if</span> <span class="n">compiling</span><span class="p">:</span>
+        <span class="n">constructor</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_compiled_packed_constructor</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="n">cast</span><span class="p">(</span>
+            <span class="n">Self</span><span class="p">,</span>
+            <span class="n">constructor</span><span class="p">(</span>
+                <span class="n">values</span><span class="p">,</span>
+                <span class="n">offsets</span><span class="p">,</span>
+                <span class="n">shape_tensor</span><span class="p">,</span>
+                <span class="n">logical_shape</span><span class="p">,</span>
+                <span class="n">resolved_permutation</span><span class="p">,</span>
+                <span class="n">resolved_ragged_dims</span><span class="p">,</span>
+                <span class="n">ragged_dims_explicit</span><span class="p">,</span>
+                <span class="nb">bool</span><span class="p">(</span><span class="n">batch_first</span><span class="p">),</span>
+                <span class="nb">float</span><span class="p">(</span><span class="n">padding_value</span><span class="p">),</span>
+                <span class="nb">bool</span><span class="p">(</span><span class="n">mask_value</span><span class="p">),</span>
+                <span class="nb">bool</span><span class="p">(</span><span class="n">pin_memory</span> <span class="ow">and</span> <span class="n">values</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">"cpu"</span> <span class="ow">and</span> <span class="n">values</span><span class="o">.</span><span class="n">is_pinned</span><span class="p">()),</span>
+                <span class="n">stored_packed_sizes</span><span class="p">,</span>
+                <span class="n">stored_element_shapes</span><span class="p">,</span>
+                <span class="n">resolved_ragged_offsets</span><span class="p">,</span>
+            <span class="p">),</span>
+        <span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="o">.</span><span class="n">_make_wrapper_subclass</span><span class="p">(</span>
+            <span class="bp">cls</span><span class="p">,</span>
+            <span class="n">logical_shape</span><span class="p">,</span>
+            <span class="n">dtype</span><span class="o">=</span><span class="n">values</span><span class="o">.</span><span class="n">dtype</span><span class="p">,</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">values</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
+            <span class="n">requires_grad</span><span class="o">=</span><span class="n">values</span><span class="o">.</span><span class="n">requires_grad</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">result</span><span class="o">.</span><span class="n">_packed_values</span> <span class="o">=</span> <span class="n">values</span>
+        <span class="n">result</span><span class="o">.</span><span class="n">_offsets</span> <span class="o">=</span> <span class="n">offsets</span>
+        <span class="n">result</span><span class="o">.</span><span class="n">_permutation</span> <span class="o">=</span> <span class="n">resolved_permutation</span>
+        <span class="n">result</span><span class="o">.</span><span class="n">_ragged_dims</span> <span class="o">=</span> <span class="n">resolved_ragged_dims</span>
+        <span class="n">result</span><span class="o">.</span><span class="n">_ragged_dims_explicit</span> <span class="o">=</span> <span class="n">ragged_dims_explicit</span>
+        <span class="n">result</span><span class="o">.</span><span class="n">_physical_shape</span> <span class="o">=</span> <span class="n">shape_tensor</span>
+        <span class="n">result</span><span class="o">.</span><span class="n">_logical_shape</span> <span class="o">=</span> <span class="n">logical_shape</span>
+        <span class="n">result</span><span class="o">.</span><span class="n">_set_runtime_config</span><span class="p">(</span>
+            <span class="n">batch_first</span><span class="o">=</span><span class="n">batch_first</span><span class="p">,</span>
+            <span class="n">padding_value</span><span class="o">=</span><span class="n">padding_value</span><span class="p">,</span>
+            <span class="n">mask_value</span><span class="o">=</span><span class="n">mask_value</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">result</span><span class="o">.</span><span class="n">_pin_memory</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">pin_memory</span> <span class="ow">and</span> <span class="n">values</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">"cpu"</span> <span class="ow">and</span> <span class="n">values</span><span class="o">.</span><span class="n">is_pinned</span><span class="p">())</span>
+        <span class="n">result</span><span class="o">.</span><span class="n">_packed_sizes</span> <span class="o">=</span> <span class="n">stored_packed_sizes</span>
+        <span class="n">result</span><span class="o">.</span><span class="n">_element_shapes</span> <span class="o">=</span> <span class="n">stored_element_shapes</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">_install_persistent_ragged_offsets</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">resolved_ragged_offsets</span><span class="p">)</span>
+        <span class="n">result</span><span class="o">.</span><span class="n">_invalidate_transient_caches</span><span class="p">()</span>
+    <span class="k">if</span> <span class="n">mark_dynamic</span><span class="p">:</span>
+        <span class="n">result</span><span class="o">.</span><span class="n">_mark_tensor_backed_dynamic_dims</span><span class="p">(</span><span class="n">mark_values</span><span class="o">=</span><span class="n">mark_values_dynamic</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">validate</span><span class="p">:</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">_validate_packed_metadata</span><span class="p">(</span>
+            <span class="n">result</span><span class="o">.</span><span class="n">concat</span><span class="p">,</span>
+            <span class="n">result</span><span class="o">.</span><span class="n">_offsets</span><span class="p">,</span>
+            <span class="n">result</span><span class="o">.</span><span class="n">_physical_shape</span><span class="p">,</span>
+            <span class="n">permutation</span><span class="o">=</span><span class="n">result</span><span class="o">.</span><span class="n">_permutation</span><span class="p">,</span>
+            <span class="n">ragged_dims</span><span class="o">=</span><span class="n">result</span><span class="o">.</span><span class="n">_ragged_dims</span><span class="p">,</span>
+            <span class="n">logical_shape</span><span class="o">=</span><span class="n">result</span><span class="o">.</span><span class="n">_logical_shape</span><span class="p">,</span>
+            <span class="n">batch_first</span><span class="o">=</span><span class="n">result</span><span class="o">.</span><span class="n">batch_first</span><span class="p">,</span>
+            <span class="n">packed_sizes</span><span class="o">=</span><span class="n">packed_sizes</span><span class="p">,</span>
+            <span class="n">element_shapes</span><span class="o">=</span><span class="n">element_shapes</span><span class="p">,</span>
+            <span class="n">ragged_offsets</span><span class="o">=</span><span class="n">resolved_ragged_offsets</span><span class="p">,</span>
+        <span class="p">)</span>
+    <span class="k">return</span> <span class="n">result</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h4 id="danling.tensors.nested_tensor.NestedTensor.__coerce_tangent_metadata__" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">__coerce_tangent_metadata__</span>
 
@@ -17957,7 +18421,7 @@ including dtype, device, gradient, pinning, ragged-dimension and padding options
         <span class="n">torch</span><span class="o">.</span><span class="n">cumsum</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span><span class="n">sizes</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">long</span><span class="p">),</span> <span class="n">dim</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">out</span><span class="o">=</span><span class="n">offsets</span><span class="p">[</span><span class="mi">1</span><span class="p">:])</span>
         <span class="n">shape_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span><span class="n">element_shapes</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">long</span><span class="p">)</span>
         <span class="n">values</span> <span class="o">=</span> <span class="n">concat_tensor</span><span class="o">.</span><span class="n">clone</span><span class="p">(</span><span class="n">memory_format</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">contiguous_format</span><span class="p">)</span>
-        <span class="n">result</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
             <span class="n">values</span><span class="p">,</span>
             <span class="n">offsets</span><span class="p">,</span>
             <span class="n">shape_tensor</span><span class="p">,</span>
@@ -18590,7 +19054,7 @@ shape, and runtime configuration are inherited from <code>self</code>.</p>
             <span class="sa">f</span><span class="s2">"got </span><span class="si">{</span><span class="n">packed_values</span><span class="o">.</span><span class="n">shape</span><span class="si">}</span><span class="s2"> and expected </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">shape</span><span class="si">}</span><span class="s2">"</span>
         <span class="p">)</span>
     <span class="n">pin_memory</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">packed_values</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">"cpu"</span> <span class="ow">and</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">is_pinned</span><span class="p">())</span>
-    <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
         <span class="n">packed_values</span><span class="p">,</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_offsets</span><span class="p">,</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_physical_shape</span><span class="p">,</span>
@@ -19070,7 +19534,7 @@ mismatched packed leading dimension.</p>
         <span class="n">packed_sizes</span> <span class="o">=</span> <span class="p">()</span>
         <span class="n">element_shapes</span> <span class="o">=</span> <span class="p">()</span>
     <span class="n">pin_memory</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">packed_values</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">"cpu"</span> <span class="ow">and</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">is_pinned</span><span class="p">())</span>
-    <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
         <span class="n">packed_values</span><span class="p">,</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_offsets</span><span class="p">,</span>
         <span class="n">physical_shape</span><span class="p">,</span>
@@ -19497,7 +19961,7 @@ or does not sum to the packed leading dimension.</p>
     <span class="k">else</span><span class="p">:</span>
         <span class="n">logical_shape</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">Size</span><span class="p">((</span><span class="n">max_length</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="p">),</span> <span class="o">*</span><span class="n">static_tail</span><span class="p">))</span>
     <span class="n">pin_memory</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">packed_values</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">"cpu"</span> <span class="ow">and</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">is_pinned</span><span class="p">())</span>
-    <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
         <span class="n">packed_values</span><span class="p">,</span>
         <span class="n">offsets</span><span class="p">,</span>
         <span class="n">physical_shape</span><span class="p">,</span>
@@ -19973,7 +20437,7 @@ dimension.</p>
     <span class="c1"># Both ragged axes and their offsets already carry the dynamic shape contract. Marking</span>
     <span class="c1"># caller-owned packed storage here would mutate a compiled graph input after Dynamo has</span>
     <span class="c1"># installed its guards, forcing an otherwise unnecessary second compilation.</span>
-    <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
         <span class="n">packed_values</span><span class="p">,</span>
         <span class="n">outer_offsets</span><span class="p">,</span>
         <span class="n">physical_shape</span><span class="p">,</span>
@@ -20399,7 +20863,7 @@ its autograd history directly.</p>
     <span class="k">else</span><span class="p">:</span>
         <span class="n">logical_shape</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">Size</span><span class="p">((</span><span class="n">max_rows</span><span class="p">,</span> <span class="n">batch_size</span><span class="p">,</span> <span class="n">max_columns</span><span class="p">,</span> <span class="o">*</span><span class="n">static_tail</span><span class="p">))</span>
     <span class="n">pin_memory</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">packed_values</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">"cpu"</span> <span class="ow">and</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">is_pinned</span><span class="p">())</span>
-    <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
         <span class="n">packed_values</span><span class="p">,</span>
         <span class="n">outer_offsets</span><span class="p">,</span>
         <span class="n">physical_shape</span><span class="p">,</span>
@@ -20644,7 +21108,7 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
     <span class="n">values</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_dense_to_packed_values</span><span class="p">(</span><span class="n">tensor</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">values</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">element_shapes</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_element_shapes</span>
-        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
             <span class="n">values</span><span class="p">,</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_offsets</span><span class="p">,</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_physical_shape</span><span class="p">,</span>
@@ -21555,7 +22019,7 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 <span class="normal">5306</span>
 <span class="normal">5307</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">__copy__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Shallow copy: new NestedTensor sharing underlying tensor data."""</span>
-    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="p">,</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_offsets</span><span class="p">,</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_physical_shape</span><span class="p">,</span>
@@ -21618,7 +22082,7 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 <span class="normal">5329</span>
 <span class="normal">5330</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">__deepcopy__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">memo</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Deep copy: clones all tensor data."""</span>
-    <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">clone</span><span class="p">(),</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_offsets</span><span class="o">.</span><span class="n">clone</span><span class="p">(),</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_physical_shape</span><span class="o">.</span><span class="n">clone</span><span class="p">(),</span>
@@ -22220,7 +22684,7 @@ The newly created <code>NestedTensor</code> will have the same shape as current 
 <span class="normal">5477</span>
 <span class="normal">5478</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">pin_memory</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span> <span class="o">|</span> <span class="nb">str</span> <span class="o">|</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Pin the underlying tensor memory for faster host-to-device transfer."""</span>
-    <span class="k">return</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_from_packed</span><span class="p">(</span>
+    <span class="k">return</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">from_packed</span><span class="p">(</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">concat</span><span class="o">.</span><span class="n">pin_memory</span><span class="p">(</span><span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_offsets</span><span class="p">,</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_physical_shape</span><span class="p">,</span>

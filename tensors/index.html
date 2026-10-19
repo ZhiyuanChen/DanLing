@@ -1618,7 +1618,7 @@ per_element_fallback  (unpack → apply per element → repack)
 </code></pre></div></td></tr></table></div>
 <h3 id="key-internal-helpers">Key Internal Helpers<a class="headerlink" href="#key-internal-helpers" title="Permanent link">&para;</a></h3>
 <ul>
-<li><code>_from_packed(values, offsets, shape_tensor, ...)</code>: Direct constructor from packed representation. Used by all aten handlers to build results without function call overhead.</li>
+<li><code>from_packed(values, offsets, shape_tensor, ...)</code>: Direct constructor from packed representation. Used by all aten handlers to build results without function call overhead.</li>
 <li><code>_map_storage_serial(input, fn)</code>: Per-element slow path — applies <code>fn</code> to each element via <code>_unpack()</code>. Used when ops need individual element dimensionality.</li>
 <li><code>_translate_non_batch_dim(nt, dim)</code>: Converts a NestedTensor dim index to the corresponding element-level dim (skipping the batch dimension).</li>
 </ul>

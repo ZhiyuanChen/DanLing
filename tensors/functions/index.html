@@ -1678,7 +1678,7 @@ registered handler.</p>
 <p>Handlers here use several strategies depending on the op&rsquo;s needs:</p>
 <ul>
 <li><strong>Packed fast-path</strong> — ops that work directly on the concatenated
-  <code>concat</code> tensor via <code>NestedTensor._from_packed</code> without knowing element
+  <code>concat</code> tensor via <code>NestedTensor.from_packed</code> without knowing element
   boundaries.</li>
 <li><strong>Per-element dispatch</strong> — ops that must be applied to each element
   individually via <code>_map_storage_serial</code>, e.g. when dimension indices need
