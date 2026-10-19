@@ -7297,7 +7297,7 @@ first local part for compatibility with TorchRunner helpers.</p>
 
         <span class="n">mesh_device_type</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">parallel</span><span class="o">.</span><span class="n">mesh_device_type</span>
         <span class="k">if</span> <span class="n">mesh_device_type</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">mesh_device_type</span> <span class="o">=</span> <span class="s2">"cuda"</span> <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">is_available</span><span class="p">()</span> <span class="k">else</span> <span class="s2">"cpu"</span>
+            <span class="n">mesh_device_type</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">device_mesh</span> <span class="o">=</span> <span class="n">init_device_mesh</span><span class="p">(</span>
             <span class="n">mesh_device_type</span><span class="p">,</span>
             <span class="n">mesh_shape</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">topology</span><span class="o">.</span><span class="n">mesh_shape</span><span class="p">,</span>
