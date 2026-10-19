@@ -247,6 +247,7 @@ class NestedTensor(torch.Tensor):
     _cached_packed_offsets: dict[tuple[str, torch.dtype, tuple[int, ...]], Tensor] | None
     _cached_ragged_level_offsets: dict[tuple[int, str, torch.dtype, tuple[int, ...]], Tensor] | None
     _unflattened_autograd: bool
+    _wrapper_grad_leaf: bool
     _is_aot_tangent: bool
     _RAGGED_OFFSETS_PREFIX = "_ragged_offsets_"
     _AOT_CACHE_HASH_VERSION = 3
@@ -2757,7 +2758,8 @@ class NestedTensor(torch.Tensor):
         r"""Avoid retaining a differentiable view whose graph saves this wrapper."""
         if not torch.is_grad_enabled():
             return True
-        return not ((vars(self).get("_unflattened_autograd", False) and self.requires_grad) or self.grad_fn is not None)
+        wrapper_owned = vars(self).get("_unflattened_autograd", False) or vars(self).get("_wrapper_grad_leaf", False)
+        return not ((wrapper_owned and self.requires_grad) or self.grad_fn is not None)
 
     # ------------------------------------------------------------------
     # Cached materialized views
@@ -2932,7 +2934,7 @@ class NestedTensor(torch.Tensor):
         with torch._C.DisableTorchFunctionSubclass():
             grad_fn = self.grad_fn
             wrapper_version = self._cache_version(self)
-        if vars(self).get("_unflattened_autograd", False):
+        if vars(self).get("_unflattened_autograd", False) or vars(self).get("_wrapper_grad_leaf", False):
             needs_projection = self.requires_grad
         else:
             # Saved-tensor hooks can restore this wrapper's autograd edge while
@@ -5164,9 +5166,11 @@ class NestedTensor(torch.Tensor):
     @requires_grad.setter
     def requires_grad(self, value: bool):
         r"""Enable or disable gradient computation for this tensor."""
-        if super().requires_grad == value:
-            return
         values = vars(self).get("_packed_values")
+        if super().requires_grad == value:
+            if value and self.is_leaf and isinstance(values, Tensor) and values.is_leaf:
+                self._wrapper_grad_leaf = True
+            return
         if not self.is_leaf:
             raise RuntimeError("you can only change requires_grad flags of leaf variables")
         if isinstance(values, Tensor) and values.requires_grad != value and not values.is_leaf:
@@ -5174,6 +5178,9 @@ class NestedTensor(torch.Tensor):
         torch.Tensor.requires_grad.__set__(self, value)  # type: ignore[attr-defined]
         if isinstance(values, Tensor) and values.requires_grad != value:
             values.requires_grad_(value)
+        # Explicitly enabled leaves own their public autograd edge. Factories
+        # wrapping an existing values graph retain that graph's original owner.
+        self._wrapper_grad_leaf = value and isinstance(values, Tensor) and values.is_leaf
 
     # ------------------------------------------------------------------
     # State management
@@ -5220,6 +5227,7 @@ class NestedTensor(torch.Tensor):
             "_packed_sizes": self._packed_sizes,
             "_element_shapes": self._element_shapes,
             "_ragged_offsets": self._persistent_ragged_offsets(),
+            "_wrapper_grad_leaf": vars(self).get("_wrapper_grad_leaf", False),
         }
 
     def __setstate__(self, state: Mapping) -> None:
@@ -5260,6 +5268,7 @@ class NestedTensor(torch.Tensor):
         type(self)._install_persistent_ragged_offsets(self, ragged_offsets)
         # Serialized state intentionally excludes transient caches.
         self._invalidate_transient_caches()
+        self._wrapper_grad_leaf = state.get("_wrapper_grad_leaf", False)
         self._mark_tensor_backed_dynamic_dims()
         self._validate_metadata()
 
@@ -5286,6 +5295,8 @@ class NestedTensor(torch.Tensor):
             element_shapes=state["_element_shapes"],
             ragged_offsets=serialized_ragged_offsets,
         )
+        result._wrapper_grad_leaf = state.get("_wrapper_grad_leaf", False)
+        return result
 
     def __copy__(self):
         r"""Shallow copy: new NestedTensor sharing underlying tensor data."""
@@ -5490,7 +5501,7 @@ class NestedTensor(torch.Tensor):
         return torch.prod(self, dim=dim, keepdim=keepdim, dtype=dtype)
 
     def requires_grad_(self, requires_grad: bool = True):
-        r"""Enable or disable gradient computation in-place."""
+        r"""Enable gradients in-place; explicit leaves accumulate them in ``self.grad``."""
         self.requires_grad = requires_grad
         return self
 
@@ -5964,7 +5975,7 @@ class _PackedValuesAutograd(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_values: Tensor):
         (input,) = ctx.saved_tensors
-        return input._packed_like_unchecked_raw(grad_values)
+        return input._packed_like_unchecked(grad_values)
 
 
 @torch.compiler.allow_in_graph

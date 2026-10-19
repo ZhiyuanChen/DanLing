@@ -39,6 +39,57 @@ TORCH_VERSION = Version(torch.__version__.split("+")[0])
 
 class TestAutogradViewLifetime:
 
+    @pytest.mark.parametrize("backend", ["eager", "aot_eager"])
+    def test_explicit_leaf_owns_gradients(self, device, backend):
+        def loss(value):
+            return torch.pow(value, 3).sum()
+
+        run = loss if backend == "eager" else torch.compile(loss, backend=backend, fullgraph=True, dynamic=True)
+        source = NT(
+            [
+                torch.randn(2, 3, 2, device=device, dtype=torch.float64),
+                torch.randn(4, 2, 2, device=device, dtype=torch.float64),
+            ],
+            ragged_dims=(0, 1),
+        ).requires_grad_()
+        with torch.no_grad():
+            values = source.concat.clone()
+        assert source.is_leaf
+        for step in (1, 2):
+            run(source).backward()
+            assert isinstance(source.grad, NT)
+            assert_close(source.grad.element_sizes(), source.element_sizes())
+            assert_close(source.grad.concat, step * 3 * values.square())
+        source.grad = None
+        gradient = torch.autograd.grad(run(source), source)[0]
+        assert source.grad is None
+        assert_close(gradient.concat, 3 * values.square())
+        if backend == "eager":
+            gradient = torch.autograd.grad(loss(source), source, create_graph=True)[0]
+            second = torch.autograd.grad(gradient, source, grad_outputs=torch.ones_like(gradient))[0]
+            assert_close(second.concat, 6 * values)
+            try:
+                loss(source).backward(create_graph=True)
+                assert_close(source.grad.concat, 3 * values.square())
+                second = torch.autograd.grad(source.grad, source, grad_outputs=torch.ones_like(source.grad))[0]
+                assert_close(second.concat, 6 * values)
+            finally:
+                source.grad = None
+
+    def test_explicit_leaf_materialized_views_release_owner(self, device):
+        source = NT([torch.randn(2, 3, device=device), torch.randn(4, 3, device=device)]).requires_grad_()
+        with torch.no_grad():
+            values = source.concat.clone()
+        padded = source.tensor
+        elements = source.unbind(0)
+        loss = padded.square().sum() + sum(element.square().sum() for element in elements)
+        loss.backward()
+        assert_close(source.grad.concat, 4 * values)
+        reference = weakref.ref(source)
+        del source, padded, elements, loss
+        gc.collect()
+        assert reference() is None
+
     @staticmethod
     def view(output, name):
         if name == "concat":
