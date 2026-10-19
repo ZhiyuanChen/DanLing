@@ -7605,6 +7605,22 @@ ATEN_CREATION_OPS = [
 ]
 
 
+@NestedTensorAtenRegistry.implement(aten.new_empty_strided.default, compile_safe=True)
+def new_empty_strided(func, args, kwargs):
+    r"""Preserve ragged geometry when autograd allocates a matching gradient layout."""
+    from torch.fx.experimental.symbolic_shapes import statically_known_true
+
+    source, size, stride = args[:3]
+    if (
+        len(size) == source.dim()
+        and len(stride) == source.dim()
+        and all(statically_known_true(a == b) for a, b in zip(size, source.shape))
+        and all(statically_known_true(a == b) for a, b in zip(stride, source.stride()))
+    ):
+        return source.packed_like(aten.empty_like.default(source._packed_values, **kwargs))
+    return func(source._packed_values, *args[1:], **kwargs)
+
+
 def _creation_like_handler(func, args, kwargs):
     r"""Create packed values while deriving layout and pinning from the actual result."""
     source = args[0]
