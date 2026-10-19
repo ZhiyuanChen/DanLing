@@ -180,6 +180,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
     def __init__(self, config) -> None:
         if not isinstance(config, RunnerConfig):
             config = RunnerConfig(config)
+        if isinstance(config.get("device"), torch.device):
+            config["device"] = str(config["device"])
         config.stack = normalize_stack_name(config.get("stack", "ddp"))
         checkpoint_backend = str(config.get("ckpt.backend")).strip().lower()
         if checkpoint_backend == "auto":
@@ -227,7 +229,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
         The default implementation initializes the default torch.distributed
         process group from `WORLD_SIZE`/`RANK`/`LOCAL_RANK` environment
-        variables when `WORLD_SIZE > 1`, sets the active CUDA device,
+        variables when `WORLD_SIZE > 1`, sets the selected CUDA device,
         broadcasts `self.timestamp` from rank 0, and seeds
         `elastic_state.restart_count` from `TORCHELASTIC_RESTART_COUNT`.
 
@@ -251,7 +253,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
         **Side effects:** when `WORLD_SIZE > 1`, calls
         `dist.init_process_group(...)`, sets the active CUDA device when
-        CUDA is available, and broadcasts `self.timestamp` from rank 0.
+        the runtime device is CUDA, and broadcasts `self.timestamp` from rank 0.
         Reads `TORCHELASTIC_RESTART_COUNT` into `elastic_state.restart_count`.
 
         !!! danger "Do not"
@@ -277,6 +279,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         world_size = int(os.getenv("WORLD_SIZE", "1"))
         rank = int(os.getenv("RANK", "0"))
         runtime_device = self.device
+        if backend is None:
+            backend = dist.Backend.default_device_backend_map.get(runtime_device.type)
         use_cuda_runtime = torch.cuda.is_available() and runtime_device.type == "cuda"
         runtime_device_index = runtime_device.index if runtime_device.index is not None else self.local_rank
         dist_ready = dist.is_available() and dist.is_initialized()
@@ -2902,7 +2906,14 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         return super().read_config(checkpoint, *args, **kwargs)
 
     @property
-    def device(self):
+    def device(self) -> torch.device:
+        """Use the configured device, falling back to local CUDA or CPU selection."""
+        configured_device = self.config.get("device")
+        if configured_device is not None:
+            device = torch.device(configured_device)
+            if device.type == "cuda" and device.index is None:
+                return torch.device("cuda", self.local_rank)
+            return device
         if torch.cuda.is_available():
             return torch.device("cuda", self.local_rank)
         return torch.device("cpu")

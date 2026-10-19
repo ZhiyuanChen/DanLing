@@ -194,15 +194,17 @@ class DistributedSmokeParallelRunner(CpuParallelRunner):
 def _parallel_gloo_smoke_worker(rank: int, world_size: int, workspace_root: str) -> None:
     configure_distributed_env(rank, world_size)
     os.environ["BACKEND"] = "gloo"
-    runner = DistributedSmokeParallelRunner(
-        {
-            "logging.enabled": False,
-            "workspace.root": workspace_root,
-            "dataloader": {"batch_size": 2, "shuffle": False},
-            "ckpt": {"async_mode": "disabled", "interval": 1},
-            **_parallel_config(shard=1, pipeline=world_size, tensor=1, mesh_device_type="cpu"),
-        }
-    )
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        runner = DistributedSmokeParallelRunner(
+            {
+                "logging.enabled": False,
+                "workspace.root": workspace_root,
+                "dataloader": {"batch_size": 2, "shuffle": False},
+                "ckpt": {"async_mode": "disabled", "interval": 1},
+                **_parallel_config(shard=1, pipeline=world_size, tensor=1),
+            }
+        )
     try:
         assert runner.world_size == world_size
         assert runner.tensor_degree == 1
@@ -213,6 +215,7 @@ def _parallel_gloo_smoke_worker(rank: int, world_size: int, workspace_root: str)
         assert runner.data_rank == 0
         assert runner.config.get("ckpt.backend") == "dcp"
         assert runner.device_mesh is not None
+        assert runner.device_mesh.device_type == "cpu"
         assert runner.tensor_group is not None
         assert runner.pipeline_group is not None
         assert runner.shard_group is not None

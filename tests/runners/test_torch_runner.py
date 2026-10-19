@@ -32,7 +32,7 @@ import torch.distributed as dist
 from torch import nn, optim
 
 import danling.runners.torch_runner as torch_runner_module
-from danling.runners import TorchRunner
+from danling.runners import RunnerConfig, TorchRunner
 from danling.tensors import NestedTensor
 from tests.runners.distributed import configure_distributed_env, process_group, require_gloo, run_distributed
 
@@ -1038,6 +1038,68 @@ class TestTorchRunnerProfiling:
 
 
 class TestTorchRunnerDistributedRuntime:
+    @pytest.mark.parametrize("device", ["cpu", torch.device("cpu")])
+    def test_explicit_cpu_device_overrides_cuda_availability(self, tmp_path: Path, monkeypatch, device) -> None:
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        runner = TinyTorchRunner(
+            {"logging.enabled": False, "workspace.root": str(tmp_path), "seed": None, "device": device}
+        )
+        try:
+            assert runner.device == torch.device("cpu")
+            assert runner.config.get("device") == "cpu"
+            assert runner.model is not None
+            assert all(parameter.device.type == "cpu" for parameter in runner.model.parameters())
+            prediction, loss = runner.train_step((torch.ones(2, 4), torch.zeros(2, 2)))
+            assert prediction.device.type == "cpu"
+            assert loss is not None and loss.device.type == "cpu"
+            assert runner.train_state.global_step == 1
+        finally:
+            runner.close()
+
+    @pytest.mark.parametrize("configured", ["cuda:3", torch.device("cuda:3"), "cuda", None])
+    def test_device_preserves_explicit_index_or_uses_local_rank(self, monkeypatch, configured) -> None:
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setenv("LOCAL_RANK", "2")
+        runner = object.__new__(TorchRunner)
+        runner.config = RunnerConfig({"device": configured})
+        expected = torch.device("cuda", 3 if configured is not None and str(configured) == "cuda:3" else 2)
+        assert runner.device == expected
+        if configured is None:
+            monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+            assert runner.device == torch.device("cpu")
+
+    @pytest.mark.parametrize(("device", "backend"), [("cpu", "gloo"), ("cuda:3", "nccl")])
+    def test_init_distributed_uses_selected_device(self, monkeypatch, device, backend) -> None:
+        monkeypatch.setenv("WORLD_SIZE", "2")
+        monkeypatch.setenv("LOCAL_RANK", "1")
+        monkeypatch.delenv("BACKEND", raising=False)
+        monkeypatch.delenv("TORCHELASTIC_RESTART_COUNT", raising=False)
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        selected_devices = []
+        monkeypatch.setattr(torch.cuda, "set_device", selected_devices.append)
+        initialized = False
+        initialization = {}
+
+        def init_process_group(**kwargs):
+            nonlocal initialized
+            initialization.update(kwargs)
+            initialized = True
+
+        monkeypatch.setattr(dist, "is_available", lambda: True)
+        monkeypatch.setattr(dist, "is_initialized", lambda: initialized)
+        monkeypatch.setattr(dist, "init_process_group", init_process_group)
+        monkeypatch.setattr(dist, "get_world_size", lambda: 2)
+        monkeypatch.setattr(dist, "broadcast_object_list", lambda objects: None)
+        runner = object.__new__(TorchRunner)
+        runner.config = RunnerConfig({"device": device})
+        runner.timestamp = "test-device"
+        runner.init_distributed()
+        assert initialization["backend"] == backend
+        if device == "cpu":
+            assert not selected_devices
+        else:
+            assert selected_devices and all(index == 3 for index in selected_devices)
+
     def test_init_distributed_rejects_preinitialized_process_group(self) -> None:
         require_gloo()
         run_distributed(_torch_runner_preinitialized_pg_worker, world_size=2)

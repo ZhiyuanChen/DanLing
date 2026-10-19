@@ -257,7 +257,7 @@ class ParallelRunner(TorchRunner):
 
         mesh_device_type = self.config.parallel.mesh_device_type
         if mesh_device_type is None:
-            mesh_device_type = "cuda" if torch.cuda.is_available() else "cpu"
+            mesh_device_type = self.device.type
         self.device_mesh = init_device_mesh(
             mesh_device_type,
             mesh_shape=self.topology.mesh_shape,
