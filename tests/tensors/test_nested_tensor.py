@@ -2391,6 +2391,46 @@ class TestIndexing:
 
 class TestMutationCoherence:
 
+    @pytest.mark.parametrize("explicit_leaf", [False, True])
+    def test_shape_assignment_updates_wrapper_gradient_layout(self, explicit_leaf):
+        parts = [
+            torch.arange(12.0, dtype=torch.float64).reshape(2, 3, 2).requires_grad_(),
+            torch.arange(16.0, dtype=torch.float64).reshape(4, 2, 2).requires_grad_(),
+        ]
+        source = NT(parts, ragged_dims=(0, 1))
+        replacement = torch.arange(36.0, dtype=torch.float64).reshape(6, 3, 2).requires_grad_()
+        if explicit_leaf:
+            source = source.detach().requires_grad_()
+            with torch.no_grad():
+                source[0] = replacement
+            source.concat.sum().backward()
+            assert source.grad.shape == source.shape
+            assert_close(source.grad.element_sizes(), source.element_sizes())
+        else:
+            source = source.square()
+            source[0] = replacement
+            gradients = torch.autograd.grad(source.concat.sum(), (*parts, replacement), allow_unused=True)
+            assert_close(gradients[0], torch.zeros_like(parts[0]))
+            assert_close(gradients[1], 2 * parts[1])
+            assert_close(gradients[2], torch.ones_like(replacement))
+
+    def test_shape_change_preserves_independent_alias_topology(self):
+        source = NT([torch.arange(12.0).reshape(2, 3, 2), torch.arange(16.0).reshape(4, 2, 2)], ragged_dims=(0, 1))
+        independent = source + 100
+        before = independent.element_sizes().clone()
+        replacement = torch.arange(12.0).reshape(6, 1, 2)
+        source[0] = replacement
+        assert_close(source[0], replacement)
+        assert_close(independent.element_sizes(), before)
+        assert independent.shape == (2, 4, 3, 2)
+        assert_close(independent[0], torch.arange(12.0).reshape(2, 3, 2) + 100)
+        before_values = source.concat.clone()
+        before_sizes = source.element_sizes().clone()
+        with pytest.raises(ValueError, match="ndim"):
+            source[0] = torch.ones(12)
+        assert_close(source.concat, before_values)
+        assert_close(source.element_sizes(), before_sizes)
+
     def test_materialized_views_follow_runtime_settings(self):
         nested = NestedTensor([torch.tensor([1.0, 2.0]), torch.tensor([3.0])], padding_value=-1.0)
         _ = nested.tensor_mask

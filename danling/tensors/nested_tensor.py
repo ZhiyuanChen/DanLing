@@ -2072,6 +2072,28 @@ class NestedTensor(torch.Tensor):
         type(self)._install_persistent_ragged_offsets(self, ragged_offsets)
         self._mark_tensor_backed_dynamic_dims()
         self._validate_metadata()
+        self._refresh_mutated_wrapper()
+
+    def _refresh_mutated_wrapper(self) -> None:
+        r"""Align wrapper metadata and its edge with newly assigned packed storage."""
+        # A wrapper's native storage is only a logical size placeholder. Share
+        # a fresh placeholder rather than resizing or allocating padded data.
+        layout = torch.Tensor._make_wrapper_subclass(
+            type(self),
+            self._logical_shape,
+            dtype=self.dtype,
+            device=self.device,
+            requires_grad=self.requires_grad,
+        )
+        with torch.no_grad(), torch._C.DisableTorchFunctionSubclass(), torch._C._DisableTorchDispatch():
+            torch.Tensor.set_(self, layout)
+        self._invalidate_transient_caches()
+        if (
+            torch.is_grad_enabled()
+            and self._packed_values.requires_grad
+            and not vars(self).get("_wrapper_grad_leaf", False)
+        ):
+            _PackedLikeAutograd.apply(self._packed_values, _PackedStructureReference(self, reuse_wrapper=True))
 
     @property
     def _hierarchical_offsets(self) -> tuple[Tensor, ...]:
@@ -4980,35 +5002,41 @@ class NestedTensor(torch.Tensor):
             if self.concat.dim() > 1 and new_payload.shape[1:] != self.concat.shape[1:]:
                 storage_list = list(self._storage)
                 storage_list[idx] = value
-                self._repack(storage_list)
-                return
-
-            if new_size == old_size:
-                # Same packed span size: direct overwrite keeps concat allocation.
-                self._packed_values[old_start:old_end] = new_payload
-                self._physical_shape[idx] = new_shape_row
+                candidate = self.__class__(storage_list, **self._meta())
             else:
-                # Different packed span size: splice concat and shift subsequent offsets.
-                self._packed_values = torch.cat([self.concat[:old_start], new_payload, self.concat[old_end:]], dim=0)
-                delta = new_size - old_size
-                self._offsets = self._offsets.clone()
-                self._offsets[idx + 1 :] += delta  # noqa: E203
-                self._physical_shape = self._physical_shape.clone()
-                self._physical_shape[idx] = new_shape_row
-            self._logical_shape = self._logical_shape_from_physical_shape(
-                self._physical_shape, self._offsets, self.batch_first
-            )
-            if self._element_shapes is not None and self._packed_sizes is not None:
-                element_shapes = list(self._element_shapes)
-                element_shapes[idx] = tuple(int(dim) for dim in value.shape)
-                self._element_shapes = tuple(element_shapes)
-                packed_sizes = list(self._packed_sizes)
-                packed_sizes[idx] = self._packed_sizes_like(
-                    (self._element_shapes[idx],),
-                    self._ragged_dims if self._ragged_dims_explicit else None,
-                )[0]
-                self._packed_sizes = tuple(packed_sizes)
-            self._validate_metadata()
+                # Derived wrappers share immutable layout tensors. Build and validate
+                # replacement metadata before touching numerical storage or aliases.
+                shape_tensor = self._physical_shape.clone()
+                shape_tensor[idx] = new_shape_row
+                offsets = self._offsets.clone()
+                offsets[idx + 1 :] += new_size - old_size  # noqa: E203
+                values = self._packed_values
+                if new_size != old_size:
+                    values = torch.cat([self.concat[:old_start], new_payload, self.concat[old_end:]], dim=0)
+                candidate = self.__class__.from_packed(
+                    values,
+                    offsets,
+                    shape_tensor,
+                    permutation=permutation,
+                    ragged_dims=self._ragged_dims if self._ragged_dims_explicit else None,
+                    batch_first=self.batch_first,
+                    padding_value=self.padding_value,
+                    mask_value=self.mask_value,
+                    pin_memory=self._pin_memory,
+                )
+                if new_size == old_size:
+                    self._packed_values[old_start:old_end] = new_payload
+            self._packed_values = candidate._packed_values
+            self._offsets = candidate._offsets
+            self._physical_shape = candidate._physical_shape
+            self._logical_shape = candidate._logical_shape
+            self._permutation = candidate._permutation
+            self._ragged_dims = candidate._ragged_dims
+            self._ragged_dims_explicit = candidate._ragged_dims_explicit
+            self._element_shapes = candidate._element_shapes
+            self._packed_sizes = candidate._packed_sizes
+            type(self)._install_persistent_ragged_offsets(self, candidate._persistent_ragged_offsets())
+            self._refresh_mutated_wrapper()
         elif isinstance(index, (slice, list)):
             if isinstance(index, list) and index and all(isinstance(i, bool) for i in index):
                 if len(index) != len(self):
@@ -6001,7 +6029,10 @@ class _PackedValuesAutograd(torch.autograd.Function):
     def forward(ctx, input: NestedTensor) -> Tensor:
         # Only the layout is needed in backward. Its detached alias keeps version
         # checks and saved-tensor hooks without retaining the owning wrapper.
-        ctx.save_for_backward(input.detach())
+        # Native layout changes on the owner must not invalidate the old
+        # projection's immutable topology. Its packed child still shares the
+        # numerical version counter used by ordinary saved-value checks.
+        ctx.save_for_backward(input._packed_like_unchecked_raw(input._packed_values.detach()))
         # The dense child is not a Function input. Returning that exact object
         # lets autograd attach this node to the wrapper's own backing tensor,
         # creating a wrapper -> backing.grad_fn -> saved-wrapper reference cycle.
