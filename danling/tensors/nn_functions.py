@@ -527,7 +527,11 @@ def _sdpa_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
         and query.concat.is_cuda
     ):
         return False
-    if query.dtype in _LOW_PRECISION_CUDA_DTYPES and torch.backends.cuda.flash_sdp_enabled():
+    if (
+        query.dtype in _LOW_PRECISION_CUDA_DTYPES
+        and torch.backends.cuda.flash_sdp_enabled()
+        and max(query.concat.size(-1), value.concat.size(-1)) <= 256
+    ):
         return True
     return dropout_p == 0.0 and _flex_attention_available
 
@@ -1239,6 +1243,13 @@ def multi_head_attention_forward(
                 f"query.batch_first={query.batch_first}, value.batch_first={value.batch_first}. "
                 "Use the same batch_first setting for query, key, and value."
             )
+    if isinstance(key, NestedTensor) and isinstance(value, NestedTensor):
+        type(key)._meta_tensor_equal(
+            key._physical_shape[:, 0],
+            value._physical_shape[:, 0],
+            "MHA key and value sequence lengths must match for every sample",
+            runtime_assert=True,
+        )
     if len(query) == 0:
         empty = cls([], **query._meta(include_dtype=True))
         return empty, (torch.empty(0, dtype=query.dtype, device=query.device) if need_weights else None)
@@ -1342,10 +1353,16 @@ def multi_head_attention_forward(
         if isinstance(v_padded, Tensor) and v_padded.dim() == 3:
             v_padded = v_padded.transpose(0, 1)
 
-    # Build key_padding_mask from NestedTensor structure if not provided
-    # PyTorch convention: True=ignore (padding)
-    if key_padding_mask is None and isinstance(key, NestedTensor):
-        key_padding_mask = ~_nested_sequence_valid_mask(key)
+    # Structural padding cannot become visible through an explicit user mask.
+    # PyTorch convention: True=ignore; floating masks use additive -inf.
+    if isinstance(key, NestedTensor):
+        structural_mask = ~_nested_sequence_valid_mask(key)
+        if key_padding_mask is None:
+            key_padding_mask = structural_mask
+        elif key_padding_mask.dtype == torch.bool:
+            key_padding_mask = key_padding_mask | structural_mask
+        else:
+            key_padding_mask = key_padding_mask.masked_fill(structural_mask, float("-inf"))
 
     # Single batched MHA call (replaces per-sample Python loop)
     output, weights = F.multi_head_attention_forward(
@@ -1462,6 +1479,27 @@ def scaled_dot_product_attention(
             f"query.batch_first={query.batch_first}, value.batch_first={value.batch_first}. "
             "Use the same batch_first setting for query, key, and value."
         )
+    if isinstance(key, NestedTensor) and isinstance(value, NestedTensor):
+        if key._physical_shape.size(1) != value._physical_shape.size(1):
+            raise ValueError("SDPA key and value ranks must match")
+        type(key)._meta_tensor_equal(
+            key._physical_shape[:, -2],
+            value._physical_shape[:, -2],
+            "SDPA key and value sequence lengths must match for every sample",
+            runtime_assert=True,
+        )
+    elif isinstance(key, NestedTensor):
+        torch._assert_async(
+            (key._physical_shape[:, -2] == value.shape[-2]).all(),
+            "SDPA key and value sequence lengths must match for every sample",
+        )
+    elif isinstance(value, NestedTensor):
+        torch._assert_async(
+            (value._physical_shape[:, -2] == key.shape[-2]).all(),
+            "SDPA key and value sequence lengths must match for every sample",
+        )
+    elif key.shape[-2] != value.shape[-2]:
+        raise ValueError("SDPA key and value sequence lengths must match")
     if isinstance(attn_mask, NestedTensor) and len(query) != len(attn_mask):
         raise ValueError(
             "NestedTensor batch length mismatch between query and attn_mask: "
@@ -1486,7 +1524,11 @@ def scaled_dot_product_attention(
         and not enable_gqa
         and query.concat.is_cuda
     ):
-        if query.dtype in _LOW_PRECISION_CUDA_DTYPES and torch.backends.cuda.flash_sdp_enabled():
+        if (
+            query.dtype in _LOW_PRECISION_CUDA_DTYPES
+            and torch.backends.cuda.flash_sdp_enabled()
+            and max(query.concat.size(-1), value.concat.size(-1)) <= 256
+        ):
             return _sdpa_via_native_flash(
                 query,
                 key,

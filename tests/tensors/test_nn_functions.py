@@ -3401,6 +3401,52 @@ def test_prelu_preserves_rank_and_logical_channels():
         torch.testing.assert_close(actual, F.prelu(source.unsqueeze(0), weight).squeeze(0))
 
 
+@pytest.mark.parametrize("mask_dtype", [torch.bool, torch.float64])
+def test_mha_user_mask_preserves_structural_padding(mask_dtype):
+    parts = [torch.randn(length, 4, dtype=torch.float64) for length in (2, 4)]
+    model = nn.MultiheadAttention(4, 2, batch_first=True, dtype=torch.float64).eval()
+    source = NT(parts, padding_value=13)
+    mask = torch.zeros(2, 4, dtype=mask_dtype)
+    actual, _ = model(source, source, source, key_padding_mask=mask, need_weights=True)
+    for i, (result, part) in enumerate(zip(actual, parts)):
+        expected, _ = model(part[None], part[None], part[None], key_padding_mask=mask[i : i + 1, : len(part)])
+        torch.testing.assert_close(result, expected[0])
+
+
+def test_sdpa_rejects_mismatched_key_value_sample_lengths():
+    query = NT(torch.randn(1, 2, 4), torch.randn(1, 3, 4))
+    value = NT(torch.randn(1, 3, 4), torch.randn(1, 2, 4))
+    with pytest.raises(RuntimeError, match="sequence lengths"):
+        F.scaled_dot_product_attention(query, query, value)
+
+
+@pytest.mark.parametrize(("query_width", "value_width"), [(4, 3), (4, 7), (16, 32)])
+def test_sdpa_preserves_value_feature_width(device, query_width, value_width):
+    if device.type != "cuda":
+        pytest.skip("native varlen attention requires CUDA")
+    queries = [
+        torch.randn(2, length, query_width, device=device, dtype=torch.bfloat16, requires_grad=True)
+        for length in (2, 4)
+    ]
+    keys = [torch.randn_like(query, requires_grad=True) for query in queries]
+    values = [
+        torch.randn(2, length, value_width, device=device, dtype=torch.bfloat16, requires_grad=True)
+        for length in (2, 4)
+    ]
+    actual = F.scaled_dot_product_attention(NT(queries), NT(keys), NT(values))
+    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+        expected = [F.scaled_dot_product_attention(q, k, v) for q, k, v in zip(queries, keys, values)]
+    for result, reference in zip(actual, expected):
+        assert result.shape == reference.shape
+        torch.testing.assert_close(result, reference, atol=0.02, rtol=0.02)
+
+    leaves = (*queries, *keys, *values)
+    actual_grads = torch.autograd.grad(actual.concat.square().sum(), leaves)
+    expected_grads = torch.autograd.grad(sum(part.square().sum() for part in expected), leaves)
+    for result, reference in zip(actual_grads, expected_grads):
+        torch.testing.assert_close(result, reference, atol=0.04, rtol=0.04)
+
+
 def test_embedding_bag_supports_2d_sample_bags():
     parts = [torch.tensor([[0, 1], [2, 3]]), torch.tensor([[1, 2]])]
     weight = torch.arange(12.0).reshape(4, 3)

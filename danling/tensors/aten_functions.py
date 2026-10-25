@@ -4865,9 +4865,14 @@ def _flash_attention_forward_raw(
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     r"""Run the underlying varlen FlashAttention op on packed dense values."""
     original_head_dim = query.size(-1)
-    q_padded = _pad_last_dim_for_flash(query)
-    k_padded = _pad_last_dim_for_flash(key)
-    v_padded = _pad_last_dim_for_flash(value)
+    if query.size(-1) != key.size(-1):
+        raise ValueError("SDPA query and key feature widths must match")
+    # The varlen kernel requires a common head width. Extra Q/K coordinates are
+    # zero, so padding all three preserves scores and the original Q scale.
+    common_width = ((max(query.size(-1), value.size(-1)) + 7) // 8) * 8
+    q_padded = _pad_last_dim_for_flash(query, common_width)
+    k_padded = _pad_last_dim_for_flash(key, common_width)
+    v_padded = _pad_last_dim_for_flash(value, common_width)
     softmax_scale = scale if scale is not None else original_head_dim**-0.5
     attention, logsumexp, rng_state, unused, debug_mask = aten._flash_attention_forward.default(
         q_padded,
@@ -4886,8 +4891,8 @@ def _flash_attention_forward_raw(
         seqused_k=seqused_k,
         alibi_slopes=alibi_slopes,
     )
-    if attention.size(-1) != original_head_dim:
-        attention = attention[..., :original_head_dim]
+    if attention.size(-1) != value.size(-1):
+        attention = attention[..., : value.size(-1)]
     return attention, logsumexp, rng_state, unused, debug_mask
 
 
@@ -4933,6 +4938,12 @@ def _sdpa_via_native_flash(
     alibi_slopes: Tensor | None = None,
 ) -> NestedTensor:
     r"""Run SDPA directly on DanLing storage via varlen Flash Attention kernels."""
+    type(key)._meta_tensor_equal(
+        key._physical_shape[:, 1],
+        value._physical_shape[:, 1],
+        "Flash attention key and value sequence lengths must match for every sample",
+        runtime_assert=True,
+    )
     q_values, q_cumulative, q_max = _sdpa_pack_native(query)
     if _same_ragged_offsets(query, key):
         k_values = key.concat.contiguous()
@@ -5020,6 +5031,12 @@ def flash_attention_forward(_func, args, kwargs):
     ):
         raise ValueError("DanLing _flash_attention_forward requires matching native attention NestedTensors.")
 
+    type(key)._meta_tensor_equal(
+        key._physical_shape[:, 1],
+        value._physical_shape[:, 1],
+        "Flash attention key and value sequence lengths must match for every sample",
+        runtime_assert=True,
+    )
     q_values, q_cumulative, q_max = _sdpa_pack_native(query)
     if _same_ragged_offsets(query, key):
         k_values = key.concat.contiguous()
