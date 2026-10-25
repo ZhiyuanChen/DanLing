@@ -47,6 +47,43 @@ def _native_composite():
         yield
 
 
+@contextmanager
+def _native_autograd():
+    r"""Build a local native derivative graph below a custom-op boundary."""
+    with (
+        _native_composite(),
+        torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.AutogradFunctionality, False),
+        torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False),
+        torch.enable_grad(),
+    ):
+        yield
+
+
+def _native_vjp(outputs, arguments, cotangents, *, create_graph=False):
+    r"""Differentiate the live native edges, including constant empty scans."""
+    live_outputs = [(output, grad) for output, grad in zip(outputs, cotangents) if output.requires_grad]
+    selected = tuple(argument for argument in arguments if argument.requires_grad)
+    if live_outputs and selected:
+        gradients = iter(
+            torch.autograd.grad(
+                tuple(output for output, _ in live_outputs),
+                selected,
+                tuple(grad for _, grad in live_outputs),
+                create_graph=create_graph,
+                allow_unused=True,
+            )
+        )
+    else:
+        gradients = iter(None for _ in selected)
+    result = []
+    for argument in arguments:
+        gradient = next(gradients) if argument.requires_grad else None
+        if gradient is None and argument.requires_grad and create_graph:
+            gradient = argument.reshape(-1)[:0].sum().expand_as(argument)
+        result.append(gradient)
+    return tuple(result)
+
+
 def _segmented_cdist_lengths(row_lengths: Tensor, column_lengths: Tensor) -> tuple[list[int], list[int]]:
     r"""Validate CPU length metadata and return concrete runtime segment sizes."""
     if row_lengths.dim() != 1 or column_lengths.dim() != 1:
@@ -102,6 +139,54 @@ def _mm_cdist_backward(
     return grad_left, grad_right
 
 
+def _differentiable_cdist_backward(
+    grad_output: Tensor,
+    left: Tensor,
+    right: Tensor,
+    row_lengths: Tensor,
+    column_lengths: Tensor,
+    distances: Tensor,
+    p: float,
+    compute_mode: int,
+) -> tuple[Tensor, Tensor]:
+    r"""Keep the native per-segment VJP graph for subsequent derivatives."""
+    rows, columns = _segmented_cdist_lengths(row_lengths, column_lengths)
+    left_gradients, right_gradients = [], []
+    left_start = right_start = output_start = 0
+    for row_count, column_count in zip(rows, columns):
+        pair_count = row_count * column_count
+        left_segment = left.narrow(0, left_start, row_count)
+        right_segment = right.narrow(0, right_start, column_count)
+        grad_segment = grad_output.narrow(0, output_start, pair_count).reshape(row_count, column_count)
+        distance_segment = distances.narrow(0, output_start, pair_count).reshape(row_count, column_count)
+        uses_mm = p == 2 and (compute_mode == 1 or (compute_mode == 0 and (row_count > 25 or column_count > 25)))
+        if uses_mm:
+            left_vjp, right_vjp = _mm_cdist_backward(grad_segment, left_segment, right_segment, distance_segment)
+        else:
+            left_vjp = torch.ops.aten._cdist_backward.default(
+                grad_segment.unsqueeze(0),
+                left_segment.unsqueeze(0),
+                right_segment.unsqueeze(0),
+                p,
+                distance_segment.unsqueeze(0),
+            ).squeeze(0)
+            right_vjp = torch.ops.aten._cdist_backward.default(
+                grad_segment.mT.unsqueeze(0),
+                right_segment.unsqueeze(0),
+                left_segment.unsqueeze(0),
+                p,
+                distance_segment.mT.unsqueeze(0),
+            ).squeeze(0)
+        left_gradients.append(left_vjp)
+        right_gradients.append(right_vjp)
+        left_start += row_count
+        right_start += column_count
+        output_start += pair_count
+    if not rows:
+        return left.clone(), right.clone()
+    return torch.cat(left_gradients), torch.cat(right_gradients)
+
+
 @torch.library.custom_op("danling::_segmented_cdist_backward", mutates_args=())
 def segmented_cdist_backward(
     grad_output: Tensor,
@@ -113,7 +198,7 @@ def segmented_cdist_backward(
     p: float,
     compute_mode: int,
 ) -> tuple[Tensor, Tensor]:
-    r"""First-order VJP for :func:`segmented_cdist`, kept opaque to AOTAutograd."""
+    r"""Native per-segment VJP for :func:`segmented_cdist`."""
     rows, columns = _segmented_cdist_lengths(row_lengths, column_lengths)
     _validate_segmented_cdist_operands(left, right, rows, columns, compute_mode)
     total_pairs = sum(row * column for row, column in zip(rows, columns))
@@ -178,6 +263,90 @@ def _segmented_cdist_backward_fake(
     return torch.empty_like(left), torch.empty_like(right)
 
 
+@torch.library.custom_op("danling::_segmented_cdist_backward_vjp", mutates_args=())
+def _segmented_cdist_backward_vjp(
+    grad_left: Tensor,
+    grad_right: Tensor,
+    grad_output: Tensor,
+    left: Tensor,
+    right: Tensor,
+    row_lengths: Tensor,
+    column_lengths: Tensor,
+    distances: Tensor,
+    p: float,
+    compute_mode: int,
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    r"""Differentiate each native VJP without padding or feature-expanded pairs.
+
+    Custom-op kernels run below autograd dispatch. Enable only its functionality
+    key for this local, detached recomputation, preserving the other dispatch
+    state (including autocast). No internal graph escapes the kernel.
+    """
+    with _native_autograd():
+        arguments = tuple(tensor.detach().requires_grad_() for tensor in (grad_output, left, right, distances))
+        gradients = _differentiable_cdist_backward(
+            arguments[0], arguments[1], arguments[2], row_lengths, column_lengths, arguments[3], p, compute_mode
+        )
+        result = _native_vjp(gradients, arguments, (grad_left, grad_right))
+    return tuple(
+        torch.zeros_like(argument) if gradient is None else gradient.detach().clone()
+        for argument, gradient in zip(arguments, result)
+    )
+
+
+@_segmented_cdist_backward_vjp.register_fake
+def _segmented_cdist_backward_vjp_fake(
+    grad_left: Tensor,
+    grad_right: Tensor,
+    grad_output: Tensor,
+    left: Tensor,
+    right: Tensor,
+    row_lengths: Tensor,
+    column_lengths: Tensor,
+    distances: Tensor,
+    p: float,
+    compute_mode: int,
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    del grad_left, grad_right, row_lengths, column_lengths, p, compute_mode
+    return torch.empty_like(grad_output), torch.empty_like(left), torch.empty_like(right), torch.empty_like(distances)
+
+
+def _segmented_cdist_backward_setup_context(ctx, inputs, output) -> None:
+    del output
+    grad_output, left, right, row_lengths, column_lengths, distances, p, compute_mode = inputs
+    ctx.save_for_backward(grad_output, left, right, row_lengths, column_lengths, distances)
+    ctx.p, ctx.compute_mode = p, compute_mode
+
+
+def _segmented_cdist_backward_autograd(ctx, grad_left, grad_right):
+    grad_output, left, right, row_lengths, column_lengths, distances = ctx.saved_tensors
+    if torch.is_grad_enabled():
+        arguments = (grad_output, left, right, distances)
+        gradients = _differentiable_cdist_backward(
+            grad_output, left, right, row_lengths, column_lengths, distances, ctx.p, ctx.compute_mode
+        )
+        result = _native_vjp(gradients, arguments, (grad_left, grad_right), create_graph=True)
+        return result[0], result[1], result[2], None, None, result[3], None, None
+    grad_grad_output, grad_left, grad_right, grad_distances = _segmented_cdist_backward_vjp(
+        grad_left,
+        grad_right,
+        grad_output,
+        left,
+        right,
+        row_lengths,
+        column_lengths,
+        distances,
+        ctx.p,
+        ctx.compute_mode,
+    )
+    return grad_grad_output, grad_left, grad_right, None, None, grad_distances, None, None
+
+
+segmented_cdist_backward.register_autograd(
+    _segmented_cdist_backward_autograd, setup_context=_segmented_cdist_backward_setup_context
+)
+
+
 @torch.library.custom_op("danling::_segmented_cdist", mutates_args=())
 def segmented_cdist(
     left: Tensor,
@@ -239,6 +408,11 @@ def _segmented_cdist_autograd_backward(ctx, grad_output):
     if grad_output is None:
         return None, None, None, None, None, None
     left, right, row_lengths, column_lengths, distances = ctx.saved_tensors
+    if torch.is_grad_enabled():
+        grad_left, grad_right = _differentiable_cdist_backward(
+            grad_output, left, right, row_lengths, column_lengths, distances, ctx.p, ctx.compute_mode
+        )
+        return grad_left, grad_right, None, None, None, None
     grad_left, grad_right = segmented_cdist_backward(
         grad_output,
         left,
@@ -358,6 +532,70 @@ def _segmented_cumprod_backward_fake(
     return torch.empty_like(values)
 
 
+def _differentiable_cumprod_backward(grad_output: Tensor, values: Tensor, offsets: Tensor, output: Tensor) -> Tensor:
+    r"""Keep native zero, complex-conjugate, and non-finite VJP semantics."""
+    lengths = _segment_lengths(offsets, values.shape[0])
+    gradients = []
+    start = 0
+    for length in lengths:
+        gradients.append(
+            torch.ops.aten.cumprod_backward.default(
+                grad_output.narrow(0, start, length),
+                values.narrow(0, start, length),
+                0,
+                output.narrow(0, start, length),
+            )
+        )
+        start += length
+    return torch.cat(gradients) if gradients else values.clone()
+
+
+@torch.library.custom_op("danling::_segmented_cumprod_backward_vjp", mutates_args=())
+def _segmented_cumprod_backward_vjp(
+    cotangent: Tensor, grad_output: Tensor, values: Tensor, offsets: Tensor, output: Tensor
+) -> tuple[Tensor, Tensor, Tensor]:
+    r"""Native VJP of the opaque backward, with independent saved-output edges."""
+    with _native_autograd():
+        arguments = tuple(tensor.detach().requires_grad_() for tensor in (grad_output, values, output))
+        gradients = _differentiable_cumprod_backward(arguments[0], arguments[1], offsets, arguments[2])
+        result = _native_vjp((gradients,), arguments, (cotangent,))
+    return tuple(
+        torch.zeros_like(argument) if gradient is None else gradient.detach().clone()
+        for argument, gradient in zip(arguments, result)
+    )
+
+
+@_segmented_cumprod_backward_vjp.register_fake
+def _segmented_cumprod_backward_vjp_fake(
+    cotangent: Tensor, grad_output: Tensor, values: Tensor, offsets: Tensor, output: Tensor
+) -> tuple[Tensor, Tensor, Tensor]:
+    del cotangent, offsets
+    return torch.empty_like(grad_output), torch.empty_like(values), torch.empty_like(output)
+
+
+def _segmented_cumprod_backward_setup_context(ctx, inputs, output) -> None:
+    del output
+    ctx.save_for_backward(*inputs)
+
+
+def _segmented_cumprod_backward_autograd(ctx, cotangent):
+    grad_output, values, offsets, output = ctx.saved_tensors
+    if torch.is_grad_enabled():
+        arguments = (grad_output, values, output)
+        gradients = _differentiable_cumprod_backward(grad_output, values, offsets, output)
+        result = _native_vjp((gradients,), arguments, (cotangent,), create_graph=True)
+        return result[0], result[1], None, result[2]
+    grad_grad_output, grad_values, grad_output_value = _segmented_cumprod_backward_vjp(
+        cotangent, grad_output, values, offsets, output
+    )
+    return grad_grad_output, grad_values, None, grad_output_value
+
+
+segmented_cumprod_backward.register_autograd(
+    _segmented_cumprod_backward_autograd, setup_context=_segmented_cumprod_backward_setup_context
+)
+
+
 @torch.library.custom_op("danling::_segmented_cumprod", mutates_args=())
 def segmented_cumprod(values: Tensor, offsets: Tensor) -> Tensor:
     r"""Run native cumprod independently over packed variable-length segments.
@@ -400,20 +638,7 @@ def _segmented_cumprod_autograd_backward(ctx, grad_output):
         # Native cumprod_backward is itself differentiable. Keep its operations
         # visible when create_graph requests another derivative instead of
         # crossing the opaque first-order kernel boundary.
-        lengths = _segment_lengths(offsets, values.shape[0])
-        gradients = []
-        start = 0
-        for length in lengths:
-            gradients.append(
-                torch.ops.aten.cumprod_backward.default(
-                    grad_output.narrow(0, start, length),
-                    values.narrow(0, start, length),
-                    0,
-                    output.narrow(0, start, length),
-                )
-            )
-            start += length
-        return torch.cat(gradients) if gradients else values * 0, None
+        return _differentiable_cumprod_backward(grad_output, values, offsets, output), None
     return segmented_cumprod_backward(grad_output, values, offsets, output), None
 
 

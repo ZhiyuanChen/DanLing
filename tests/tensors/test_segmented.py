@@ -23,7 +23,16 @@ import pytest
 import torch
 
 from danling.tensors import NestedTensor
-from danling.tensors.segmented import align_rows, segmented_arg_scan, segmented_scan, segmented_sort_perm
+from danling.tensors.segmented import (
+    align_rows,
+    segmented_arg_scan,
+    segmented_cdist,
+    segmented_cdist_backward,
+    segmented_cumprod,
+    segmented_cumprod_backward,
+    segmented_scan,
+    segmented_sort_perm,
+)
 
 
 def lengths_case(shape_fn):
@@ -166,3 +175,103 @@ class TestSegmentedCumprodComplex:
         expected_gradient = torch.autograd.grad(expected, values, cotangent)[0]
         torch.testing.assert_close(actual, expected)
         torch.testing.assert_close(actual_gradient, expected_gradient)
+
+
+class TestSegmentedHigherDerivatives:
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager"])
+    @pytest.mark.parametrize("case", ["zeros", "complex", "nonfinite", "empty"])
+    def test_cumprod_vjp_derivative_matches_native(self, device, backend, case):
+        dtype = torch.complex128 if case == "complex" else torch.float64
+        data = [0.0, 2.0, 3.0, 4.0, 0.0]
+        if case == "nonfinite":
+            data[1] = float("inf")
+        values = torch.tensor(data, dtype=dtype, device=device, requires_grad=True)
+        if case == "complex":
+            values = (values + 0.5j).detach().requires_grad_()
+        if case == "empty":
+            values = values[:0].detach().requires_grad_()
+        lengths = (3, 0, 2) if case != "empty" else (0, 0, 0)
+        offsets = torch.tensor([0, lengths[0], lengths[0], sum(lengths)])
+        output = torch.cat([part.cumprod(0) for part in values.split(lengths)]).detach().requires_grad_()
+        cotangent = torch.randn_like(values, requires_grad=True)
+
+        def run(grad, data, result):
+            return segmented_cumprod_backward(grad, data, offsets, result)
+
+        if backend is not None:
+            run = torch.compile(run, backend=backend, fullgraph=True, dynamic=True)
+        actual = run(cotangent, values, output)
+        with torch.no_grad():
+            expected_value = torch.cat(
+                [
+                    torch.ops.aten.cumprod_backward.default(grad, data, 0, result)
+                    for grad, data, result in zip(
+                        cotangent.split(lengths), values.split(lengths), output.split(lengths)
+                    )
+                ]
+            )
+        expected = torch.cat(
+            [
+                torch.ops.aten.cumprod_backward.default(grad, data, 0, result)
+                for grad, data, result in zip(cotangent.split(lengths), values.split(lengths), output.split(lengths))
+            ]
+        )
+        direction = torch.randn_like(values)
+        actual_gradients = torch.autograd.grad(actual, (cotangent, values, output), direction, allow_unused=True)
+        expected_gradients = torch.autograd.grad(expected, (cotangent, values, output), direction, allow_unused=True)
+
+        torch.testing.assert_close(actual, expected_value, equal_nan=True)
+        for argument, actual_gradient, expected_gradient in zip(
+            (cotangent, values, output), actual_gradients, expected_gradients
+        ):
+            if expected_gradient is None:
+                expected_gradient = torch.zeros_like(argument)
+            torch.testing.assert_close(actual_gradient, expected_gradient, equal_nan=True)
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager"])
+    def test_euclidean_cdist_vjp_passes_gradcheck(self, device, backend):
+        left = torch.randn(3, 2, dtype=torch.float64, device=device, requires_grad=True)
+        right = torch.randn(3, 2, dtype=torch.float64, device=device, requires_grad=True)
+        row_lengths, column_lengths = torch.tensor([2, 1]), torch.tensor([1, 2])
+        distances = (torch.rand(4, dtype=torch.float64, device=device) + 1).requires_grad_()
+        cotangent = torch.randn_like(distances, requires_grad=True)
+
+        def run(grad, lhs, rhs, result):
+            return segmented_cdist_backward(grad, lhs, rhs, row_lengths, column_lengths, result, 2.0, 1)
+
+        if backend is not None:
+            run = torch.compile(run, backend=backend, fullgraph=True, dynamic=True)
+        assert torch.autograd.gradcheck(run, (cotangent, left, right, distances), fast_mode=True)
+
+    @pytest.mark.parametrize("operation", ["cumprod", "cdist"])
+    def test_compiled_forward_preserves_native_third_derivatives(self, device, operation):
+        values = torch.tensor([0.0, 2.0, 3.0, 4.0, 5.0], dtype=torch.float64, device=device, requires_grad=True)
+        reference = values.detach().clone().requires_grad_()
+        offsets = torch.tensor([0, 3, 5])
+        if operation == "cumprod":
+
+            def run(data):
+                return segmented_cumprod(data, offsets)
+
+            expected = torch.cat([part.cumprod(0) for part in reference.split((3, 2))])
+        else:
+            right = torch.randn(3, 2, dtype=torch.float64, device=device)
+            row_lengths, column_lengths = torch.tensor([3, 2]), torch.tensor([1, 2])
+
+            def run(data):
+                return segmented_cdist(data[:, None].expand(-1, 2), right, row_lengths, column_lengths, 2.0, 1)
+
+            expected = torch.cat(
+                [
+                    torch.cdist(lhs[:, None].expand(-1, 2), rhs, compute_mode="use_mm_for_euclid_dist").flatten()
+                    for lhs, rhs in zip(reference.split((3, 2)), right.split((1, 2)))
+                ]
+            )
+        compiled = torch.compile(run, backend="eager", fullgraph=True, dynamic=True)
+        actual = compiled(values)
+        torch.testing.assert_close(actual, expected)
+        for _ in range(3):
+            actual = torch.autograd.grad(actual.sum(), values, create_graph=True)[0]
+            expected = torch.autograd.grad(expected.sum(), reference, create_graph=True)[0]
+            torch.testing.assert_close(actual, expected)
