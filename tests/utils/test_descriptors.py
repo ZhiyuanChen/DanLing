@@ -68,3 +68,22 @@ def test_ensure_parent_dir(tmp_path):
     parent_dir = Path(obj.cached_ensure_parent_dir).parent
     assert parent_dir.exists()
     parent_dir.rmdir()
+
+
+def test_directory_properties_support_class_access_and_relative_basename(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    class Paths:
+        @descriptors.ensure_parent_dir
+        def file(self):
+            return "result.json"
+
+        @descriptors.cached_ensure_parent_dir
+        def cached_file(self):
+            return "cached.json"
+
+    assert Paths.file is not None
+    assert Paths.cached_file is not None
+    paths = Paths()
+    assert paths.file == "result.json"
+    assert paths.cached_file == "cached.json"

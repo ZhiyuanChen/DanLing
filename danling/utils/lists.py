@@ -17,6 +17,7 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
+from operator import index as integer_index
 from typing import Callable
 
 
@@ -37,13 +38,16 @@ class defaultlist(flist):
         self.default_factory = default_factory
 
     def _fill(self, index):
+        if isinstance(index, slice):
+            return
+        index = integer_index(index)
         while len(self) <= index:
             self.append(self.default_factory())
 
     def __setitem__(self, index, value):
         self._fill(index)
-        super().__setitem__(self, index, value)
+        super().__setitem__(index, value)
 
     def __getitem__(self, index):
         self._fill(index)
-        return super().__getitem__(self, index)
+        return super().__getitem__(index)

@@ -88,6 +88,8 @@ class ensure_dir(property):
     """
 
     def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
         val = super().__get__(instance, owner)
         makedirs(val, exist_ok=True)
         return val
@@ -104,8 +106,10 @@ class ensure_parent_dir(property):
     """
 
     def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
         val = super().__get__(instance, owner)
-        makedirs(dirname(val), exist_ok=True)
+        makedirs(dirname(val) or ".", exist_ok=True)
         return val
 
 
@@ -120,6 +124,8 @@ class cached_ensure_dir(cached_property):
     """
 
     def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
         val = super().__get__(instance, owner)
         makedirs(val, exist_ok=True)
         return val
@@ -136,6 +142,8 @@ class cached_ensure_parent_dir(cached_property):
     """
 
     def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
         val = super().__get__(instance, owner)
-        makedirs(dirname(val), exist_ok=True)
+        makedirs(dirname(val) or ".", exist_ok=True)
         return val
