@@ -908,18 +908,20 @@ class TestTorchRunnerCheckpointInterop:
         finally:
             restored.close()
 
-    def test_seeded_loader_resume_preserves_model_random_stream(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("shuffle", [False, True])
+    def test_seeded_loader_resume_preserves_model_random_stream(self, tmp_path: Path, shuffle: bool) -> None:
         config = {
             "logging.enabled": False,
             "workspace.dir": str(tmp_path),
             "seed": 42,
             "deterministic": False,
-            "dataloader": {"batch_size": 2, "shuffle": False},
+            "dataloader": {"batch_size": 2, "shuffle": shuffle},
         }
         source = StatefulDatasetTorchRunner(config)
         try:
             iterator = iter(source.dataloaders["train"])
-            assert next(iterator).tolist() == [0, 1]
+            first = next(iterator)
+            assert len(first) == 2
             checkpoint = source.state_dict()
             expected_batch = next(iterator)
             expected_noise = torch.rand(8)
@@ -1821,3 +1823,27 @@ class TestTorchRunnerSignalsAndShutdown:
             if parameter.grad is not None:
                 assert torch.count_nonzero(parameter.grad).item() == 0
         assert runner.train_state.micro_step == 0
+
+
+def test_bounded_inference_and_evaluation_do_not_consume_extra_batches(tmp_path):
+    class CountingLoader:
+        def __init__(self):
+            self.reads = []
+
+        def __len__(self):
+            return 4
+
+        def __iter__(self):
+            for index in range(4):
+                self.reads.append(index)
+                yield torch.full((1, 4), float(index)), torch.zeros(1, 2)
+
+    runner = TinyTorchRunner({"device": "cpu", "workspace.dir": str(tmp_path), "logging.enabled": False})
+    try:
+        for operation, steps in (("infer", 0), ("infer", 1), ("evaluate_steps", 1)):
+            loader = CountingLoader()
+            runner.dataloaders["val"] = loader
+            getattr(runner, operation)(split="val", steps=steps)
+            assert loader.reads == list(range(steps))
+    finally:
+        runner.close()

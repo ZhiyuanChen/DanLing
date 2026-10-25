@@ -25,6 +25,7 @@ import re
 from collections.abc import Mapping, Sequence
 from contextlib import ExitStack, contextmanager, nullcontext
 from datetime import timedelta
+from itertools import islice
 from time import perf_counter
 from typing import Any, Callable, Iterator
 from warnings import warn
@@ -38,6 +39,7 @@ from torch import nn, optim, utils
 from torch.backends import cudnn
 from torch.nn.utils import clip_grad_norm_, clip_grad_value_
 from torchdata.stateful_dataloader import StatefulDataLoader
+from torchdata.stateful_dataloader.sampler import RandomSampler as StatefulRandomSampler
 from tqdm import tqdm
 
 try:
@@ -1122,14 +1124,17 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             default_kwargs["worker_init_fn"] = _seed_dataloader_worker
         # Worker/iterator seeds must not consume the model RNG when a loader is
         # rebuilt on checkpoint resume, even with nondeterministic kernels.
-        if default_kwargs.get("generator") is None and self.config.seed is not None:
-            generator = torch.Generator()
-            generator.manual_seed(int(self.config.seed) + int(self.rank))
-            default_kwargs["generator"] = generator
         for k, dataset in datasets.items():
             kwargs = NestedDict(default_kwargs)
             if k in split_kwargs:
                 kwargs.merge(split_kwargs[k], overwrite=True)
+            if kwargs.get("generator") is None:
+                generator = torch.Generator()
+                if self.config.seed is None:
+                    generator.seed()
+                else:
+                    generator.manual_seed(int(self.config.seed) + int(self.rank))
+                kwargs["generator"] = generator
             is_train_split = k in self.train_splits
             shuffle = kwargs.pop("shuffle", is_train_split)
             collate_fn = kwargs.pop("collate_fn", self.collate_fn)
@@ -1149,6 +1154,9 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             sampler = kwargs.pop("sampler", None)
             if sampler is None:
                 sampler = self.build_datasampler(dataset, split=k, shuffle=shuffle)
+                if type(sampler) is StatefulRandomSampler:
+                    # Loader worker seeds and sampler replay must not advance each other's RNG.
+                    sampler.generator = torch.Generator().set_state(kwargs["generator"].get_state())
             self.dataloaders[k] = StatefulDataLoader(dataset, sampler=sampler, collate_fn=collate_fn, **kwargs)
 
     def build_datasampler(self, dataset: Any, *, split: str, shuffle: bool) -> Any:
@@ -1183,7 +1191,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                 rank=rank,
                 shuffle=shuffle,
             )
-        return utils.data.RandomSampler(dataset) if shuffle else utils.data.SequentialSampler(dataset)
+        return StatefulRandomSampler(dataset) if shuffle else utils.data.SequentialSampler(dataset)
 
     @staticmethod
     def collate_fn(batch):
@@ -1495,6 +1503,10 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             grad = parameter.grad
             if grad is None:
                 continue
+            if grad.is_sparse:
+                grad = grad.coalesce().values()
+            elif grad.layout != torch.strided:
+                grad = grad.values()
             if not torch.isfinite(grad).all():
                 return True
         return False
@@ -2560,9 +2572,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             self.metrics.reset()
         telemetry = LoopTelemetry(self, start_time=self.loop_time())
         consumed = 0
-        for iteration, data in enumerate(loader):
-            if steps is not None and iteration >= steps:
-                break
+        batches = loader if steps is None else islice(loader, steps)
+        for iteration, data in enumerate(batches):
             consumed = iteration + 1
             self.supervisor.maybe_handle_termination_signal()
             loss_n = self._get_loss_normalizer(data)
@@ -2747,9 +2758,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         return [merged[index] for index in sorted(merged)]
 
     def _iter_infer_batches(self, loader: Any, *, steps: int | None, split: str) -> Iterator[list[float]]:
-        for iteration, data in enumerate(loader):
-            if steps is not None and iteration >= steps:
-                break
+        batches = loader if steps is None else islice(loader, steps)
+        for iteration, data in enumerate(batches):
             values = self.infer_step(data)
             self.supervisor.mark_heartbeat_progress()
             yield values

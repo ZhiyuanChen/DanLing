@@ -32,6 +32,8 @@ def to_device(data: Any, device: torch.device):
     if isinstance(data, list):
         return [to_device(i, device) for i in data]
     if isinstance(data, tuple):
+        if hasattr(data, "_fields"):
+            return type(data)(*(to_device(i, device) for i in data))
         return tuple(to_device(i, device) for i in data)
     if isinstance(data, dict):
         return FlatDict({k: to_device(v, device) for k, v in data.items()})
