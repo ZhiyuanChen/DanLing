@@ -4581,6 +4581,18 @@ class TestSegmentedSort:
 
 class TestSegmentedCumulative:
 
+    def test_cumprod_preserves_native_second_derivatives_at_zero(self):
+        values = torch.tensor([0.0, 2.0, 3.0, 4.0, 5.0], dtype=torch.float64, requires_grad=True)
+        reference = values.detach().clone().requires_grad_()
+        output = NT(values.split((3, 2))).cumprod(dim=1).concat
+        expected = torch.cat([part.cumprod(0) for part in reference.split((3, 2))])
+        gradient = torch.autograd.grad(output.sum(), values, create_graph=True)[0]
+        expected_gradient = torch.autograd.grad(expected.sum(), reference, create_graph=True)[0]
+        second = torch.autograd.grad(gradient.sum(), values)[0]
+        expected_second = torch.autograd.grad(expected_gradient.sum(), reference)[0]
+        assert_close(gradient, expected_gradient)
+        assert_close(second, expected_second)
+
     def test_cumprod_and_logcumsumexp_match_per_element(self, device, float_dtype):
         elements = [torch.randn(n, 3, device=device, dtype=float_dtype) for n in (3, 0, 5)]
         nested = NT(elements, ragged_dims=(0,))

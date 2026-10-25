@@ -373,6 +373,24 @@ def _segmented_cumprod_autograd_backward(ctx, grad_output):
     if grad_output is None:
         return None, None
     values, offsets, output = ctx.saved_tensors
+    if torch.is_grad_enabled():
+        # Native cumprod_backward is itself differentiable. Keep its operations
+        # visible when create_graph requests another derivative instead of
+        # crossing the opaque first-order kernel boundary.
+        lengths = _segment_lengths(offsets, values.shape[0])
+        gradients = []
+        start = 0
+        for length in lengths:
+            gradients.append(
+                torch.ops.aten.cumprod_backward.default(
+                    grad_output.narrow(0, start, length),
+                    values.narrow(0, start, length),
+                    0,
+                    output.narrow(0, start, length),
+                )
+            )
+            start += length
+        return torch.cat(gradients) if gradients else values * 0, None
     return segmented_cumprod_backward(grad_output, values, offsets, output), None
 
 
