@@ -92,3 +92,12 @@ def test_flatdict_options(tmp_path, extension):
     save(value, path, indent=4, sort_keys=True)
     getattr(value, extension)(expected, indent=4, sort_keys=True)
     assert path.read_text() == expected.read_text()
+
+
+def test_tsv_extension_uses_tab_separated_format(tmp_path):
+    pandas = pytest.importorskip("pandas")
+    path = tmp_path / "observations.tsv"
+    frame = pandas.DataFrame({"a": [1], "b": [2]})
+    save(frame, path, index=False)
+    assert path.read_text() == "a\tb\n1\t2\n"
+    pandas.testing.assert_frame_equal(load(path), frame)

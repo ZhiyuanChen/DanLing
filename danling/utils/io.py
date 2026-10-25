@@ -116,6 +116,8 @@ def save(obj: Any, file: PathStr, *args: Any, **kwargs: Any) -> File:
             pyarrow.parquet.write_table(obj, path, *args, **kwargs)
     elif extension in CSV:
         if isinstance(obj, pandas.DataFrame):
+            if extension == "tsv":
+                kwargs.setdefault("sep", "\t")
             obj.to_csv(path, *args, **kwargs)
         else:
             raise NotImplementedError(f"Trying to save {obj} to {file!r} but is not supported")
@@ -213,6 +215,8 @@ def load_pandas(file: PathStr, *args: Any, **kwargs: Any) -> Any:
     if extension in H5:
         return pandas.read_hdf(path, *args, **kwargs)
     if extension in CSV:
+        if extension == "tsv":
+            kwargs.setdefault("sep", "\t")
         return pandas.read_csv(path, *args, **kwargs)
     if extension in JSON:
         return pandas.read_json(path, *args, **kwargs)
