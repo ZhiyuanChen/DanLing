@@ -3500,3 +3500,272 @@ def test_gaussian_nll_fullgraph_preserves_variance_gradients():
     expected_grads = torch.autograd.grad(expected, (*parts, variance))
     for result, reference in zip(actual_grads, expected_grads):
         torch.testing.assert_close(result, reference)
+
+
+@pytest.mark.parametrize("ragged_channels", (False, True))
+@pytest.mark.parametrize("backend", ("aot_eager", "inductor"))
+def test_local_response_norm_fullgraph_sample_boundaries(device, backend, ragged_channels):
+    torch.compiler.reset()
+    shapes = ((2, 3, 4), (4, 2, 5)) if ragged_channels else ((3, 2, 4), (3, 4, 2))
+    parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+    template = NT(parts, padding_value=float("nan"))
+    values = template.concat.detach().requires_grad_()
+    reference_parts = [part.detach().clone().requires_grad_() for part in parts]
+    run = torch.compile(
+        lambda source, packed: F.local_response_norm(source.packed_like(packed), 4, alpha=0.2, beta=0.6).concat,
+        backend=backend,
+        fullgraph=True,
+        dynamic=True,
+    )
+    actual = run(template, values)
+    reference = NT(
+        [F.local_response_norm(part.unsqueeze(0), 4, alpha=0.2, beta=0.6).squeeze(0) for part in reference_parts],
+        ragged_dims=template.ragged_dims,
+    )
+    assert_close(actual, reference.concat)
+    cotangent = torch.randn_like(actual)
+    actual_grad = torch.autograd.grad(actual, values, cotangent)[0]
+    reference_grads = torch.autograd.grad(reference.concat, reference_parts, cotangent)
+    assert_close(actual_grad, NT(reference_grads, ragged_dims=template.ragged_dims).concat)
+
+
+@pytest.mark.parametrize("classes", (-1, 5))
+@pytest.mark.parametrize("backend", (None, "aot_eager", "inductor"))
+def test_one_hot_fullgraph_inferred_classes(device, backend, classes):
+    torch.compiler.reset()
+    source = NT([torch.tensor([0, 2], device=device), torch.tensor([4, 1, 3], device=device)], ragged_dims=(0,))
+
+    def run(value):
+        return F.one_hot(value, num_classes=classes)
+
+    if backend is not None:
+        run = torch.compile(run, backend=backend, fullgraph=True)
+    actual = run(source)
+    expected = NT([F.one_hot(part, num_classes=5) for part in source], ragged_dims=(0,))
+    assert_close(actual, expected)
+    if classes == -1:
+        changed = source.packed_like(source.concat.remainder(2))
+        assert_close(run(changed), NT([F.one_hot(part, num_classes=2) for part in changed], ragged_dims=(0,)))
+
+
+@pytest.mark.parametrize("hard", (False, True))
+@pytest.mark.parametrize("dim", (1, -1))
+def test_gumbel_softmax_fullgraph_packed_noise_and_vjp(device, dim, hard):
+    torch.compiler.reset()
+    template = NT(
+        [torch.randn(2, 3, device=device, dtype=torch.float64), torch.randn(4, 3, device=device, dtype=torch.float64)],
+        ragged_dims=(0,),
+    )
+    values = template.concat.detach().requires_grad_()
+    reference_values = values.detach().clone().requires_grad_()
+    torch.manual_seed(918)
+    noise = -torch.empty_like(reference_values).exponential_().log()
+    parts = list((reference_values + noise).split((2, 4)))
+    references = [F.softmax(part / 0.7, dim=dim - 1 if dim > 0 else dim) for part in parts]
+    if hard:
+        references = [
+            torch.zeros_like(part).scatter_(
+                dim - 1 if dim > 0 else dim, part.argmax(dim - 1 if dim > 0 else dim, keepdim=True), 1
+            )
+            - part.detach()
+            + part
+            for part in references
+        ]
+    expected = torch.cat(references)
+    run = torch.compile(
+        lambda source, packed: F.gumbel_softmax(source.packed_like(packed), tau=0.7, hard=hard, dim=dim).concat,
+        backend="aot_eager",
+        fullgraph=True,
+        dynamic=True,
+    )
+    torch.manual_seed(918)
+    actual = run(template, values)
+    assert_close(actual, expected)
+    cotangent = torch.randn_like(actual)
+    assert_close(
+        torch.autograd.grad(actual, values, cotangent)[0], torch.autograd.grad(expected, reference_values, cotangent)[0]
+    )
+
+
+@pytest.mark.parametrize("p", (1.5, 2.0))
+@pytest.mark.parametrize("backend", (None, "aot_eager", "inductor"))
+def test_pdist_fullgraph_condensed_values_and_vjp(device, backend, p):
+    torch.compiler.reset()
+    parts = [
+        torch.randn(rows, columns, device=device, dtype=torch.float64, requires_grad=True)
+        for rows, columns in ((0, 3), (1, 2), (4, 2), (3, 3))
+    ]
+    template = NT(parts, ragged_dims=(0, 1))
+    values = template.concat.detach().requires_grad_()
+    reference_parts = [part.detach().clone().requires_grad_() for part in parts]
+
+    def run(source, packed):
+        return F.pdist(source.packed_like(packed), p=p).concat
+
+    if backend is not None:
+        run = torch.compile(run, backend=backend, fullgraph=True, dynamic=True)
+    actual = run(template, values)
+    expected = torch.cat(
+        [F.pdist(part, p=p) if part.shape[0] > 1 else part.sum().expand(0) for part in reference_parts]
+    )
+    assert_close(actual, expected)
+    cotangent = torch.randn_like(actual)
+    expected_grads = torch.autograd.grad(expected, reference_parts, cotangent)
+    assert_close(torch.autograd.grad(actual, values, cotangent)[0], NT(expected_grads, ragged_dims=(0, 1)).concat)
+
+
+@pytest.mark.parametrize("spatial_rank", (2, 3))
+@pytest.mark.parametrize("ratio", (False, True))
+@pytest.mark.parametrize("backend", (None, "aot_eager", "inductor"))
+def test_fractional_max_pool_fullgraph_indices_randomness_and_vjp(device, backend, spatial_rank, ratio):
+    torch.compiler.reset()
+    pool = F.fractional_max_pool2d if spatial_rank == 2 else F.fractional_max_pool3d
+    spatial_shapes = ((5, 6), (7, 4)) if spatial_rank == 2 else ((4, 5, 6), (6, 7, 4))
+    parts = [torch.randn(2, *shape, device=device, dtype=torch.float64, requires_grad=True) for shape in spatial_shapes]
+    template = NT(parts, ragged_dims=tuple(range(1, spatial_rank + 1)))
+    values = template.concat.detach().requires_grad_()
+    reference_parts = [part.detach().clone().requires_grad_() for part in parts]
+    samples = torch.full((1, 2, spatial_rank), 0.37, device=device, dtype=torch.float64) if ratio else None
+    kwargs = {"output_ratio": (0.5,) * spatial_rank} if ratio else {"output_size": 2}
+    expected_outputs, expected_indices = [], []
+    torch.manual_seed(716)
+    for part in reference_parts:
+        output, index = pool(part, 2, return_indices=True, _random_samples=samples, **kwargs)
+        expected_outputs.append(output)
+        expected_indices.append(index)
+    expected = NT(expected_outputs, ragged_dims=template.ragged_dims)
+
+    def run(source, packed):
+        return pool(source.packed_like(packed), 2, return_indices=True, _random_samples=samples, **kwargs)
+
+    if backend is not None:
+        run = torch.compile(run, backend=backend, fullgraph=True, dynamic=True)
+    torch.manual_seed(716)
+    actual, actual_indices = run(template, values)
+    assert_close(actual, expected)
+    assert_close(actual_indices, NT(expected_indices, ragged_dims=template.ragged_dims))
+    cotangent = torch.randn_like(actual.concat)
+    expected_grads = torch.autograd.grad(expected.concat, reference_parts, cotangent)
+    assert_close(
+        torch.autograd.grad(actual.concat, values, cotangent)[0],
+        NT(expected_grads, ragged_dims=template.ragged_dims).concat,
+    )
+
+
+@pytest.mark.parametrize("p", (0.0, 1.5, 2.0, -1.0, float("inf"), float("-inf")))
+@pytest.mark.parametrize("backend", ("aot_eager", "inductor"))
+def test_normalize_ragged_fullgraph_values_and_vjp(device, backend, p):
+    torch.compiler.reset()
+    rows = (2, 4) if p < 0 or math.isinf(p) else (0, 2, 4)
+    parts = [torch.randn(size, 3, device=device, dtype=torch.float64, requires_grad=True) for size in rows]
+    with torch.no_grad():
+        parts[-1][0] = 0
+    source = NT(parts, ragged_dims=(0,))
+    packed = source.concat.detach().requires_grad_()
+    references = [part.detach().clone().requires_grad_() for part in parts]
+    expected = torch.cat([F.normalize(part, p=p, dim=0) for part in references])
+    run = torch.compile(
+        lambda template, values: F.normalize(template.packed_like(values), p=p, dim=1).concat,
+        backend=backend,
+        fullgraph=True,
+        dynamic=True,
+    )
+    actual = run(source, packed)
+    assert_close(actual, expected)
+    cotangent = torch.randn_like(actual)
+    expected_grads = torch.autograd.grad(expected, references, cotangent)
+    assert_close(torch.autograd.grad(actual, packed, cotangent)[0], torch.cat(expected_grads))
+
+
+def test_gumbel_softmax_inductor_ragged_groups(device):
+    torch.compiler.reset()
+    source = NT(
+        [
+            torch.randn(2, 3, 4, device=device, dtype=torch.float64),
+            torch.randn(4, 2, 4, device=device, dtype=torch.float64),
+        ],
+        ragged_dims=(0, 1),
+    )
+    packed = source.concat.detach().requires_grad_()
+    run = torch.compile(
+        lambda template, values: F.gumbel_softmax(template.packed_like(values), hard=True, dim=2),
+        backend="inductor",
+        fullgraph=True,
+        dynamic=True,
+    )
+    output = run(source, packed)
+    for part in output:
+        assert_close(part.sum(1), torch.ones_like(part.sum(1)))
+        assert torch.all((part == 0) | (part == 1))
+    gradient = torch.autograd.grad(output.concat, packed, torch.randn_like(output.concat))[0]
+    assert torch.isfinite(gradient).all()
+    assert gradient.count_nonzero() > 0
+
+
+@pytest.mark.parametrize("p", (0.5, 1.5, 2.0, -1.0))
+@pytest.mark.parametrize("dtype", (torch.float64, torch.complex128))
+def test_normalize_ragged_zero_coordinate_hessian(device, p, dtype):
+    parts = [
+        torch.tensor([0.0, 2.0, 3.0], device=device, dtype=dtype),
+        torch.tensor([4.0, 5.0], device=device, dtype=dtype),
+        torch.zeros(3, device=device, dtype=dtype),
+    ]
+    source = NT(parts, ragged_dims=(0,))
+    packed = source.concat.detach().requires_grad_()
+    reference = packed.detach().clone().requires_grad_()
+    cotangent = torch.tensor([1.0, -2.0, 0.5, 3.0, -0.25, 0.25, -1.0, 2.0], device=device, dtype=dtype)
+    direction = torch.tensor([2.0, 1.0, -1.0, 0.5, -3.0, 1.0, 0.5, -0.5], device=device, dtype=dtype)
+    actual = F.normalize(source.packed_like(packed), p=p, dim=1).concat
+    expected = torch.cat([F.normalize(part, p=p, dim=0) for part in reference.split((3, 2, 3))])
+    actual_grad = torch.autograd.grad(actual, packed, cotangent, create_graph=True)[0]
+    expected_grad = torch.autograd.grad(expected, reference, cotangent, create_graph=True)[0]
+    assert_close(actual_grad, expected_grad)
+    assert_close(
+        torch.autograd.grad(actual_grad, packed, direction)[0],
+        torch.autograd.grad(expected_grad, reference, direction)[0],
+        equal_nan=True,
+    )
+
+
+def test_gumbel_softmax_hard_empty_ragged_axis_matches_native(device):
+    parts = [torch.empty(0, 3, device=device), torch.randn(2, 3, device=device)]
+    source = NT(parts, ragged_dims=(0,))
+    assert F.gumbel_softmax(source, hard=False, dim=1)[0].shape == parts[0].shape
+    with pytest.raises(IndexError, match="non-zero size"):
+        F.gumbel_softmax(parts[0], hard=True, dim=0)
+    with pytest.raises(IndexError, match="non-zero size"):
+        F.gumbel_softmax(source, hard=True, dim=1)
+
+
+@pytest.mark.parametrize("dtype", (torch.float16, torch.bfloat16))
+@pytest.mark.parametrize("ragged_channels", (False, True))
+@pytest.mark.parametrize("backend", (None, "inductor"))
+def test_local_response_norm_low_precision_window_accumulation(device, dtype, ragged_channels, backend):
+    if device.type != "cuda":
+        pytest.skip("low precision native LRN reference requires CUDA")
+    torch.compiler.reset()
+    shapes = ((3, 2), (4, 3)) if ragged_channels else ((3, 2), (3, 4))
+    parts = [torch.full(shape, 180.0, device=device, dtype=dtype) for shape in shapes]
+    source = NT(parts, ragged_dims=(0, 1) if ragged_channels else (1,))
+    values = source.concat.detach().requires_grad_()
+    references = [part.detach().clone().requires_grad_() for part in parts]
+    expected = NT(
+        [F.local_response_norm(part.unsqueeze(0), 3, alpha=0.2, beta=0.6).squeeze(0) for part in references],
+        ragged_dims=source.ragged_dims,
+    )
+
+    def run(template, packed):
+        return F.local_response_norm(template.packed_like(packed), 3, alpha=0.2, beta=0.6).concat
+
+    if backend is not None:
+        run = torch.compile(run, backend=backend, fullgraph=True, dynamic=True)
+    actual = run(source, values)
+    tolerances = {"rtol": 0.02, "atol": 0.002} if dtype == torch.bfloat16 else {"rtol": 0.002, "atol": 0.0002}
+    assert_close(actual, expected.concat, **tolerances)
+    cotangent = torch.ones_like(actual)
+    expected_grads = torch.autograd.grad(expected.concat, references, cotangent)
+    assert_close(
+        torch.autograd.grad(actual, values, cotangent)[0],
+        NT(expected_grads, ragged_dims=source.ragged_dims).concat,
+        **tolerances,
+    )

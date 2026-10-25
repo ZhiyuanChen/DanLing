@@ -74,7 +74,6 @@ from .ops import (
     _check_execution_guard,
     _compile_unsupported,
     _concat_apply_same_shape,
-    _concat_dim_for_tensor_dim,
     _ensure_nested_input,
     _ExecutionGuardKind,
     _is_compiling,
@@ -2573,7 +2572,7 @@ def layer_norm(
     )
 
 
-@NestedTensorFuncRegistry.implement(F.local_response_norm, compile_safe=False)
+@NestedTensorFuncRegistry.implement(F.local_response_norm, compile_safe=True)
 def local_response_norm(
     input: NestedTensor, size: int, alpha: float = 1e-4, beta: float = 0.75, k: float = 1.0
 ) -> NestedTensor:
@@ -2601,63 +2600,93 @@ def local_response_norm(
         >>> torch.allclose(out, ref)
         True
     """
-    batch_dense = input._materialize_batch_leading(input.padding_value)
-    valid = _nested_full_valid_mask_batch_leading(input, batch_dense)
-    masked = torch.where(valid, batch_dense, torch.zeros((), dtype=batch_dense.dtype, device=batch_dense.device))
-    output = F.local_response_norm(masked, size=size, alpha=alpha, beta=beta, k=k)
-    padding = torch.full_like(output, input.padding_value)
-    return _nested_from_batch_leading_tensor(input, torch.where(valid, output, padding))
+    if input._physical_shape.size(1) < 2:
+        raise ValueError("local_response_norm expects channel and spatial dimensions in every sample")
+    if size <= 0:
+        raise ValueError("local_response_norm size must be positive")
+    values = input.concat
+    squared = values.square()
+    carrier = squared.float() if values.dtype in (torch.float16, torch.bfloat16) else squared
+    channel_dim = _physical_to_values_dim(input, 0)
+    if channel_dim is not None:
+        squares = carrier.movedim(channel_dim, -1)
+        padded = F.pad(squares, (size // 2, (size - 1) // 2))
+        window_sum = torch.zeros_like(squares)
+        for shift in range(size):
+            window_sum = window_sum + padded.narrow(-1, shift, squares.shape[-1])
+        window_sum = window_sum.movedim(-1, channel_dim)
+    else:
+        batch, local = input._packed_batch_local_indices(device=values.device)
+        shapes = input._physical_shape.to(values.device).index_select(0, batch)
+        channel_position = input._varying_dims.index(0)
+        stride = shapes[:, list(input._varying_dims[channel_position + 1 :])].prod(1)
+        channels = shapes[:, 0]
+        coordinate = (local // stride) % channels
+        positions = torch.arange(values.shape[0], device=values.device)
+        squares = torch.cat((carrier, carrier.new_zeros((1, *values.shape[1:]))))
+        window_sum = torch.zeros_like(carrier)
+        for shift in range(-(size // 2), (size - 1) // 2 + 1):
+            valid = (coordinate + shift >= 0) & (coordinate + shift < channels)
+            index = torch.where(valid, positions + shift * stride, values.shape[0])
+            window_sum = window_sum + squares.index_select(0, index)
+    mean = window_sum.div(size).to(values.dtype)
+    return input._packed_like_unchecked(values / mean.mul(alpha).add(k).pow(beta))
 
 
-def _normalize_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
-    r"""Return whether ``F.normalize`` can stay entirely on packed storage."""
-    if not args:
-        return False
-    input = args[0]
-    dim = kwargs.get("dim", args[2] if len(args) > 2 else 1)
-    out = kwargs.get("out", args[4] if len(args) > 4 else None)
-    if out is not None or not isinstance(dim, int):
-        return False
-    try:
-        physical_dim = _translate_non_batch_dim(input, dim)
-    except (IndexError, TypeError, ValueError):
-        return False
-    return _physical_to_values_dim(input, physical_dim) is not None
-
-
-@NestedTensorFuncRegistry.implement(
-    F.normalize,
-    compile_safe=True,
-    compile_guard=_normalize_compile_safe_inputs,
-)
+@NestedTensorFuncRegistry.implement(F.normalize, compile_safe=True)
 def normalize(input, p=2.0, dim=1, eps=1e-12, out=None):
-    r"""Normalize static dimensions on packed values, with a mask-aware eager ragged fallback."""
+    r"""Normalize each sample's requested axis on its packed values."""
     if out is not None:
         raise NotImplementedError("F.normalize(..., out=...) is not supported on NestedTensor.")
-
-    logical_dim = dim if dim >= 0 else dim + input.dim()
-    physical_dim = _translate_non_batch_dim(input, logical_dim)
+    physical_dim = _translate_non_batch_dim(input, dim)
     values_dim = _physical_to_values_dim(input, physical_dim)
     if values_dim is not None:
-        normalized = F.normalize(input.concat, p=p, dim=values_dim, eps=eps, out=None)
-        return input.packed_like(normalized)
+        return input._packed_like_unchecked(F.normalize(input.concat, p=p, dim=values_dim, eps=eps))
+    from ._nn_segmented import PackedVectorNorm
+    from .aten_functions import _packed_ragged_reduction_groups
 
-    if _is_compiling():
-        _compile_unsupported(
-            "torch.nn.functional.normalize",
-            "only static dimensions that stay on packed storage are compile-safe",
+    values = input.concat
+    # Validate the native floating/complex dtype contract without reducing an empty infinity norm.
+    torch.linalg.vector_norm(values[:0], ord=2)
+    if p < 0 or p in (float("inf"), float("-inf")):
+        torch._assert_async(
+            torch.all(input._physical_shape[:, physical_dim] > 0),
+            "vector norm cannot reduce an empty dimension for this order",
         )
-    tensor = input.tensor
-    valid = _nested_full_valid_mask(input, tensor)
-    masked = torch.where(valid, tensor, torch.zeros((), dtype=tensor.dtype, device=tensor.device))
-    normalized = F.normalize(masked, p=p, dim=logical_dim, eps=eps, out=None)
-    padding = torch.full_like(normalized, input.padding_value)
-    return _nested_from_padded_tensor(input, torch.where(valid, normalized, padding))
+    _, _, groups, group_count = _packed_ragged_reduction_groups(input, physical_dim, device=values.device)
+    norms = PackedVectorNorm.apply(values, groups, group_count, p)
+    denominator = norms.index_select(0, groups).clamp_min(eps)
+    return input._packed_like_unchecked(values / denominator)
 
 
-@NestedTensorFuncRegistry.implement(F.pdist, compile_safe=False)
+@NestedTensorFuncRegistry.implement(F.pdist, compile_safe=True)
 def pdist(input, p=2.0):
-    return _apply_per_element(input, F.pdist, p=p)
+    from ._nn_segmented import segmented_pdist
+
+    if len(input) == 0 and input._physical_shape.size(1) == 0:
+        return input._packed_like_unchecked(input.concat)
+    if input._physical_shape.size(1) != 2:
+        raise RuntimeError("pdist only supports 2D tensors in every NestedTensor sample")
+    output = segmented_pdist(input.concat, input._offsets, input._physical_shape, list(input._permutation), float(p))
+    rows = input._physical_shape[:, 0]
+    counts = rows * (rows - 1) // 2
+    offsets = torch.cat((counts.new_zeros(1), counts.cumsum(0)))
+    maximum = input._logical_shape[1 if input.batch_first else 0]
+    maximum = maximum * (maximum - 1) // 2
+    outer_size = (len(input), maximum) if input.batch_first else (maximum, len(input))
+    result = type(input).from_packed(
+        output,
+        offsets,
+        counts[:, None],
+        permutation=(0,),
+        ragged_dims=(0,),
+        outer_size=outer_size,
+        batch_first=input.batch_first,
+        padding_value=input.padding_value,
+        mask_value=input.mask_value,
+        validate=False,
+    )
+    return result._packed_like_unchecked(output, reuse_wrapper=True)
 
 
 @NestedTensorFuncRegistry.implement(F.rms_norm, compile_safe=True)
@@ -2767,10 +2796,14 @@ def grid_sample(input, grid, *args, **kwargs):
     return _apply_pair(input, grid, sample)
 
 
-@NestedTensorFuncRegistry.implement(F.one_hot, compile_safe=False)
+@NestedTensorFuncRegistry.implement(F.one_hot, compile_safe=True)
 def one_hot(input, num_classes: int = -1):
-    output_values = F.one_hot(input.concat, num_classes=num_classes)
-    num_classes = int(output_values.shape[-1])
+    from ._nn_segmented import inferred_one_hot
+
+    output_values = (
+        inferred_one_hot(input.concat) if num_classes == -1 else F.one_hot(input.concat, num_classes=num_classes)
+    )
+    num_classes = output_values.shape[-1]
     shape_tensor = torch.cat(
         [
             input._physical_shape,
@@ -2794,6 +2827,7 @@ def one_hot(input, num_classes: int = -1):
         outer_size=(*input.shape, num_classes),
         packed_sizes=input._packed_sizes,
         element_shapes=element_shapes,
+        validate=False,
     )
 
 
@@ -2939,8 +2973,6 @@ NN_POOL_WITH_INDICES_OPS = [
     F.adaptive_max_pool1d_with_indices,
     F.adaptive_max_pool2d_with_indices,
     F.adaptive_max_pool3d_with_indices,
-    F.fractional_max_pool2d_with_indices,
-    F.fractional_max_pool3d_with_indices,
 ]
 
 NN_MAX_UNPOOL_OPS = [F.max_unpool1d, F.max_unpool2d, F.max_unpool3d]
@@ -2968,41 +3000,152 @@ def f_softmin(input, dim=-1, _stacklevel=3, dtype=None):
     return torch.softmax(torch.neg(source), dim=dim, dtype=None)
 
 
-@NestedTensorFuncRegistry.implement(F.gumbel_softmax, compile_safe=False)
-def gumbel_softmax(logits, *args, dim=-1, **kwargs):
-    from .aten_functions import _packed_to_padded
+@NestedTensorFuncRegistry.implement(F.gumbel_softmax, compile_safe=True)
+def gumbel_softmax(logits, tau=1, hard=False, eps=1e-10, dim=-1):
+    from .aten_functions import _is_fake_tensor, _packed_varying_softmax_group_indices
 
     dim_adj = _translate_non_batch_dim(logits, dim)
-    if dim_adj == 0:
-        padded, _, _, batch_idx, local_idx, _ = _packed_to_padded(logits, fill_value=float("-inf"))
-        out_padded = F.gumbel_softmax(padded, *args, dim=1, **kwargs)
-        return logits._packed_like_unchecked(out_padded[batch_idx, local_idx])
-    concat_dim = _concat_dim_for_tensor_dim(logits, dim_adj)
-    if concat_dim is not None:
-        return _apply_packed(logits, F.gumbel_softmax, *args, dim=concat_dim, **kwargs)
-    if _is_compiling():
-        _compile_unsupported(
-            "torch.nn.functional.gumbel_softmax",
-            "only ragged-dim and packed static-dim cases are compile-safe",
+    values_dim = _physical_to_values_dim(logits, dim_adj)
+    if values_dim is not None:
+        return logits._packed_like_unchecked(
+            F.gumbel_softmax(logits.concat, tau=tau, hard=hard, eps=eps, dim=values_dim)
         )
-    return _map_storage_serial(logits, lambda t: F.gumbel_softmax(t, *args, dim=dim_adj, **kwargs))
+    if hard:
+        nonempty = torch.all(logits._physical_shape[:, dim_adj] > 0)
+        message = "max(): Expected reduction dim to have non-zero size."
+        if not _is_compiling() and not _is_fake_tensor(logits._physical_shape):
+            if not bool(nonempty):
+                raise IndexError(message)
+        else:
+            torch._assert_async(nonempty, message)
+    if eps != 1e-10:
+        import warnings
+
+        warnings.warn("`eps` parameter is deprecated and has no effect.", stacklevel=2)
+    noise = -torch.empty_like(logits.concat, memory_format=torch.legacy_contiguous_format).exponential_().log()
+    perturbed = logits._packed_like_unchecked((logits.concat + noise) / tau)
+    soft = torch.softmax(perturbed, dim=dim)
+    if not hard:
+        return soft
+    group_idx, group_count = _packed_varying_softmax_group_indices(logits, dim_adj, device=logits.device)
+    values = soft.concat
+    index = group_idx.reshape(-1, *([1] * (values.dim() - 1))).expand_as(values)
+    maxima = values.new_full((group_count, *values.shape[1:]), float("-inf"))
+    maxima = maxima.scatter_reduce(0, index, values, "amax", include_self=False)
+    positions = torch.arange(values.shape[0], device=values.device).reshape(-1, *([1] * (values.dim() - 1)))
+    candidates = torch.where(values == maxima.index_select(0, group_idx), positions, values.shape[0])
+    first = torch.full(maxima.shape, values.shape[0], device=values.device, dtype=torch.long)
+    first = first.scatter_reduce(0, index, candidates, "amin", include_self=True)
+    hard_values = (positions == first.index_select(0, group_idx)).to(values.dtype)
+    return logits._packed_like_unchecked(hard_values - values.detach() + values)
 
 
 # Fractional max pool — boolean_dispatch wrappers that support return_indices
 
 
-@NestedTensorFuncRegistry.implement(F.fractional_max_pool2d, compile_safe=False)
-def fractional_max_pool2d(input, *args, return_indices=False, **kwargs):
-    if return_indices:
-        return _apply_with_indices(input, F.fractional_max_pool2d, *args, **kwargs)
-    return _apply_per_element(input, F.fractional_max_pool2d, *args, **kwargs)
+@NestedTensorFuncRegistry.implement(F.fractional_max_pool2d, compile_safe=True)
+def fractional_max_pool2d(
+    input, kernel_size, output_size=None, output_ratio=None, return_indices=False, _random_samples=None
+):
+    output, indices = _fractional_max_pool(input, 2, kernel_size, output_size, output_ratio, _random_samples)
+    return (output, indices) if return_indices else output
 
 
-@NestedTensorFuncRegistry.implement(F.fractional_max_pool3d, compile_safe=False)
-def fractional_max_pool3d(input, *args, return_indices=False, **kwargs):
-    if return_indices:
-        return _apply_with_indices(input, F.fractional_max_pool3d, *args, **kwargs)
-    return _apply_per_element(input, F.fractional_max_pool3d, *args, **kwargs)
+@NestedTensorFuncRegistry.implement(F.fractional_max_pool3d, compile_safe=True)
+def fractional_max_pool3d(
+    input, kernel_size, output_size=None, output_ratio=None, return_indices=False, _random_samples=None
+):
+    output, indices = _fractional_max_pool(input, 3, kernel_size, output_size, output_ratio, _random_samples)
+    return (output, indices) if return_indices else output
+
+
+@NestedTensorFuncRegistry.implement(F.fractional_max_pool2d_with_indices, compile_safe=True)
+def fractional_max_pool2d_with_indices(
+    input, kernel_size, output_size=None, output_ratio=None, return_indices=False, _random_samples=None
+):
+    del return_indices
+    return _fractional_max_pool(input, 2, kernel_size, output_size, output_ratio, _random_samples)
+
+
+@NestedTensorFuncRegistry.implement(F.fractional_max_pool3d_with_indices, compile_safe=True)
+def fractional_max_pool3d_with_indices(
+    input, kernel_size, output_size=None, output_ratio=None, return_indices=False, _random_samples=None
+):
+    del return_indices
+    return _fractional_max_pool(input, 3, kernel_size, output_size, output_ratio, _random_samples)
+
+
+def _fractional_max_pool(input, spatial_rank, kernel_size, output_size, output_ratio, random_samples):
+    from ._nn_segmented import segmented_fractional_max_pool
+    from .aten_functions import _tensor_backed_ragged_offsets
+
+    rank = input._physical_shape.size(1)
+    if len(input) == 0 and rank == 0:
+        return input._packed_like_unchecked(input.concat), input._packed_like_unchecked(input.concat.to(torch.long))
+    if rank not in (spatial_rank + 1, spatial_rank + 2):
+        raise ValueError(f"fractional_max_pool{spatial_rank}d expects channel and spatial dimensions")
+    kernel = (kernel_size,) * spatial_rank if isinstance(kernel_size, (int, torch.SymInt)) else tuple(kernel_size)
+    if output_size is None and output_ratio is None:
+        raise ValueError("fractional_max_pool requires either an output_size or output_ratio")
+    physical_shape = input._physical_shape
+    maximum = list(input._max_physical_dims())
+    prefix_rank = rank - spatial_rank
+    if output_size is not None:
+        sizes = (output_size,) * spatial_rank if isinstance(output_size, (int, torch.SymInt)) else tuple(output_size)
+        if len(sizes) != spatial_rank:
+            raise ValueError("fractional_max_pool output_size must match the spatial rank")
+        spatial_shape = physical_shape.new_tensor(sizes).reshape(1, spatial_rank).expand(len(input), -1)
+        maximum[prefix_rank:] = sizes
+    else:
+        ratios = (
+            (output_ratio,) * spatial_rank
+            if isinstance(output_ratio, (int, float, torch.SymInt, torch.SymFloat))
+            else tuple(output_ratio)
+        )
+        if len(ratios) != spatial_rank or any(ratio <= 0 or ratio >= 1 for ratio in ratios):
+            raise ValueError("fractional_max_pool output_ratio must be between zero and one in every spatial dimension")
+        spatial_shape = torch.stack(
+            [
+                torch.floor(physical_shape[:, prefix_rank + dim].to(torch.float64) * ratio).to(torch.long)
+                for dim, ratio in enumerate(ratios)
+            ],
+            dim=1,
+        )
+        maximum[prefix_rank:] = [math.floor(extent * ratio) for extent, ratio in zip(maximum[prefix_rank:], ratios)]
+    output_shape = torch.cat((physical_shape[:, :prefix_rank], spatial_shape), dim=1)
+    static_shape = [maximum[dim] for dim in input._static_dims]
+    values, indices, _ = segmented_fractional_max_pool(
+        input.concat,
+        input._offsets,
+        physical_shape,
+        output_shape,
+        list(input._permutation),
+        spatial_rank,
+        list(kernel),
+        static_shape,
+        random_samples,
+    )
+    counts = output_shape[:, list(input._varying_dims)].prod(1)
+    offsets = torch.cat((counts.new_zeros(1), counts.cumsum(0)))
+    outer_size = (len(input), *maximum) if input.batch_first else (maximum[0], len(input), *maximum[1:])
+    output = type(input).from_packed(
+        values,
+        offsets,
+        output_shape,
+        permutation=input._permutation,
+        ragged_dims=input._ragged_dims,
+        batch_first=input.batch_first,
+        padding_value=input.padding_value,
+        mask_value=input.mask_value,
+        outer_size=outer_size,
+        validate=False,
+        ragged_offsets=(
+            _tensor_backed_ragged_offsets(output_shape, input._ragged_dims, dtype=offsets.dtype)
+            if len(input._ragged_dims) > 1
+            else (offsets,) if input._ragged_dims else None
+        ),
+    )
+    return output._packed_like_unchecked(values, reuse_wrapper=True), output._packed_like_unchecked(indices)
 
 
 # ---------------------------------------------------------------------------
@@ -3280,6 +3423,14 @@ NN_TIER_A_PACKED_COMPILE_SAFE_OPS: tuple = (
     F.layer_norm,
     F.normalize,
     F.rms_norm,
+    F.local_response_norm,
+    F.one_hot,
+    F.gumbel_softmax,
+    F.pdist,
+    F.fractional_max_pool2d,
+    F.fractional_max_pool3d,
+    F.fractional_max_pool2d_with_indices,
+    F.fractional_max_pool3d_with_indices,
 )
 
 NN_TIER_B_EAGER_ONLY_OPS: tuple = (
@@ -3301,14 +3452,8 @@ NN_TIER_B_EAGER_ONLY_OPS: tuple = (
     *NN_POOL_WITH_INDICES_OPS,
     *NN_MAX_UNPOOL_OPS,
     F.ctc_loss,
-    F.fractional_max_pool2d,
-    F.fractional_max_pool3d,
-    F.gumbel_softmax,
     F.grid_sample,
-    F.local_response_norm,
-    F.one_hot,
     F.pairwise_distance,
-    F.pdist,
 )
 
 # Backward-compatible policy aliases used by tests and adjacent modules.
