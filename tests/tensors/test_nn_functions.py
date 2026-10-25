@@ -3354,6 +3354,24 @@ def test_prelu_preserves_rank_and_logical_channels():
         torch.testing.assert_close(actual, F.prelu(source.unsqueeze(0), weight).squeeze(0))
 
 
+def test_embedding_bag_supports_2d_sample_bags():
+    parts = [torch.tensor([[0, 1], [2, 3]]), torch.tensor([[1, 2]])]
+    weight = torch.arange(12.0).reshape(4, 3)
+    actual = F.embedding_bag(NT(parts), weight)
+    for result, part in zip(actual, parts):
+        torch.testing.assert_close(result, F.embedding_bag(part, weight))
+
+
+def test_embedding_bag_explicit_offsets_fullgraph():
+    source = NT(torch.tensor([0, 1, 2]), torch.tensor([1, 2, 3, 0]))
+    weight = torch.arange(12.0).reshape(4, 3)
+    offsets = torch.tensor([0, 2])
+    compiled = torch.compile(F.embedding_bag, backend="aot_eager", fullgraph=True)
+    actual = compiled(source, weight, offsets=offsets, mode="sum")
+    for result, part in zip(actual, source):
+        torch.testing.assert_close(result, F.embedding_bag(part, weight, offsets=offsets, mode="sum"))
+
+
 def test_inplace_relu_updates_the_original_nested_tensor():
     source = NT(torch.tensor([-1.0, 2.0]), torch.tensor([-3.0, 4.0, -5.0]))
     source.tensor  # Materialize a view before the mutation.

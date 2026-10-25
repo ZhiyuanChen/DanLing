@@ -1895,8 +1895,9 @@ def embedding_bag(
     ):
         use_packed = offsets is None
         if offsets is not None and offsets.dim() == 1 and offsets.numel() > 0:
-            offsets_cpu = offsets.detach().to(device="cpu", dtype=torch.long)
-            use_packed = int(offsets_cpu[0]) == 0
+            # Tensor assertions remain in the graph instead of specializing data.
+            torch._assert_async(offsets[0] == 0, "embedding_bag offsets must start at zero")
+            use_packed = True
         if use_packed:
             from .aten_functions import _from_uniform_batched_output
 
@@ -1933,7 +1934,9 @@ def embedding_bag(
         lambda t: F.embedding_bag(
             t,
             weight,
-            offsets=offsets if offsets is not None else torch.tensor([0], device=t.device, dtype=torch.long),
+            offsets=(
+                offsets if offsets is not None or t.dim() == 2 else torch.tensor([0], device=t.device, dtype=torch.long)
+            ),
             max_norm=max_norm,
             norm_type=norm_type,
             scale_grad_by_freq=scale_grad_by_freq,
