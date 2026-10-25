@@ -7458,11 +7458,33 @@ def topk(func, args, kwargs):
 # ---------------------------------------------------------------------------
 
 
+@NestedTensorAtenRegistry.implement(aten.is_same_size.default)
+def is_same_size(func, args, kwargs):
+    r"""Compare the complete element geometry rather than a list of booleans."""
+    from .nested_tensor import NestedTensor
+
+    left, right = args
+    if isinstance(left, NestedTensor) and isinstance(right, NestedTensor):
+        return left.shape == right.shape and torch.equal(left._physical_shape, right._physical_shape)
+    return left.shape == right.shape
+
+
 @NestedTensorAtenRegistry.implement(aten.alias.default)
 def alias(func, args, kwargs):
     r"""Create an alias of the NestedTensor sharing the same _values storage."""
     source = args[0]
     return source._packed_like_unchecked(func(source.concat, **kwargs))
+
+
+@NestedTensorAtenRegistry.implement(aten._has_same_storage_numel.default)
+def has_same_storage_numel(func, args, kwargs):
+    r"""Compare numerical storage, excluding the logical wrapper's placeholder."""
+    from .nested_tensor import NestedTensor
+
+    left, right = args
+    left = left._packed_values if isinstance(left, NestedTensor) else left
+    right = right._packed_values if isinstance(right, NestedTensor) else right
+    return func(left, right, **kwargs)
 
 
 @NestedTensorAtenRegistry.implement(aten.clone.default)

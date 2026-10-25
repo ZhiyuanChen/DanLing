@@ -86,6 +86,21 @@ _INT64_MAX = torch.iinfo(torch.int64).max
 _INT64_SQUARE_ROOT_MAX = math.isqrt(_INT64_MAX)
 
 
+def _transform_metadata(tensor: Tensor) -> Tensor:
+    r"""Keep integer topology independent of a reverse-mode transform's lifetime."""
+    if not _is_compiling():
+        while torch._C._functorch.is_gradtrackingtensor(tensor):
+            tensor = torch._C._functorch.get_unwrapped(tensor)
+    return tensor
+
+
+def _transform_base(tensor: Tensor) -> Tensor:
+    r"""Inspect a transform's underlying layout without discarding its numerical edge."""
+    while torch._C._functorch.is_gradtrackingtensor(tensor):
+        tensor = torch._C._functorch.get_unwrapped(tensor)
+    return tensor
+
+
 def _validate_concrete_square_lengths(lengths: Tensor) -> None:
     r"""Reject square metadata that cannot be represented by signed int64."""
     concrete_lengths = lengths.tolist()
@@ -562,7 +577,7 @@ class NestedTensor(torch.Tensor):
         offsets = torch.zeros(len(tensors) + 1, dtype=torch.long)
         torch.cumsum(sizes, dim=0, out=offsets[1:])
 
-        return values, offsets, shape_tensor, packed_sizes, element_shapes
+        return values, _transform_metadata(offsets), _transform_metadata(shape_tensor), packed_sizes, element_shapes
 
     @staticmethod
     def _normalize_ragged_dims(ragged_dims: tuple[int, ...], physical_rank: int) -> tuple[int, ...]:
@@ -689,7 +704,7 @@ class NestedTensor(torch.Tensor):
         if ragged_offsets is None or len(ragged_offsets) <= 1:
             return
         for name, level_offsets in zip(cls._ragged_offset_names(len(ragged_offsets)), ragged_offsets):
-            setattr(result, name, level_offsets)
+            setattr(result, name, _transform_metadata(level_offsets))
 
     def _persistent_ragged_offsets(self) -> tuple[Tensor, ...] | None:
         r"""Return tensor-backed row splits when this instance owns a complete topology."""
@@ -1531,6 +1546,8 @@ class NestedTensor(torch.Tensor):
             raise ValueError(f"shape_tensor must be on CPU, got {shape_tensor.device}")
 
         compiling = _is_compiling()
+        offsets = _transform_metadata(offsets)
+        shape_tensor = _transform_metadata(shape_tensor)
         if validate and compiling:
             _compile_unsupported("NestedTensor.from_packed", "metadata validation is eager-only")
         if outer_size is not None:
@@ -1967,6 +1984,27 @@ class NestedTensor(torch.Tensor):
             self = args[0]
             dim = args[1] if len(args) > 1 else kwargs.get("dim")
             return self.size(dim)
+
+        if func is torch._VF._make_dual and all(isinstance(arg, cls) for arg in args[:2]):
+            from .ops import _broadcast_nested_to_values
+
+            primal, tangent = args[:2]
+            if not torch.ops.aten.is_same_size.default(primal, tangent):
+                raise RuntimeError("NestedTensor forward tangent topology must match the primal")
+            tangent_values = _broadcast_nested_to_values(primal, tangent)
+            if tangent_values is None:
+                raise RuntimeError("NestedTensor could not align the forward tangent's packed layout")
+            values = func(primal.concat, tangent_values, **kwargs)
+            return primal._packed_like_unchecked(values)
+        if func is torch._VF._unpack_dual and isinstance(args[0], cls):
+            source = args[0]
+            primal, tangent = func(source.concat, **kwargs)
+            return torch.return_types._unpack_dual(
+                (
+                    source._packed_like_unchecked(primal),
+                    source._packed_like_unchecked(tangent) if tangent is not None else None,
+                )
+            )
 
         handler = NestedTensorFuncRegistry.get(func)
         if handler is not None:
@@ -5987,11 +6025,26 @@ class _PackedStructureReference:
 class _PackedLikeAutograd(torch.autograd.Function):
     r"""Attach a derived packed tensor to a wrapper produced inside a compiled graph."""
 
+    generate_vmap_rule = True
+
     @staticmethod
-    def forward(ctx, packed_values: Tensor, structure: _PackedStructureReference) -> NestedTensor:
-        ctx.packed_shape = packed_values.shape
+    def forward(packed_values: Tensor, structure: _PackedStructureReference) -> NestedTensor:
         reference = structure.value
         max_length_binding = vars(reference).get("_compile_max_length_binding")
+        result = reference if structure.reuse_wrapper else reference._packed_like_unchecked_raw(packed_values)
+        if max_length_binding is not None:
+            result._max_length_binding = max_length_binding
+        if structure.mark_dynamic:
+            result._mark_tensor_backed_dynamic_dims()
+        return result
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        packed_values, structure = inputs
+        reference = structure.value
+        max_length_binding = vars(reference).get("_compile_max_length_binding")
+        ctx.packed_shape = packed_values.shape
+        ctx.jvp_layout = reference._layout_state()
         if not _is_compiling() and not _is_fake_tensor(packed_values):
             # Backward needs layout metadata only: the axis split for a packed tangent and, for
             # a dense tangent, a storage-free layout wrapper rebuilt from these metadata tensors.
@@ -6009,12 +6062,14 @@ class _PackedLikeAutograd(torch.autograd.Function):
             if max_length_binding is not None:
                 layout._max_length_binding = max_length_binding
             ctx.save_for_backward(layout)
-        result = reference if structure.reuse_wrapper else reference._packed_like_unchecked_raw(packed_values)
-        if max_length_binding is not None:
-            result._max_length_binding = max_length_binding
-        if structure.mark_dynamic:
-            result._mark_tensor_backed_dynamic_dims()
-        return result
+
+    @staticmethod
+    def jvp(ctx, values_tangent, structure_tangent):
+        del structure_tangent
+        if values_tangent is None:
+            return None
+        layout = NestedTensor._layout_from_state(ctx.jvp_layout, values_tangent, ctx.packed_shape)
+        return layout._packed_like_unchecked_raw(values_tangent)
 
     @staticmethod
     def backward(ctx, grad_output: NestedTensor):
@@ -6025,20 +6080,28 @@ class _PackedLikeAutograd(torch.autograd.Function):
         else:
             reference = None
             reference_ragged, reference_static = ctx.axes
-        values_grad = grad_output.concat if isinstance(grad_output, NestedTensor) else grad_output
-        if isinstance(grad_output, NestedTensor):
-            grad_static = grad_output._static_dims
-            packed_tangent = grad_output._ragged_dims == reference_ragged and set(grad_static) == set(reference_static)
+        tangent_layout = grad_output if _is_compiling() else _transform_base(grad_output)
+        nested_tangent = isinstance(tangent_layout, NestedTensor)
+        values_grad = (
+            grad_output.concat
+            if isinstance(grad_output, NestedTensor)
+            else _project_packed_values(grad_output) if nested_tangent else grad_output
+        )
+        if nested_tangent:
+            grad_static = tangent_layout._static_dims
+            packed_tangent = tangent_layout._ragged_dims == reference_ragged and set(grad_static) == set(
+                reference_static
+            )
             reference_shapes = reference._physical_shape if state is None else state[2]
             reference_offsets = reference._offsets if state is None else state[1]
             message = "NestedTensor tangent topology must match the output"
             if (
                 not packed_tangent
                 or not NestedTensor._meta_tensor_equal(
-                    grad_output._physical_shape, reference_shapes, message, runtime_assert=True
+                    tangent_layout._physical_shape, reference_shapes, message, runtime_assert=True
                 )
                 or not NestedTensor._meta_tensor_equal(
-                    grad_output._offsets, reference_offsets, message, runtime_assert=True
+                    tangent_layout._offsets, reference_offsets, message, runtime_assert=True
                 )
             ):
                 raise RuntimeError(message)
@@ -6064,23 +6127,41 @@ class _PackedLikeAutograd(torch.autograd.Function):
 class _PackedValuesAutograd(torch.autograd.Function):
     r"""Project a wrapper-owned autograd edge back onto its packed values."""
 
+    generate_vmap_rule = True
+
     @staticmethod
-    def forward(ctx, input: NestedTensor) -> Tensor:
+    def forward(input: NestedTensor) -> Tensor:
+        # Returning the child itself would attach this node to the wrapper's
+        # own backing tensor and create a reference cycle through the saved
+        # layout. A fresh view preserves storage and version aliases.
+        return input._packed_values.view_as(input._packed_values)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        (input,) = inputs
+        if not _is_compiling() and torch._C._are_functorch_transforms_active():
+            layout = _transform_base(input)
+            ctx.layout_state = layout._layout_state()
+            ctx.save_for_backward(layout._packed_values.detach())
+            return
         # Only the layout is needed in backward. Its detached alias keeps version
         # checks and saved-tensor hooks without retaining the owning wrapper.
         # Native layout changes on the owner must not invalidate the old
         # projection's immutable topology. Its packed child still shares the
         # numerical version counter used by ordinary saved-value checks.
         ctx.save_for_backward(input._packed_like_unchecked_raw(input._packed_values.detach()))
-        # The dense child is not a Function input. Returning that exact object
-        # lets autograd attach this node to the wrapper's own backing tensor,
-        # creating a wrapper -> backing.grad_fn -> saved-wrapper reference cycle.
-        # A fresh view preserves storage and version aliases without mutating it.
-        return input._packed_values.view_as(input._packed_values)
+
+    @staticmethod
+    def jvp(ctx, input_tangent):
+        del ctx
+        return input_tangent.concat if input_tangent is not None else None
 
     @staticmethod
     def backward(ctx, grad_values: Tensor):
         (input,) = ctx.saved_tensors
+        if hasattr(ctx, "layout_state"):
+            layout = NestedTensor._layout_from_state(ctx.layout_state, grad_values, input.shape)
+            return layout._packed_like_unchecked(grad_values)
         return input._packed_like_unchecked(grad_values)
 
 

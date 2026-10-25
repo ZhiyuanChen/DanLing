@@ -37,6 +37,70 @@ NT = NestedTensor
 TORCH_VERSION = Version(torch.__version__.split("+")[0])
 
 
+class TestFunctionTransforms:
+
+    @pytest.mark.parametrize("wrapper_leaf", [False, True])
+    def test_reverse_transforms_preserve_ragged_geometry(self, device, wrapper_leaf):
+        source = NT(
+            [
+                torch.randn(2, 3, 2, dtype=torch.float64, device=device),
+                torch.randn(4, 2, 2, dtype=torch.float64, device=device),
+            ],
+            ragged_dims=(1, 0),
+        )
+        if wrapper_leaf:
+            source.requires_grad_()
+        values = source.concat.detach().clone()
+
+        def loss(value):
+            return value.sin().square().sum()
+
+        gradient = torch.func.grad(loss)(source)
+        assert_close(gradient.element_sizes(), source.element_sizes())
+        assert_close(gradient.concat, 2 * values.sin() * values.cos())
+        second = torch.func.grad(lambda value: torch.func.grad(loss)(value).sum())(source)
+        assert_close(second.concat, 2 * (2 * values).cos())
+        output, pullback = torch.func.vjp(torch.sin, source)
+        (gradient,) = pullback(torch.ones_like(output))
+        assert_close(gradient.concat, values.cos())
+        assert source.grad is None
+
+    def test_native_forward_ad_preserves_packed_tangents(self, device):
+        elements = [
+            torch.randn(2, 3, 2, dtype=torch.float64, device=device),
+            torch.randn(4, 2, 2, dtype=torch.float64, device=device),
+        ]
+        source = NT(elements, ragged_dims=(1, 0)).requires_grad_()
+        direction = NT([torch.randn_like(element) for element in elements], ragged_dims=(0, 1))
+        with torch.autograd.forward_ad.dual_level():
+            dual = torch.autograd.forward_ad.make_dual(source, direction)
+            output = dual.pow(3)
+            primal, tangent = torch.autograd.forward_ad.unpack_dual(output)
+            for actual, value, vector in zip(tangent, elements, direction):
+                assert_close(actual, 3 * value.square() * vector)
+            packed_primal, packed_tangent = torch.autograd.forward_ad.unpack_dual(output.concat)
+            assert_close(packed_primal, primal.concat)
+            assert_close(packed_tangent, tangent.concat)
+
+    def test_jvp_and_factory_transforms(self, device):
+        values = torch.randn(5, dtype=torch.float64, device=device)
+        direction = torch.randn_like(values)
+
+        def loss(packed):
+            return NT([packed[:2], packed[2:]]).sin().sum()
+
+        assert_close(torch.func.grad(loss)(values), values.cos())
+        assert_close(torch.func.jacfwd(loss)(values), values.cos())
+        primal, tangent = torch.func.jvp(loss, (values,), (direction,))
+        assert_close(primal, values.sin().sum())
+        assert_close(tangent, (values.cos() * direction).sum())
+        source = NT([values[:2], values[2:]])
+        vector = NT([direction[:2], direction[2:]])
+        primal, tangent = torch.func.jvp(torch.sin, (source,), (vector,))
+        assert_close(primal.concat, values.sin())
+        assert_close(tangent.concat, values.cos() * direction)
+
+
 class TestAutogradViewLifetime:
 
     def test_eager_intermediate_wrapper_receives_gradients_and_hooks(self):
