@@ -1870,6 +1870,31 @@ class TestCopySemantics:
 
 class TestFromFactoryMethods:
 
+    def test_mask_batch_selection_respects_layout_and_dtype(self):
+        padded = torch.arange(24.0).reshape(3, 2, 4)
+        output = NT.from_tensor_mask(
+            padded, torch.tensor([True, False]), batched=True, batch_first=False, dtype=torch.float64
+        )
+        assert output.dtype == torch.float64
+        assert_close(output.tensor, padded[:, :1].double())
+
+    def test_nested_like_checks_nested_batch_and_topology(self):
+        source = NT([torch.ones(2), torch.ones(4)])
+        with pytest.raises(ValueError, match="batch size"):
+            source.nested_like(NT([torch.ones(1)]))
+        with pytest.raises(ValueError, match="shape"):
+            source.nested_like(NT([torch.ones(4), torch.ones(2)]))
+        assert_close(source.nested_like(source), source)
+
+    def test_from_packed_rejects_inconsistent_static_tail(self):
+        with pytest.raises(ValueError, match="static dimensions"):
+            NT.from_packed(
+                torch.arange(35.0).reshape(7, 5),
+                torch.tensor([0, 3, 7]),
+                torch.tensor([[3, 4], [4, 4]]),
+                ragged_dims=(0,),
+            )
+
     def test_from_tensor_mask_high_dimensional(self):
         padded = torch.tensor(
             [
@@ -1885,18 +1910,9 @@ class TestFromFactoryMethods:
             ],
             dtype=torch.bool,
         )
-        nested = NestedTensor.from_tensor_mask(padded, mask)
-        reference = NT(
-            [
-                torch.tensor([[1.0, 2.0], [3.0, 0.0]], dtype=torch.float32),
-                torch.tensor([[9.0, 8.0, 7.0], [6.0, 5.0, 0.0]], dtype=torch.float32),
-            ]
-        )
-        assert_close(nested, reference)
-
-        padded_mask = ~mask
-        nested_inverted = NestedTensor.from_tensor_mask(padded, padded_mask, mask_value=True)
-        assert_close(nested_inverted, reference)
+        for supplied, mask_value in ((mask, False), (~mask, True)):
+            with pytest.raises(ValueError, match="rectangular prefix"):
+                NestedTensor.from_tensor_mask(padded, supplied, mask_value=mask_value)
 
     def test_from_tensor_mask_1d_trims_with_mask(self):
         padded = torch.tensor([1, 2, 0, 0])
@@ -1933,10 +1949,8 @@ class TestFromFactoryMethods:
     def test_from_tensor_mask_ndim3(self):
         padded = torch.tensor([[[1, 2, 0], [3, 0, 0]]])
         mask = torch.tensor([[[1, 1, 0], [1, 0, 0]]], dtype=torch.bool)
-        output = NestedTensor.from_tensor_mask(padded, mask)
-        assert output.tensor.shape == torch.Size([1, 2, 2])
-        reference = NT([torch.tensor([[1, 2], [3, 0]])])
-        assert_close(output, reference)
+        with pytest.raises(ValueError, match="rectangular prefix"):
+            NestedTensor.from_tensor_mask(padded, mask)
 
     def test_from_tensor_mask_ndim3_non_prefix_box_raises(self):
         padded = torch.tensor(
@@ -1953,7 +1967,7 @@ class TestFromFactoryMethods:
             ],
             dtype=torch.bool,
         )
-        with pytest.raises(ValueError, match="valid hierarchical ragged prefix"):
+        with pytest.raises(ValueError, match="rectangular prefix"):
             NestedTensor.from_tensor_mask(padded, mask)
 
     def test_from_tensor_mask_2d_non_prefix_raises(self):

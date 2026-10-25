@@ -1175,6 +1175,9 @@ class NestedTensor(torch.Tensor):
         if _is_fake_tensor(offsets) or _is_fake_tensor(shape_tensor):
             return
 
+        for dim in static_dims:
+            if batch_size and not bool((shape_tensor[:, dim] == values.size(1 + static_dims.index(dim))).all()):
+                raise ValueError("Packed values tail must match static dimensions in permutation order")
         if bool((shape_tensor < 0).any()):
             raise ValueError("shape_tensor must be non-negative")
         if int(offsets[0].item()) != 0:
@@ -3395,34 +3398,23 @@ class NestedTensor(torch.Tensor):
         mask = mask.to(dtype=torch.bool)
         mask_value = kwargs.get("mask_value", False)
         effective_mask = ~mask if mask_value else mask
+        kwargs.setdefault("dtype", tensor.dtype)
+        batch_first = kwargs.get("batch_first", True)
 
         if mask.ndim == 1:
             if batched:
+                batch_dim = 0 if tensor.dim() <= 1 or batch_first else 1
+                if mask.numel() != tensor.size(batch_dim):
+                    raise ValueError("Tensor/mask batch dimension mismatch")
                 indices = effective_mask.nonzero(as_tuple=False).flatten()
-                return cls([tensor[int(i)] for i in indices], dtype=tensor.dtype, **kwargs)
-            return cls(tensor[effective_mask], dtype=tensor.dtype, **kwargs)
+                return cls([tensor.select(batch_dim, int(i)) for i in indices], **kwargs)
+            return cls(tensor[effective_mask], **kwargs)
         # ndim >= 2: batch setup is shared, per-element trim differs by rank
-        batch_first = kwargs.get("batch_first", True)
         tensor_iter = tensor if batch_first else tensor.transpose(0, 1)
         mask_iter = effective_mask if batch_first else effective_mask.transpose(0, 1)
         if tensor_iter.size(0) != mask_iter.size(0):
             raise ValueError("Tensor/mask batch dimension mismatch: " f"{tensor_iter.size(0)} vs {mask_iter.size(0)}")
         trimmed = []
-
-        def _is_prefix_mask(mask_1d: Tensor) -> bool:
-            count = int(mask_1d.sum().item())
-            prefix = torch.arange(mask_1d.size(0), device=mask_1d.device, dtype=torch.long) < count
-            return bool(torch.equal(mask_1d, prefix))
-
-        def _is_hierarchical_prefix_mask(mask_nd: Tensor) -> bool:
-            if mask_nd.dim() == 1:
-                return _is_prefix_mask(mask_nd)
-            leading_valid = mask_nd.reshape(mask_nd.size(0), -1).any(dim=1)
-            valid_count = int(leading_valid.sum().item())
-            prefix = torch.arange(mask_nd.size(0), device=mask_nd.device, dtype=torch.long) < valid_count
-            if not torch.equal(leading_valid, prefix):
-                return False
-            return all(_is_hierarchical_prefix_mask(mask_nd[index]) for index in range(valid_count))
 
         if mask.ndim == 2:
             # 1-D per-element mask: only contiguous-prefix masks can be reconstructed
@@ -3438,7 +3430,8 @@ class NestedTensor(torch.Tensor):
             for t, count in zip(tensor_iter, counts.tolist()):
                 trimmed.append(t[:count])
         else:
-            # N-D per-element mask: only hierarchical ragged-prefix masks are representable as NestedTensor.
+            # Each element is a rectangular tensor: holes or unequal child
+            # prefixes cannot be retained as validity metadata.
             extents = torch.zeros((mask_iter.size(0), mask_iter.dim() - 1), dtype=torch.long, device=mask_iter.device)
             nonzero = mask_iter.nonzero(as_tuple=False)
             if nonzero.numel() > 0:
@@ -3446,20 +3439,21 @@ class NestedTensor(torch.Tensor):
                 extents.scatter_reduce_(0, batch_index, nonzero[:, 1:] + 1, reduce="amax", include_self=False)
             extent_rows = extents.cpu().tolist()
             for t, em, sizes in zip(tensor_iter, mask_iter, extent_rows):
-                if not _is_hierarchical_prefix_mask(em):
+                coordinates = [torch.arange(extent, device=em.device) for extent in em.shape]
+                rectangle = torch.ones_like(em)
+                for dim, (coordinate, size) in enumerate(zip(coordinates, sizes)):
+                    view_shape = [1] * em.dim()
+                    view_shape[dim] = coordinate.numel()
+                    rectangle = rectangle & (coordinate < size).view(view_shape)
+                if not torch.equal(em, rectangle):
                     raise ValueError(
-                        "from_tensor_mask() with N-D masks requires each element mask to be a valid hierarchical "
-                        "ragged prefix; "
-                        "interior False gaps are not supported."
+                        "from_tensor_mask() requires each element mask to be a rectangular prefix; "
+                        "nonrectangular validity domains cannot be represented."
                     )
                 slices = tuple(slice(0, size) for size in sizes)
                 t_slice = t[slices]
-                m_slice = em[slices]
-                valid_mask = m_slice
-                if t_slice.dim() > m_slice.dim():
-                    valid_mask = m_slice.view(m_slice.shape + (1,) * (t_slice.dim() - m_slice.dim()))
-                trimmed.append(t_slice.masked_fill(~valid_mask, kwargs.get("padding_value", 0.0)))
-        return cls(trimmed, dtype=tensor.dtype, **kwargs)
+                trimmed.append(t_slice)
+        return cls(trimmed, **kwargs)
 
     def _dense_to_packed_values(self, tensor: Tensor) -> Tensor | None:
         r"""
@@ -4286,6 +4280,16 @@ class NestedTensor(torch.Tensor):
         """
 
         if isinstance(tensor, NestedTensor):
+            if len(self) != len(tensor):
+                raise ValueError(
+                    "The batch size of NestedTensor and input tensor does not match, " f"{len(self)} != {len(tensor)}"
+                )
+            if strict and (
+                self.shape != tensor.shape
+                or self.batch_first != tensor.batch_first
+                or not torch.equal(self._physical_shape, tensor._physical_shape)
+            ):
+                raise ValueError("The shape of NestedTensor and input tensor does not match")
             return cast(NestedTensor, tensor.clone())
 
         if strict and self.shape != tensor.shape:
