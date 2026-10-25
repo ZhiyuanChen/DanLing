@@ -96,3 +96,13 @@ def test_tensor_lr_schedule(scaling, dtype):
         if step < 10:
             optimizer.step()
             scheduler.step()
+
+
+@pytest.mark.parametrize("rate", [0.0, torch.tensor(0.0)])
+def test_zero_learning_rate_group_remains_frozen(rate):
+    optimizer = torch.optim.SGD([torch.nn.Parameter(torch.ones(1))], lr=rate)
+    scheduler = LRScheduler(optimizer, total_steps=4, warmup_steps=0, cooldown_steps=0, min_lr=0)
+    for _ in range(4):
+        assert float(optimizer.param_groups[0]["lr"]) == 0
+        optimizer.step()
+        scheduler.step()

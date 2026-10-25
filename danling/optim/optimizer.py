@@ -102,9 +102,11 @@ class OptimizerParameterCache:
     def __init__(self, optimizer: optim.Optimizer | None = None) -> None:
         self._optimizer = optimizer
         self._parameters = None
+        self._group_signature: tuple[tuple[int, int], ...] | None = None
 
     def invalidate(self) -> None:
         self._parameters = None
+        self._group_signature = None
 
     def bind(self, optimizer: optim.Optimizer | None) -> None:
         if optimizer is self._optimizer:
@@ -118,11 +120,13 @@ class OptimizerParameterCache:
         if self._optimizer is None:
             return []
 
-        if self._parameters is not None:
+        group_signature = tuple((id(group["params"]), len(group["params"])) for group in self._optimizer.param_groups)
+        if self._parameters is not None and self._group_signature == group_signature:
             return self._parameters
 
         parameters = list(self.iter_unique_parameters(self._optimizer))
         self._parameters = parameters
+        self._group_signature = group_signature
         return parameters
 
     @staticmethod
@@ -211,6 +215,10 @@ class OptimizerContainer:
             grad = parameter.grad
             if grad is None:
                 continue
+            if grad.is_sparse:
+                grad = grad.coalesce().values()
+            elif grad.layout != torch.strided:
+                grad = grad.values()
             if not torch.isfinite(grad).all():
                 return True
         return False

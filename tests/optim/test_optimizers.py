@@ -92,3 +92,21 @@ def test_deepspeed_optimizers():
     assert isinstance(OPTIMIZERS.build(model.parameters(), type="adamw", lr=0.001), optim.AdamW)
     assert isinstance(OPTIMIZERS.build(model.parameters(), type="lamb", lr=0.001), ds.ops.lamb.DeepSpeedCPULamb)
     assert isinstance(OPTIMIZERS.build(model.parameters(), type="lion", lr=0.001), ds.ops.lion.DeepSpeedCPULion)
+
+
+def test_optimizer_container_checks_added_parameter_groups():
+    first, added = nn.Parameter(torch.ones(1)), nn.Parameter(torch.ones(1))
+    container = OptimizerContainer(optim.SGD([first], lr=0.1))
+    first.grad = torch.zeros_like(first)
+    assert container.has_nan_inf_grad() is False
+    container.optimizer.add_param_group({"params": [added]})
+    added.grad = torch.full_like(added, float("inf"))
+    assert container.step(skip_nonfinite_grad=True).stepped is False
+    torch.testing.assert_close(added, torch.ones(1))
+
+
+def test_optimizer_container_accepts_finite_sparse_gradients():
+    embedding = nn.Embedding(4, 2, sparse=True)
+    container = OptimizerContainer(optim.SGD(embedding.parameters(), lr=0.1))
+    embedding(torch.tensor([1, 2])).sum().backward()
+    assert container.step(skip_nonfinite_grad=True).stepped is True

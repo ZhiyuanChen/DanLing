@@ -186,7 +186,11 @@ class LRScheduler(lr_scheduler._LRScheduler):  # pylint: disable=protected-acces
             final_lr = lr * self.final_lr_ratio
         ratio = getattr(self, self.method)(progress)
         if scaling == "percentile":
-            lr = lr * pow(final_lr / lr, ratio)
+            if isinstance(lr, Tensor):
+                denominator = lr.masked_fill(lr == 0, 1)
+                lr = lr * pow(final_lr / denominator, ratio)
+            elif lr != 0:
+                lr = lr * pow(final_lr / lr, ratio)
         elif scaling == "numerical":
             lr = (1 - ratio) * (lr - final_lr) + final_lr
         else:
