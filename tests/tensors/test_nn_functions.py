@@ -3702,6 +3702,59 @@ def test_gumbel_softmax_inductor_ragged_groups(device):
     assert gradient.count_nonzero() > 0
 
 
+@pytest.mark.parametrize("nonfinite", (False, True))
+def test_prelu_fullgraph_declared_ragged_channels(device, nonfinite):
+    torch.compiler.reset()
+    parts = [torch.randn(3, length, device=device, dtype=torch.float64) for length in (2, 4)]
+    if nonfinite:
+        parts[0][0, 0] = float("inf")
+    source = NT(parts, ragged_dims=(0, 1))
+    values = source.concat.detach().requires_grad_()
+    weight = torch.randn(3, device=device, dtype=torch.float64, requires_grad=True)
+    if nonfinite:
+        with torch.no_grad():
+            weight[0] = float("nan")
+    reference_values = values.detach().clone().requires_grad_()
+    reference_weight = weight.detach().clone().requires_grad_()
+    references = NT(
+        [F.prelu(part.unsqueeze(0), reference_weight).squeeze(0) for part in source.packed_like(reference_values)],
+        ragged_dims=(0, 1),
+    ).concat
+    run = torch.compile(
+        lambda template, packed, slopes: F.prelu(template.packed_like(packed), slopes).concat,
+        backend="aot_eager",
+        fullgraph=True,
+        dynamic=True,
+    )
+    actual = run(source, values, weight)
+    assert_close(actual, references, equal_nan=True)
+    cotangent = torch.randn_like(actual)
+    actual_grads = torch.autograd.grad(actual, (values, weight), cotangent)
+    expected_grads = torch.autograd.grad(references, (reference_values, reference_weight), cotangent)
+    for actual_grad, expected_grad in zip(actual_grads, expected_grads):
+        assert_close(actual_grad, expected_grad, equal_nan=True)
+
+
+def test_softmin_fullgraph_ragged_values_and_vjp(device):
+    torch.compiler.reset()
+    source = NT([torch.randn(rows, 3, device=device, dtype=torch.float64) for rows in (2, 4)], ragged_dims=(0,))
+    values = source.concat.detach().requires_grad_()
+    reference_values = values.detach().clone().requires_grad_()
+    expected = torch.cat([F.softmin(part, dim=0) for part in reference_values.split((2, 4))])
+    run = torch.compile(
+        lambda template, packed: F.softmin(template.packed_like(packed), dim=1).concat,
+        backend="inductor",
+        fullgraph=True,
+        dynamic=True,
+    )
+    actual = run(source, values)
+    assert_close(actual, expected)
+    cotangent = torch.randn_like(actual)
+    assert_close(
+        torch.autograd.grad(actual, values, cotangent)[0], torch.autograd.grad(expected, reference_values, cotangent)[0]
+    )
+
+
 @pytest.mark.parametrize("p", (0.5, 1.5, 2.0, -1.0))
 @pytest.mark.parametrize("dtype", (torch.float64, torch.complex128))
 def test_normalize_ragged_zero_coordinate_hessian(device, p, dtype):

@@ -380,9 +380,21 @@ def prelu(input: NestedTensor, weight: Tensor) -> NestedTensor:
         return input._packed_like_unchecked(F.prelu(input.concat, weight))
     channel_dim = _physical_to_values_dim(input, 0)
     if channel_dim is None:
-        if _is_compiling():
-            _compile_unsupported("torch.nn.functional.prelu", "per-channel weights require a static channel axis")
-        return _map_storage_serial(input, lambda t: F.prelu(t.unsqueeze(0), weight).squeeze(0))
+        if len(input) == 0:
+            return input._packed_like_unchecked(input.concat)
+        if weight.dim() != 1:
+            raise RuntimeError("prelu: weight must have one dimension")
+        values = input.concat
+        F.prelu(values[:0], weight[:1])
+        torch._assert_async(
+            torch.all(input._physical_shape[:, 0] == weight.numel()),
+            "prelu: per-channel weights must match every sample's channel extent",
+        )
+        batch, local = input._packed_batch_local_indices(device=values.device)
+        coordinates = input._packed_varying_coords(batch, local, device=values.device)
+        channels = coordinates[input._varying_dims.index(0)]
+        slopes = weight.index_select(0, channels)
+        return input._packed_like_unchecked(F.prelu(values.unsqueeze(0), slopes).squeeze(0))
     values = input.concat.movedim(channel_dim, 1)
     output = F.prelu(values, weight).movedim(1, channel_dim)
     return input._packed_like_unchecked(output)
@@ -2987,7 +2999,7 @@ def f_softmax(input, dim=-1, _stacklevel=3, dtype=None):
     return torch.softmax(input, dim=dim, dtype=dtype)
 
 
-@NestedTensorFuncRegistry.implement(F.softmin)
+@NestedTensorFuncRegistry.implement(F.softmin, compile_safe=True)
 def f_softmin(input, dim=-1, _stacklevel=3, dtype=None):
     del _stacklevel  # keep F.softmin-compatible signature
     source = input if dtype is None else input.to(dtype=dtype)
