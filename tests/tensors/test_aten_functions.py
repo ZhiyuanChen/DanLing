@@ -149,6 +149,29 @@ class TestElementwiseOps:
 
 class TestIndexingOps:
 
+    @pytest.mark.parametrize("operation", [torch.index_add, torch.index_copy])
+    def test_index_write_maps_multi_ragged_static_axis(self, operation):
+        parts = [torch.arange(r * s * 9.0).reshape(r, s, 3, 3) for r, s in ((2, 3), (3, 4))]
+        indices = torch.tensor([1, 0, 2])
+        source = NT([part + 1000 for part in parts])
+        output = operation(NT(parts), 3, indices, source)
+        for actual, part, replacement in zip(output, parts, source):
+            assert_close(actual, operation(part, 2, indices, replacement))
+
+    def test_index_put_preserves_nonleading_ragged_coordinates(self):
+        parts = [torch.arange(12.0).reshape(2, 2, 3) + 100 * i for i in range(2)]
+        indices, values = (torch.tensor([0]),), torch.full((1, 2, 3), -1.0)
+        output = torch.index_put(NT(parts, ragged_dims=(1,)), indices, values)
+        for actual, part in zip(output, parts):
+            assert_close(actual, torch.index_put(part, indices, values))
+
+    def test_index_select_retains_all_outer_ragged_levels(self):
+        parts = [torch.arange(r * s * t).reshape(r, s, t) for r, s, t in ((2, 3, 4), (3, 4, 5))]
+        indices = torch.tensor([0, 1])
+        output = torch.index_select(NT(parts, ragged_dims=(0, 1, 2)), 3, indices)
+        for actual, part in zip(output, parts):
+            assert_close(actual, part.index_select(2, indices))
+
     def test_index_put_matches_dense(self, device):
         seed = 0
         dtype = torch.float32

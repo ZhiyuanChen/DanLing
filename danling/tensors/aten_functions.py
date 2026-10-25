@@ -1940,19 +1940,15 @@ def _index_write_like(source, dim, index, src, apply_fn, op_name: str):
         )
 
     index_values = index.to(device=source.concat.device, dtype=torch.long)
-    if (
-        isinstance(src, NestedTensor)
-        and dim_adj > 0
-        and source.concat.dim() > dim_adj
-        and source._has_same_structure(src)
-    ):
+    values_dim = _physical_to_values_dim(source, dim_adj)
+    if isinstance(src, NestedTensor) and values_dim is not None and source._has_same_structure(src):
         # As with scatter, packed writes are only safe on static per-element dims.
         # The source layout must share offsets with the destination so row boundaries
         # remain aligned after concatenation.
         src_values = src.concat
         if src_values.device != source.concat.device:
             src_values = src_values.to(device=source.concat.device)
-        return source._packed_like_unchecked(apply_fn(source.concat, dim_adj, index_values, src_values))
+        return source._packed_like_unchecked(apply_fn(source.concat, values_dim, index_values, src_values))
 
     storage = []
     if isinstance(src, NestedTensor):
@@ -2003,11 +1999,10 @@ def _packed_index_put_indices(source: NestedTensor, indices):
     pattern. The ragged leading dim is offset per element; later indexed dims must already
     be static in the packed layout.
     """
-    if source._physical_shape.size(1) == 0:
+    rank = source._physical_shape.size(1)
+    if source._varying_dims != (0,) or source._static_dims != tuple(range(1, rank)):
         return None
-    if source._physical_shape.size(1) > 1 and source.concat.dim() == 1:
-        return None
-    if not indices or len(indices) > source._physical_shape.size(1):
+    if not indices or len(indices) > rank:
         return None
     if any(not _is_integer_index_tensor(idx) for idx in indices):
         return None
@@ -2241,12 +2236,13 @@ def _packed_segment_index_select(source: NestedTensor, dim_adj: int, index: Tens
             raise IndexError(f"index_select: index is out of bounds for dimension {dim_adj} with size {shortest}")
     rows = (offsets[:-1].unsqueeze(1) + index.reshape(1, -1)).reshape(-1)
     new_physical_shape, _, element_shapes = source._shape_meta_from_components(replace_dims={int(dim_adj): count})
-    # One segment per sample under a single ragged level; under two, the level above says how
-    # many segments each sample owns, and each of them is now ``count`` rows long.
-    if source._ragged_rank <= 1:
-        groups = torch.arange(len(source) + 1, device=source._offsets.device, dtype=source._offsets.dtype)
-    else:
-        groups = source._ragged_level_offsets(0)
+    # Every outer ragged coordinate owns one selected segment. Counting only the
+    # first ragged level loses intermediate coordinates at rank three and above.
+    outer_dims = source._varying_dims[:-1]
+    segment_counts = (
+        source._physical_shape[:, list(outer_dims)].prod(1) if outer_dims else source._offsets.new_ones(len(source))
+    )
+    groups = torch.cat((source._offsets.new_zeros(1), segment_counts.cumsum(0)))
     return _packed_with_shape(
         source,
         source.concat.index_select(0, rows),
