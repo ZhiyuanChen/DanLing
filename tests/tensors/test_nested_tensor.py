@@ -1990,6 +1990,15 @@ class TestFromFactoryMethods:
         with pytest.raises(ValueError):
             NestedTensor.from_concatenated(concat, shapes)
 
+    def test_from_concatenated_round_trip_preserves_permuted_layout(self):
+        parts = [torch.arange(r * 6.0).reshape(r, 2, 3) for r in (2, 4)]
+        source = NT(parts, ragged_dims=(0,)).permute(0, 3, 1, 2)
+        values, shapes = source.concatenate()
+        assert isinstance(shapes, tuple)
+        restored = NT.from_concatenated(values, pickle.loads(pickle.dumps(shapes)))
+        for actual, expected in zip(restored, parts):
+            assert_close(actual, expected.permute(2, 0, 1))
+
     def test_from_concatenated_round_trip_multidim(self):
         nested_tensor = NestedTensor([torch.randn(2, 3, 4), torch.randn(2, 3, 4)])
         concat, shapes = nested_tensor.concatenate()

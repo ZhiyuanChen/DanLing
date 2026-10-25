@@ -143,6 +143,27 @@ def _rectangular_row_splits_fake(row_lengths: Tensor, column_lengths: Tensor) ->
     return row_lengths.new_empty((row_splits_size,))
 
 
+class ConcatenatedShapes(tuple):
+    r"""Element shapes together with their concatenated packed-axis layout.
+
+    This remains a tuple of ``torch.Size`` objects for existing consumers.
+    Converting it to an ordinary tuple discards ``ragged_dims`` and
+    ``packed_dim_order`` and opts into canonical reconstruction instead.
+    """
+
+    packed_dim_order: tuple[int, ...]
+    ragged_dims: tuple[int, ...]
+
+    def __new__(cls, shapes, packed_dim_order, ragged_dims):
+        result = super().__new__(cls, shapes)
+        result.packed_dim_order = tuple(packed_dim_order)
+        result.ragged_dims = tuple(ragged_dims)
+        return result
+
+    def __getnewargs__(self):
+        return tuple(self), self.packed_dim_order, self.ragged_dims
+
+
 class NestedTensor(torch.Tensor):
     r"""
     A container for variable-length tensors that enables efficient batch operations.
@@ -3079,7 +3100,9 @@ class NestedTensor(torch.Tensor):
         Returns:
             A tuple containing:
             - concat_tensor: The concatenated tensor (same as .concat property)
-            - shapes: Tuple of original tensor shapes for reconstruction
+            - shapes: Tuple of original tensor shapes carrying ``ragged_dims`` and
+              ``packed_dim_order`` for lossless reconstruction. Converting it to a
+              plain tuple discards the packed layout and requests canonical reconstruction.
 
         Examples:
             >>> nested_tensor = NestedTensor([torch.randn(9, 8), torch.randn(11, 8)])
@@ -3095,7 +3118,7 @@ class NestedTensor(torch.Tensor):
         batch_size = len(self._offsets) - 1
         if batch_size == 0:
             return torch.empty(0, dtype=self.concat.dtype, device=self.device), ()
-        return self.concat, self._original_shapes()
+        return self.concat, ConcatenatedShapes(self._original_shapes(), self._permutation, self._ragged_dims)
 
     # ------------------------------------------------------------------
     # Container protocol
@@ -3281,7 +3304,8 @@ class NestedTensor(torch.Tensor):
 
         Args:
             concat_tensor: The concatenated tensor returned by concatenate()
-            shapes: Tuple of original tensor shapes returned by concatenate()
+            shapes: Shapes returned by ``concatenate()``, including their packed layout.
+                An ordinary shape tuple describes canonical packed-axis order.
             **kwargs (object): Keyword options forwarded to ``NestedTensor.__new__``,
                 including dtype, device, gradient, pinning, ragged-dimension and padding options.
 
@@ -3309,11 +3333,22 @@ class NestedTensor(torch.Tensor):
         num_elements = [shape.numel() for shape in shapes]
         element_shapes = tuple(tuple(int(dim) for dim in shape) for shape in shapes)
         declared_ragged_dims = kwargs.get("ragged_dims")
-        if declared_ragged_dims is None:
-            varying_dims, static_dims = cls._pack_layout_from_element_shapes(element_shapes)
+        if isinstance(shapes, ConcatenatedShapes):
+            if declared_ragged_dims is not None and tuple(declared_ragged_dims) != shapes.ragged_dims:
+                raise ValueError("ragged_dims must match the concatenated packed layout")
+            declared_ragged_dims = shapes.ragged_dims
+            kwargs["ragged_dims"] = declared_ragged_dims
+            permutation = shapes.packed_dim_order
+            varying_dims = declared_ragged_dims
+            static_dims = permutation[len(varying_dims) :]
         else:
-            varying_dims, static_dims = cls._pack_layout_from_declared_ragged_dims(element_shapes, declared_ragged_dims)
-        permutation = varying_dims + static_dims
+            if declared_ragged_dims is None:
+                varying_dims, static_dims = cls._pack_layout_from_element_shapes(element_shapes)
+            else:
+                varying_dims, static_dims = cls._pack_layout_from_declared_ragged_dims(
+                    element_shapes, declared_ragged_dims
+                )
+            permutation = varying_dims + static_dims
         identity_permutation = tuple(range(len(element_shapes[0]))) if element_shapes and element_shapes[0] else ()
 
         # The common sequence layout is already packed in its final order.
