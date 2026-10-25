@@ -4536,7 +4536,8 @@ class TestCdist:
         torch.testing.assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_compile_fullgraph_preserves_values_and_vjp(self, device):
+    @pytest.mark.parametrize("public_function", [False, True], ids=["method", "torch"])
+    def test_compile_fullgraph_preserves_values_and_vjp(self, device, public_function):
         left_values = torch.randn(7, 3, device=device, requires_grad=True)
         right_values = torch.randn(5, 3, device=device, requires_grad=True)
         left_parts = left_values.split((2, 5))
@@ -4544,7 +4545,7 @@ class TestCdist:
         left = NT(left_parts, ragged_dims=(0,), batch_first=False)
         right = NT(right_parts, ragged_dims=(0,), batch_first=False)
         compiled = torch.compile(
-            lambda lhs, rhs: lhs.cdist(rhs).concat,
+            lambda lhs, rhs: (torch.cdist(lhs, rhs) if public_function else lhs.cdist(rhs)).concat,
             backend="aot_eager",
             fullgraph=True,
             dynamic=True,
@@ -4707,12 +4708,13 @@ class TestSegmentedCumulative:
         )
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_cumprod_compile_fullgraph_backward(self, device):
+    @pytest.mark.parametrize("public_function", [False, True], ids=["method", "torch"])
+    def test_cumprod_compile_fullgraph_backward(self, device, public_function):
         values = torch.randn(8, 2, device=device, requires_grad=True)
         parts = values.split((3, 5))
         nested = NT(parts, ragged_dims=(0,))
         compiled = torch.compile(
-            lambda value: value.cumprod(dim=1).concat,
+            lambda value: (torch.cumprod(value, dim=1) if public_function else value.cumprod(dim=1)).concat,
             backend="aot_eager",
             fullgraph=True,
             dynamic=True,

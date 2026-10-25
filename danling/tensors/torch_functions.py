@@ -5801,7 +5801,7 @@ def _packed_cdist_nested(x1: NestedTensor, x2: NestedTensor, p: float, compute_m
     return x1.packed_with_rectangular_lengths(distances, row_lengths, column_lengths)
 
 
-@NestedTensorFuncRegistry.implement(torch.cdist)
+@NestedTensorFuncRegistry.implement(torch.cdist, compile_safe=True)
 def cdist(x1, x2, p: float = 2.0, compute_mode: str = "use_mm_for_euclid_dist_if_necessary"):
     r"""
     Pairwise p-distances computed per element. See also [torch.cdist][].
@@ -5847,7 +5847,7 @@ def cdist(x1, x2, p: float = 2.0, compute_mode: str = "use_mm_for_euclid_dist_if
     return NestedTensor(parts, **meta)
 
 
-@NestedTensorFuncRegistry.implement(torch.cumprod)
+@NestedTensorFuncRegistry.implement(torch.cumprod, compile_safe=True)
 def cumprod(input: NestedTensor, dim: int, *, dtype: torch.dtype | None = None):
     r"""Compute cumulative products, dispatching ragged dimensions without padding.
 
