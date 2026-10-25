@@ -362,7 +362,12 @@ class DeepSpeedRunner(TorchRunner):
               physical checkpoint layout.
         """
         epochs = self.train_state.epoch if epochs is None else epochs
-        if not self.checkpoint_manager.should_persist_checkpoint(epochs=epochs, last_step=last_step, force=force):
+        if not self.config.get("ckpt.enabled", True):
+            return
+        should_update_best = bool(save_best and self.is_best)
+        if not should_update_best and not self.checkpoint_manager.should_persist_checkpoint(
+            epochs=epochs, last_step=last_step, force=force
+        ):
             return
 
         client_state: dict = BaseRunner.state_dict(self, dict)  # type: ignore[assignment]
@@ -370,7 +375,6 @@ class DeepSpeedRunner(TorchRunner):
         client_state["scheduler"] = (
             self.scheduler.state_dict() if getattr(self, "_runner_owns_scheduler", False) and self.scheduler else None
         )
-        should_update_best = bool(save_best and self.is_best)
         physical_tag, track_for_retention = self._resolve_physical_checkpoint_tag(
             name=name, epochs=epochs, should_update_best=should_update_best
         )

@@ -216,3 +216,20 @@ class TestDeepSpeedRunnerRealBackend:
             assert runner.train_state.global_step == 1
         finally:
             runner.close()
+
+
+def test_best_checkpoint_is_published_outside_save_interval(tmp_path):
+    from danling.utils import RoundDict
+
+    class SavingModel:
+        def save_checkpoint(self, checkpoint_dir, tag, **kwargs):
+            del kwargs
+            (Path(checkpoint_dir) / tag).mkdir(parents=True, exist_ok=True)
+
+    runner = _bare_deepspeed_runner(tmp_path, model=SavingModel(), config={"epochs": 20, "ckpt.interval": 10})
+    runner.results = RoundDict()
+    try:
+        runner.save_checkpoint(epochs=0, save_best=True)
+        assert (tmp_path / "best.pointer").is_file()
+    finally:
+        runner.checkpoint_manager.close()
