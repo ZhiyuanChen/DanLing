@@ -44,7 +44,7 @@
       
       
       <link rel="icon" href="../../assets/images/logo.ico">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
     
     
       
@@ -52,10 +52,10 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.57a0d79d.min.css">
       
         
-        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.fb2fffe2.min.css">
       
       
 
@@ -1920,7 +1920,11 @@ Defaults to &ldquo;percentile&rdquo; if <code>final_lr_ratio</code> is set, othe
 <span class="normal">213</span>
 <span class="normal">214</span>
 <span class="normal">215</span>
-<span class="normal">216</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">LRScheduler</span><span class="p">(</span><span class="n">lr_scheduler</span><span class="o">.</span><span class="n">_LRScheduler</span><span class="p">):</span>  <span class="c1"># pylint: disable=protected-access</span>
+<span class="normal">216</span>
+<span class="normal">217</span>
+<span class="normal">218</span>
+<span class="normal">219</span>
+<span class="normal">220</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">LRScheduler</span><span class="p">(</span><span class="n">lr_scheduler</span><span class="o">.</span><span class="n">_LRScheduler</span><span class="p">):</span>  <span class="c1"># pylint: disable=protected-access</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    General learning rate scheduler.</span>
 
@@ -2081,7 +2085,11 @@ Defaults to &ldquo;percentile&rdquo; if <code>final_lr_ratio</code> is set, othe
             <span class="n">final_lr</span> <span class="o">=</span> <span class="n">lr</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">final_lr_ratio</span>
         <span class="n">ratio</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">method</span><span class="p">)(</span><span class="n">progress</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">scaling</span> <span class="o">==</span> <span class="s2">"percentile"</span><span class="p">:</span>
-            <span class="n">lr</span> <span class="o">=</span> <span class="n">lr</span> <span class="o">*</span> <span class="nb">pow</span><span class="p">(</span><span class="n">final_lr</span> <span class="o">/</span> <span class="n">lr</span><span class="p">,</span> <span class="n">ratio</span><span class="p">)</span>
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">lr</span><span class="p">,</span> <span class="n">Tensor</span><span class="p">):</span>
+                <span class="n">denominator</span> <span class="o">=</span> <span class="n">lr</span><span class="o">.</span><span class="n">masked_fill</span><span class="p">(</span><span class="n">lr</span> <span class="o">==</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+                <span class="n">lr</span> <span class="o">=</span> <span class="n">lr</span> <span class="o">*</span> <span class="nb">pow</span><span class="p">(</span><span class="n">final_lr</span> <span class="o">/</span> <span class="n">denominator</span><span class="p">,</span> <span class="n">ratio</span><span class="p">)</span>
+            <span class="k">elif</span> <span class="n">lr</span> <span class="o">!=</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="n">lr</span> <span class="o">=</span> <span class="n">lr</span> <span class="o">*</span> <span class="nb">pow</span><span class="p">(</span><span class="n">final_lr</span> <span class="o">/</span> <span class="n">lr</span><span class="p">,</span> <span class="n">ratio</span><span class="p">)</span>
         <span class="k">elif</span> <span class="n">scaling</span> <span class="o">==</span> <span class="s2">"numerical"</span><span class="p">:</span>
             <span class="n">lr</span> <span class="o">=</span> <span class="p">(</span><span class="mi">1</span> <span class="o">-</span> <span class="n">ratio</span><span class="p">)</span> <span class="o">*</span> <span class="p">(</span><span class="n">lr</span> <span class="o">-</span> <span class="n">final_lr</span><span class="p">)</span> <span class="o">+</span> <span class="n">final_lr</span>
         <span class="k">else</span><span class="p">:</span>
@@ -2383,10 +2391,10 @@ Defaults to &ldquo;percentile&rdquo; if <code>final_lr_ratio</code> is set, othe
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["announce.dismiss", "content.code.annotate", "content.code.copy", "content.code.select", "content.tabs.link", "content.tooltips", "header.autohide", "navigation.expand", "navigation.footer", "navigation.indexes", "navigation.prune", "navigation.sections", "navigation.tabs", "navigation.tabs.sticky", "navigation.top", "navigation.tracking", "search.highlight", "search.share", "search.suggest", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["announce.dismiss", "content.code.annotate", "content.code.copy", "content.code.select", "content.tabs.link", "content.tooltips", "header.autohide", "navigation.expand", "navigation.footer", "navigation.indexes", "navigation.prune", "navigation.sections", "navigation.tabs", "navigation.tabs.sticky", "navigation.top", "navigation.tracking", "search.highlight", "search.share", "search.suggest", "toc.follow"], "search": "../../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      <script src="../../assets/javascripts/bundle.c21346df.min.js"></script>
       
         <script src="../../javascripts/mathjax.js"></script>
       

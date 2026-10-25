@@ -44,7 +44,7 @@
       
       
       <link rel="icon" href="../assets/images/logo.ico">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
     
     
       
@@ -52,10 +52,10 @@
       
     
     
-      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
       
         
-        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
       
       
 
@@ -1340,6 +1340,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#index-and-differentiation-conventions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Index and differentiation conventions
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1586,9 +1597,9 @@ The core feature is the <a class="autorefs autorefs-internal" title="&lt;code cl
 <p>This avoids the waste of padding in the internal representation while allowing efficient batch operations.</p>
 <h3 id="dispatch-system">Dispatch System<a class="headerlink" href="#dispatch-system" title="Permanent link">&para;</a></h3>
 <p>Operations on NestedTensor are handled by a <strong>three-tier dispatch system</strong>, ordered from fastest to most flexible:</p>
-<p><strong>Level 1 — Aten dispatch</strong> (<code>aten_functions.py</code>, 285 ops): Operates directly on the packed <code>_values</code> tensor via <code>__torch_dispatch__</code>. This is the fastest path — no Python loops, no unpacking. Used for elementwise ops (add, mul, sin, exp, &hellip;), reductions, softmax, layer_norm, etc.</p>
-<p><strong>Level 2 — Torch function dispatch</strong> (<code>torch_functions.py</code>, 217 ops): Intercepts <code>torch.*</code> calls via <code>__torch_function__</code>. Handles ops that need dimension translation (e.g., <code>torch.flatten</code>, <code>torch.softmax</code> with non-default dim), multi-operand dispatch (e.g., <code>torch.einsum</code>), per-element matrix ops (e.g., <code>torch.det</code>, <code>torch.linalg.svd</code>), and fused attention (<code>torch._native_multi_head_attention</code>, <code>torch._transformer_encoder_layer_fwd</code>).</p>
-<p><strong>Level 3 — NN function dispatch</strong> (<code>nn_functions.py</code>, 113 ops): Also via <code>__torch_function__</code>, handles <code>torch.nn.functional.*</code> ops including convolutions, pooling, normalization, attention, embedding, activations (F.relu, F.gelu, F.silu, &hellip;), and loss functions. Transformer-hot ops use packed fast paths; activation handlers strip inplace flags to preserve autograd on the wrapper subclass.</p>
+<p><strong>Level 1 — Aten dispatch</strong> (<code>aten_functions.py</code>): Operates on packed values via <code>__torch_dispatch__</code>. Elementwise operations, many reductions, softmax, and layer normalization have direct packed paths. Some segmented operations invoke native kernels separately per sample to preserve their numerical semantics.</p>
+<p><strong>Level 2 — Torch function dispatch</strong> (<code>torch_functions.py</code>): Intercepts <code>torch.*</code> calls via <code>__torch_function__</code>. Handles ops that need dimension translation (e.g., <code>torch.flatten</code>, <code>torch.softmax</code> with non-default dim), multi-operand dispatch (e.g., <code>torch.einsum</code>), per-element matrix ops (e.g., <code>torch.det</code>, <code>torch.linalg.svd</code>), and fused attention (<code>torch._native_multi_head_attention</code>, <code>torch._transformer_encoder_layer_fwd</code>).</p>
+<p><strong>Level 3 — NN function dispatch</strong> (<code>nn_functions.py</code>): Also via <code>__torch_function__</code>, handles <code>torch.nn.functional.*</code> ops including convolutions, pooling, normalization, attention, embedding, activations (F.relu, F.gelu, F.silu, &hellip;), and loss functions. Transformer-hot ops use packed fast paths; supported inplace activations update the packed values and invalidate materialized views, subject to ordinary autograd leaf/view restrictions.</p>
 <p><strong>Fallback</strong>: Any aten op without an explicit handler falls back to <code>per_element_fallback</code>, which unpacks to individual tensors, applies the op element-by-element, and repacks. Under <code>torch.compile</code>, DanLing prefers explicit failure over silently entering those eager-only fallbacks.</p>
 <div class="language-text highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Text Only</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 1</span>
 <span class="normal"> 2</span>
@@ -1875,6 +1886,13 @@ the current device&rsquo;s native <code>cumprod</code> and backward kernel indep
 each packed sample. It therefore preserves native rounding, underflow, zero,
 and non-finite behavior without padding or reassociating the product. Eager
 <code>torch.cumprod(input, dim)</code> remains supported.</p>
+<p>Ragged cumulative sums also use a native scan for each packed sample. This
+isolates non-finite values between samples and preserves native within-sample
+accumulation behavior. The segmented scans use <code>O(total_values + batch_size)</code>
+explicit storage and <code>O(batch_size)</code> host scheduling/native kernel calls; they
+do not allocate a padded envelope. Eager cumulative products support higher-order
+reverse-mode derivatives. Compiled segmented cdist and cumulative-product
+backward paths retain their first-order contract.</p>
 <p>The result can remain a <code>NestedTensor</code> throughout a compiled model or cross a
 compiled/eager training boundary as a wrapper-only output. DanLing preserves
 the outer wrapper&rsquo;s AOTAutograd edge and projects it back to <code>result.concat</code>
@@ -1917,6 +1935,19 @@ to physical packed-storage order when an operator needs to validate its layout.<
 <p>Critical packed paths can use <code>nested_execution_guard</code> from <code>danling.tensors</code> in
 tests or diagnostics to reject iteration, per-element fallback, padded
 materialization, or dense repacking instead of silently accepting a slow path.</p>
+<h3 id="index-and-differentiation-conventions">Index and differentiation conventions<a class="headerlink" href="#index-and-differentiation-conventions" title="Permanent link">&para;</a></h3>
+<p>Plain Tensor indices passed to <code>torch.take</code> address flattened packed values,
+without padding or the logical batch axis. A NestedTensor index instead selects
+within each corresponding sample. These coordinates generally differ from
+flattening the padded <code>.tensor</code> view.</p>
+<p><code>concatenate()</code> returns shapes carrying the packed ragged/static axis order so
+that <code>from_concatenated(*value.concatenate())</code> can preserve noncanonical layouts.
+Converting those shapes to an ordinary tuple or list discards the layout metadata
+and requests the ordinary canonical reconstruction contract.</p>
+<p>Reverse-mode <code>torch.autograd</code> is supported. <code>torch.func</code> transforms, <code>vmap</code>, and
+forward-mode AD are not currently supported. Compile support is operation- and
+layout-specific; an explicitly rejected eager-only path is not a promise of
+general fullgraph support.</p>
 <h2 id="benchmarks">Benchmarks<a class="headerlink" href="#benchmarks" title="Permanent link">&para;</a></h2>
 <p>Benchmarked on a single NVIDIA B200 180GB GPU with PyTorch 2.11, bfloat16.</p>
 <p>Run with: <code>python scripts/benchmark_nested_tensor.py</code></p>
@@ -2601,10 +2632,10 @@ materialization, or dense repacking instead of silently accepting a slow path.</
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["announce.dismiss", "content.code.annotate", "content.code.copy", "content.code.select", "content.tabs.link", "content.tooltips", "header.autohide", "navigation.expand", "navigation.footer", "navigation.indexes", "navigation.prune", "navigation.sections", "navigation.tabs", "navigation.tabs.sticky", "navigation.top", "navigation.tracking", "search.highlight", "search.share", "search.suggest", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["announce.dismiss", "content.code.annotate", "content.code.copy", "content.code.select", "content.tabs.link", "content.tooltips", "header.autohide", "navigation.expand", "navigation.footer", "navigation.indexes", "navigation.prune", "navigation.sections", "navigation.tabs", "navigation.tabs.sticky", "navigation.top", "navigation.tracking", "search.highlight", "search.share", "search.suggest", "toc.follow"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
       
         <script src="../javascripts/mathjax.js"></script>
       
