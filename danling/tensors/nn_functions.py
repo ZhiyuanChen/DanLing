@@ -365,14 +365,33 @@ def _apply_packed(input: NestedTensor, op: Callable, *args, **kwargs) -> NestedT
 
 
 # Activations — registered so they run on packed concat with autograd preserved.
-# The inplace flag is stripped since the wrapper subclass is always an autograd leaf.
+# In-place activations update the same packed storage and invalidate materialized views.
 
 
 def _activation_handler(input: NestedTensor, *args, _fn=None, inplace=False, **kwargs):
-    r"""Run an activation function on packed concat, ignoring the inplace flag."""
-
+    r"""Run an activation on packed storage with native in-place behavior."""
+    if inplace:
+        _fn(input.concat, *args, inplace=True, **kwargs)
+        input._invalidate_transient_caches()
+        return input
     new_values = _fn(input.concat, *args, **kwargs)
     return input._packed_like_unchecked(new_values)
+
+
+@NestedTensorFuncRegistry.implement(F.prelu, compile_safe=True)
+def prelu(input: NestedTensor, weight: Tensor) -> NestedTensor:
+    from .ops import _physical_to_values_dim
+
+    if weight.numel() == 1:
+        return input._packed_like_unchecked(F.prelu(input.concat, weight))
+    channel_dim = _physical_to_values_dim(input, 0)
+    if channel_dim is None:
+        if _is_compiling():
+            _compile_unsupported("torch.nn.functional.prelu", "per-channel weights require a static channel axis")
+        return _map_storage_serial(input, lambda t: F.prelu(t.unsqueeze(0), weight).squeeze(0))
+    values = input.concat.movedim(channel_dim, 1)
+    output = F.prelu(values, weight).movedim(1, channel_dim)
+    return input._packed_like_unchecked(output)
 
 
 NN_ACTIVATION_OPS: list[Callable[..., Tensor]] = [
@@ -2437,12 +2456,13 @@ def instance_norm(
         >>> torch.allclose(out, ref)
         True
     """
-    return _map_storage_serial(
+    update_stats = use_input_stats and (running_mean is not None or running_var is not None) and len(input) > 0
+    result = _map_storage_serial(
         input,
         lambda t: F.instance_norm(
             t.unsqueeze(0),
-            running_mean,
-            running_var,
+            None if update_stats else running_mean,
+            None if update_stats else running_var,
             weight,
             bias,
             use_input_stats,
@@ -2450,6 +2470,18 @@ def instance_norm(
             eps,
         ).squeeze(0),
     )
+    if update_stats:
+        with torch.no_grad():
+            elements = input._storage
+            if running_mean is not None:
+                means = torch.stack([t.to(running_mean.dtype).flatten(1).mean(1) for t in elements]).mean(0)
+                running_mean.lerp_(means, momentum)
+            if running_var is not None:
+                variances = torch.stack(
+                    [t.to(running_var.dtype).flatten(1).var(1, unbiased=True) for t in elements]
+                ).mean(0)
+                running_var.lerp_(variances, momentum)
+    return result
 
 
 @NestedTensorFuncRegistry.implement(F.layer_norm, compile_safe=True)

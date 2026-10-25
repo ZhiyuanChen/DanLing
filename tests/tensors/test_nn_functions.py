@@ -3331,3 +3331,34 @@ class TestCrossEntropy:
         weights = NestedTensor([torch.ones(3, device=device, dtype=float_dtype)] * 2, ragged_dims=())
         with pytest.raises(ValueError, match="class weights must be one-dimensional"):
             F.cross_entropy(values, target, weight=weights)
+
+
+def test_instance_norm_updates_running_statistics_once_per_batch():
+    parts = [torch.arange(8.0).reshape(2, 4), torch.arange(8.0, 16.0).reshape(2, 4)]
+    running_mean, running_var = torch.zeros(2), torch.ones(2)
+    expected_mean, expected_var = running_mean.clone(), running_var.clone()
+    actual = F.instance_norm(NT(parts), running_mean, running_var, use_input_stats=True)
+    expected = F.instance_norm(torch.stack(parts), expected_mean, expected_var, use_input_stats=True)
+    for result, reference in zip(actual, expected):
+        torch.testing.assert_close(result, reference)
+    torch.testing.assert_close(running_mean, expected_mean)
+    torch.testing.assert_close(running_var, expected_var)
+
+
+def test_prelu_preserves_rank_and_logical_channels():
+    parts = [torch.randn(2, 3, 4), torch.randn(2, 3, 5)]
+    weight = torch.tensor([0.1, 0.5], requires_grad=True)
+    output = F.prelu(NT(parts), weight)
+    for actual, source in zip(output, parts):
+        assert actual.shape == source.shape
+        torch.testing.assert_close(actual, F.prelu(source.unsqueeze(0), weight).squeeze(0))
+
+
+def test_inplace_relu_updates_the_original_nested_tensor():
+    source = NT(torch.tensor([-1.0, 2.0]), torch.tensor([-3.0, 4.0, -5.0]))
+    source.tensor  # Materialize a view before the mutation.
+    result = F.relu(source, inplace=True)
+    assert result is source
+    torch.testing.assert_close(source[0], torch.tensor([0.0, 2.0]))
+    torch.testing.assert_close(source[1], torch.tensor([0.0, 4.0, 0.0]))
+    torch.testing.assert_close(source.tensor[1], torch.tensor([0.0, 4.0, 0.0]))
