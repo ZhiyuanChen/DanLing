@@ -5372,9 +5372,11 @@ class NestedTensor(torch.Tensor):
         return result
 
     def __copy__(self):
-        r"""Shallow copy: new NestedTensor sharing underlying tensor data."""
-        return self.__class__.from_packed(
-            self.concat,
+        r"""Shallow copy: share storage while preserving independent leaf ownership."""
+        wrapper_leaf = vars(self).get("_wrapper_grad_leaf", False)
+        values = self._packed_values.detach().requires_grad_(self.requires_grad) if wrapper_leaf else self.concat
+        result = self.__class__.from_packed(
+            values,
             self._offsets,
             self._physical_shape,
             permutation=self._permutation,
@@ -5389,11 +5391,19 @@ class NestedTensor(torch.Tensor):
             ragged_offsets=self._persistent_ragged_offsets(),
             validate=False,
         )
+        result._wrapper_grad_leaf = wrapper_leaf
+        return result
 
     def __deepcopy__(self, memo):
-        r"""Deep copy: clones all tensor data."""
+        r"""Deep copy: clone storage and preserve independent leaf ownership."""
+        wrapper_leaf = vars(self).get("_wrapper_grad_leaf", False)
+        values = (
+            self._packed_values.detach().clone().requires_grad_(self.requires_grad)
+            if wrapper_leaf
+            else self.concat.clone()
+        )
         result = self.__class__.from_packed(
-            self.concat.clone(),
+            values,
             self._offsets.clone(),
             self._physical_shape.clone(),
             permutation=self._permutation,
@@ -5410,6 +5420,7 @@ class NestedTensor(torch.Tensor):
             ),
             validate=False,
         )
+        result._wrapper_grad_leaf = wrapper_leaf
         memo[id(self)] = result
         return result
 

@@ -1809,6 +1809,17 @@ class TestToDtype:
 
 class TestCopySemantics:
 
+    @pytest.mark.parametrize("duplicate", [copy.copy, copy.deepcopy])
+    def test_copy_preserves_independent_explicit_leaf_gradients(self, duplicate):
+        source = NT([torch.arange(1.0, 4.0), torch.arange(1.0, 3.0)]).requires_grad_()
+        copied = duplicate(source)
+        copied.concat.square().sum().backward()
+        assert copied.is_leaf
+        assert source.grad is None
+        assert_close(copied.grad.concat, 2 * source.concat)
+        source.concat.sum().backward()
+        assert_close(source.grad.concat, torch.ones(5))
+
     @staticmethod
     def configured():
         return NestedTensor(
