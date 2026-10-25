@@ -366,24 +366,27 @@ Eager mode issues the same native calls directly to avoid custom-op dispatcher
 overhead. The result is
 reconstructed as `(P_i, R_i)` through the rectangular metadata above. It does not
 materialize padding, a cross-sample matrix, pair index tensors, or
-`sum(P_i * R_i) x M` gathered operands. Eager `torch.cdist(left, right)` remains
-supported, but the method form is the AOT/Inductor entry point because PyTorch
-treats the built-in function as an opaque graph leaf.
+`sum(P_i * R_i) x M` gathered operands. Both `torch.cdist(left, right)` and
+`left.cdist(right)` support AOT/Inductor fullgraph compilation for this layout.
 
-For cumulative products along a canonical ragged dimension, use
-`input.cumprod(dim)` in compiled training code. The segmented operator invokes
+For cumulative products along a canonical ragged dimension, both
+`torch.cumprod(input, dim)` and `input.cumprod(dim)` support compiled training.
+The segmented operator invokes
 the current device's native `cumprod` and backward kernel independently for
 each packed sample. It therefore preserves native rounding, underflow, zero,
-and non-finite behavior without padding or reassociating the product. Eager
-`torch.cumprod(input, dim)` remains supported.
+and non-finite behavior without padding or reassociating the product.
 
 Ragged cumulative sums also use a native scan for each packed sample. This
 isolates non-finite values between samples and preserves native within-sample
 accumulation behavior. The segmented scans use `O(total_values + batch_size)`
 explicit storage and `O(batch_size)` host scheduling/native kernel calls; they
-do not allocate a padded envelope. Eager cumulative products support higher-order
-reverse-mode derivatives. Compiled segmented cdist and cumulative-product
-backward paths retain their first-order contract.
+do not allocate a padded envelope. Cumulative products and Euclidean MM distances
+retain native higher-order reverse-mode graphs. Their segmented backward operators
+also have registered derivatives and support differentiation of independently
+compiled VJP graphs. This differs from taking a second backward through an
+already AOT-compiled forward, which the installed PyTorch AOT runtime rejects
+for ordinary dense tensors as well. Direct-kernel distance derivatives retain
+the native kernel's differentiation support.
 
 The result can remain a `NestedTensor` throughout a compiled model or cross a
 compiled/eager training boundary as a wrapper-only output. DanLing preserves
@@ -445,10 +448,26 @@ that `from_concatenated(*value.concatenate())` can preserve noncanonical layouts
 Converting those shapes to an ordinary tuple or list discards the layout metadata
 and requests the ordinary canonical reconstruction contract.
 
-Reverse-mode `torch.autograd` is supported. `torch.func` transforms, `vmap`, and
-forward-mode AD are not currently supported. Compile support is operation- and
-layout-specific; an explicitly rejected eager-only path is not a promise of
-general fullgraph support.
+Reverse-mode `torch.autograd`, native forward AD, and `torch.func.grad`, `vjp`
+and `jvp` work through the packed autograd bridges. `jacrev` with scalar or
+one-dimensional dense outputs, static-axis `vmap`, and per-sample mapped reductions preserve the
+sample geometry. Transform support still depends on the operators used in the
+function. Direct ragged `jacfwd` encounters PyTorch's basis construction, which
+assumes that the logical rectangular shape contains exactly `numel()` values.
+For forward-mode Jacobians over true ragged values, differentiate the dense packed values
+and reconstruct the fixed geometry with `template.packed_like(values)`.
+The packed adapter also keeps gradients in true-value coordinates when a native
+composite backward would return a dense padded tangent for a direct wrapper input.
+Complete Hessian transform compositions are not implemented yet. They expose
+additional DanLing layout and vectorized-broadcast gaps, including intermediate
+sample axes beyond the currently supported logical positions zero and one.
+
+Packed fullgraph paths also cover diagonal construction/extraction, logical
+rolls and rotations, local response normalization, one-hot encoding, Gumbel
+softmax, `pdist`, fractional max pooling, and ragged normalization.
+Compile support remains operation- and layout-specific. Other spatial operators,
+attention configurations, and transform combinations still require individual
+implementations and validation.
 
 ## Benchmarks
 

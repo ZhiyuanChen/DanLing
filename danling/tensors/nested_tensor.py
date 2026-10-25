@@ -211,8 +211,10 @@ class NestedTensor(torch.Tensor):
     in batch operations. Instead of excessive padding or complex bucketing, `NestedTensor` provides an
     elegant solution that maintains both efficiency and usability.
 
-    Reverse-mode differentiation is supported through ``torch.autograd``.
-    ``torch.func`` transforms and forward-mode AD are not currently supported.
+    Packed autograd bridges support reverse-mode differentiation, forward AD,
+    and function transforms. Operator and transform coverage is described in
+    the tensor README; direct ragged ``jacfwd`` still meets PyTorch's
+    rectangular standard-basis assumption.
 
     The class provides three main views of the data:
     - `.tensor`: A padded tensor with zeros (or other value) in place of missing elements

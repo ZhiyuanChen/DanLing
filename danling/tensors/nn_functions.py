@@ -24,17 +24,11 @@ This module is the **Level 3** dispatch layer, registering handlers for
 ``F.layer_norm``, ``F.scaled_dot_product_attention``, and other
 ``torch.nn.functional`` ops.
 
-The design rule is:
-
-- use one canonical NestedTensor implementation path per op whenever possible
-- reserve ``compile_safe`` for packed-first training hot paths only
-- keep convenience APIs honest by marking densifying or repacking handlers
-  eager-only under ``torch.compile``
-- leave non-hot spatial ops eager-only rather than carrying speculative
-  packed fast paths
-
-That means most spatial operators here use per-element dispatch, while a small
-Tier A set of transformer-hot packed handlers stays compile-safe.
+Handlers preserve logical sample boundaries, native dtypes and differentiation
+semantics. Compiled paths use packed tensor operations or segmented native
+kernels with explicit metadata and autograd registrations. Compile support is
+recorded per operator and layout; remaining per-element handlers still require
+packed implementations before they can enter fullgraph execution.
 """
 
 from __future__ import annotations
