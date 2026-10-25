@@ -148,3 +148,21 @@ class TestSegmentedScan:
         assert scanned.shape == (0, 3)
         assert values.shape == (0, 3)
         assert indices.shape == (0, 3)
+
+
+class TestSegmentedCumprodComplex:
+
+    @pytest.mark.parametrize("conjugate", [False, True])
+    def test_compiled_complex_gradient_matches_native(self, device, conjugate):
+        values = torch.randn(5, 2, dtype=torch.complex128, device=device, requires_grad=True)
+        source = values.conj() if conjugate else values
+        parts = source.split((3, 0, 2))
+        nested = NestedTensor(parts, ragged_dims=(0,))
+        compiled = torch.compile(lambda data: data.cumprod(dim=1).concat, backend="aot_eager", fullgraph=True)
+        actual = compiled(nested)
+        expected = torch.cat([part.cumprod(0) for part in parts])
+        cotangent = torch.randn_like(actual)
+        actual_gradient = torch.autograd.grad(actual, values, cotangent, retain_graph=True)[0]
+        expected_gradient = torch.autograd.grad(expected, values, cotangent)[0]
+        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(actual_gradient, expected_gradient)

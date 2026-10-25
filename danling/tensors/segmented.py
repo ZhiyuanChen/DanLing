@@ -26,8 +26,25 @@ out. These primitives do the same work on the packed values directly.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import torch
 from torch import Tensor
+
+
+@contextmanager
+def _native_composite():
+    r"""Resolve lazy arithmetic created inside native composites under AOT.
+
+    AOT's boxed runtime excludes conjugate and negative dispatch. Native
+    cumprod backward creates conjugate views internally, so its arithmetic and
+    the final copy must resolve those views before leaving this local guard.
+    """
+    with (
+        torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.Conjugate, False),
+        torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.Negative, False),
+    ):
+        yield
 
 
 def _segmented_cdist_lengths(row_lengths: Tensor, column_lengths: Tensor) -> tuple[list[int], list[int]]:
@@ -318,13 +335,14 @@ def segmented_cumprod_backward(
     for length in lengths:
         if length:
             segment = values.narrow(0, start, length)
-            grad_segment = torch.ops.aten.cumprod_backward.default(
-                grad_output.narrow(0, start, length),
-                segment,
-                0,
-                output.narrow(0, start, length),
-            )
-            grad_values.narrow(0, start, length).copy_(grad_segment)
+            with _native_composite():
+                grad_segment = torch.ops.aten.cumprod_backward.default(
+                    grad_output.narrow(0, start, length),
+                    segment,
+                    0,
+                    output.narrow(0, start, length),
+                )
+                grad_values.narrow(0, start, length).copy_(grad_segment)
         start += length
     return grad_values
 
