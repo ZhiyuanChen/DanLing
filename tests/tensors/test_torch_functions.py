@@ -932,6 +932,8 @@ class TestEinsum:
         )
         lhs_values = lhs.concat
         rhs_values = rhs.concat
+        packed_equation = "xi,xi->x" if equation == "bli,bli->bl" else "xqp,xyq->xyp"
+        reference = torch.einsum(packed_equation, lhs_values, rhs_values)
         lhs_template = lhs.packed_like(torch.empty_like(lhs_values))
         rhs_template = rhs.packed_like(torch.empty_like(rhs_values))
         output = compiled(lhs_template, lhs_values, rhs_template, rhs_values)

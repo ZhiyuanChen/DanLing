@@ -39,6 +39,30 @@ TORCH_VERSION = Version(torch.__version__.split("+")[0])
 
 class TestAutogradViewLifetime:
 
+    def test_eager_intermediate_wrapper_receives_gradients_and_hooks(self):
+        leaf = torch.arange(1.0, 6.0, requires_grad=True)
+        output = NT([leaf[:2], leaf[2:]]).square()
+        output.retain_grad()
+        observed = []
+        output.register_hook(lambda gradient: observed.append(gradient))
+        loss = output.concat.sum()
+        gradient = torch.autograd.grad(loss, output, retain_graph=True)[0]
+        assert_close(gradient.concat, torch.ones(5))
+        observed.clear()
+        output.grad = None
+        loss.backward()
+        assert len(observed) == 1
+        assert_close(observed[0].concat, torch.ones(5))
+        assert_close(output.grad.concat, torch.ones(5))
+        assert_close(leaf.grad, 2 * leaf)
+
+    def test_backward_rejects_different_nested_tangent_boundaries(self):
+        leaf = torch.arange(1.0, 6.0, requires_grad=True)
+        output = NT([leaf[:2], leaf[2:]]).square()
+        tangent = NT([torch.tensor([1.0, 2.0, 3.0]), torch.tensor([4.0, 5.0])])
+        with pytest.raises(RuntimeError, match="tangent topology"):
+            torch.autograd.grad(output, leaf, tangent)
+
     def test_inference_mutation_refreshes_materialized_values(self):
         with torch.inference_mode():
             source = NT([torch.tensor([1.0, 2.0]), torch.tensor([3.0])])

@@ -172,6 +172,9 @@ class NestedTensor(torch.Tensor):
     in batch operations. Instead of excessive padding or complex bucketing, `NestedTensor` provides an
     elegant solution that maintains both efficiency and usability.
 
+    Reverse-mode differentiation is supported through ``torch.autograd``.
+    ``torch.func`` transforms and forward-mode AD are not currently supported.
+
     The class provides three main views of the data:
     - `.tensor`: A padded tensor with zeros (or other value) in place of missing elements
     - `.mask`: A boolean mask indicating which elements are real vs padding
@@ -2996,18 +2999,6 @@ class NestedTensor(torch.Tensor):
             needs_projection = grad_fn is not None
         if not needs_projection:
             return values
-        if (
-            type(values) is Tensor
-            and values.requires_grad
-            and getattr(grad_fn, "_forward_cls", None) is _PackedLikeAutograd
-            and wrapper_version == 0
-            and torch._C._autograd._top_saved_tensors_default_hooks(True) is None
-        ):
-            # The common eager case of the packed-factory rule below. A plain dense child that
-            # is fake or functionally wrapped is also answered with itself, so none of the
-            # tracing checks below can change the result.
-            return values
-
         from torch._subclasses.functional_tensor import FunctionalTensor
         from torch.utils._python_dispatch import _detect_infra_mode
 
@@ -3030,19 +3021,8 @@ class NestedTensor(torch.Tensor):
             and not isinstance(values, FunctionalTensor)
             and torch._C._autograd._top_saved_tensors_default_hooks(True) is None
         )
-        # A packed factory transparently wraps an existing dense autograd edge,
-        # which can be reused as an input between fresh forward/backward steps.
-        # Layout transforms and inplace updates can change the wrapper's edge
-        # without changing the child's graph, so they still need projection.
-        # Hook scopes always project the stable wrapper edge on both forward
-        # and checkpoint recomputation, even when the child was detached.
-        if (
-            cacheable
-            and values.requires_grad
-            and wrapper_version == 0
-            and getattr(grad_fn, "_forward_cls", None) is _PackedLikeAutograd
-        ):
-            return values
+        # Eager factory results must keep the wrapper edge visible to
+        # autograd.grad, retain_grad, and hooks just like compiled outputs.
         token = (
             (id(values), wrapper_version, self._cache_version(values), *self._shape_cache_token()) if cacheable else ()
         )
@@ -6038,6 +6018,19 @@ class _PackedLikeAutograd(torch.autograd.Function):
         if isinstance(grad_output, NestedTensor):
             grad_static = grad_output._static_dims
             packed_tangent = grad_output._ragged_dims == reference_ragged and set(grad_static) == set(reference_static)
+            reference_shapes = reference._physical_shape if state is None else state[2]
+            reference_offsets = reference._offsets if state is None else state[1]
+            message = "NestedTensor tangent topology must match the output"
+            if (
+                not packed_tangent
+                or not NestedTensor._meta_tensor_equal(
+                    grad_output._physical_shape, reference_shapes, message, runtime_assert=True
+                )
+                or not NestedTensor._meta_tensor_equal(
+                    grad_output._offsets, reference_offsets, message, runtime_assert=True
+                )
+            ):
+                raise RuntimeError(message)
         else:
             grad_static = ()
             packed_tangent = False
