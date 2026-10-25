@@ -3380,3 +3380,16 @@ def test_inplace_relu_updates_the_original_nested_tensor():
     torch.testing.assert_close(source[0], torch.tensor([0.0, 2.0]))
     torch.testing.assert_close(source[1], torch.tensor([0.0, 4.0, 0.0]))
     torch.testing.assert_close(source.tensor[1], torch.tensor([0.0, 4.0, 0.0]))
+
+
+def test_spatial_convenience_functions_restore_natural_batch_dimensions():
+    parts = [torch.randn(2, 3, 4), torch.randn(2, 4, 5)]
+    grids = [torch.zeros(2, 2, 2), torch.zeros(3, 3, 2)]
+    actual = F.grid_sample(NT(parts), NT(grids), align_corners=False)
+    for result, source, grid in zip(actual, parts, grids):
+        torch.testing.assert_close(result, F.grid_sample(source[None], grid[None], align_corners=False)[0])
+    theta = [torch.eye(2, 3), torch.eye(2, 3)]
+    actual = F.affine_grid(NT(theta), (2, 1, 3, 4), align_corners=False)
+    expected = F.affine_grid(torch.stack(theta), (2, 1, 3, 4), align_corners=False)
+    for result, reference in zip(actual, expected):
+        torch.testing.assert_close(result, reference)

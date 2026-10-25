@@ -2654,8 +2654,15 @@ def rms_norm(
 
 
 @NestedTensorFuncRegistry.implement(F.affine_grid)
-def affine_grid(input, *args, **kwargs):
-    return _apply_per_element(input, F.affine_grid, *args, **kwargs)
+def affine_grid(input, size, align_corners=None):
+    if input._physical_shape.size(1) == 2:
+        if size[0] != len(input):
+            raise ValueError("affine_grid size batch extent must match the NestedTensor batch")
+        sample_size = (1, *size[1:])
+        return _map_storage_serial(
+            input, lambda t: F.affine_grid(t.unsqueeze(0), sample_size, align_corners).squeeze(0)
+        )
+    return _apply_per_element(input, F.affine_grid, size, align_corners)
 
 
 @NestedTensorFuncRegistry.implement(F.alpha_dropout)
@@ -2708,7 +2715,13 @@ def grid_sample(input, grid, *args, **kwargs):
         raise ValueError(
             "NestedTensor batch length mismatch between input and grid: " f"input={len(input)}, grid={len(grid)}"
         )
-    return _apply_pair(input, grid, F.grid_sample, *args, **kwargs)
+
+    def sample(source, coordinates):
+        if source.dim() == coordinates.shape[-1] + 1:
+            return F.grid_sample(source.unsqueeze(0), coordinates.unsqueeze(0), *args, **kwargs).squeeze(0)
+        return F.grid_sample(source, coordinates, *args, **kwargs)
+
+    return _apply_pair(input, grid, sample)
 
 
 @NestedTensorFuncRegistry.implement(F.one_hot, compile_safe=False)
