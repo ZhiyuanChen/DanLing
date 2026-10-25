@@ -162,12 +162,12 @@ class SimpleAttention(nn.Module):
             if q is k:
                 return self.in_proj(q).chunk(3, dim=-1)
             # encoder-decoder attention
-            w_q, w_kv = self.in_proj.weight.split(self.embed_dim)
+            w_q, w_kv = self.in_proj.weight.split((self.embed_dim, self.embed_dim * 2))
             b_q, b_kv = None, None
             if self.in_proj.bias is not None:
                 b_q, b_kv = self.in_proj.bias.split((self.embed_dim, self.embed_dim * 2))
             return (F.linear(q, w_q, b_q),) + tuple(F.linear(k, w_kv, b_kv).chunk(2, dim=-1))  # type: ignore
-        w_q, w_k, w_v = self.in_proj.weight.chunk(3, -1)
+        w_q, w_k, w_v = self.in_proj.weight.chunk(3, 0)
         b_q, b_k, b_v = None, None, None
         if self.in_proj.bias is not None:
             b_q, b_k, b_v = self.in_proj.bias.chunk(3)
@@ -181,7 +181,7 @@ class SimpleAttention(nn.Module):
         attn_bias: Optional[Tensor] = None,
         attn_mask: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
-        q *= self.scaling
+        q = q * self.scaling
         # (B, Nt, E) x (B, E, Ns) -> (B, Nt, Ns)
         attn = torch.bmm(q, k.transpose(-2, -1))
         if attn_bias is not None:

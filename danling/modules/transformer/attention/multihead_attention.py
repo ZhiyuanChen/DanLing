@@ -250,7 +250,7 @@ class MultiHeadAttention(nn.Module):
         attn_bias: Optional[Tensor] = None,
         attn_mask: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
-        q *= self.scaling
+        q = q * self.scaling
         # (B, Nt, E) x (B, E, Ns) -> (B, Nt, Ns)
         attn = torch.bmm(q, k.transpose(-2, -1))
         if attn_bias is not None:

@@ -24,14 +24,28 @@ from danling.modules.transformer.attention import MultiHeadAttention, SimpleAtte
 
 
 @pytest.mark.parametrize("attention_cls", [MultiHeadAttention, SimpleAttention])
-def test_attention_forward_shape(attention_cls):
-    attention = attention_cls(embed_dim=8, num_heads=2, attn_dropout=0.0, batch_first=False)
-    query = torch.randn(4, 2, 8)
+@pytest.mark.parametrize("batch_first", [True, False])
+def test_attention_forward_shape(attention_cls, batch_first):
+    attention = attention_cls(embed_dim=8, num_heads=2, attn_dropout=0.0, batch_first=batch_first)
+    query = torch.randn((1, 4, 8) if batch_first else (4, 1, 8), requires_grad=True)
 
     outputs, weights = attention(query, query, query, need_weights=True)
 
     assert outputs.shape == query.shape
-    assert weights.shape == (2, 2, 4, 4)
+    assert weights.shape == (1, 2, 4, 4)
+    outputs.square().sum().backward()
+    assert query.grad is not None
+    assert torch.isfinite(query.grad).all()
+
+
+@pytest.mark.parametrize("attention_cls", [MultiHeadAttention, SimpleAttention])
+def test_attention_cross_attention(attention_cls):
+    attention = attention_cls(embed_dim=8, num_heads=2, batch_first=False)
+    query, memory = torch.randn(3, 1, 8, requires_grad=True), torch.randn(5, 1, 8, requires_grad=True)
+    output, _ = attention(query, memory, memory)
+    output.sum().backward()
+    assert output.shape == query.shape
+    assert query.grad is not None and memory.grad is not None
 
 
 @pytest.mark.parametrize("attention_cls", [MultiHeadAttention, SimpleAttention])
