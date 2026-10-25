@@ -260,6 +260,43 @@ def _segment_lengths(offsets: Tensor, total: int) -> list[int]:
     return [right - left for left, right in zip(positions, positions[1:])]
 
 
+@torch.library.custom_op("danling::_segmented_cumsum", mutates_args=())
+def segmented_cumsum(values: Tensor, offsets: Tensor) -> Tensor:
+    r"""Run native cumulative sums independently over packed sample boundaries."""
+    lengths = _segment_lengths(offsets, values.shape[0])
+    output = torch.empty_like(values)
+    start = 0
+    for length in lengths:
+        if length:
+            torch.ops.aten.cumsum.out(values.narrow(0, start, length), 0, out=output.narrow(0, start, length))
+        start += length
+    return output
+
+
+@segmented_cumsum.register_fake
+def _segmented_cumsum_fake(values: Tensor, offsets: Tensor) -> Tensor:
+    del offsets
+    return torch.empty_like(values)
+
+
+def _segmented_cumsum_setup_context(ctx, inputs, output) -> None:
+    _, offsets = inputs
+    ctx.save_for_backward(offsets)
+
+
+def _segmented_cumsum_autograd_backward(ctx, grad_output):
+    (offsets,) = ctx.saved_tensors
+    reversed_offsets = grad_output.shape[0] - offsets.flip(0)
+    return segmented_cumsum(grad_output.flip(0), reversed_offsets).flip(0), None
+
+
+torch.library.register_autograd(
+    segmented_cumsum,
+    _segmented_cumsum_autograd_backward,
+    setup_context=_segmented_cumsum_setup_context,
+)
+
+
 @torch.library.custom_op("danling::_segmented_cumprod_backward", mutates_args=())
 def segmented_cumprod_backward(
     grad_output: Tensor,
@@ -440,10 +477,9 @@ def segmented_scan(values: Tensor, batch_idx: Tensor, combine) -> Tensor:
     Inclusive scan of ``combine`` within each segment.
 
     A log-step Hillis-Steele scan, masked so a row only combines with a partner in its own
-    segment. The mask is what makes this a segmented scan rather than a global one, and it is
-    needed because the trick ``cumsum`` uses — scan globally, then subtract the running total
-    at each segment start — requires an inverse. ``cummax`` has none and ``cumprod``'s is
-    division, which is unsafe across zeros.
+    segment. The mask prevents unrelated samples from contributing to a prefix.
+    Operators requiring native accumulation order use their dedicated segmented
+    kernels instead; this helper applies to associative composite scans.
 
     A log-step scan combines whole blocks rather than one element at a time, so an intermediate
     result can leave the representable range even when every prefix is inside it. Callers whose

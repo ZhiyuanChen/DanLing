@@ -2608,7 +2608,7 @@ def _stack_or_nest(values: Sequence, input: NestedTensor):
     if all(isinstance(value, Tensor) for value in values):
         first = values[0]
         if all(value.shape == first.shape for value in values[1:]):
-            return torch.stack(values)
+            return torch.stack(values, dim=0 if input.batch_first or first.dim() == 0 else 1)
     return type(input)(values, **input._meta())
 
 

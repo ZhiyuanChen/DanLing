@@ -604,6 +604,34 @@ class TestMaskingOps:
 
 class TestReductionOps:
 
+    @pytest.mark.parametrize("operation,data", [(torch.std, [1.0, 2.0, 3.0]), (torch.prod, [0.0, 2.0, 3.0])])
+    def test_reductions_preserve_second_derivatives(self, operation, data):
+        values = torch.tensor(data, dtype=torch.float64, requires_grad=True)
+        reference = values.detach().clone().requires_grad_()
+        options = {"correction": 0} if operation is torch.std else {}
+        output = operation(NT(values), dim=1, **options)
+        expected = operation(reference, dim=0, **options)
+        gradient = torch.autograd.grad(output.sum(), values, create_graph=True)[0]
+        expected_gradient = torch.autograd.grad(expected, reference, create_graph=True)[0]
+        second = torch.autograd.grad(gradient.sum(), values)[0]
+        expected_second = torch.autograd.grad(expected_gradient.sum(), reference)[0]
+        assert_close(gradient, expected_gradient)
+        assert_close(second, expected_second)
+
+    def test_vector_norm_zero_coordinates_and_dtype(self):
+        values = torch.tensor([0.0, 2.0], dtype=torch.float64, requires_grad=True)
+        output = torch.linalg.vector_norm(NT(values), ord=0.5, dim=1)
+        gradient = torch.autograd.grad(output.sum(), values)[0]
+        assert_close(gradient, torch.tensor([0.0, 1.0], dtype=torch.float64))
+        with pytest.raises(RuntimeError, match="dtype"):
+            torch.linalg.vector_norm(NT(values), dim=1, dtype=torch.float32)
+
+    def test_order_statistics_map_static_axis_after_ragged_collapse(self):
+        parts = [torch.arange(24.0).reshape(2, 3, 4), torch.arange(24.0).reshape(3, 2, 4)]
+        output = torch.median(NT(parts, ragged_dims=(0, 1)), dim=3)
+        for actual, part in zip(output.values, parts):
+            assert_close(actual, torch.median(part, dim=2).values)
+
     @pytest.mark.parametrize("operation", [torch.sum, torch.mean])
     @pytest.mark.parametrize("axis", [0, 1])
     @pytest.mark.parametrize(
@@ -839,6 +867,12 @@ class TestSortingOps:
             result = result[0]
         reference = NT([ref_fn(t) for t in nt], **reference_options(nt))
         assert_close(result, reference)
+
+    def test_cumsum_does_not_mix_sample_prefixes(self):
+        parts = [torch.tensor([float("inf")]), torch.tensor([1.0, 2.0]), torch.tensor([1e20, 1.0, -1e20, 3.0])]
+        output = torch.cumsum(NT(parts), dim=1)
+        for actual, part in zip(output, parts):
+            assert_close(actual, part.cumsum(0))
 
     def test_cumsum_ragged_dim(self):
         nt = NT(

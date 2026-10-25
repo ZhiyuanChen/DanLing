@@ -3730,7 +3730,7 @@ def linalg_norm(input, ord=None, dim=None, keepdim=False, *, dtype=None):
     # Zero-padding preserves vector-norm semantics for non-negative real ord values
     padding_safe = not isinstance(vector_ord, bool) and isinstance(vector_ord, (int, float)) and float(vector_ord) >= 0
     if not flattened and dim is None:
-        if padding_safe:
+        if padding_safe and (ord is None or input._physical_shape.size(1) == 1):
             vector_norm_op = torch.ops.aten.linalg_vector_norm.default
             vector_norm_handler = NestedTensorAtenRegistry[vector_norm_op]
             return vector_norm_handler(
@@ -5056,7 +5056,9 @@ def repeat_interleave(input, repeats, dim=None, *, output_size=None):
         return _repeat_interleave_packed_batch(input, repeats, output_size=output_size)
     dim_adj = _translate_non_batch_dim(input, dim, name="repeat_interleave")
     if dim_adj in input._static_dims and isinstance(repeats, int):
-        new_values = torch.repeat_interleave(input.concat, repeats, dim=dim_adj, output_size=output_size)
+        new_values = torch.repeat_interleave(
+            input.concat, repeats, dim=_physical_to_values_dim(input, dim_adj), output_size=output_size
+        )
         base_dim_size = int(input._logical_shape[dim_norm])
         return _packed_new_dim_size(input, new_values, dim_adj, base_dim_size * repeats)
     if _is_compiling():

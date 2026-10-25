@@ -41,6 +41,7 @@ import torch
 from torch import Tensor
 from torch._C._functorch import is_functorch_wrapped_tensor as _is_functorch_wrapped_tensor
 from torch._subclasses.fake_tensor import is_fake as _torch_is_fake
+from torch.fx.experimental.symbolic_shapes import statically_known_true
 from torch.utils._python_dispatch import _get_current_dispatch_mode
 
 from .ops import (
@@ -636,7 +637,7 @@ def arg_extrema_reduction(func, args, kwargs):
     source, dims, keepdim = _extract_dim_keepdim(args, kwargs, None)
     largest = func is aten.argmax.default
     values = source.concat
-    if (values.dtype == torch.bool or values.dtype.is_complex) and values.numel():
+    if values.dtype == torch.bool or values.dtype.is_complex:
         # Preserve native arg extrema dtype errors instead of inheriting the
         # broader max/min dtype support of the shared index-selection kernel.
         return func(values.reshape(-1), 0, False, **kwargs)
@@ -775,7 +776,8 @@ def _order_stat_pair_reduction(source: NestedTensor, dim: int, keepdim: bool, ap
         return values_out, indices_out
 
     dim_adj = _translate_dim(source, dim)
-    if dim_adj == 0:
+    values_dim = _physical_to_values_dim(source, dim_adj)
+    if values_dim is None:
         values = []
         indices = []
         for tensor in source._storage:
@@ -784,7 +786,7 @@ def _order_stat_pair_reduction(source: NestedTensor, dim: int, keepdim: bool, ap
             indices.append(index)
         return _stack_or_nest(values, source), _stack_or_nest(indices, source)
 
-    values_out, indices_out = apply(source.concat, dim_adj, keepdim)
+    values_out, indices_out = apply(source.concat, values_dim, keepdim)
     return (
         _reduce_non_ragged_packed(source, values_out, dim_adj, keepdim),
         _reduce_non_ragged_packed(source, indices_out, dim_adj, keepdim),
@@ -1070,8 +1072,9 @@ class _GroupedStats(torch.autograd.Function):
             0, groups, indices, "amin", include_self=True
         )
         anchors = torch.cat((values, values.new_zeros((1, *values.shape[1:])))).index_select(0, first)
-        anchors = torch.where(anchors.isfinite(), anchors, 0)
         shifted = values - anchors.index_select(0, groups)
+        first_row = indices == first.index_select(0, groups)
+        shifted = torch.where(first_row.reshape(-1, *([1] * (values.dim() - 1))), 0, shifted)
         sums = values.new_zeros((output_size, *values.shape[1:])).index_add(0, groups, shifted)
         mean_shift = sums / counts.reshape(count_shape)
         mean = anchors + mean_shift
@@ -1100,13 +1103,11 @@ class _GroupedStats(torch.autograd.Function):
         gradient = torch.zeros_like(values)
         if grad_statistic is not None:
             if ctx.std:
-                grad_statistic = torch.where(statistic == 0, 0, grad_statistic / (2 * statistic))
+                safe_statistic = torch.where(statistic == 0, 1, statistic)
+                grad_statistic = torch.where(statistic == 0, 0, grad_statistic / (2 * safe_statistic))
             degrees = (counts.to(values.real.dtype) - ctx.correction).reshape(count_shape)
             centered = values - mean.index_select(0, groups)
-            regular = (2 * grad_statistic / degrees).index_select(0, groups) * centered
-            degenerate = torch.where(centered == 0, float("nan"), float("inf"))
-            degenerate = (grad_statistic.index_select(0, groups) * degenerate).to(values.dtype)
-            gradient = torch.where(degrees.index_select(0, groups) <= 0, degenerate, regular)
+            gradient = (2 * grad_statistic / degrees).index_select(0, groups) * centered
         if grad_mean is not None:
             gradient = gradient + (grad_mean / counts.reshape(count_shape)).index_select(0, groups)
         return gradient, None, None, None, None, None, None
@@ -3815,6 +3816,40 @@ def _resolve_vector_norm_ord(ord_value) -> float | None:
     return ord_float
 
 
+class _GroupedVectorNorm(torch.autograd.Function):
+    r"""Reduce positive finite vector norms with the native zero-gradient convention."""
+
+    @staticmethod
+    def forward(values, groups, output_size, order):
+        carrier = _numeric_reduction_values(values, values.dtype, mean=False)
+        powers = carrier.ne(0).to(carrier.dtype) if order == 0 else carrier.abs().pow(order)
+        sums = powers.new_zeros((output_size, *powers.shape[1:])).index_add(0, groups, powers)
+        result = sums if order == 0 else sums.pow(1.0 / order)
+        return result.to(values.dtype)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        values, groups, _, order = inputs
+        ctx.order = order
+        ctx.save_for_backward(values, groups, output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        if ctx.order == 0:
+            return None, None, None, None
+        values, groups, output = ctx.saved_tensors
+        norms = output.index_select(0, groups)
+        zero = (values == 0) | (norms == 0)
+        magnitudes = torch.where(zero, 1, values.abs())
+        safe_norms = torch.where(zero, 1, norms)
+        if ctx.order == 2:
+            derivative = values / safe_norms
+        else:
+            derivative = values.sign() * magnitudes.pow(ctx.order - 1) / safe_norms.pow(ctx.order - 1)
+        derivative = torch.where(zero, 0, derivative)
+        return grad_output.index_select(0, groups) * derivative, None, None, None
+
+
 def _segment_vector_norm_ragged_dim(
     source: NestedTensor,
     ord_value,
@@ -3832,21 +3867,15 @@ def _segment_vector_norm_ragged_dim(
     if ord_float is None or not source.concat.dtype.is_floating_point or source.concat.dtype.is_complex:
         return None
 
+    # Validate requested dtype with the native API before casting packed values.
+    aten.linalg_vector_norm.default(source.concat[:0], ord_value, None, False, dtype=dtype)
     values = source.concat if dtype is None else source.concat.to(dtype=dtype)
-    offsets = source.ragged_level_offsets(0, device=values.device, dtype=torch.long)
-    lengths = offsets[1:] - offsets[:-1]
-
-    if ord_float == 0.0:
-        reduced = values.ne(0).to(dtype=values.dtype)
-    else:
-        reduced = values.abs().pow(ord_float)
-
-    if dim_adj is None and reduced.dim() > 1:
-        reduced = reduced.reshape(reduced.shape[0], -1).sum(dim=1)
-
-    out = _segment_sum(source, reduced, lengths)
-    if ord_float != 0.0:
-        out = out.pow(1.0 / ord_float)
+    groups = source.packed_batch_indices(device=values.device)
+    if dim_adj is None and values.dim() > 1:
+        width = math.prod(values.shape[1:])
+        values = values.reshape(-1)
+        groups = groups[:, None].expand(-1, width).reshape(-1)
+    out = _GroupedVectorNorm.apply(values, groups, len(source), ord_float)
 
     if dim_adj is None and keepdim:
         out = out.reshape(len(source), *([1] * int(source._physical_shape.size(1))))
@@ -4070,8 +4099,8 @@ def _packed_extrema_reduction(func, source: NestedTensor, dims_adj: Sequence[int
     rank = int(source._physical_shape.size(1))
     if rank == 0:
         return func(values.reshape(len(source), 1), [1], False)
-    if values.dtype.is_complex:
-        # Delegate the dtype error to the native extrema implementation.
+    if values.dtype.is_complex and values.numel():
+        # Native kernels accept an empty output even for unsupported complex comparisons.
         return func(values, [0], False)
 
     selected_ragged = tuple(dim for dim in source._varying_dims if dim in dims_adj)
@@ -4097,7 +4126,10 @@ def _packed_extrema_reduction(func, source: NestedTensor, dims_adj: Sequence[int
     kept_shape = ordered.shape[1 + len(selected_static) :]
     contributions = ordered.reshape(ordered.shape[0] * reduction_size, *kept_shape)
     groups = groups[:, None].expand(-1, reduction_size).reshape(-1)
-    output = _GroupedExtrema.apply(contributions, groups, output_size, func is aten.amax.default)
+    if values.dtype.is_complex:
+        output = values.new_empty((output_size, *kept_shape))
+    else:
+        output = _GroupedExtrema.apply(contributions, groups, output_size, func is aten.amax.default)
     return _wrap_packed_reduction(source, output, dims_adj, keepdim, remaining_ragged, group_offsets)
 
 
@@ -4657,7 +4689,7 @@ def _exclusive_group_products(values: Tensor, groups: Tensor) -> Tensor:
 
 
 class _GroupedProduct(torch.autograd.Function):
-    r"""Native first-order product VJP, including zero-containing and complex groups."""
+    r"""Product VJP with differentiable excluded factors at zeros and infinities."""
 
     @staticmethod
     def forward(values: Tensor, groups: Tensor, output_size: int) -> Tensor:
@@ -4677,11 +4709,8 @@ class _GroupedProduct(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output: Tensor):
-        values, groups, output = ctx.saved_tensors
-        zero_counts = torch.zeros_like(output, dtype=torch.long).index_add(0, groups, (values == 0).to(torch.long))
-        quotients = output.index_select(0, groups) / values
-        excluded = _exclusive_group_products(values, groups)
-        products = torch.where(zero_counts.index_select(0, groups) == 0, quotients, excluded)
+        values, groups, _ = ctx.saved_tensors
+        products = _exclusive_group_products(values, groups)
         return grad_output.index_select(0, groups) * products.conj(), None, None
 
 
@@ -6615,7 +6644,7 @@ def _packed_varying_softmax(
         if half_to_float or source_values.dtype in (torch.float16, torch.bfloat16)
         else source_values
     )
-    if not _is_compiling() and values.shape[0] == 0:
+    if statically_known_true(values.numel() == 0):
         return source._packed_like_unchecked(values if half_to_float else source_values)
 
     groups = _packed_varying_softmax_group_indices(source, target_dim, device=values.device)
@@ -6743,36 +6772,12 @@ def _cumsum_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
 
 
 def _segmented_cumsum_values(source: NestedTensor, *extra_args, **kwargs) -> Tensor:
-    r"""Compute cumsum along the leading ragged dimension without padding."""
+    r"""Compute native sample-local cumsums without cancellation between samples."""
+    from .segmented import segmented_cumsum
+
     values = source.concat
-    out_values = aten.cumsum.default(values, 0, *extra_args, **kwargs)
-    if values.numel() == 0 or values.shape[0] == 0:
-        return out_values
-
-    offsets = source._offsets.to(device=values.device, dtype=torch.long)
-    batch_size = offsets.numel() - 1
-    if batch_size == 0:
-        return out_values
-
-    start_offsets = offsets[:-1]
-    zero_prefix = out_values.new_zeros((1, *out_values.shape[1:]))
-    prefix_indices = torch.clamp(start_offsets - 1, min=0)
-    raw_prefix = out_values.index_select(0, prefix_indices)
-    has_prefix = start_offsets > 0
-    while has_prefix.dim() < raw_prefix.dim():
-        has_prefix = has_prefix.unsqueeze(-1)
-    segment_prefix = torch.where(has_prefix, raw_prefix, zero_prefix)
-
-    prefix_delta = torch.cat((segment_prefix[:1], segment_prefix[1:] - segment_prefix[:-1]), dim=0)
-    active = start_offsets < values.shape[0]
-    while active.dim() < prefix_delta.dim():
-        active = active.unsqueeze(-1)
-    prefix_delta = torch.where(active, prefix_delta, torch.zeros_like(prefix_delta))
-    safe_start_offsets = torch.where(start_offsets < values.shape[0], start_offsets, torch.zeros_like(start_offsets))
-
-    correction = out_values.new_zeros(out_values.shape)
-    correction = correction.index_add(0, safe_start_offsets, prefix_delta)
-    return out_values - aten.cumsum.default(correction, 0, *extra_args, **kwargs)
+    dtype = aten.cumsum.default(values[:0], 0, *extra_args, **kwargs).dtype
+    return segmented_cumsum(values.to(dtype=dtype), source._offsets.to(dtype=torch.long))
 
 
 def _cumprod_result_dtype(values_dtype: torch.dtype, dtype: torch.dtype | None) -> torch.dtype:
@@ -7000,6 +7005,10 @@ def cumulative_pair(func, args, kwargs):
             raise TypeError(f"{func._schema.name.split('::')[-1]}() missing required argument 'dim'")
         dim = kw_dim
     dim_adj = _translate_dim(source, dim)
+    if source.concat.numel() == 0 and source.concat.dtype.is_complex:
+        return source._packed_like_unchecked(source.concat.clone()), source._packed_like_unchecked(
+            torch.empty_like(source.concat, dtype=torch.long)
+        )
     values_dim = _packed_static_dim(source, dim_adj)
     if values_dim is not None:
         vals, idxs = func(source.concat, values_dim, **kwargs)
