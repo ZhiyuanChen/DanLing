@@ -259,7 +259,7 @@ class TestChannelShuffle:
             ]
         )
         output = F.channel_shuffle(x, groups=2)
-        reference = NT([F.channel_shuffle(t, groups=2) for t in x], **reference_options(x))
+        reference = NT([F.channel_shuffle(t.unsqueeze(0), groups=2).squeeze(0) for t in x], **reference_options(x))
         assert_close(output, reference)
 
 

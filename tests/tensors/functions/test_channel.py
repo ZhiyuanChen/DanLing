@@ -26,7 +26,7 @@ from danling.tensors.ops import nested_execution_guard
 from tests.tensors.utils import assert_close
 
 
-def test_channel_shuffle_uses_unbatched_sample_semantics(device):
+def test_channel_shuffle_uses_logical_batch_channels(device):
     tensor = torch.arange(4 * 4, device=device, dtype=torch.float32).reshape(4, 4, 1)
     input = NT([tensor])
 
@@ -34,19 +34,19 @@ def test_channel_shuffle_uses_unbatched_sample_semantics(device):
     per_sample = F.channel_shuffle(tensor, groups=2)
     batched_channel = F.channel_shuffle(tensor.unsqueeze(0), groups=2).squeeze(0)
 
-    assert_close(output[0], per_sample)
-    assert not torch.equal(output[0], batched_channel)
+    assert_close(output[0], batched_channel)
+    assert not torch.equal(output[0], per_sample)
 
 
 def test_channel_shuffle(device):
     tensors = [
         torch.randn(4, 2, 3, device=device),
-        torch.randn(5, 2, 7, device=device),
+        torch.randn(6, 2, 7, device=device),
     ]
     input = NT(tensors)
 
     output = F.channel_shuffle(input, groups=2)
-    reference = NT([F.channel_shuffle(t, groups=2) for t in tensors])
+    reference = NT([F.channel_shuffle(t.unsqueeze(0), groups=2).squeeze(0) for t in tensors])
 
     assert_close(output, reference)
 
@@ -63,7 +63,7 @@ def test_channel_shuffle_packed_chw_fast_path(device):
     assert input._permutation == (1, 2, 0)
     with nested_execution_guard(forbid_storage_map=True):
         output = F.channel_shuffle(input, groups=2)
-    reference = NT([F.channel_shuffle(t, groups=2) for t in tensors], **input._meta())
+    reference = NT([F.channel_shuffle(t.unsqueeze(0), groups=2).squeeze(0) for t in tensors], **input._meta())
 
     assert_close(output, reference)
 
@@ -80,7 +80,7 @@ def test_channel_shuffle_packed_chw_backward(device):
     reference_input = NT(reference_tensors)
 
     output = F.channel_shuffle(input, groups=2)
-    reference = NT([F.channel_shuffle(t, groups=2) for t in reference_input], **input._meta())
+    reference = NT([F.channel_shuffle(t.unsqueeze(0), groups=2).squeeze(0) for t in reference_input], **input._meta())
 
     assert_close(output, reference)
     output.concat.square().sum().backward()
@@ -174,7 +174,9 @@ def test_packed_channel_op_sum_backward(device, op):
     if op == "channel_shuffle":
         with nested_execution_guard(forbid_storage_map=True):
             output = F.channel_shuffle(input, groups=2)
-        reference = NT([F.channel_shuffle(t, groups=2) for t in reference_input], **input._meta())
+        reference = NT(
+            [F.channel_shuffle(t.unsqueeze(0), groups=2).squeeze(0) for t in reference_input], **input._meta()
+        )
     elif op == "pixel_shuffle":
         with nested_execution_guard(forbid_storage_map=True):
             output = F.pixel_shuffle(input, upscale_factor=2)

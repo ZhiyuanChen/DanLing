@@ -46,16 +46,14 @@ except Exception:  # pragma: no cover - optional dependency/runtime
 
 
 def channel_shuffle(input, groups: int, *, _fn=None):
+    r"""Shuffle physical channel axis 0, treating each element as one batch sample."""
     output = _channel_shuffle_uniform(input, groups)
-    if output is not None:
-        return output
-    output = _packed_channel_shuffle_height(input, groups)
     if output is not None:
         return output
     output = _channel_shuffle_packed(input, groups)
     if output is not None:
         return output
-    return _per_element(input, F.channel_shuffle if _fn is None else _fn, groups)
+    return _per_element(input, lambda t, g: F.channel_shuffle(t.unsqueeze(0).contiguous(), g).squeeze(0), groups)
 
 
 def pixel_shuffle(input, upscale_factor: int, *, _fn=None):
@@ -162,10 +160,7 @@ def _channel_shuffle_uniform(input: NestedTensor, groups: int) -> NestedTensor |
     if rank < 2:
         return None
 
-    leading = values.shape[:2]
-    tail = values.shape[2:]
-    shuffled = F.channel_shuffle(values.reshape(int(leading[0] * leading[1]), *tail), groups)
-    output = shuffled.reshape(*leading, *shuffled.shape[1:])
+    output = F.channel_shuffle(values, groups)
     return _from_uniform_values(input, output, tuple(int(size) for size in output.shape[1:]))
 
 
@@ -177,7 +172,7 @@ def _channel_shuffle_packed(input: NestedTensor, groups: int) -> NestedTensor | 
     if input._element_shapes is not None and any(len(shape) < 2 for shape in input._element_shapes):
         return None
 
-    channel_dim = _packed_channel_dim_for_physical_dim(input, 1)
+    channel_dim = _packed_channel_dim_for_physical_dim(input, 0)
     if channel_dim is None:
         return None
     values = input.concat
@@ -194,181 +189,6 @@ def _channel_shuffle_packed(input: NestedTensor, groups: int) -> NestedTensor | 
 
     return type(input).from_packed(
         output,
-        input._offsets,
-        input._physical_shape.clone(),
-        permutation=input._permutation,
-        ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
-        batch_first=input.batch_first,
-        padding_value=input.padding_value,
-        mask_value=input.mask_value,
-        pin_memory=input._pin_memory,
-        packed_sizes=input._packed_sizes,
-        element_shapes=input._element_shapes,
-    )
-
-
-def _can_use_packed_channel_shuffle_height(input: NestedTensor, groups: int) -> bool:
-    if triton is None or len(input) == 0 or not input.concat.is_cuda or groups <= 0:
-        return False
-    if input._physical_shape.size(1) != 3 or input.concat.dim() != 2:
-        return False
-    if input._element_shapes is not None and any(len(shape) != 3 for shape in input._element_shapes):
-        return False
-    if tuple(int(dim) for dim in input._permutation) != (1, 2, 0):
-        return False
-    channels = int(input.concat.shape[1])
-    if not _static_channels_match(input._physical_shape, channels):
-        return False
-    return bool(torch.all(input._physical_shape[:, 1].remainder(groups) == 0))
-
-
-def _channel_shuffle_block_size() -> tuple[int, int]:
-    return 128, 64
-
-
-if triton is not None:
-
-    @triton.jit
-    def _channel_shuffle_height_kernel(
-        input_ptr,
-        output_ptr,
-        offsets_ptr,
-        shape_ptr,
-        groups: tl.constexpr,
-        channels: tl.constexpr,
-        block_l: tl.constexpr,
-        block_c: tl.constexpr,
-    ):
-        tile = tl.program_id(0)
-        channel_block = tl.program_id(1)
-        batch = tl.program_id(2)
-        out_start = tile * block_l
-        height = tl.load(shape_ptr + batch * 3 + 1)
-        width = tl.load(shape_ptr + batch * 3 + 2)
-        size = height * width
-        base = tl.load(offsets_ptr + batch)
-        offsets_l = out_start + tl.arange(0, block_l)
-        offsets_c = channel_block * block_c + tl.arange(0, block_c)
-        out_y = offsets_l // width
-        out_x = offsets_l - out_y * width
-        channels_per_group = height // groups
-        in_y = (out_y % groups) * channels_per_group + out_y // groups
-        values = tl.load(
-            input_ptr + (base + in_y[:, None] * width + out_x[:, None]) * channels + offsets_c[None, :],
-            mask=(offsets_l[:, None] < size) & (offsets_c[None, :] < channels),
-            other=0.0,
-        )
-        tl.store(
-            output_ptr + (base + offsets_l[:, None]) * channels + offsets_c[None, :],
-            values,
-            mask=(offsets_l[:, None] < size) & (offsets_c[None, :] < channels),
-        )
-
-    @triton.jit
-    def _channel_unshuffle_height_kernel(
-        input_ptr,
-        output_ptr,
-        offsets_ptr,
-        shape_ptr,
-        groups: tl.constexpr,
-        channels: tl.constexpr,
-        block_l: tl.constexpr,
-        block_c: tl.constexpr,
-    ):
-        tile = tl.program_id(0)
-        channel_block = tl.program_id(1)
-        batch = tl.program_id(2)
-        in_start = tile * block_l
-        height = tl.load(shape_ptr + batch * 3 + 1)
-        width = tl.load(shape_ptr + batch * 3 + 2)
-        size = height * width
-        base = tl.load(offsets_ptr + batch)
-        offsets_l = in_start + tl.arange(0, block_l)
-        offsets_c = channel_block * block_c + tl.arange(0, block_c)
-        in_y = offsets_l // width
-        in_x = offsets_l - in_y * width
-        channels_per_group = height // groups
-        group = in_y // channels_per_group
-        index_in_group = in_y - group * channels_per_group
-        out_y = index_in_group * groups + group
-        values = tl.load(
-            input_ptr + (base + out_y[:, None] * width + in_x[:, None]) * channels + offsets_c[None, :],
-            mask=(offsets_l[:, None] < size) & (offsets_c[None, :] < channels),
-            other=0.0,
-        )
-        tl.store(
-            output_ptr + (base + offsets_l[:, None]) * channels + offsets_c[None, :],
-            values,
-            mask=(offsets_l[:, None] < size) & (offsets_c[None, :] < channels),
-        )
-
-
-class _PackedChannelShuffleHeightFunction(torch.autograd.Function):
-    @staticmethod
-    def forward(
-        ctx,
-        values: Tensor,
-        offsets: Tensor,
-        shape: Tensor,
-        groups: int,
-        channels: int,
-        batch: int,
-        max_hw: int,
-        block_l: int,
-        block_c: int,
-    ) -> Tensor:
-        output = torch.empty_like(values)
-        grid = (triton.cdiv(max_hw, block_l), triton.cdiv(channels, block_c), batch)
-        _channel_shuffle_height_kernel[grid](values, output, offsets, shape, groups, channels, block_l, block_c)
-
-        ctx.save_for_backward(offsets, shape)
-        ctx.groups = groups
-        ctx.channels = channels
-        ctx.batch = batch
-        ctx.max_hw = max_hw
-        ctx.block_l = block_l
-        ctx.block_c = block_c
-        return output
-
-    @staticmethod
-    def backward(ctx, grad_output: Tensor):
-        offsets, shape = ctx.saved_tensors
-        grad_output = grad_output.contiguous()
-        grad_input = torch.empty_like(grad_output)
-        grid = (triton.cdiv(ctx.max_hw, ctx.block_l), triton.cdiv(ctx.channels, ctx.block_c), ctx.batch)
-        _channel_unshuffle_height_kernel[grid](
-            grad_output,
-            grad_input,
-            offsets,
-            shape,
-            ctx.groups,
-            ctx.channels,
-            ctx.block_l,
-            ctx.block_c,
-        )
-        return grad_input, None, None, None, None, None, None, None, None
-
-
-def _packed_channel_shuffle_height(input: NestedTensor, groups: int) -> NestedTensor | None:
-    if not _can_use_packed_channel_shuffle_height(input, groups):
-        return None
-    input_shapes = _resolve_element_shapes(input)
-    channels = int(input.concat.shape[1])
-    block_l, block_c = _channel_shuffle_block_size()
-    device = input.concat.device
-    output_values = _PackedChannelShuffleHeightFunction.apply(
-        input.concat,
-        input._offsets.to(device=device, non_blocking=True),
-        input._physical_shape.to(device=device, non_blocking=True),
-        int(groups),
-        channels,
-        len(input_shapes),
-        max(int(height) * int(width) for _, height, width in input_shapes),
-        block_l,
-        block_c,
-    )
-    return type(input).from_packed(
-        output_values,
         input._offsets,
         input._physical_shape.clone(),
         permutation=input._permutation,
