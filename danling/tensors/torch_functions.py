@@ -2830,6 +2830,16 @@ def addr(input, vec1, vec2, *, beta=1, alpha=1, out=None):
     if out is not None:
         raise NotImplementedError("torch.addr(..., out=...) is not supported for NestedTensor.")
 
+    if isinstance(vec1, NestedTensor) and isinstance(vec2, NestedTensor):
+        from .aten_functions import per_element_fallback
+
+        _validate_pairwise_batch_length(vec1, vec2, op_name="addr", lhs_name="vec1", rhs_name="vec2")
+        return per_element_fallback(torch.ops.aten.addr.default, (input, vec1, vec2), {"alpha": alpha, "beta": beta})
+    if isinstance(input, NestedTensor):
+        from .aten_functions import per_element_fallback
+
+        return per_element_fallback(torch.ops.aten.addr.default, (input, vec1, vec2), {"alpha": alpha, "beta": beta})
+
     if isinstance(vec1, NestedTensor) and not isinstance(vec2, NestedTensor):
         if (
             isinstance(vec2, Tensor)
@@ -4024,6 +4034,36 @@ def outer(input, vec2, *, out=None):
 
     if out is not None:
         raise NotImplementedError("torch.outer(..., out=...) is not supported for NestedTensor.")
+
+    if isinstance(input, NestedTensor) and isinstance(vec2, NestedTensor):
+        from .ops import _binary_joint_ragged_broadcast
+
+        _validate_pairwise_batch_length(input, vec2, op_name="outer", lhs_name="input", rhs_name="vec2")
+        if input._physical_shape.size(1) != 1 or vec2._physical_shape.size(1) != 1:
+            raise RuntimeError("outer: Expected 1-D argument vectors")
+        left_shape, left_sizes, left_elements = input._shape_meta_from_components(suffix=(1,))
+        right_shape, right_sizes, right_elements = vec2._shape_meta_from_components(prefix=(1,), keep_dims=(0,))
+        left = _packed_with_shape(
+            input,
+            input.concat.unsqueeze(-1),
+            left_shape,
+            input._logical_shape_from_components(suffix=(1,)),
+            permutation=(0, 1),
+            packed_sizes=left_sizes,
+            element_shapes=left_elements,
+            preserve_ragged_offsets=True,
+        )
+        right = _packed_with_shape(
+            vec2,
+            vec2.concat.unsqueeze(-1),
+            right_shape,
+            vec2._logical_shape_from_components(prefix=(1,), keep_dims=(0,)),
+            permutation=(1, 0),
+            packed_sizes=right_sizes,
+            element_shapes=right_elements,
+            preserve_ragged_offsets=True,
+        )
+        return _binary_joint_ragged_broadcast(left, right, torch.mul, (), {})
 
     if isinstance(input, NestedTensor):
         if isinstance(vec2, Tensor) and input.concat.dim() == 1 and vec2.dim() == 1:

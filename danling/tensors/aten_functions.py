@@ -65,7 +65,6 @@ from .ops import (
     _is_compiling,
     _is_packed_identity,
     _maybe_align_dense_to_nested,
-    _nested_like_elements,
     _normalize_dim,
     _physical_to_values_dim,
     _resolve_dense_for_values,
@@ -7757,7 +7756,24 @@ def _ternary_per_element(func, args, kwargs, ref):
             else:
                 elements.append(operand)
         results.append(func(*elements, *args[3:], **kwargs))
-    return _nested_like_elements(ref, results)
+    result_rank = results[0].dim()
+    ragged_dims = tuple(
+        sorted(
+            {
+                dim + result_rank - operand._physical_shape.size(1)
+                for operand in args[:3]
+                if isinstance(operand, NestedTensor)
+                for dim in operand._varying_dims
+            }
+        )
+    )
+    return type(ref)(
+        results,
+        ragged_dims=ragged_dims,
+        batch_first=ref.batch_first,
+        padding_value=ref.padding_value,
+        mask_value=ref.mask_value,
+    )
 
 
 def _ternary_handler(func, args, kwargs):

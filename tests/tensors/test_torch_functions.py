@@ -1883,6 +1883,16 @@ class TestIndexingWriteOps:
 
 class TestInnerProducts:
 
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_pairwise_outer_and_addr(self, batch_first):
+        left = NT([torch.arange(2.0), torch.arange(3.0)], batch_first=batch_first)
+        right = NT([torch.arange(4.0), torch.arange(2.0)], batch_first=batch_first)
+        outer = torch.outer(left, right)
+        biased = torch.addr(torch.tensor(2.0), left, right, beta=3, alpha=2)
+        for actual, added, first, second in zip(outer, biased, left, right):
+            assert_close(actual, torch.outer(first, second))
+            assert_close(added, torch.addr(torch.tensor(2.0), first, second, beta=3, alpha=2))
+
     def test_dot_both_nested_ragged(self, device, float_dtype):
         lhs = NT(
             [
@@ -5153,6 +5163,13 @@ def _dense_ternary_result(op_name, condition_values, packed_values, first, secon
 
 
 class TestTernaryAutograd:
+
+    def test_ternary_retains_both_operands_ragged_axes(self):
+        left = NT([torch.ones(2, 1, 3), torch.ones(4, 1, 3)], ragged_dims=(0,))
+        right = NT([torch.full((1, 3, 3), 2.0), torch.full((1, 5, 3), 2.0)], ragged_dims=(1,))
+        output = torch.where(left > 0, left, right)
+        for actual, first, second in zip(output, left, right):
+            assert_close(actual, torch.where(first > 0, first, second))
 
     @pytest.mark.parametrize("op_name", ["where", "addcmul", "addcdiv", "lerp", "lerp_scalar"])
     def test_public_ternary_preserves_autograd(self, op_name):
