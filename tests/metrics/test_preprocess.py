@@ -467,3 +467,13 @@ class TestTaskPreprocessors:
             ignore_nan=True,
         )
         assert regression_input.shape == regression_target.shape
+
+
+def test_multiclass_class_axis_is_aligned_to_target_geometry():
+    scores = torch.tensor([[[10.0, 0.0, 10.0], [0.0, 10.0, 0.0]]])
+    labels = torch.tensor([[0, 1, 0]])
+    preds, target = preprocess_multiclass(scores, labels, num_classes=2)
+    assert torch.equal(preds.argmax(-1), target)
+    ambiguous = torch.tensor([[[9.0, 8.0], [10.0, 7.0]]])
+    preds, target = preprocess_multiclass(ambiguous, torch.tensor([[1, 0]]), num_classes=2, class_dim=1)
+    assert torch.equal(preds.argmax(-1), target)

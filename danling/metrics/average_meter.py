@@ -192,10 +192,10 @@ class AverageMeter:
         if world_size == 1:
             return self.value()
 
-        if self._tensor_template is not None:
-            return self._tensor_batch()
-
         device = self._sync_device()
+        template = self._resolve_tensor_template(world_size, device)
+        if template is not None:
+            return self._tensor_batch(template)
         synced_tensor = torch.tensor([0.0, float(self._local_n)], dtype=torch.float64, device=device)
         if self._local_n > 0:
             if isinstance(self._local_value, Tensor):
@@ -212,9 +212,10 @@ class AverageMeter:
         world_size = self._current_world_size()
         if world_size == 1:
             return self._local_average()
-        if self._tensor_template is not None:
-            return self._tensor_average()
         device = self._sync_device()
+        template = self._resolve_tensor_template(world_size, device)
+        if template is not None:
+            return self._tensor_average(template)
         synced_tensor = torch.tensor([0.0, float(self._local_count)], dtype=torch.float64, device=device)
         if isinstance(self._local_sum, Tensor):
             synced_tensor[0] = self._local_sum.to(device=device, dtype=torch.float64)
@@ -351,10 +352,12 @@ class AverageMeter:
                 return None
             return self._tensor_template.to(device=device, dtype=torch.float64)
 
-        metadata = None
+        metadata: tuple[tuple[int, ...] | None, str] | None = None
         if self._tensor_template is not None:
             metadata = (tuple(self._tensor_template.shape), str(self._tensor_template.dtype))
-        metadata_list: list[tuple[tuple[int, ...], str] | None] = [None for _ in range(world_size)]
+        elif self._local_count > 0:
+            metadata = (None, "scalar")
+        metadata_list: list[tuple[tuple[int, ...] | None, str] | None] = [None for _ in range(world_size)]
         dist.all_gather_object(metadata_list, metadata)
         references = [item for item in metadata_list if item is not None]
         if not references:
@@ -363,6 +366,8 @@ class AverageMeter:
             raise ValueError(f"AverageMeter received inconsistent tensor metadata across ranks: {references!r}")
 
         shape, dtype_name = references[0]
+        if shape is None:
+            return None
         template = torch.empty(shape, dtype=getattr(torch, dtype_name.removeprefix("torch.")), device=device)
         template_device = self.device if self.device is not None else device
         self._tensor_template = template.to(device=template_device)
@@ -376,9 +381,9 @@ class AverageMeter:
             return str(value)
         return value.__format__(format_spec)
 
-    def _tensor_spec(self) -> tuple[tuple[int, ...], str] | None:
+    def _tensor_spec(self) -> tuple[tuple[int, ...] | None, str] | None:
         if self._tensor_template is None:
-            return None
+            return (None, "scalar") if self._local_count > 0 else None
         return tuple(self._tensor_template.shape), str(self._tensor_template.dtype)
 
 
@@ -532,16 +537,16 @@ class AverageMeters(MetersBase):
             return {
                 name: self[name]._resolve_tensor_template(self[name]._current_world_size(), device)
                 for name, spec in local_specs.items()
-                if spec is not None
+                if spec is not None and spec[0] is not None
             }
 
         world_size = self[sync_names[0]]._current_world_size()
-        gathered_specs: list[dict[str, tuple[tuple[int, ...], str] | None]] = [{} for _ in range(world_size)]
+        gathered_specs: list[dict[str, tuple[tuple[int, ...] | None, str] | None]] = [{} for _ in range(world_size)]
         dist.all_gather_object(gathered_specs, local_specs)
 
         templates: dict[str, Tensor] = {}
         for name in sync_names:
-            references: list[tuple[tuple[int, ...], str]] = []
+            references: list[tuple[tuple[int, ...] | None, str]] = []
             for spec in gathered_specs:
                 reference = spec.get(name)
                 if reference is not None:
@@ -554,6 +559,8 @@ class AverageMeters(MetersBase):
                 )
 
             shape, dtype_name = references[0]
+            if shape is None:
+                continue
             template = torch.empty(shape, dtype=getattr(torch, dtype_name.removeprefix("torch.")), device=device)
             meter = self[name]
             template_device = meter.device if meter.device is not None else device

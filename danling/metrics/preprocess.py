@@ -92,7 +92,11 @@ def base_preprocess(
         input, target = _apply_mask(input, target, ~torch.isnan(target))
 
     if input.numel() == target.numel():
-        return input.squeeze(), target.squeeze()
+        # Keep the leading sample axis, including a batch containing one sample.
+        if input.ndim > 1:
+            input = input.reshape(input.shape[0], *(size for size in input.shape[1:] if size != 1))
+        if target.ndim > 1:
+            target = target.reshape(target.shape[0], *(size for size in target.shape[1:] if size != 1))
     return input, target
 
 
@@ -111,6 +115,27 @@ def _align_nested_tensors(
     input: Tensor | NestedTensor,
     target: Tensor | NestedTensor,
 ) -> tuple[Tensor, Tensor]:
+    if isinstance(input, NestedTensor) and isinstance(target, NestedTensor):
+        if len(input) != len(target):
+            raise ValueError("Metric prediction and target batches must contain the same number of samples")
+        input_shapes = [tuple(part.shape) for part in input]
+        target_shapes = [tuple(part.shape) for part in target]
+        if any(
+            left != right
+            and not (
+                len(left) == len(right) + 1
+                and any(left[:axis] + left[axis + 1 :] == right for axis in range(len(left)))
+            )
+            for left, right in zip(input_shapes, target_shapes)
+        ):
+            raise ValueError("Metric predictions and targets must have matching per-sample observation shapes")
+        if (
+            input._ragged_dims != target._ragged_dims
+            or input._permutation[: len(target._permutation)] != target._permutation
+        ):
+            # Unusual storage orders need a common logical row order before flattening.
+            input = NestedTensor(list(input), batch_first=input.batch_first)
+            target = NestedTensor(list(target), batch_first=target.batch_first)
     if isinstance(input, NestedTensor) or isinstance(target, NestedTensor):
         if isinstance(input, NestedTensor) and not isinstance(target, NestedTensor):
             target = input.nested_like(target, strict=False)
@@ -204,7 +229,51 @@ def preprocess_multiclass(
     target: Tensor | NestedTensor | Sequence,
     num_classes: int,
     ignore_index: int | None = -100,
+    class_dim: int | None = None,
 ) -> tuple[Tensor, Tensor]:
+    """Flatten class scores, inferring an unambiguous class axis from target geometry.
+
+    Ambiguous shapes retain the historical last-axis convention. Supply class_dim
+    explicitly when a spatial axis has the same extent as the class axis.
+    """
+    input = _coerce_to_tensor_like(input)
+    target = _coerce_to_tensor_like(target)
+    if isinstance(input, NestedTensor):
+        targets = list(target) if isinstance(target, NestedTensor) else None
+        parts = list(input)
+        if parts:
+            candidates = [
+                axis
+                for axis in range(parts[0].ndim)
+                if all(
+                    part.shape[axis] == num_classes
+                    and (targets is None or part.shape[:axis] + part.shape[axis + 1 :] == targets[i].shape)
+                    for i, part in enumerate(parts)
+                )
+            ]
+            axis = class_dim
+            if axis is not None:
+                axis = axis % input.dim()
+                batch_dim = 0 if input.batch_first else 1
+                if axis == batch_dim:
+                    raise ValueError("The class axis cannot be the NestedTensor batch axis")
+                axis -= int(axis > batch_dim)
+            else:
+                axis = candidates[0] if len(candidates) == 1 else parts[0].ndim - 1
+            if any(part.shape[axis] != num_classes for part in parts):
+                raise ValueError("The class axis must have num_classes entries")
+            if axis != parts[0].ndim - 1:
+                input = NestedTensor([part.movedim(axis, -1) for part in parts], batch_first=input.batch_first)
+    elif input.ndim == target.ndim + 1:
+        candidates = [
+            axis
+            for axis in range(input.ndim)
+            if input.shape[axis] == num_classes and input.shape[:axis] + input.shape[axis + 1 :] == target.shape
+        ]
+        axis = class_dim if class_dim is not None else (candidates[0] if len(candidates) == 1 else -1)
+        if input.shape[axis] != num_classes:
+            raise ValueError("The class axis must have num_classes entries")
+        input = input.movedim(axis, -1)
     input, target = base_preprocess(input, target, ignore_index=None, ignore_nan=False)
     input, target = input.reshape(-1, num_classes), target.flatten()
     if ignore_index is not None:

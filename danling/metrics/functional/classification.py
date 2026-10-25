@@ -56,6 +56,7 @@ def _preprocess_for_task(
     num_classes: int | None,
     num_labels: int | None,
     ignore_index: int | None,
+    class_dim: int | None = None,
 ) -> tuple[Tensor, Tensor]:
     from ..preprocess import preprocess_binary, preprocess_multiclass, preprocess_multilabel
 
@@ -64,7 +65,9 @@ def _preprocess_for_task(
     if task == "multiclass":
         if num_classes is None:
             raise ValueError("num_classes is required for multiclass metrics")
-        return preprocess_multiclass(input, target, num_classes=num_classes, ignore_index=ignore_index)
+        return preprocess_multiclass(
+            input, target, num_classes=num_classes, ignore_index=ignore_index, class_dim=class_dim
+        )
     if num_labels is None:
         raise ValueError("num_labels is required for multilabel metrics")
     return preprocess_multilabel(input, target, num_labels=num_labels, ignore_index=ignore_index)
@@ -132,6 +135,7 @@ def accuracy(
         num_classes=num_classes,
         num_labels=num_labels,
         ignore_index=ignore_index,
+        class_dim=kwargs.pop("class_dim", None),
     )
     if resolved_task == "binary":
         return tmcls.binary_accuracy(preds, targets, threshold=threshold, ignore_index=ignore_index, **kwargs)
@@ -175,6 +179,7 @@ def auprc(
         num_classes=num_classes,
         num_labels=num_labels,
         ignore_index=ignore_index,
+        class_dim=kwargs.pop("class_dim", None),
     )
     if resolved_task == "binary":
         return tmcls.binary_average_precision(preds, targets, ignore_index=ignore_index, **kwargs)
@@ -216,6 +221,7 @@ def auroc(
         num_classes=num_classes,
         num_labels=num_labels,
         ignore_index=ignore_index,
+        class_dim=kwargs.pop("class_dim", None),
     )
     if resolved_task == "binary":
         return tmcls.binary_auroc(preds, targets, ignore_index=ignore_index, **kwargs)
@@ -284,6 +290,7 @@ def fbeta_score(
         num_classes=num_classes,
         num_labels=num_labels,
         ignore_index=ignore_index,
+        class_dim=kwargs.pop("class_dim", None),
     )
     if resolved_task == "binary":
         return tmcls.binary_fbeta_score(
@@ -337,6 +344,7 @@ def precision(
         num_classes=num_classes,
         num_labels=num_labels,
         ignore_index=ignore_index,
+        class_dim=kwargs.pop("class_dim", None),
     )
     if resolved_task == "binary":
         return tmcls.binary_precision(preds, targets, threshold=threshold, ignore_index=ignore_index, **kwargs)
@@ -382,6 +390,7 @@ def recall(
         num_classes=num_classes,
         num_labels=num_labels,
         ignore_index=ignore_index,
+        class_dim=kwargs.pop("class_dim", None),
     )
     if resolved_task == "binary":
         return tmcls.binary_recall(preds, targets, threshold=threshold, ignore_index=ignore_index, **kwargs)
@@ -427,6 +436,7 @@ def specificity(
         num_classes=num_classes,
         num_labels=num_labels,
         ignore_index=ignore_index,
+        class_dim=kwargs.pop("class_dim", None),
     )
     if resolved_task == "binary":
         return tmcls.binary_specificity(
@@ -478,6 +488,7 @@ def balanced_accuracy(
         num_classes=num_classes,
         num_labels=num_labels,
         ignore_index=ignore_index,
+        class_dim=kwargs.pop("class_dim", None),
     )
     if resolved_task == "binary":
         return 0.5 * (
@@ -537,6 +548,7 @@ def jaccard_index(
         num_classes=num_classes,
         num_labels=num_labels,
         ignore_index=ignore_index,
+        class_dim=kwargs.pop("class_dim", None),
     )
     if resolved_task == "binary":
         return tmcls.binary_jaccard_index(preds, targets, threshold=threshold, ignore_index=ignore_index, **kwargs)
@@ -605,6 +617,7 @@ def hamming_loss(
         num_classes=num_classes,
         num_labels=num_labels,
         ignore_index=ignore_index,
+        class_dim=kwargs.pop("class_dim", None),
     )
     if resolved_task == "binary":
         return tmcls.binary_hamming_distance(

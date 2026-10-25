@@ -75,6 +75,24 @@ def _distributed_average_meter_zero_count_worker(rank: int, world_size: int):
         assert isnan(meter.average())
 
 
+def _distributed_average_meter_empty_vector_worker(rank: int, world_size: int):
+    with process_group("gloo", rank, world_size):
+        meter = AverageMeter(device="cpu", distributed=True)
+        if rank == 0:
+            meter.update(torch.tensor([1.0, 3.0]))
+        expected = torch.tensor([1.0, 3.0], dtype=torch.float64)
+        assert_close(meter.batch(), expected)
+        assert_close(meter.average(), expected)
+
+
+def _distributed_average_meters_mixed_type_worker(rank: int, world_size: int):
+    with process_group("gloo", rank, world_size):
+        meters = AverageMeters(score=AverageMeter(device="cpu", distributed=True))
+        meters["score"].update(torch.tensor([1.0, 3.0]) if rank == 0 else 4.0)
+        with pytest.raises(ValueError, match="inconsistent tensor metadata"):
+            meters.average()
+
+
 def _distributed_average_meter_inconsistent_tensor_metadata_worker(rank: int, world_size: int):
     with process_group("gloo", rank, world_size):
         meter = AverageMeter(device="cpu", distributed=True)
@@ -105,6 +123,13 @@ def _distributed_average_meters_mixed_worker(rank: int, world_size: int):
 
 
 class TestAverageMeter:
+
+    def test_vector_reduction_with_an_empty_rank(self):
+        run_distributed(_distributed_average_meter_empty_vector_worker, world_size=2)
+
+    def test_collection_rejects_active_scalar_vector_mixture(self):
+        run_distributed(_distributed_average_meters_mixed_type_worker, world_size=2)
+
     def test_tracks_basic_statistics(self):
         meter = AverageMeter()
         assert isnan(meter.val)

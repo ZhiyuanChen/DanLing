@@ -127,14 +127,18 @@ class GlobalMetrics:
         if isinstance(target, NestedTensor):
             target = target.concat
 
-        artifacts.last_preds = input.detach()
-        artifacts.last_targets = target.detach()
+        if input.ndim == 0:
+            input = input.reshape(1)
+        if target.ndim == 0:
+            target = target.reshape(1)
+        artifacts.last_preds = self._detach_to_device(input)
+        artifacts.last_targets = self._detach_to_device(target)
         self._local_n = self._infer_batch_count(target)
         self._local_count += self._local_n
 
         if self.requirements["preds_targets"]:
-            stored_input = self._detach_to_device(input)
-            stored_target = self._detach_to_device(target)
+            stored_input = artifacts.last_preds
+            stored_target = artifacts.last_targets
             artifacts.preds.append(stored_input)
             artifacts.targets.append(stored_target)
             artifacts.pending_preds.append(stored_input)
@@ -156,7 +160,12 @@ class GlobalMetrics:
         artifacts = self._artifacts
         sync = self._sync
         world_size = get_world_size() if self.distributed else 1
-        if sync.synced and sync.world_size == world_size:
+        needs_sync = not sync.synced or sync.world_size != world_size
+        if self.distributed and world_size > 1:
+            dirty = torch.tensor(int(needs_sync), device=self._sync_device())
+            dist.all_reduce(dirty, op=dist.ReduceOp.MAX)
+            needs_sync = bool(dirty.item())
+        if not needs_sync:
             return
 
         synced_pred_chunks = sync.pred_chunks
@@ -168,7 +177,11 @@ class GlobalMetrics:
         if self.distributed:
             if world_size > 1:
                 if self.requirements["preds_targets"]:
-                    if self._requires_full_artifact_resync(world_size):
+                    full_resync = torch.tensor(
+                        int(self._requires_full_artifact_resync(world_size)), device=self._sync_device()
+                    )
+                    dist.all_reduce(full_resync, op=dist.ReduceOp.MAX)
+                    if bool(full_resync.item()):
                         local_pred_tensor = self._local_artifact(artifacts.preds, artifacts.preds_template)
                         local_target_tensor = self._local_artifact(artifacts.targets, artifacts.targets_template)
                         synced_pred_chunks = self._gather_tensor_chunks(local_pred_tensor, world_size)
@@ -384,10 +397,7 @@ class GlobalMetrics:
         return torch.empty(0, device=self.device or "cpu")
 
     def _detach_to_device(self, tensor: Tensor) -> Tensor:
-        output = tensor.detach()
-        if self.device is not None:
-            output = output.to(self.device)
-        return output
+        return tensor.detach().to(device=self.device or tensor.device, copy=True)
 
     def _local_artifact(self, tensors: list[Tensor], template: Tensor | None) -> Tensor | None:
         if not tensors:

@@ -83,6 +83,25 @@ def _updated_binary_metrics(num_batches: int = 3, batch_size: int = 6):
 
 
 class TestGlobalMetricsLocalBehavior:
+
+    def test_class_first_nested_scores_keep_observation_alignment(self):
+        scores = [torch.tensor([[10.0, 0.0], [0.0, 10.0], [0.0, 0.0]]), torch.eye(3) * 10]
+        labels = [torch.tensor([0, 1]), torch.tensor([0, 1, 2])]
+        metrics = GlobalMetrics(multiclass_accuracy(3), distributed=False)
+        metrics.update(NestedTensor(scores), NestedTensor(labels))
+        assert float(metrics.average()["acc"]) == pytest.approx(1.0)
+
+    def test_single_sample_batches_snapshot_prediction_values(self):
+        from danling.metrics.functional import mse
+
+        metrics = GlobalMetrics(mse(), distributed=False)
+        prediction = torch.tensor([1.0])
+        metrics.update(prediction, torch.zeros(1))
+        prediction.fill_(100)
+        metrics.update(torch.tensor([3.0]), torch.zeros(1))
+        assert_close(metrics.preds, torch.tensor([1.0, 3.0]))
+        assert_close(metrics.average()["mse"], torch.tensor(5.0))
+
     def test_rejects_non_metricfunc_descriptors(self):
         with pytest.raises(ValueError, match="MetricFunc instances"):
             GlobalMetrics([1], preprocess=preprocess_binary, distributed=False)  # type: ignore[list-item]
@@ -602,6 +621,10 @@ class TestGlobalMetricsLocalBehavior:
 
 
 class TestDistributedGlobalMetrics:
+
+    def test_average_after_only_one_rank_updates(self):
+        run_distributed(_distributed_uneven_metric_updates_worker, world_size=2)
+
     def test_binary_average_syncs_across_ranks(self):
         run_distributed(_distributed_binary_worker, world_size=2)
 
@@ -881,3 +904,15 @@ def _distributed_binary_nccl_worker(rank: int, world_size: int):
             rtol=RTOL,
             atol=ATOL,
         )
+
+
+def _distributed_uneven_metric_updates_worker(rank: int, world_size: int):
+    from danling.metrics.functional import mse
+
+    with process_group("gloo", rank, world_size):
+        metrics = GlobalMetrics(mse(), distributed=True, device="cpu")
+        metrics.update(torch.ones(2), torch.zeros(2))
+        assert_close(metrics.average()["mse"], torch.tensor(1.0))
+        if rank == 0:
+            metrics.update(torch.full((2,), 3.0), torch.zeros(2))
+        assert_close(metrics.average()["mse"], torch.tensor(22.0 / 6.0))

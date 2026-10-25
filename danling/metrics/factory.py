@@ -148,6 +148,7 @@ def multiclass_metrics(
     *metric_funcs: MetricFunc,
     mode: str = "global",
     ignore_index: int | None = -100,
+    class_dim: int | None = None,
     distributed: bool = True,
     device=None,
     preprocess: Callable | None = None,
@@ -177,7 +178,9 @@ def multiclass_metrics(
         mode,
         default_metric_funcs=default_metric_funcs,
         custom_metrics=metrics,
-        preprocess=partial(preprocess_multiclass, num_classes=num_classes, ignore_index=ignore_index),
+        preprocess=partial(
+            preprocess_multiclass, num_classes=num_classes, ignore_index=ignore_index, class_dim=class_dim
+        ),
         custom_preprocess=preprocess,
         metric_funcs=metric_funcs,
         distributed=distributed,

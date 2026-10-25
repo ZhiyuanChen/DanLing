@@ -431,3 +431,11 @@ class TestStreamMetrics:
     def test_nccl_sync_smoke(self):
         require_nccl_cuda(world_size=2)
         run_distributed(_distributed_stream_metrics_nccl_worker, world_size=2)
+
+
+def test_single_sample_matrix_batch_keeps_sample_weight():
+    metrics = StreamMetrics(error=lambda p, t: (p - t).square().mean(), distributed=False)
+    metrics.update(torch.zeros(1, 2), torch.zeros(1, 2))
+    metrics.update(torch.full((2, 2), 3.0), torch.zeros(2, 2))
+    assert metrics.count["error"] == 3
+    assert metrics.average()["error"] == pytest.approx(6.0)
