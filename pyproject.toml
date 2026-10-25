@@ -32,7 +32,9 @@ dependencies = [
   "gitpython",
   "lazy-imports",
   "strenum; python_version<'3.11'",
+  "torch>=2.4",
   "torchdata",
+  "torchmetrics",
   "tqdm",
 ]
 optional-dependencies.accelerate = [
