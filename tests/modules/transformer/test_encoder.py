@@ -51,3 +51,30 @@ def test_transformer_encoder_stacks_attention_weights():
 
     assert outputs.shape == inputs.shape
     assert weights.shape == (2, 2, 2, 4, 4)
+
+
+def test_pre_norm_zero_branches_preserve_residual():
+    from torch import nn
+
+    from danling.modules.transformer import TransformerDecoderLayer
+
+    inputs = torch.randn(2, 4, 8) + 5
+    for cls in (TransformerEncoderLayer, TransformerDecoderLayer):
+        layer = cls(8, 2, norm_first=True, dropout=0, attn_dropout=0, ffn_dropout=0)
+        with torch.no_grad():
+            for module in layer.modules():
+                if isinstance(module, nn.Linear):
+                    module.weight.zero_()
+                    if module.bias is not None:
+                        module.bias.zero_()
+        outputs, _ = layer(inputs) if cls is TransformerEncoderLayer else layer(inputs, inputs)
+        torch.testing.assert_close(outputs, inputs)
+
+
+def test_encoder_can_build_independent_layers():
+    encoder = TransformerEncoder(_build_encoder_layer(), num_layers=2, share_parameters=False)
+    first, second = (next(layer.parameters()) for layer in encoder.layers)
+    original = second.detach().clone()
+    with torch.no_grad():
+        first.add_(1)
+    torch.testing.assert_close(second, original)

@@ -17,6 +17,7 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
+from copy import deepcopy
 from functools import partial
 from typing import Any, Dict, Optional, Tuple, Type
 
@@ -79,6 +80,7 @@ class TransformerEncoderLayer(nn.Module):
         key_padding_mask: Optional[Tensor] = None,
         need_weights: bool = False,
     ) -> Tuple[Tensor, Tensor]:
+        residual = src
         if self.norm_first:
             src = self.norm1(src)
 
@@ -91,10 +93,10 @@ class TransformerEncoderLayer(nn.Module):
             key_padding_mask=key_padding_mask,
             need_weights=need_weights,
         )
-        attn = src + self.dropout(attn)
-        attn = self.norm1(attn) if not self.norm_first else self.norm2(attn)
-
-        ffn = self.ffn(attn)
+        attn = residual + self.dropout(attn)
+        if not self.norm_first:
+            attn = self.norm1(attn)
+        ffn = self.ffn(self.norm2(attn) if self.norm_first else attn)
         ffn = attn + self.dropout(ffn)
 
         if not self.norm_first:
@@ -104,13 +106,18 @@ class TransformerEncoderLayer(nn.Module):
 
 
 class TransformerEncoder(nn.Module):
+    """Repeat a layer, optionally copying its parameters for independent depth.
+
+    share_parameters=True preserves the historical tied-layer architecture.
+    """
+
     __constants__ = ["norm"]
 
-    def __init__(self, layer: TransformerEncoderLayer, num_layers: int = 6) -> None:
+    def __init__(self, layer: TransformerEncoderLayer, num_layers: int = 6, *, share_parameters: bool = True) -> None:
         super().__init__()
         self.num_layers = num_layers
         self.layers = nn.ModuleList([])
-        self.layers.extend([layer for _ in range(self.num_layers)])
+        self.layers.extend([layer if share_parameters else deepcopy(layer) for _ in range(self.num_layers)])
 
     def forward(
         self,

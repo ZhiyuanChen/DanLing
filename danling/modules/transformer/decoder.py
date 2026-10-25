@@ -17,6 +17,7 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
+from copy import deepcopy
 from functools import partial
 from typing import Any, Dict, Optional, Tuple, Type
 
@@ -94,6 +95,7 @@ class TransformerDecoderLayer(nn.Module):
         mem_key_padding_mask: Optional[Tensor] = None,
         need_weights: bool = False,
     ) -> Tuple[Tensor, Tensor]:
+        residual = tgt
         if self.norm_first:
             tgt = self.norm1(tgt)
 
@@ -106,9 +108,11 @@ class TransformerDecoderLayer(nn.Module):
             key_padding_mask=tgt_key_padding_mask,
             need_weights=need_weights,
         )
-        self_attn = tgt + self.dropout(self_attn)
+        self_attn = residual + self.dropout(self_attn)
+        # The existing attention normalizer is shared by the two attention blocks.
+        cross_query = self.norm1(self_attn) if self.norm_first else self_attn
         cross_attn, weights = self.cross_attn(
-            self_attn,
+            cross_query,
             mem,
             mem,
             attn_bias=mem_bias,
@@ -117,9 +121,9 @@ class TransformerDecoderLayer(nn.Module):
             need_weights=need_weights,
         )
         cross_attn = self_attn + self.dropout(cross_attn)
-        attn = self.norm1(cross_attn) if not self.norm_first else self.norm2(cross_attn)
+        attn = self.norm1(cross_attn) if not self.norm_first else cross_attn
 
-        ffn = self.ffn(attn)
+        ffn = self.ffn(self.norm2(attn) if self.norm_first else attn)
         ffn = attn + self.dropout(ffn)
 
         if not self.norm_first:
@@ -129,13 +133,15 @@ class TransformerDecoderLayer(nn.Module):
 
 
 class TransformerDecoder(nn.Module):
+    """Repeat a layer with explicitly tied or independent parameters."""
+
     __constants__ = ["norm"]
 
-    def __init__(self, layer: TransformerDecoderLayer, num_layers: int = 6) -> None:
+    def __init__(self, layer: TransformerDecoderLayer, num_layers: int = 6, *, share_parameters: bool = True) -> None:
         super().__init__()
         self.num_layers = num_layers
         self.layers = nn.ModuleList([])
-        self.layers.extend([layer for _ in range(self.num_layers)])
+        self.layers.extend([layer if share_parameters else deepcopy(layer) for _ in range(self.num_layers)])
 
     def forward(
         self,
