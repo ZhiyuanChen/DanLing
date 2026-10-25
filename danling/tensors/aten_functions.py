@@ -7090,9 +7090,9 @@ def flip(func, args, kwargs):
     return per_element_fallback(func, (source, dims_adj), kwargs)
 
 
-@NestedTensorAtenRegistry.implement(aten.roll.default)
+@NestedTensorAtenRegistry.implement(aten.roll.default, compile_safe=True)
 def roll(func, args, kwargs):
-    r"""Roll along non-ragged dims on packed values; fallback for ragged/flatten cases."""
+    r"""Roll packed sample coordinates without crossing ragged boundaries."""
     source = args[0]
     kw_shifts = kwargs.pop("shifts", _MISSING)
     kw_dims = kwargs.pop("dims", _MISSING)
@@ -7110,33 +7110,24 @@ def roll(func, args, kwargs):
         dims = args[2]
     else:
         dims = () if kw_dims is _MISSING else kw_dims
-    if isinstance(shifts, int):
+    if isinstance(shifts, (int, torch.SymInt)):
         shifts = [shifts]
     else:
         shifts = list(shifts)
 
-    if isinstance(dims, int):
+    if isinstance(dims, (int, torch.SymInt)):
         dims = (dims,)
     else:
         dims = tuple(dims)
 
-    # dims=[] (or omitted) follows torch.roll flatten semantics per element.
-    if len(dims) == 0:
-        if _is_compiling():
-            _compile_unsupported("aten.roll.default", "dims=None flatten semantics are eager-only")
-        return per_element_fallback(func, (source, shifts, []), kwargs)
+    from .torch_functions import _packed_roll
 
-    dims_adj = tuple(_translate_dim(source, dim) for dim in dims)
-    if source.concat.dim() > 1 and all(dim > 0 for dim in dims_adj):
-        return source._packed_like_unchecked(func(source.concat, shifts, list(dims_adj), **kwargs))
-    if _is_compiling():
-        _compile_unsupported("aten.roll.default", "only non-ragged roll dimensions are compile-safe")
-    return per_element_fallback(func, (source, shifts, list(dims_adj)), kwargs)
+    return _packed_roll(source, shifts, dims)
 
 
-@NestedTensorAtenRegistry.implement(aten.rot90.default)
+@NestedTensorAtenRegistry.implement(aten.rot90.default, compile_safe=True)
 def rot90(func, args, kwargs):
-    r"""Rotate over two non-ragged dims on packed values; fallback for ragged dims."""
+    r"""Rotate logical sample axes while preserving packed coordinate semantics."""
     source = args[0]
     kw_k = kwargs.pop("k", _MISSING)
     kw_dims = kwargs.pop("dims", _MISSING)
@@ -7157,41 +7148,9 @@ def rot90(func, args, kwargs):
     if len(dims) != 2:
         raise ValueError("rot90 dims must be a sequence of two dimensions.")
 
-    dim_count = source.dim()
-    dims_norm = tuple(_normalize_dim(d, dim_count) for d in dims)
-    dims_adj = tuple(_translate_dim(source, d) for d in dims_norm)
-    k_mod = int(k) % 4
+    from .torch_functions import _packed_rot90
 
-    if source.concat.dim() > 1 and all(dim > 0 for dim in dims_adj):
-        out_values = func(source.concat, k, list(dims_adj), **kwargs)
-        if k_mod % 2 == 0:
-            return source._packed_like_unchecked(out_values)
-        out_shape = source._physical_shape.clone()
-        out_shape[:, [dims_adj[0], dims_adj[1]]] = out_shape[:, [dims_adj[1], dims_adj[0]]]
-        out_logical = list(source._logical_shape)
-        out_logical[dims_norm[0]], out_logical[dims_norm[1]] = out_logical[dims_norm[1]], out_logical[dims_norm[0]]
-        out_packed_sizes = None
-        out_element_shapes = None
-        if source._element_shapes is not None:
-            rotated_shapes = []
-            for shape in source._element_shapes:
-                shape_list = list(shape)
-                shape_list[dims_adj[0]], shape_list[dims_adj[1]] = shape_list[dims_adj[1]], shape_list[dims_adj[0]]
-                rotated_shapes.append(tuple(shape_list))
-            out_element_shapes = tuple(rotated_shapes)
-            out_packed_sizes = source._packed_sizes_like(out_element_shapes)
-        return _packed_with_shape(
-            source,
-            out_values,
-            out_shape,
-            out_logical,
-            packed_sizes=out_packed_sizes,
-            element_shapes=out_element_shapes,
-        )
-
-    if _is_compiling():
-        _compile_unsupported("aten.rot90.default", "only non-ragged rotation planes are compile-safe")
-    return per_element_fallback(func, (source, k, list(dims_adj)), kwargs)
+    return _packed_rot90(source, k, dims)
 
 
 @NestedTensorAtenRegistry.implement(aten.searchsorted.Tensor)

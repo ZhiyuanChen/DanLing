@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import builtins
 import contextlib
+import math
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
@@ -3023,7 +3024,57 @@ def det(input):
     return torch.ops.aten.det.default(input)
 
 
-@NestedTensorFuncRegistry.implement(torch.diag)
+def _packed_index_from_element_flat(source, batch, local):
+    r"""Map logical per-element flat positions onto scalar packed storage."""
+    values = source.concat
+    sizes = source._physical_shape.to(device=values.device, dtype=torch.long)[batch]
+    coordinates = [local] * source._physical_shape.shape[1]
+    for dim in range(len(coordinates) - 1, -1, -1):
+        coordinates[dim] = local.remainder(sizes[:, dim])
+        local = local.div(sizes[:, dim], rounding_mode="floor")
+    rows = torch.zeros_like(batch)
+    for dim in source._ragged_dims:
+        rows = rows * sizes[:, dim] + coordinates[dim]
+    indices = source.packed_offsets(device=values.device)[batch] + rows
+    for dim, extent in zip(source._static_dims, values.shape[1:]):
+        indices = indices * extent + coordinates[dim]
+    return indices
+
+
+def _packed_flatten_elements(source):
+    r"""Flatten each logical element without padding or changing its value order."""
+    values = source.concat
+    lengths = source._physical_shape.prod(1)
+    offsets = _offsets_from_packed_lengths(lengths).to(values.device)
+    batch = torch.repeat_interleave(
+        torch.arange(len(source), device=values.device), lengths.to(values.device), output_size=values.numel()
+    )
+    local = torch.arange(values.numel(), device=values.device) - offsets[batch]
+    indices = _packed_index_from_element_flat(source, batch, local)
+    return values.reshape(-1).index_select(0, indices), lengths
+
+
+def _packed_diagflat(input, offset):
+    r"""Materialize only the requested per-sample diagonal matrices."""
+    flat, lengths = _packed_flatten_elements(input)
+    sides = lengths + abs(offset)
+    matrix_lengths = sides.square()
+    output_size = matrix_lengths.sum().item()
+    torch._check(output_size >= 0)
+    output = flat.new_zeros((output_size,))
+    batch = torch.repeat_interleave(
+        torch.arange(len(input), device=flat.device), lengths.to(flat.device), output_size=flat.numel()
+    )
+    starts = _offsets_from_packed_lengths(lengths).to(flat.device)
+    local = torch.arange(flat.numel(), device=flat.device) - starts[batch]
+    side = sides.to(flat.device)[batch]
+    positions = _offsets_from_packed_lengths(matrix_lengths).to(flat.device)[batch]
+    positions = positions + (local + builtins.max(-offset, 0)) * side + local + builtins.max(offset, 0)
+    output = output.scatter(0, positions, flat)
+    return input.packed_with_square_lengths(output, sides)
+
+
+@NestedTensorFuncRegistry.implement(torch.diag, compile_safe=True)
 def diag(input, diagonal=0):
     r"""
     Apply [torch.diag][] to each element of a NestedTensor.
@@ -3031,19 +3082,34 @@ def diag(input, diagonal=0):
     For 1-D elements, returns a 2-D diagonal matrix per element.
     For 2-D elements, returns the diagonal as a 1-D tensor per element.
     """
-    # ``diag`` only admits a packed fast path for dense same-shape batches.
-    # We intentionally keep NestedTensor on the per-element path here; callers
-    # with uniform shapes should use a plain dense Tensor instead.
-    return _map_storage_serial(input, lambda t: torch.diag(t, diagonal=diagonal))
+    rank = input._physical_shape.shape[1]
+    if rank == 1:
+        return _packed_diagflat(input, diagonal)
+    if rank != 2:
+        raise RuntimeError("diag(): Supports 1D or 2D tensors only")
+    lengths = (input._physical_shape.min(1).values - abs(diagonal)).clamp_min(0)
+    if diagonal > 0:
+        lengths = torch.minimum(input._physical_shape[:, 0], input._physical_shape[:, 1] - diagonal).clamp_min(0)
+    elif diagonal < 0:
+        lengths = torch.minimum(input._physical_shape[:, 0] + diagonal, input._physical_shape[:, 1]).clamp_min(0)
+    output_size = lengths.sum().item()
+    torch._check(output_size >= 0)
+    device = input.concat.device
+    batch = torch.repeat_interleave(
+        torch.arange(len(input), device=device), lengths.to(device), output_size=output_size
+    )
+    local = torch.arange(output_size, device=device) - _offsets_from_packed_lengths(lengths).to(device)[batch]
+    columns = input._physical_shape[:, 1].to(device)[batch]
+    element_flat = (local + builtins.max(-diagonal, 0)) * columns + local + builtins.max(diagonal, 0)
+    indices = _packed_index_from_element_flat(input, batch, element_flat)
+    values = input.concat.reshape(-1).index_select(0, indices)
+    return input.packed_with_lengths(values, lengths)
 
 
-@NestedTensorFuncRegistry.implement(torch.diagflat)
+@NestedTensorFuncRegistry.implement(torch.diagflat, compile_safe=True)
 def diagflat(input, offset=0):
     r"""Apply [torch.diagflat][] to each element of a NestedTensor."""
-    # ``diagflat`` flattens each element before materializing a square matrix,
-    # so ragged element lengths directly control the output size. Keep the
-    # semantics explicit and per-element instead of adding same-shape special cases.
-    return _map_storage_serial(input, lambda t: torch.diagflat(t, offset=offset))
+    return _packed_diagflat(input, offset)
 
 
 @NestedTensorFuncRegistry.implement(torch.diagonal)
@@ -5144,7 +5210,94 @@ def reshape(input: NestedTensor, shape: Sequence[int]) -> NestedTensor:
     return _aten_view_like(torch.ops.aten.reshape.default, (input, list(shape)), {})
 
 
-@NestedTensorFuncRegistry.implement(torch.roll)
+def _packed_reindex_ragged(source, *, shifts=None, flips=()):
+    r"""Gather ragged coordinates within each sample, preserving its packed layout."""
+    values = source.concat
+    batch, local = source._packed_batch_local_indices(device=values.device)
+    coordinates = source._packed_varying_coords(batch, local, device=values.device)
+    sizes = source._physical_shape.to(values.device)[batch]
+    rows = torch.zeros_like(local)
+    for dim, coordinate in zip(source._ragged_dims, coordinates):
+        extent = sizes[:, dim]
+        if shifts is not None and dim in shifts:
+            coordinate = (coordinate - shifts[dim]).remainder(extent)
+        if dim in flips:
+            coordinate = extent - 1 - coordinate
+        rows = rows * extent + coordinate
+    gather = rows + source.packed_offsets(device=values.device)[batch]
+    return values.index_select(0, gather)
+
+
+def _packed_roll(source, shifts, dims):
+    r"""Roll logical axes using packed gathers and native static-axis rolls."""
+    values = source.concat
+    if not dims:
+        if len(shifts) != 1:
+            raise RuntimeError("shifts and dimensions must align. shifts: 1, dims: 0")
+        flat = torch.arange(values.numel(), device=values.device)
+        static_volume = math.prod(values.shape[1:])
+        rows = flat.div(builtins.max(static_volume, 1), rounding_mode="floor")
+        batch = source.packed_batch_indices(device=values.device)[rows]
+        local_rows = rows - source.packed_offsets(device=values.device)[batch]
+        ragged_coordinates = source._packed_varying_coords(batch, local_rows, device=values.device)
+        coordinates = dict(zip(source._ragged_dims, ragged_coordinates))
+        tail = flat.remainder(builtins.max(static_volume, 1))
+        for dim, extent in reversed(tuple(zip(source._static_dims, values.shape[1:]))):
+            coordinates[dim] = tail.remainder(builtins.max(extent, 1))
+            tail = tail.div(builtins.max(extent, 1), rounding_mode="floor")
+        sizes = source._physical_shape.to(values.device)[batch]
+        element_flat = torch.zeros_like(flat)
+        for dim in range(source._physical_shape.shape[1]):
+            element_flat = element_flat * sizes[:, dim] + coordinates[dim]
+        shifted = (element_flat - shifts[0]).remainder(sizes.prod(1))
+        gather = _packed_index_from_element_flat(source, batch, shifted)
+        return source._packed_like_unchecked(values.reshape(-1).index_select(0, gather).reshape(values.shape))
+    if len(shifts) != len(dims):
+        raise RuntimeError("shifts and dimensions must align")
+    physical_dims = tuple(int(_translate_non_batch_dim(source, dim, name="roll")) for dim in dims)
+    ragged_shifts = {}
+    static_shifts, static_axes = [], []
+    for dim, shift in zip(physical_dims, shifts):
+        if dim in source._ragged_dims:
+            ragged_shifts[dim] = ragged_shifts.get(dim, 0) + shift
+        else:
+            static_shifts.append(shift)
+            static_axes.append(_physical_to_values_dim(source, dim))
+    if ragged_shifts:
+        values = _packed_reindex_ragged(source, shifts=ragged_shifts)
+    if static_axes:
+        values = torch.roll(values, static_shifts, static_axes)
+    return source._packed_like_unchecked(values)
+
+
+def _packed_rot90(source, k, dims):
+    r"""Rotate a logical plane by flipping coordinates and relabeling its axes."""
+    if len(dims) != 2:
+        raise ValueError("rot90 dims must be a sequence of two dimensions.")
+    physical_dims = tuple(int(_translate_non_batch_dim(source, dim, name="rot90")) for dim in dims)
+    if physical_dims[0] == physical_dims[1]:
+        raise RuntimeError("expected rotation dims to be different")
+    rotations = k % 4
+    flips = physical_dims if rotations == 2 else ((physical_dims[1],) if rotations == 1 else (physical_dims[0],))
+    if rotations == 0:
+        return source._packed_like_unchecked(source.concat.clone())
+    ragged_flips = tuple(dim for dim in flips if dim in source._ragged_dims)
+    values = _packed_reindex_ragged(source, flips=ragged_flips) if ragged_flips else source.concat
+    static_flips = tuple(_physical_to_values_dim(source, dim) for dim in flips if dim in source._static_dims)
+    if static_flips:
+        values = torch.flip(values, static_flips)
+    output = source._packed_like_unchecked(values)
+    if rotations % 2:
+        from .aten_functions import _packed_metadata_permute
+
+        permutation = list(range(source._physical_shape.shape[1]))
+        first, second = physical_dims
+        permutation[first], permutation[second] = permutation[second], permutation[first]
+        output = _packed_metadata_permute(output, tuple(permutation))
+    return output
+
+
+@NestedTensorFuncRegistry.implement(torch.roll, compile_safe=True)
 def roll(input: NestedTensor, shifts, dims=None):
     r"""
     Roll the tensor `input` along the given dimension(s). Elements that are shifted beyond the last position are
@@ -5175,23 +5328,21 @@ def roll(input: NestedTensor, shifts, dims=None):
         >>> torch.equal(out, ref)
         True
     """
-    if isinstance(shifts, int):
+    if isinstance(shifts, (int, torch.SymInt)):
         shifts = [shifts]
     else:
         shifts = list(shifts)
 
-    from .aten_functions import roll as _aten_roll
-
     if dims is None:
-        return _aten_roll(torch.ops.aten.roll.default, (input, shifts, []), {})
-    if isinstance(dims, int):
+        return _packed_roll(input, shifts, ())
+    if isinstance(dims, (int, torch.SymInt)):
         dims = [dims]
     else:
         dims = list(dims)
-    return _aten_roll(torch.ops.aten.roll.default, (input, shifts, dims), {})
+    return _packed_roll(input, shifts, dims)
 
 
-@NestedTensorFuncRegistry.implement(torch.rot90)
+@NestedTensorFuncRegistry.implement(torch.rot90, compile_safe=True)
 def rot90(input: NestedTensor, k: int = 1, dims: Sequence[int] = (0, 1)) -> NestedTensor:
     r"""
     Rotate an n-D tensor by 90 degrees in the plane specified by dims axis.
@@ -5219,9 +5370,7 @@ def rot90(input: NestedTensor, k: int = 1, dims: Sequence[int] = (0, 1)) -> Nest
     """
     if len(dims) != 2:
         raise ValueError("rot90 dims must be a sequence of two dimensions.")
-    from .aten_functions import rot90 as _aten_rot90
-
-    return _aten_rot90(torch.ops.aten.rot90.default, (input, k, list(dims)), {})
+    return _packed_rot90(input, k, dims)
 
 
 @NestedTensorFuncRegistry.implement(torch.squeeze)
@@ -6641,18 +6790,11 @@ TORCH_TIER1_COMPILE_SAFE_OPS: tuple = (
     torch.Tensor.masked_scatter,
 )
 
-TORCH_EAGER_ONLY_OPS: tuple = (
-    torch.diag,
-    torch.diagflat,
-    torch.roll,
-    torch.rot90,
-)
-
 for _op, _handler in _TORCH_HANDLER_TABLE:
     NestedTensorFuncRegistry.register(
         _op,
         _bind_fn(_handler, _op),
-        compile_safe=_op not in TORCH_EAGER_ONLY_OPS,
+        compile_safe=True,
         compile_guard=_binary_op_compile_safe if _op in TORCH_BINARY_ELEMENTWISE_OPS else None,
     )
 

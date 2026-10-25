@@ -3935,6 +3935,51 @@ class TestRot90:
         assert tuple(tuple(element.shape) for element in output) == expected_shapes
 
 
+class TestPackedCoordinateTransforms:
+
+    @pytest.mark.parametrize(
+        ("operation", "shapes", "ragged_dims"),
+        [
+            ("roll", ((2, 4, 3), (3, 2, 3)), (1, 0)),
+            ("roll_flat", ((2, 3), (2, 5)), (1,)),
+            ("rot90", ((2, 3), (2, 5)), (1,)),
+            ("diag_vector", ((0,), (4,)), (0,)),
+            ("diag_matrix", ((2, 3), (4, 3)), (0,)),
+            ("diagflat", ((2, 3), (2, 5)), (1,)),
+        ],
+    )
+    def test_fullgraph_values_and_vjp(self, device, operation, shapes, ragged_dims):
+        leaves = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+        references = [leaf.detach().clone().requires_grad_() for leaf in leaves]
+        source = NT(leaves, ragged_dims=ragged_dims, batch_first=False)
+        if operation == "roll":
+            call = partial(torch.roll, shifts=(2, -1), dims=(0, 2))
+            native = partial(torch.roll, shifts=(2, -1), dims=(0, 1))
+        elif operation == "roll_flat":
+            call = native = partial(torch.roll, shifts=3)
+        elif operation == "rot90":
+            call = partial(torch.rot90, k=1, dims=(0, 2))
+            native = partial(torch.rot90, k=1, dims=(0, 1))
+        elif operation == "diagflat":
+            call = native = partial(torch.diagflat, offset=-1)
+        else:
+            call = native = partial(torch.diag, diagonal=-1)
+
+        torch._dynamo.reset()
+        compiled = torch.compile(call, backend="aot_eager", fullgraph=True, dynamic=True)
+        output = compiled(source)
+        expected = [native(value) for value in references]
+        weights = [torch.randn_like(value) for value in expected]
+        for actual, reference in zip(output, expected):
+            torch.testing.assert_close(actual, reference)
+        actual_loss = sum((value * weight).sum() for value, weight in zip(output, weights))
+        expected_loss = sum((value * weight).sum() for value, weight in zip(expected, weights))
+        gradients = torch.autograd.grad(actual_loss, leaves)
+        reference_gradients = torch.autograd.grad(expected_loss, references)
+        for actual, reference in zip(gradients, reference_gradients):
+            torch.testing.assert_close(actual, reference)
+
+
 class TestSearchsorted:
 
     def test_bucketize(self, device, float_dtype):
