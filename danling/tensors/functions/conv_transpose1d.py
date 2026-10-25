@@ -28,6 +28,7 @@ from torch import Tensor
 from torch.nn import functional as F
 
 from ._convolution import (
+    _autocast_convolution_tensors,
     _can_use_spatial_tile_convolution,
     _cap_spatial_tile_batch_for_channels,
     _ceil_div,
@@ -1392,14 +1393,15 @@ def _spatial_tile_conv_transpose1d(
     tile_geometry_meta = torch.tensor(tile_geometry_rows, device=device, dtype=torch.int64)
     input_offsets_device = input._offsets.to(device=device, non_blocking=True)
     output_offsets_device = output_offsets.to(device=device, non_blocking=True)
+    input_values, weight, bias = _autocast_convolution_tensors(input.concat, weight, bias)
     requires_grad = torch.is_grad_enabled() and (
-        input.concat.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
+        input_values.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
     )
-    use_channels_last = bool(channels_last and input.concat.is_cuda)
+    use_channels_last = bool(channels_last and input_values.is_cuda)
 
     if requires_grad:
         output_values = _SpatialTileConvTranspose1dCudnnFunction.apply(
-            input.concat,
+            input_values,
             weight,
             bias,
             input_offsets_device,
@@ -1422,7 +1424,7 @@ def _spatial_tile_conv_transpose1d(
         )
     else:
         output_values = _spatial_tile_conv_transpose1d_forward_values(
-            input.concat,
+            input_values,
             weight.contiguous(),
             bias,
             output_size=total_out,

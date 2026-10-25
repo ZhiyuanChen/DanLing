@@ -100,3 +100,52 @@ def test_conv1d_invalid_bias_shape_matches_torch(device):
 
     with pytest.raises(RuntimeError):
         F.conv1d(input, weight, bias, padding=1)
+
+
+@pytest.mark.parametrize(("rank", "backend"), [(1, "aot_eager"), (2, "aot_eager"), (1, "inductor")])
+def test_compiled_pointwise_output_preserves_parameter_gradients(rank, backend):
+    shapes = [(2, 3), (2, 5)] if rank == 1 else [(2, 3, 4), (2, 4, 6)]
+    parts = [torch.randn(shape, dtype=torch.float64, requires_grad=True) for shape in shapes]
+    weight = torch.randn(3, 2, *([1] * rank), dtype=torch.float64, requires_grad=True)
+    bias = torch.randn(3, dtype=torch.float64, requires_grad=True)
+    fn = F.conv1d if rank == 1 else F.conv2d
+    expected = [fn(part, weight, bias) for part in parts]
+    expected_grads = torch.autograd.grad(sum(part.square().sum() for part in expected), (*parts, weight, bias))
+    compiled = torch.compile(fn, backend=backend, fullgraph=True)
+    output = compiled(NT(parts), weight, bias)
+    actual_grads = torch.autograd.grad(output.concat.square().sum(), (*parts, weight, bias))
+    for actual, reference in zip(actual_grads, expected_grads):
+        torch.testing.assert_close(actual, reference)
+
+
+@pytest.mark.parametrize(("rank", "transpose"), [(1, False), (2, False), (1, True), (2, True)])
+def test_spatial_convolution_autocast_matches_native_vjps(device, rank, transpose):
+    if device.type != "cuda":
+        pytest.skip("spatial tile autocast requires CUDA")
+    shapes = [(2, 9), (2, 7)] if rank == 1 else [(2, 6, 7), (2, 5, 9)]
+    parts = [torch.randn(shape, device=device, requires_grad=True) for shape in shapes]
+    references = [part.detach().clone().requires_grad_() for part in parts]
+    channels = (2, 3) if transpose else (3, 2)
+    weight = torch.randn(*channels, *([3] * rank), device=device, requires_grad=True)
+    bias = torch.randn(3, device=device, requires_grad=True)
+    reference_weight, reference_bias = weight.detach().clone().requires_grad_(), bias.detach().clone().requires_grad_()
+    fn = getattr(F, f"conv_transpose{rank}d" if transpose else f"conv{rank}d")
+    kwargs = {"stride": 2, "padding": 1}
+    if transpose:
+        kwargs["output_padding"] = 1
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        actual = fn(NT(parts), weight, bias, **kwargs)
+        expected = [fn(part, reference_weight, reference_bias, **kwargs) for part in references]
+    assert actual.dtype == torch.bfloat16
+    probes = [torch.randn_like(part) for part in expected]
+    actual_grads = torch.autograd.grad(
+        sum((part * probe).sum() for part, probe in zip(actual, probes)), (*parts, weight, bias)
+    )
+    expected_grads = torch.autograd.grad(
+        sum((part * probe).sum() for part, probe in zip(expected, probes)),
+        (*references, reference_weight, reference_bias),
+    )
+    for result, reference in zip(actual, expected):
+        torch.testing.assert_close(result, reference, atol=0.02, rtol=0.02)
+    for result, reference in zip(actual_grads, expected_grads):
+        torch.testing.assert_close(result, reference, atol=0.03, rtol=0.03)

@@ -43,6 +43,17 @@ def _per_element(input: NestedTensor, fn: Callable, *args, **kwargs) -> NestedTe
         return cls([fn(t, *args, **kwargs) for t in input._storage], **input._meta())
 
 
+def _autocast_convolution_tensors(values: Tensor, weight: Tensor, bias: Tensor | None):
+    r"""Cast before the custom tile autograd boundary, retaining native AMP VJPs."""
+    if values.is_cuda and torch.is_autocast_enabled("cuda") and values.dtype != torch.float64:
+        dtype = torch.get_autocast_dtype("cuda")
+        values = values.to(dtype=dtype)
+        weight = weight.to(dtype=dtype)
+        if bias is not None:
+            bias = bias.to(dtype=dtype)
+    return values, weight, bias
+
+
 def _has_static_input_channels(input: NestedTensor, channels: int, rank: int) -> bool:
     if input._physical_shape.size(1) != rank + 1:
         return False
@@ -136,20 +147,17 @@ def _packed_pointwise_conv_transpose(
     if input._element_shapes is not None:
         element_shapes = tuple((out_channels, *shape[1:]) for shape in input._element_shapes)
 
-    return type(input).from_packed(
+    from ..aten_functions import _packed_with_shape
+
+    return _packed_with_shape(
+        input,
         output,
-        input._offsets,
         shape_tensor,
+        input._logical_shape_from_components(replace_dims={0: out_channels}),
         permutation=input._permutation,
-        ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
-        batch_first=input.batch_first,
-        padding_value=input.padding_value,
-        mask_value=input.mask_value,
-        pin_memory=input._pin_memory,
-        outer_size=input._logical_shape_from_components(replace_dims={0: out_channels}),
         packed_sizes=input._packed_sizes,
         element_shapes=element_shapes,
-        validate=False,
+        preserve_ragged_offsets=True,
     )
 
 

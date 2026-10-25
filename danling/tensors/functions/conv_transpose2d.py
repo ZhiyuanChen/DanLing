@@ -28,6 +28,7 @@ from torch import Tensor
 from torch.nn import functional as F
 
 from ._convolution import (
+    _autocast_convolution_tensors,
     _can_use_spatial_tile_convolution,
     _ceil_div,
     _conv_transpose_output_size,
@@ -1431,8 +1432,9 @@ def _spatial_tile_conv_transpose2d(
         )
 
     input_shapes = tuple(_resolve_element_shapes(input))
+    input_values, weight, bias = _autocast_convolution_tensors(input.concat, weight, bias)
     requires_grad = torch.is_grad_enabled() and (
-        input.concat.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
+        input_values.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
     )
 
     resolved_tile_config = _resolve_spatial_tile2d_config(input_shapes, tile_size, max_tiles_per_batch)
@@ -1477,7 +1479,7 @@ def _spatial_tile_conv_transpose2d(
         local_output_shape=local_output_shape,
     )
 
-    device = input.concat.device
+    device = input_values.device
     shape_meta = torch.tensor(
         [
             (int(input_shape[1]), int(input_shape[2]), int(output_shape[1]), int(output_shape[2]))
@@ -1510,11 +1512,11 @@ def _spatial_tile_conv_transpose2d(
     )
     if resolved_weight_max_tiles is None:
         return None
-    use_channels_last = bool(channels_last and input.concat.is_cuda)
+    use_channels_last = bool(channels_last and input_values.is_cuda)
 
     if requires_grad:
         output_values = _SpatialTileConvTranspose2dCudnnFunction.apply(
-            input.concat,
+            input_values,
             weight,
             bias,
             input_offsets_device,
@@ -1538,7 +1540,7 @@ def _spatial_tile_conv_transpose2d(
         )
     else:
         output_values = _spatial_tile_conv_transpose2d_forward_values(
-            input.concat,
+            input_values,
             weight.contiguous(),
             bias,
             output_size=total_out,

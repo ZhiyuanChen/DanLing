@@ -28,6 +28,7 @@ from torch.nn import functional as F
 
 from ..ops import _check_execution_guard, _ExecutionGuardKind
 from ._convolution import (
+    _autocast_convolution_tensors,
     _can_use_spatial_tile_convolution,
     _conv_output_size,
     _has_cuda_tensors,
@@ -133,20 +134,17 @@ def _packed_pointwise_conv1d(
     if input._element_shapes is not None:
         element_shapes = tuple((out_channels, *shape[1:]) for shape in input._element_shapes)
 
-    return type(input).from_packed(
+    from ..aten_functions import _packed_with_shape
+
+    return _packed_with_shape(
+        input,
         output,
-        input._offsets,
         shape_tensor,
+        input._logical_shape_from_components(replace_dims={0: out_channels}),
         permutation=input._permutation,
-        ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
-        batch_first=input.batch_first,
-        padding_value=input.padding_value,
-        mask_value=input.mask_value,
-        pin_memory=input._pin_memory,
-        outer_size=input._logical_shape_from_components(replace_dims={0: out_channels}),
         packed_sizes=input._packed_sizes,
         element_shapes=element_shapes,
-        validate=False,
+        preserve_ragged_offsets=True,
     )
 
 
@@ -1525,14 +1523,15 @@ def _spatial_tile_conv1d(
     tile_meta = torch.tensor(tiles, device=device, dtype=torch.int32)
     input_offsets_device = input._offsets.to(device=device, non_blocking=True)
     output_offsets_device = output_offsets.to(device=device, non_blocking=True)
+    input_values, weight, bias = _autocast_convolution_tensors(input.concat, weight, bias)
     requires_grad = torch.is_grad_enabled() and (
-        input.concat.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
+        input_values.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
     )
-    use_channels_last = bool(channels_last and input.concat.is_cuda)
+    use_channels_last = bool(channels_last and input_values.is_cuda)
 
     if requires_grad:
         output_values = _SpatialTileConv1dCudnnFunction.apply(
-            input.concat,
+            input_values,
             weight,
             bias,
             input_offsets_device,
@@ -1556,7 +1555,7 @@ def _spatial_tile_conv1d(
         )
     else:
         output_values = _spatial_tile_conv1d_forward_values(
-            input.concat,
+            input_values,
             weight.contiguous(),
             bias,
             output_size=total_out,
