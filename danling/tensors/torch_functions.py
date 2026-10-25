@@ -2786,6 +2786,11 @@ def addmm(input, mat1, mat2, *, beta=1, alpha=1, out=None):
     from .aten_functions import addmm as _aten_addmm
     from .nested_tensor import NestedTensor
 
+    for operand in (mat1, mat2):
+        rank = operand._physical_shape.size(1) if isinstance(operand, NestedTensor) else operand.dim()
+        if rank != 2:
+            raise RuntimeError("addmm expects 2-D matrix operands")
+
     if out is not None:
         raise NotImplementedError("torch.addmm(..., out=...) is not supported for NestedTensor.")
 
@@ -2804,6 +2809,11 @@ def addmm(input, mat1, mat2, *, beta=1, alpha=1, out=None):
             return result
         bias = input if beta == 1 else torch.mul(input, beta)
         return torch.add(result, bias)
+
+    if isinstance(input, NestedTensor):
+        from .aten_functions import per_element_fallback
+
+        return per_element_fallback(torch.ops.aten.addmm.default, (input, mat1, mat2), {"alpha": alpha, "beta": beta})
 
     return torch.addmm(input, mat1, mat2, beta=beta, alpha=alpha)
 
@@ -2877,6 +2887,11 @@ def baddbmm(input, batch1, batch2, *, beta=1, alpha=1, out=None):
     from .aten_functions import baddbmm as _aten_baddbmm
     from .nested_tensor import NestedTensor
 
+    for operand in (batch1, batch2):
+        rank = operand._physical_shape.size(1) if isinstance(operand, NestedTensor) else operand.dim()
+        if rank != 3:
+            raise RuntimeError("baddbmm expects 3-D matrix operands")
+
     if out is not None:
         raise NotImplementedError("torch.baddbmm(..., out=...) is not supported for NestedTensor.")
 
@@ -2894,6 +2909,13 @@ def baddbmm(input, batch1, batch2, *, beta=1, alpha=1, out=None):
             return result
         bias = input if beta == 1 else torch.mul(input, beta)
         return torch.add(result, bias)
+
+    if isinstance(input, NestedTensor):
+        from .aten_functions import per_element_fallback
+
+        return per_element_fallback(
+            torch.ops.aten.baddbmm.default, (input, batch1, batch2), {"alpha": alpha, "beta": beta}
+        )
 
     return torch.baddbmm(input, batch1, batch2, beta=beta, alpha=alpha)
 
@@ -2927,6 +2949,11 @@ def bmm(input, mat2, *, out=None):
     from .aten_functions import bmm as _aten_bmm
     from .nested_tensor import NestedTensor
 
+    for operand in (input, mat2):
+        rank = operand._physical_shape.size(1) if isinstance(operand, NestedTensor) else operand.dim()
+        if rank != 3:
+            raise RuntimeError("bmm expects 3-D matrix operands")
+
     if out is not None:
         raise NotImplementedError("torch.bmm(..., out=...) is not supported for NestedTensor.")
 
@@ -2952,6 +2979,10 @@ def _matrix_last2_to_scalar_public(input, op):
     if input.concat.dim() > 2 or input._physical_shape.size(1) != 2:
         return None
 
+    torch._assert_async(
+        (input._physical_shape[:, 0] == input._physical_shape[:, 1]).all(),
+        "linalg.det: A must be batches of square matrices",
+    )
     device = input.device
     batch = len(input)
     rows = input._physical_shape[:, 0].to(device=device, dtype=torch.long)
@@ -3944,6 +3975,11 @@ def mm(input, mat2, *, out=None):
         True
     """
     from .nested_tensor import NestedTensor
+
+    for operand in (input, mat2):
+        rank = operand._physical_shape.size(1) if isinstance(operand, NestedTensor) else operand.dim()
+        if rank != 2:
+            raise RuntimeError("mm expects 2-D matrix operands")
 
     if out is not None:
         raise NotImplementedError("torch.mm(..., out=...) is not supported for NestedTensor.")

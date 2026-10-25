@@ -425,6 +425,33 @@ class TestIndexingOps:
 
 class TestLinearAlgebraOps:
 
+    def test_matrix_kernels_follow_permuted_logical_axes(self):
+        parts = [torch.randn(rows, 3, 3, dtype=torch.float64) for rows in (2, 4)]
+        source = torch.permute(NT(parts, ragged_dims=(0,)), (0, 1, 3, 2))
+        weight = torch.randn(3, 3, dtype=torch.float64)
+        product = torch.matmul(source, weight)
+        triangular = torch.tril(source)
+        q, r = torch.linalg.qr(source)
+        u, singular, vh = torch.linalg.svd(source, full_matrices=False)
+        for i, part in enumerate(parts):
+            expected = part.mT
+            assert_close(product[i], expected @ weight)
+            assert_close(triangular[i], torch.tril(expected))
+            assert_close(q[i] @ r[i], expected)
+            assert_close(u[i] @ torch.diag_embed(singular[i]) @ vh[i], expected)
+
+    def test_matrix_vector_keeps_interior_ragged_axes(self):
+        parts = [torch.randn(2, length, 3) for length in (2, 4)]
+        vector = torch.randn(3)
+        output = torch.matmul(NT(parts, ragged_dims=(1,)), vector)
+        for actual, part in zip(output, parts):
+            assert_close(actual, part @ vector)
+
+    def test_determinant_rejects_nonsquare_samples(self):
+        source = NT([torch.ones(2, 3), torch.ones(3, 2)], ragged_dims=(0, 1))
+        with pytest.raises(RuntimeError, match="square"):
+            torch.linalg.det(source)
+
     def test_diagonal_and_trace(self):
         nt_diagonal = NT(
             [

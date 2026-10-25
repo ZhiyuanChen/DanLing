@@ -3467,22 +3467,49 @@ def _packed_square_softmax(
     return source._packed_like_unchecked(out_values)
 
 
+def _canonical_static_layout(source: NestedTensor) -> NestedTensor:
+    r"""Put static packed axes in logical order without changing ragged row coordinates."""
+    static_dims = tuple(sorted(source._static_dims))
+    if static_dims == source._static_dims:
+        return source
+    values = source.concat.permute(0, *(1 + source._static_dims.index(dim) for dim in static_dims))
+    return _packed_with_shape(
+        source,
+        values,
+        source._physical_shape,
+        source._logical_shape,
+        permutation=(*source._varying_dims, *static_dims),
+        packed_sizes=source._packed_sizes,
+        element_shapes=source._element_shapes,
+        preserve_ragged_offsets=True,
+    )
+
+
+def _has_static_matrix_axes(source: NestedTensor) -> bool:
+    rank = source._physical_shape.size(1)
+    return rank >= 2 and rank - 2 in source._static_dims and rank - 1 in source._static_dims
+
+
+def _has_static_last_axis(source: NestedTensor) -> bool:
+    return source._physical_shape.size(1) - 1 in source._static_dims
+
+
 def _matmul_has_packed_path(lhs, rhs) -> bool:
     from .nested_tensor import NestedTensor
 
     if isinstance(lhs, NestedTensor):
         if isinstance(rhs, NestedTensor):
             return (
-                (lhs._has_same_structure(rhs) and lhs.concat.dim() > 2 and rhs.concat.dim() > 2)
+                (lhs._has_same_structure(rhs) and _has_static_matrix_axes(lhs) and _has_static_matrix_axes(rhs))
                 or (_packed_jagged_matmul_kind(lhs, rhs) is not None)
                 or (
                     lhs.concat.dim() == rhs.concat.dim() == 4
                     and _complementary_singleton_square_operands(lhs, rhs) is not None
                 )
             )
-        return isinstance(rhs, Tensor) and lhs.concat.dim() >= 2 and rhs.dim() <= 2
+        return isinstance(rhs, Tensor) and _has_static_last_axis(lhs) and lhs.concat.dim() >= 2 and rhs.dim() <= 2
     if isinstance(rhs, NestedTensor):
-        if isinstance(lhs, Tensor) and lhs.dim() <= 2 and rhs.concat.dim() > 2:
+        if isinstance(lhs, Tensor) and lhs.dim() <= 2 and _has_static_matrix_axes(rhs):
             return True
         if not isinstance(lhs, Tensor) or rhs.concat.dim() != 2:
             return False
@@ -5007,7 +5034,13 @@ def addmm(func, args, kwargs):
     from .nested_tensor import NestedTensor
 
     bias, mat1, mat2 = args[0], args[1], args[2]
-    if isinstance(mat1, NestedTensor) and not isinstance(mat2, NestedTensor) and mat1.concat.dim() == 2:
+    if (
+        isinstance(mat1, NestedTensor)
+        and not isinstance(mat2, NestedTensor)
+        and mat1.concat.dim() == 2
+        and _has_static_last_axis(mat1)
+        and not isinstance(bias, NestedTensor)
+    ):
         new_values = func(bias, mat1.concat, mat2, **kwargs)
         return _packed_new_last_dim(mat1, new_values, mat2.shape[1])
     if (
@@ -5042,7 +5075,7 @@ def addmm(func, args, kwargs):
                 beta=kwargs.get("beta", 1),
             )
             return _from_uniform_batched_output(mat2, out)
-    raise NotImplementedError(f"NestedTensor: {func} requires a supported packed 2-D NestedTensor matrix operand")
+    return per_element_fallback(func, args, kwargs)
 
 
 @NestedTensorAtenRegistry.implement(aten.baddbmm.default)
@@ -5051,6 +5084,10 @@ def baddbmm(func, args, kwargs):
     from .nested_tensor import NestedTensor
 
     bias, batch1, batch2 = args[0], args[1], args[2]
+    if isinstance(batch1, NestedTensor):
+        batch1 = _canonical_static_layout(batch1)
+    if isinstance(batch2, NestedTensor):
+        batch2 = _canonical_static_layout(batch2)
 
     if (
         isinstance(batch1, Tensor)
@@ -5081,7 +5118,7 @@ def baddbmm(func, args, kwargs):
         )
         return _packed_new_dim_size(batch2, new_values, 1, int(batch1.shape[1]))
 
-    raise NotImplementedError(f"NestedTensor: {func} requires a supported packed dense x NT batched matmul")
+    return per_element_fallback(func, args, kwargs)
 
 
 # See also torch_functions.py::bmm for the torch-level handler (mismatched offsets).
@@ -5091,7 +5128,18 @@ def bmm(func, args, kwargs):
     from .nested_tensor import NestedTensor
 
     mat1, mat2 = args[0], args[1]
-    if isinstance(mat1, NestedTensor) and isinstance(mat2, NestedTensor) and mat1._has_same_structure(mat2):
+    if isinstance(mat1, NestedTensor):
+        mat1 = _canonical_static_layout(mat1)
+    if isinstance(mat2, NestedTensor):
+        mat2 = _canonical_static_layout(mat2)
+
+    if (
+        isinstance(mat1, NestedTensor)
+        and isinstance(mat2, NestedTensor)
+        and mat1._has_same_structure(mat2)
+        and _has_static_matrix_axes(mat1)
+        and _has_static_matrix_axes(mat2)
+    ):
         new_values = func(mat1.concat, mat2.concat, **kwargs)
         return _packed_new_last_dim(mat1, new_values, mat2.concat.shape[-1])
     if (
@@ -5111,7 +5159,7 @@ def bmm(func, args, kwargs):
     ):
         new_values = torch.bmm(mat2.concat.permute(1, 0, 2), mat1.transpose(1, 2)).permute(1, 0, 2)
         return _packed_new_dim_size(mat2, new_values, 1, int(mat1.shape[1]))
-    raise NotImplementedError(f"NestedTensor: {func} requires two NTs with matching packed structure")
+    return per_element_fallback(func, args, kwargs)
 
 
 @NestedTensorAtenRegistry.implement(aten.diagonal.default)
@@ -5127,13 +5175,28 @@ def diagonal(func, args, kwargs):
 
     dim1_adj = _translate_dim(source, dim1)
     dim2_adj = _translate_dim(source, dim2)
-    if dim1_adj == 0 or dim2_adj == 0:
-        # Once the ragged leading dim participates in the diagonal, output lengths become
-        # element-dependent again, so we intentionally stay on the per-element path.
+    values_dim1 = _physical_to_values_dim(source, dim1_adj)
+    values_dim2 = _physical_to_values_dim(source, dim2_adj)
+    if values_dim1 is None or values_dim2 is None:
         return _apply_per_element_nested(source, lambda t: func(t, offset, dim1_adj, dim2_adj, **kwargs))
 
-    out_values = func(source.concat, offset, dim1_adj, dim2_adj, **kwargs)
-    return _packed_with_tail_from_values(source, out_values)
+    out_values = func(source.concat, offset, values_dim1, values_dim2, **kwargs)
+    keep_dims = tuple(dim for dim in range(source._physical_shape.size(1)) if dim not in (dim1_adj, dim2_adj))
+    shape, packed_sizes, element_shapes = source._shape_meta_from_components(
+        keep_dims=keep_dims, suffix=(out_values.shape[-1],)
+    )
+    renumber = {dim: index for index, dim in enumerate(keep_dims)}
+    permutation = tuple(renumber[dim] for dim in source._permutation if dim in renumber) + (len(keep_dims),)
+    return _packed_with_shape(
+        source,
+        out_values,
+        shape,
+        source._logical_shape_from_components(keep_dims=keep_dims, suffix=(out_values.shape[-1],)),
+        permutation=permutation,
+        packed_sizes=packed_sizes,
+        element_shapes=element_shapes,
+        preserve_ragged_offsets=True,
+    )
 
 
 @NestedTensorAtenRegistry.implement(aten._linalg_check_errors.default)
@@ -5152,9 +5215,9 @@ def linalg_check_errors(func, args, kwargs):
 @NestedTensorAtenRegistry.implement(aten._linalg_eigh.default)
 def linalg_eigh(func, args, kwargs):
     r"""Dispatch handler for linalg_eigh with packed fast path for matrix-batched packed values."""
-    source = args[0]
+    source = _canonical_static_layout(args[0])
     cls = type(source)
-    if source.concat.dim() <= 2:
+    if not _has_static_matrix_axes(source):
         if len(source) == 0:
             empty = cls([], **source._meta(include_dtype=True))
             return empty, empty
@@ -5184,9 +5247,9 @@ def linalg_eigh(func, args, kwargs):
 @NestedTensorAtenRegistry.implement(aten.linalg_qr.default)
 def linalg_qr(func, args, kwargs):
     r"""Dispatch handler for linalg_qr with packed fast path for matrix-batched packed values."""
-    source = args[0]
+    source = _canonical_static_layout(args[0])
     cls = type(source)
-    if source.concat.dim() <= 2:
+    if not _has_static_matrix_axes(source):
         if len(source) == 0:
             empty = cls([], **source._meta(include_dtype=True))
             return empty, empty
@@ -5239,21 +5302,25 @@ def linalg_solve(func, args, kwargs):
 
     mat_a, mat_b = args[0], args[1]
     if isinstance(mat_a, NestedTensor):
+        mat_a = _canonical_static_layout(mat_a)
+    if isinstance(mat_b, NestedTensor):
+        mat_b = _canonical_static_layout(mat_b)
+    if isinstance(mat_a, NestedTensor):
         if isinstance(mat_b, NestedTensor):
             if len(mat_a) != len(mat_b):
                 raise ValueError(
                     "linalg.solve: NestedTensor batch length mismatch between input and B: "
                     f"input={len(mat_a)}, B={len(mat_b)}"
                 )
-            if mat_a._has_same_structure(mat_b) and mat_a.concat.dim() > 2 and mat_b.concat.dim() > 1:
+            if mat_a._has_same_structure(mat_b) and _has_static_matrix_axes(mat_a) and _has_static_matrix_axes(mat_b):
                 return _packed_with_tail_from_values(mat_a, func(mat_a.concat, mat_b.concat, *args[2:], **kwargs))
             return per_element_fallback(func, args, kwargs)
-        if isinstance(mat_b, Tensor) and mat_a.concat.dim() > 2:
+        if isinstance(mat_b, Tensor) and _has_static_matrix_axes(mat_a):
             return _packed_with_tail_from_values(mat_a, func(mat_a.concat, mat_b, *args[2:], **kwargs))
         return per_element_fallback(func, args, kwargs)
 
     if isinstance(mat_b, NestedTensor):
-        if isinstance(mat_a, Tensor) and mat_a.dim() == 2 and mat_b.concat.dim() > 1:
+        if isinstance(mat_a, Tensor) and mat_a.dim() == 2 and _has_static_matrix_axes(mat_b):
             return _packed_with_tail_from_values(mat_b, func(mat_a, mat_b.concat, *args[2:], **kwargs))
         return per_element_fallback(func, args, kwargs)
 
@@ -5267,13 +5334,17 @@ def linalg_solve_ex(func, args, kwargs):
 
     mat_a, mat_b = args[0], args[1]
     if isinstance(mat_a, NestedTensor):
+        mat_a = _canonical_static_layout(mat_a)
+    if isinstance(mat_b, NestedTensor):
+        mat_b = _canonical_static_layout(mat_b)
+    if isinstance(mat_a, NestedTensor):
         if isinstance(mat_b, NestedTensor):
             if len(mat_a) != len(mat_b):
                 raise ValueError(
                     "linalg.solve: NestedTensor batch length mismatch between input and B: "
                     f"input={len(mat_a)}, B={len(mat_b)}"
                 )
-            if mat_a._has_same_structure(mat_b) and mat_a.concat.dim() > 2 and mat_b.concat.dim() > 1:
+            if mat_a._has_same_structure(mat_b) and _has_static_matrix_axes(mat_a) and _has_static_matrix_axes(mat_b):
                 result, lu, pivots, info = func(mat_a.concat, mat_b.concat, *args[2:], **kwargs)
                 return (
                     _packed_with_tail_from_values(mat_a, result),
@@ -5282,7 +5353,7 @@ def linalg_solve_ex(func, args, kwargs):
                     _packed_with_tail_from_values(mat_a, info),
                 )
             return per_element_fallback(func, args, kwargs)
-        if isinstance(mat_b, Tensor) and mat_a.concat.dim() > 2:
+        if isinstance(mat_b, Tensor) and _has_static_matrix_axes(mat_a):
             result, lu, pivots, info = func(mat_a.concat, mat_b, *args[2:], **kwargs)
             return (
                 _packed_with_tail_from_values(mat_a, result),
@@ -5302,9 +5373,9 @@ def linalg_solve_ex(func, args, kwargs):
 @NestedTensorAtenRegistry.implement(aten._linalg_svd.default)
 def linalg_svd(func, args, kwargs):
     r"""Dispatch handler for linalg_svd with packed fast path for matrix-batched packed values."""
-    source = args[0]
+    source = _canonical_static_layout(args[0])
     cls = type(source)
-    if source.concat.dim() <= 2:
+    if not _has_static_matrix_axes(source):
         if len(source) == 0:
             empty = cls([], **source._meta(include_dtype=True))
             return empty, empty, empty
@@ -5372,6 +5443,10 @@ def matmul(func, args, kwargs):
     from .nested_tensor import NestedTensor
 
     lhs, rhs = args[0], args[1]
+    if isinstance(lhs, NestedTensor):
+        lhs = _canonical_static_layout(lhs)
+    if isinstance(rhs, NestedTensor):
+        rhs = _canonical_static_layout(rhs)
 
     if isinstance(lhs, NestedTensor):
         if isinstance(rhs, NestedTensor):
@@ -5382,11 +5457,14 @@ def matmul(func, args, kwargs):
                 square = _binary_complementary_singleton_square(lhs, rhs, torch.bmm, (), kwargs)
                 if square is not None:
                     return square
-            if lhs._has_same_structure(rhs) and lhs.concat.dim() > 2 and rhs.concat.dim() > 2:
+            if lhs._has_same_structure(rhs) and _has_static_matrix_axes(lhs) and _has_static_matrix_axes(rhs):
                 return _packed_with_tail_from_values(lhs, func(lhs.concat, rhs.concat, **kwargs))
             return per_element_fallback(func, args, kwargs)
-        if isinstance(rhs, Tensor) and lhs.concat.dim() >= 2 and rhs.dim() <= 2:
-            return _packed_with_tail_from_values(lhs, func(lhs.concat, rhs, **kwargs))
+        if isinstance(rhs, Tensor) and _has_static_last_axis(lhs) and lhs.concat.dim() >= 2 and rhs.dim() <= 2:
+            values = func(lhs.concat, rhs, **kwargs)
+            if rhs.dim() == 1:
+                return _packed_without_dim(lhs, lhs._physical_shape.size(1) - 1, values)
+            return _packed_with_tail_from_values(lhs, values)
         return per_element_fallback(func, args, kwargs)
 
     if isinstance(rhs, NestedTensor):
@@ -5404,8 +5482,11 @@ def matmul(func, args, kwargs):
                 rhs_batched = rhs.concat.view(len(rhs), *extents)
                 out = func(lhs.unsqueeze(0), rhs_batched.unsqueeze(1), **kwargs)
                 return _from_uniform_batched_output(rhs, out.reshape(len(rhs), *lhs.shape[:-1], extents[1]))
-        if isinstance(lhs, Tensor) and lhs.dim() <= 2 and rhs.concat.dim() > 2:
-            return _packed_with_tail_from_values(rhs, func(lhs, rhs.concat, **kwargs))
+        if isinstance(lhs, Tensor) and lhs.dim() <= 2 and _has_static_matrix_axes(rhs):
+            values = func(lhs, rhs.concat, **kwargs)
+            if lhs.dim() == 1:
+                return _packed_without_dim(rhs, rhs._physical_shape.size(1) - 2, values)
+            return _packed_with_tail_from_values(rhs, values)
         return per_element_fallback(func, args, kwargs)
 
     return func(*args, **kwargs)
@@ -5415,8 +5496,13 @@ def matmul(func, args, kwargs):
 @NestedTensorAtenRegistry.implement(aten.linalg_det.default)
 def matrix_last2_to_scalar(func, args, kwargs):
     r"""Apply determinant-like ops and drop trailing matrix dims in metadata."""
-    source = args[0]
-    if source.concat.dim() <= 2:
+    source = _canonical_static_layout(args[0])
+    if not _has_static_matrix_axes(source):
+        if source._physical_shape.size(1) == 2:
+            torch._assert_async(
+                (source._physical_shape[:, 0] == source._physical_shape[:, 1]).all(),
+                "linalg.det: A must be batches of square matrices",
+            )
         if source._physical_shape.size(1) != 2:
             return _apply_per_element_nested(source, lambda t: func(t, *args[1:], **kwargs))
 
@@ -5456,8 +5542,8 @@ def matrix_last2_to_scalar(func, args, kwargs):
 @NestedTensorAtenRegistry.implement(aten.linalg_cholesky.default)
 def matrix_last2_unary(func, args, kwargs):
     r"""Apply matrix-style unary ops on packed values when ragged dim-0 is a batch axis."""
-    source = args[0]
-    if source.concat.dim() <= 2:
+    source = _canonical_static_layout(args[0])
+    if not _has_static_matrix_axes(source):
         return _apply_per_element_nested(source, lambda t: func(t, *args[1:], **kwargs))
     return source._packed_like_unchecked(func(source.concat, *args[1:], **kwargs))
 
@@ -5466,8 +5552,8 @@ def matrix_last2_unary(func, args, kwargs):
 @NestedTensorAtenRegistry.implement(aten.linalg_matrix_power.default)
 def matrix_power(func, args, kwargs):
     r"""Apply matrix power on packed values when the ragged leading dim stays element-local."""
-    source = args[0]
-    if source.concat.dim() <= 2:
+    source = _canonical_static_layout(args[0])
+    if not _has_static_matrix_axes(source):
         return _apply_per_element_nested(source, lambda t: func(t, *args[1:], **kwargs))
     return source._packed_like_unchecked(func(source.concat, *args[1:], **kwargs))
 
@@ -5479,7 +5565,12 @@ def mm(func, args, kwargs):
     from .nested_tensor import NestedTensor
 
     mat1, mat2 = args[0], args[1]
-    if isinstance(mat1, NestedTensor) and not isinstance(mat2, NestedTensor) and mat1.concat.dim() == 2:
+    if (
+        isinstance(mat1, NestedTensor)
+        and not isinstance(mat2, NestedTensor)
+        and mat1.concat.dim() == 2
+        and _has_static_last_axis(mat1)
+    ):
         new_values = func(mat1.concat, mat2, **kwargs)
         return _packed_new_last_dim(mat1, new_values, mat2.shape[1])
     if (
@@ -5496,7 +5587,7 @@ def mm(func, args, kwargs):
         if extents is not None:
             rhs_batched = mat2.concat.view(len(mat2), *extents)
             return _from_uniform_batched_output(mat2, torch.matmul(mat1, rhs_batched))
-    raise NotImplementedError(f"NestedTensor: {func} requires (NT × dense) with 2-D _values")
+    return per_element_fallback(func, args, kwargs)
 
 
 @NestedTensorAtenRegistry.implement(aten.trace.default)
