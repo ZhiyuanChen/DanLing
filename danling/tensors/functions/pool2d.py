@@ -385,7 +385,7 @@ if triton is not None:
         out_y = out_flat // out_w
         out_x = out_flat - out_y * out_w
         max_values = tl.full((block_l, block_c), -float("inf"), dtype=tl.float32)
-        max_indices = tl.zeros((block_l, block_c), dtype=tl.int64)
+        max_indices = tl.full((block_l, block_c), -1, dtype=tl.int64)
 
         for kernel_y in range(0, kernel_h):
             in_y = out_y * stride_h - padding_h + kernel_y * dilation_h
@@ -403,7 +403,7 @@ if triton is not None:
                     other=-float("inf"),
                 )
                 input_index = safe_in_y * in_w + safe_in_x
-                better = values > max_values
+                better = valid[:, None] & ((max_indices < 0) | (values > max_values) | (values != values))
                 max_values = tl.where(better, values, max_values)
                 max_indices = tl.where(better, input_index[:, None], max_indices)
 
@@ -462,7 +462,7 @@ if triton is not None:
         out_y = out_flat // out_w
         out_x = out_flat - out_y * out_w
         max_values = tl.full((block_l, block_c), -float("inf"), dtype=tl.float32)
-        max_indices = tl.zeros((block_l, block_c), dtype=tl.int64)
+        max_indices = tl.full((block_l, block_c), -1, dtype=tl.int64)
 
         for kernel_y in range(0, kernel_h):
             in_y = out_y * stride_h - padding_h + kernel_y * dilation_h
@@ -480,7 +480,7 @@ if triton is not None:
                     mask=valid[:, None] & (offsets_c[None, :] < channels),
                     other=-float("inf"),
                 )
-                better = values > max_values
+                better = valid[:, None] & ((max_indices < 0) | (values > max_values) | (values != values))
                 max_values = tl.where(better, values, max_values)
                 max_indices = tl.where(better, input_index[:, None], max_indices)
 

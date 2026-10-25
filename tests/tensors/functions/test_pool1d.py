@@ -113,3 +113,39 @@ def test_max_pool1d_return_indices(device):
     ]
 
     _compare_pool(inputs, F.max_pool1d, kernel_size=2, stride=2, return_indices=True)
+
+
+@pytest.mark.parametrize("rank", [1, 2, 3])
+@pytest.mark.parametrize("value", [float("-inf"), float("nan")])
+def test_packed_max_pool_nonfinite_windows_match_native(device, rank, value):
+    if device.type != "cuda":
+        pytest.skip("packed max pool kernels require CUDA")
+    shapes = [(1, *([2] * (rank - 1)), length) for length in (4, 6)]
+    parts = [torch.full(shape, value, device=device, requires_grad=True) for shape in shapes]
+    references = [part.detach().clone().requires_grad_() for part in parts]
+    fn = getattr(F, f"max_pool{rank}d")
+    actual = fn(NT(parts), 2)
+    expected = [fn(part, 2) for part in references]
+    for result, reference in zip(actual, expected):
+        torch.testing.assert_close(result, reference, equal_nan=True)
+    actual_grads = torch.autograd.grad(actual.concat.sum(), parts)
+    expected_grads = torch.autograd.grad(sum(part.sum() for part in expected), references)
+    for result, reference in zip(actual_grads, expected_grads):
+        torch.testing.assert_close(result, reference)
+
+
+@pytest.mark.parametrize("rank", [1, 3])
+def test_cuda_avg_pool_preserves_float64(device, rank):
+    if device.type != "cuda":
+        pytest.skip("CUDA kernel dtype routing")
+    shapes = [(2, *([3] * (rank - 1)), length) for length in (4, 6)]
+    parts = [torch.randn(shape, dtype=torch.float64, device=device, requires_grad=True) for shape in shapes]
+    fn = getattr(F, f"avg_pool{rank}d")
+    actual = fn(NT(parts), 3, stride=1, padding=1, count_include_pad=False)
+    expected = [fn(part, 3, stride=1, padding=1, count_include_pad=False) for part in parts]
+    for result, reference in zip(actual, expected):
+        torch.testing.assert_close(result, reference)
+    actual_grads = torch.autograd.grad(actual.concat.square().sum(), parts, retain_graph=True)
+    expected_grads = torch.autograd.grad(sum(part.square().sum() for part in expected), parts)
+    for result, reference in zip(actual_grads, expected_grads):
+        torch.testing.assert_close(result, reference)

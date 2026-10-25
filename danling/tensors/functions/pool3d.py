@@ -109,6 +109,8 @@ def max_pool3d(
 def _can_use_packed_pool3d(input: NestedTensor) -> bool:
     if len(input) == 0 or triton is None or not input.concat.is_cuda:
         return False
+    if input.concat.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        return False
     if input._physical_shape.size(1) != 4:
         return False
     if input._element_shapes is not None and any(len(shape) != 4 for shape in input._element_shapes):
@@ -422,7 +424,7 @@ if triton is not None:
         out_y = out_rem // out_w
         out_x = out_rem - out_y * out_w
         max_values = tl.full((block_l, block_c), -float("inf"), dtype=tl.float32)
-        max_indices = tl.zeros((block_l, block_c), dtype=tl.int64)
+        max_indices = tl.full((block_l, block_c), -1, dtype=tl.int64)
 
         for kernel_z in range(0, kernel_d):
             in_z = out_z * stride_d - padding_d + kernel_z * dilation_d
@@ -442,7 +444,7 @@ if triton is not None:
                         mask=valid[:, None] & (offsets_c[None, :] < channels),
                         other=-float("inf"),
                     )
-                    better = values > max_values
+                    better = valid[:, None] & ((max_indices < 0) | (values > max_values) | (values != values))
                     max_values = tl.where(better, values, max_values)
                     max_indices = tl.where(better, input_index[:, None], max_indices)
 
