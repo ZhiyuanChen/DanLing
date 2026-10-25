@@ -126,11 +126,11 @@ This avoids the waste of padding in the internal representation while allowing e
 
 Operations on NestedTensor are handled by a **three-tier dispatch system**, ordered from fastest to most flexible:
 
-**Level 1 — Aten dispatch** (`aten_functions.py`, 285 ops): Operates directly on the packed `_values` tensor via `__torch_dispatch__`. This is the fastest path — no Python loops, no unpacking. Used for elementwise ops (add, mul, sin, exp, ...), reductions, softmax, layer_norm, etc.
+**Level 1 — Aten dispatch** (`aten_functions.py`): Operates on packed values via `__torch_dispatch__`. Elementwise operations, many reductions, softmax, and layer normalization have direct packed paths. Some segmented operations invoke native kernels separately per sample to preserve their numerical semantics.
 
-**Level 2 — Torch function dispatch** (`torch_functions.py`, 217 ops): Intercepts `torch.*` calls via `__torch_function__`. Handles ops that need dimension translation (e.g., `torch.flatten`, `torch.softmax` with non-default dim), multi-operand dispatch (e.g., `torch.einsum`), per-element matrix ops (e.g., `torch.det`, `torch.linalg.svd`), and fused attention (`torch._native_multi_head_attention`, `torch._transformer_encoder_layer_fwd`).
+**Level 2 — Torch function dispatch** (`torch_functions.py`): Intercepts `torch.*` calls via `__torch_function__`. Handles ops that need dimension translation (e.g., `torch.flatten`, `torch.softmax` with non-default dim), multi-operand dispatch (e.g., `torch.einsum`), per-element matrix ops (e.g., `torch.det`, `torch.linalg.svd`), and fused attention (`torch._native_multi_head_attention`, `torch._transformer_encoder_layer_fwd`).
 
-**Level 3 — NN function dispatch** (`nn_functions.py`, 113 ops): Also via `__torch_function__`, handles `torch.nn.functional.*` ops including convolutions, pooling, normalization, attention, embedding, activations (F.relu, F.gelu, F.silu, ...), and loss functions. Transformer-hot ops use packed fast paths; activation handlers strip inplace flags to preserve autograd on the wrapper subclass.
+**Level 3 — NN function dispatch** (`nn_functions.py`): Also via `__torch_function__`, handles `torch.nn.functional.*` ops including convolutions, pooling, normalization, attention, embedding, activations (F.relu, F.gelu, F.silu, ...), and loss functions. Transformer-hot ops use packed fast paths; supported inplace activations update the packed values and invalidate materialized views, subject to ordinary autograd leaf/view restrictions.
 
 **Fallback**: Any aten op without an explicit handler falls back to `per_element_fallback`, which unpacks to individual tensors, applies the op element-by-element, and repacks. Under `torch.compile`, DanLing prefers explicit failure over silently entering those eager-only fallbacks.
 
@@ -377,6 +377,14 @@ each packed sample. It therefore preserves native rounding, underflow, zero,
 and non-finite behavior without padding or reassociating the product. Eager
 `torch.cumprod(input, dim)` remains supported.
 
+Ragged cumulative sums also use a native scan for each packed sample. This
+isolates non-finite values between samples and preserves native within-sample
+accumulation behavior. The segmented scans use `O(total_values + batch_size)`
+explicit storage and `O(batch_size)` host scheduling/native kernel calls; they
+do not allocate a padded envelope. Eager cumulative products support higher-order
+reverse-mode derivatives. Compiled segmented cdist and cumulative-product
+backward paths retain their first-order contract.
+
 The result can remain a `NestedTensor` throughout a compiled model or cross a
 compiled/eager training boundary as a wrapper-only output. DanLing preserves
 the outer wrapper's AOTAutograd edge and projects it back to `result.concat`
@@ -424,6 +432,23 @@ to physical packed-storage order when an operator needs to validate its layout.
 Critical packed paths can use `nested_execution_guard` from `danling.tensors` in
 tests or diagnostics to reject iteration, per-element fallback, padded
 materialization, or dense repacking instead of silently accepting a slow path.
+
+### Index and differentiation conventions
+
+Plain Tensor indices passed to `torch.take` address flattened packed values,
+without padding or the logical batch axis. A NestedTensor index instead selects
+within each corresponding sample. These coordinates generally differ from
+flattening the padded `.tensor` view.
+
+`concatenate()` returns shapes carrying the packed ragged/static axis order so
+that `from_concatenated(*value.concatenate())` can preserve noncanonical layouts.
+Converting those shapes to an ordinary tuple or list discards the layout metadata
+and requests the ordinary canonical reconstruction contract.
+
+Reverse-mode `torch.autograd` is supported. `torch.func` transforms, `vmap`, and
+forward-mode AD are not currently supported. Compile support is operation- and
+layout-specific; an explicitly rejected eager-only path is not a promise of
+general fullgraph support.
 
 ## Benchmarks
 

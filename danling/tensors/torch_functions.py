@@ -2569,6 +2569,9 @@ def take(input: NestedTensor, index, *, out=None):
     Returns a new tensor with the elements of `input` at the given indices.
     See also [torch.take][].
 
+    Plain Tensor indices address flattened packed values without padding. A
+    NestedTensor index addresses each corresponding sample independently.
+
     Args:
         input: The input NestedTensor.
         index: Indices into the flattened tensor.

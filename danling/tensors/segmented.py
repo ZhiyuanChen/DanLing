@@ -262,7 +262,12 @@ def _segment_lengths(offsets: Tensor, total: int) -> list[int]:
 
 @torch.library.custom_op("danling::_segmented_cumsum", mutates_args=())
 def segmented_cumsum(values: Tensor, offsets: Tensor) -> Tensor:
-    r"""Run native cumulative sums independently over packed sample boundaries."""
+    r"""Run native cumulative sums independently over packed sample boundaries.
+
+    Each nonempty segment issues a native scan to preserve its accumulation
+    semantics. Host scheduling is O(batch size); explicit storage stays linear
+    in the packed input rather than a padded batch envelope.
+    """
     lengths = _segment_lengths(offsets, values.shape[0])
     output = torch.empty_like(values)
     start = 0
