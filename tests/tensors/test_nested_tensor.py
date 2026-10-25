@@ -39,6 +39,13 @@ TORCH_VERSION = Version(torch.__version__.split("+")[0])
 
 class TestAutogradViewLifetime:
 
+    def test_inference_mutation_refreshes_materialized_values(self):
+        with torch.inference_mode():
+            source = NT([torch.tensor([1.0, 2.0]), torch.tensor([3.0])])
+            assert_close(source.tensor, torch.tensor([[1.0, 2.0], [3.0, 0.0]]))
+            source.concat.add_(10)
+            assert_close(source.tensor, torch.tensor([[11.0, 12.0], [13.0, 0.0]]))
+
     @pytest.mark.parametrize("backend", ["eager", "aot_eager"])
     def test_explicit_leaf_owns_gradients(self, device, backend):
         def loss(value):
@@ -2466,6 +2473,64 @@ class TestReductions:
 
 
 class TestShapeManipulation:
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_permuted_static_axes_preserve_dense_coordinates_and_gradients(self, batch_first):
+        parts = [torch.arange(r * 6.0, dtype=torch.float64).reshape(r, 2, 3).requires_grad_() for r in (2, 4)]
+        permutation = (0, 3, 1, 2) if batch_first else (3, 1, 0, 2)
+        source = NT(parts, ragged_dims=(0,), batch_first=batch_first).permute(permutation)
+        expected_parts = [part.permute(2, 0, 1) for part in parts]
+        expected = torch.zeros(2, 3, 4, 2, dtype=torch.float64)
+        for i, part in enumerate(expected_parts):
+            expected[i, :, : part.size(1)] = part
+        if not batch_first:
+            expected = expected.movedim(0, 1)
+        assert_close(source.tensor, expected)
+        restored = source.nested_like(expected)
+        for actual, reference in zip(restored, expected_parts):
+            assert_close(actual, reference)
+        weights = torch.arange(expected.numel(), dtype=expected.dtype).reshape(expected.shape)
+        actual_grad = torch.autograd.grad((source.tensor * weights).sum(), parts, retain_graph=True)
+        expected_grad = torch.autograd.grad((expected * weights).sum(), parts)
+        assert_close(actual_grad, expected_grad)
+
+    @pytest.mark.parametrize("explicit_leaf", [False, True])
+    def test_changing_batch_axis_preserves_wrapper_gradients(self, explicit_leaf):
+        parts = [torch.randn(r, 3, dtype=torch.float64, requires_grad=not explicit_leaf) for r in (2, 4)]
+        source = NT(parts)
+        if explicit_leaf:
+            source.requires_grad_()
+        else:
+            source = source.square()
+        source.batch_first = False
+        weights = torch.arange(source.tensor.numel(), dtype=torch.float64).reshape(source.shape)
+        loss = (source.tensor * weights).sum()
+        if explicit_leaf:
+            loss.backward()
+            assert source.grad.shape == source.shape
+            assert_close(source.grad.tensor, source.nested_like(weights).tensor)
+        else:
+            gradients = torch.autograd.grad(loss, parts)
+            for index, (actual, part) in enumerate(zip(gradients, parts)):
+                assert_close(actual, 2 * part * weights[: part.size(0), index])
+
+    def test_zero_axes_and_scalar_batches_keep_their_rank(self):
+        source = NT.from_packed(
+            torch.empty(5, 0), torch.tensor([0, 2, 5]), torch.tensor([[2, 0], [3, 0]]), ragged_dims=(0,)
+        )
+        assert source.tensor.shape == (2, 3, 0)
+        source.batch_first = False
+        assert source.tensor.shape == (3, 2, 0)
+        source[0] = torch.empty(2, 0)
+        assert source.tensor.shape == (3, 2, 0)
+        empty = NT.from_packed(
+            torch.empty(0, 3), torch.tensor([0]), torch.empty(0, 2, dtype=torch.long), ragged_dims=(0,)
+        )
+        assert empty.shape == (0, 0, 3)
+        assert_close(NT([torch.tensor(1.0), torch.tensor(2.0)], batch_first=False).tensor, torch.tensor([1.0, 2.0]))
+        assert NT([], batch_first=False).tensor.shape == (0,)
+        with pytest.raises(IndexError, match="Dimension out of range"):
+            source.size(-4)
 
     def test_permute(self):
         nested_tensor = NestedTensor([torch.randn(3, 4, 5), torch.randn(2, 4, 5)])

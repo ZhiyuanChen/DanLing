@@ -1024,13 +1024,10 @@ class NestedTensor(torch.Tensor):
     def _logical_shape_from_physical_shape(physical_shape: Tensor, offsets: Tensor, batch_first: bool) -> torch.Size:
         r"""Compute logical shape from packed metadata without unpacking elements."""
         batch_size = len(offsets) - 1
-        if batch_size == 0:
-            return torch.Size((0,))
-        if physical_shape.numel() == 0:
+        physical_rank = physical_shape.size(1)
+        if physical_rank == 0:
             return torch.Size((batch_size,))
-        size = [int(physical_shape[:, d].max().item()) for d in range(physical_shape.size(1))]
-        while size and size[-1] == 0:
-            size.pop()
+        size = [int(physical_shape[:, d].max().item()) if batch_size else 0 for d in range(physical_rank)]
         size.insert(0 if batch_first else 1, batch_size)
         return torch.Size(size)
 
@@ -1409,12 +1406,7 @@ class NestedTensor(torch.Tensor):
                 maybe_mark_dynamic(self._physical_shape, dim)
 
     def _values_cache_token(self) -> tuple[int, ...]:
-        r"""Return a cache token for views that depend on packed values and layout metadata.
-
-        Tensors created under ``torch.inference_mode`` do not track version
-        counters, even after leaving the context. Fall back to object identity
-        for those immutable tensors so cached views remain usable.
-        """
+        r"""Return a cache token for versioned packed values and layout metadata."""
         return (self._cache_version(self.concat), *self._shape_cache_token())
 
     def _shape_cache_token(self) -> tuple[int, ...]:
@@ -1552,6 +1544,12 @@ class NestedTensor(torch.Tensor):
             resolved_permutation,
             ragged_dims,
         )
+        if outer_size is None and shape_tensor.size(0) == 0:
+            physical_sizes = [0] * physical_rank
+            for packed_dim, physical_dim in enumerate(resolved_permutation[len(resolved_ragged_dims) :], 1):
+                physical_sizes[physical_dim] = values.size(packed_dim)
+            physical_sizes.insert(0 if batch_first or physical_rank == 0 else 1, 0)
+            logical_shape = torch.Size(physical_sizes)
         # An inferred layout is declared once resolved (see ``__new__``).
         ragged_dims_explicit = ragged_dims is not None or bool(resolved_ragged_dims)
         resolved_ragged_offsets = cls._resolve_persistent_ragged_offsets(
@@ -2756,6 +2754,10 @@ class NestedTensor(torch.Tensor):
 
     def _can_cache_materialized_views(self) -> bool:
         r"""Avoid retaining a differentiable view whose graph saves this wrapper."""
+        # Inference tensors can mutate without a version counter. A numerical
+        # materialization cannot be cached across accesses to that storage.
+        if self._packed_values.is_inference():
+            return False
         if not torch.is_grad_enabled():
             return True
         wrapper_owned = vars(self).get("_unflattened_autograd", False) or vars(self).get("_wrapper_grad_leaf", False)
@@ -2778,7 +2780,7 @@ class NestedTensor(torch.Tensor):
         ):
             return cached[3]
         batch_leading = self._materialize_batch_leading(self.padding_value)
-        tensor = batch_leading if self.batch_first else batch_leading.movedim(0, 1)
+        tensor = batch_leading if self.batch_first or batch_leading.dim() <= 1 else batch_leading.movedim(0, 1)
         if cacheable:
             self._cached_tensor_view = (self.batch_first, self.padding_value, token, tensor)
         return tensor
@@ -2888,7 +2890,12 @@ class NestedTensor(torch.Tensor):
         tensor_shape.pop(0 if self.batch_first else 1)
         batch_leading = self.concat.new_full((batch_size, *tensor_shape), fill_value)
         if self.concat.size(0) > 0:
-            batch_leading[self._packed_dense_index(device=batch_leading.device)] = self.concat
+            # Advanced indices leave static dimensions in physical axis order;
+            # packed storage may retain a different order after a permutation.
+            static_order = tuple(sorted(self._static_dims))
+            values_order = (0, *(1 + self._static_dims.index(dim) for dim in static_order))
+            values = self.concat.permute(values_order)
+            batch_leading[self._packed_dense_index(device=batch_leading.device)] = values
         return batch_leading
 
     def _original_shapes(self) -> tuple[torch.Size, ...]:
@@ -3482,7 +3489,10 @@ class NestedTensor(torch.Tensor):
         if batch_leading.dim() <= 1:
             return batch_leading.contiguous()
 
-        return batch_leading[self._packed_dense_index(device=batch_leading.device)].contiguous()
+        values = batch_leading[self._packed_dense_index(device=batch_leading.device)]
+        static_order = tuple(sorted(self._static_dims))
+        packed_order = (0, *(1 + static_order.index(dim) for dim in self._static_dims))
+        return values.permute(packed_order).contiguous()
 
     def _packed_sizes_like(
         self,
@@ -5090,15 +5100,31 @@ class NestedTensor(torch.Tensor):
     def batch_first(self, value: bool):
         new_value = type(self)._coerce_batch_first(value)
         old_value = getattr(self, "_batch_first", None)
-        self._batch_first = new_value
         if old_value is None or old_value == new_value:
+            self._batch_first = new_value
             return
-        if hasattr(self, "_physical_shape") and hasattr(self, "_offsets") and hasattr(self, "_logical_shape"):
-            self._logical_shape = type(self)._logical_shape_from_physical_shape(
-                self._physical_shape,
-                self._offsets,
-                new_value,
-            )
+        if hasattr(self, "_logical_shape") and len(self._logical_shape) > 1:
+            # Keep TensorImpl sizes and its autograd edge aligned with the
+            # public layout. The packed payload itself does not move.
+            with torch._C.DisableTorchFunctionSubclass(), torch._C._DisableTorchDispatch():
+                if self.is_leaf:
+                    with torch.no_grad():
+                        torch.Tensor.transpose_(self, 0, 1)
+                else:
+                    torch.Tensor.transpose_(self, 0, 1)
+            shape = self._logical_shape
+            self._logical_shape = torch.Size((shape[1], shape[0], *shape[2:]))
+            # Outer strides describe the logical wrapper, not packed storage.
+            # Keep its conventional contiguous metadata so leaf accumulation
+            # allocates the same layout as structure-preserving gradients.
+            stride: list[int] = []
+            running = 1
+            for size in reversed(self._logical_shape):
+                stride.insert(0, running)
+                running *= max(size, 1)
+            with torch.no_grad(), torch._C.DisableTorchFunctionSubclass(), torch._C._DisableTorchDispatch():
+                torch.Tensor.as_strided_(self, self._logical_shape, stride)
+        self._batch_first = new_value
         if hasattr(self, "_cached_tensor_view"):
             self._invalidate_transient_caches()
 
@@ -5455,6 +5481,8 @@ class NestedTensor(torch.Tensor):
             >>> permuted.shape
             torch.Size([2, 5, 3, 4])
         """
+        if len(dims) == 1 and isinstance(dims[0], (tuple, list)):
+            dims = tuple(dims[0])
         return cast(Self, torch.permute(self, dims))
 
     def moveaxis(self, source, destination) -> Self:
@@ -5577,7 +5605,11 @@ class NestedTensor(torch.Tensor):
             with torch._C.DisableTorchFunctionSubclass():
                 full_size = torch.Tensor.size(self)
         if dim is not None:
-            dim = dim + len(full_size) if dim < 0 else dim
+            if not -len(full_size) <= dim < len(full_size):
+                raise IndexError(
+                    f"Dimension out of range (expected to be in range of [{-len(full_size)}, "
+                    f"{len(full_size) - 1}], but got {dim})"
+                )
             return full_size[dim]
         return full_size
 
