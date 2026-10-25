@@ -96,9 +96,33 @@ def _transform_metadata(tensor: Tensor) -> Tensor:
 
 def _transform_base(tensor: Tensor) -> Tensor:
     r"""Inspect a transform's underlying layout without discarding its numerical edge."""
-    while torch._C._functorch.is_gradtrackingtensor(tensor):
+    while torch._C._functorch.is_gradtrackingtensor(tensor) or torch._C._functorch.is_batchedtensor(tensor):
         tensor = torch._C._functorch.get_unwrapped(tensor)
     return tensor
+
+
+def _transform_batch_dims(tensor: Tensor) -> tuple[int, ...]:
+    r"""Locate vectorized axes in the underlying wrapper's logical coordinates."""
+    if torch._C._functorch.is_gradtrackingtensor(tensor):
+        return _transform_batch_dims(torch._C._functorch.get_unwrapped(tensor))
+    if torch._C._functorch.is_batchedtensor(tensor):
+        dim = torch._C._functorch.maybe_get_bdim(tensor)
+        inner = _transform_batch_dims(torch._C._functorch.get_unwrapped(tensor))
+        for hidden in sorted(inner):
+            if hidden <= dim:
+                dim += 1
+        return (*inner, dim)
+    return ()
+
+
+def _needs_packed_bridge(values: Tensor) -> bool:
+    r"""Transform wrappers must be lifted even when their current derivative is constant."""
+    if torch.is_grad_enabled() and values.requires_grad:
+        return True
+    if not _is_compiling() and torch._C._functorch.is_gradtrackingtensor(values):
+        interpreter = torch._C._functorch.peek_interpreter_stack()
+        return interpreter is not None and interpreter.key() == torch._C._functorch.TransformType.Grad
+    return False
 
 
 def _validate_concrete_square_lengths(lengths: Tensor) -> None:
@@ -434,7 +458,7 @@ class NestedTensor(torch.Tensor):
             element_shapes=element_shapes,
             ragged_offsets=ragged_offsets,
         )
-        if torch.is_grad_enabled() and values.requires_grad:
+        if _needs_packed_bridge(values):
             return _PackedLikeAutograd.apply(values, _PackedStructureReference(result, mark_dynamic=True))
         return result
 
@@ -3653,10 +3677,10 @@ class NestedTensor(torch.Tensor):
             and not (_is_fake_tensor(self._offsets) or _is_fake_tensor(self._physical_shape))
             and torch._C._autograd._top_saved_tensors_default_hooks(True) is None
         ):
-            if torch.is_grad_enabled() and packed_values.requires_grad:
+            if _needs_packed_bridge(packed_values):
                 return _PackedLikeAutograd.apply(packed_values, _PackedStructureReference(self, reuse_wrapper=True))
             return self
-        if _is_compiling() or (torch.is_grad_enabled() and packed_values.requires_grad):
+        if _is_compiling() or _needs_packed_bridge(packed_values):
             return _PackedLikeAutograd.apply(packed_values, _PackedStructureReference(self))
         return self._packed_like_unchecked_raw(packed_values)
 
@@ -3731,7 +3755,7 @@ class NestedTensor(torch.Tensor):
             and result._physical_shape is self._physical_shape
         ):
             result._cached_hierarchical_offsets = self._cached_hierarchical_offsets
-        if torch.is_grad_enabled() and packed_values.requires_grad:
+        if _needs_packed_bridge(packed_values):
             return _PackedLikeAutograd.apply(packed_values, _PackedStructureReference(result, mark_dynamic=True))
         return result
 
@@ -6025,8 +6049,6 @@ class _PackedStructureReference:
 class _PackedLikeAutograd(torch.autograd.Function):
     r"""Attach a derived packed tensor to a wrapper produced inside a compiled graph."""
 
-    generate_vmap_rule = True
-
     @staticmethod
     def forward(packed_values: Tensor, structure: _PackedStructureReference) -> NestedTensor:
         reference = structure.value
@@ -6069,7 +6091,35 @@ class _PackedLikeAutograd(torch.autograd.Function):
         if values_tangent is None:
             return None
         layout = NestedTensor._layout_from_state(ctx.jvp_layout, values_tangent, ctx.packed_shape)
-        return layout._packed_like_unchecked_raw(values_tangent)
+        return _PackedLikeAutograd.apply(values_tangent, _PackedStructureReference(layout))
+
+    @staticmethod
+    def vmap(info, in_dims, packed_values, structure):
+        values_dim, _ = in_dims
+        if values_dim is None:
+            return _PackedLikeAutograd.apply(packed_values, structure), None
+        reference = structure.value
+        rank = reference._physical_shape.size(1)
+        shape = torch.cat(
+            (reference._physical_shape, reference._physical_shape.new_full((len(reference), 1), info.batch_size)),
+            dim=1,
+        )
+        values = packed_values.movedim(values_dim, -1)
+        layout = type(reference).from_packed(
+            values,
+            reference._offsets,
+            shape,
+            permutation=(*reference._permutation, rank),
+            ragged_dims=reference._ragged_dims if reference._ragged_dims_explicit else None,
+            batch_first=reference.batch_first,
+            padding_value=reference.padding_value,
+            mask_value=reference.mask_value,
+            outer_size=(*reference.shape, info.batch_size),
+            ragged_offsets=reference._persistent_ragged_offsets(),
+            validate=False,
+        )
+        output = _PackedLikeAutograd.apply(values, _PackedStructureReference(layout))
+        return output, reference.dim()
 
     @staticmethod
     def backward(ctx, grad_output: NestedTensor):
@@ -6089,17 +6139,26 @@ class _PackedLikeAutograd(torch.autograd.Function):
         )
         if nested_tangent:
             grad_static = tangent_layout._static_dims
-            packed_tangent = tangent_layout._ragged_dims == reference_ragged and set(grad_static) == set(
-                reference_static
-            )
+            grad_ragged = tangent_layout._ragged_dims
+            tangent_shapes = tangent_layout._physical_shape
+            if not _is_compiling():
+                batch_dim = 0 if tangent_layout.batch_first else 1
+                for logical_dim in sorted(_transform_batch_dims(grad_output), reverse=True):
+                    physical_dim = logical_dim - (logical_dim > batch_dim)
+                    if logical_dim == batch_dim or physical_dim not in grad_static:
+                        raise RuntimeError("NestedTensor tangent vectorization must use static per-element axes")
+                    keep = tuple(dim for dim in range(tangent_shapes.size(1)) if dim != physical_dim)
+                    tangent_shapes = _transform_metadata(tangent_shapes[:, keep])
+                    grad_static = tuple(dim - (dim > physical_dim) for dim in grad_static if dim != physical_dim)
+                    grad_ragged = tuple(dim - (dim > physical_dim) for dim in grad_ragged)
+                    batch_dim -= logical_dim < batch_dim
+            packed_tangent = grad_ragged == reference_ragged and set(grad_static) == set(reference_static)
             reference_shapes = reference._physical_shape if state is None else state[2]
             reference_offsets = reference._offsets if state is None else state[1]
             message = "NestedTensor tangent topology must match the output"
             if (
                 not packed_tangent
-                or not NestedTensor._meta_tensor_equal(
-                    tangent_layout._physical_shape, reference_shapes, message, runtime_assert=True
-                )
+                or not NestedTensor._meta_tensor_equal(tangent_shapes, reference_shapes, message, runtime_assert=True)
                 or not NestedTensor._meta_tensor_equal(
                     tangent_layout._offsets, reference_offsets, message, runtime_assert=True
                 )
@@ -6127,8 +6186,6 @@ class _PackedLikeAutograd(torch.autograd.Function):
 class _PackedValuesAutograd(torch.autograd.Function):
     r"""Project a wrapper-owned autograd edge back onto its packed values."""
 
-    generate_vmap_rule = True
-
     @staticmethod
     def forward(input: NestedTensor) -> Tensor:
         # Returning the child itself would attach this node to the wrapper's
@@ -6154,7 +6211,23 @@ class _PackedValuesAutograd(torch.autograd.Function):
     @staticmethod
     def jvp(ctx, input_tangent):
         del ctx
-        return input_tangent.concat if input_tangent is not None else None
+        if input_tangent is None:
+            return None
+        return (
+            input_tangent.concat if isinstance(input_tangent, NestedTensor) else _project_packed_values(input_tangent)
+        )
+
+    @staticmethod
+    def vmap(info, in_dims, input):
+        del info
+        (logical_dim,) = in_dims
+        if logical_dim is None:
+            return _PackedValuesAutograd.apply(input), None
+        physical_dim = logical_dim - (logical_dim > (0 if input.batch_first else 1))
+        values_dim = _physical_to_values_dim(input, physical_dim)
+        if logical_dim == (0 if input.batch_first else 1) or values_dim is None:
+            raise RuntimeError("A packed projection can only vmap over a static per-element dimension")
+        return _PackedValuesAutograd.apply(input), values_dim
 
     @staticmethod
     def backward(ctx, grad_values: Tensor):

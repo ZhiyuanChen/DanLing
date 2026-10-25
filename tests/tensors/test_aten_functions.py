@@ -41,6 +41,47 @@ def reference_options(source: NestedTensor) -> dict:
 
 class TestElementwiseOps:
 
+    @pytest.mark.parametrize("width", [1, 4], ids=["identity", "static-expansion"])
+    def test_native_expand_preserves_logical_ragged_axes(self, device, width):
+        leaves = [torch.randn(1, length, device=device, dtype=torch.float64, requires_grad=True) for length in (2, 3)]
+        source = NT(leaves, ragged_dims=(1,))
+
+        output = torch.ops.aten.expand.default(source, [2, width, 3])
+
+        assert output.ragged_dims == (1,)
+        for actual, reference in zip(output, leaves):
+            assert_close(actual, reference.expand(width, -1))
+        gradients = torch.autograd.grad(output.concat.sum(), leaves)
+        for actual, reference in zip(gradients, leaves):
+            assert_close(actual, torch.full_like(reference, width))
+        direction = NT([torch.randn_like(leaf) for leaf in leaves], ragged_dims=(1,))
+        for primal in (source, source.detach()):
+            with torch.autograd.forward_ad.dual_level():
+                dual = torch.autograd.forward_ad.make_dual(primal, direction)
+                _, tangent = torch.autograd.forward_ad.unpack_dual(torch.ops.aten.expand.default(dual, [2, width, 3]))
+                assert tangent is not None
+                for actual, reference in zip(tangent, direction):
+                    assert_close(actual, reference.expand(width, -1))
+        with torch.no_grad():
+            source.concat.add_(1)
+            for actual, reference in zip(output, source):
+                assert_close(actual, reference.expand(width, -1))
+
+    def test_native_stack_mixes_dense_and_nested_scalar_batches(self, device):
+        dense = torch.randn(2, dtype=torch.float64, device=device, requires_grad=True)
+        scalars = [torch.randn((), dtype=torch.float64, device=device, requires_grad=True) for _ in range(2)]
+        source = NT(scalars)
+
+        output = torch.ops.aten.stack.default([dense, source, source], 1)
+        expected = torch.stack([dense, torch.stack(scalars), torch.stack(scalars)], 1)
+
+        assert not isinstance(output, NT)
+        assert_close(output, expected)
+        actual_gradients = torch.autograd.grad(output.sum(), (dense, *scalars))
+        expected_gradients = torch.autograd.grad(expected.sum(), (dense, *scalars))
+        for actual, reference in zip(actual_gradients, expected_gradients):
+            assert_close(actual, reference)
+
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="pin_memory requires CUDA")
     @pytest.mark.parametrize("pin_memory", [False, True])
     def test_zeros_like_follows_requested_pinning(self, pin_memory):
@@ -148,6 +189,24 @@ class TestElementwiseOps:
 
 
 class TestIndexingOps:
+
+    @pytest.mark.parametrize("dim,start,stop,step", [(-1, -3, -1, 1), (1, 0, 3, 2)])
+    def test_slice_noncanonical_axes_and_gradients(self, device, dim, start, stop, step):
+        elements = [
+            torch.randn(3, 2, dtype=torch.float64, device=device, requires_grad=True),
+            torch.randn(3, 4, dtype=torch.float64, device=device, requires_grad=True),
+        ]
+        source = NT(elements, ragged_dims=(1,))
+        actual = torch.ops.aten.slice.Tensor(source, dim, start, stop, step)
+        reference = [
+            torch.ops.aten.slice.Tensor(element, dim - 1 if dim > 0 else dim, start, stop, step) for element in elements
+        ]
+        for result, expected in zip(actual, reference):
+            assert_close(result, expected)
+        actual_grads = torch.autograd.grad(actual.sum(), elements, retain_graph=True)
+        expected_grads = torch.autograd.grad(sum(result.sum() for result in reference), elements)
+        for result, expected in zip(actual_grads, expected_grads):
+            assert_close(result, expected)
 
     @pytest.mark.parametrize("operation", [torch.index_add, torch.index_copy])
     def test_index_write_maps_multi_ragged_static_axis(self, operation):

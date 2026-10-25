@@ -5435,13 +5435,25 @@ def expand(input: NestedTensor, *sizes) -> NestedTensor:
 
     The batch and ragged axes retain the existing topology (use ``-1`` or their
     current logical extent). Static axes follow ordinary dense ``expand`` rules,
-    so only singleton axes may grow. Adding new leading dimensions is not
-    supported for NestedTensor.
+    so only singleton axes may grow. A batch-first input may add one leading
+    static axis, retaining its sample axis at logical position one.
     """
     from .aten_functions import _packed_with_shape
 
     if len(sizes) == 1 and isinstance(sizes[0], (list, tuple, torch.Size)):
         sizes = tuple(sizes[0])
+    if len(sizes) == input.dim() + 1 and input.batch_first:
+        from .aten_functions import unsqueeze as _aten_unsqueeze
+
+        if sizes[0] < 0:
+            raise RuntimeError("a new leading expand dimension must have a non-negative size")
+        expanded = _aten_unsqueeze(torch.ops.aten.unsqueeze.default, (input, 0), {})
+        targets = list(sizes)
+        for dim in expanded._ragged_dims:
+            logical_dim = dim + (dim >= 1)
+            if targets[logical_dim] == expanded.size(logical_dim):
+                targets[logical_dim] = -1
+        return expand(expanded, *targets)
     if len(sizes) != input.dim():
         raise NotImplementedError(
             f"NestedTensor.expand expects {input.dim()} sizes (matching ndim) but got {len(sizes)}; "
@@ -6020,7 +6032,7 @@ def unsqueeze(input: NestedTensor, dim: int):
         raise IndexError(f"Dimension out of range (expected to be in range of [{-ndims - 1}, {ndims}], but got {dim})")
 
     batch_dim = _get_batch_dim(input)
-    if dim <= batch_dim:
+    if dim <= batch_dim and not (dim == 0 and batch_dim == 0):
         raise ValueError("Cannot unsqueeze at or before the batch dimension for NestedTensor.")
     if _needs_outer_autograd(input):
         with torch._C.DisableTorchFunctionSubclass():

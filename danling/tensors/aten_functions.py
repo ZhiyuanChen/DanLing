@@ -49,6 +49,7 @@ from .ops import (
     ATEN_BINARY_ELEMENTWISE_OPS,
     ATEN_UNARY_ELEMENTWISE_OPS,
     NestedTensorAtenRegistry,
+    NestedTensorFuncRegistry,
     _binary_complementary_singleton_square,
     _binary_op_maybe_tensor,
     _broadcast_lower_rank_nested_to_values,
@@ -448,6 +449,30 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
 
     if len(dims) == 0:
         return _call(source.concat, none_dim, keepdim)
+
+    for dim in dims:
+        if dim < -source.dim() or dim >= source.dim():
+            raise IndexError("Dimension out of range")
+    normalized_dims = tuple(int(_normalize_dim(dim, source.dim())) for dim in dims)
+    if len(set(normalized_dims)) != len(normalized_dims):
+        raise RuntimeError("a reduction dimension appears multiple times in the list of dims")
+    batch_dim = _reduction_batch_dim(source)
+    if len(normalized_dims) > 1 and batch_dim in normalized_dims:
+        selected = tuple(_translate_dim(source, dim) for dim in normalized_dims if dim != batch_dim)
+        if all(dim in selected for dim in source._ragged_dims):
+            # Once the sample axis and every ragged axis are reduced, the
+            # packed leading axis is precisely their joint coordinate set.
+            # This also serves reductions inside a vmap over a static axis.
+            values_dims = [0, *(1 + source._static_dims.index(dim) for dim in selected if dim in source._static_dims)]
+            output = _call(source.concat, values_dims, False)
+            remaining = tuple(dim for dim in source._static_dims if dim not in selected)
+            logical_order = tuple(remaining.index(dim) for dim in sorted(remaining))
+            if logical_order != tuple(range(len(remaining))):
+                output = output.permute(logical_order)
+            if keepdim:
+                shape = tuple(1 if dim in normalized_dims else source.size(dim) for dim in range(source.dim()))
+                output = output.reshape(shape)
+            return output
 
     if func in (aten.sum.dim_IntList, aten.nansum.default, aten.nanmean.default, aten.logsumexp.default):
         for dim in dims:
@@ -5942,13 +5967,14 @@ def permute(func, args, kwargs):
         raise ValueError(f"Invalid permutation dims {dims} for shape with {dim_count} dims")
 
     batch_dim = _get_batch_dim(source)
-    if normalized_dims[batch_dim] != batch_dim:
-        raise ValueError("Permuting the batch dimension is not supported for NestedTensor.")
+    output_batch_dim = normalized_dims.index(batch_dim)
+    if output_batch_dim > 1:
+        raise ValueError("NestedTensor's logical batch dimension must stay at position zero or one.")
 
     tensor_dims = tuple(_translate_dim(source, d) for d in normalized_dims if d != batch_dim)
     metadata_only = _packed_metadata_permute(source, tensor_dims)
     if metadata_only is not None:
-        return metadata_only
+        return metadata_only if output_batch_dim == batch_dim else aten.transpose.int(metadata_only, 0, 1)
     if tensor_dims[0] != 0:
         # Ragged dim move stays per-element but should remain in the compile graph
         # when possible, so we avoid the dynamo-disabled generic fallback.
@@ -6040,6 +6066,10 @@ def squeeze_dim(func, args, kwargs):
     source = args[0]
     dim = _normalize_dim(args[1], source.dim())
     batch_dim = _get_batch_dim(source)
+    if dim == 0 and batch_dim == 1:
+        if source.size(0) != 1:
+            return source
+        return squeeze_dim(func, (aten.transpose.int(source, 0, 1), 1), kwargs)
     if dim <= batch_dim:
         raise ValueError("Cannot squeeze the batch dimension or dimensions before it for NestedTensor.")
 
@@ -6159,6 +6189,80 @@ def narrow(func, args, kwargs):
     start = args[2] if len(args) > 2 else kwargs["start"]
     length = args[3] if len(args) > 3 else kwargs["length"]
     return narrow_nested(source, dim, start, length)
+
+
+@NestedTensorAtenRegistry.implement(aten.slice.Tensor)
+def slice_tensor(func, args, kwargs):
+    r"""Slice logical axes using each sample's extent rather than a padded maximum."""
+    source = args[0]
+    dim = args[1] if len(args) > 1 else kwargs.get("dim", 0)
+    start = args[2] if len(args) > 2 else kwargs.get("start")
+    stop = args[3] if len(args) > 3 else kwargs.get("end")
+    step = args[4] if len(args) > 4 else kwargs.get("step", 1)
+    if dim < -source.dim() or dim >= source.dim():
+        raise IndexError("Dimension out of range")
+    if step <= 0:
+        raise RuntimeError("slice step must be positive")
+    dim = _normalize_dim(dim, source.dim())
+    if dim == _get_batch_dim(source):
+        begin, end, stride = slice(start, stop, step).indices(len(source))
+        if stride == 1:
+            return _packed_batch_slice(source, begin, builtins.max(end - begin, 0), "aten.slice")
+        return source[list(range(begin, end, stride))]
+    dim_adj = _translate_dim(source, dim)
+    values_dim = _physical_to_values_dim(source, dim_adj)
+    if values_dim is not None:
+        begin, end, stride = slice(start, stop, step).indices(source.concat.size(values_dim))
+        if stride == 1:
+            return _packed_static_slice(source, dim_adj, begin, builtins.max(end - begin, 0))
+        values = func(source.concat, values_dim, start, stop, step)
+        return _packed_with_static_tail_from_values(source, values)
+    if _has_single_packed_ragged_dim(source, dim_adj) and step == 1:
+        from .nested_tensor import _transform_metadata
+
+        extents = _transform_metadata(source._physical_shape[:, dim_adj]).tolist()
+        spans = [slice(start, stop, step).indices(extent) for extent in extents]
+        return _packed_ragged_slice(
+            source,
+            dim_adj,
+            [begin for begin, _, _ in spans],
+            [builtins.max(end - begin, 0) for begin, end, _ in spans],
+        )
+    return _apply_per_element_nested(source, lambda value: func(value, dim_adj, start, stop, step))
+
+
+@NestedTensorFuncRegistry.implement(aten.slice.Tensor)
+def public_slice_tensor(input, dim=0, start=None, end=None, step=1):
+    r"""Keep public native slices on the packed graph with their exact per-sample extents."""
+    result = slice_tensor(aten.slice.Tensor, (input, dim, start, end, step), {})
+    return result._packed_like_unchecked(result._packed_values, reuse_wrapper=True)
+
+
+@NestedTensorAtenRegistry.implement(aten.cat.default, compile_safe=True)
+def cat(func, args, kwargs):
+    r"""Share public concatenation's logical dense and ragged alignment."""
+    from .torch_functions import cat as concatenate
+
+    dim = args[1] if len(args) > 1 else kwargs.get("dim", 0)
+    return concatenate(args[0], dim=dim)
+
+
+@NestedTensorAtenRegistry.implement(aten.stack.default, compile_safe=True)
+def stack(func, args, kwargs):
+    r"""Stack logical scalar batches without replaying dense batch axes per element."""
+    from .nested_tensor import NestedTensor
+    from .torch_functions import stack as stack_nested
+
+    tensors = args[0]
+    dim = args[1] if len(args) > 1 else kwargs.get("dim", 0)
+    nested = [tensor for tensor in tensors if isinstance(tensor, NestedTensor)]
+    if all(tensor._physical_shape.size(1) == 0 for tensor in nested):
+        # Native composite backwards stack per-sample scalars, mixing dense
+        # [B] buffers and wrappers of B scalar elements. Their packed children
+        # already are those exact dense buffers; no padding or sample loop is needed.
+        values = [tensor.concat if isinstance(tensor, NestedTensor) else tensor for tensor in tensors]
+        return func(values, dim)
+    return stack_nested(tensors, dim=dim)
 
 
 @NestedTensorAtenRegistry.implement(aten.transpose.int)
@@ -6286,6 +6390,32 @@ def unflatten(func, args, kwargs):
     )
 
 
+@NestedTensorAtenRegistry.implement(aten.expand.default, compile_safe=True)
+def expand(func, args, kwargs):
+    r"""Expand logical wrapper dimensions while retaining the true ragged extents."""
+    from .ops import _logical_dim_for_element_dim
+    from .torch_functions import expand as expand_nested
+
+    source = args[0]
+    sizes = tuple(args[1] if len(args) > 1 else kwargs["size"])
+    if sizes == tuple(source.shape):
+        values = source.concat
+        return source._packed_like_unchecked(func(values, values.shape, implicit=kwargs.get("implicit", False)))
+    if len(sizes) == source.dim():
+        sizes = list(sizes)
+        for physical_dim in source._ragged_dims:
+            logical_dim = _logical_dim_for_element_dim(source, physical_dim)
+            if sizes[logical_dim] == source.size(logical_dim):
+                sizes[logical_dim] = -1
+    return expand_nested(source, *sizes)
+
+
+@NestedTensorFuncRegistry.implement(aten.expand.default, compile_safe=True)
+def public_expand_tensor(input, size, *, implicit=False):
+    r"""Preserve packed autograd and forward tangents for public native expands."""
+    return expand(aten.expand.default, (input, size), {"implicit": implicit})
+
+
 @NestedTensorAtenRegistry.implement(aten.unsqueeze.default, compile_safe=True)
 def unsqueeze(func, args, kwargs):
     r"""Insert a singleton logical dim after the batch axis and update metadata."""
@@ -6298,6 +6428,8 @@ def unsqueeze(func, args, kwargs):
         raise IndexError(f"Dimension out of range (expected to be in range of [{-ndims - 1}, {ndims}], but got {dim})")
 
     batch_dim = _get_batch_dim(source)
+    if dim == 0 and batch_dim == 0:
+        return aten.transpose.int(unsqueeze(func, (source, 1), kwargs), 0, 1)
     if dim <= batch_dim:
         raise ValueError("Cannot unsqueeze at or before the batch dimension for NestedTensor.")
 
@@ -6471,6 +6603,11 @@ def view_like(func, args, kwargs):
         target = tuple(kwargs.pop("shape"))
     else:
         raise ValueError(f"NestedTensor: {func} missing target shape")
+
+    if target == tuple(source.shape):
+        return source._packed_like_unchecked(func(source.concat, source.concat.shape, **kwargs))
+    if not source.batch_first and source.size(0) == 1 and target == tuple(source.shape[1:]):
+        return squeeze_dim(aten.squeeze.dim, (source, 0), kwargs)
 
     if source._element_shapes is None and (_is_compiling() or _is_fake_tensor(source._physical_shape)):
         return _tensor_backed_view_like(func, source, target, kwargs)
@@ -6973,6 +7110,13 @@ def cumulative(func, args, kwargs):
             # Cast before accumulating, not after: that is the dense op's contract, and the two
             # orders are not numerically equivalent.
             values = source.concat.to(result_dtype)
+            if not _is_compiling() and torch._C._are_functorch_transforms_active():
+                from .nested_tensor import _transform_metadata
+
+                offsets = _transform_metadata(source._offsets).tolist()
+                parts = [values[start:end].cumprod(0) for start, end in zip(offsets[:-1], offsets[1:])]
+                scanned = torch.cat(parts) if parts else values.clone()
+                return source._packed_like_unchecked(scanned)
             return source._packed_like_unchecked(segmented_cumprod(values, source._offsets))
         if _is_compiling():
             _compile_unsupported(
@@ -7884,6 +8028,7 @@ _ATEN_HANDLER_TABLE: list[tuple] = [
     (aten.var.correction, _make_dim_reduction_handler(None, None, True)),
     # _elementwise_binary_handler
     *((op, _elementwise_binary_handler) for op in ATEN_BINARY_ELEMENTWISE_OPS),
+    (torch.ops.prims.mul.default, _elementwise_binary_handler),
     # _elementwise_unary_handler
     *((op, _elementwise_unary_handler) for op in ATEN_UNARY_ELEMENTWISE_OPS),
     *((op, _creation_like_handler) for op in ATEN_CREATION_OPS),

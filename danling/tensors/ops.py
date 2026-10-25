@@ -1622,6 +1622,19 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
         reverse = True
         input, other = other, input
 
+    if (
+        isinstance(other, Tensor)
+        and not isinstance(other, cls)
+        and other.dim() == input.dim() + 1
+        and input.batch_first
+    ):
+        # A leading dense broadcast axis also appears in vectorized VJPs.
+        # Insert it as a static per-element axis, then keep the logical sample
+        # axis at position one rather than dropping the extra tangent axis.
+        expanded = torch.ops.aten.transpose.int(torch.ops.aten.unsqueeze.default(input, 1), 0, 1)
+        lhs, rhs = (other, expanded) if reverse else (expanded, other)
+        return op(lhs, rhs, *extra_args, **extra_kwargs)
+
     if len(input) == 0 and not isinstance(other, cls):
         resolved = _as_tensor_like(other, input.concat)
         new_values = (

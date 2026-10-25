@@ -701,10 +701,11 @@ class TestDimensionTransforms:
         assert_close(output, reference)
         assert output.shape == reference.shape
 
-    def test_unsqueeze_batch_dim_raises(self):
-        nt = NestedTensor([torch.tensor([1, 2])])
-        with pytest.raises(ValueError):
-            torch.unsqueeze(nt, dim=0)
+    def test_unsqueeze_before_batch_preserves_samples(self):
+        nt = NestedTensor([torch.tensor([1, 2]), torch.tensor([3, 4, 5])])
+        output = torch.unsqueeze(nt, dim=0)
+        assert output.batch_first is False
+        assert_close(output.tensor, nt.tensor.unsqueeze(0))
 
     def test_unsqueeze_batch_first_false_respects_batch_dim(self):
         nt = NestedTensor([torch.tensor([1, 2])], batch_first=False)

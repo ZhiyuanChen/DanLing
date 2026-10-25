@@ -90,6 +90,8 @@ class TestFunctionTransforms:
             return NT([packed[:2], packed[2:]]).sin().sum()
 
         assert_close(torch.func.grad(loss)(values), values.cos())
+        second = torch.func.grad(lambda packed: torch.func.grad(loss)(packed).sum())(values)
+        assert_close(second, -values.sin())
         assert_close(torch.func.jacfwd(loss)(values), values.cos())
         primal, tangent = torch.func.jvp(loss, (values,), (direction,))
         assert_close(primal, values.sin().sum())
@@ -99,6 +101,72 @@ class TestFunctionTransforms:
         primal, tangent = torch.func.jvp(torch.sin, (source,), (vector,))
         assert_close(primal.concat, values.sin())
         assert_close(tangent.concat, values.cos() * direction)
+
+    def test_vectorized_jacrev_and_static_vmap(self, device):
+        elements = [
+            torch.randn(2, 3, 2, dtype=torch.float64, device=device),
+            torch.randn(4, 2, 2, dtype=torch.float64, device=device),
+        ]
+        source = NT(elements, ragged_dims=(1, 0))
+        for chunk_size in (None, 1):
+            gradient = torch.func.jacrev(lambda value: value.square().sum(), chunk_size=chunk_size)(source)
+            assert_close(gradient.concat, 2 * source.concat)
+        jacobian = torch.func.jacrev(lambda value: torch.stack((value.sum(), value.square().sum())))(source)
+        for actual, element in zip(jacobian, elements):
+            assert_close(actual, torch.stack((torch.ones_like(element), 2 * element)))
+        sums = torch.vmap(lambda value: value.sum(), in_dims=-1)(source)
+        assert_close(sums, sum(element.sum(dim=(0, 1)) for element in elements))
+        per_sample = torch.vmap(lambda value: value.square().sum())(source)
+        assert_close(per_sample, torch.stack([element.square().sum() for element in elements]))
+
+    def test_packed_value_jacobians(self, device):
+        template = NT(
+            [torch.zeros(2, dtype=torch.float64, device=device), torch.zeros(3, dtype=torch.float64, device=device)]
+        )
+        values = torch.linspace(0.1, 0.5, 5, dtype=torch.float64, device=device)
+
+        def loss(packed):
+            return template.packed_like(packed).sin().sum()
+
+        assert_close(torch.func.jacfwd(loss)(values), values.cos())
+        assert_close(torch.func.jacrev(loss)(values), values.cos())
+
+    @pytest.mark.parametrize(
+        "values",
+        [
+            pytest.param([1.2, 2.3, 3.4, 4.5, 5.6], id="nonzero"),
+            pytest.param([0.0, 2.3, 3.4, 4.5, 0.0], id="single-zero"),
+            pytest.param([0.0, 0.0, 3.4, 0.0, 5.6], id="multiple-zeros"),
+        ],
+    )
+    def test_cumprod_transform_derivatives(self, device, values):
+        values = torch.tensor(values, dtype=torch.float64, device=device)
+        direction = torch.randn_like(values)
+        source = NT(values.split((2, 3)), ragged_dims=(0,))
+        vector = NT(direction.split((2, 3)), ragged_dims=(0,))
+
+        def reference(packed):
+            return torch.cat([part.cumprod(0) for part in packed.split((2, 3))])
+
+        expected, expected_tangent = torch.func.jvp(reference, (values,), (direction,))
+        actual, tangent = torch.func.jvp(lambda value: torch.cumprod(value, dim=1), (source,), (vector,))
+        assert_close(actual.concat, expected)
+        assert_close(tangent.concat, expected_tangent)
+
+        def loss(packed):
+            return source.packed_like(packed).cumprod(dim=1).sum()
+
+        expected_gradient = torch.func.grad(lambda packed: reference(packed).sum())(values)
+        assert_close(torch.func.grad(loss)(values), expected_gradient)
+
+    def test_leading_expand_preserves_ragged_samples(self, device):
+        source = NT([torch.randn(2, 1, device=device), torch.randn(3, 1, device=device)])
+        output = source.expand(4, 2, 3, 5)
+        assert not output.batch_first
+        for actual, element in zip(output, source):
+            assert_close(actual, element.unsqueeze(0).expand(4, -1, 5))
+        with pytest.raises(RuntimeError, match="non-negative"):
+            source.expand(-1, 2, 3, 5)
 
 
 class TestAutogradViewLifetime:
