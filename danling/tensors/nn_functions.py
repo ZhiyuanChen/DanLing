@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import math
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
@@ -3045,12 +3046,139 @@ def _dropout_handler(input, *args, _fn=None, **kwargs):
     return _map_storage_serial(input, lambda t: _fn(t, *args, **kwargs))
 
 
+def _gaussian_nll_loss_packed(input, target, var, full=False, eps=1e-6, reduction="mean"):
+    r"""Native Gaussian NLL math with a tensor assertion suitable for fullgraph."""
+    if not isinstance(var, Tensor):
+        var = torch.full_like(input, var)
+    if var.size() != input.size():
+        if input.size()[:-1] == var.size():
+            var = var.unsqueeze(-1)
+        elif input.size()[:-1] != var.size()[:-1] or var.size(-1) != 1:
+            raise ValueError("var is of incorrect size")
+    torch._assert_async((var >= 0).all(), "var has negative entries")
+    var = var.clone()
+    with torch.no_grad():
+        var.clamp_(min=eps)
+    loss = 0.5 * (torch.log(var) + (input - target).square() / var)
+    if full:
+        loss = loss + 0.5 * math.log(2 * math.pi)
+    if reduction == "none":
+        return loss
+    if reduction == "mean":
+        return loss.mean()
+    if reduction == "sum":
+        return loss.sum()
+    raise ValueError(f"{reduction} is not valid")
+
+
 def _make_loss_handler(n_tensor_args):
-    r"""Factory for loss function handlers that concat the first n positional args."""
+    r"""Align loss operands by sample before calling the packed dense kernel."""
 
     def _handler(*args, _fn=None, **kwargs):
-        tensor_args = _concat_tensors(*args[:n_tensor_args])
-        return _fn(*tensor_args, *args[n_tensor_args:], **kwargs)
+        from .nested_tensor import NestedTensor
+        from .ops import _broadcast_nested_to_values, _resolve_dense_for_values
+
+        names = ("input", "target")
+        if _fn is F.gaussian_nll_loss:
+            names = ("input", "target", "var")
+        elif _fn in (F.cosine_embedding_loss, F.margin_ranking_loss):
+            names = ("input1", "input2", "target")
+        elif _fn in (F.triplet_margin_loss, F.triplet_margin_with_distance_loss):
+            names = ("anchor", "positive", "negative")
+        tensor_args = list(args[: len(names)])
+        for name in names[len(tensor_args) :]:
+            tensor_args.append(kwargs.pop(name))
+        reference = next(v for v in tensor_args if isinstance(v, NestedTensor))
+        elementwise = _fn in (
+            F.binary_cross_entropy,
+            F.binary_cross_entropy_with_logits,
+            F.gaussian_nll_loss,
+            F.hinge_embedding_loss,
+            F.huber_loss,
+            F.kl_div,
+            F.l1_loss,
+            F.mse_loss,
+            F.poisson_nll_loss,
+            F.smooth_l1_loss,
+            F.soft_margin_loss,
+        )
+        if elementwise:
+            broadcast_args = tensor_args[:2] if _fn is F.gaussian_nll_loss else tensor_args
+            tensor_indices = [i for i, value in enumerate(broadcast_args) if isinstance(value, Tensor)]
+            broadcasted = torch.broadcast_tensors(*(tensor_args[i] for i in tensor_indices))
+            for index, value in zip(tensor_indices, broadcasted):
+                tensor_args[index] = value
+            reference = next(v for v in tensor_args if isinstance(v, NestedTensor))
+
+        if _fn is F.gaussian_nll_loss and isinstance(tensor_args[2], NestedTensor):
+            variance = tensor_args[2]
+            if variance.batch_first != reference.batch_first or len(variance) != len(reference):
+                raise ValueError("Loss operands must have matching batch lengths and batch placement")
+            variance_rank = variance._physical_shape.size(1)
+            input_rank = reference._physical_shape.size(1)
+            if variance_rank == input_rank - 1:
+                type(reference)._meta_tensor_equal(
+                    reference._physical_shape[:, :-1],
+                    variance._physical_shape,
+                    "Gaussian variance sample shapes must match input positions",
+                    runtime_assert=True,
+                )
+                tensor_args[2] = variance.unsqueeze(-1)
+            elif variance_rank == input_rank:
+                torch._assert_async(
+                    (reference._physical_shape[:, :-1] == variance._physical_shape[:, :-1]).all()
+                    & (
+                        (reference._physical_shape[:, -1] == variance._physical_shape[:, -1])
+                        | (variance._physical_shape[:, -1] == 1)
+                    ).all(),
+                    "Gaussian variance sample shapes must match input positions",
+                )
+            else:
+                raise ValueError("var is of incorrect size")
+
+        def pack(value):
+            if isinstance(value, NestedTensor):
+                if value.batch_first != reference.batch_first or len(value) != len(reference):
+                    raise ValueError("Loss operands must have matching batch lengths and batch placement")
+                if elementwise:
+                    if reference._has_same_layout(value):
+                        return value.concat
+                    values = _broadcast_nested_to_values(reference, value)
+                    if values is None:
+                        raise ValueError("Loss tensor argument cannot be aligned with the NestedTensor input")
+                    return values
+                type(reference)._meta_tensor_equal(
+                    reference._offsets,
+                    value._offsets,
+                    "Loss operands must have matching per-sample positions",
+                    runtime_assert=True,
+                )
+                return value.concat
+            if isinstance(value, Tensor) and value.dim() == reference.dim():
+                values = _resolve_dense_for_values(reference, value)
+                if values is None:
+                    raise ValueError("Loss tensor argument cannot be aligned with the NestedTensor input")
+                return values
+            return value
+
+        remaining = list(args[len(names) :])
+        batchmean = _fn is F.kl_div and (remaining[2] if len(remaining) > 2 else kwargs.get("reduction")) == "batchmean"
+        if batchmean:
+            if len(remaining) > 2:
+                remaining[2] = "sum"
+            else:
+                kwargs["reduction"] = "sum"
+        loss_fn = _gaussian_nll_loss_packed if _fn is F.gaussian_nll_loss and _is_compiling() else _fn
+        output = loss_fn(
+            *(pack(value) for value in tensor_args),
+            *(pack(value) for value in remaining),
+            **{name: pack(value) for name, value in kwargs.items()},
+        )
+        if batchmean:
+            return output / len(reference)
+        if elementwise and output.dim() and output.shape == reference.concat.shape:
+            return reference._packed_like_unchecked(output)
+        return output
 
     return _handler
 

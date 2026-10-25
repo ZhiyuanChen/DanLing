@@ -2114,8 +2114,8 @@ class TestRankingLosses:
         x = nested_rand([(2, 3), (1, 3)], device, float_dtype)
         target = NT(
             [
-                torch.tensor([1.0, -1.0], device=device, dtype=float_dtype),
-                torch.tensor([1.0], device=device, dtype=float_dtype),
+                torch.tensor([[1.0], [-1.0]], device=device, dtype=float_dtype),
+                torch.tensor([[1.0]], device=device, dtype=float_dtype),
             ]
         )
         output = F.hinge_embedding_loss(x, target, reduction="sum")
@@ -3333,6 +3333,53 @@ class TestCrossEntropy:
             F.cross_entropy(values, target, weight=weights)
 
 
+def test_loss_broadcasts_sample_boundaries_and_retains_unreduced_topology():
+    parts = [torch.tensor([[1.0], [2.0]], requires_grad=True), torch.tensor([[3.0]], requires_grad=True)]
+    targets = [torch.tensor([[1.0]]), torch.tensor([[2.0], [3.0]])]
+    output = F.mse_loss(NT(parts), NT(targets), reduction="none")
+    assert isinstance(output, NT)
+    assert [tuple(t.shape) for t in output] == [(2, 1), (2, 1)]
+    expected = [torch.tensor([[0.0], [1.0]]), torch.tensor([[1.0], [0.0]])]
+    for actual, reference in zip(output, expected):
+        torch.testing.assert_close(actual, reference)
+    grads = torch.autograd.grad(output.concat.mean(), parts)
+    torch.testing.assert_close(grads[0], torch.tensor([[0.0], [0.5]]))
+    torch.testing.assert_close(grads[1], torch.tensor([[0.5]]))
+
+
+def test_kl_batchmean_uses_logical_batch_size():
+    parts = [torch.log(torch.tensor([[0.2, 0.8], [0.4, 0.6]])), torch.log(torch.tensor([[0.6, 0.4]]))]
+    parts = [part.requires_grad_() for part in parts]
+    targets = [torch.full_like(part, 0.5) for part in parts]
+    actual = F.kl_div(NT(parts), NT(targets), reduction="batchmean")
+    expected = sum(F.kl_div(part, target, reduction="sum") for part, target in zip(parts, targets)) / 2
+    torch.testing.assert_close(actual, expected)
+    for gradient in torch.autograd.grad(actual, parts):
+        torch.testing.assert_close(gradient, torch.full_like(gradient, -0.25))
+
+
+def test_loss_auxiliary_tensors_follow_native_sample_positions():
+    parts = [torch.tensor([[0.2], [0.4]]), torch.tensor([[0.8]])]
+    target = NT([torch.zeros_like(part) for part in parts])
+    variance = NT([torch.ones_like(part) for part in parts])
+    actual = F.gaussian_nll_loss(NT(parts), target, var=variance, reduction="sum")
+    torch.testing.assert_close(actual, sum(0.5 * part.square().sum() for part in parts))
+    mismatched_variance = NT(torch.ones(1, 1), torch.ones(2, 1))
+    with pytest.raises(RuntimeError, match="variance sample shapes"):
+        F.gaussian_nll_loss(NT(parts), target, var=mismatched_variance)
+    per_position_variance = NT(torch.ones(2), torch.ones(1))
+    torch.testing.assert_close(
+        F.gaussian_nll_loss(NT(parts), target, var=per_position_variance, reduction="sum"), actual
+    )
+    weights = torch.tensor([[[1.0], [2.0]], [[3.0], [100.0]]])
+    actual = F.binary_cross_entropy(NT(parts), target, weight=weights, reduction="sum")
+    expected = sum(
+        F.binary_cross_entropy(part, torch.zeros_like(part), weight=weights[i, : len(part)], reduction="sum")
+        for i, part in enumerate(parts)
+    )
+    torch.testing.assert_close(actual, expected)
+
+
 def test_instance_norm_updates_running_statistics_once_per_batch():
     parts = [torch.arange(8.0).reshape(2, 4), torch.arange(8.0, 16.0).reshape(2, 4)]
     running_mean, running_var = torch.zeros(2), torch.ones(2)
@@ -3392,4 +3439,18 @@ def test_spatial_convenience_functions_restore_natural_batch_dimensions():
     actual = F.affine_grid(NT(theta), (2, 1, 3, 4), align_corners=False)
     expected = F.affine_grid(torch.stack(theta), (2, 1, 3, 4), align_corners=False)
     for result, reference in zip(actual, expected):
+        torch.testing.assert_close(result, reference)
+
+
+def test_gaussian_nll_fullgraph_preserves_variance_gradients():
+    parts = [torch.randn(2, 3, requires_grad=True), torch.randn(4, 3, requires_grad=True)]
+    target = NT([torch.randn_like(part) for part in parts])
+    variance = torch.ones(6, 3, requires_grad=True)
+    compiled = torch.compile(F.gaussian_nll_loss, backend="aot_eager", fullgraph=True)
+    actual = compiled(NT(parts), target, variance, reduction="sum", full=True)
+    expected = F.gaussian_nll_loss(torch.cat(parts), target.concat, variance, reduction="sum", full=True)
+    torch.testing.assert_close(actual, expected)
+    actual_grads = torch.autograd.grad(actual, (*parts, variance))
+    expected_grads = torch.autograd.grad(expected, (*parts, variance))
+    for result, reference in zip(actual_grads, expected_grads):
         torch.testing.assert_close(result, reference)
