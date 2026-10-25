@@ -190,15 +190,17 @@ class TestScatterErrors:
 
 class TestScatterCompile:
 
-    def test_scatter_fullgraph(self):
+    @pytest.mark.parametrize("operation", ["scatter", "scatter_add", "scatter_reduce"])
+    def test_scatter_fullgraph(self, operation):
         shapes = [(2, 3, 4), (2, 2, 4)]
         nested, index, source, bases, indices, sources = build_case(
             shapes,
             1,
             ragged_dims=(1,),
         )
+        kwargs = {"reduce": "sum"} if operation == "scatter_reduce" else {}
         compiled = torch.compile(
-            lambda input_, indices_, source_: torch.scatter(input_, 2, indices_, source_),
+            lambda input_, indices_, source_: getattr(torch, operation)(input_, 2, indices_, source_, **kwargs),
             backend="aot_eager",
             fullgraph=True,
         )
@@ -207,7 +209,7 @@ class TestScatterCompile:
 
         assert_matches(
             output,
-            [torch.scatter(base, 1, idx, src) for base, idx, src in zip(bases, indices, sources)],
+            [getattr(torch, operation)(base, 1, idx, src, **kwargs) for base, idx, src in zip(bases, indices, sources)],
         )
 
 

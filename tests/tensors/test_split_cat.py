@@ -559,6 +559,23 @@ class TestAutograd:
         torch.testing.assert_close(left_values.grad, torch.ones(8, 4))
         torch.testing.assert_close(right_values.grad, torch.ones(6, 4))
 
+    @pytest.mark.parametrize("dim", [0, 1], ids=["batch", "ragged"])
+    def test_cat_fullgraph_preserves_repeated_input_gradient(self, device, dim):
+        values = torch.randn(5, 3, device=device, requires_grad=True)
+        source = NestedTensor(values.split((2, 3)), ragged_dims=(0,))
+        compiled = torch.compile(
+            lambda value: torch.cat((value, value), dim=dim),
+            backend="aot_eager",
+            fullgraph=True,
+            dynamic=True,
+        )
+        output = compiled(source)
+        expected = list(source) * 2 if dim == 0 else [torch.cat((part, part)) for part in source]
+        for actual, reference in zip(output, expected):
+            torch.testing.assert_close(actual, reference)
+        gradient = torch.autograd.grad(output.concat.sum(), values)[0]
+        torch.testing.assert_close(gradient, torch.full_like(values, 2))
+
 
 class TestMixedLogicalCat:
 

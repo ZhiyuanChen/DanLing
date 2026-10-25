@@ -540,7 +540,7 @@ def cat(tensors: tuple[Tensor | NestedTensor, ...], dim: int = 0):
             return operands[0]
         merged = NestedTensor._cat_batch_packed(operands)
         if merged is not None:
-            return merged
+            return merged._packed_like_unchecked(merged.concat, reuse_wrapper=True)
         # The packed merge needs one shared layout; concatenation itself does not. A batch of
         # one, or one whose lengths happen to be equal, infers a ragged dim from nothing, so
         # layouts that disagree only by inference still describe samples that belong in one
@@ -617,20 +617,15 @@ def _cat_packed_non_batch(tensors, first: NestedTensor, dim_adj: int):
     sample's rows from operand 0 come first, then its rows from operand 1, and so on. That
     reordering is one scatter of positions rather than one ``cat`` per sample.
     """
-    from .aten_functions import _outer_size, _packed_sole_ragged_dim, _packed_static_dim, _packed_with_shape
+    from .aten_functions import (
+        _packed_metadata_permute,
+        _packed_sole_ragged_dim,
+        _packed_static_dim,
+        _packed_with_shape,
+    )
     from .nested_tensor import NestedTensor
 
-    logical_shape = None
     if not all(isinstance(tensor, NestedTensor) for tensor in tensors):
-        if builtins.sum(isinstance(tensor, NestedTensor) for tensor in tensors) == 1 and dim_adj in first._ragged_dims:
-            dense_extent = builtins.sum(
-                int(tensor.shape[_logical_dim_for_element_dim(first, dim_adj)])
-                for tensor in tensors
-                if not isinstance(tensor, NestedTensor)
-            )
-            logical_shape = first._logical_shape_from_components(
-                replace_dims={dim_adj: first._max_physical_dims()[dim_adj] + dense_extent}
-            )
         packed_tensors = []
         for tensor in tensors:
             if isinstance(tensor, NestedTensor):
@@ -723,34 +718,15 @@ def _cat_packed_non_batch(tensors, first: NestedTensor, dim_adj: int):
 
     physical_shape = first._physical_shape.clone()
     physical_shape[:, dim_adj] = builtins.sum(tensor._physical_shape[:, dim_adj] for tensor in tensors)
-    element_shapes = None
-    if all(tensor._element_shapes is not None for tensor in tensors):
-        element_shapes = tuple(
-            (*shape[:dim_adj], builtins.sum(t._element_shapes[index][dim_adj] for t in tensors), *shape[dim_adj + 1 :])
-            for index, shape in enumerate(cast(tuple[tuple[int, ...], ...], first._element_shapes))
-        )
-    packed_sizes = None
-    if all(tensor._packed_sizes is not None for tensor in tensors):
-        packed_sizes = tuple(builtins.sum(sizes) for sizes in zip(*(t._packed_sizes for t in tensors)))
-    return NestedTensor.from_packed(
-        values,
-        new_offsets,
-        physical_shape,
-        permutation=first._permutation,
-        ragged_dims=first._ragged_dims if first._ragged_dims_explicit else None,
-        batch_first=first.batch_first,
-        padding_value=first.padding_value,
-        mask_value=first.mask_value,
-        pin_memory=first._pin_memory,
-        outer_size=(
-            logical_shape
-            if logical_shape is not None
-            else _outer_size(first, physical_shape, new_offsets, element_shapes)
-        ),
-        packed_sizes=packed_sizes,
-        element_shapes=element_shapes,
-        validate=False,
-    )
+    output = first.packed_with_lengths(values, physical_shape[:, dim_adj])
+    if first._permutation != tuple(range(len(first._permutation))):
+        canonical = output
+        order = tuple(first._permutation.index(dim) for dim in range(len(first._permutation)))
+        output = cast(NestedTensor, _packed_metadata_permute(canonical, order))
+        binding = vars(canonical).get("_compile_max_length_binding")
+        if binding is not None:
+            output._max_length_binding = binding
+    return output
 
 
 def _cat_packed_ragged_axis(tensors: tuple[NestedTensor, ...], dim_adj: int):
@@ -881,7 +857,7 @@ def _cat_logical_dense_operand(first: NestedTensor, tensor: Tensor, dim_adj: int
 # Aliases for torch.cat
 for _alias in (torch.concat, torch.concatenate):
 
-    @NestedTensorFuncRegistry.implement(_alias)
+    @NestedTensorFuncRegistry.implement(_alias, compile_safe=True)
     def _cat_alias(tensors, dim: int = 0, _fn=_alias):  # noqa: B023 — default binds loop var
         return torch.cat(tuple(tensors), dim=dim)
 
@@ -891,22 +867,22 @@ for _alias in (torch.concat, torch.concatenate):
 # ``(B, L, C)`` NestedTensor ``vstack`` would concatenate the ragged dim instead of the batch.
 
 
-@NestedTensorFuncRegistry.implement(torch.vstack)
-@NestedTensorFuncRegistry.implement(torch.row_stack)
+@NestedTensorFuncRegistry.implement(torch.vstack, compile_safe=True)
+@NestedTensorFuncRegistry.implement(torch.row_stack, compile_safe=True)
 def vstack(tensors):
     r"""Concatenate along logical dimension 0. See also [torch.vstack][]."""
     return torch.cat(tuple(tensors), dim=0)
 
 
-@NestedTensorFuncRegistry.implement(torch.hstack)
-@NestedTensorFuncRegistry.implement(torch.column_stack)
+@NestedTensorFuncRegistry.implement(torch.hstack, compile_safe=True)
+@NestedTensorFuncRegistry.implement(torch.column_stack, compile_safe=True)
 def hstack(tensors):
     r"""Concatenate along logical dimension 1. See also [torch.hstack][]."""
     tensors = tuple(tensors)
     return torch.cat(tensors, dim=0 if tensors[0].dim() == 1 else 1)
 
 
-@NestedTensorFuncRegistry.implement(torch.dstack)
+@NestedTensorFuncRegistry.implement(torch.dstack, compile_safe=True)
 def dstack(tensors):
     r"""Concatenate along logical dimension 2. See also [torch.dstack][]."""
     tensors = tuple(tensors)
@@ -2502,7 +2478,7 @@ def scatter(input: NestedTensor, dim: int, index, src):
     return torch.ops.aten.scatter.value(input, dim, index, src)
 
 
-@NestedTensorFuncRegistry.implement(torch.scatter_add)
+@NestedTensorFuncRegistry.implement(torch.scatter_add, compile_safe=True)
 def scatter_add(input: NestedTensor, dim: int, index, src):
     r"""
     Out-of-place version of [torch.Tensor.scatter_add_][]
@@ -2533,7 +2509,7 @@ def scatter_add(input: NestedTensor, dim: int, index, src):
 
 if hasattr(torch, "scatter_reduce"):
 
-    @NestedTensorFuncRegistry.implement(torch.scatter_reduce)
+    @NestedTensorFuncRegistry.implement(torch.scatter_reduce, compile_safe=True)
     def scatter_reduce(input: NestedTensor, dim: int, index, src, reduce: str, *, include_self: bool = True):
         r"""
         Out-of-place version of [torch.Tensor.scatter_reduce_][]
@@ -2564,7 +2540,7 @@ if hasattr(torch, "scatter_reduce"):
         return torch.ops.aten.scatter_reduce.two(input, dim, index, src, reduce, include_self=include_self)
 
 
-@NestedTensorFuncRegistry.implement(torch.take)
+@NestedTensorFuncRegistry.implement(torch.take, compile_safe=True)
 def take(input: NestedTensor, index, *, out=None):
     r"""
     Returns a new tensor with the elements of `input` at the given indices.
@@ -2601,7 +2577,9 @@ def take(input: NestedTensor, index, *, out=None):
             )
         return NestedTensor(torch.take(t.reshape(-1), i) for t, i in zip(input._storage, index._storage))
 
-    return torch.ops.aten.take.default(input, index)
+    if index.device != input.concat.device:
+        index = index.to(input.concat.device)
+    return torch.take(input.concat.reshape(-1), index)
 
 
 if hasattr(torch, "take_along_dim"):
@@ -4669,7 +4647,7 @@ def nansum(
     return NestedTensorAtenRegistry[op](op, (input, dims, keepdim), {"dtype": dtype})
 
 
-@NestedTensorFuncRegistry.implement(torch.numel)
+@NestedTensorFuncRegistry.implement(torch.numel, compile_safe=True)
 def numel(input: NestedTensor) -> int:
     r"""
     Returns the total number of elements in the `input` tensor.
@@ -5408,7 +5386,7 @@ def squeeze(input: NestedTensor, dim: int | None = None):
     return _aten_squeeze_dim(torch.ops.aten.squeeze.dim, (input, dim_norm), {})
 
 
-@NestedTensorFuncRegistry.implement(torch.swapaxes)
+@NestedTensorFuncRegistry.implement(torch.swapaxes, compile_safe=True)
 def swapaxes(input: NestedTensor, axis0: int, axis1: int):
     r"""
     Alias for [torch.transpose][].
@@ -5635,7 +5613,7 @@ def _normalize_new_size(shape: tuple, kwargs: dict | None = None) -> tuple:
     return tuple(int(dim) for dim in shape)
 
 
-@NestedTensorFuncRegistry.implement(torch.Tensor.new_zeros)
+@NestedTensorFuncRegistry.implement(torch.Tensor.new_zeros, compile_safe=True)
 def new_zeros(input: NestedTensor, *shape, **kwargs) -> Tensor:
     r"""
     Create a plain tensor of the given size with this NestedTensor's dtype and device.
@@ -5650,19 +5628,19 @@ def new_zeros(input: NestedTensor, *shape, **kwargs) -> Tensor:
     return input.concat.new_zeros(_normalize_new_size(shape, kwargs), **kwargs)
 
 
-@NestedTensorFuncRegistry.implement(torch.Tensor.new_ones)
+@NestedTensorFuncRegistry.implement(torch.Tensor.new_ones, compile_safe=True)
 def new_ones(input: NestedTensor, *shape, **kwargs) -> Tensor:
     r"""Plain-tensor counterpart of [torch.Tensor.new_ones][]. See [new_zeros][] for why."""
     return input.concat.new_ones(_normalize_new_size(shape, kwargs), **kwargs)
 
 
-@NestedTensorFuncRegistry.implement(torch.Tensor.new_empty)
+@NestedTensorFuncRegistry.implement(torch.Tensor.new_empty, compile_safe=True)
 def new_empty(input: NestedTensor, *shape, **kwargs) -> Tensor:
     r"""Plain-tensor counterpart of [torch.Tensor.new_empty][]. See [new_zeros][] for why."""
     return input.concat.new_empty(_normalize_new_size(shape, kwargs), **kwargs)
 
 
-@NestedTensorFuncRegistry.implement(torch.Tensor.new_full)
+@NestedTensorFuncRegistry.implement(torch.Tensor.new_full, compile_safe=True)
 def new_full(input: NestedTensor, size=None, fill_value=None, **kwargs) -> Tensor:
     r"""Plain-tensor counterpart of [torch.Tensor.new_full][]. See [new_zeros][] for why."""
     if fill_value is None:
@@ -5671,7 +5649,7 @@ def new_full(input: NestedTensor, size=None, fill_value=None, **kwargs) -> Tenso
     return input.concat.new_full(resolved, fill_value, **kwargs)
 
 
-@NestedTensorFuncRegistry.implement(torch.Tensor.new_empty_strided)
+@NestedTensorFuncRegistry.implement(torch.Tensor.new_empty_strided, compile_safe=True)
 def new_empty_strided(input: NestedTensor, size=None, stride=None, **kwargs) -> Tensor:
     r"""Plain-tensor counterpart of [torch.Tensor.new_empty_strided][]. See [new_zeros][] for why."""
     if stride is None:
