@@ -67,18 +67,27 @@ class TestElementwiseOps:
             for actual, reference in zip(output, source):
                 assert_close(actual, reference.expand(width, -1))
 
-    def test_native_stack_mixes_dense_and_nested_scalar_batches(self, device):
-        dense = torch.randn(2, dtype=torch.float64, device=device, requires_grad=True)
-        scalars = [torch.randn((), dtype=torch.float64, device=device, requires_grad=True) for _ in range(2)]
-        source = NT(scalars)
+    @pytest.mark.parametrize(
+        "shape,batch_first", [((), True), ((), False), ((3,), False), ((2, 3), True), ((2, 3), False)]
+    )
+    def test_native_stack_mixes_dense_and_nested_rectangular_batches(self, device, shape, batch_first):
+        leaves = [torch.randn(shape, dtype=torch.float64, device=device, requires_grad=True) for _ in range(2)]
+        source = NT(leaves, ragged_dims=(), batch_first=batch_first)
+        elements = leaves
+        if len(shape) == 2:
+            source = source.transpose(1 if batch_first else 0, 2)
+            elements = [leaf.t() for leaf in leaves]
+        reference = torch.stack(elements, dim=0 if batch_first or not shape else 1)
+        dense = torch.randn_like(reference, requires_grad=True)
 
         output = torch.ops.aten.stack.default([dense, source, source], 1)
-        expected = torch.stack([dense, torch.stack(scalars), torch.stack(scalars)], 1)
+        expected = torch.stack([dense, reference, reference], 1)
 
         assert not isinstance(output, NT)
         assert_close(output, expected)
-        actual_gradients = torch.autograd.grad(output.sum(), (dense, *scalars))
-        expected_gradients = torch.autograd.grad(expected.sum(), (dense, *scalars))
+        cotangent = torch.randn_like(expected)
+        actual_gradients = torch.autograd.grad(output, (dense, *leaves), cotangent)
+        expected_gradients = torch.autograd.grad(expected, (dense, *leaves), cotangent)
         for actual, reference in zip(actual_gradients, expected_gradients):
             assert_close(actual, reference)
 

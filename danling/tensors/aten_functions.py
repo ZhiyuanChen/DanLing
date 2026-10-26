@@ -6249,18 +6249,27 @@ def cat(func, args, kwargs):
 
 @NestedTensorAtenRegistry.implement(aten.stack.default, compile_safe=True)
 def stack(func, args, kwargs):
-    r"""Stack logical scalar batches without replaying dense batch axes per element."""
+    r"""Stack rectangular logical batches without replaying dense batch axes per element."""
     from .nested_tensor import NestedTensor
     from .torch_functions import stack as stack_nested
 
     tensors = args[0]
     dim = args[1] if len(args) > 1 else kwargs.get("dim", 0)
     nested = [tensor for tensor in tensors if isinstance(tensor, NestedTensor)]
-    if all(tensor._physical_shape.size(1) == 0 for tensor in nested):
-        # Native composite backwards stack per-sample scalars, mixing dense
-        # [B] buffers and wrappers of B scalar elements. Their packed children
-        # already are those exact dense buffers; no padding or sample loop is needed.
-        values = [tensor.concat if isinstance(tensor, NestedTensor) else tensor for tensor in tensors]
+    if all(not tensor._ragged_dims for tensor in nested):
+        # Native composite backwards mix complete dense batches and wrappers
+        # with no remaining ragged axes. Restore their exact logical axis order
+        # before stacking; these rectangular views require no padding.
+        values = []
+        for tensor in tensors:
+            if isinstance(tensor, NestedTensor):
+                order = (0, *(1 + tensor._static_dims.index(dim) for dim in range(tensor._physical_shape.size(1))))
+                value = tensor.concat.permute(order)
+                if not tensor.batch_first and tensor.dim() > 1:
+                    value = value.movedim(0, 1)
+                values.append(value)
+            else:
+                values.append(tensor)
         return func(values, dim)
     return stack_nested(tensors, dim=dim)
 

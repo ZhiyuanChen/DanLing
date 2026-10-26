@@ -139,22 +139,26 @@ class TestFunctionTransforms:
             pytest.param([0.0, 0.0, 3.4, 0.0, 5.6], id="multiple-zeros"),
         ],
     )
-    def test_cumprod_transform_derivatives(self, device, values):
+    @pytest.mark.parametrize("layout", ["scalar", "leading-channels"])
+    def test_cumprod_transform_derivatives(self, device, values, layout):
         values = torch.tensor(values, dtype=torch.float64, device=device)
+        if layout != "scalar":
+            values = values[:, None] * values.new_tensor([1.0, 0.5])
         direction = torch.randn_like(values)
         source = NT(values.split((2, 3)), ragged_dims=(0,))
         vector = NT(direction.split((2, 3)), ragged_dims=(0,))
+        dim = 1
 
         def reference(packed):
             return torch.cat([part.cumprod(0) for part in packed.split((2, 3))])
 
         expected, expected_tangent = torch.func.jvp(reference, (values,), (direction,))
-        actual, tangent = torch.func.jvp(lambda value: torch.cumprod(value, dim=1), (source,), (vector,))
+        actual, tangent = torch.func.jvp(lambda value: torch.cumprod(value, dim=dim), (source,), (vector,))
         assert_close(actual.concat, expected)
         assert_close(tangent.concat, expected_tangent)
 
         def loss(packed):
-            return source.packed_like(packed).cumprod(dim=1).sum()
+            return source.packed_like(packed).cumprod(dim=dim).sum()
 
         expected_gradient = torch.func.grad(lambda packed: reference(packed).sum())(values)
         assert_close(torch.func.grad(loss)(values), expected_gradient)
