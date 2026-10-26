@@ -1877,22 +1877,25 @@ Eager mode issues the same native calls directly to avoid custom-op dispatcher
 overhead. The result is
 reconstructed as <code>(P_i, R_i)</code> through the rectangular metadata above. It does not
 materialize padding, a cross-sample matrix, pair index tensors, or
-<code>sum(P_i * R_i) x M</code> gathered operands. Eager <code>torch.cdist(left, right)</code> remains
-supported, but the method form is the AOT/Inductor entry point because PyTorch
-treats the built-in function as an opaque graph leaf.</p>
-<p>For cumulative products along a canonical ragged dimension, use
-<code>input.cumprod(dim)</code> in compiled training code. The segmented operator invokes
+<code>sum(P_i * R_i) x M</code> gathered operands. Both <code>torch.cdist(left, right)</code> and
+<code>left.cdist(right)</code> support AOT/Inductor fullgraph compilation for this layout.</p>
+<p>For cumulative products along a canonical ragged dimension, both
+<code>torch.cumprod(input, dim)</code> and <code>input.cumprod(dim)</code> support compiled training.
+The segmented operator invokes
 the current device&rsquo;s native <code>cumprod</code> and backward kernel independently for
 each packed sample. It therefore preserves native rounding, underflow, zero,
-and non-finite behavior without padding or reassociating the product. Eager
-<code>torch.cumprod(input, dim)</code> remains supported.</p>
+and non-finite behavior without padding or reassociating the product.</p>
 <p>Ragged cumulative sums also use a native scan for each packed sample. This
 isolates non-finite values between samples and preserves native within-sample
 accumulation behavior. The segmented scans use <code>O(total_values + batch_size)</code>
 explicit storage and <code>O(batch_size)</code> host scheduling/native kernel calls; they
-do not allocate a padded envelope. Eager cumulative products support higher-order
-reverse-mode derivatives. Compiled segmented cdist and cumulative-product
-backward paths retain their first-order contract.</p>
+do not allocate a padded envelope. Cumulative products and Euclidean MM distances
+retain native higher-order reverse-mode graphs. Their segmented backward operators
+also have registered derivatives and support differentiation of independently
+compiled VJP graphs. This differs from taking a second backward through an
+already AOT-compiled forward, which the installed PyTorch AOT runtime rejects
+for ordinary dense tensors as well. Direct-kernel distance derivatives retain
+the native kernel&rsquo;s differentiation support.</p>
 <p>The result can remain a <code>NestedTensor</code> throughout a compiled model or cross a
 compiled/eager training boundary as a wrapper-only output. DanLing preserves
 the outer wrapper&rsquo;s AOTAutograd edge and projects it back to <code>result.concat</code>
@@ -1944,10 +1947,25 @@ flattening the padded <code>.tensor</code> view.</p>
 that <code>from_concatenated(*value.concatenate())</code> can preserve noncanonical layouts.
 Converting those shapes to an ordinary tuple or list discards the layout metadata
 and requests the ordinary canonical reconstruction contract.</p>
-<p>Reverse-mode <code>torch.autograd</code> is supported. <code>torch.func</code> transforms, <code>vmap</code>, and
-forward-mode AD are not currently supported. Compile support is operation- and
-layout-specific; an explicitly rejected eager-only path is not a promise of
-general fullgraph support.</p>
+<p>Reverse-mode <code>torch.autograd</code>, native forward AD, and <code>torch.func.grad</code>, <code>vjp</code>
+and <code>jvp</code> work through the packed autograd bridges. <code>jacrev</code> with scalar or
+one-dimensional dense outputs, static-axis <code>vmap</code>, and per-sample mapped reductions preserve the
+sample geometry. Transform support still depends on the operators used in the
+function. Direct ragged <code>jacfwd</code> encounters PyTorch&rsquo;s basis construction, which
+assumes that the logical rectangular shape contains exactly <code>numel()</code> values.
+For forward-mode Jacobians over true ragged values, differentiate the dense packed values
+and reconstruct the fixed geometry with <code>template.packed_like(values)</code>.
+The packed adapter also keeps gradients in true-value coordinates when a native
+composite backward would return a dense padded tangent for a direct wrapper input.
+Complete Hessian transform compositions are not implemented yet. They expose
+additional DanLing layout and vectorized-broadcast gaps, including intermediate
+sample axes beyond the currently supported logical positions zero and one.</p>
+<p>Packed fullgraph paths also cover diagonal construction/extraction, logical
+rolls and rotations, local response normalization, one-hot encoding, Gumbel
+softmax, <code>pdist</code>, fractional max pooling, and ragged normalization.
+Compile support remains operation- and layout-specific. Other spatial operators,
+attention configurations, and transform combinations still require individual
+implementations and validation.</p>
 <h2 id="benchmarks">Benchmarks<a class="headerlink" href="#benchmarks" title="Permanent link">&para;</a></h2>
 <p>Benchmarked on a single NVIDIA B200 180GB GPU with PyTorch 2.11, bfloat16.</p>
 <p>Run with: <code>python scripts/benchmark_nested_tensor.py</code></p>

@@ -1736,17 +1736,11 @@ functions.</p>
 <code>F.linear</code>, <code>F.conv*</code>, <code>F.max_pool*</code>, <code>F.embedding</code>,
 <code>F.layer_norm</code>, <code>F.scaled_dot_product_attention</code>, and other
 <code>torch.nn.functional</code> ops.</p>
-<p>The design rule is:</p>
-<ul>
-<li>use one canonical NestedTensor implementation path per op whenever possible</li>
-<li>reserve <code>compile_safe</code> for packed-first training hot paths only</li>
-<li>keep convenience APIs honest by marking densifying or repacking handlers
-  eager-only under <code>torch.compile</code></li>
-<li>leave non-hot spatial ops eager-only rather than carrying speculative
-  packed fast paths</li>
-</ul>
-<p>That means most spatial operators here use per-element dispatch, while a small
-Tier A set of transformer-hot packed handlers stays compile-safe.</p>
+<p>Handlers preserve logical sample boundaries, native dtypes and differentiation
+semantics. Compiled paths use packed tensor operations or segmented native
+kernels with explicit metadata and autograd registrations. Compile support is
+recorded per operator and layout; remaining per-element handlers still require
+packed implementations before they can enter fullgraph execution.</p>
 
 
 
@@ -1794,12 +1788,7 @@ Tier A set of transformer-hot packed handlers stays compile-safe.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nn_functions.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">897</span>
-<span class="normal">898</span>
-<span class="normal">899</span>
-<span class="normal">900</span>
-<span class="normal">901</span>
-<span class="normal">902</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">902</span>
 <span class="normal">903</span>
 <span class="normal">904</span>
 <span class="normal">905</span>
@@ -1834,7 +1823,12 @@ Tier A set of transformer-hot packed handlers stays compile-safe.</p>
 <span class="normal">934</span>
 <span class="normal">935</span>
 <span class="normal">936</span>
-<span class="normal">937</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">create_flex_block_mask</span><span class="p">(</span>
+<span class="normal">937</span>
+<span class="normal">938</span>
+<span class="normal">939</span>
+<span class="normal">940</span>
+<span class="normal">941</span>
+<span class="normal">942</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">create_flex_block_mask</span><span class="p">(</span>
     <span class="n">mask_mod</span><span class="p">:</span> <span class="n">Callable</span><span class="p">,</span>
     <span class="n">query</span><span class="p">:</span> <span class="n">NestedTensor</span><span class="p">,</span>
     <span class="n">key</span><span class="p">:</span> <span class="n">NestedTensor</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
