@@ -495,10 +495,11 @@ def _resolve_dense_for_values(nt: NestedTensor, other) -> Tensor | None:
     :func:`_dense_alignment` does the reading and refuses ambiguous shapes; this function does
     the rewriting, one permutation plus at most one ``index_select``, for any packed layout.
 
-    A dense operand shaped exactly like the packed values is elementwise on them, which is what
-    a danling op that concatenated this same tensor produces (e.g. ``F.cross_entropy`` with
-    ``reduction="none"``). That match covers packed dim 0, whose extent is data-dependent, so it
-    cannot be a coincidental collision with a ragged maximum and is taken before any alignment.
+    For ragged layouts, a dense operand shaped exactly like the packed values is elementwise
+    on them, which is what a danling op that concatenated this same tensor produces (e.g.
+    ``F.cross_entropy`` with ``reduction="none"``). That match covers a data-dependent packed
+    row count. Rectangular layouts instead use logical alignment: their batch and static
+    extents can coincide while their logical and packed axes differ.
 
     Returns ``None`` when no reading applies; raises when more than one does.
     """
@@ -513,14 +514,15 @@ def _resolve_dense_for_values(nt: NestedTensor, other) -> Tensor | None:
     # A data-derived packed row count cannot be compared with a dense batch
     # extent in Python. Use this shortcut only when equality is already known;
     # otherwise resolve the operand through its logical/sample alignment.
-    if other.dim() == nt.concat.dim() and all(
+    packed_match = other.dim() == nt.concat.dim() and all(
         statically_known_true(dense == packed) for dense, packed in zip(other.shape, nt.concat.shape)
-    ):
+    )
+    if nt._ragged_dims and packed_match:
         return other
 
     reading = _dense_alignment(nt, other)
     if reading is None:
-        return None
+        return other if packed_match else None
     return _dense_alignment_to_values(nt, other, reading)
 
 

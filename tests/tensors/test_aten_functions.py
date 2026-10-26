@@ -123,6 +123,23 @@ class TestElementwiseOps:
         assert_close(pow_rev_out, pow_rev_ref)
         assert_close(and_out, and_ref)
 
+    @pytest.mark.parametrize("shape,packed", [((2, 3), False), ((3,), True)])
+    def test_rectangular_dense_operands_use_logical_then_packed_axes(self, device, shape, packed):
+        leaves = [torch.randn(shape, dtype=torch.float64, device=device, requires_grad=True) for _ in range(2)]
+        source = NT(leaves, ragged_dims=(), batch_first=False)
+        reference = torch.stack(leaves, dim=1)
+        dense = torch.randn_like(source.concat if packed else reference, requires_grad=True)
+
+        output = source * dense
+        expected = reference * (dense.movedim(0, 1) if packed else dense)
+
+        assert_close(output.tensor, expected)
+        cotangent = torch.randn_like(expected)
+        actual_gradients = torch.autograd.grad(output.tensor, (*leaves, dense), cotangent)
+        expected_gradients = torch.autograd.grad(expected, (*leaves, dense), cotangent)
+        for actual, reference in zip(actual_gradients, expected_gradients):
+            assert_close(actual, reference)
+
     @pytest.mark.parametrize("op", [torch.mul, torch.add])
     def test_binary_op_roundtrip(self, op):
         nt = NT([torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0, 5.0])])
