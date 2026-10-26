@@ -139,7 +139,9 @@ class TestFunctionTransforms:
             pytest.param([0.0, 0.0, 3.4, 0.0, 5.6], id="multiple-zeros"),
         ],
     )
-    @pytest.mark.parametrize("layout", ["scalar", "leading-channels", "trailing-channels"])
+    @pytest.mark.parametrize(
+        "layout", ["scalar", "leading-channels", "trailing-channels", "leading-channels-batch-second"]
+    )
     def test_cumprod_transform_derivatives(self, device, values, layout):
         values = torch.tensor(values, dtype=torch.float64, device=device)
         if layout != "scalar":
@@ -151,10 +153,10 @@ class TestFunctionTransforms:
         if trailing:
             elements = [part.t() for part in elements]
             vectors = [part.t() for part in vectors]
-        batch_first = not trailing
+        batch_first = not trailing and layout != "leading-channels-batch-second"
         source = NT(elements, ragged_dims=(1 if trailing else 0,), batch_first=batch_first)
         vector = NT(vectors, ragged_dims=source.ragged_dims, batch_first=source.batch_first)
-        dim = 2 if trailing else 1
+        dim = 2 if trailing else 1 if batch_first else 0
 
         def reference(packed):
             return torch.cat([part.cumprod(0) for part in packed.split((2, 3))])

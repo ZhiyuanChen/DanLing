@@ -3834,11 +3834,11 @@ class TestReductionOps:
 
         nt = NT(parts, batch_first=False)
         count = torch.count_nonzero(nt, dim=(0, 3))
-        count_reference = torch.stack([torch.count_nonzero(t, dim=(0, 2)) for t in parts]).movedim(0, 1)
+        count_reference = torch.stack([torch.count_nonzero(t, dim=(0, 2)) for t in parts])
         assert_close(count, count_reference)
 
         summed = torch.sum(nt, dim=(0, 3))
-        sum_reference = torch.stack([torch.sum(t, dim=(0, 2)) for t in parts]).movedim(0, 1)
+        sum_reference = torch.stack([torch.sum(t, dim=(0, 2)) for t in parts])
         assert_close(summed, sum_reference)
 
     def test_linalg_matrix_norm_after_multi_ragged_dims(self, device, float_dtype):
@@ -3878,7 +3878,7 @@ class TestReductionOps:
             for op in (torch.argmax, torch.argmin):
                 output = op(nt, dim=logical_dim, keepdim=keepdim)
                 reference = torch.stack([op(t, dim=element_dim, keepdim=keepdim) for t in parts])
-                if parts[0].dim() - (0 if keepdim else 1) > 0:
+                if keepdim or element_dim != 0:
                     reference = reference.movedim(0, 1)
                 assert_close(output, reference)
 
@@ -3892,7 +3892,7 @@ class TestReductionOps:
 
         count = torch.count_nonzero(nt, dim=logical_dim)
         count_reference = torch.stack([torch.count_nonzero(t, dim=element_dim) for t in parts])
-        if parts[0].dim() - 1 > 0:
+        if element_dim != 0:
             count_reference = count_reference.movedim(0, 1)
         assert_close(count, count_reference)
 

@@ -3686,10 +3686,8 @@ def _restore_multi_dim_batch_dim(
     dims_adj,
     keepdim: bool,
 ) -> Tensor:
-    r"""Restore the configured batch position after reducing physical dimensions."""
-    physical_rank = int(source._physical_shape.size(1))
-    output_physical_rank = physical_rank if keepdim else physical_rank - len({int(dim) for dim in dims_adj})
-    if not source.batch_first and output_physical_rank > 0:
+    r"""Restore the logical batch position after removing the reduced dimensions."""
+    if not source.batch_first and (keepdim or 0 not in dims_adj) and output.dim() > 1:
         return output.movedim(0, 1)
     return output
 
