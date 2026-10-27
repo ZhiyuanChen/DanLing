@@ -39,7 +39,7 @@ from torch import distributed as dist
 from torch import nn, optim, utils
 from torch.backends import cudnn
 from torch.nn import functional as F
-from torch.nn.utils import clip_grad_norm_, clip_grad_value_
+from torch.nn.utils import clip_grad_value_
 from torchdata.stateful_dataloader import StatefulDataLoader
 from torchdata.stateful_dataloader.sampler import RandomSampler as StatefulRandomSampler
 from tqdm import tqdm
@@ -55,6 +55,7 @@ from danling.optim.optimizer import (
     SCHEDULER_METRIC_UNSET,
     OptimizerContainer,
     OptimizerParameterCache,
+    clip_grad_norm,
     normalize_scheduler_interval,
     scheduler_requires_metric,
     step_scheduler,
@@ -1726,6 +1727,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             return self.optimizer_container.clip_gradients(
                 max_grad_value=max_grad_value,
                 max_grad_norm=max_grad_norm,
+                pipeline_group=self._gradient_clipping_group(),
+                device=self.device,
             )
 
         if self.optimizer is None or (max_grad_value is None and max_grad_norm is None):
@@ -1735,8 +1738,13 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         if max_grad_value is not None:
             clip_grad_value_(parameters, max_grad_value)
         if max_grad_norm is not None:
-            grad_norm = clip_grad_norm_(parameters, max_grad_norm)
+            grad_norm = clip_grad_norm(
+                parameters, max_grad_norm, pipeline_group=self._gradient_clipping_group(), device=self.device
+            )
             return float(grad_norm.detach().item() if isinstance(grad_norm, torch.Tensor) else grad_norm)
+        return None
+
+    def _gradient_clipping_group(self):
         return None
 
     def _optimizer_step_and_zero_grad(self) -> None:

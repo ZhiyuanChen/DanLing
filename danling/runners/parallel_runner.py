@@ -879,6 +879,11 @@ class ParallelRunner(TorchRunner):
             return tuple(fsdp_parts)
         return super()._train_no_sync_targets()
 
+    def _gradient_clipping_group(self):
+        if self.pipeline_degree > 1 and dist.is_available() and dist.is_initialized():
+            return self.pipeline_group
+        return None
+
     @property
     def loss_parallel_enabled(self) -> bool:
         configured = self.config.parallel.get("loss_parallel")

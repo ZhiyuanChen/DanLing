@@ -24,11 +24,59 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 import torch
+from torch import distributed as dist
 from torch import nn, optim
-from torch.nn.utils import clip_grad_norm_, clip_grad_value_
+from torch.nn.utils import clip_grad_norm_ as native_clip_grad_norm_
+from torch.nn.utils import clip_grad_value_
+
+try:
+    from torch.distributed.tensor import DTensor
+except ImportError:
+    from torch.distributed._tensor import DTensor
 
 SCHEDULER_METRIC_UNSET = object()
 SchedulerInterval = Literal["step", "epoch"]
+
+
+@torch.no_grad()
+def clip_grad_norm(
+    parameters: list[nn.Parameter], max_norm: float, *, pipeline_group: Any = None, device: torch.device | None = None
+) -> torch.Tensor:
+    """Clip one model norm across distinct DTensor meshes and pipeline stages.
+
+    A DTensor norm reduces its own mesh. Pipeline ranks own disjoint model
+    parameters, so their squared norms need a separate sum before every rank
+    applies the same clipping coefficient. Scalar accumulation preserves
+    Float64 gradients and keeps empty stages in the pipeline collective.
+    """
+    if pipeline_group is None and not any(isinstance(parameter.grad, DTensor) for parameter in parameters):
+        return native_clip_grad_norm_(parameters, max_norm)
+    by_mesh: dict[Any, list[torch.Tensor]] = {}
+    for parameter in parameters:
+        if parameter.grad is not None:
+            gradient = parameter.grad
+            mesh = gradient.device_mesh if isinstance(gradient, DTensor) else None
+            by_mesh.setdefault((mesh, gradient.device), []).append(gradient)
+    squared_norms = []
+    for gradients in by_mesh.values():
+        norms = torch.stack([torch.linalg.vector_norm(gradient) for gradient in gradients])
+        norm = torch.linalg.vector_norm(norms)
+        if isinstance(norm, DTensor):
+            norm = norm.full_tensor()
+        squared_norms.append(norm.to(dtype=torch.float64).square())
+    if squared_norms:
+        norm_device = device or squared_norms[0].device
+        total_squared = torch.stack([norm.to(norm_device) for norm in squared_norms]).sum()
+    else:
+        total_squared = torch.zeros((), dtype=torch.float64, device=device)
+    if pipeline_group is not None:
+        dist.all_reduce(total_squared, op=dist.ReduceOp.SUM, group=pipeline_group)
+    total_norm = total_squared.sqrt()
+    coefficient = (max_norm / (total_norm + 1e-6)).clamp(max=1.0)
+    for gradients in by_mesh.values():
+        for gradient in gradients:
+            gradient.mul_(coefficient.to(device=gradient.device))
+    return total_norm
 
 
 @dataclass(slots=True)
@@ -171,15 +219,25 @@ class OptimizerContainer:
         *,
         max_grad_value: float | None = None,
         max_grad_norm: float | None = None,
+        pipeline_group: Any = None,
+        device: torch.device | None = None,
     ) -> float | None:
         if max_grad_value is None and max_grad_norm is None:
             return None
 
         parameters = self.parameter_cache.get_parameters_for_clipping(self.optimizer)
         if max_grad_value is not None:
-            clip_grad_value_(parameters, max_grad_value)
+            groups: dict[Any, list[nn.Parameter]] = {}
+            for parameter in parameters:
+                if parameter.grad is not None:
+                    gradient = parameter.grad
+                    mesh = gradient.device_mesh if isinstance(gradient, DTensor) else None
+                    placements = gradient.placements if isinstance(gradient, DTensor) else None
+                    groups.setdefault((mesh, placements, gradient.device), []).append(parameter)
+            for group in groups.values():
+                clip_grad_value_(group, max_grad_value)
         if max_grad_norm is not None:
-            grad_norm = clip_grad_norm_(parameters, max_grad_norm)
+            grad_norm = clip_grad_norm(parameters, max_grad_norm, pipeline_group=pipeline_group, device=device)
             return float(grad_norm.detach().item() if isinstance(grad_norm, torch.Tensor) else grad_norm)
         return None
 
