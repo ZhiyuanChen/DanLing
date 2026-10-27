@@ -19,14 +19,171 @@
 
 from __future__ import annotations
 
+import json
+import os
+import socket
+import threading
+import time
+from collections import deque
 from collections.abc import Mapping, MutableMapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
+from warnings import warn
 
 import torch
 from torch import distributed as dist
 
 from danling.tensors import NestedTensor
+
+
+class RuntimeDiagnostics:
+    """Opt-in per-rank phase events and bounded CUDA allocator snapshots.
+
+    Durations are host wall time and never synchronize CUDA. Checkpoint future
+    callbacks retain the context captured when the operation was submitted.
+    """
+
+    def __init__(self, runner: Any) -> None:
+        self.runner = runner
+        config = runner.config.get("profiling", {})
+        if not isinstance(config, Mapping):
+            config = {}
+        self.enabled = bool(config.get("events", False))
+        self.memory_history = bool(config.get("memory_history", False)) and runner.device.type == "cuda"
+        self.snapshot_interval = config.get("memory_snapshot_interval")
+        self.snapshot_keep = int(config.get("memory_snapshot_keep", 2))
+        self.snapshot_on_oom = bool(config.get("memory_snapshot_on_oom", True))
+        self._snapshots: deque[str] = deque()
+        self._lock = threading.Lock()
+        self._sequence = 0
+        self._warned = False
+        self._closed = False
+        self.directory = os.path.join(
+            runner.workspace.dir, str(config.get("trace_dir", "profiles")), runner.timestamp, f"rank-{runner.rank:05d}"
+        )
+        self.event_path = os.path.join(self.directory, f"events-{os.getpid()}.jsonl")
+        if self.enabled or self.memory_history:
+            os.makedirs(self.directory, exist_ok=True)
+        if self.memory_history:
+            entries = int(config.get("memory_history_max_entries", 100000))
+            if (
+                entries <= 0
+                or self.snapshot_keep <= 0
+                or (self.snapshot_interval is not None and self.snapshot_interval <= 0)
+            ):
+                raise ValueError("Allocator history size, snapshot retention and interval must be positive")
+            record = getattr(torch.cuda.memory, "_record_memory_history", None)
+            if not callable(record) or not callable(getattr(torch.cuda.memory, "_dump_snapshot", None)):
+                raise RuntimeError("This PyTorch build does not support CUDA allocator history")
+            record(max_entries=entries, device=runner.device)
+
+    def context(self) -> dict[str, Any]:
+        state = self.runner.train_state
+        return {
+            "run_id": self.runner.id,
+            "rank": self.runner.rank,
+            "world_size": self.runner.world_size,
+            "step": state.global_step,
+            "micro_step": state.micro_step,
+            "epoch": state.epoch,
+        }
+
+    def event(self, phase: str, *, context: Mapping[str, Any] | None = None, **fields: Any) -> None:
+        if not self.enabled or self._closed:
+            return
+        payload = dict(self.context() if context is None else context)
+        payload.update(fields)
+        payload.update(
+            phase=phase, time_unix=time.time(), pid=os.getpid(), thread=threading.get_ident(), host=socket.gethostname()
+        )
+        try:
+            with self._lock:
+                self._sequence += 1
+                payload["sequence"] = self._sequence
+                with open(self.event_path, "a", encoding="utf-8") as stream:
+                    stream.write(json.dumps(payload, default=str) + "\n")
+        except OSError as exc:
+            if not self._warned:
+                warn(f"runner diagnostic event write failed: {exc}", RuntimeWarning, stacklevel=2)
+                self._warned = True
+
+    @contextmanager
+    def span(self, phase: str, *, context: Mapping[str, Any] | None = None, **fields: Any):
+        if not self.enabled and not self.memory_history:
+            yield
+            return
+        started = time.perf_counter()
+        context = dict(self.context() if context is None else context)
+        status = "ok"
+        try:
+            yield
+        except BaseException as exc:
+            status = type(exc).__name__
+            if isinstance(exc, torch.cuda.OutOfMemoryError) and self.memory_history and self.snapshot_on_oom:
+                self.dump_memory_snapshot(reason="oom")
+            raise
+        finally:
+            self.event(phase, context=context, duration_seconds=time.perf_counter() - started, status=status, **fields)
+
+    def track_future(self, future: Any, phase: str, *, context: Mapping[str, Any] | None = None, **fields: Any) -> None:
+        if not self.enabled:
+            return
+        started = time.perf_counter()
+        context = dict(self.context() if context is None else context)
+
+        def completed(result):
+            error = None if result.cancelled() else result.exception()
+            self.event(
+                phase,
+                context=context,
+                duration_seconds=time.perf_counter() - started,
+                status="cancelled" if result.cancelled() else ("ok" if error is None else type(error).__name__),
+                **fields,
+            )
+
+        future.add_done_callback(completed)
+
+    def dump_memory_snapshot(self, *, reason: str) -> str | None:
+        if not self.memory_history:
+            return None
+        path = os.path.join(
+            self.directory, f"memory-{self.runner.train_state.global_step}-{reason}-{time.time_ns()}.pickle"
+        )
+        try:
+            with torch.cuda.device(self.runner.device):
+                torch.cuda.memory._dump_snapshot(path)
+            self._snapshots.append(path)
+            while len(self._snapshots) > self.snapshot_keep:
+                os.remove(self._snapshots.popleft())
+            self.event("memory.snapshot", path=path, reason=reason)
+            return path
+        except Exception as exc:
+            warn(f"failed to dump CUDA allocator snapshot: {exc}", RuntimeWarning, stacklevel=2)
+            return None
+
+    def step(self) -> None:
+        if self.runner.device.type == "cuda" and self.enabled:
+            stats = torch.cuda.memory_stats(self.runner.device)
+            self.event(
+                "memory.counters", allocation_retries=stats.get("num_alloc_retries", 0), ooms=stats.get("num_ooms", 0)
+            )
+        step = self.runner.train_state.global_step
+        if (
+            self.memory_history
+            and self.snapshot_interval is not None
+            and step > 0
+            and step % self.snapshot_interval == 0
+        ):
+            self.dump_memory_snapshot(reason="periodic")
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        if self.memory_history:
+            torch.cuda.memory._record_memory_history(enabled=None, device=self.runner.device)
+            self.memory_history = False
+        self._closed = True
 
 
 def _max_optional(lhs: float | None, rhs: float | None) -> float | None:

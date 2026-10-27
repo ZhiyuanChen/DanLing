@@ -303,6 +303,12 @@ class ProfilingConfig(chanfig.Config):
     post_processing_timeout_seconds: Optional[float] = None
     trace_dir: str = "profiles"
     operator_table_rows: int = 100  # Zero skips CPU aggregation during GPU-job shutdown.
+    events: bool = False
+    memory_history: bool = False
+    memory_history_max_entries: int = 100000
+    memory_snapshot_interval: Optional[int] = None
+    memory_snapshot_keep: int = 2
+    memory_snapshot_on_oom: bool = True
 
 
 class HeartbeatConfig(chanfig.Config):

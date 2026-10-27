@@ -19,14 +19,75 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import MutableMapping
+from concurrent.futures import Future
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import torch
 
-from danling.runners.telemetry import LoopTelemetry, RuntimeTelemetrySnapshot
+from danling.runners.telemetry import LoopTelemetry, RuntimeDiagnostics, RuntimeTelemetrySnapshot
 from danling.tensors import NestedTensor
+
+
+def _diagnostic_runner(tmp_path, *, device="cpu", **profiling):
+    return SimpleNamespace(
+        config={"profiling": profiling},
+        device=torch.device(device),
+        workspace=SimpleNamespace(dir=str(tmp_path)),
+        timestamp="run",
+        id="training-run",
+        rank=3,
+        world_size=4,
+        train_state=SimpleNamespace(global_step=7, micro_step=14, epoch=2),
+    )
+
+
+def test_diagnostic_future_retains_submission_context_and_phase_failure(tmp_path):
+    runner = _diagnostic_runner(tmp_path, events=True)
+    diagnostics = RuntimeDiagnostics(runner)
+    future = Future()
+    diagnostics.track_future(future, "checkpoint.upload", target="checkpoint-7")
+    runner.train_state.global_step = 8
+    future.set_result(None)
+    with pytest.raises(ValueError, match="failure"), diagnostics.span("train.microbatch"):
+        raise ValueError("failure")
+    diagnostics.close()
+    with open(diagnostics.event_path, encoding="utf-8") as stream:
+        records = [json.loads(line) for line in stream]
+    assert [(item["phase"], item["step"], item["status"]) for item in records] == [
+        ("checkpoint.upload", 7, "ok"),
+        ("train.microbatch", 8, "ValueError"),
+    ]
+    assert records[0]["target"] == "checkpoint-7"
+    assert all(item["rank"] == 3 and item["duration_seconds"] >= 0 for item in records)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA allocator history requires CUDA")
+def test_cuda_allocator_snapshots_have_bounded_retention(tmp_path):
+    runner = _diagnostic_runner(
+        tmp_path,
+        device="cuda",
+        events=True,
+        memory_history=True,
+        memory_history_max_entries=128,
+        memory_snapshot_interval=1,
+        memory_snapshot_keep=1,
+    )
+    diagnostics = RuntimeDiagnostics(runner)
+    try:
+        allocation = torch.ones(1024, device="cuda")
+        diagnostics.step()
+        runner.train_state.global_step += 1
+        allocation.square_()
+        diagnostics.step()
+        snapshots = list(tmp_path.rglob("memory-*.pickle"))
+        assert len(snapshots) == 1
+        assert snapshots[0].stat().st_size > 0
+    finally:
+        diagnostics.close()
 
 
 class _RecordingMeter:

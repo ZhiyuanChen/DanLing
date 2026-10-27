@@ -26,7 +26,7 @@ import socket
 import threading
 import time
 from collections.abc import Mapping
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from typing import TYPE_CHECKING, Any
 from warnings import warn
 
@@ -197,8 +197,10 @@ class RunnerSupervisor:
         self.run_gc_collection(scope="startup", progress=0)
 
     def run_gc_collection(self, *, scope: str, progress: int) -> None:
-        del scope, progress
-        python_gc.collect(self._gc_generation_value)
+        diagnostics = getattr(self.runner, "diagnostics", None)
+        context = diagnostics.span("gc", scope=scope, progress=progress) if diagnostics is not None else nullcontext()
+        with context:
+            python_gc.collect(self._gc_generation_value)
 
     def maybe_collect_garbage(self, progress: int, *, scope: str) -> bool:
         interval = self._gc_interval_value

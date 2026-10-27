@@ -64,7 +64,7 @@ from .checkpoints import TorchDistributedCheckpointManager, TorchFTCheckpointMan
 from .compile import Compiler
 from .config import RunnerConfig, normalize_stack_name
 from .mixins import Fp8Mixin
-from .telemetry import LoopTelemetry
+from .telemetry import LoopTelemetry, RuntimeDiagnostics
 from .utils import RunnerMode, get_precision, on_main_process
 
 TorchDTensor: Any
@@ -159,6 +159,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
     scheduler_monitor: str | None = None
     _train_pg_timeout_reduced: bool = False
     _profiler_context: Any | None = None
+    diagnostics: RuntimeDiagnostics | None = None
     _profiler: Any | None = None
     _profiler_trace_dir: str | None = None
     _profiler_operator_table_rows: int = 100
@@ -219,6 +220,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         self.scheduler_monitor = None if monitor is None else str(monitor)
         self._bind_optimizer_container()
         self.auto_restore()
+        self.diagnostics = RuntimeDiagnostics(self)
         self._init_profiler()
         super().__post_init__()
 
@@ -531,6 +533,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         self._profiler = profiler
 
     def _step_profiler(self) -> None:
+        if self.diagnostics is not None:
+            self.diagnostics.step()
         if self._profiler is None:
             return
         self._profiler.step()
@@ -1620,10 +1624,11 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
     @contextmanager
     def _train_step_context(self, *, no_sync_targets: tuple[nn.Module, ...] | list[nn.Module] = ()):
-        autocast_context = self.infer_context()
-        if self._should_train_no_sync() and no_sync_targets:
-            with ExitStack() as stack:
-                stack.enter_context(autocast_context)
+        with ExitStack() as stack:
+            if self.diagnostics is not None:
+                stack.enter_context(self.diagnostics.span("train.microbatch"))
+            stack.enter_context(self.infer_context())
+            if self._should_train_no_sync() and no_sync_targets:
                 for module in no_sync_targets:
                     no_sync = getattr(module, "no_sync", None)
                     if callable(no_sync):
@@ -1640,10 +1645,6 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                         "cannot disable gradient synchronization for "
                         f"{type(module).__name__}: expected `no_sync()` or `set_requires_gradient_sync(...)`"
                     )
-                yield
-            return
-
-        with autocast_context:
             yield
 
     def train_step(self, data: Any) -> tuple[Any, torch.Tensor | None]:
@@ -1876,7 +1877,9 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
         self.validate_ema_update_contract()
         self._begin_optimizer_window()
-        self.checkpoint_manager.maybe_wait_for_staging()
+        context = self.diagnostics.span("checkpoint.staging_wait") if self.diagnostics is not None else nullcontext()
+        with context:
+            self.checkpoint_manager.maybe_wait_for_staging()
         self._sync_fault_tolerant_gradients()
         if self.grad_scaler is not None and self.optimizer is not None:
             self.grad_scaler.unscale_(self.optimizer)
@@ -3043,9 +3046,13 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             drained = super().close(timeout=timeout)
         except Exception:
             self._close_profiler()
+            if self.diagnostics is not None:
+                self.diagnostics.close()
             self.destroy_process_group()
             raise
         if not drained:
             return False
+        if self.diagnostics is not None:
+            self.diagnostics.close()
         self.destroy_process_group()
         return drained

@@ -357,3 +357,33 @@ Supported runner stacks:
 | `torch` / `ddp`    | file default, DCP opt-in                                    | DanLing payload           | default for built loaders                    | supported           |
 | `parallel`         | DCP default                                                 | DCP/DanLing model payload | default plus pipeline proxy state delegation | FSDP-only supported |
 | `deepspeed` / `ds` | DeepSpeed engine tag directories plus DanLing pointer files | DanLing payload           | default for built loaders via client state   | not supported       |
+
+## Update commits and runtime diagnostics
+
+TorchFT starts one quorum per optimizer accumulation window, before consuming its
+first batch. An update must pass `Manager.should_commit()` before the optimizer,
+step scheduler, EMA or global update counter advances. Nonfinite losses reject
+the entire window, including when `skip_nonfinite_loss` replaces a microbatch
+with zero. `ft.use_async_quorum` must remain `false` so healing restores model
+and loader state before forward; `ft.manager_timeout_seconds` controls recovery
+and `ft.max_consecutive_nonfinite_steps` bounds retries of divergent training.
+Manager step metadata is saved with full checkpoints. Asynchronous healing is
+rejected because TorchFT applies its recovered state after forward/backward.
+Custom training loops should call `_begin_optimizer_window()` before reading
+window data, use `train_context()` and finish through `optimizer_step()`.
+
+`profiling.events: true` writes per-rank JSONL events under
+`profiling.trace_dir/<timestamp>/rank-<rank>/events-<pid>.jsonl`. Events include
+run, rank, optimizer/microstep, process and thread context. Host phase durations
+cover microbatches, garbage collection, checkpoint submission, staging waits
+and async staging/upload completion; they do not synchronize CUDA. Future
+completion events retain the context of their submission and checkpoint target.
+Event writes are serialized within each rank and diagnostics are disabled by default.
+
+On CUDA, `profiling.memory_history: true` enables PyTorch allocator history with
+at most `memory_history_max_entries` records. `memory_snapshot_interval` enables
+periodic dumps; `memory_snapshot_on_oom` dumps on a training-context CUDA OOM.
+Only the latest `memory_snapshot_keep` dumps from that runner are retained.
+This optional facility uses PyTorch's experimental allocator snapshot API and
+requires a build providing it. Events also include allocator retry/OOM counters.
+CPU runs leave CUDA memory diagnostics inactive.

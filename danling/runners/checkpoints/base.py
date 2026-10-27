@@ -199,6 +199,9 @@ class CheckpointManager(ABC):
             self._start_or_queue_async_task(task_to_start)
 
     def _start_or_queue_async_task(self, task: Any) -> None:
+        diagnostics = getattr(self.runner, "diagnostics", None)
+        if diagnostics is not None:
+            diagnostics.event("checkpoint.enqueue", target=getattr(task, "checkpoint_id", None))
         dropped_task: Any | None = None
         future: Future | None = None
         start_error: Exception | None = None
@@ -357,6 +360,9 @@ class CheckpointManager(ABC):
         warn(f"{message} {self._rank_context()}", RuntimeWarning, stacklevel=3)
 
     def _emit_checkpoint_success(self, *, target: str | None = None, aliases: tuple[str, ...] = ()) -> None:
+        diagnostics = getattr(self.runner, "diagnostics", None)
+        if diagnostics is not None:
+            diagnostics.event("checkpoint.published", target=target, aliases=aliases)
         fields = self._checkpoint_event_fields(target=target, aliases=aliases)
         self._emit_info(self._format_event("checkpoint saved", fields))
 
@@ -367,6 +373,9 @@ class CheckpointManager(ABC):
         target: str | None = None,
         alias: str | None = None,
     ) -> None:
+        diagnostics = getattr(self.runner, "diagnostics", None)
+        if diagnostics is not None:
+            diagnostics.event("checkpoint.failed", target=target, error=str(exc))
         storage_failure = storage_failure_name(exc)
         if storage_failure is None:
             error = f"{type(exc).__name__}: {exc}"

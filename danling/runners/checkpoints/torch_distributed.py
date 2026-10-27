@@ -24,7 +24,7 @@ from collections import deque
 from collections.abc import Mapping
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from time import monotonic, sleep
 from typing import Any
@@ -776,11 +776,32 @@ class TorchDistributedCheckpointManager(CheckpointManager):
             if self._stager is None:
                 self._stager = DefaultStager(StagingOptions(True, True, True, True))
             save_kwargs["async_stager"] = self._stager
-        response = dcp.async_save(dict(task.state), **save_kwargs)
+        diagnostics = getattr(self.runner, "diagnostics", None)
+        saved_context = None
+        if diagnostics is not None:
+            saved_context = diagnostics.context()
+            train = task.state.get("state", {}).get("train", {})
+            for name in ("global_step", "micro_step", "epoch"):
+                if name in train:
+                    saved_context["step" if name == "global_step" else name] = train[name]
+        context = (
+            diagnostics.span("checkpoint.submit", context=saved_context, target=task.checkpoint_id)
+            if diagnostics is not None
+            else nullcontext()
+        )
+        with context:
+            response = dcp.async_save(dict(task.state), **save_kwargs)
         future = self._as_future(response)
         if future is None:
             raise RuntimeError("dcp.async_save did not return a Future-compatible handle")
         self._staging_future = self._as_staging_future(response) if task.async_mode == "async_with_pinned_mem" else None
+        diagnostics = getattr(self.runner, "diagnostics", None)
+        if diagnostics is not None:
+            diagnostics.track_future(future, "checkpoint.upload", context=saved_context, target=task.checkpoint_id)
+            if self._staging_future is not None:
+                diagnostics.track_future(
+                    self._staging_future, "checkpoint.staging", context=saved_context, target=task.checkpoint_id
+                )
         return future
 
     def apply_pointer_updates(self, pointers: _PendingPointers) -> None:
