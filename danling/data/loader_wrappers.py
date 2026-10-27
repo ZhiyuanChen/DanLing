@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 
@@ -29,22 +30,38 @@ class StepProxyLoader:
         self._loader = loader
         self.batch_sampler = getattr(loader, "batch_sampler", None)
         self.sampler = getattr(loader, "sampler", None)
+        self._position = 0
+        self._exhausted = False
 
     def __len__(self) -> int:
         return len(self._loader)
 
     def __iter__(self):
-        for _ in range(len(self._loader)):
+        if self._exhausted:
+            self._position = 0
+            self._exhausted = False
+        while self._position < len(self._loader):
+            self._position += 1
             yield None
+        self._exhausted = True
 
     def state_dict(self):
         state_dict_fn = getattr(self._loader, "state_dict", None)
-        if not callable(state_dict_fn):
-            raise AttributeError(f"{type(self._loader).__name__} has no callable state_dict")
-        return state_dict_fn()
+        return {
+            "loader": state_dict_fn() if callable(state_dict_fn) else None,
+            "position": self._position,
+            "exhausted": self._exhausted,
+        }
 
     def load_state_dict(self, state_dict) -> None:
         load_state_dict_fn = getattr(self._loader, "load_state_dict", None)
-        if not callable(load_state_dict_fn):
-            raise AttributeError(f"{type(self._loader).__name__} has no callable load_state_dict")
-        load_state_dict_fn(state_dict)
+        if isinstance(state_dict, Mapping) and "position" in state_dict and "loader" in state_dict:
+            self._position = int(state_dict["position"])
+            self._exhausted = bool(state_dict["exhausted"])
+            state_dict = state_dict["loader"]
+        else:
+            # Older checkpoints stored only the underlying loader's cursor.
+            self._position = int(state_dict.get("_num_yielded", 0))
+            self._exhausted = bool(state_dict.get("_iterator_finished", False))
+        if callable(load_state_dict_fn) and state_dict is not None:
+            load_state_dict_fn(state_dict)

@@ -2098,6 +2098,146 @@ class TestTorchRunnerStepEvaluation:
 
 class TestTorchRunnerSignalsAndShutdown:
 
+    @pytest.mark.parametrize("step_mode", [False, True])
+    @pytest.mark.parametrize("before_loop", [False, True])
+    def test_sigterm_resume_keeps_every_consumed_training_batch(self, tmp_path, step_mode, before_loop) -> None:
+        class ShutdownRunner(StreamingEpochRunner):
+            def __init__(self, config):
+                super().__init__(config)
+                self.datasets["train"] = list(range(8))
+                self.consumed = []
+                self.request_signal = not before_loop
+
+            def train_step(self, data):
+                self.consumed.append(int(data.item()))
+                if self.request_signal:
+                    self.request_signal = False
+                    self.supervisor.request_shutdown(signal.SIGTERM, None)
+                return super().train_step(data)
+
+        config = {
+            "device": "cpu",
+            "logging.enabled": False,
+            "logging.interval": 0,
+            "workspace.dir": str(tmp_path),
+            "accum_steps": 3,
+            "steps": 3,
+            "dataloader": {"batch_size": 1, "shuffle": False},
+            "ckpt": {"backend": "file", "async_mode": "disabled"},
+        }
+        source = ShutdownRunner(config)
+        checkpoint_path = Path(source.workspace.checkpoint_dir) / "latest.pth"
+        try:
+            if before_loop:
+                source.supervisor.request_shutdown(signal.SIGTERM, None)
+            with pytest.raises(SystemExit):
+                source.train_steps(["train"], []) if step_mode else source.train_epoch()
+            assert source.consumed == ([] if before_loop else [0, 1, 2])
+            consumed = source.consumed
+        finally:
+            source.close()
+        restored = ShutdownRunner(config)
+        try:
+            restored.request_signal = False
+            restored.load_checkpoint(checkpoint_path)
+            restored.train_steps(["train"], []) if step_mode else restored.train_epoch()
+            assert consumed + restored.consumed == list(range(8))
+            assert restored.train_state.global_step == 3
+        finally:
+            restored.close()
+
+    def test_recovery_restores_loader_before_selecting_each_window(self, tmp_path) -> None:
+        runner = StatefulDatasetTorchRunner(
+            {
+                "device": "cpu",
+                "logging.enabled": False,
+                "workspace.dir": str(tmp_path),
+                "dataloader": {"batch_size": 1, "shuffle": False},
+            }
+        )
+        try:
+            loader = runner.dataloaders["train"]
+            states = []
+            iterator = iter(loader)
+            for index in range(5):
+                next(iterator)
+                if index in (1, 4):
+                    states.append(runner.dataloaders.state_dict())
+
+            class Recovery:
+                def begin_step(self):
+                    runner.load_dataloaders(states.pop(0))
+
+                def close(self):
+                    pass
+
+            runner.fault_tolerance = Recovery()
+            batches = runner._iter_train_batches(loader)
+            assert next(batches)[1].item() == 2
+            runner.train_state.micro_step += 1
+            assert next(batches)[1].item() == 5
+        finally:
+            runner.close()
+
+    def test_step_mode_resume_preserves_split_target_and_sampler_epoch(self, tmp_path) -> None:
+        class SplitRunner(StreamingEpochRunner):
+            def __init__(self, config):
+                super().__init__(config)
+                self.consumed = []
+                self.interrupt = False
+
+            def train_step(self, data):
+                self.consumed.append((self.split, int(data.item())))
+                result = super().train_step(data)
+                if self.interrupt and self.train_state.global_step == 6:
+                    self.supervisor.request_shutdown(signal.SIGTERM, None)
+                return result
+
+        def build(path):
+            runner = SplitRunner(
+                {
+                    "device": "cpu",
+                    "seed": 42,
+                    "logging.enabled": False,
+                    "logging.interval": 0,
+                    "workspace.dir": str(path),
+                    "steps": 8,
+                    "ckpt": {"backend": "file", "async_mode": "disabled"},
+                }
+            )
+            for split, size in (("a", 10), ("b", 1)):
+                sampler = torch.utils.data.DistributedSampler(
+                    list(range(size)), num_replicas=1, rank=0, seed=42, shuffle=True
+                )
+                runner.dataloaders[split] = torch_runner_module.StatefulDataLoader(
+                    list(range(size)), batch_size=1, sampler=sampler
+                )
+            return runner
+
+        baseline = build(tmp_path / "baseline")
+        try:
+            baseline.train_steps(["a", "b"], [])
+            expected = baseline.consumed
+        finally:
+            baseline.close()
+        source = build(tmp_path / "resumed")
+        checkpoint_path = Path(source.workspace.checkpoint_dir) / "latest.pth"
+        try:
+            source.interrupt = True
+            with pytest.raises(SystemExit):
+                source.train_steps(["a", "b"], [])
+            consumed = source.consumed
+        finally:
+            source.close()
+        restored = build(tmp_path / "resumed")
+        try:
+            restored.load_checkpoint(checkpoint_path)
+            restored.train_steps(["a", "b"], [])
+            assert consumed + restored.consumed == expected
+            assert restored.train_state.global_step == 8
+        finally:
+            restored.close()
+
     def test_sigterm_discards_unsynced_partial_accumulation(self, tmp_path: Path) -> None:
         class DistributedAccumRunner(TinyTorchRunner):
             @property

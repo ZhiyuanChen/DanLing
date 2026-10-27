@@ -254,8 +254,16 @@ class RunnerSupervisor:
 
     def maybe_handle_termination_signal(self) -> None:
         signum = self._termination_signal
+        ready = getattr(self.runner, "can_checkpoint_for_shutdown", None)
+        if callable(ready) and not ready():
+            return
+        synchronize = getattr(self.runner, "synchronize_termination_signal", None)
+        if callable(synchronize):
+            signum = synchronize(signum)
         if signum is None:
             return
+        self._termination_signal = signum
+        self._termination_request_count = max(self._termination_request_count, 1)
 
         try:
             signal_name = signal.Signals(signum).name

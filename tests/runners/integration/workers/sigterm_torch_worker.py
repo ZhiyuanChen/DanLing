@@ -22,7 +22,7 @@ class SigtermTorchRunner(TorchRunner):
 
     def __init__(self, config):
         super().__init__(config)
-        total_examples = int(self.config.steps) * int(os.getenv("WORLD_SIZE", "1"))
+        total_examples = int(self.config.steps) * int(self.config.accum_steps) * int(os.getenv("WORLD_SIZE", "1"))
         self.datasets["train"] = [
             {"input": torch.full((4,), float(index + 1)), "target": torch.zeros(2)} for index in range(total_examples)
         ]
@@ -32,11 +32,17 @@ class SigtermTorchRunner(TorchRunner):
         self.criterion = nn.MSELoss(reduction="mean")
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.1)
         self._sigterm_sent = False
+        self.consumed_samples = []
 
     def train_step(self, data):
+        self.consumed_samples.extend(int(value) for value in data["input"][:, 0].tolist())
         result = super().train_step(data)
         signal_after_steps = int(os.getenv("DANLING_SIGNAL_AFTER_STEPS", "0") or 0)
-        if signal_after_steps > 0 and not self._sigterm_sent and self.train_state.global_step >= signal_after_steps:
+        signal_after_micro_steps = int(os.getenv("DANLING_SIGNAL_AFTER_MICRO_STEPS", "0") or 0)
+        should_signal = signal_after_steps > 0 and self.train_state.global_step >= signal_after_steps
+        should_signal |= signal_after_micro_steps > 0 and self.train_state.micro_step >= signal_after_micro_steps
+        signal_rank = int(os.getenv("DANLING_SIGNAL_RANK", "-1"))
+        if should_signal and not self._sigterm_sent and (signal_rank < 0 or self.rank == signal_rank):
             self._sigterm_sent = True
             os.kill(os.getpid(), signal.SIGTERM)
         return result
@@ -47,6 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--steps", type=int, required=True)
     parser.add_argument("--signal-after-steps", type=int, default=0)
+    parser.add_argument("--accum-steps", type=int, default=1)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--status-name", default="status")
     return parser.parse_args()
@@ -63,6 +70,7 @@ def main() -> None:
             "stack": "ddp",
             "dist.backend": "gloo",
             "steps": args.steps,
+            "accum_steps": args.accum_steps,
             "train_splits": ["train"],
             "evaluate_splits": [],
             "resume": args.resume,
@@ -82,13 +90,16 @@ def main() -> None:
             exit_code = int(exc.code or 0)
             raise
     finally:
+        status = {
+            "exit_code": exit_code,
+            "global_step": int(runner.train_state.global_step),
+            "signal_after_steps": int(args.signal_after_steps),
+            "consumed_samples": runner.consumed_samples,
+        }
+        status_paths = [run_dir / f"sigterm-{args.status_name}-rank{runner.rank}.json"]
         if runner.rank == 0:
-            status = {
-                "exit_code": exit_code,
-                "global_step": int(runner.train_state.global_step),
-                "signal_after_steps": int(args.signal_after_steps),
-            }
-            status_path = run_dir / f"sigterm-{args.status_name}.json"
+            status_paths.append(run_dir / f"sigterm-{args.status_name}.json")
+        for status_path in status_paths:
             status_path.parent.mkdir(parents=True, exist_ok=True)
             with status_path.open("w", encoding="utf-8") as fp:
                 json.dump(status, fp)

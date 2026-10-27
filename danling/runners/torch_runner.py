@@ -2124,9 +2124,47 @@ class TorchRunner(Fp8Mixin, BaseRunner):
     def prepare_for_shutdown_checkpoint(self) -> None:
         self._flush_pending_optimizer_step()
 
+    def can_checkpoint_for_shutdown(self) -> bool:
+        """A fetched batch and its accumulation window must be consumed before saving."""
+        return getattr(self, "_train_checkpoint_ready", True)
+
+    def synchronize_termination_signal(self, signum: int | None) -> int | None:
+        """Let one signaled rank stop its torchrun replica at a shared safe boundary."""
+        if not (dist.is_available() and dist.is_initialized()):
+            return signum
+        # TorchFT replicas have independent default process groups. A shutdown
+        # vote must not wait for its managed group or stop the other replicas.
+        backend = str(dist.get_backend()).lower()
+        device = torch.device("cuda", torch.cuda.current_device()) if "nccl" in backend else torch.device("cpu")
+        pending = torch.tensor(0 if signum is None else signum, dtype=torch.int32, device=device)
+        dist.all_reduce(pending, op=dist.ReduceOp.MAX)
+        return int(pending.item()) or None
+
+    def _next_train_batch(self, iterator):
+        diagnostics = getattr(self, "diagnostics", None)
+        context = diagnostics.span("data.fetch") if diagnostics is not None else nullcontext()
+        with context:
+            return next(iterator, None)
+
     def _iter_train_batches(self, loader: Any) -> Iterator[tuple[int, Any, bool]]:
-        iterator = iter(enumerate(loader))
-        current = next(iterator, None)
+        iterator = None
+        generation = -1
+
+        def begin_window():
+            nonlocal iterator, generation
+            self._train_checkpoint_ready = True
+            self.supervisor.maybe_handle_termination_signal()
+            # Recovery may restore loader/RNG state. Start it before fetching
+            # the window's first batch, rather than after selecting its data.
+            self._begin_optimizer_window()
+            current_generation = getattr(self, "_dataloader_state_generation", 0)
+            if iterator is None or generation != current_generation:
+                iterator = iter(enumerate(loader))
+                generation = current_generation
+            self._train_checkpoint_ready = False
+            return self._next_train_batch(iterator)
+
+        current = begin_window()
         while current is not None:
             iteration, data = current
             next_micro_step = self.train_state.micro_step + 1
@@ -2134,9 +2172,10 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             # Only peek when a partial accumulation window needs an end-of-loader
             # check. At optimizer/checkpoint boundaries the loader must describe
             # the last consumed batch, without an uncheckpointed lookahead batch.
-            next_item = None if reaches_accum_boundary else next(iterator, None)
+            next_item = None if reaches_accum_boundary else self._next_train_batch(iterator)
             yield iteration, data, reaches_accum_boundary or next_item is None
-            current = next(iterator, None) if reaches_accum_boundary else next_item
+            current = begin_window() if reaches_accum_boundary else next_item
+        self._train_checkpoint_ready = True
 
     def _resolve_requested_splits(
         self,
@@ -2336,6 +2375,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                 self._pending_loss_reduction = None
 
             loss = self._loss_for_reporting(loss, loss_n, data)
+            self._train_checkpoint_ready = will_flush
             self.supervisor.mark_heartbeat_progress()
             self.supervisor.maybe_handle_termination_signal()
             current_time = self.loop_time()
@@ -2420,13 +2460,17 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         print(f"train: step mode start global_step={self.train_state.global_step} steps={total_steps}")
         result = RoundDict()
         step_mode_iterators: dict[str, Iterator[tuple[int, Any, bool]] | None] = dict.fromkeys(train_splits)
-        step_mode_sampler_epochs = {split: self.train_state.epoch for split in train_splits}
+        step_mode_sampler_epochs = self.train_state.sampler_epochs
+        for split in train_splits:
+            step_mode_sampler_epochs.setdefault(split, self.train_state.epoch)
         while self.train_state.global_step < total_steps:
             self.supervisor.maybe_handle_termination_signal()
             round_start_step = self.train_state.global_step
             round_result = RoundDict()
             total_train_splits = len(train_splits)
             for split_index, split in enumerate(train_splits):
+                if split_index < self.train_state.step_mode_split_index:
+                    continue
                 self.supervisor.maybe_handle_termination_signal()
                 self.mode = RunnerMode.train
                 self.split = split
@@ -2443,7 +2487,9 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                 if split_steps <= 0:
                     break
                 start_global_step = self.train_state.global_step
-                target_global_step = start_global_step + split_steps
+                target_global_step = self.train_state.step_mode_target or start_global_step + split_steps
+                self.train_state.step_mode_split_index = split_index
+                self.train_state.step_mode_target = target_global_step
                 self.meters.reset()
                 self.metrics = self.train_metrics
                 if self.metrics is not None:
@@ -2460,15 +2506,18 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                 while self.train_state.global_step < target_global_step:
                     batch: tuple[int, Any, bool] | None = None
                     iterator = step_mode_iterators[split]
-                    recreated = False
+                    recreated = 0
                     while True:
                         if iterator is None:
-                            if recreated:
+                            # A restored cursor can already be at the end of
+                            # its pass before this process creates an iterator.
+                            # Allow that pass to finish, then try one fresh pass.
+                            if recreated >= 2:
                                 break
                             self._set_loader_epoch(loader, step_mode_sampler_epochs[split])
                             iterator = self._iter_train_batches(loader)
                             step_mode_iterators[split] = iterator
-                            recreated = True
+                            recreated += 1
                         try:
                             batch = next(iterator)
                             break
@@ -2494,6 +2543,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                         self._pending_loss_reduction = None
 
                     loss = self._loss_for_reporting(loss, loss_n, data)
+                    self._train_checkpoint_ready = will_flush
                     self.supervisor.mark_heartbeat_progress()
                     self.supervisor.maybe_handle_termination_signal()
                     current_time = self.loop_time()
@@ -2529,6 +2579,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                 telemetry.finalize_result(
                     round_result[split], elapsed_seconds=self.loop_time(sync=True) - telemetry.start_time
                 )
+                self.train_state.step_mode_split_index = split_index + 1
+                self.train_state.step_mode_target = 0
                 self.supervisor.maybe_handle_termination_signal()
 
             if self.train_state.global_step == round_start_step:
@@ -2543,6 +2595,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             self._step_epoch_scheduler(round_result)
             result = round_result
             self.train_state.epoch += 1
+            self.train_state.step_mode_split_index = 0
+            self.train_state.step_mode_target = 0
         remaining_steps = total_steps - self.train_state.global_step
         if remaining_steps > 0:
             warn(

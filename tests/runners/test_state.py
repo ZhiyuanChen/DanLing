@@ -23,9 +23,17 @@ from danling.runners.state import RunnerTrainState
 
 
 def test_runner_train_state_persists_only_maintained_progress_fields() -> None:
-    state = RunnerTrainState(global_step=3, micro_step=7, epoch=2)
-
-    assert state.state_dict() == {"global_step": 3, "micro_step": 7, "epoch": 2}
+    state = RunnerTrainState(
+        global_step=3,
+        micro_step=7,
+        epoch=2,
+        sampler_epochs={"train": 1},
+        step_mode_split_index=1,
+        step_mode_target=5,
+    )
+    restored = RunnerTrainState()
+    restored.load_state_dict(state.state_dict())
+    assert restored == state
 
 
 def test_runner_train_state_ignores_stale_counter_keys_on_load() -> None:

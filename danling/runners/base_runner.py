@@ -1299,6 +1299,7 @@ class BaseRunner(metaclass=MetaRunner):
         if state_dict is None:
             return
         self.dataloaders.load_state_dict(state_dict)
+        self._dataloader_state_generation = getattr(self, "_dataloader_state_generation", 0) + 1
 
     def load_pretrained(
         self,

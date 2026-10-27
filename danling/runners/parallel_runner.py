@@ -78,12 +78,27 @@ class _ParallelDataLoaderDict(DataLoaderDict):
     def __init__(self, runner: ParallelRunner) -> None:
         super().__init__()
         object.__setattr__(self, "_runner", runner)
+        object.__setattr__(self, "_step_proxies", {})
 
     def __getitem__(self, key):
         loader = super().__getitem__(key)
         if self._runner._use_step_only_loader() and not isinstance(loader, StepProxyLoader):
-            return StepProxyLoader(loader)
+            entry = self._step_proxies.get(key)
+            if entry is None or entry[0] is not loader:
+                entry = (loader, StepProxyLoader(loader))
+                self._step_proxies[key] = entry
+            return entry[1]
         return loader
+
+    def state_dict(self) -> dict[str, Any]:
+        states = {}
+        for split in self:
+            state_dict = getattr(self[split], "state_dict", None)
+            if callable(state_dict):
+                state = state_dict()
+                if state is not None:
+                    states[str(split)] = state
+        return states
 
 
 class ParallelRunner(TorchRunner):
@@ -1594,9 +1609,7 @@ class ParallelRunner(TorchRunner):
                     f"{len(self.model_parts)} local parts but stage indices are {indices}; "
                     "configure pipeline_partitions or expose stage_index on the schedule stages"
                 )
-        return nn.ModuleDict(
-            {f"stage_{index}": self.unwrap(model) for index, model in zip(indices, self.model_parts)}
-        )
+        return nn.ModuleDict({f"stage_{index}": self.unwrap(model) for index, model in zip(indices, self.model_parts)})
 
     def _restore_model_checkpoint(
         self, state_dict: Mapping[str, Any] | list[Mapping[str, Any]], *args, **kwargs

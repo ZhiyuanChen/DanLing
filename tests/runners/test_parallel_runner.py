@@ -254,6 +254,21 @@ def test_pipeline_checkpoint_restores_global_stage_parameter_identity(tmp_path, 
     run_distributed(_pipeline_checkpoint_identity_worker, worker_args=(str(tmp_path), parts))
 
 
+def test_pipeline_step_proxy_restores_its_consumed_ticks_without_loading_samples() -> None:
+    loader = StatefulDataLoader(list(range(8)), batch_size=2, shuffle=False)
+    proxy = StepProxyLoader(loader)
+    iterator = iter(proxy)
+    assert next(iterator) is None
+    assert next(iterator) is None
+    state = proxy.state_dict()
+    assert loader.state_dict()["_num_yielded"] == 0
+    restored_loader = StatefulDataLoader(list(range(8)), batch_size=2, shuffle=False)
+    restored = StepProxyLoader(restored_loader)
+    restored.load_state_dict(state)
+    assert list(restored) == [None, None]
+    assert restored_loader.state_dict()["_num_yielded"] == 0
+    assert list(restored) == [None] * 4
+
 
 def _parallel_gloo_smoke_worker(rank: int, world_size: int, workspace_root: str) -> None:
     configure_distributed_env(rank, world_size)
