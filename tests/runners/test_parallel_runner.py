@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 from collections import OrderedDict
 from contextlib import contextmanager
+from itertools import chain
 
 import pytest
 import torch
@@ -189,6 +190,69 @@ class DistributedSmokeParallelRunner(CpuParallelRunner):
             raise ValueError("model is not initialized")
         self.model = self.model.to(self.device)
         self.model_parts = [self.model]
+
+
+class DistributedCheckpointPartsRunner(CpuParallelRunner):
+    def __init__(self, config):
+        super().__init__(config)
+        self.model_parts = [nn.Linear(2, 2, bias=False) for _ in self.pipeline_stage_indices()]
+        self.model = self.model_parts[0]
+        self.optimizer = optim.Adam(chain.from_iterable(part.parameters() for part in self.model_parts), lr=0.01)
+
+    def materialize_model(self) -> None:
+        self.model_parts = [part.to(self.device) for part in self.model_parts]
+
+
+def _pipeline_checkpoint_identity_worker(rank: int, world_size: int, checkpoint_dir: str, parts: int) -> None:
+    configure_distributed_env(rank, world_size)
+    runner = DistributedCheckpointPartsRunner(
+        {
+            "logging.enabled": False,
+            "workspace.dir": checkpoint_dir,
+            "dist.backend": "gloo",
+            "ckpt": {"backend": "dcp", "async_mode": "disabled", "interval": 1},
+            **_parallel_config(
+                pipeline=world_size,
+                mesh_device_type="cpu",
+                pipeline_partitions=[[f"stage{index}"] for index in range(world_size * parts)],
+            ),
+        }
+    )
+    try:
+        expected = {}
+        for index, part in zip(runner.pipeline_stage_indices(), runner.model_parts):
+            with torch.no_grad():
+                part.weight.fill_(index + 1)
+            (part(torch.ones(1, 2)) * (index + 2)).sum().backward()
+        runner.optimizer.step()
+        runner.optimizer.zero_grad()
+        for index, part in zip(runner.pipeline_stage_indices(), runner.model_parts):
+            expected[index] = (
+                part.weight.detach().clone(),
+                {key: value.clone() for key, value in runner.optimizer.state[part.weight].items()},
+            )
+        runner.save_checkpoint(force=True)
+        with torch.no_grad():
+            for part in runner.model_parts:
+                part.weight.zero_()
+        # Numeric optimizer parameter IDs depend on local parameter order.
+        # FQN checkpoint identity must survive an equivalent reordered optimizer.
+        runner.optimizer = optim.Adam(list(reversed(list(runner.iter_optimizer_parameters()))), lr=0.01)
+        runner.load_checkpoint("latest")
+        for index, part in zip(runner.pipeline_stage_indices(), runner.model_parts):
+            weight, moments = expected[index]
+            torch.testing.assert_close(part.weight, weight)
+            for key, value in moments.items():
+                torch.testing.assert_close(runner.optimizer.state[part.weight][key], value)
+    finally:
+        runner.close()
+
+
+@pytest.mark.parametrize("parts", [1, 2])
+def test_pipeline_checkpoint_restores_global_stage_parameter_identity(tmp_path, parts: int) -> None:
+    require_gloo()
+    run_distributed(_pipeline_checkpoint_identity_worker, worker_args=(str(tmp_path), parts))
+
 
 
 def _parallel_gloo_smoke_worker(rank: int, world_size: int, workspace_root: str) -> None:

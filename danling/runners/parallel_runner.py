@@ -1563,13 +1563,8 @@ class ParallelRunner(TorchRunner):
         state = cls()
         state["ema"] = self.ema.state_dict() if self.ema else None
         state["scheduler"] = self.scheduler.state_dict() if self.scheduler else None
-        if len(self.model_parts) != 1:
-            state["optimizer"] = self.optimizer.state_dict() if self.optimizer else None
-            state["model_parts"] = [self.unwrap(model).state_dict() for model in self.model_parts]
-            return state
-
         model_state_dict, optim_state_dict = self.checkpoint_manager.export_model_optimizer_state(
-            model=self.model_parts[0],
+            model=self._checkpoint_model(),
             optimizer=self.optimizer,
             options_cls=StateDictOptions,
             strict=True,
@@ -1577,6 +1572,31 @@ class ParallelRunner(TorchRunner):
         state["model"] = model_state_dict
         state["optimizer"] = optim_state_dict if self.optimizer is not None else None
         return state
+
+    def _checkpoint_model(self) -> nn.Module:
+        """Give every pipeline part a global FQN before DCP deduplicates keys."""
+        if len(self.model_parts) == 1 and self.pipeline_degree == 1:
+            return self.model_parts[0]
+        if self.pipeline_degree == 1:
+            indices = tuple(range(len(self.model_parts)))
+        else:
+            stages = getattr(self.pipeline_schedule, "stages", None)
+            if stages is None:
+                stage = getattr(self.pipeline_schedule, "stage", None)
+                stages = () if stage is None else (stage,)
+            if len(stages) == len(self.model_parts) and all(hasattr(stage, "stage_index") for stage in stages):
+                indices = tuple(int(stage.stage_index) for stage in stages)
+            else:
+                indices = self.pipeline_stage_indices()
+            if len(indices) != len(self.model_parts):
+                raise ValueError(
+                    "cannot checkpoint pipeline parts without global stage identities: "
+                    f"{len(self.model_parts)} local parts but stage indices are {indices}; "
+                    "configure pipeline_partitions or expose stage_index on the schedule stages"
+                )
+        return nn.ModuleDict(
+            {f"stage_{index}": self.unwrap(model) for index, model in zip(indices, self.model_parts)}
+        )
 
     def _restore_model_checkpoint(
         self, state_dict: Mapping[str, Any] | list[Mapping[str, Any]], *args, **kwargs
@@ -1592,24 +1612,23 @@ class ParallelRunner(TorchRunner):
                 self.unwrap(model).load_state_dict(model_state_dict, *args, **kwargs)
             return
 
-        if len(self.model_parts) == 1:
-            self.checkpoint_manager.load_model_state(
-                model=self.model_parts[0],
-                model_state_dict=state_dict,
-                options_cls=StateDictOptions,
-                strict=True,
-            )
-            return
-
-        super()._restore_model_checkpoint(state_dict, *args, **kwargs)
+        model = self._checkpoint_model()
+        if len(self.model_parts) == 1 and not any(key.startswith("stage_") for key in state_dict):
+            # Explicit model-only imports can still use the part's native FQNs.
+            model = self.model_parts[0]
+        self.checkpoint_manager.load_model_state(
+            model=model,
+            model_state_dict=state_dict,
+            options_cls=StateDictOptions,
+            strict=True,
+        )
 
     def _restore_optimizer_checkpoint(self, state_dict: Mapping[str, Any], *args, **kwargs) -> None:
-        if len(self.model_parts) != 1:
-            super()._restore_optimizer_checkpoint(state_dict, *args, **kwargs)
-            return
-
+        model = self._checkpoint_model()
+        if len(self.model_parts) == 1 and not any("stage_" in str(key) for key in state_dict):
+            model = self.model_parts[0]
         self.checkpoint_manager.load_optimizer_state(
-            model=self.model_parts[0],
+            model=model,
             optimizer=self.optimizer,
             optimizer_state_dict=state_dict,
             options_cls=StateDictOptions,
