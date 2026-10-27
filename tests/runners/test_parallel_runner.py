@@ -473,6 +473,88 @@ class TestParallelRunnerTopology:
 
 class TestParallelRunnerParallelization:
 
+    @pytest.mark.parametrize("pin_memory", [False, True])
+    def test_meta_cpu_offload_preserves_cpu_parameters_and_runtime_buffer_aliases(self, device, pin_memory):
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = nn.Parameter(torch.empty(2, 3, dtype=torch.float64))
+                self.tied_weight = self.weight
+                self.register_buffer("scale", torch.empty(3, dtype=torch.float32))
+                self.register_buffer("scale_alias", self.scale, persistent=False)
+
+            def init_weights(self):
+                self.weight.fill_(1)
+                self.scale = torch.full((3,), 2, dtype=torch.float32, device=self.weight.device)
+                self.scale_alias = self.scale
+
+        runner = object.__new__(ParallelRunner)
+        runner.config = RunnerConfig(
+            {
+                "device": str(device),
+                "model_init.meta": True,
+                "fsdp": {"enabled": True, "offload_policy": {"pin_memory": pin_memory}},
+            }
+        )
+        with torch.device("meta"):
+            model = Model()
+        model = runner.materialize_model_values(model)
+        assert model.weight.device.type == "cpu"
+        assert model.scale.device == torch.empty(0, device=device).device
+        assert model.weight is model.tied_weight
+        assert model.scale is model.scale_alias
+        assert model.weight.dtype == torch.float64 and model.scale.dtype == torch.float32
+        torch.testing.assert_close(model.weight, torch.ones_like(model.weight))
+        torch.testing.assert_close(model.scale, torch.full_like(model.scale, 2))
+
+    def test_meta_model_is_parallelized_and_sharded_before_allocation(self, monkeypatch):
+        events = []
+
+        class Model(nn.Linear):
+            def __init__(self):
+                super().__init__(3, 2, dtype=torch.float64)
+
+            def parallelize(self, parallel):
+                events.append(("parallel", self.weight.is_meta))
+
+            def init_weights(self):
+                events.append(("init", self.weight.is_meta))
+                self.weight.fill_(1)
+                self.bias.zero_()
+
+        class MetaRunner(CpuParallelRunner):
+            def init_distributed(self):
+                _init_parallel_topology(self)
+
+            @property
+            def world_size(self):
+                return 2
+
+            def build_model(self):
+                return Model()
+
+            def _check_fsdp_prerequisites(self):
+                return
+
+            def fsdp_kwargs(self):
+                return {}
+
+            def apply_fsdp(self, model, kwargs):
+                events.append(("shard", model.weight.is_meta))
+                return model
+
+        monkeypatch.setattr(parallel_runner_module.parallel_fsdp, "check", lambda: None)
+        runner = MetaRunner(
+            {"logging.enabled": False, "model_init.meta": True, "fsdp.enabled": True, **_parallel_config(shard=2)}
+        )
+        try:
+            assert events == [("parallel", True), ("shard", True), ("init", False)]
+            torch.testing.assert_close(
+                runner.model(torch.ones(1, 3, dtype=torch.float64)), torch.full((1, 2), 3.0, dtype=torch.float64)
+            )
+        finally:
+            runner.close()
+
     def test_requires_model_parallelization_for_model_axes(self) -> None:
         with pytest.raises(NotImplementedError, match="model-specific parallelization"):
             TinyParallelRunner({"logging.enabled": False, **_parallel_config(context=2, pipeline=4, tensor=2)})

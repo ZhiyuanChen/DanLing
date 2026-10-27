@@ -316,6 +316,25 @@ Explicit user-provided dataloaders are not rewrapped.
 
 `ParallelRunner` exposes topology-, pipeline-, and FSDP-aware extension points:
 
+For models that must be sharded before allocating their parameters, opt in with
+`model_init.meta=True` and override `build_model() -> nn.Module`. The runner calls
+that hook inside `torch.device("meta")`; already-bound meta models are also
+accepted. `ParallelRunner` applies parallel transforms and FSDP before allocating
+storage, then calls `initialize_model(model) -> None` before building the optimizer.
+The default initialization calls `model.init_weights()`; override the hook to
+initialize or load all parameters and buffers, including non-persistent buffers.
+Normal checkpoint/pretrained restoration still follows initialization. Repeated
+references to the same parameter or buffer remain tied during allocation, and
+their dtypes are retained. Already-initialized models keep their values and the
+ordinary device-move path. Mixed initialized/meta tensors require a custom
+`materialize_model_values(model) -> nn.Module`; do not bind an optimizer to meta
+parameters before materialization.
+`model_init_device(model)` defaults to the runtime device; `ParallelRunner`
+selects CPU parameter allocation for `CPUOffloadPolicy`, while buffers are
+allocated on the runtime device before the model-owned initialization/load hook.
+Buffers recreated by that hook are then moved to the runtime device, preserving
+their values, dtypes, and current aliases.
+
 - `build_topology`: validate/construct ordered parallel axes from config + world state
 - `init_model_parallel_groups`: initialize model-parallel process groups/device mesh
 - `parallelize_model`: apply model-specific TP/CP/EP transforms before compile/FSDP wrapping

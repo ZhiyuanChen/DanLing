@@ -26,6 +26,12 @@ from typing import Any, Optional, Union
 import chanfig
 
 
+class ModelInitConfig(chanfig.Config):
+    r"""Optional meta construction and post-sharding initialization."""
+
+    meta: bool = False
+
+
 class CompileConfig(chanfig.Config):
     r"""
     `torch.compile` and graph-compiler options.
@@ -551,6 +557,7 @@ NON_SEMANTIC_CONFIG_KEYS: tuple[str, ...] = (
 )
 
 DEFAULT_FILTERED_CONFIG_SECTIONS: tuple[tuple[str, chanfig.Config], ...] = (
+    ("model_init", ModelInitConfig()),
     ("optim", OptimizerConfig()),
     ("sched", SchedulerConfig()),
     ("fp8", Fp8Config()),
@@ -697,6 +704,7 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
     ft: FaultToleranceConfig = FaultToleranceConfig()
 
     compile: CompileConfig = CompileConfig()
+    model_init: ModelInitConfig = ModelInitConfig()
     dist: DistributedConfig = DistributedConfig()
     ddp: DdpConfig = DdpConfig()
     gc: GcConfig = GcConfig()

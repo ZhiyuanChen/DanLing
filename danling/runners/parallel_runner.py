@@ -283,6 +283,7 @@ class ParallelRunner(TorchRunner):
         return tuple(groups)
 
     def __post_init__(self):
+        self._construct_model()
         self._pipeline_loss_divisor_local = 0.0
         self._pipeline_loss_weighting = None
         if self.fsdp_enabled:
@@ -355,6 +356,16 @@ class ParallelRunner(TorchRunner):
             wrapped = [self.apply_fsdp(part, fsdp_kwargs) for part in compiled]
         else:
             wrapped = compiled
+
+        if self.config.model_init.meta:
+            wrapped = [
+                (
+                    self.materialize_model_values(part)
+                    if any(t.is_meta for t in (*part.parameters(), *part.buffers()))
+                    else part
+                )
+                for part in wrapped
+            ]
 
         self.model_parts = wrapped
         self.model = wrapped[0]
@@ -573,7 +584,14 @@ class ParallelRunner(TorchRunner):
                     raise ValueError("cannot materialize pipeline: model_parts are not initialized")
                 self.model_parts = [self.model]
             parts = list(self.model_parts)
-        parts = [part.to(self.device) for part in parts]
+        parts = [
+            (
+                part
+                if self.config.model_init.meta and any(t.is_meta for t in (*part.parameters(), *part.buffers()))
+                else part.to(self.device)
+            )
+            for part in parts
+        ]
         parts = [self.parallelize_model(part) for part in parts]
         self.model_parts = parts
         self.model = parts[0]
@@ -675,6 +693,15 @@ class ParallelRunner(TorchRunner):
             cpu_offload_policy_cls=CPUOffloadPolicy,
             label="fsdp.offload_policy",
         )
+
+    def model_init_device(self, model: nn.Module) -> torch.device:
+        if (
+            self.fsdp_enabled
+            and CPUOffloadPolicy is not None
+            and isinstance(self.build_offload_policy(), CPUOffloadPolicy)
+        ):
+            return torch.device("cpu")
+        return super().model_init_device(model)
 
     def fsdp_kwargs(self) -> dict[str, Any]:
         return build_fsdp2_kwargs(

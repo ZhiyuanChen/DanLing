@@ -382,6 +382,112 @@ def _torch_runner_preinitialized_pg_worker(rank: int, world_size: int) -> None:
 # ---------------------------------------------------------------------------
 
 
+class TestMetaModelLifecycle:
+    @pytest.mark.parametrize("restore_pretrained", [False, True])
+    def test_meta_build_preserves_ties_buffers_dtype_and_optimizer_ownership(self, tmp_path, restore_pretrained):
+        events = []
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.left = nn.Linear(3, 3, bias=False, dtype=torch.float64)
+                self.right = nn.Linear(3, 3, bias=False, dtype=torch.float64)
+                self.right.weight = self.left.weight
+                self.register_buffer("scale", torch.empty((), dtype=torch.float64))
+                self.register_buffer("counter", torch.empty((), dtype=torch.int64), persistent=False)
+                self.register_buffer("scale_alias", self.scale)
+
+            def init_weights(self):
+                self.left.weight.fill_(0.25)
+                self.scale.fill_(2)
+                self.counter.fill_(7)
+
+            def forward(self, value):
+                return self.right(self.left(value)) * self.scale
+
+        class MetaRunner(TorchRunner):
+            def init_distributed(self):
+                return
+
+            def build_model(self):
+                model = Model()
+                events.append(("build", model.left.weight.is_meta))
+                return model
+
+            def initialize_model(self, model):
+                events.append(("init", model.left.weight.is_meta))
+                super().initialize_model(model)
+
+            def build_optimizer(self):
+                events.append(("optim", self.model.left.weight.is_meta))
+                super().build_optimizer()
+
+        config = {
+            "device": "cpu",
+            "logging.enabled": False,
+            "model_init.meta": True,
+            "optim": {"type": "sgd", "lr": 0.1},
+        }
+        expected_weight = 0.25
+        if restore_pretrained:
+            checkpoint = tmp_path / "pretrained.pth"
+            torch.save(
+                {
+                    "model": {
+                        "left.weight": torch.full((3, 3), 0.75, dtype=torch.float64),
+                        "right.weight": torch.full((3, 3), 0.75, dtype=torch.float64),
+                        "scale": torch.tensor(3.0, dtype=torch.float64),
+                        "scale_alias": torch.tensor(3.0, dtype=torch.float64),
+                    }
+                },
+                checkpoint,
+            )
+            config["pretrained"] = str(checkpoint)
+            expected_weight = 0.75
+        runner = MetaRunner(config)
+        try:
+            model = runner.model
+            assert events == [("build", True), ("init", False), ("optim", False)]
+            assert model.left.weight is model.right.weight
+            assert model.scale is model.scale_alias
+            assert model.left.weight.dtype == model.scale.dtype == torch.float64
+            assert model.counter.dtype == torch.int64 and model.counter.item() == 7
+            torch.testing.assert_close(model.left.weight, torch.full_like(model.left.weight, expected_weight))
+            assert model.scale.item() == (3 if restore_pretrained else 2)
+            assert runner.optimizer.param_groups[0]["params"] == [model.left.weight]
+            value = torch.ones(2, 3, dtype=torch.float64)
+            loss = model(value).square().sum()
+            loss.backward()
+            assert model.left.weight.grad is not None
+            runner.optimizer.step()
+            assert not torch.equal(model.left.weight, torch.full_like(model.left.weight, expected_weight))
+        finally:
+            runner.close()
+
+    def test_initialized_model_is_not_reinitialized_when_meta_construction_is_enabled(self):
+        class ExistingRunner(TorchRunner):
+            def init_distributed(self):
+                return
+
+            def __init__(self, config):
+                super().__init__(config)
+                self.model = nn.Linear(2, 2, dtype=torch.float64)
+                with torch.no_grad():
+                    self.model.weight.fill_(3)
+                    self.model.bias.fill_(4)
+
+            def initialize_model(self, model):
+                raise AssertionError("initialized model must not be reset")
+
+        runner = ExistingRunner({"device": "cpu", "logging.enabled": False, "model_init.meta": True})
+        try:
+            torch.testing.assert_close(
+                runner.model(torch.ones(1, 2, dtype=torch.float64)), torch.full((1, 2), 10.0, dtype=torch.float64)
+            )
+        finally:
+            runner.close()
+
+
 class TestTorchRunnerBootstrap:
 
     def test_fault_tolerance_requires_torchft_package(self) -> None:

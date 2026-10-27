@@ -89,7 +89,7 @@ class GraphRunner(TorchRunner):
         """
         if self.model is None:
             raise ValueError("cannot materialize model: model is not initialized")
-        self.model = self.model.to(self.device)
+        self.model = self.materialize_model_values(self.model)
         if self.fp8_enabled:
             self.apply_fp8_module_policy_to_model_parts()
         if self.ema is not None:

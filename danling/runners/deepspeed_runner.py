@@ -105,7 +105,7 @@ class DeepSpeedRunner(TorchRunner):
         if self.model is None:
             raise ValueError("cannot materialize DeepSpeed model: model is not initialized")
 
-        model = self.model.to(self.device)
+        model = self.materialize_model_values(self.model)
         self.model = model
         if self.fp8_enabled:
             self.apply_fp8_module_policy_to_model_parts()

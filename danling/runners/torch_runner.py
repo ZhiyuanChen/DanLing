@@ -193,6 +193,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         super().__init__(config)
 
     def __post_init__(self):
+        self._construct_model()
         self._pending_loss_normalizer = None
         self._accumulation_divisor_local = 0.0
         self._accumulation_mode = None
@@ -714,6 +715,87 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         if grad_norm is not None:
             self.meters.grad_norm.update(grad_norm)
 
+    def build_model(self) -> nn.Module:
+        r"""Build a model under the runner's meta-device context when opted in.
+
+        Override this instead of binding ``self.model`` in ``__init__`` when
+        ``model_init.meta=True``. Model-specific configuration stays on the
+        runner's existing Chanfig configuration.
+        """
+        raise NotImplementedError("model_init.meta=True requires a model or an overridden build_model()")
+
+    def _construct_model(self) -> None:
+        if self.model is not None or not self.config.model_init.meta:
+            return
+        with torch.device("meta"):
+            model = self.build_model()
+        if not isinstance(model, nn.Module):
+            raise TypeError("build_model() must return an nn.Module")
+        self.model = model
+
+    def initialize_model(self, model: nn.Module) -> None:
+        r"""Initialize or load newly allocated model storage before optimizer creation.
+
+        This runs only for a meta model. Override it to initialize parameters
+        and persistent/non-persistent buffers, or to load model-specific state.
+        The default calls the model's explicit ``init_weights()`` protocol;
+        it does not guess initialization order or reset pretrained models.
+        Ordinary checkpoint/pretrained restoration still runs in ``auto_restore``.
+        """
+        initialize = getattr(model, "init_weights", None)
+        if not callable(initialize):
+            raise NotImplementedError("meta models require init_weights() or an overridden initialize_model()")
+        initialize()
+
+    def model_init_device(self, model: nn.Module) -> torch.device:
+        r"""Select the parameter-allocation device for a meta model."""
+        return self.device
+
+    def materialize_model_values(self, model: nn.Module) -> nn.Module:
+        r"""Allocate a meta model after transforms, retaining tied tensor identities.
+
+        Already initialized models keep the ordinary ``to(device)`` path.
+        Mixed initialized/meta tensors require a model-specific override since
+        ``to_empty`` would otherwise discard initialized values.
+        """
+        tensors = tuple(model.parameters()) + tuple(model.buffers())
+        if not any(tensor.is_meta for tensor in tensors):
+            return model.to(self.device)
+        if not self.config.model_init.meta:
+            raise ValueError("meta model materialization requires model_init.meta=True")
+        if any(not tensor.is_meta for tensor in tensors):
+            raise ValueError("mixed initialized/meta model tensors require overriding materialize_model_values()")
+        if self.optimizer is not None:
+            raise ValueError("build the optimizer after meta model materialization")
+
+        aliases: dict[int, list[tuple[nn.Module, str, str]]] = {}
+        for module in model.modules():
+            for collection in ("_parameters", "_buffers"):
+                for name, tensor in getattr(module, collection).items():
+                    if tensor is not None:
+                        aliases.setdefault(id(tensor), []).append((module, collection, name))
+        allocation_device = torch.device(self.model_init_device(model))
+        model.to_empty(device=allocation_device)
+        for references in aliases.values():
+            owner, collection, name = references[0]
+            tensor = getattr(owner, collection)[name]
+            if collection == "_buffers" and allocation_device != self.device:
+                tensor = torch.empty_like(tensor, device=self.device)
+            for owner, collection, name in references:
+                getattr(owner, collection)[name] = tensor
+        with torch.no_grad():
+            self.initialize_model(self.unwrap(model))
+        if any(tensor.is_meta for tensor in (*model.parameters(), *model.buffers())):
+            raise RuntimeError("initialize_model() left meta tensors in the model")
+        buffers: dict[int, torch.Tensor] = {}
+        for module in model.modules():
+            for name, buffer in module._buffers.items():
+                if buffer is not None:
+                    if id(buffer) not in buffers:
+                        buffers[id(buffer)] = buffer.to(self.device)
+                    module._buffers[name] = buffers[id(buffer)]
+        return model
+
     def materialize_model(self) -> None:
         """
         Move the model to the runtime device, optionally compile, and wrap
@@ -762,7 +844,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         if self.model is None:
             raise ValueError("cannot materialize model: model is not initialized")
 
-        model = self.model.to(self.device)
+        model = self.materialize_model_values(self.model)
         self.model = model
         if self.fp8_enabled:
             self.apply_fp8_module_policy_to_model_parts()
