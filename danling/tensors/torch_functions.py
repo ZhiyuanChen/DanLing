@@ -4966,9 +4966,9 @@ def permute(input: NestedTensor, dims: Sequence[int]) -> NestedTensor:
     if normalized_dims[batch_dim] != batch_dim:
         raise ValueError("Permuting the batch dimension is not supported for NestedTensor.")
 
-    from .aten_functions import permute as _aten_permute
+    from .aten_functions import _permute_nested
 
-    return _aten_permute(torch.ops.aten.permute.default, (input, list(normalized_dims)), {})
+    return _permute_nested(torch.ops.aten.permute.default, (input, list(normalized_dims)), {})
 
 
 def _offsets_from_packed_lengths(lengths: Tensor) -> Tensor:

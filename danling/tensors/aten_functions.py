@@ -5945,6 +5945,18 @@ def _packed_metadata_permute(source: NestedTensor, tensor_dims: tuple[int, ...])
 
 @NestedTensorAtenRegistry.implement(aten.permute.default)
 def permute(func, args, kwargs):
+    r"""Leave the outer autograd edge to the native differentiable-view layer."""
+    result = _permute_nested(func, args, kwargs)
+    values = result._packed_values
+    # The shared implementation connects public packed operations to their
+    # wrappers. A native view must instead return fresh outer metadata before
+    # ATen installs its own edge. Keep the original numerical child and aliases.
+    view = result._packed_like_unchecked_raw(values.detach())
+    view._packed_values = values
+    return view
+
+
+def _permute_nested(func, args, kwargs):
     r"""Permute static per-element dims while keeping the batch axis fixed."""
     source = args[0]
     kw_dims = kwargs.pop("dims", _MISSING)

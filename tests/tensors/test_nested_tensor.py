@@ -131,6 +131,26 @@ class TestFunctionTransforms:
         assert_close(torch.func.jacfwd(loss)(values), values.cos())
         assert_close(torch.func.jacrev(loss)(values), values.cos())
 
+    @pytest.mark.parametrize("shapes,ragged_dims", [(((2, 3), (4, 3)), (0,)), (((2, 3, 2), (4, 2, 2)), (1, 0))])
+    def test_packed_like_vmap_values_and_derivatives(self, device, shapes, ragged_dims):
+        template = NT(
+            [torch.zeros(shape, device=device, dtype=torch.float64) for shape in shapes], ragged_dims=ragged_dims
+        )
+        values = torch.randn((3, *template.concat.shape), device=device, dtype=torch.float64, requires_grad=True)
+
+        def loss(packed):
+            return template.packed_like(packed).sin().sum()
+
+        output = torch.vmap(loss)(values)
+        assert_close(output, values.sin().flatten(1).sum(1))
+        assert_close(torch.autograd.grad(output.sum(), values)[0], values.cos())
+        gradient = torch.vmap(torch.func.grad(loss))(values)
+        assert_close(gradient, values.cos())
+        second = torch.autograd.grad(gradient.sum(), values, create_graph=True)[0]
+        assert_close(second, -values.sin())
+        third = torch.autograd.grad(second.sum(), values)[0]
+        assert_close(third, -values.cos())
+
     @pytest.mark.parametrize(
         "values",
         [
