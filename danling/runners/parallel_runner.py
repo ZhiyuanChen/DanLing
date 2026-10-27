@@ -949,7 +949,7 @@ class ParallelRunner(TorchRunner):
         if self.criterion is None:
             raise ValueError("cannot compute pipeline loss: criterion is not initialized")
 
-        loss = self.criterion(pred, target)
+        loss = self._compute_loss(pred, target)
         if loss is None:
             raise ValueError("cannot compute pipeline loss: criterion did not produce a loss")
         if loss.ndim > 0:
@@ -960,12 +960,58 @@ class ParallelRunner(TorchRunner):
             normalizer = self._mapping_loss_normalizer(target)
         if normalizer is None:
             normalizer = self._tensor_loss_normalizer(target)
-        divisor = float(max(int(normalizer), 1)) if normalizer is not None else 1.0
+        divisor = float(normalizer) if normalizer is not None else 1.0
+        reduction = self._get_loss_reduction({"target": target})
+        explicit = getattr(self, "_pipeline_batch_normalizer", None)
+        if explicit is not None:
+            if getattr(self.criterion, "reduction", None) == "sum":
+                reduction = "normalized_sum"
+                divisor = 0.0
+            else:
+                divisor *= self._pipeline_normalizer_ratio
+            normalizer = divisor
+        self._pipeline_loss_reduction = reduction
         if self._pipeline_loss_weighting is not None:
             self._pipeline_loss_divisor_local += divisor
             if self._pipeline_loss_weighting == "train":
-                self._accumulation_divisor_local += divisor
-            return loss * divisor
+                self._pending_loss_normalizer = normalizer
+                self._pending_loss_reduction = reduction
+                return self._scaled_loss_for_backward(loss)
+            return loss * divisor if reduction == "mean" else loss
+        return loss
+
+    def _prepare_pipeline_loss_normalization(self, data: Any, target: Any) -> None:
+        self._pipeline_batch_normalizer = self._explicit_loss_normalizer(data)
+        self._pipeline_normalizer_ratio = 1.0
+        if self._pipeline_batch_normalizer is not None and getattr(self.criterion, "reduction", None) != "sum":
+            natural = self._tensor_loss_normalizer(target)
+            if natural is not None:
+                self._pipeline_normalizer_ratio = self._pipeline_batch_normalizer / natural if natural > 0 else 0.0
+
+    def _finish_pipeline_loss_normalization(self) -> None:
+        explicit = self._pipeline_batch_normalizer
+        if (
+            explicit is not None
+            and getattr(self.criterion, "reduction", None) == "sum"
+            and self.pipeline_has_last_stage
+        ):
+            self._pipeline_loss_divisor_local = explicit
+            if self._pipeline_loss_weighting == "train":
+                self._accumulation_divisor_local += explicit
+
+    def _loss_for_reporting(self, loss: torch.Tensor | None, normalizer: float | None, data: Any):
+        if self.pipeline_schedule is not None:
+            self._loss_reporting_reduction = self._get_loss_reduction(data)
+            return loss
+        return super()._loss_for_reporting(loss, normalizer, data)
+
+    def _sum_loss_for_reporting(self, loss: torch.Tensor) -> torch.Tensor:
+        self.all_reduce(loss, domain="loss", op=dist.ReduceOp.SUM)
+        if self.pipeline_degree > 1 and self.pipeline_group is not None and dist.is_initialized():
+            coordinates = dict(self.topology.ranks)
+            coordinates["pipeline"] = self.pipeline_degree - 1
+            source_rank = self.topology.rank_from_coordinates(coordinates)
+            dist.broadcast(loss, src=source_rank, group=self.pipeline_group)
         return loss
 
     def build_pipeline_schedule(self, stage_model: nn.Module | Sequence[nn.Module]) -> Any:
@@ -1112,14 +1158,17 @@ class ParallelRunner(TorchRunner):
             payload = payload.to(original_device)
         return payload
 
-    def reduce_loss_for_logging(self, loss: torch.Tensor | None, loss_n: int | None) -> torch.Tensor | None:
+    def reduce_loss_for_logging(self, loss: torch.Tensor | None, loss_n: float | None) -> torch.Tensor | None:
+        summed = getattr(self, "_loss_reporting_reduction", None) == "sum"
         if self.pipeline_schedule is None:
             if loss is None:
                 return None
             loss_value = _local_reduction_tensor(loss.detach()).to(dtype=torch.float64)
             if loss_value.ndim > 0:
                 loss_value = loss_value.mean()
-            normalizer = float(max(int(loss_n or 1), 1))
+            normalizer = float(loss_n) if loss_n is not None else 1.0
+            if summed:
+                normalizer = 1.0
             payload_device = self.all_reduce_device()
             payload = torch.stack(
                 (
@@ -1130,14 +1179,16 @@ class ParallelRunner(TorchRunner):
             self.all_reduce(payload, domain="loss", op=dist.ReduceOp.SUM)
             if payload[1].item() <= 0:
                 return None
-            return payload[0] / payload[1]
+            return payload[0] if summed else payload[0] / payload[1]
         if not (dist.is_available() and dist.is_initialized()):
             return super().reduce_loss_for_logging(loss, loss_n)
         payload = torch.zeros((3,), dtype=torch.float64, device=self.device)
         is_reporter = self.pipeline_has_last_stage and self.tensor_rank == 0
         if is_reporter:
             if loss is not None:
-                normalizer = float(max(int(loss_n or 1), 1))
+                normalizer = float(loss_n) if loss_n is not None else 1.0
+                if summed:
+                    normalizer = 1.0
                 loss_value = _local_reduction_tensor(loss.detach()).to(dtype=torch.float64)
                 if loss_value.ndim > 0:
                     loss_value = loss_value.mean()
@@ -1150,7 +1201,7 @@ class ParallelRunner(TorchRunner):
         dist.broadcast(payload, src=source_rank)
         if payload[2].item() <= 0 or payload[1].item() <= 0:
             return None
-        return payload[0] / payload[1]
+        return payload[0] if summed else payload[0] / payload[1]
 
     @property
     def reports_batch_telemetry(self) -> bool:
@@ -1162,8 +1213,6 @@ class ParallelRunner(TorchRunner):
         return 1
 
     def _reduce_loss_normalizer_total(self, local_total: float) -> float:
-        if local_total <= 0:
-            return local_total
         if self._loss_normalizer_sync_divisor() <= 1:
             return local_total
         if not (dist.is_available() and dist.is_initialized()):
@@ -1215,10 +1264,12 @@ class ParallelRunner(TorchRunner):
         if not (self.pipeline_has_last_stage and losses):
             return None
         loss = torch.stack(losses).sum()
+        if getattr(self, "_pipeline_loss_reduction", None) == "sum":
+            return loss
         if self._pipeline_loss_divisor_local > 0:
             loss = loss / self._pipeline_loss_divisor_local
         else:
-            loss = loss / len(losses)
+            loss = loss * 0
         return loss
 
     def _sync_pipeline_accumulation_divisor(self) -> None:
@@ -1229,13 +1280,16 @@ class ParallelRunner(TorchRunner):
 
         value = self._pipeline_loss_divisor_local if self.pipeline_has_last_stage else 0.0
         device = self.all_reduce_device()
-        payload = torch.tensor(value, dtype=torch.float64, device=device)
+        modes = (None, "uniform", "weighted", "sum", "normalized_sum")
+        mode = modes.index(self._accumulation_mode) if self.pipeline_has_last_stage else 0
+        payload = torch.tensor((value, mode), dtype=torch.float64, device=device)
         coordinates = dict(self.topology.ranks)
         coordinates["pipeline"] = self.pipeline_degree - 1
         source_rank = self.topology.rank_from_coordinates(coordinates)
         dist.broadcast(payload, src=source_rank, group=self.pipeline_group)
         if not self.pipeline_has_last_stage:
-            self._accumulation_divisor_local += float(payload.item())
+            self._accumulation_divisor_local += float(payload[0].item())
+            self._accumulation_mode = modes[int(payload[1].item())]
 
     @contextmanager
     def train_context(self):
@@ -1282,6 +1336,7 @@ class ParallelRunner(TorchRunner):
             self._pipeline_loss_divisor_local = 0.0
             self._pipeline_loss_weighting = "train"
             inputs, target = self._prepare_pipeline_batch(data)
+            self._prepare_pipeline_loss_normalization(data, target)
             losses: list[torch.Tensor] = []
             targets = target if self.pipeline_has_last_stage else None
 
@@ -1298,6 +1353,7 @@ class ParallelRunner(TorchRunner):
                         losses=losses,
                     )
             finally:
+                self._finish_pipeline_loss_normalization()
                 self._pipeline_loss_weighting = None
 
             loss = self._pipeline_loss_value(losses)
@@ -1337,6 +1393,7 @@ class ParallelRunner(TorchRunner):
             self._pipeline_loss_divisor_local = 0.0
             self._pipeline_loss_weighting = "eval"
             inputs, target = self._prepare_pipeline_batch(data)
+            self._prepare_pipeline_loss_normalization(data, target)
             losses: list[torch.Tensor] = []
             targets = target if self.pipeline_has_last_stage else None
 
@@ -1353,6 +1410,7 @@ class ParallelRunner(TorchRunner):
                         losses=losses,
                     )
             finally:
+                self._finish_pipeline_loss_normalization()
                 self._pipeline_loss_weighting = None
 
             loss = self._pipeline_loss_value(losses)

@@ -466,7 +466,7 @@ class LoopTelemetry:
         iteration: int,
         length: int | None,
         loss: torch.Tensor | None,
-        loss_n: int | None,
+        loss_n: float | None,
         display_iteration: int | None = None,
         reset_peak_stats: bool = True,
     ) -> None:

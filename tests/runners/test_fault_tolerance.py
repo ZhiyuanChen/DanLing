@@ -121,3 +121,20 @@ def test_nonfinite_microbatch_rejects_entire_fault_tolerant_accumulation(tmp_pat
             assert parameter.grad is None
     finally:
         runner.close()
+
+
+def test_zero_weight_window_finishes_quorum_without_advancing_updates(tmp_path) -> None:
+    runner = TinyFaultToleranceRunner({"logging.enabled": False, "workspace.dir": str(tmp_path)})
+    manager = _QuorumManager([True])
+    runner.fault_tolerance._manager = manager
+    runner.dataloaders["train"] = [{"input": torch.ones(2, 4), "target": torch.zeros(2, 2), "loss_normalizer": 0.0}]
+    before = [parameter.detach().clone() for parameter in runner.model.parameters()]
+    try:
+        runner.train_epoch("train")
+        assert runner.train_state.global_step == 0
+        assert manager.starts == manager.votes == 1
+        assert not manager.errors
+        for parameter, expected in zip(runner.model.parameters(), before):
+            torch.testing.assert_close(parameter, expected)
+    finally:
+        runner.close()

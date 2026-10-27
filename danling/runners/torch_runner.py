@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import random
 import re
@@ -37,6 +38,7 @@ from chanfig import NestedDict
 from torch import distributed as dist
 from torch import nn, optim, utils
 from torch.backends import cudnn
+from torch.nn import functional as F
 from torch.nn.utils import clip_grad_norm_, clip_grad_value_
 from torchdata.stateful_dataloader import StatefulDataLoader
 from torchdata.stateful_dataloader.sampler import RandomSampler as StatefulRandomSampler
@@ -163,8 +165,10 @@ class TorchRunner(Fp8Mixin, BaseRunner):
     _profiler: Any | None = None
     _profiler_trace_dir: str | None = None
     _profiler_operator_table_rows: int = 100
-    _pending_loss_normalizer: int | None = None
+    _pending_loss_normalizer: float | None = None
+    _pending_loss_reduction: str | None = None
     _accumulation_divisor_local: float = 0.0
+    _accumulation_divisor_total: float | None = None
     _accumulation_mode: str | None = None
     _train_window_will_flush: bool = False
     _optimizer_parameter_cache: OptimizerParameterCache | None = None
@@ -1327,38 +1331,43 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         return True
 
     @staticmethod
-    def _as_int_or_none(value: Any) -> int | None:
-        if isinstance(value, bool):
-            return int(value)
-        if isinstance(value, int):
-            return int(value)
-        if isinstance(value, float):
-            return int(value)
+    def _as_float_or_none(value: Any) -> float | None:
+        if isinstance(value, (bool, int, float)):
+            return float(value)
         if torch.is_tensor(value) and value.numel() == 1:
-            return int(value.detach().item())
+            return float(value.detach().item())
         return None
 
-    def _mapping_loss_normalizer(self, mapping: Mapping[str, Any] | None) -> int | None:
+    def _mapping_loss_normalizer(self, mapping: Mapping[str, Any] | None) -> float | None:
         if mapping is None:
             return None
         for key in ("loss_normalizer", "num_valid_tokens", "valid_tokens", "num_tokens", "token_count"):
             if key in mapping:
-                normalizer = self._as_int_or_none(mapping[key])
+                normalizer = self._as_float_or_none(mapping[key])
                 if normalizer is not None:
+                    if not math.isfinite(normalizer) or normalizer < 0:
+                        raise ValueError("loss normalizer must be finite and nonnegative")
                     return normalizer
         return None
 
-    def _tensor_loss_normalizer(self, target: Any) -> int | None:
+    def _tensor_loss_normalizer(self, target: Any) -> float | None:
         if not torch.is_tensor(target):
             return None
+        if isinstance(self.criterion, nn.CrossEntropyLoss) and target.is_floating_point():
+            class_dim = 1 if target.ndim > 1 else 0
+            return float(target.numel() // target.shape[class_dim])
         ignore_index = getattr(self.criterion, "ignore_index", None)
         if ignore_index is not None:
-            return int((target != int(ignore_index)).sum().item())
+            valid = target != int(ignore_index)
+            weight = getattr(self.criterion, "weight", None)
+            if isinstance(self.criterion, (nn.CrossEntropyLoss, nn.NLLLoss)) and weight is not None:
+                return float(weight.to(device=target.device)[target[valid]].sum().item())
+            return float(valid.sum().item())
         if getattr(self.criterion, "reduction", None) == "mean":
-            return int(target.numel())
+            return float(target.numel())
         return None
 
-    def _get_loss_normalizer(self, data: Any) -> int | None:
+    def _get_loss_normalizer(self, data: Any) -> float | None:
         if isinstance(data, Mapping):
             explicit = self._mapping_loss_normalizer(data)
             if explicit is not None:
@@ -1378,7 +1387,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             if isinstance(inputs, Mapping):
                 attention_mask = inputs.get("attention_mask")
                 if isinstance(attention_mask, torch.Tensor):
-                    return int(attention_mask.detach().sum().item())
+                    return float(attention_mask.detach().sum().item())
             return None
 
         if isinstance(data, Sequence) and not isinstance(data, (str, bytes)):
@@ -1393,6 +1402,76 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                     return normalizer
         return None
 
+    def _explicit_loss_normalizer(self, data: Any) -> float | None:
+        mappings: list[Any] = []
+        if isinstance(data, Mapping):
+            mappings.extend((data, data.get("target")))
+        elif isinstance(data, Sequence) and not isinstance(data, (str, bytes)) and len(data) > 1:
+            mappings.append(data[1])
+        for mapping in mappings:
+            if isinstance(mapping, Mapping):
+                normalizer = self._mapping_loss_normalizer(mapping)
+                if normalizer is not None:
+                    return normalizer
+        return None
+
+    def _get_loss_reduction(self, data: Any = None) -> str:
+        """Describe the scalar loss before the accumulation window is normalized.
+
+        A mean is weighted by its actual denominator. A sum stays additive;
+        providing an explicit normalizer instead declares a summed numerator
+        whose desired denominator is that metadata value. Unknown criteria keep
+        the historical microbatch-mean behavior.
+        """
+        if getattr(self.criterion, "reduction", None) != "sum":
+            return "mean"
+        return "normalized_sum" if self._explicit_loss_normalizer(data) is not None else "sum"
+
+    def _compute_loss(self, pred: Any, target: Any) -> torch.Tensor | None:
+        """Evaluate a criterion while giving an empty CE/NLL mean a zero VJP."""
+        criterion = self.criterion
+        if criterion is None:
+            return None
+        if isinstance(criterion, (nn.CrossEntropyLoss, nn.NLLLoss)):
+            normalizer = self._tensor_loss_normalizer(target)
+            if normalizer == 0 and criterion.reduction == "mean":
+                if isinstance(criterion, nn.CrossEntropyLoss):
+                    return F.cross_entropy(
+                        pred,
+                        target,
+                        weight=criterion.weight,
+                        ignore_index=criterion.ignore_index,
+                        reduction="sum",
+                        label_smoothing=criterion.label_smoothing,
+                    )
+                return F.nll_loss(
+                    pred, target, weight=criterion.weight, ignore_index=criterion.ignore_index, reduction="sum"
+                )
+        return criterion(pred, target)
+
+    def _loss_for_reporting(self, loss: torch.Tensor | None, normalizer: float | None, data: Any):
+        self._loss_reporting_reduction = self._get_loss_reduction(data)
+        if loss is not None and self._loss_reporting_reduction == "normalized_sum":
+            return loss / normalizer if normalizer else loss * 0
+        return loss
+
+    def _update_loss_meter(self, loss: torch.Tensor, normalizer: float | None) -> None:
+        weight = 1.0 if self._loss_reporting_reduction == "sum" or normalizer is None else normalizer
+        self.meters.loss.update(loss.detach(), n=weight)
+
+    def _sum_loss_for_reporting(self, loss: torch.Tensor) -> torch.Tensor:
+        return self.all_reduce(loss, op=dist.ReduceOp.SUM)
+
+    def get_epoch_result(self) -> RoundDict:
+        result = super().get_epoch_result()
+        if getattr(self, "_loss_reporting_reduction", None) == "sum":
+            meter = self.meters.get("loss")
+            loss = torch.as_tensor(
+                0.0 if meter is None else meter.sum, dtype=torch.float64, device=self.all_reduce_device()
+            )
+            result["loss"] = self._sum_loss_for_reporting(loss).item()
+        return result
+
     def _loss_normalizer_sync_divisor(self) -> int:
         if self.fault_tolerance is not None and self.fault_tolerance.replicate_process_group is not None:
             return max(self.world_size, 1) * max(
@@ -1403,8 +1482,6 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         return 1
 
     def _reduce_loss_normalizer_total(self, local_total: float) -> float:
-        if local_total <= 0:
-            return local_total
         if self._loss_normalizer_sync_divisor() <= 1:
             return local_total
         if not (dist.is_available() and dist.is_initialized()):
@@ -1466,7 +1543,11 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             return tensor
         group = self.all_reduce_group()
         group_size = max(self.world_size if group is None else dist.get_world_size(group=group), 1)
-        if group is not None and self.fault_tolerance is not None and group is self.fault_tolerance.replicate_process_group:
+        if (
+            group is not None
+            and self.fault_tolerance is not None
+            and group is self.fault_tolerance.replicate_process_group
+        ):
             group_size *= max(self.world_size, 1)
         if group_size <= 1:
             return tensor
@@ -1480,14 +1561,17 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             payload = payload.to(original_device)
         return payload
 
-    def reduce_loss_for_logging(self, loss: torch.Tensor | None, loss_n: int | None) -> torch.Tensor | None:
+    def reduce_loss_for_logging(self, loss: torch.Tensor | None, loss_n: float | None) -> torch.Tensor | None:
         """Detach and all-reduce weighted loss tensor for logging."""
         if loss is None:
             return None
         loss_value = _local_reduction_tensor(loss.detach()).to(dtype=torch.float64)
         if loss_value.ndim > 0:
             loss_value = loss_value.mean()
-        normalizer = float(max(int(loss_n), 0) if loss_n is not None else 1)
+        normalizer = float(loss_n) if loss_n is not None else 1.0
+        summed = getattr(self, "_loss_reporting_reduction", None) == "sum"
+        if summed:
+            normalizer = 1.0
         payload_device = self.all_reduce_device()
         payload = torch.stack(
             (
@@ -1498,7 +1582,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         self.all_reduce(payload, op=dist.ReduceOp.SUM)
         if payload[1].item() <= 0:
             return None
-        return payload[0] / payload[1]
+        return payload[0] if summed else payload[0] / payload[1]
 
     def _reset_accumulation_normalization(self) -> None:
         """Clear the per-window accumulation state.
@@ -1508,66 +1592,62 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         from its first batch's normalizer.
         """
         self._pending_loss_normalizer = None
+        self._pending_loss_reduction = None
         self._accumulation_divisor_local = 0.0
+        self._accumulation_divisor_total = None
         self._accumulation_mode = None
 
     def _loss_scale_for_backward(self) -> float:
         """Consume the pending loss-normalizer signal and return this micro-step's loss scale."""
         loss_normalizer = self._pending_loss_normalizer
+        reduction = self._pending_loss_reduction or self._get_loss_reduction()
+        mode = reduction if reduction != "mean" else ("weighted" if loss_normalizer is not None else "uniform")
         if self._accumulation_mode is None:
-            self._accumulation_mode = (
-                "weighted" if loss_normalizer is not None and int(loss_normalizer) > 0 else "uniform"
+            self._accumulation_mode = mode
+
+        if self._accumulation_mode != mode:
+            raise ValueError("loss reduction or normalization changed within the current accumulation window")
+        if mode in {"weighted", "normalized_sum"} and loss_normalizer is None:
+            raise ValueError(
+                "loss normalizer became unavailable within the current accumulation window. "
+                "Override `train_step()` or provide consistent batch metadata for weighted normalization."
             )
-
-        if self._accumulation_mode == "weighted":
-            if loss_normalizer is None or int(loss_normalizer) <= 0:
-                raise ValueError(
-                    "loss normalizer became unavailable within the current accumulation window. "
-                    "Override `train_step()` or provide consistent batch metadata for weighted normalization."
-                )
-            normalizer = float(int(loss_normalizer))
-            self._accumulation_divisor_local += normalizer
-            self._pending_loss_normalizer = None
-            return normalizer
-
-        self._accumulation_divisor_local += 1.0
+        normalizer = float(loss_normalizer) if loss_normalizer is not None else 1.0
+        if not math.isfinite(normalizer) or normalizer < 0:
+            raise ValueError("loss normalizer must be finite and nonnegative")
+        self._accumulation_divisor_local += normalizer
         self._pending_loss_normalizer = None
-        return 1.0
+        self._pending_loss_reduction = None
+        return normalizer if mode == "weighted" else 1.0
 
     def _scaled_loss_for_backward(self, loss: torch.Tensor) -> torch.Tensor:
         """Scale and accumulate loss for one micro-step inside an accumulation window.
 
-        Accumulation contract (window-local; reset on optimizer flush):
+        Means are multiplied by their real denominator and summed before one
+        global division. A sum remains additive unless an explicit batch
+        normalizer declares the denominator of that summed numerator. Empty
+        microbatches contribute zero numerator and zero denominator. Unknown
+        criteria without metadata retain uniform microbatch averaging.
 
-        1. **Mode detection.** First micro-step decides the window mode from
-           ``self._pending_loss_normalizer``:
-              - non-empty positive normalizer → ``"weighted"``
-              - ``None`` or non-positive → ``"uniform"``
-        2. **Mode is sticky.** Once the window picks ``"weighted"``, every
-           subsequent micro-step in that window MUST also publish a positive
-           normalizer; missing one raises with guidance to override
-           `train_step()` or homogenize batch metadata. A ``"uniform"`` window
-           ignores per-batch normalizers entirely.
-        3. **Producer/consumer.** ``train_epoch`` / ``train_steps`` set
-           ``self._pending_loss_normalizer`` from ``_get_loss_normalizer(data)``
-           before each ``train_step`` call; this method consumes and clears it.
-        4. **Override safety.** Subclasses overriding ``train_step`` are
-           responsible for keeping the normalizer signal consistent across the
-           window — either always present (weighted mode) or always absent
-           (uniform mode). Mixing within one window is a programmer error.
-
-        See `_reset_accumulation_normalization` for window boundaries and
-        `_gradient_scale_for_step` for the optimizer-side rescale.
+        Loop overrides may publish ``_pending_loss_normalizer`` before calling
+        ``backward``; a window must use a consistent reduction convention.
         """
-        return loss * self._loss_scale_for_backward()
+        scale = self._loss_scale_for_backward()
+        return loss * scale
 
     def _gradient_scale_for_step(self) -> float | None:
-        if self._accumulation_divisor_local <= 0:
+        if self._accumulation_mode is None:
             return None
         total = self._reduce_loss_normalizer_total(self._accumulation_divisor_local)
+        self._accumulation_divisor_total = total
         if total <= 0:
-            return None
+            return 0.0
+        if self._accumulation_mode == "sum":
+            return float(max(self._loss_normalizer_sync_divisor(), 1))
         return float(max(self._loss_normalizer_sync_divisor(), 1)) / total
+
+    def _accumulation_is_empty(self) -> bool:
+        return self._accumulation_mode is not None and self._accumulation_divisor_total == 0
 
     def _optimizer_parameters_for_scaling(self) -> list[nn.Parameter]:
         if self.optimizer is None:
@@ -1795,7 +1875,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             if self.model is None:
                 raise ValueError("cannot run train_step: model is not initialized")
             pred = self.model(**inputs) if isinstance(inputs, Mapping) else self.model(inputs)
-            loss = self.criterion(pred, target) if self.criterion is not None else None
+            loss = self._compute_loss(pred, target)
             if loss is None:
                 raise ValueError("cannot run train_step: criterion did not produce a loss")
             skipped = self.backward(loss)
@@ -1811,57 +1891,51 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             Whether this micro-batch was replaced with zero.
         """
 
-        if (
-            self.fault_tolerance is not None
-            and self.fault_tolerance.enabled
-            and not bool(torch.isfinite(loss.detach()).all().item())
-        ):
+        zero_weight = self._pending_loss_normalizer == 0
+        globally_nonfinite = False
+        fault_tolerant = self.fault_tolerance is not None and self.fault_tolerance.enabled
+        nonfinite = False
+        if self.skip_nonfinite_loss or fault_tolerant:
+            # Every rank votes, including an empty rank whose criterion may
+            # legitimately be undefined. Zero weight makes that vote finite.
+            nonfinite = not zero_weight and not bool(torch.isfinite(loss.detach()).all().item())
+        if self.skip_nonfinite_loss:
+            globally_nonfinite = self._sync_optimizer_skip_decision(nonfinite)
+        if fault_tolerant and self.fault_tolerance is not None and (nonfinite or globally_nonfinite):
             self.fault_tolerance.record_nonfinite_loss()
-        if not self.skip_nonfinite_loss:
-            self._backward(loss)
-            return False
-        nonfinite = not bool(torch.isfinite(loss.detach()).all().item())
-        if not self._sync_optimizer_skip_decision(nonfinite):
-            self._backward(loss)
-            return False
+        if zero_weight or globally_nonfinite:
+            self._backward_zero_vjp(loss, preserve_missing=globally_nonfinite)
+            return True
+        self._backward(loss)
+        return False
 
-        if self.fault_tolerance is not None and self.fault_tolerance.enabled:
-            self.fault_tolerance.record_nonfinite_loss()
-
-        gradients = [
-            (parameter, None if parameter.grad is None else parameter.grad.detach().clone())
-            for parameter in self.iter_optimizer_parameters()
-        ]
-        independent_zero = loss.detach().new_zeros((), requires_grad=True)
-        zero_loss = independent_zero
+    def _backward_zero_vjp(self, loss: torch.Tensor, *, preserve_missing: bool = False) -> None:
+        # Replace only this contribution before AccumulateGrad and distributed
+        # reducers see it. Prior window gradients then synchronize normally.
+        parameters = [parameter for parameter in self.iter_optimizer_parameters() if parameter.requires_grad]
+        presence = None
+        if preserve_missing:
+            presence = torch.tensor(
+                [float(parameter.grad is not None) for parameter in parameters], device=self.all_reduce_device()
+            )
+            if not self._should_train_no_sync():
+                self.all_reduce(presence, op=dist.ReduceOp.MAX)
+        handles = [parameter.register_hook(torch.zeros_like) for parameter in parameters]
+        zero = loss.detach().new_zeros((), requires_grad=True)
         if loss.requires_grad:
-            finite_loss = torch.where(torch.isfinite(loss), loss, torch.zeros_like(loss))
-            zero_loss = zero_loss + finite_loss.sum() * 0.0
+            zero = zero + torch.where(torch.isfinite(loss), loss, torch.zeros_like(loss)).sum() * 0
+        else:
+            for parameter in parameters:
+                zero = zero + parameter.reshape(-1)[:1].real.nan_to_num().sum() * 0
         try:
-            self._backward(zero_loss)
+            self._backward(zero)
         finally:
-            for parameter, gradient in gradients:
-                parameter.grad = gradient
-
-        if self.accum_steps > 1 and self._train_no_sync_targets() and not self._should_train_no_sync():
-            self._sync_preserved_gradients(gradients)
-        return True
-
-    def _sync_preserved_gradients(
-        self,
-        gradients: list[tuple[nn.Parameter, torch.Tensor | None]],
-    ) -> None:
-        divisor = self._loss_normalizer_sync_divisor()
-        for parameter, gradient in gradients:
-            present = torch.tensor(float(gradient is not None), device=self.all_reduce_device())
-            self.all_reduce(present, op=dist.ReduceOp.MAX)
-            if not bool(present.item()):
-                parameter.grad = None
-                continue
-            synchronized = torch.zeros_like(parameter) if gradient is None else gradient
-            self.all_reduce(synchronized, op=dist.ReduceOp.SUM)
-            synchronized.div_(divisor)
-            parameter.grad = synchronized
+            for handle in handles:
+                handle.remove()
+        if presence is not None:
+            for parameter, existed in zip(parameters, presence.tolist()):
+                if not existed:
+                    parameter.grad = None
 
     def _backward(self, loss: torch.Tensor) -> None:
         """
@@ -1968,6 +2042,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         grad_scale = self._gradient_scale_for_step()
         if grad_scale is not None:
             self._scale_optimizer_gradients(grad_scale)
+        empty_window = self._accumulation_is_empty()
         max_grad_value = self.max_grad_value
         max_grad_norm = self.max_grad_norm
         skip_nonfinite_grad = self.skip_nonfinite_grad
@@ -1976,13 +2051,13 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         if skip_nonfinite_grad or self.grad_scaler is not None or fault_tolerant:
             has_nonfinite_grad = self._optimizer_has_nonfinite_grad()
             has_nonfinite_grad = self._sync_optimizer_skip_decision(has_nonfinite_grad)
-        commit = not has_nonfinite_grad
+        commit = not has_nonfinite_grad and not empty_window
         if fault_tolerant and self.fault_tolerance is not None:
-            commit = self.fault_tolerance.should_commit(nonfinite=has_nonfinite_grad)
+            commit = self.fault_tolerance.should_commit(nonfinite=has_nonfinite_grad) and not empty_window
         if not commit:
             self._zero_optimizer_grad()
             if self.grad_scaler is not None:
-                if fault_tolerant and not has_nonfinite_grad:
+                if empty_window or (fault_tolerant and not has_nonfinite_grad):
                     self.grad_scaler.update(new_scale=self.grad_scaler.get_scale())
                 else:
                     self.grad_scaler.update()
@@ -2224,7 +2299,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         loader_length = self._loader_length(loader)
         length = loader_length - 1 if loader_length is not None else None
         last_loss: torch.Tensor | None = None
-        last_loss_n: int | None = None
+        last_loss_n: float | None = None
         self._set_loader_epoch(loader, self.train_state.epoch)
         self.mode = RunnerMode.train
         self.split = split
@@ -2241,29 +2316,25 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
         for iteration, data, will_flush in self._iter_train_batches(loader):
             self.supervisor.maybe_handle_termination_signal()
-            # Positive int = weighted-loss signal; None = no signal (uniform window).
-            # 0 or missing collapses to None so the accumulation state machine
-            # picks "uniform" cleanly instead of being silently coerced to 1.
             loss_n = self._get_loss_normalizer(data)
-            if loss_n is not None and loss_n <= 0:
-                loss_n = None
             self._pending_loss_normalizer = loss_n
+            self._pending_loss_reduction = self._get_loss_reduction(data)
             self._train_window_will_flush = will_flush
             try:
                 _, loss = self.train_step(data)
             finally:
                 self._train_window_will_flush = False
                 self._pending_loss_normalizer = None
+                self._pending_loss_reduction = None
 
+            loss = self._loss_for_reporting(loss, loss_n, data)
             self.supervisor.mark_heartbeat_progress()
             self.supervisor.maybe_handle_termination_signal()
             current_time = self.loop_time()
             if self.scheduler is not None and hasattr(self.scheduler, "get_last_lr"):
                 self.meters.lr.update(self.scheduler.get_last_lr()[0])
             if loss is not None:
-                # `loss_n or 1` weights a missing normalizer as a single-sample meter update;
-                # criteria that emit a real loss for zero-valid-token batches are not supported here.
-                self.meters.loss.update(loss.detach(), n=loss_n or 1)
+                self._update_loss_meter(loss, loss_n)
             telemetry.observe(iteration=iteration, data=data, current_time=current_time)
 
             if self.log_interval > 0 and (
@@ -2403,25 +2474,25 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                     batch_iteration += 1
                     self.supervisor.maybe_handle_termination_signal()
                     step_before = self.train_state.global_step
-                    # See `train_epoch` for normalizer semantics.
                     loss_n = self._get_loss_normalizer(data)
-                    if loss_n is not None and loss_n <= 0:
-                        loss_n = None
                     self._pending_loss_normalizer = loss_n
+                    self._pending_loss_reduction = self._get_loss_reduction(data)
                     self._train_window_will_flush = will_flush
                     try:
                         _, loss = self.train_step(data)
                     finally:
                         self._train_window_will_flush = False
                         self._pending_loss_normalizer = None
+                        self._pending_loss_reduction = None
 
+                    loss = self._loss_for_reporting(loss, loss_n, data)
                     self.supervisor.mark_heartbeat_progress()
                     self.supervisor.maybe_handle_termination_signal()
                     current_time = self.loop_time()
                     if self.scheduler is not None and hasattr(self.scheduler, "get_last_lr"):
                         self.meters.lr.update(self.scheduler.get_last_lr()[0])
                     if loss is not None:
-                        self.meters.loss.update(loss.detach(), n=loss_n or 1)
+                        self._update_loss_meter(loss, loss_n)
                     telemetry.observe(iteration=batch_iteration, data=data, current_time=current_time)
 
                     step_after = self.train_state.global_step
@@ -2540,7 +2611,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         model = self.ema or self.model
         with self.infer_context():
             pred = model(**inputs) if isinstance(inputs, Mapping) else model(inputs)
-            loss = self.criterion(pred, target) if self.criterion is not None else None
+            loss = self._compute_loss(pred, target)
 
         if self.metrics is not None and pred is not None and target is not None:
             self.metrics.update(pred, target)
@@ -2607,7 +2678,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         length = loader_length - 1 if loader_length is not None else None
 
         last_loss: torch.Tensor | None = None
-        last_loss_n: int | None = None
+        last_loss_n: float | None = None
         self.mode = RunnerMode.evaluate
         self.split = split
         self.meters.reset()
@@ -2623,11 +2694,12 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             if loss_n is not None and loss_n < 0:
                 loss_n = None
             _, loss = self.evaluate_step(data)
+            loss = self._loss_for_reporting(loss, loss_n, data)
             self.supervisor.mark_heartbeat_progress()
             self.supervisor.maybe_handle_termination_signal()
             current_time = self.loop_time()
             if loss is not None:
-                self.meters.loss.update(loss.detach(), n=1 if loss_n is None else loss_n)
+                self._update_loss_meter(loss, loss_n)
             telemetry.observe(
                 iteration=iteration,
                 data=data,
@@ -2723,11 +2795,12 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             if loss_n is not None and loss_n < 0:
                 loss_n = None
             _, loss = self.evaluate_step(data)
+            loss = self._loss_for_reporting(loss, loss_n, data)
             self.supervisor.mark_heartbeat_progress()
             self.supervisor.maybe_handle_termination_signal()
             current_time = self.loop_time()
             if loss is not None:
-                self.meters.loss.update(loss.detach(), n=1 if loss_n is None else loss_n)
+                self._update_loss_meter(loss, loss_n)
             telemetry.observe(iteration=iteration, data=data, current_time=current_time)
             self.supervisor.maybe_collect_garbage(iteration + 1, scope=f"evaluate:{split}")
 

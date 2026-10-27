@@ -98,6 +98,34 @@ def test_graph_runner_train_step_matches_eager_update() -> None:
         graph.close()
 
 
+@pytest.mark.parametrize("empty_first", [False, True])
+def test_graph_runner_zero_weight_discards_nonfinite_vjp(empty_first) -> None:
+    runner = TinyGraphRunner({"device": "cpu", "logging.enabled": False, "accum_steps": 2, "logging.interval": 0})
+    try:
+        runner.model.double()
+        initial = runner.model.weight.detach().clone()
+        valid = {
+            "input": torch.tensor([[1.0, 2.0]], dtype=torch.float64),
+            "target": torch.zeros(1, 1, dtype=torch.float64),
+            "loss_normalizer": 0.123456789123,
+        }
+        empty = {
+            "input": torch.empty(0, 2, dtype=torch.float64),
+            "target": torch.empty(0, 1, dtype=torch.float64),
+            "loss_normalizer": 0.0,
+        }
+        gradient = torch.autograd.grad(
+            runner.criterion(runner.model(valid["input"]), valid["target"]), runner.model.weight
+        )[0]
+        runner.dataloaders["train"] = [empty, valid] if empty_first else [valid, empty]
+        result = runner.train_epoch()
+        torch.testing.assert_close(runner.model.weight, initial - 0.1 * gradient, rtol=1e-12, atol=1e-12)
+        assert runner.train_state.global_step == 1
+        assert torch.isfinite(torch.tensor(result["loss"]))
+    finally:
+        runner.close()
+
+
 def test_graph_runner_replaces_nonfinite_loss_without_accumulating_gradients() -> None:
     runner = TinyGraphRunner({"logging.enabled": False, "skip_nonfinite_loss": True})
     try:

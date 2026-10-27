@@ -82,6 +82,22 @@ Step-mode semantics:
 - `evaluate_steps(split, steps=None)` is always bounded-step evaluation.
   When `steps` is omitted, it defaults to `max(steps_budget // 20, 1)`.
 
+## Loss reduction and clipping
+
+Mean losses accumulate as numerators and are divided once by the global window's
+denominator. Weighted CE/NLL uses the valid target class-weight sum. Batch
+`loss_normalizer` metadata can supply a nonnegative real denominator/weight for
+custom objectives. A criterion with `reduction="sum"` accumulates additively;
+with explicit `loss_normalizer`, it declares a summed numerator to divide by that
+denominator. Unknown criteria retain microbatch-mean accumulation by default.
+Custom objectives can override `_get_loss_normalizer()` and `_get_loss_reduction()`.
+Zero-weight microbatches contribute no gradient; an entirely zero-weight global
+window skips the optimizer, step scheduler, EMA and update counter.
+
+Pipeline `max_grad_norm` uses one model norm across stages and DTensor meshes.
+Runner-owned fp16 scales the backward loss on the final pipeline stage, keeps
+scales consistent on overflow, and includes scaler state in full checkpoints.
+
 Checkpoint/score contracts (all overridable):
 
 - `load_model`

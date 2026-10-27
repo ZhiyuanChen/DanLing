@@ -356,6 +356,9 @@ def _torch_runner_nonfinite_loss_accumulation_worker(rank: int, world_size: int)
         first_gathered = [torch.zeros_like(first_grad) for _ in range(world_size)]
         dist.all_gather(first_gathered, first_grad)
         assert not torch.allclose(first_gathered[0], first_gathered[1])
+        # A rank may have no local contribution while another still has one.
+        if rank == 0:
+            next(runner.model.parameters()).grad = None
 
         invalid_input = torch.full((2, 4), float("inf")) if rank else torch.ones(2, 4)
         _prediction, loss = runner.train_step((invalid_input, target))
@@ -375,6 +378,67 @@ def _torch_runner_preinitialized_pg_worker(rank: int, world_size: int) -> None:
     configure_distributed_env(rank, world_size)
     with process_group("gloo", rank, world_size), pytest.raises(RuntimeError, match="already initialized"):
         DistributedTinyTorchRunner({"logging.enabled": False, "dist.backend": "gloo", "ckpt": {"backend": "file"}})
+
+
+def _torch_runner_empty_token_rank_worker(rank: int, world_size: int, reduction: str) -> None:
+    class ClassificationRunner(TorchRunner):
+        def __init__(self, config):
+            super().__init__(config)
+            self.model = nn.Linear(2, 2, bias=False, dtype=torch.float64)
+            self.criterion = (
+                nn.MSELoss()
+                if reduction == "nan"
+                else nn.CrossEntropyLoss(weight=torch.tensor([0.25, 1.75], dtype=torch.float64), reduction=reduction)
+            )
+            self.optimizer = optim.SGD(self.model.parameters(), lr=0.1, weight_decay=0.1)
+
+    configure_distributed_env(rank, world_size)
+    runner = ClassificationRunner(
+        {
+            "device": "cpu",
+            "dist.backend": "gloo",
+            "logging.enabled": False,
+            "logging.interval": 0,
+            "skip_nonfinite_loss": True,
+        }
+    )
+    try:
+        initial = runner.unwrap(runner.model).weight.detach().clone()
+        inputs = torch.tensor([[1.0, 1.0], [2.0, 2.0]], dtype=torch.float64)
+        targets = torch.tensor([-100, 1])
+        reference = (
+            runner.criterion(runner.unwrap(runner.model)(inputs[1:]), torch.zeros(1, 2, dtype=torch.float64))
+            if reduction == "nan"
+            else runner.criterion(runner.unwrap(runner.model)(inputs), targets)
+        )
+        gradient = torch.autograd.grad(reference, runner.unwrap(runner.model).weight)[0]
+        runner.dataloaders["train"] = [(inputs[rank : rank + 1], targets[rank : rank + 1])]
+        if reduction == "nan":
+            runner.dataloaders["train"] = [
+                {
+                    "input": inputs[rank : rank + 1],
+                    "target": torch.full((1, 2), float("nan") if rank == 0 else 0.0, dtype=torch.float64),
+                    "loss_normalizer": 0.0 if rank == 0 else 0.75,
+                }
+            ]
+        runner.train_epoch()
+        expected = initial - 0.1 * (gradient + 0.1 * initial)
+        torch.testing.assert_close(runner.unwrap(runner.model).weight, expected)
+        assert runner.train_state.global_step == 1
+        runner.dataloaders["train"] = [(inputs[rank : rank + 1], torch.full((1,), -100))]
+        if reduction == "nan":
+            runner.dataloaders["train"] = [
+                {
+                    "input": inputs[rank : rank + 1],
+                    "target": torch.full((1, 2), float("nan"), dtype=torch.float64),
+                    "loss_normalizer": 0.0,
+                }
+            ]
+        runner.train_epoch()
+        torch.testing.assert_close(runner.unwrap(runner.model).weight, expected)
+        assert runner.train_state.global_step == 1
+    finally:
+        runner.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1523,6 +1587,118 @@ class TestTorchRunnerScheduling:
 
 
 class TestTorchRunnerEpochExecution:
+
+    @pytest.mark.parametrize("reduction", ["mean", "sum", "nan"])
+    def test_empty_token_rank_participates_in_global_normalization(self, reduction) -> None:
+        require_gloo()
+        run_distributed(_torch_runner_empty_token_rank_worker, worker_args=(reduction,))
+
+    @pytest.mark.parametrize("empty_first", [False, True])
+    @pytest.mark.parametrize("invalid", ["empty", "nan"])
+    def test_zero_weight_loss_preserves_other_microbatch_gradients(self, empty_first, invalid) -> None:
+        runner = WeightedLossRunner(
+            {"device": "cpu", "logging.enabled": False, "accum_steps": 2, "logging.interval": 0}
+        )
+        try:
+            runner.model.double()
+            valid = {
+                "input": torch.ones(1, 1, dtype=torch.float64),
+                "target": torch.zeros(1, 1, dtype=torch.float64),
+                "loss_normalizer": 0.25,
+            }
+            empty = {
+                "input": torch.empty(0, 1, dtype=torch.float64),
+                "target": torch.empty(0, 1, dtype=torch.float64),
+                "loss_normalizer": 0.0,
+            }
+            if invalid == "nan":
+                empty = {
+                    "input": torch.ones(1, 1, dtype=torch.float64),
+                    "target": torch.full((1, 1), float("nan"), dtype=torch.float64),
+                    "loss_normalizer": 0.0,
+                }
+            runner.dataloaders["train"] = [empty, valid] if empty_first else [valid, empty]
+            result = runner.train_epoch()
+            torch.testing.assert_close(runner.model.weight, torch.tensor([[0.8]], dtype=torch.float64))
+            assert result["loss"] == pytest.approx(1.0)
+            assert runner.train_state.global_step == 1
+        finally:
+            runner.close()
+
+    @pytest.mark.parametrize("kind", ["ce", "nll", "mse"])
+    @pytest.mark.parametrize("reduction", ["mean", "sum"])
+    def test_accumulated_criterion_matches_concatenated_batch(self, kind, reduction) -> None:
+        runner = WeightedLossRunner(
+            {"device": "cpu", "logging.enabled": False, "accum_steps": 4, "logging.interval": 0}
+        )
+        try:
+            linear = nn.Linear(2, 2, bias=False, dtype=torch.float64)
+            runner.model = nn.Sequential(linear, nn.LogSoftmax(dim=1)) if kind == "nll" else linear
+            weight = torch.tensor([0.25, 1.75], dtype=torch.float64)
+            runner.criterion = (
+                nn.MSELoss(reduction=reduction)
+                if kind == "mse"
+                else (nn.NLLLoss if kind == "nll" else nn.CrossEntropyLoss)(weight=weight, reduction=reduction)
+            )
+            runner.optimizer = optim.SGD(runner.model.parameters(), lr=0.1)
+            runner._bind_optimizer_container()
+            inputs = torch.tensor([[1.0, 2.0], [2.0, -1.0], [-1.0, 3.0], [0.5, -2.0]], dtype=torch.float64)
+            target = torch.zeros_like(inputs) if kind == "mse" else torch.tensor([-100, 0, 1, 1])
+            expected = [parameter.detach().clone() for parameter in runner.model.parameters()]
+            loss = runner.criterion(runner.model(inputs), target)
+            gradients = torch.autograd.grad(loss, tuple(runner.model.parameters()))
+            runner.dataloaders["train"] = list(zip(inputs.split((1, 1, 2)), target.split((1, 1, 2))))
+            runner.train_epoch()
+            for parameter, initial, gradient in zip(runner.model.parameters(), expected, gradients):
+                torch.testing.assert_close(parameter, initial - 0.1 * gradient)
+            assert runner.train_state.global_step == 1
+        finally:
+            runner.close()
+
+    @pytest.mark.parametrize("reduction", ["mean", "sum"])
+    def test_real_loss_normalizers_preserve_fractional_weights(self, reduction) -> None:
+        runner = WeightedLossRunner(
+            {"device": "cpu", "logging.enabled": False, "accum_steps": 2, "logging.interval": 0}
+        )
+        try:
+            runner.model.double()
+            runner.criterion = nn.MSELoss(reduction=reduction)
+            runner.dataloaders["train"] = [
+                {
+                    "input": torch.ones(1, 1, dtype=torch.float64),
+                    "target": torch.zeros(1, 1, dtype=torch.float64),
+                    "loss_normalizer": 0.25,
+                },
+                {
+                    "input": torch.full((1, 1), 3.0, dtype=torch.float64),
+                    "target": torch.zeros(1, 1, dtype=torch.float64),
+                    "loss_normalizer": 0.75,
+                },
+            ]
+            runner.train_epoch()
+            gradient = 2 * (0.25 + 9 * 0.75) if reduction == "mean" else 2 * (1 + 9)
+            torch.testing.assert_close(runner.model.weight, torch.tensor([[1 - 0.1 * gradient]], dtype=torch.float64))
+        finally:
+            runner.close()
+
+    @pytest.mark.parametrize("reduction", ["mean", "sum"])
+    def test_empty_loss_window_keeps_optimizer_and_scheduler_unchanged(self, reduction) -> None:
+        runner = TinyStepLRTorchRunner(
+            {"device": "cpu", "logging.enabled": False, "accum_steps": 2, "logging.interval": 0}
+        )
+        try:
+            runner.criterion = nn.CrossEntropyLoss(reduction=reduction)
+            runner.optimizer.param_groups[0]["weight_decay"] = 0.1
+            initial = [parameter.detach().clone() for parameter in runner.model.parameters()]
+            scheduler_state = runner.scheduler.state_dict()
+            runner.dataloaders["train"] = [(torch.ones(1, 4), torch.full((1,), -100))] * 2
+            runner.train_epoch()
+            assert runner.train_state.global_step == 0
+            assert runner.scheduler.state_dict() == scheduler_state
+            for parameter, expected in zip(runner.model.parameters(), initial):
+                torch.testing.assert_close(parameter, expected)
+        finally:
+            runner.close()
 
     def test_train_epoch_supports_unsized_loader(self) -> None:
         runner = StreamingEpochRunner({"logging.enabled": False, "logging.interval": 1024})
