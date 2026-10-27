@@ -179,6 +179,7 @@ Current launch contract:
 
 When TorchFT is enabled:
 
+- automatic checkpoint backend selection uses DCP, including single-process replica groups
 - dataloader sharding and seed bias are expanded across replica groups using
   `ft.replica_id` and `ft.group_size`
 - FSDP2 replicated-dimension all-reduce hooks use TorchFT-managed process groups

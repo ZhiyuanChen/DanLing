@@ -45,10 +45,19 @@ class FaultTolerance:
         self._replicate_process_group: Any | None = None
         self.replica_id: int = 0
         self.group_size: int = 1
+        self._quorum_active = False
+        self._nonfinite_loss = False
+        self._consecutive_nonfinite_steps = 0
+        self._max_nonfinite_steps = int(runner.config.get("ft.max_consecutive_nonfinite_steps", 10))
 
         config = runner.config.get("ft")
         if not config or not bool(config.get("enabled", False)):
             return
+
+        if config.get("use_async_quorum", False):
+            raise NotImplementedError(
+                "DanLing requires synchronous TorchFT quorum to restore state before selecting data"
+            )
 
         if not has_torchft or torchft is None:
             raise ImportError("torchft is not installed. Install `torchft-nightly` to enable config.ft.enabled.")
@@ -58,6 +67,9 @@ class FaultTolerance:
         self.replica_id = int(config.get("replica_id", 0))
         self.group_size = int(config.get("group_size", 1))
         min_replica_size = int(config.get("min_replica_size", 1))
+        manager_timeout_seconds = float(config.get("manager_timeout_seconds", 60.0))
+        if manager_timeout_seconds <= 0 or self._max_nonfinite_steps <= 0:
+            raise ValueError("FT manager timeout and nonfinite retry limit must be positive")
 
         if process_group_timeout_seconds <= 0:
             raise ValueError(
@@ -85,7 +97,8 @@ class FaultTolerance:
                 min_replica_size=min_replica_size,
                 load_state_dict=self._load_state_dict,
                 state_dict=self._state_dict,
-                use_async_quorum=True,
+                use_async_quorum=False,
+                timeout=timedelta(seconds=manager_timeout_seconds),
                 replica_id=f"danling_fault_tolerance_{self.replica_id}",
             )
             self._replicate_process_group = torchft.process_group.ManagedProcessGroup(self._manager)
@@ -114,6 +127,40 @@ class FaultTolerance:
             return 0
         return int(self._manager.participating_rank())
 
+    def begin_step(self) -> None:
+        """Start one quorum before consuming an optimizer window's data.
+
+        Synchronous quorum is the default so healing restores model and loader
+        state before the next forward. The guard spans gradient accumulation.
+        """
+        if self._manager is not None and not self._quorum_active:
+            self._manager.start_quorum()
+            self._quorum_active = True
+            self._nonfinite_loss = False
+
+    def record_nonfinite_loss(self) -> None:
+        """Reject the whole window even when a bad micro-batch is zeroed."""
+        self._nonfinite_loss = True
+
+    def should_commit(self, *, nonfinite: bool = False) -> bool:
+        """Finish the quorum once, before optimizer or scheduler mutation."""
+        if self._manager is None:
+            return not nonfinite
+        self.begin_step()
+        nonfinite = nonfinite or self._nonfinite_loss
+        if nonfinite:
+            self._consecutive_nonfinite_steps += 1
+            self._manager.report_error(RuntimeError("Loss or gradients are not finite"))
+        else:
+            self._consecutive_nonfinite_steps = 0
+        try:
+            commit = bool(self._manager.should_commit())
+        finally:
+            self._quorum_active = False
+        if self._consecutive_nonfinite_steps > self._max_nonfinite_steps:
+            raise RuntimeError("Nonfinite gradients persisted beyond the configured FT retry limit")
+        return commit and not nonfinite
+
     @staticmethod
     def _close_resource(resource: Any | None) -> None:
         if resource is None:
@@ -126,6 +173,7 @@ class FaultTolerance:
                 return
 
     def close(self) -> None:
+        self._quorum_active = False
         self._close_resource(self._replicate_process_group)
         self._replicate_process_group = None
         self._close_resource(self._manager)
@@ -133,8 +181,20 @@ class FaultTolerance:
         self._close_resource(self._process_group)
         self._process_group = None
 
+    def state_dict(self) -> Mapping[str, Any]:
+        """Persist the manager's committed-step and participation metadata."""
+        return {} if self._manager is None else self._manager.state_dict()
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        if self._manager is not None:
+            self._manager.load_state_dict(dict(state))
+
     def _state_dict(self) -> Mapping[str, Any]:
-        return self.runner.state_dict()
+        state = dict(self.runner.state_dict())
+        # The manager transports its own metadata during healing. Its callback
+        # only owns runner components, not the active quorum's manager state.
+        state.pop("fault_tolerance", None)
+        return state
 
     def _load_state_dict(self, state_dict: Mapping[str, Any]) -> None:
         self.runner.load_checkpoint(state_dict)

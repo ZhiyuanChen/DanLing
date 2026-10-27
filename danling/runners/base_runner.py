@@ -139,7 +139,7 @@ class BaseRunner(metaclass=MetaRunner):
     checkpoint_manager: CheckpointManager
     workspace: RunnerWorkspace
     supervisor: RunnerSupervisor
-    fault_tolerance: FaultTolerance | None
+    fault_tolerance: FaultTolerance | None = None
 
     timestamp: str
     _print_process: int

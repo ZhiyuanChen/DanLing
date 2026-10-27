@@ -187,7 +187,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         config.stack = normalize_stack_name(config.get("stack", "ddp"))
         checkpoint_backend = str(config.get("ckpt.backend")).strip().lower()
         if checkpoint_backend == "auto":
-            checkpoint_backend = "dcp" if self.world_size > 1 else "file"
+            checkpoint_backend = "dcp" if self.world_size > 1 or config.get("ft.enabled", False) else "file"
         config["ckpt"]["backend"] = self._validate_checkpoint_backend(checkpoint_backend)
         super().__init__(config)
 
@@ -231,7 +231,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
         The default implementation initializes the default torch.distributed
         process group from `WORLD_SIZE`/`RANK`/`LOCAL_RANK` environment
-        variables when `WORLD_SIZE > 1`, sets the selected CUDA device,
+        variables when `WORLD_SIZE > 1` or TorchFT is enabled, sets the selected CUDA device,
         broadcasts `self.timestamp` from rank 0, and seeds
         `elastic_state.restart_count` from `TORCHELASTIC_RESTART_COUNT`.
 
@@ -246,14 +246,14 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         **Precondition:** environment variables `WORLD_SIZE`, `RANK`,
         `LOCAL_RANK` are set when running distributed. The default
         torch.distributed process group is **not** already initialized when
-        `WORLD_SIZE > 1` — the runner owns process-group lifecycle.
+        `WORLD_SIZE > 1` or TorchFT is enabled — the runner owns process-group lifecycle.
 
         Raises:
             RuntimeError: the default process group is already initialized
-                when `WORLD_SIZE > 1`.
+                when `WORLD_SIZE > 1` or TorchFT is enabled.
             ValueError: `dist.init_timeout_seconds` is non-positive.
 
-        **Side effects:** when `WORLD_SIZE > 1`, calls
+        **Side effects:** when `WORLD_SIZE > 1` or TorchFT is enabled, calls
         `dist.init_process_group(...)`, sets the active CUDA device when
         the runtime device is CUDA, and broadcasts `self.timestamp` from rank 0.
         Reads `TORCHELASTIC_RESTART_COUNT` into `elastic_state.restart_count`.
@@ -286,11 +286,12 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         use_cuda_runtime = torch.cuda.is_available() and runtime_device.type == "cuda"
         runtime_device_index = runtime_device.index if runtime_device.index is not None else self.local_rank
         dist_ready = dist.is_available() and dist.is_initialized()
-        if world_size > 1 and dist_ready:
+        requires_process_group = world_size > 1 or bool(self.config.get("ft.enabled", False))
+        if requires_process_group and dist_ready:
             raise RuntimeError(
                 "default process group is already initialized; Runner requires owning process-group lifecycle"
             )
-        if world_size > 1:
+        if requires_process_group:
             if use_cuda_runtime:
                 torch.cuda.set_device(runtime_device_index)
             init_kwargs: dict[str, Any] = {
@@ -1308,7 +1309,9 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
     def _loss_normalizer_sync_divisor(self) -> int:
         if self.fault_tolerance is not None and self.fault_tolerance.replicate_process_group is not None:
-            return max(int(dist.get_world_size(group=self.fault_tolerance.replicate_process_group)), 1)
+            return max(self.world_size, 1) * max(
+                int(dist.get_world_size(group=self.fault_tolerance.replicate_process_group)), 1
+            )
         if dist.is_available() and dist.is_initialized():
             return max(self.world_size, 1)
         return 1
@@ -1327,8 +1330,12 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         return float(total_tensor.item())
 
     def all_reduce_device(self) -> torch.device:
-        if self.distributed and dist.is_available() and dist.is_initialized():
+        if dist.is_available() and dist.is_initialized():
             group = self.all_reduce_group()
+            if self.fault_tolerance is not None and group is self.fault_tolerance.replicate_process_group:
+                # FT reductions first traverse the native local group. A Gloo
+                # replica group also accepts CUDA; NCCL cannot accept CPU.
+                group = None
             if group is not None:
                 try:
                     backend = str(dist.get_backend(group=group)).lower()
@@ -1352,11 +1359,15 @@ class TorchRunner(Fp8Mixin, BaseRunner):
     def all_reduce(self, tensor: torch.Tensor, *, op=dist.ReduceOp.SUM) -> torch.Tensor:
         """Reduce tensor over the runner's replica/data-parallel collective domain."""
         if dist.is_available() and dist.is_initialized():
-            dist.all_reduce(tensor, op=op, group=self.all_reduce_group())
+            group = self.all_reduce_group()
+            ft_group = None if self.fault_tolerance is None else self.fault_tolerance.replicate_process_group
+            if group is not None and group is ft_group:
+                dist.all_reduce(tensor, op=op)
+            dist.all_reduce(tensor, op=op, group=group)
         return tensor
 
     def _sync_optimizer_skip_decision(self, should_skip: bool) -> bool:
-        if not (self.distributed and dist.is_available() and dist.is_initialized()):
+        if not (dist.is_available() and dist.is_initialized()):
             return should_skip
         payload = torch.tensor(float(should_skip), device=self.all_reduce_device())
         self.all_reduce(payload, op=dist.ReduceOp.MAX)
@@ -1369,6 +1380,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             return tensor
         group = self.all_reduce_group()
         group_size = max(self.world_size if group is None else dist.get_world_size(group=group), 1)
+        if group is not None and self.fault_tolerance is not None and group is self.fault_tolerance.replicate_process_group:
+            group_size *= max(self.world_size, 1)
         if group_size <= 1:
             return tensor
 
@@ -1517,6 +1530,26 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         elif self.optimizer is not None:
             self.optimizer.zero_grad()
 
+    def _sync_fault_tolerant_gradients(self) -> None:
+        """Average already-local-DDP-reduced gradients across FT replicas."""
+        if self.fault_tolerance is None:
+            return
+        group = self.fault_tolerance.replicate_process_group
+        if group is None:
+            return
+        degree = max(int(dist.get_world_size(group=group)), 1)
+        for parameter in self._optimizer_parameters_for_scaling():
+            present = torch.tensor(int(parameter.grad is not None), device=parameter.device)
+            dist.all_reduce(present, group=group, op=dist.ReduceOp.MAX)
+            if not bool(present.item()):
+                continue
+            gradient = torch.zeros_like(parameter) if parameter.grad is None else parameter.grad
+            if gradient.is_sparse:
+                gradient = gradient.to_dense()
+            dist.all_reduce(gradient, group=group, op=dist.ReduceOp.SUM)
+            gradient.div_(degree)
+            parameter.grad = gradient
+
     def _clip_optimizer_gradients(
         self,
         *,
@@ -1554,8 +1587,14 @@ class TorchRunner(Fp8Mixin, BaseRunner):
     @contextmanager
     def train_context(self):
         """Context for one training micro-step (autocast + optional DDP no_sync)."""
+        self._begin_optimizer_window()
         with self._train_step_context(no_sync_targets=self._train_no_sync_targets()):
             yield
+
+    def _begin_optimizer_window(self) -> None:
+        """Allow fault-tolerant healing before reading a new window's data."""
+        if self.fault_tolerance is not None:
+            self.fault_tolerance.begin_step()
 
     def _should_train_no_sync(self) -> bool:
         if self._train_window_will_flush:
@@ -1689,6 +1728,12 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             Whether this micro-batch was replaced with zero.
         """
 
+        if (
+            self.fault_tolerance is not None
+            and self.fault_tolerance.enabled
+            and not bool(torch.isfinite(loss.detach()).all().item())
+        ):
+            self.fault_tolerance.record_nonfinite_loss()
         if not self.skip_nonfinite_loss:
             self._backward(loss)
             return False
@@ -1696,6 +1741,9 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         if not self._sync_optimizer_skip_decision(nonfinite):
             self._backward(loss)
             return False
+
+        if self.fault_tolerance is not None and self.fault_tolerance.enabled:
+            self.fault_tolerance.record_nonfinite_loss()
 
         gradients = [
             (parameter, None if parameter.grad is None else parameter.grad.detach().clone())
@@ -1827,7 +1875,9 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             )
 
         self.validate_ema_update_contract()
+        self._begin_optimizer_window()
         self.checkpoint_manager.maybe_wait_for_staging()
+        self._sync_fault_tolerant_gradients()
         if self.grad_scaler is not None and self.optimizer is not None:
             self.grad_scaler.unscale_(self.optimizer)
         grad_scale = self._gradient_scale_for_step()
@@ -1836,15 +1886,23 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         max_grad_value = self.max_grad_value
         max_grad_norm = self.max_grad_norm
         skip_nonfinite_grad = self.skip_nonfinite_grad
-        if skip_nonfinite_grad or self.grad_scaler is not None:
+        fault_tolerant = self.fault_tolerance is not None and self.fault_tolerance.enabled
+        has_nonfinite_grad = False
+        if skip_nonfinite_grad or self.grad_scaler is not None or fault_tolerant:
             has_nonfinite_grad = self._optimizer_has_nonfinite_grad()
             has_nonfinite_grad = self._sync_optimizer_skip_decision(has_nonfinite_grad)
-            if has_nonfinite_grad:
-                self._zero_optimizer_grad()
-                if self.grad_scaler is not None:
+        commit = not has_nonfinite_grad
+        if fault_tolerant and self.fault_tolerance is not None:
+            commit = self.fault_tolerance.should_commit(nonfinite=has_nonfinite_grad)
+        if not commit:
+            self._zero_optimizer_grad()
+            if self.grad_scaler is not None:
+                if fault_tolerant and not has_nonfinite_grad:
+                    self.grad_scaler.update(new_scale=self.grad_scaler.get_scale())
+                else:
                     self.grad_scaler.update()
-                self._reset_accumulation_normalization()
-                return False
+            self._reset_accumulation_normalization()
+            return False
 
         grad_norm = self._clip_optimizer_gradients(max_grad_value=max_grad_value, max_grad_norm=max_grad_norm)
         self._record_grad_norm(grad_norm)
@@ -2802,6 +2860,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         state = cls(super().state_dict(cls))
         state.update(self._export_checkpoint_metadata(cls))
         state.update(self._export_checkpoint_components(cls))
+        if self.fault_tolerance is not None and self.fault_tolerance.enabled:
+            state["fault_tolerance"] = self.fault_tolerance.state_dict()
         return state
 
     def _restore_model_checkpoint(self, state_dict: Mapping[str, Any], *args, **kwargs) -> None:
@@ -2831,6 +2891,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         `load_checkpoint`; this method owns only runner/RNG state.
         """
         super().load_state_dict(checkpoint)
+        if self.fault_tolerance is not None and "fault_tolerance" in checkpoint:
+            self.fault_tolerance.load_state_dict(checkpoint["fault_tolerance"])
         if self.grad_scaler is not None:
             scaler_state = checkpoint.get("grad_scaler")
             if scaler_state is not None:
@@ -2969,7 +3031,10 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
     @property
     def distributed(self) -> bool:
-        return self.world_size > 1
+        if self.world_size > 1:
+            return True
+        runtime = self.fault_tolerance
+        return runtime is not None and runtime.enabled and runtime.group_size > 1
 
     def close(self, timeout: float | None = None) -> bool:
         """Close runner resources."""

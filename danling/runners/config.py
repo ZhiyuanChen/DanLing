@@ -449,6 +449,9 @@ class FaultToleranceConfig(chanfig.Config):
     enabled: bool = False
     process_group: str = "gloo"
     process_group_timeout_seconds: float = 10.0
+    manager_timeout_seconds: float = 60.0
+    use_async_quorum: bool = False  # Async healing cannot guarantee data/model consistency; must remain False.
+    max_consecutive_nonfinite_steps: int = 10
     replica_id: int = 0
     group_size: int = 1
     min_replica_size: int = 1

@@ -99,6 +99,10 @@ def _launch_replica_group(
     resume: bool,
 ) -> subprocess.Popen[str]:
     env = dict(os.environ)
+    allocated = env.get("CUDA_VISIBLE_DEVICES")
+    if allocated:
+        devices = allocated.split(",")
+        visible_devices = ",".join(devices[int(index)] for index in visible_devices.split(","))
     env["CUDA_VISIBLE_DEVICES"] = visible_devices
     env["TORCHFT_LIGHTHOUSE"] = f"http://127.0.0.1:{LIGHTHOUSE_PORT}"
     cmd = [
@@ -241,6 +245,8 @@ def _run_torch_replica_groups(*, repo_root: Path, run_dir: Path, steps: int, res
                 f"replica_group={index} returncode={returncode}\n{stdout}" for index, returncode, stdout in failed
             )
             raise AssertionError(f"fault-tolerance replica groups failed:\n{failure_text}")
+        statuses = [json.loads((run_dir / f"ft-status-replica-{index}.json").read_text()) for index in (0, 1)]
+        torch.testing.assert_close(torch.tensor(statuses[0]["weights"]), torch.tensor(statuses[1]["weights"]))
     finally:
         for process in procs:
             if process.poll() is None:

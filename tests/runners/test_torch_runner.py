@@ -25,6 +25,7 @@ import os
 import signal
 from collections import OrderedDict
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -1071,8 +1072,9 @@ class TestTorchRunnerDistributedRuntime:
             assert runner.device == torch.device("cpu")
 
     @pytest.mark.parametrize(("device", "backend"), [("cpu", "gloo"), ("cuda:3", "nccl")])
-    def test_init_distributed_uses_selected_device(self, monkeypatch, device, backend) -> None:
-        monkeypatch.setenv("WORLD_SIZE", "2")
+    @pytest.mark.parametrize(("world_size", "ft_enabled"), [(2, False), (1, True)])
+    def test_init_distributed_uses_selected_device(self, monkeypatch, device, backend, world_size, ft_enabled) -> None:
+        monkeypatch.setenv("WORLD_SIZE", str(world_size))
         monkeypatch.setenv("LOCAL_RANK", "1")
         monkeypatch.delenv("BACKEND", raising=False)
         monkeypatch.delenv("TORCHELASTIC_RESTART_COUNT", raising=False)
@@ -1090,10 +1092,10 @@ class TestTorchRunnerDistributedRuntime:
         monkeypatch.setattr(dist, "is_available", lambda: True)
         monkeypatch.setattr(dist, "is_initialized", lambda: initialized)
         monkeypatch.setattr(dist, "init_process_group", init_process_group)
-        monkeypatch.setattr(dist, "get_world_size", lambda: 2)
+        monkeypatch.setattr(dist, "get_world_size", lambda: world_size)
         monkeypatch.setattr(dist, "broadcast_object_list", lambda objects: None)
         runner = object.__new__(TorchRunner)
-        runner.config = RunnerConfig({"device": device})
+        runner.config = RunnerConfig({"device": device, "ft.enabled": ft_enabled})
         runner.timestamp = "test-device"
         runner.init_distributed()
         assert initialization["backend"] == backend
@@ -1101,6 +1103,35 @@ class TestTorchRunnerDistributedRuntime:
             assert not selected_devices
         else:
             assert selected_devices and all(index == 3 for index in selected_devices)
+
+    @pytest.mark.parametrize("replica_id", [0, 1])
+    def test_single_process_ft_replicas_use_distinct_data_shards(self, monkeypatch, replica_id) -> None:
+        monkeypatch.setenv("WORLD_SIZE", "1")
+        monkeypatch.setenv("RANK", "0")
+        monkeypatch.setattr(dist, "is_initialized", lambda: False)
+        runner = object.__new__(TorchRunner)
+        runner.fault_tolerance = SimpleNamespace(
+            enabled=True, group_size=2, data_parallel_info=lambda degree, rank: (degree * 2, replica_id + rank)
+        )
+        sampler = runner.build_datasampler(list(range(4)), split="train", shuffle=False)
+        assert runner.world_size == 1 and runner.rank == 0
+        assert runner.distributed
+        assert list(sampler) == [replica_id, replica_id + 2]
+
+    @pytest.mark.parametrize(
+        ("backend", "degree", "expected"), [("nccl", 2, "cuda:0"), ("nccl", 1, "cuda:0"), ("gloo", 2, "cpu")]
+    )
+    def test_ft_collective_payload_supports_the_native_backend(self, monkeypatch, backend, degree, expected) -> None:
+        replica_group = object()
+        runner = object.__new__(TorchRunner)
+        runner.config = RunnerConfig({"device": "cuda:0"})
+        runner.fault_tolerance = SimpleNamespace(enabled=True, group_size=degree, replicate_process_group=replica_group)
+        monkeypatch.setattr(dist, "is_available", lambda: True)
+        monkeypatch.setattr(dist, "is_initialized", lambda: True)
+        monkeypatch.setattr(dist, "get_world_size", lambda group=None: 1 if group is None else degree)
+        monkeypatch.setattr(dist, "get_backend", lambda group=None: backend if group is None else "gloo")
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        assert runner.all_reduce_device() == torch.device(expected)
 
     def test_init_distributed_rejects_preinitialized_process_group(self) -> None:
         require_gloo()

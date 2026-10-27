@@ -15,12 +15,17 @@ from danling.runners import TorchRunner
 
 class TinyFaultToleranceTorchRunner(TorchRunner):
     @property
+    def steps(self):
+        # Simulate interruption without changing the checkpoint's training recipe.
+        return getattr(self, "_stop_at", super().steps)
+
+    @property
     def device(self):
         return torch.device("cpu")
 
     def __init__(self, config):
         super().__init__(config)
-        total_examples = int(self.config.steps) * int(self.world_size)
+        total_examples = int(self.config.steps) * int(self.world_size) * int(self.config.ft.group_size)
         self.datasets["train"] = [
             {"input": torch.full((4,), float(index + 1)), "target": torch.zeros(2)} for index in range(total_examples)
         ]
@@ -50,7 +55,7 @@ def main() -> None:
             "workspace.dir": str(run_dir),
             "stack": "ddp",
             "dist.backend": "gloo",
-            "steps": args.steps,
+            "steps": 4,
             "train_splits": ["train"],
             "evaluate_splits": [],
             "resume": args.resume,
@@ -70,12 +75,14 @@ def main() -> None:
             },
         }
     )
+    runner._stop_at = args.steps
     try:
         runner.train_steps(train_splits=["train"], evaluate_splits=[])
         if runner.rank == 0:
             status = {
                 "global_step": int(runner.train_state.global_step),
                 "cursor": int(runner.dataloaders["train"].state_dict()["_num_yielded"]),
+                "weights": runner.unwrap(runner.model).weight.detach().cpu().tolist(),
             }
             status_path = run_dir / f"ft-status-replica-{args.replica_id}.json"
             with status_path.open("w", encoding="utf-8") as fp:

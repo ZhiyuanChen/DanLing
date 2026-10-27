@@ -597,6 +597,9 @@ class ParallelRunner(TorchRunner):
         for model in self.model_parts:
             model.apply(apply_hook)
 
+    def _sync_fault_tolerant_gradients(self) -> None:
+        """FSDP's all-reduce hook already reduces sharded gradients over FT."""
+
     def parallelize_model(self, model: nn.Module) -> nn.Module:
         """
         Apply model-specific tensor/context/expert parallel transforms.
@@ -1062,7 +1065,7 @@ class ParallelRunner(TorchRunner):
         return tensor
 
     def _sync_optimizer_skip_decision(self, should_skip: bool) -> bool:
-        if not (self.distributed and dist.is_available() and dist.is_initialized()):
+        if not (dist.is_available() and dist.is_initialized()):
             return should_skip
         payload = torch.tensor(float(should_skip), device=self.all_reduce_device())
         self.all_reduce(payload, domain="optimizer", op=dist.ReduceOp.MAX)
