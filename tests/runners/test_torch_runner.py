@@ -554,6 +554,57 @@ class TestMetaModelLifecycle:
 
 class TestTorchRunnerBootstrap:
 
+    def test_named_compile_groups_preserve_outputs_gradients_names_and_hooks(self, device):
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.first = nn.Linear(4, 4, dtype=torch.float64)
+                self.second = nn.Linear(4, 4, dtype=torch.float64)
+                self.skip = nn.Linear(4, 4, dtype=torch.float64)
+
+            def compile_regions(self):
+                return {"blocks": (self.first, self.second)}
+
+            @torch.compiler.disable
+            def eager_skip(self, x):
+                return self.skip(x)
+
+            def forward(self, x):
+                return self.second(self.first(x).sin()) + self.eager_skip(x)
+
+        class RegionRunner(TorchRunner):
+            def init_distributed(self):
+                return
+
+            def __init__(self, config):
+                super().__init__(config)
+                self.model = Model()
+
+        runner = RegionRunner(
+            {
+                "device": str(device),
+                "logging.enabled": False,
+                "compile": {"enabled": True, "regions": ["blocks"], "backend": "aot_eager", "fullgraph": True},
+            }
+        )
+        try:
+            reference = Model().to(device)
+            reference.load_state_dict(runner.model.state_dict())
+            assert tuple(runner.model.state_dict()) == tuple(reference.state_dict())
+            for model in (runner.model, reference):
+                model.first.register_forward_hook(lambda module, args, output: output + 0.5)
+            x = torch.randn(3, 4, dtype=torch.float64, device=device, requires_grad=True)
+            reference_x = x.detach().clone().requires_grad_()
+            actual = runner.model(x)
+            expected = reference(reference_x)
+            torch.testing.assert_close(actual, expected)
+            gradients = torch.autograd.grad(actual.square().sum(), (x, *runner.model.parameters()))
+            expected_gradients = torch.autograd.grad(expected.square().sum(), (reference_x, *reference.parameters()))
+            for actual_gradient, expected_gradient in zip(gradients, expected_gradients):
+                torch.testing.assert_close(actual_gradient, expected_gradient)
+        finally:
+            runner.close()
+
     def test_fault_tolerance_requires_torchft_package(self) -> None:
         if importlib.util.find_spec("torchft") is not None:
             pytest.skip("torchft is installed")

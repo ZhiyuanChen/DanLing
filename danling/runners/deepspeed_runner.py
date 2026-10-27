@@ -110,7 +110,7 @@ class DeepSpeedRunner(TorchRunner):
         if self.fp8_enabled:
             self.apply_fp8_module_policy_to_model_parts()
             model = self.model
-        model = self.compiler.compile(model)
+        model = self.compile_model(model)
         self.model = model
 
         if self.ema is not None:

@@ -357,6 +357,27 @@ allocated on the runtime device before the model-owned initialization/load hook.
 Buffers recreated by that hook are then moved to the runtime device, preserving
 their values, dtypes, and current aliases.
 
+`compile.regions=["blocks"]` selects named module groups instead of compiling the
+whole model. Override `compile_regions(model) -> Mapping[str, Sequence[nn.Module]]`
+or implement `model.compile_regions()` with the same mapping. Groups are resolved
+after model transforms and activation-checkpoint wrapping, and use the existing
+shared-cache `Compiler.compile_modules`; module identities, state-dict names, and
+call hooks remain intact. Unselected modules stay eager. Compilation still
+requires `compile.enabled=True`; `GraphRunner` retains its whole-step boundary.
+
+For named activation-checkpoint boundaries, set
+`activation_checkpoint.enabled=True` and `activation_checkpoint.regions=["blocks"]`
+instead of `module_classes`. Override `activation_checkpoint_regions(model)` or
+implement `model.activation_checkpoint_regions()` to return names mapped to
+module FQNs (an empty FQN selects the root). The optional
+`activation_checkpoint_policy(model, name)` runner hook, or
+`model.activation_checkpoint_policy(name)`, returns a native selective-checkpoint
+policy callable or list of `OpOverload` objects to save. Other operations are
+recomputed. Selective policies require non-reentrant checkpointing;
+`activation_checkpoint.preserve_rng_state` is forwarded to native checkpointing
+and defaults to `True`.
+These hooks are scoped to the model and introduce no global region registry.
+
 - `build_topology`: validate/construct ordered parallel axes from config + world state
 - `init_model_parallel_groups`: initialize model-parallel process groups/device mesh
 - `parallelize_model`: apply model-specific TP/CP/EP transforms before compile/FSDP wrapping

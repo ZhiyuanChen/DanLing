@@ -365,7 +365,7 @@ class ParallelRunner(TorchRunner):
             parts = list(self.model_parts)
         parts = [self.apply_activation_checkpointing(part) for part in parts]
 
-        compiled = [self.compiler.compile(part) for part in parts]
+        compiled = [self.compile_model(part) for part in parts]
         if self.fsdp_enabled:
             fsdp_kwargs = self.fsdp_kwargs()
             wrapped = [self.apply_fsdp(part, fsdp_kwargs) for part in compiled]
@@ -818,6 +818,34 @@ class ParallelRunner(TorchRunner):
         if not self.config.activation_checkpoint.enabled:
             return model
 
+        requested = self.config.activation_checkpoint.regions
+        if requested:
+            if self.config.activation_checkpoint.module_classes:
+                raise ValueError("choose activation_checkpoint.regions or module_classes")
+            if isinstance(requested, str) or len(set(requested)) != len(requested):
+                raise ValueError("activation_checkpoint.regions must contain distinct region names")
+            from torch.utils.checkpoint import create_selective_checkpoint_contexts
+
+            available = self.activation_checkpoint_regions(model)
+            impl = self._activation_checkpoint_impl()
+            for name in requested:
+                if name not in available:
+                    raise ValueError(f"unknown activation checkpoint region {name!r}; available: {tuple(available)}")
+                path = available[name]
+                module = model.get_submodule(path)
+                policy = self.activation_checkpoint_policy(model, name)
+                kwargs: dict[str, Any] = {"preserve_rng_state": self.config.activation_checkpoint.preserve_rng_state}
+                if policy is not None:
+                    if impl != CheckpointImpl.NO_REENTRANT:
+                        raise ValueError("selective checkpoint policies require no_reentrant")
+                    kwargs["context_fn"] = partial(create_selective_checkpoint_contexts, policy)
+                wrapped = checkpoint_wrapper(module, checkpoint_impl=impl, **kwargs)
+                if path:
+                    model.set_submodule(path, wrapped)
+                else:
+                    model = wrapped
+            return model
+
         module_classes = self.config.activation_checkpoint.module_classes
         if not module_classes:
             raise ValueError(
@@ -831,9 +859,31 @@ class ParallelRunner(TorchRunner):
             qualified_name = f"{module_type.__module__}.{module_type.__qualname__}"
             return module_type.__name__ in class_names or qualified_name in class_names
 
-        wrapper = partial(checkpoint_wrapper, checkpoint_impl=self._activation_checkpoint_impl())
+        wrapper = partial(
+            checkpoint_wrapper,
+            checkpoint_impl=self._activation_checkpoint_impl(),
+            preserve_rng_state=self.config.activation_checkpoint.preserve_rng_state,
+        )
         apply_torch_activation_checkpointing(model, checkpoint_wrapper_fn=wrapper, check_fn=check_fn)
         return model
+
+    def activation_checkpoint_regions(self, model: nn.Module) -> Mapping[str, str]:
+        r"""Resolve model-owned names to module FQNs before wrapping.
+
+        Override this or implement ``model.activation_checkpoint_regions()``.
+        An empty FQN selects the model itself.
+        """
+        regions = getattr(model, "activation_checkpoint_regions", None)
+        return regions() if callable(regions) else {}
+
+    def activation_checkpoint_policy(self, model: nn.Module, name: str):
+        r"""Return a native selective-checkpoint policy or op list, or None.
+
+        ``model.activation_checkpoint_policy(name)`` may choose expensive ops
+        to retain while recomputing the remaining work in that named region.
+        """
+        policy = getattr(model, "activation_checkpoint_policy", None)
+        return policy(name) if callable(policy) else None
 
     def _activation_checkpoint_impl(self):
         impl = str(self.config.activation_checkpoint.checkpoint_impl).strip().lower().replace("-", "_")

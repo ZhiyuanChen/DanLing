@@ -43,6 +43,9 @@ class CompileConfig(chanfig.Config):
             to `"ddp_optimizer"` when model compile is enabled.
         precompile_artifact_dir: Optional GraphRunner compiler-cache directory.
         memory_policy: Optional graph-memory policy label for experimental graph paths.
+        regions: Optional model-owned region names. Each region is a group of
+            modules sharing one forward implementation; selected groups replace
+            whole-model compilation.
     """
 
     enabled: bool = False
@@ -54,6 +57,7 @@ class CompileConfig(chanfig.Config):
     optimize_ddp: Union[bool, str, None] = "ddp_optimizer"
     precompile_artifact_dir: Optional[str] = None
     memory_policy: Optional[str] = None
+    regions: Optional[Sequence[str]] = None
 
 
 class FsdpConfig(chanfig.Config):
@@ -91,12 +95,16 @@ class ActivationCheckpointConfig(chanfig.Config):
     `module_classes` entries match either the class name (for example
     `"TransformerBlock"`) or fully qualified class name. DanLing requires an
     explicit boundary list so users do not accidentally checkpoint arbitrary
-    containers.
+    containers. Alternatively, ``regions`` selects model-owned names resolved to
+    module FQNs. Model/runner hooks may supply native selective-checkpoint
+    policies for these regions. RNG state is preserved by default.
     """
 
     enabled: bool = False
     module_classes: Optional[Sequence[str]] = None
     checkpoint_impl: str = "no_reentrant"
+    regions: Optional[Sequence[str]] = None
+    preserve_rng_state: bool = True
 
 
 class ParallelAxesConfig(chanfig.Config):

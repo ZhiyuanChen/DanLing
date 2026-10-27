@@ -66,6 +66,10 @@ class GraphRunner(TorchRunner):
         super().__post_init__()
 
     def _validate_graph_runtime_config(self) -> None:
+        if self.config.compile.enabled and self.config.compile.regions:
+            raise ValueError(
+                "GraphRunner compiles whole steps; named model compile regions use TorchRunner/ParallelRunner"
+            )
         if self.distributed:
             raise NotImplementedError("GraphRunner does not yet support distributed execution")
         if self._normalized_precision_name(self.precision) in {"fp16", "float16", "half"}:

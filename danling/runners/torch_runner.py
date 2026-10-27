@@ -801,6 +801,40 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                     module._buffers[name] = buffers[id(buffer)]
         return model
 
+    def compile_regions(self, model: nn.Module) -> Mapping[str, Sequence[nn.Module]]:
+        r"""Return model-owned named module groups, resolved after transforms.
+
+        Override this or implement ``model.compile_regions()``. Members of a
+        group share one forward implementation and compiler cache. Modules
+        retain their identities, parameter names, and ``Module.__call__`` hooks.
+        """
+        regions = getattr(model, "compile_regions", None)
+        return regions() if callable(regions) else {}
+
+    def compile_model(self, model: nn.Module) -> nn.Module:
+        r"""Compile selected named groups, or the whole model when none are selected."""
+        requested = self.config.compile.regions
+        if not self.compiler.enabled or not requested:
+            return self.compiler.compile(model)
+        if isinstance(requested, str) or len(set(requested)) != len(requested):
+            raise ValueError("compile.regions must contain distinct region names")
+        available = self.compile_regions(model)
+        groups = []
+        seen: set[int] = set()
+        for name in requested:
+            if name not in available:
+                raise ValueError(f"unknown compile region {name!r}; available regions: {tuple(available)}")
+            modules = tuple(available[name])
+            if not modules or any(not isinstance(module, nn.Module) for module in modules):
+                raise ValueError(f"compile region {name!r} must contain nn.Module instances")
+            if seen.intersection(id(module) for module in modules):
+                raise ValueError("selected compile regions must not share modules")
+            seen.update(id(module) for module in modules)
+            groups.append(modules)
+        for modules in groups:
+            self.compiler.compile_modules(modules)
+        return model
+
     def materialize_model(self) -> None:
         """
         Move the model to the runtime device, optionally compile, and wrap
@@ -857,7 +891,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         should_wrap_ddp = self.distributed and not isinstance(
             model, (nn.parallel.DistributedDataParallel, nn.parallel.DataParallel)
         )
-        model = self.compiler.compile(model)
+        model = self.compile_model(model)
         if should_wrap_ddp:
             with self.compiler.ddp_optimizer():
                 model = nn.parallel.DistributedDataParallel(

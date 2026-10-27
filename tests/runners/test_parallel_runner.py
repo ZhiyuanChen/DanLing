@@ -586,6 +586,110 @@ class TestParallelRunnerParallelization:
         torch.testing.assert_close(model.weight, torch.ones_like(model.weight))
         torch.testing.assert_close(model.scale, torch.full_like(model.scale, 2))
 
+    @pytest.mark.parametrize("compile_selected", [False, True])
+    def test_named_selective_checkpoint_preserves_dropout_rng_and_vjp(self, device, compile_selected):
+        from torch.utils._python_dispatch import TorchDispatchMode
+        from torch.utils.checkpoint import CheckpointPolicy
+
+        class Block(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = nn.Parameter(torch.randn(4, 5, dtype=torch.float64))
+
+            def forward(self, x):
+                return torch.nn.functional.dropout(torch.mm(x, self.weight), p=0.4).sin()
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.block = Block()
+
+            def activation_checkpoint_regions(self):
+                return {"features": "block"}
+
+            def compile_regions(self):
+                return {"features": (self.block,)}
+
+            def activation_checkpoint_policy(self, name):
+                assert name == "features"
+                return lambda ctx, op, *args, **kwargs: (
+                    CheckpointPolicy.MUST_SAVE if op == torch.ops.aten.mm.default else CheckpointPolicy.PREFER_RECOMPUTE
+                )
+
+            def forward(self, x):
+                return self.block(x)
+
+        class CountForwardMM(TorchDispatchMode):
+            calls = 0
+
+            def __torch_dispatch__(self, op, types, args=(), kwargs=None):
+                if op == torch.ops.aten.mm.default and args[0].shape == (3, 4) and args[1].shape == (4, 5):
+                    self.calls += 1
+                return op(*args, **(kwargs or {}))
+
+        class RegionRunner(ParallelRunner):
+            def init_distributed(self):
+                _init_parallel_topology(self)
+
+            @property
+            def world_size(self):
+                return 2
+
+            def __init__(self, config):
+                super().__init__(config)
+                self.model = Model()
+
+        runner = RegionRunner(
+            {
+                "logging.enabled": False,
+                "device": str(device),
+                "activation_checkpoint": {"enabled": True, "regions": ["features"]},
+                "compile": {
+                    "enabled": compile_selected,
+                    "regions": ["features"],
+                    "backend": "aot_eager",
+                    "fullgraph": True,
+                },
+                **_parallel_config(shard=2),
+            }
+        )
+        try:
+            reference = Model().to(device)
+            reference.load_state_dict(runner.model.state_dict())
+            x = torch.randn(3, 4, dtype=torch.float64, device=device, requires_grad=True)
+            reference_x = x.detach().clone().requires_grad_()
+            torch.manual_seed(77)
+            if compile_selected:
+                actual = runner.model(x)
+                forward_rng = torch.get_rng_state()
+                forward_cuda_rng = torch.cuda.get_rng_state(device) if device.type == "cuda" else None
+                gradients = torch.autograd.grad(actual.square().sum(), (x, *runner.model.parameters()))
+            else:
+                with CountForwardMM() as counter:
+                    actual = runner.model(x)
+                    forward_rng = torch.get_rng_state()
+                    forward_cuda_rng = torch.cuda.get_rng_state(device) if device.type == "cuda" else None
+                    gradients = torch.autograd.grad(actual.square().sum(), (x, *runner.model.parameters()))
+                assert counter.calls == 1
+            torch.testing.assert_close(torch.get_rng_state(), forward_rng)
+            if forward_cuda_rng is not None:
+                torch.testing.assert_close(torch.cuda.get_rng_state(device), forward_cuda_rng)
+            if compile_selected:
+                # Compiled CUDA dropout can use a different random kernel from
+                # eager. Control its VJP with the mask realized in the forward;
+                # replay must use that same mask without advancing RNG state.
+                mask = actual.detach().ne(0).to(x.dtype) / 0.6
+                expected = (torch.mm(reference_x, reference.block.weight) * mask).sin()
+            else:
+                torch.manual_seed(77)
+                expected = reference(reference_x)
+            expected_gradients = torch.autograd.grad(expected.square().sum(), (reference_x, *reference.parameters()))
+            torch.testing.assert_close(actual, expected)
+            for actual_gradient, expected_gradient in zip(gradients, expected_gradients):
+                torch.testing.assert_close(actual_gradient, expected_gradient)
+        finally:
+            runner.close()
+
     def test_meta_model_is_parallelized_and_sharded_before_allocation(self, monkeypatch):
         events = []
 
