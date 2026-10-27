@@ -6198,17 +6198,12 @@ class _PackedValuesAutograd(torch.autograd.Function):
     @staticmethod
     def setup_context(ctx, inputs, output):
         (input,) = inputs
-        if not _is_compiling() and torch._C._are_functorch_transforms_active():
-            layout = _transform_base(input)
-            ctx.layout_state = layout._layout_state()
-            ctx.save_for_backward(layout._packed_values.detach())
-            return
-        # Only the layout is needed in backward. Its detached alias keeps version
-        # checks and saved-tensor hooks without retaining the owning wrapper.
-        # Native layout changes on the owner must not invalidate the old
-        # projection's immutable topology. Its packed child still shares the
-        # numerical version counter used by ordinary saved-value checks.
-        ctx.save_for_backward(input._packed_like_unchecked_raw(input._packed_values.detach()))
+        layout = (
+            _transform_base(input) if not _is_compiling() and torch._C._are_functorch_transforms_active() else input
+        )
+        # Retain topology without owning activation storage.
+        values = torch.empty((), device="meta", dtype=output.dtype).expand(output.shape)
+        ctx.layout = layout._packed_like_unchecked_raw(values)
 
     @staticmethod
     def jvp(ctx, input_tangent):
@@ -6233,11 +6228,7 @@ class _PackedValuesAutograd(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_values: Tensor):
-        (input,) = ctx.saved_tensors
-        if hasattr(ctx, "layout_state"):
-            layout = NestedTensor._layout_from_state(ctx.layout_state, grad_values, input.shape)
-            return layout._packed_like_unchecked(grad_values)
-        return input._packed_like_unchecked(grad_values)
+        return ctx.layout._packed_like_unchecked(grad_values)
 
 
 @torch.compiler.allow_in_graph

@@ -445,6 +445,8 @@ class TestAutogradViewLifetime:
             reference_scale = scale.detach().clone().requires_grad_()
             for _ in range(3):
                 output = compiled(nested, scale)
+                projection_gradient = torch.autograd.grad(nested.concat.sum(), leaf)[0]
+                assert_close(projection_gradient, torch.ones_like(leaf), atol=1e-12, rtol=1e-12)
                 output.concat.square().sum().backward()
                 (reference * reference_scale).square().sum().backward()
                 assert_close(leaf.grad, reference.grad, atol=1e-12, rtol=1e-12)
