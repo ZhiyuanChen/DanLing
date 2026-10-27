@@ -27,10 +27,12 @@ from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass
+from io import BytesIO
 from time import monotonic, sleep
 from typing import Any
 from warnings import warn
 
+import torch
 from lazy_imports import try_import
 from torch import distributed as dist
 from torch.optim import Optimizer
@@ -536,6 +538,13 @@ class TorchDistributedCheckpointManager(CheckpointManager):
     def rank_local_state(state: Mapping[str, Any]) -> dict[str, Any]:
         """Keep process RNG and loader cursors out of DCP's replicated-key deduplication."""
         state = dict(state)
+        # Result rows and metric keys grow during training. Keep the public
+        # payload readable, but store history as one item so a fresh runner's
+        # empty result schema can restore all saved rows through DCP.
+        if isinstance(state.get("results"), Mapping):
+            history = BytesIO()
+            torch.save(state["results"], history)
+            state["results"] = history.getvalue()
         if not (dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1):
             return state
         local = {}
@@ -559,6 +568,12 @@ class TorchDistributedCheckpointManager(CheckpointManager):
         world_size = 1 if no_dist else dist.get_world_size()
         metadata = dcp.FileSystemReader(checkpoint_id).read_metadata()
         state = dict(state)
+        if "results" in metadata.state_dict_metadata:
+            state["results"] = b""
+        else:
+            # Older checkpoints have no result history. Do not ask DCP to read
+            # a template key that was not part of their storage schema.
+            state.pop("results", None)
         prefix = "rank_local."
         saved_ranks = {
             int(key[len(prefix) :])
@@ -602,6 +617,8 @@ class TorchDistributedCheckpointManager(CheckpointManager):
         if saved_ranks and "rank_local" not in state:
             state["rank_local"] = {"0": b""}
         dcp.load(state, checkpoint_id=checkpoint_id, no_dist=no_dist)
+        if "results" in state:
+            state["results"] = torch.load(BytesIO(state["results"]), map_location="cpu", weights_only=False)
         if saved_ranks:
             local = pickle.loads(state.pop("rank_local")[str(0 if no_dist else dist.get_rank())])
             for key in ("dataloaders", "fault_tolerance"):

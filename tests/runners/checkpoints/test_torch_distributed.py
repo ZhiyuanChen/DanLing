@@ -45,6 +45,81 @@ from tests.runners.distributed import process_group, require_gloo, run_distribut
 pytestmark = pytest.mark.filterwarnings("ignore:torch.distributed is disabled.*:UserWarning")
 
 
+@pytest.mark.parametrize("backend", ["file", "dcp"])
+def test_checkpoint_resume_preserves_dynamic_result_history_and_best(tmp_path, backend):
+    class HistoryRunner(TorchRunner):
+        def __init__(self, config):
+            super().__init__(config)
+            self.model = torch.nn.Linear(2, 2)
+
+    config = {
+        "device": "cpu",
+        "logging.enabled": False,
+        "workspace.dir": str(tmp_path),
+        "score": {"split": "val", "metric": "loss"},
+        "ckpt": {"backend": backend, "async_mode": "disabled", "interval": None},
+    }
+    source, restored = HistoryRunner(config), HistoryRunner(config)
+    try:
+        source.train_state.global_step = 2
+        source.append_result({"val": {"loss": 0.1}}, index=2)
+        source.save_checkpoint(force=True)
+        source.train_state.global_step = 9
+        metric = torch.tensor([0.7, 0.8], dtype=torch.float64)
+        source.append_result({"val": {"loss": 0.5, "new_metric": metric}}, index=9)
+        source.save_checkpoint(force=True)
+        latest = Path(source.workspace.checkpoint_dir) / "latest.pth" if backend == "file" else "latest"
+        restored.load_checkpoint(latest)
+        assert list(restored.results) == [2, 9]
+        assert restored.results[2] == source.results[2]
+        assert restored.best_index == 2
+        assert restored.best_score == 0.1
+        torch.testing.assert_close(restored.results[9]["val"]["new_metric"], metric)
+        restored.append_result({"val": {"loss": 0.8}}, index=12)
+        restored.train_state.global_step = 12
+        restored.save_checkpoint(force=True)
+        best_path = Path(restored.workspace.checkpoint_dir) / "best.pth" if backend == "file" else "best"
+        best = restored.read_checkpoint(best_path)
+        assert best["state"]["train"]["global_step"] == 2
+        assert best["results"] == {2: {"val": {"loss": 0.1}}}
+    finally:
+        source.close()
+        restored.close()
+
+
+def test_dcp_loads_legacy_checkpoint_without_result_history(tmp_path):
+    class LegacyRunner(TorchRunner):
+        legacy_payload = False
+
+        def __init__(self, config):
+            super().__init__(config)
+            self.model = torch.nn.Linear(2, 2)
+
+        def state_dict(self, cls=dict):
+            state = super().state_dict(cls)
+            if self.legacy_payload:
+                state.pop("results")
+            return state
+
+    config = {
+        "device": "cpu",
+        "logging.enabled": False,
+        "workspace.dir": str(tmp_path),
+        "ckpt": {"backend": "dcp", "async_mode": "disabled"},
+    }
+    source, restored = LegacyRunner(config), LegacyRunner(config)
+    try:
+        source.legacy_payload = True
+        source.train_state.global_step = 4
+        source.save_checkpoint(force=True)
+        restored.load_checkpoint("latest")
+        assert restored.train_state.global_step == 4
+        assert not restored.results
+    finally:
+        source.close()
+        restored.close()
+
+
 @pytest.mark.parametrize("optimizer_cls", [torch.optim.Adam, torch.optim.AdamW, torch.optim.SGD])
 def test_fresh_dcp_export_preserves_optimizer_hooks_state_and_first_update(optimizer_cls):
     model = torch.nn.Linear(2, 2, dtype=torch.float64)
@@ -326,10 +401,13 @@ def _rank_local_resume_worker(rank: int, world_size: int, checkpoint_dir: str, u
             next(iterator)
         export = runner.state_dict
         captured = {}
+        history = {2: {"val": {"loss": 0.1}}, 9: {"val": {"loss": 0.5, "accuracy": 0.7}}}
+        saved_history = deepcopy(history)
 
         def state_dict():
             rng = {"python": random.getstate(), "torch_cpu": torch.get_rng_state()}
             state = export()
+            state["results"] = history
             state["state"]["rng"] = rng
             state["fault_tolerance"] = {"step": rank + 4}
             if not captured:
@@ -348,10 +426,12 @@ def _rank_local_resume_worker(rank: int, world_size: int, checkpoint_dir: str, u
             random.seed(100 + rank)
             torch.manual_seed(200 + rank)
             manager.save_checkpoint(force=True)
+            history.clear()
             runner.dataloaders["train"] = StatefulDataLoader(list(range(128)), batch_size=1, shuffle=False)
             random.seed(300)
             torch.manual_seed(400)
             checkpoint = manager.load_checkpoint("latest")
+            assert checkpoint["results"] == saved_history
             assert checkpoint["state"]["rng"]["python"] == captured["python"]
             torch.testing.assert_close(checkpoint["state"]["rng"]["torch_cpu"], captured["torch_cpu"])
             assert checkpoint["fault_tolerance"] == {"step": rank + 4}

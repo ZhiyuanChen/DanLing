@@ -156,6 +156,13 @@ Checkpoint persistence internals are implemented under `danling.runners.checkpoi
 
 `ParallelRunner` forces `ckpt.backend="dcp"` by default.
 
+Full checkpoints expose native result rows as the top-level `results` mapping,
+preserving their indices, metric keys, and best-score history on resume.
+`load_pretrained` only imports weights and leaves that history untouched.
+Legacy checkpoints without `results` retain the current runner's history.
+DCP stores this growing mapping as one opaque item and decodes it before returning
+the public checkpoint payload; `runner.results` remains readable and appendable.
+
 ## Dataloader state
 
 Full-state checkpoints include split-keyed dataloader progress under the top-level

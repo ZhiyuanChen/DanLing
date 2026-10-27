@@ -332,14 +332,17 @@ def test_base_runner_save_replaces_existing_file(tmp_path: Path) -> None:
 
 
 def test_base_runner_from_checkpoint_path_restores_full_state(tmp_path: Path) -> None:
-    source = MinimalRunner(_config(tmp_path, seed=1016))
+    source = MinimalRunner(_config(tmp_path, seed=1016, score={"split": "val"}))
     checkpoint_path = tmp_path / "runner-checkpoint.pth"
     try:
         source.set_seed()
         source.train_state.global_step = 7
         source.train_state.epoch = 3
         source.elastic_state.restart_count = 2
+        source.append_result({"val": {"loss": 0.1}}, index=2)
+        source.append_result({"val": {"loss": 0.5}}, index=7)
         checkpoint = dict(source.state_dict())
+        assert checkpoint["results"] == {2: {"val": {"loss": 0.1}}, 7: {"val": {"loss": 0.5}}}
         checkpoint["runner"]["resume"] = True
         checkpoint["runner"]["pretrained"] = "stale-pretrained"
         torch.save(checkpoint, checkpoint_path)
@@ -351,6 +354,10 @@ def test_base_runner_from_checkpoint_path_restores_full_state(tmp_path: Path) ->
         assert restored.train_state.global_step == 7
         assert restored.train_state.epoch == 3
         assert restored.elastic_state.restart_count == 2
+        assert restored.best_index == 2
+        restored.append_result({"val": {"loss": 0.8}}, index=9)
+        assert restored.results[7]["val"]["loss"] == 0.5
+        assert restored.best_index == 2
         assert restored.config.checkpoint == str(checkpoint_path)
         assert restored.config.resume is False
         assert restored.config.pretrained is None

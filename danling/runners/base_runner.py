@@ -1014,7 +1014,7 @@ class BaseRunner(metaclass=MetaRunner):
         Build the backend-neutral runner checkpoint payload.
 
         The base payload contains semantic runner config, mutable runner
-        state, RNG snapshots, and dataloader resume state. Backend runners
+        state, result history, RNG snapshots, and dataloader resume state. Backend runners
         extend this payload with model/optimizer/scheduler state.
 
         **Called when:** checkpoint managers build a payload for
@@ -1026,7 +1026,9 @@ class BaseRunner(metaclass=MetaRunner):
                 `dict`-like containers to preserve their serialization format.
 
         Returns:
-            Mapping with `runner`, `state`, and `dataloaders` keys.
+            Mapping with `runner`, `state`, `results`, and `dataloaders` keys.
+            `results` maps native row indices to complete result rows so a full
+            resume retains model-selection history.
 
         **Side effects:** snapshots Python and NumPy RNG state into
         `self.rng_state` before exporting.
@@ -1049,7 +1051,7 @@ class BaseRunner(metaclass=MetaRunner):
         if cls is not dict:
             dataloader_state = cls(dataloader_state)
 
-        return cls(runner=self.config.dict(), state=state, dataloaders=dataloader_state)
+        return cls(runner=self.config.dict(), state=state, results=self.results.dict(), dataloaders=dataloader_state)
 
     def load_state_dict(self, checkpoint: Mapping[str, Any]) -> None:
         """
@@ -1093,6 +1095,11 @@ class BaseRunner(metaclass=MetaRunner):
 
         state_dict = checkpoint.get("state") or {}
         self.state.load_state_dict(dict(state_dict))
+        if "results" in checkpoint:
+            results = checkpoint["results"]
+            if not isinstance(results, Mapping):
+                raise ValueError("checkpoint results must be a mapping of row indices to result rows")
+            self.results = RoundDict(results)
 
         rng_state = state_dict.get("rng")
         if isinstance(rng_state, Mapping) and "python" in rng_state and self.rng_state.python is not None:

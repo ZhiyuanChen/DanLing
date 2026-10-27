@@ -34,6 +34,7 @@ from danling.runners import DeepSpeedRunner
 from danling.runners.checkpoints import FileCheckpointManager
 from danling.runners.config import RunnerConfig
 from danling.runners.state import RunnerState
+from danling.utils import RoundDict
 
 HAS_DEEPSPEED = importlib.util.find_spec("deepspeed") is not None
 
@@ -62,6 +63,7 @@ def _bare_deepspeed_runner(
     runner.train_state = state.train
     runner.elastic_state = state.elastic
     runner.rng_state = state.rng
+    runner.results = RoundDict()
     runner.dataloaders = DataLoaderDict()
     runner.workspace = SimpleNamespace(checkpoint_dir=str(tmp_path))
     runner.ema = None
