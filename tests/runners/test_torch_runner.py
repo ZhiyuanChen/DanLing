@@ -1373,6 +1373,31 @@ class TestTorchRunnerDistributedRuntime:
 
 
 class TestTorchRunnerOptimization:
+
+    @pytest.mark.parametrize("amp", [False, True])
+    def test_discarded_loss_keeps_missing_adamw_gradients_and_amp_state(self, amp) -> None:
+        runner = TinyTorchRunner({"device": "cpu", "logging.enabled": False, "skip_nonfinite_loss": True})
+        try:
+            runner.optimizer = optim.AdamW(runner.model.parameters(), lr=0.1, weight_decay=0.2)
+            runner._bind_optimizer_container()
+            if amp:
+                runner.grad_scaler = torch.amp.GradScaler("cpu", init_scale=128.0, growth_interval=2)
+                runner.grad_scaler.scale(torch.zeros(()))
+                scale_state = runner.grad_scaler.state_dict()
+            initial = [parameter.detach().clone() for parameter in runner.model.parameters()]
+            runner.train_step((torch.full((1, 4), float("inf")), torch.zeros(1, 2)))
+            assert runner.optimizer.state_dict()["state"] == {}
+            assert runner.train_state.global_step == 1
+            for parameter, expected in zip(runner.model.parameters(), initial):
+                torch.testing.assert_close(parameter, expected)
+            if amp:
+                assert runner.grad_scaler.state_dict() == scale_state
+            runner.train_step((torch.ones(1, 4), torch.zeros(1, 2)))
+            assert runner.train_state.global_step == 2
+            assert runner.optimizer.state_dict()["state"]
+        finally:
+            runner.close()
+
     def test_nonfinite_loss_is_replaced_with_zero_before_backward(self) -> None:
         runner = TinyTorchRunner({"logging.enabled": False, "skip_nonfinite_loss": True})
         assert runner.model is not None

@@ -1785,12 +1785,39 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         if self.optimizer is None:
             raise ValueError("cannot step optimizer: optimizer is not configured")
         if self.grad_scaler is not None:
-            self.grad_scaler.step(self.optimizer)
+            has_gradients = any(parameter.grad is not None for parameter in self._optimizer_parameters_for_scaling())
+            if has_gradients:
+                self.grad_scaler.step(self.optimizer)
+            self._update_grad_scaler(committed=has_gradients)
         else:
             self.optimizer.step()
         if self.optimizer_container is not None and self.optimizer_container.scheduler_interval == "step":
             self.optimizer_container.step_scheduler()
         self._zero_optimizer_grad()
+
+    def _update_grad_scaler(self, *, overflow: bool = False, committed: bool = True) -> None:
+        """Advance AMP only for an update, using a global overflow decision.
+
+        A finite rejected step must clear the scaler's per-optimizer stage
+        without advancing its growth tracker. For overflow, load a backed-off
+        public state on every optimizer rank; local found-inf buffers alone do
+        not cover independent pipeline stages.
+        """
+        scaler = self.grad_scaler
+        if scaler is None:
+            return
+        if overflow:
+            state = scaler.state_dict()
+            if state:
+                state["scale"] *= state["backoff_factor"]
+                state["_growth_tracker"] = 0
+                scaler.update(new_scale=state["scale"])
+                scaler.load_state_dict(state)
+                return
+        if not committed:
+            scaler.update(new_scale=scaler.get_scale())
+        else:
+            scaler.update()
 
     @contextmanager
     def train_context(self):
@@ -2098,19 +2125,13 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             commit = self.fault_tolerance.should_commit(nonfinite=has_nonfinite_grad) and not empty_window
         if not commit:
             self._zero_optimizer_grad()
-            if self.grad_scaler is not None:
-                if empty_window or (fault_tolerant and not has_nonfinite_grad):
-                    self.grad_scaler.update(new_scale=self.grad_scaler.get_scale())
-                else:
-                    self.grad_scaler.update()
+            self._update_grad_scaler(overflow=has_nonfinite_grad, committed=False)
             self._reset_accumulation_normalization()
             return False
 
         grad_norm = self._clip_optimizer_gradients(max_grad_value=max_grad_value, max_grad_norm=max_grad_norm)
         self._record_grad_norm(grad_norm)
         self._optimizer_step_and_zero_grad()
-        if self.grad_scaler is not None:
-            self.grad_scaler.update()
         self.update_ema()
 
         self._reset_accumulation_normalization()

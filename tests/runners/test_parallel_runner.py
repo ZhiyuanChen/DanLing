@@ -119,6 +119,80 @@ class FakeShardedGradScaler:
         self.update_calls += 1
 
 
+def _pipeline_scaled_backward_worker(rank: int, world_size: int, device_type: str = "cpu") -> None:
+    class PipelineRunner(ParallelRunner):
+        def __init__(self, config):
+            super().__init__(config)
+            self.model = nn.Linear(2, 2, bias=False, dtype=torch.float64 if device_type == "cpu" else torch.float32)
+            with torch.no_grad():
+                self.model.weight.fill_((rank + 1) / 8)
+            self.criterion = nn.MSELoss()
+            self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
+
+        def setup_grad_scaler(self):
+            self.grad_scaler = torch.amp.GradScaler(device_type, init_scale=128.0, growth_interval=2)
+
+        def materialize_model(self):
+            self.model = self.model.to(self.device)
+            self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
+            self.model_parts = [self.model]
+            self.pipeline_has_first_stage = self.pipeline_rank == 0
+            self.pipeline_has_last_stage = self.pipeline_rank == self.pipeline_degree - 1
+            self.pipeline_schedule = self.build_pipeline_schedule(self.model)
+
+    configure_distributed_env(rank, world_size)
+    runner = PipelineRunner(
+        {
+            "device": f"cuda:{rank}" if device_type == "cuda" else "cpu",
+            "dist.backend": "nccl" if device_type == "cuda" else "gloo",
+            "precision": "fp16" if device_type == "cuda" else None,
+            "logging.enabled": False,
+            "logging.interval": 0,
+            "max_grad_norm": 0.025,
+            **_parallel_config(pipeline=world_size, pipeline_microbatches=2),
+        }
+    )
+    try:
+        weights = [
+            torch.full(
+                (2, 2), (index + 1) / 8, dtype=runner.model.weight.dtype, device=runner.device, requires_grad=True
+            )
+            for index in range(world_size)
+        ]
+        inputs = torch.arange(8, dtype=runner.model.weight.dtype, device=runner.device).view(4, 2) / 4
+        targets = torch.zeros_like(inputs)
+        with runner.infer_context():
+            loss = nn.functional.mse_loss(inputs @ weights[0].T @ weights[1].T, targets)
+        gradients = torch.autograd.grad(loss, weights)
+        norm = torch.linalg.vector_norm(torch.stack([torch.linalg.vector_norm(gradient) for gradient in gradients]))
+        coefficient = (0.025 / (norm + 1e-6)).clamp(max=1)
+        runner.dataloaders["train"] = [(inputs, targets)]
+        reported = runner.train_epoch()["loss"]
+        torch.testing.assert_close(
+            runner.model.weight,
+            weights[rank].detach() - 0.1 * coefficient * gradients[rank],
+            atol=1e-12 if device_type == "cpu" else 1e-4,
+            rtol=1e-12 if device_type == "cpu" else 1e-3,
+        )
+        assert reported == pytest.approx(loss.detach().item(), rel=1e-3 if device_type == "cuda" else 1e-12)
+        checkpoint = runner.state_dict()
+        assert checkpoint["grad_scaler"]["scale"] == 128.0
+        assert checkpoint["grad_scaler"]["_growth_tracker"] == 1
+        modified = dict(checkpoint["grad_scaler"], scale=32.0, _growth_tracker=0)
+        runner.grad_scaler.load_state_dict(modified)
+        runner.load_state_dict(checkpoint)
+        assert runner.grad_scaler.state_dict() == checkpoint["grad_scaler"]
+        initial = runner.model.weight.detach().clone()
+        runner.model.weight.grad = torch.full_like(initial, float("inf") if rank else 128.0)
+        assert runner.optimizer_step() is False
+        assert runner.train_state.global_step == 1
+        torch.testing.assert_close(runner.model.weight, initial)
+        assert runner.grad_scaler.get_scale() == 64.0
+        assert runner.grad_scaler.state_dict()["_growth_tracker"] == 0
+    finally:
+        runner.close()
+
+
 class ParallelizableLinear(nn.Linear):
     def __init__(self) -> None:
         super().__init__(4, 2)
@@ -1443,6 +1517,73 @@ class TestParallelRunnerPipelineBinding:
 
 class TestParallelRunnerRuntimeBehavior:
 
+    @pytest.mark.parametrize("device_type", ["cpu", "cuda"])
+    def test_native_pipeline_scaling_clipping_and_scaler_resume(self, device_type) -> None:
+        require_gloo()
+        if device_type == "cuda" and torch.cuda.device_count() < 2:
+            pytest.skip("two CUDA devices are required")
+        run_distributed(_pipeline_scaled_backward_worker, worker_args=(device_type,))
+
+    @pytest.mark.parametrize("device_type", ["cpu", "cuda"])
+    def test_pipeline_scaled_microbatches_match_native_update(self, device_type) -> None:
+        if device_type == "cuda" and not torch.cuda.is_available():
+            pytest.skip("CUDA is unavailable")
+
+        class Schedule:
+            def __init__(self, runner):
+                self.runner = runner
+
+            def step(self, inputs, *, target, losses):
+                for part, labels in zip(inputs.chunk(2), target.chunk(2)):
+                    loss = self.runner._pipeline_loss(self.runner.model(part), labels)
+                    losses.append(loss.detach())
+                    loss.backward()
+
+        class LocalRunner(ParallelRunner):
+            @property
+            def world_size(self):
+                return 1
+
+            @property
+            def rank(self):
+                return 0
+
+            def init_distributed(self):
+                _init_parallel_topology(self)
+
+            def __init__(self, config):
+                super().__init__(config)
+                self.model = nn.Linear(2, 2, bias=False, dtype=torch.float64 if device_type == "cpu" else torch.float32)
+                self.criterion = nn.MSELoss()
+                self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
+                self.pipeline_schedule = Schedule(self)
+
+            def materialize_model(self):
+                self.model = self.model.to(self.device)
+                self.model_parts = [self.model]
+
+        runner = LocalRunner(
+            {"device": device_type, "logging.enabled": False, "precision": "fp16" if device_type == "cuda" else None}
+        )
+        try:
+            runner.grad_scaler = torch.amp.GradScaler(device_type, init_scale=128.0, growth_interval=2)
+            inputs = torch.arange(8, dtype=runner.model.weight.dtype, device=device_type).view(4, 2) / 4
+            targets = torch.zeros_like(inputs)
+            initial = runner.model.weight.detach().clone()
+            with runner.infer_context():
+                reference = runner.criterion(runner.model(inputs), targets)
+            gradient = torch.autograd.grad(reference, runner.model.weight)[0]
+            _, loss = runner.train_step((inputs, targets))
+            torch.testing.assert_close(runner.model.weight, initial - 0.1 * gradient, atol=1e-4, rtol=1e-3)
+            torch.testing.assert_close(loss, reference, atol=1e-4, rtol=1e-3)
+            state = runner.state_dict()
+            assert state["grad_scaler"] == runner.grad_scaler.state_dict()
+            runner.grad_scaler.load_state_dict(dict(state["grad_scaler"], scale=32.0))
+            runner.load_state_dict(state)
+            assert runner.grad_scaler.state_dict() == state["grad_scaler"]
+        finally:
+            runner.close()
+
     def test_runner_mode_updates_all_local_model_parts(self) -> None:
         class OpaqueSchedule:
             def step(self, *args, **kwargs):
@@ -1609,15 +1750,15 @@ class TestParallelRunnerRuntimeBehavior:
             runner._pipeline_loss_weighting = "train"
             runner._pipeline_loss_divisor_local = 0.0
             runner._accumulation_divisor_local = 0.0
+            runner._prepare_pipeline_loss_normalization(None, torch.zeros(4, 1))
 
             loss_a = runner._pipeline_loss(torch.ones(1, 1), torch.zeros(1, 1))
             loss_b = runner._pipeline_loss(torch.full((3, 1), 3.0), torch.zeros(3, 1))
+            runner._finish_pipeline_loss_normalization([loss_a, loss_b])
             weighted = runner._pipeline_loss_value([loss_a, loss_b])
 
             assert weighted is not None
             assert weighted.item() == pytest.approx(7.0)
-            assert runner._pipeline_loss_divisor_local == pytest.approx(4.0)
-            assert runner._accumulation_divisor_local == pytest.approx(4.0)
         finally:
             runner._pipeline_loss_weighting = None
             runner.close()
@@ -1640,7 +1781,7 @@ class TestParallelRunnerRuntimeBehavior:
                 self.model = nn.Linear(4, 2)
                 self.criterion = nn.MSELoss()
                 self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
-                self.schedule = RecordingPipelineSchedule(loss=torch.tensor(1.0))
+                self.schedule = RecordingPipelineSchedule(loss=torch.tensor(4.0))
                 self.pipeline_schedule = self.schedule
                 self.model_parts = [self.model]
                 self.pipeline_has_first_stage = True
