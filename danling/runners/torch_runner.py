@@ -3057,6 +3057,19 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         state["model"] = self.unwrap(self.model).state_dict()
         return state
 
+    def _export_checkpoint_local_state(self) -> Mapping[str, Any]:
+        """Snapshot replica-local resume state without gathering model/optimizer weights."""
+        self.rng_state.torch_cpu = torch.get_rng_state()
+        self.rng_state.torch_cuda = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        state = BaseRunner.state_dict(self)
+        local = {"state": {"rng": state["state"]["rng"]}, "dataloaders": state["dataloaders"]}
+        fault_tolerance = self.fault_tolerance
+        if fault_tolerance is not None and fault_tolerance.enabled:
+            state_dict = getattr(fault_tolerance, "state_dict", None)
+            if state_dict is not None:
+                local["fault_tolerance"] = state_dict()
+        return local
+
     def state_dict(self, cls: type = dict) -> Mapping:
         """
         Return the TorchRunner checkpoint payload.

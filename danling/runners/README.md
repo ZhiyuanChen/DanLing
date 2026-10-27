@@ -146,7 +146,7 @@ Rank participation contract:
 - `DeepSpeedRunner.save_checkpoint` uses DeepSpeed engine checkpointing for full-state saves; all ranks participate in those saves.
 - `DeepSpeedRunner.save_model_checkpoint` exports the unwrapped engine module as a DanLing model-only checkpoint for publication or `pretrained`.
 - When `config.ft.enabled=True` under `TorchRunner`/DDP or `ParallelRunner` FSDP, full DCP saves are gated to the TorchFT participating replica group.
-  Other replica groups save only their per-replica dataloader state.
+  Each replica group also saves its own dataloader, RNG and Manager state.
 
 Checkpoint persistence internals are implemented under `danling.runners.checkpoints`:
 
@@ -165,9 +165,15 @@ Full-state checkpoints include split-keyed dataloader progress under the top-lev
 - User-provided dataloaders participate when they implement `state_dict()` and `load_state_dict()`.
 - Non-stateful dataloaders are skipped rather than wrapped or special-cased.
 - `BaseRunner.load_checkpoint()` restores dataloaders after model/EMA/optimizer/scheduler state.
-- DCP checkpoints carry dataloader state in the main checkpoint payload.
-- With TorchFT enabled, per-replica dataloader checkpoints take precedence over the main checkpoint dataloader payload during restore.
-- `ParallelRunner` middle-stage proxy loaders delegate `state_dict()` and `load_state_dict()` to the real first-stage loader while yielding placeholders locally.
+- DCP stores RNG, dataloader and FT state under rank-specific keys, retaining the public payload shape when loaded.
+- With TorchFT enabled, each replica's local checkpoint takes precedence for its dataloader, RNG and Manager state.
+- `ParallelRunner` middle-stage proxy loaders save their placeholder cursor along with the underlying loader state.
+
+Step-mode checkpoints retain the active split target and each split's sampler
+epoch. A graceful SIGTERM waits until the current accumulation window finishes,
+before fetching another batch, then saves and drains checkpoint I/O. A second
+SIGTERM exits immediately. Custom loops can override `can_checkpoint_for_shutdown()`
+to declare their own consistent data/update boundary.
 
 ## TorchFT
 
@@ -199,8 +205,8 @@ When TorchFT is enabled:
 - dataloader sharding and seed bias are expanded across replica groups using
   `ft.replica_id` and `ft.group_size`
 - FSDP2 replicated-dimension all-reduce hooks use TorchFT-managed process groups
-- loss/normalizer logging reductions use the TorchFT managed replica group when available
-- per-replica dataloader checkpoints are enabled automatically through the DCP checkpoint manager and win over main-checkpoint dataloader state on restore
+- DDP gradients and loss/normalizer reductions span replica-local ranks and the TorchFT managed replica group
+- per-replica local-state checkpoints are enabled automatically through the DCP checkpoint manager
 
 Distributed state-dict invariants:
 

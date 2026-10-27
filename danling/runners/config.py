@@ -156,7 +156,7 @@ class ParallelConfig(chanfig.Config):
 
 class DataloaderCheckpointConfig(chanfig.Config):
     r"""
-    Per-replica dataloader checkpoint settings.
+    Per-replica dataloader, RNG, and TorchFT manager checkpoint settings.
     """
 
     enabled: bool = False

@@ -41,7 +41,7 @@ class FTDataLoaderCheckpointTask:
 
 
 class FTDataLoaderCheckpointer:
-    """DCP persistence helper for per-replica stateful dataloaders."""
+    """DCP persistence helper for each replica's loader, RNG, and manager state."""
 
     def __init__(self, runner: Any) -> None:
         self.runner = runner
@@ -73,7 +73,12 @@ class FTDataLoaderCheckpointer:
         checkpoint_name: str,
         track_for_retention: bool,
     ) -> FTDataLoaderCheckpointTask | None:
-        state = self.state_dict()
+        state_dict = getattr(self.runner, "_export_checkpoint_local_state", None)
+        if callable(state_dict):
+            state = state_dict()
+        else:
+            dataloaders = self.state_dict()
+            state = {"dataloaders": dataloaders} if dataloaders else {}
         if not state:
             return None
         return FTDataLoaderCheckpointTask(
@@ -104,7 +109,7 @@ class FTDataLoaderCheckpointer:
         }
         if not task.no_dist and task.process_group is not None:
             save_kwargs["process_group"] = task.process_group
-        dcp.save(task.state, **save_kwargs)
+        dcp.save(TorchDistributedCheckpointManager.rank_local_state(task.state), **save_kwargs)
 
     def load(self, *, checkpoint_id: str | None = None) -> Mapping[str, Any] | None:
         if checkpoint_id is None:
@@ -115,16 +120,32 @@ class FTDataLoaderCheckpointer:
         if not os.path.exists(os.path.join(ft_checkpoint_id, ".metadata")):
             return None
 
-        state = dict(self.state_dict())
-        if not state:
+        metadata = dcp.FileSystemReader(ft_checkpoint_id).read_metadata()
+        is_local_state = any(
+            key.startswith("rank_local.")
+            or key.startswith("dataloaders.")
+            or key == "dataloaders"
+            or key.startswith("state.rng.")
+            or key.startswith("fault_tolerance.")
+            for key in metadata.state_dict_metadata
+        )
+        task = self.build_task(checkpoint_name=checkpoint_name, track_for_retention=False)
+        if task is None:
             return None
         no_dist = not (dist.is_available() and dist.is_initialized())
-        dcp.load(state, checkpoint_id=ft_checkpoint_id, no_dist=no_dist)
+        if is_local_state:
+            state = TorchDistributedCheckpointManager.load_rank_local_state(task.state, ft_checkpoint_id)
+        else:
+            state = dict(self.state_dict())
+            dcp.load(state, checkpoint_id=ft_checkpoint_id, no_dist=no_dist)
+            state = {"dataloaders": state}
 
-        dataloaders = getattr(self.runner, "dataloaders", None)
-        load_state_dict_fn = getattr(dataloaders, "load_state_dict", None)
+        load_state_dict_fn = getattr(self.runner, "load_dataloaders", None)
+        if not callable(load_state_dict_fn):
+            dataloaders = getattr(self.runner, "dataloaders", None)
+            load_state_dict_fn = getattr(dataloaders, "load_state_dict", None)
         if callable(load_state_dict_fn):
-            load_state_dict_fn(state)
+            load_state_dict_fn(state.get("dataloaders", {}))
         return state
 
 
@@ -215,9 +236,13 @@ class TorchFTCheckpointManager(TorchDistributedCheckpointManager):
     def load_checkpoint(self, checkpoint: bytes | str | os.PathLike) -> dict[str, Any]:
         checkpoint_id = self._resolve_checkpoint_id(checkpoint)
         state = super().load_checkpoint(checkpoint_id)
-        dataloader_state = self._dataloader_checkpointer.load(checkpoint_id=checkpoint_id)
-        if dataloader_state is not None:
-            state["dataloaders"] = dataloader_state
+        local_state = self._dataloader_checkpointer.load(checkpoint_id=checkpoint_id)
+        if local_state is not None:
+            for key in ("dataloaders", "fault_tolerance"):
+                if key in local_state:
+                    state[key] = local_state[key]
+            if "state" in local_state and "rng" in local_state["state"]:
+                state["state"] = {**state.get("state", {}), "rng": local_state["state"]["rng"]}
         return state
 
     def _should_save_full_checkpoint(self) -> bool:

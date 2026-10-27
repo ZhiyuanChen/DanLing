@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import random
 from collections.abc import Mapping
 from concurrent.futures import Future
 from dataclasses import dataclass
@@ -187,6 +188,74 @@ def _configure_distributed_runner(runner: _CheckpointRunner, rank: int) -> None:
     runner.distributed = True
     runner.is_main_process = rank == 0
     runner.rank = rank
+
+
+def _rank_local_resume_worker(rank: int, world_size: int, checkpoint_dir: str, use_ft: bool) -> None:
+    with process_group("gloo", rank, world_size):
+        runner = _CheckpointRunner(
+            Path(checkpoint_dir),
+            config={
+                "ckpt.interval": 1,
+                "ckpt.dataloader_checkpoint.enabled": use_ft,
+                "ckpt.dataloader_checkpoint.replica_id": "replica0",
+            },
+            dataloaders=True,
+        )
+        _configure_distributed_runner(runner, rank)
+        runner.dataloaders["train"] = StatefulDataLoader(list(range(128)), batch_size=1, shuffle=False)
+        iterator = iter(runner.dataloaders["train"])
+        for _ in range(rank + 2):
+            next(iterator)
+        export = runner.state_dict
+        captured = {}
+
+        def state_dict():
+            rng = {"python": random.getstate(), "torch_cpu": torch.get_rng_state()}
+            state = export()
+            state["state"]["rng"] = rng
+            state["fault_tolerance"] = {"step": rank + 4}
+            if not captured:
+                captured.update(rng)
+            return state
+
+        runner.state_dict = state_dict
+        runner._export_checkpoint_local_state = lambda: {
+            key: value
+            for key, value in runner.state_dict().items()
+            if key in ("state", "dataloaders", "fault_tolerance")
+        }
+        manager_cls = TorchFTCheckpointManager if use_ft else TorchDistributedCheckpointManager
+        manager = manager_cls(runner)
+        try:
+            random.seed(100 + rank)
+            torch.manual_seed(200 + rank)
+            manager.save_checkpoint(force=True)
+            runner.dataloaders["train"] = StatefulDataLoader(list(range(128)), batch_size=1, shuffle=False)
+            random.seed(300)
+            torch.manual_seed(400)
+            checkpoint = manager.load_checkpoint("latest")
+            assert checkpoint["state"]["rng"]["python"] == captured["python"]
+            torch.testing.assert_close(checkpoint["state"]["rng"]["torch_cpu"], captured["torch_cpu"])
+            assert checkpoint["fault_tolerance"] == {"step": rank + 4}
+            position = _dataloader_state_position(checkpoint["dataloaders"]["train"])
+            assert position == rank + 2, (rank, position, checkpoint["dataloaders"]["train"])
+            runner.dataloaders.load_state_dict(checkpoint["dataloaders"])
+            value = next(iter(runner.dataloaders["train"])).item()
+            assert value == rank + 2, (rank, value, position, checkpoint["dataloaders"]["train"])
+        finally:
+            manager.close()
+
+
+@pytest.mark.parametrize("use_ft", [False, True])
+def test_dcp_resume_preserves_each_rank_rng_and_loader(tmp_path: Path, use_ft: bool) -> None:
+    require_gloo()
+    run_distributed(_rank_local_resume_worker, worker_args=(str(tmp_path), use_ft))
+    manager = TorchDistributedCheckpointManager(_CheckpointRunner(tmp_path))
+    try:
+        with pytest.raises(ValueError, match="rank-local RNG/dataloader state.*world size 1"):
+            manager.load_checkpoint("latest")
+    finally:
+        manager.close()
 
 
 def _assert_checkpoint_failure(
@@ -908,12 +977,28 @@ def test_dcp_dataloader_checkpoint_save_and_restore(tmp_path: Path) -> None:
         dataloaders=True,
     )
     manager = TorchFTCheckpointManager(runner)
+    export = runner.state_dict
+
+    def state_dict():
+        state = export()
+        state["state"]["rng"] = {"python": "full-writer-replica"}
+        state["fault_tolerance"] = {"step": 1}
+        return state
+
+    runner.state_dict = state_dict
+    runner._export_checkpoint_local_state = lambda: {
+        "dataloaders": runner.dataloaders.state_dict(),
+        "state": {"rng": {"python": "own-replica"}},
+        "fault_tolerance": {"step": 7},
+    }
 
     manager.save_checkpoint(epochs=0)
     _restore_stateful_dataloader_position(runner.dataloaders["train"], 0)
-    manager.load_checkpoint("latest")
+    checkpoint = manager.load_checkpoint("latest")
 
     assert _stateful_dataloader_position(runner.dataloaders["train"]) == 7
+    assert checkpoint["state"]["rng"] == {"python": "own-replica"}
+    assert checkpoint["fault_tolerance"] == {"step": 7}
     dataloader_root = tmp_path / "dataloader-replica-replica0"
     assert dataloader_root.exists()
     assert any((path / ".metadata").exists() for path in dataloader_root.iterdir())

@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import os
+import pickle
 from collections import deque
 from collections.abc import Mapping
 from concurrent.futures import Future
@@ -410,13 +411,110 @@ class TorchDistributedCheckpointManager(CheckpointManager):
     def load_checkpoint(self, checkpoint: bytes | str | os.PathLike) -> dict[str, Any]:
         checkpoint_id = self._resolve_checkpoint_id(checkpoint)
         state = self.runner.state_dict()
+        model = state.get("model", {})
+        if any(key.startswith("stage_") for key in model):
+            metadata = dcp.FileSystemReader(checkpoint_id).read_metadata()
+            model_keys = [key for key in metadata.state_dict_metadata if key.startswith("model.")]
+            if model_keys and not any(key.startswith("model.stage_") for key in model_keys):
+                raise ValueError(
+                    "cannot resume a legacy pipeline checkpoint without global stage parameter identities; "
+                    "use a model-only restore to import its weights explicitly"
+                )
+        return self.load_rank_local_state(state, checkpoint_id)
+
+    @staticmethod
+    def rank_local_state(state: Mapping[str, Any]) -> dict[str, Any]:
+        """Keep process RNG and loader cursors out of DCP's replicated-key deduplication."""
+        state = dict(state)
+        if not (dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1):
+            return state
+        local = {}
+        for key in ("dataloaders", "fault_tolerance"):
+            if key in state:
+                local[key] = state.pop(key)
+        runner_state = state.get("state")
+        if isinstance(runner_state, Mapping) and "rng" in runner_state:
+            runner_state = dict(runner_state)
+            local["rng"] = runner_state.pop("rng")
+            state["state"] = runner_state
+        # A loader's nested keys can change after its iterator starts. Store its
+        # process-local state as one opaque item so a fresh iterator need not
+        # reproduce the saved schema before DCP can read it.
+        state["rank_local"] = {str(dist.get_rank()): pickle.dumps(local)}
+        return state
+
+    @classmethod
+    def load_rank_local_state(cls, state: Mapping[str, Any], checkpoint_id: str) -> dict[str, Any]:
         no_dist = not (dist.is_available() and dist.is_initialized())
+        world_size = 1 if no_dist else dist.get_world_size()
+        metadata = dcp.FileSystemReader(checkpoint_id).read_metadata()
+        state = dict(state)
+        prefix = "rank_local."
+        saved_ranks = {
+            int(key[len(prefix) :])
+            for key in metadata.state_dict_metadata
+            if key.startswith(prefix) and key[len(prefix) :].isdigit()
+        }
+        if saved_ranks and saved_ranks != set(range(world_size)):
+            raise ValueError(
+                "cannot restore rank-local RNG/dataloader state: checkpoint ranks "
+                f"{sorted(saved_ranks)} do not match world size {world_size}; "
+                "use a model-only restore when changing the distributed world size"
+            )
+        if not saved_ranks and world_size > 1:
+            warn(
+                "legacy distributed checkpoint has shared RNG/dataloader state; "
+                "the original per-rank resume identity cannot be recovered",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        runner_state = state.get("state")
+        if not saved_ranks and isinstance(runner_state, Mapping) and isinstance(runner_state.get("train"), Mapping):
+            state["state"] = runner_state = dict(runner_state)
+            runner_state["train"] = train_state = dict(runner_state["train"])
+            for key in ("sampler_epochs", "step_mode_split_index", "step_mode_target"):
+                prefix_key = "state.train." + key
+                if not any(
+                    name == prefix_key or name.startswith(prefix_key + ".") for name in metadata.state_dict_metadata
+                ):
+                    train_state.pop(key, None)
+        state = cls.rank_local_state(state) if saved_ranks else dict(state)
+        if (
+            not saved_ranks
+            and "fault_tolerance" in state
+            and not any(
+                key == "fault_tolerance" or key.startswith("fault_tolerance.") for key in metadata.state_dict_metadata
+            )
+        ):
+            state.pop("fault_tolerance")
+        # A single-rank loader can also inspect a checkpoint written by a
+        # distributed world of size one, without changing the public payload.
+        if saved_ranks and "rank_local" not in state:
+            state["rank_local"] = {"0": b""}
         dcp.load(state, checkpoint_id=checkpoint_id, no_dist=no_dist)
-        return dict(state)
+        if saved_ranks:
+            local = pickle.loads(state.pop("rank_local")[str(0 if no_dist else dist.get_rank())])
+            for key in ("dataloaders", "fault_tolerance"):
+                if key in local:
+                    state[key] = local[key]
+            if "rng" in local:
+                state["state"] = {**state.get("state", {}), "rng": local["rng"]}
+        return state
+
+    def build_checkpoint_payload(self, *, last_step: bool = False) -> Mapping[str, Any]:
+        return self.rank_local_state(super().build_checkpoint_payload(last_step=last_step))
 
     def load_model_checkpoint(self, checkpoint: bytes | str | os.PathLike) -> dict[str, Any]:
         checkpoint_id = self._resolve_checkpoint_id(checkpoint)
         state = dict(self.build_model_checkpoint_payload())
+        parts = getattr(self.runner, "model_parts", ())
+        if len(parts) == 1 and "model" in state:
+            prefixes = {name.split(".", 1)[0] for name in state["model"]}
+            if len(prefixes) == 1 and next(iter(prefixes)).startswith("stage_"):
+                prefix = next(iter(prefixes)) + "."
+                metadata = dcp.FileSystemReader(checkpoint_id).read_metadata()
+                if not any(key.startswith("model." + prefix) for key in metadata.state_dict_metadata):
+                    state["model"] = {name[len(prefix) :]: value for name, value in state["model"].items()}
         no_dist = not (dist.is_available() and dist.is_initialized())
         dcp.load(state, checkpoint_id=checkpoint_id, no_dist=no_dist)
         return dict(state)
