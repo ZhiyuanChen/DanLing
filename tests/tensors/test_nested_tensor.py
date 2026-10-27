@@ -1302,6 +1302,23 @@ class TestPackedLike:
         assert output.concat is packed_values
         assert output.concat.stride() == packed_values.stride()
 
+    @pytest.mark.parametrize("pin_memory", [False, True])
+    def test_packed_like_vmap_preserves_storage_and_pinning(self, pin_memory):
+        if pin_memory and not torch.cuda.is_available():
+            pytest.skip("pin_memory requires CUDA")
+        template = NT([torch.zeros(2, 3), torch.zeros(4, 3)])
+        values = torch.empty((2, 3, 6), pin_memory=pin_memory).normal_().transpose(1, 2)
+
+        output = torch.vmap(lambda packed: template.packed_like(packed).concat)(values)
+
+        assert output.is_pinned() is pin_memory
+        assert output.stride() == values.stride()
+        assert output.untyped_storage().data_ptr() == values.untyped_storage().data_ptr()
+        assert_close(output, values)
+        mapped = torch.vmap(lambda packed: template.packed_like(packed).sin().concat)(values)
+        assert mapped.is_pinned() is pin_memory
+        assert_close(mapped, values.sin())
+
     def test_packed_like_follows_dtype_and_autograd_history(self):
         reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
         leaf = torch.randn(reference.concat.shape, dtype=torch.float64, requires_grad=True)

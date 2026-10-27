@@ -101,6 +101,15 @@ def _transform_base(tensor: Tensor) -> Tensor:
     return tensor
 
 
+def _is_pinned(tensor: Tensor) -> bool:
+    r"""Inspect storage pinning without batching a metadata-only query."""
+    if tensor.device.type != "cpu":
+        return False
+    if not _is_compiling() and torch._C._are_functorch_transforms_active():
+        tensor = _transform_base(tensor)
+    return tensor.is_pinned()
+
+
 def _transform_batch_dims(tensor: Tensor) -> tuple[int, ...]:
     r"""Locate vectorized axes in the underlying wrapper's logical coordinates."""
     if torch._C._functorch.is_gradtrackingtensor(tensor):
@@ -430,7 +439,7 @@ class NestedTensor(torch.Tensor):
             padding_value=padding_value,
             mask_value=mask_value,
         )
-        result._pin_memory = bool(pin_memory and values.device.type == "cpu" and values.is_pinned())
+        result._pin_memory = bool(pin_memory and _is_pinned(values))
         ragged_offsets = cls._resolve_persistent_ragged_offsets(
             offsets,
             shape_tensor,
@@ -837,7 +846,9 @@ class NestedTensor(torch.Tensor):
     @staticmethod
     def _maybe_pin_values(values: Tensor, pin_memory: bool) -> Tensor:
         r"""Pin packed storage when requested and the values live on CPU."""
-        if pin_memory and values.device.type == "cpu" and not values.is_pinned():
+        if pin_memory and values.device.type == "cpu" and not _is_pinned(values):
+            if not _is_compiling() and torch._C._are_functorch_transforms_active():
+                return _PinMemoryAutograd.apply(values)
             return values.pin_memory()
         return values
 
@@ -1703,7 +1714,7 @@ class NestedTensor(torch.Tensor):
                     bool(batch_first),
                     float(padding_value),
                     bool(mask_value),
-                    bool(pin_memory and values.device.type == "cpu" and values.is_pinned()),
+                    bool(pin_memory and _is_pinned(values)),
                     stored_packed_sizes,
                     stored_element_shapes,
                     resolved_ragged_offsets,
@@ -1729,7 +1740,7 @@ class NestedTensor(torch.Tensor):
                 padding_value=padding_value,
                 mask_value=mask_value,
             )
-            result._pin_memory = bool(pin_memory and values.device.type == "cpu" and values.is_pinned())
+            result._pin_memory = bool(pin_memory and _is_pinned(values))
             result._packed_sizes = stored_packed_sizes
             result._element_shapes = stored_element_shapes
             cls._install_persistent_ragged_offsets(result, resolved_ragged_offsets)
@@ -3631,7 +3642,7 @@ class NestedTensor(torch.Tensor):
             result._batch_first = self._batch_first
             result._padding_value = self._padding_value
             result._mask_value = self._mask_value
-            result._pin_memory = bool(self._pin_memory and values.device.type == "cpu" and values.is_pinned())
+            result._pin_memory = bool(self._pin_memory and _is_pinned(values))
             result._packed_sizes = self._packed_sizes
             result._element_shapes = self._element_shapes
             type(self)._install_persistent_ragged_offsets(result, self._persistent_ragged_offsets())
@@ -3732,7 +3743,7 @@ class NestedTensor(torch.Tensor):
                 "packed_values must have exactly the same shape as the reference packed storage, "
                 f"got {packed_values.shape} and expected {self.concat.shape}"
             )
-        pin_memory = bool(packed_values.device.type == "cpu" and packed_values.is_pinned())
+        pin_memory = _is_pinned(packed_values)
         result = type(self).from_packed(
             packed_values,
             self._offsets,
@@ -3897,7 +3908,7 @@ class NestedTensor(torch.Tensor):
         if len(self) == 0:
             packed_sizes = ()
             element_shapes = ()
-        pin_memory = bool(packed_values.device.type == "cpu" and packed_values.is_pinned())
+        pin_memory = _is_pinned(packed_values)
         result = type(self).from_packed(
             packed_values,
             self._offsets,
@@ -4027,7 +4038,7 @@ class NestedTensor(torch.Tensor):
             logical_shape = torch.Size((len(self), max_length, *static_tail))
         else:
             logical_shape = torch.Size((max_length, len(self), *static_tail))
-        pin_memory = bool(packed_values.device.type == "cpu" and packed_values.is_pinned())
+        pin_memory = _is_pinned(packed_values)
         result = type(self).from_packed(
             packed_values,
             offsets,
@@ -4178,7 +4189,7 @@ class NestedTensor(torch.Tensor):
             logical_shape = torch.Size((len(self), max_length, max_length, *static_tail))
         else:
             logical_shape = torch.Size((max_length, len(self), max_length, *static_tail))
-        pin_memory = bool(packed_values.device.type == "cpu" and packed_values.is_pinned())
+        pin_memory = _is_pinned(packed_values)
         # Both ragged axes and their offsets already carry the dynamic shape contract. Marking
         # caller-owned packed storage here would mutate a compiled graph input after Dynamo has
         # installed its guards, forcing an otherwise unnecessary second compilation.
@@ -4327,7 +4338,7 @@ class NestedTensor(torch.Tensor):
             logical_shape = torch.Size((batch_size, max_rows, max_columns, *static_tail))
         else:
             logical_shape = torch.Size((max_rows, batch_size, max_columns, *static_tail))
-        pin_memory = bool(packed_values.device.type == "cpu" and packed_values.is_pinned())
+        pin_memory = _is_pinned(packed_values)
         result = type(self).from_packed(
             packed_values,
             outer_offsets,
@@ -6033,6 +6044,30 @@ class NestedTensor(torch.Tensor):
         return NestedTensorAtenRegistry[op](op, (self, dim), kwargs)
 
 
+class _PinMemoryAutograd(torch.autograd.Function):
+    r"""Pin transformed CPU storage as one dense batch with identity derivatives."""
+
+    @staticmethod
+    def forward(values: Tensor) -> Tensor:
+        return values.pin_memory()
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        pass
+
+    @staticmethod
+    def backward(ctx, gradient):
+        return gradient
+
+    @staticmethod
+    def jvp(ctx, tangent):
+        return tangent
+
+    @staticmethod
+    def vmap(info, in_dims, values):
+        return _PinMemoryAutograd.apply(values), in_dims[0]
+
+
 class _PackedStructureReference:
     r"""Forward-only carrier for layout metadata used by the packed autograd bridge.
 
@@ -6116,6 +6151,7 @@ class _PackedLikeAutograd(torch.autograd.Function):
             batch_first=reference.batch_first,
             padding_value=reference.padding_value,
             mask_value=reference.mask_value,
+            pin_memory=_is_pinned(values),
             outer_size=(*reference.shape, info.batch_size),
             ragged_offsets=reference._persistent_ragged_offsets(),
             validate=False,
