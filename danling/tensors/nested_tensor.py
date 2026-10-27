@@ -319,6 +319,7 @@ class NestedTensor(torch.Tensor):
     _cached_packed_batch_indices: dict[tuple[str, torch.dtype, tuple[int, ...]], Tensor] | None
     _cached_packed_local_indices: dict[tuple[int, str, torch.dtype, tuple[int, ...]], Tensor] | None
     _cached_packed_offsets: dict[tuple[str, torch.dtype, tuple[int, ...]], Tensor] | None
+    _cached_element_sizes: dict[tuple[str, torch.dtype, tuple[int, ...]], Tensor] | None
     _cached_ragged_level_offsets: dict[tuple[int, str, torch.dtype, tuple[int, ...]], Tensor] | None
     _unflattened_autograd: bool
     _wrapper_grad_leaf: bool
@@ -1345,6 +1346,7 @@ class NestedTensor(torch.Tensor):
         self._cached_packed_batch_indices = None
         self._cached_packed_local_indices = None
         self._cached_packed_offsets = None
+        self._cached_element_sizes = None
         self._cached_ragged_level_offsets = None
         self._unflattened_autograd = False
 
@@ -1375,6 +1377,10 @@ class NestedTensor(torch.Tensor):
             self._cached_ragged_level_offsets = {}
         result._cached_hierarchical_offsets = self._cached_hierarchical_offsets
         result._cached_packed_offsets = self._cached_packed_offsets
+        if self._physical_shape is result._physical_shape:
+            if self._cached_element_sizes is None:
+                self._cached_element_sizes = {}
+            result._cached_element_sizes = self._cached_element_sizes
         result._cached_ragged_level_offsets = self._cached_ragged_level_offsets
 
     def _layout_state(self) -> tuple:
@@ -2267,16 +2273,39 @@ class NestedTensor(torch.Tensor):
             self._cached_packed_offsets[key] = converted
         return converted
 
-    def element_sizes(self) -> Tensor:
-        r"""Return every logical element shape as a CPU integer tensor.
+    def element_sizes(
+        self,
+        *,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> Tensor:
+        r"""Return every logical element shape as an integer tensor.
 
         Rows follow logical batch order and columns follow logical element
         dimension order, independent of ``batch_first`` and physical packed
-        storage order.  The returned ``(batch_size, element_rank)`` tensor is
-        the canonical tensor-backed shape metadata and is therefore returned
-        without a copy.
+        storage order. By default, the canonical CPU ``(batch_size, element_rank)``
+        metadata is returned without a copy. Device and dtype conversions are
+        cached while the layout metadata tracks mutations and no dispatch mode
+        is active.
         """
-        return self._physical_shape
+        sizes = self._physical_shape
+        target_device = sizes.device if device is None else torch.device(device)
+        target_dtype = sizes.dtype if dtype is None else dtype
+        if sizes.device == target_device and sizes.dtype == target_dtype:
+            return sizes
+        device_key = type(self)._offset_conversion_device_key(target_device)
+        token = self._offset_conversion_cache_token() if device_key is not None else None
+        key = None if device_key is None or token is None else (device_key, target_dtype, token)
+        if key is not None and self._cached_element_sizes is not None:
+            cached = self._cached_element_sizes.get(key)
+            if cached is not None:
+                return cached
+        elif key is not None:
+            self._cached_element_sizes = {}
+        converted = type(self)._convert_offsets(sizes, device=target_device, dtype=target_dtype)
+        if key is not None and self._cached_element_sizes is not None:
+            self._cached_element_sizes[key] = converted
+        return converted
 
     def ragged_level_offsets(
         self,

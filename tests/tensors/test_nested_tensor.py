@@ -1446,7 +1446,8 @@ class TestPackedLike:
         with pytest.raises(TypeError, match="torch.strided"):
             reference.packed_like(torch.zeros_like(reference.concat).to_sparse())
 
-    def test_packed_offsets_and_element_sizes_report_public_layout(self):
+    @pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
+    def test_packed_offsets_and_element_sizes_report_public_layout(self, device, dtype):
         nested = NestedTensor(
             [torch.empty(2, 2, 4), torch.empty(3, 3, 4)],
             ragged_dims=(0, 1),
@@ -1455,6 +1456,18 @@ class TestPackedLike:
         assert_close(nested.packed_offsets(), torch.tensor([0, 4, 13]))
         assert_close(nested.element_sizes(), torch.tensor([[2, 2, 4], [3, 3, 4]]))
         assert_close(nested.packed_local_indices(level=0), torch.tensor([0, 1, 0, 1, 2]))
+
+        default_sizes = nested.element_sizes()
+        assert default_sizes is nested.element_sizes()
+        converted = nested.element_sizes(device=device, dtype=dtype)
+        assert_close(converted, default_sizes.to(device=device, dtype=dtype))
+        changed = nested.packed_with_static_tail(torch.empty(13, 7))
+        assert_close(
+            changed.element_sizes(device=device, dtype=dtype),
+            torch.tensor([[2, 2, 7], [3, 3, 7]], device=device, dtype=dtype),
+        )
+        default_sizes[:, -1].fill_(5)
+        assert_close(nested.element_sizes(device=device, dtype=dtype), default_sizes.to(device=device, dtype=dtype))
 
     @pytest.mark.parametrize("warm_cuda", [False, True])
     def test_packed_layout_accessors_support_empty_and_fake_tensors(self, warm_cuda):
@@ -1467,6 +1480,7 @@ class TestPackedLike:
             device = torch.device("cuda", torch.cuda.current_device())
             reference.packed_offsets(device=device)
             reference.ragged_level_offsets(0, device=device)
+            reference.element_sizes(device=device)
 
         with fake_tensor_mod.FakeTensorMode() as mode:
             fake = mode.from_tensor(reference)
@@ -1474,6 +1488,7 @@ class TestPackedLike:
             if warm_cuda:
                 fake_offsets = output.ragged_level_offsets(0, device=device)
                 assert fake_tensor_mod.is_fake(fake_offsets)
+                assert fake_tensor_mod.is_fake(output.element_sizes(device=device))
 
         assert empty.element_sizes().shape == (0, 0)
         assert fake_tensor_mod.is_fake(output.concat)
