@@ -22,6 +22,7 @@ from __future__ import annotations
 import random
 from collections.abc import Mapping
 from concurrent.futures import Future
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,15 +32,132 @@ import torch
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from danling.data import DataLoaderDict
+from danling.runners import ParallelRunner, TorchRunner
 from danling.runners.checkpoints.torch_distributed import (
     DCP_PINNED_MEMORY_STAGING_AVAILABLE,
     TorchDistributedCheckpointManager,
 )
 from danling.runners.checkpoints.torch_ft import TorchFTCheckpointManager
 from danling.runners.config import RunnerConfig
+from danling.runners.topology import ParallelContext
 from tests.runners.distributed import process_group, require_gloo, run_distributed
 
 pytestmark = pytest.mark.filterwarnings("ignore:torch.distributed is disabled.*:UserWarning")
+
+
+@pytest.mark.parametrize("optimizer_cls", [torch.optim.Adam, torch.optim.AdamW, torch.optim.SGD])
+def test_fresh_dcp_export_preserves_optimizer_hooks_state_and_first_update(optimizer_cls):
+    model = torch.nn.Linear(2, 2, dtype=torch.float64)
+    reference = deepcopy(model)
+    optimizer = optimizer_cls(model.parameters(), lr=0.1)
+    control = optimizer_cls(reference.parameters(), lr=0.1)
+    events = []
+    optimizer.register_step_pre_hook(lambda *args: events.append("step"))
+    optimizer.register_state_dict_pre_hook(lambda *args: events.append("export"))
+    optimizer.register_state_dict_post_hook(lambda *args: events.append("exported"))
+
+    TorchDistributedCheckpointManager.export_model_optimizer_state(model=model, optimizer=optimizer)
+    assert events == ["export", "exported"]
+    assert not optimizer.state
+    assert all(parameter.grad is None for parameter in model.parameters())
+    value = torch.ones(1, 2, dtype=torch.float64)
+    model(value).square().sum().backward()
+    reference(value).square().sum().backward()
+    gradients = [parameter.grad for parameter in model.parameters()]
+    TorchDistributedCheckpointManager.export_model_optimizer_state(model=model, optimizer=optimizer)
+    assert all(parameter.grad is gradient for parameter, gradient in zip(model.parameters(), gradients))
+    optimizer.step()
+    control.step()
+    assert events == ["export", "exported", "export", "exported", "step"]
+    for actual, expected in zip(model.parameters(), reference.parameters()):
+        torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.parametrize("native_fqns", [False, True], ids=["raw-ids", "native-fqns"])
+@pytest.mark.parametrize(
+    "optimizer_cls,updates",
+    [
+        (torch.optim.Adam, 0),
+        (torch.optim.Adam, 2),
+        (torch.optim.AdamW, 0),
+        (torch.optim.AdamW, 2),
+        (torch.optim.SGD, 0),
+    ],
+)
+def test_dcp_optimizer_roundtrip_into_fresh_runner_preserves_first_update(
+    tmp_path, native_fqns, optimizer_cls, updates
+):
+    base = ParallelRunner if native_fqns else TorchRunner
+
+    class CheckpointRunner(base):
+        def init_distributed(self):
+            if native_fqns:
+                self.topology = self.build_topology()
+                self.parallel = ParallelContext(self.topology)
+
+        @property
+        def world_size(self):
+            return 2 if native_fqns else 1
+
+        def __init__(self, config):
+            super().__init__(config)
+            self.model = torch.nn.Linear(2, 2, dtype=torch.float64)
+            self.optimizer = optimizer_cls(self.model.parameters(), lr=0.1)
+
+    config = {
+        "device": "cpu",
+        "logging.enabled": False,
+        "workspace.dir": str(tmp_path),
+        "ckpt": {"backend": "dcp", "async_mode": "disabled", "interval": 1},
+        "parallel.axes.shard": 2 if native_fqns else 1,
+    }
+    source, control, restored, healed = (CheckpointRunner(config) for _ in range(4))
+    value = torch.ones(1, 2, dtype=torch.float64)
+
+    def update(runner, parameter=None):
+        output = getattr(runner.model, parameter) if parameter is not None else runner.model(value)
+        output.square().sum().backward()
+        assert runner.optimizer_step()
+
+    try:
+        control.model.load_state_dict(source.model.state_dict())
+        for _ in range(updates):
+            update(source, parameter="weight")
+            update(control, parameter="weight")
+        source.save_checkpoint(force=True)
+        snapshot = deepcopy(source.state_dict())
+        if not updates:
+            assert not source.optimizer.state
+        if updates:
+            for destination in (restored, healed):
+                update(destination, parameter="bias")
+                assert destination.model.bias in destination.optimizer.state
+                assert destination.model.weight not in destination.optimizer.state
+        else:
+            assert not restored.optimizer.state
+        restored.load_checkpoint("latest")
+        healed.load_checkpoint(snapshot)
+        for destination in (restored, healed):
+            for original, loaded in zip(source.model.parameters(), destination.model.parameters()):
+                torch.testing.assert_close(original, loaded)
+                for key, expected in source.optimizer.state.get(original, {}).items():
+                    torch.testing.assert_close(destination.optimizer.state[loaded][key], expected)
+            if not updates:
+                assert not destination.optimizer.state
+            else:
+                assert destination.model.bias not in destination.optimizer.state
+        update(source)
+        update(restored)
+        update(healed)
+        update(control)
+        for destination in (source, restored, healed):
+            for actual, expected in zip(destination.model.parameters(), control.model.parameters()):
+                torch.testing.assert_close(actual, expected)
+    finally:
+        source.close()
+        control.close()
+        restored.close()
+        healed.close()
 
 
 @dataclass

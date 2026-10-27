@@ -1733,6 +1733,18 @@ class ParallelRunner(TorchRunner):
             strict=True,
         )
 
+    def _checkpoint_optimizer_load_template(self) -> Mapping[str, Any] | None:
+        if self.optimizer is None:
+            return None
+        _, state = self.checkpoint_manager.export_model_optimizer_state(
+            model=self._checkpoint_model(),
+            optimizer=self.optimizer,
+            options_cls=StateDictOptions,
+            strict=True,
+            initialize_optimizer_state=True,
+        )
+        return state
+
     def load_checkpoint(
         self,
         checkpoint: Mapping | bytes | str | os.PathLike,

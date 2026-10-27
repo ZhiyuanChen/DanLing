@@ -3208,6 +3208,15 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             return
         self.optimizer.load_state_dict(dict(state_dict), *args, **kwargs)
 
+    def _checkpoint_optimizer_load_template(self) -> Mapping[str, Any] | None:
+        """Build native optimizer storage only when reading a trained DCP state."""
+        if self.optimizer is None:
+            return None
+        TorchDistributedCheckpointManager.export_model_optimizer_state(
+            model=self.unwrap(self.model), optimizer=self.optimizer, initialize_optimizer_state=True
+        )
+        return self.optimizer.state_dict()
+
     def load_optimizer(self, state_dict: Mapping[str, Any] | None, *args, **kwargs) -> None:
         if self.optimizer is None:
             return

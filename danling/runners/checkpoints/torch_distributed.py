@@ -21,11 +21,11 @@ from __future__ import annotations
 
 import os
 import pickle
-from collections import deque
+from collections import defaultdict, deque
 from collections.abc import Mapping
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from contextlib import nullcontext, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from time import monotonic, sleep
 from typing import Any
@@ -33,6 +33,7 @@ from warnings import warn
 
 from lazy_imports import try_import
 from torch import distributed as dist
+from torch.optim import Optimizer
 
 from ..config import RunnerConfig
 from .base import CheckpointManager
@@ -289,12 +290,47 @@ class TorchDistributedCheckpointManager(CheckpointManager):
         optimizer: Any,
         options_cls: Any = None,
         strict: bool = True,
+        initialize_optimizer_state: bool = False,
     ) -> tuple[Any, Any]:
-        """Export model/optimizer state via DCP state-dict API."""
+        """Export without optimizer updates; initialization is reserved for load templates."""
 
         options = cls.state_dict_options(options_cls, full_state_dict=False, cpu_offload=False, strict=strict)
-        optimizers: Any = optimizer if optimizer is not None else []
-        return dcp_get_state_dict(model, optimizers, options=options)
+        optimizers = cls._optimizer_sequence(optimizer)
+        context = nullcontext() if initialize_optimizer_state else cls._optimizer_export_guard(optimizers)
+        previous_states = [(optim, optim.state) for optim in optimizers] if initialize_optimizer_state else []
+        try:
+            for optim, _ in previous_states:
+                optim.state = defaultdict(dict)
+            with context:
+                return dcp_get_state_dict(model, optimizers, options=options)
+        except Exception:
+            for optim, state in previous_states:
+                optim.state = state
+            raise
+
+    @staticmethod
+    def _optimizer_sequence(optimizer: Any) -> tuple[Any, ...]:
+        return () if optimizer is None else (optimizer,) if isinstance(optimizer, Optimizer) else tuple(optimizer)
+
+    @staticmethod
+    @contextmanager
+    def _optimizer_export_guard(optimizers):
+        guards: list[tuple[Any, Any]] = []
+        try:
+            for optim in optimizers:
+                parameters = [parameter for group in optim.param_groups for parameter in group["params"]]
+                if optim.state or not parameters or any(parameter.grad is not None for parameter in parameters):
+                    continue
+                # DCP otherwise calls step() to initialize a fresh optimizer.
+                # A borrowed gradient prevents that without allocating a
+                # parameter-sized tensor or bypassing state_dict hooks.
+                parameter = parameters[0]
+                guards.append((parameter, parameter.grad))
+                parameter.grad = parameter.detach()
+            yield
+        finally:
+            for parameter, gradient in guards:
+                parameter.grad = gradient
 
     @classmethod
     def load_model_state(
@@ -322,13 +358,52 @@ class TorchDistributedCheckpointManager(CheckpointManager):
     ) -> None:
         """Load optimizer state via DCP state-dict API."""
 
-        options = cls.state_dict_options(options_cls, strict=strict)
-        dcp_set_optimizer_state_dict(
-            model,
-            optimizer,
-            optim_state_dict=dict(optimizer_state_dict),
-            options=options,
+        optimizers = cls._optimizer_sequence(optimizer)
+        named_options = cls.state_dict_options(
+            options_cls, full_state_dict=False, cpu_offload=False, strict=strict, flatten_optimizer_state_dict=False
         )
+        with cls._optimizer_export_guard(optimizers):
+            _, named_state = dcp_get_state_dict(model, optimizers, options=named_options)
+        saved_prefixes = cls._state_key_prefixes(set(optimizer_state_dict))
+        groups = [(optim, group) for optim in optimizers for group in optim.param_groups]
+        if any(
+            f"state.{fqn}" in saved_prefixes and not optim.state.get(parameter)
+            for (optim, group), named_group in zip(groups, named_state["param_groups"])
+            for parameter, fqn in zip(group["params"], named_group["params"])
+        ):
+            cls.export_model_optimizer_state(
+                model=model,
+                optimizer=optimizers,
+                options_cls=options_cls,
+                strict=strict,
+                initialize_optimizer_state=True,
+            )
+        # Native canonical groups preserve the live parameter ordering, also
+        # through compile wrappers and shared parameters. Only names of saved
+        # states may reach native unflattening; unused parameters stay cold.
+        for (optim, group), named_group in zip(groups, named_state["param_groups"]):
+            for parameter, fqn in zip(group["params"], named_group["params"]):
+                parameter_state = dict(optim.state.get(parameter, {}))
+                for name in list(parameter_state):
+                    if "state" in optimizer_state_dict:
+                        saved = name in optimizer_state_dict["state"].get(fqn, {})
+                    else:
+                        saved = f"state.{fqn}.{name}" in saved_prefixes
+                    if not saved:
+                        parameter_state.pop(name)
+                if parameter_state:
+                    optim.state[parameter] = parameter_state
+                else:
+                    optim.state.pop(parameter, None)
+        options = cls.state_dict_options(options_cls, strict=strict)
+        with cls._optimizer_export_guard(optimizers):
+            dcp_set_optimizer_state_dict(
+                model, optimizers, optim_state_dict=dict(optimizer_state_dict), options=options
+            )
+        for optim in optimizers:
+            for parameter, parameter_state in list(optim.state.items()):
+                if isinstance(parameter_state, Mapping) and not parameter_state:
+                    optim.state.pop(parameter)
 
     def save_checkpoint(
         self,
@@ -410,10 +485,16 @@ class TorchDistributedCheckpointManager(CheckpointManager):
 
     def load_checkpoint(self, checkpoint: bytes | str | os.PathLike) -> dict[str, Any]:
         checkpoint_id = self._resolve_checkpoint_id(checkpoint)
+        metadata = dcp.FileSystemReader(checkpoint_id).read_metadata()
         state = self.runner.state_dict()
+        saved_keys = set(metadata.state_dict_metadata)
+        load_optimizer_template = getattr(self.runner, "_checkpoint_optimizer_load_template", None)
+        if any(key.startswith("optimizer.state.") for key in saved_keys) and callable(load_optimizer_template):
+            state["optimizer"] = load_optimizer_template()
+        if isinstance(state.get("optimizer"), Mapping):
+            state["optimizer"] = self._saved_optimizer_template(state["optimizer"], saved_keys)
         model = state.get("model", {})
         if any(key.startswith("stage_") for key in model):
-            metadata = dcp.FileSystemReader(checkpoint_id).read_metadata()
             model_keys = [key for key in metadata.state_dict_metadata if key.startswith("model.")]
             if model_keys and not any(key.startswith("model.stage_") for key in model_keys):
                 raise ValueError(
@@ -421,6 +502,35 @@ class TorchDistributedCheckpointManager(CheckpointManager):
                     "use a model-only restore to import its weights explicitly"
                 )
         return self.load_rank_local_state(state, checkpoint_id)
+
+    @staticmethod
+    def _saved_optimizer_template(template: Mapping[str, Any], saved_keys: set[str]) -> dict[str, Any]:
+        """Retain saved optimizer fields, including partially initialized states."""
+
+        saved_prefixes = TorchDistributedCheckpointManager._state_key_prefixes(saved_keys)
+
+        def saved_mapping(value, prefix):
+            if not isinstance(value, Mapping):
+                return value
+            return {
+                key: saved_mapping(item, f"{prefix}.{key}")
+                for key, item in value.items()
+                if f"{prefix}.{key}" in saved_prefixes
+            }
+
+        result = saved_mapping(template, "optimizer")
+        if "state" in template and not any(key.startswith("optimizer.state.") for key in saved_keys):
+            result["state"] = {}
+        return result
+
+    @staticmethod
+    def _state_key_prefixes(keys: set[str]) -> set[str]:
+        prefixes = set(keys)
+        for key in keys:
+            while "." in key:
+                key = key.rsplit(".", 1)[0]
+                prefixes.add(key)
+        return prefixes
 
     @staticmethod
     def rank_local_state(state: Mapping[str, Any]) -> dict[str, Any]:
