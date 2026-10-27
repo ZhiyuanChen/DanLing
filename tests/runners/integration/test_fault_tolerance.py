@@ -318,7 +318,8 @@ def test_fault_tolerance_torch_runner_soaks_multiple_restarts(tmp_path: Path) ->
     lighthouse = _start_lighthouse(repo_root)
     try:
         _run_torch_replica_groups(repo_root=repo_root, run_dir=run_dir, steps=1, resume=False)
-        for steps in (2, 3, 4):
+        # A completed-budget resume still performs final full/model saves.
+        for steps in (1, 2, 3, 4):
             _run_torch_replica_groups(repo_root=repo_root, run_dir=run_dir, steps=steps, resume=True)
     finally:
         if lighthouse.poll() is None:

@@ -2031,6 +2031,57 @@ class TestTorchRunnerLoopResultStability:
 
 class TestTorchRunnerStepExecution:
 
+    def test_resume_after_split_last_update_continues_next_round(self, tmp_path: Path) -> None:
+        class BoundaryRunner(TinyTorchRunner):
+            def __init__(self, config):
+                super().__init__(config)
+                self.datasets["train"] = [(torch.full((4,), float(value)), torch.zeros(2)) for value in (1, 2)]
+                self.consumed = []
+                self.interrupt = False
+
+            def train_step(self, data):
+                self.consumed.append(int(data[0][0, 0].item()))
+                return super().train_step(data)
+
+            def save_checkpoint(self, *args, **kwargs):
+                super().save_checkpoint(*args, **kwargs)
+                if self.interrupt and self.train_state.global_step == 2:
+                    raise SystemExit
+
+        config = {
+            "device": "cpu",
+            "seed": 42,
+            "steps": 4,
+            "logging.enabled": False,
+            "logging.interval": 0,
+            "dataloader": {"batch_size": 1, "shuffle": False},
+            "ckpt": {"backend": "file", "async_mode": "disabled", "interval": 2},
+        }
+        baseline = BoundaryRunner({**config, "workspace.dir": str(tmp_path / "baseline")})
+        source = BoundaryRunner({**config, "workspace.dir": str(tmp_path / "resumed")})
+        restored = None
+        try:
+            baseline.train_steps(["train"], [])
+            source.interrupt = True
+            with pytest.raises(SystemExit):
+                source.train_steps(["train"], [])
+            checkpoint = Path(source.workspace.checkpoint_dir) / "latest.pth"
+            source.close()
+
+            restored = BoundaryRunner({**config, "workspace.dir": str(tmp_path / "resumed")})
+            restored.load_checkpoint(checkpoint)
+            restored.train_steps(["train"], [])
+
+            assert source.consumed + restored.consumed == baseline.consumed == [1, 2, 1, 2]
+            assert restored.train_state.global_step == restored.train_state.micro_step == 4
+            for actual, expected in zip(restored.model.parameters(), baseline.model.parameters()):
+                torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        finally:
+            baseline.close()
+            source.close()
+            if restored is not None:
+                restored.close()
+
     def test_train_steps_result_is_independent_of_log_interval(self, tmp_path: Path) -> None:
         runner = StreamingEpochRunner(
             {"logging.enabled": False, "workspace.root": str(tmp_path), "steps": 3, "logging.interval": 2}

@@ -2331,6 +2331,9 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         total_epochs = self.epochs
         if total_epochs is None:
             raise ValueError("cannot run epoch-mode training: config.epochs is not set")
+        # Even a completed resume needs healing and membership before final
+        # collective checkpoint/export; no batch is fetched by this handshake.
+        self._begin_optimizer_window()
         print(f"train: epoch mode start epoch={self.train_state.epoch} total_epochs={total_epochs}")
         early_stop_counter = 0
         patience = self.patience
@@ -2512,6 +2515,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         total_steps = self.steps
         if total_steps is None:
             raise ValueError("cannot run step-mode training: config.steps could not be resolved")
+        self._begin_optimizer_window()
         print(f"train: step mode start global_step={self.train_state.global_step} steps={total_steps}")
         result = RoundDict()
         step_mode_iterators: dict[str, Iterator[tuple[int, Any, bool]] | None] = dict.fromkeys(train_splits)
@@ -2521,6 +2525,9 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         while self.train_state.global_step < total_steps:
             self.supervisor.maybe_handle_termination_signal()
             round_start_step = self.train_state.global_step
+            plan_epoch = self.train_state.epoch
+            restart_round = False
+            round_finished_restored_split = False
             round_result = RoundDict()
             total_train_splits = len(train_splits)
             for split_index, split in enumerate(train_splits):
@@ -2543,6 +2550,9 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                     break
                 start_global_step = self.train_state.global_step
                 target_global_step = self.train_state.step_mode_target or start_global_step + split_steps
+                # A checkpoint can be saved by the last update of a split,
+                # before the loop clears its target and advances the round.
+                round_finished_restored_split |= target_global_step <= start_global_step
                 self.train_state.step_mode_split_index = split_index
                 self.train_state.step_mode_target = target_global_step
                 self.meters.reset()
@@ -2559,6 +2569,31 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                 batch_iteration = -1
 
                 while self.train_state.global_step < target_global_step:
+                    self.supervisor.maybe_handle_termination_signal()
+                    generation = getattr(self, "_dataloader_state_generation", 0)
+                    # Quorum can restore newer progress as well as model and
+                    # loader state. Revalidate this plan before any iterator
+                    # creation or fetch; the generator's begin is idempotent.
+                    self._begin_optimizer_window()
+                    if getattr(self, "_dataloader_state_generation", 0) != generation:
+                        # Healing can reload only some local ranks, even when
+                        # their shared training plan is unchanged. Invalidate
+                        # local loader caches without changing collective loop
+                        # ordering on the ranks that did not need recovery.
+                        step_mode_iterators = dict.fromkeys(train_splits)
+                        step_mode_sampler_epochs = self.train_state.sampler_epochs
+                        for train_split in train_splits:
+                            step_mode_sampler_epochs.setdefault(train_split, self.train_state.epoch)
+                    if (
+                        self.train_state.global_step >= total_steps
+                        or self.train_state.epoch != plan_epoch
+                        or self.train_state.step_mode_split_index != split_index
+                        or self.train_state.step_mode_target != target_global_step
+                    ):
+                        restart_round = True
+                        break
+                    if self.train_state.global_step >= target_global_step:
+                        break
                     batch: tuple[int, Any, bool] | None = None
                     iterator = step_mode_iterators[split]
                     recreated = 0
@@ -2630,6 +2665,8 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                             display_iteration=global_step,
                         )
 
+                if restart_round:
+                    break
                 round_result[split] = self.get_epoch_result()
                 telemetry.finalize_result(
                     round_result[split], elapsed_seconds=self.loop_time(sync=True) - telemetry.start_time
@@ -2638,7 +2675,13 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                 self.train_state.step_mode_target = 0
                 self.supervisor.maybe_handle_termination_signal()
 
-            if self.train_state.global_step == round_start_step:
+            if restart_round:
+                step_mode_iterators = dict.fromkeys(train_splits)
+                step_mode_sampler_epochs = self.train_state.sampler_epochs
+                for split in train_splits:
+                    step_mode_sampler_epochs.setdefault(split, self.train_state.epoch)
+                continue
+            if self.train_state.global_step == round_start_step and not round_finished_restored_split:
                 remaining_steps = total_steps - self.train_state.global_step
                 warn(
                     f"step-mode training made no progress after one full split pass "

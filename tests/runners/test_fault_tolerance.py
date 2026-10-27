@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import importlib.util
 from collections import deque
+from copy import deepcopy
 
 import pytest
 import torch
 from torch import nn, optim
+from torchdata.stateful_dataloader import StatefulDataLoader
 
 from danling.runners import TorchRunner
 
@@ -67,6 +69,94 @@ class _QuorumManager:
 
     def load_state_dict(self, state):
         self.votes = state["step"]
+
+
+def _resume_loader(values):
+    return StatefulDataLoader(
+        [(torch.full((4,), float(value)), torch.zeros(2)) for value in values], batch_size=1, shuffle=False
+    )
+
+
+@pytest.mark.parametrize("heal_on_start", [1, 2])
+def test_healing_at_step_budget_does_not_fetch_or_train_again(tmp_path, heal_on_start) -> None:
+    config = {"device": "cpu", "logging.enabled": False, "steps": 2, "ckpt.enabled": False}
+    donor = TinyFaultToleranceRunner({**config, "workspace.dir": str(tmp_path / "donor")})
+    receiver = TinyFaultToleranceRunner({**config, "workspace.dir": str(tmp_path / "receiver")})
+    try:
+        donor.dataloaders["train"] = _resume_loader(range(1, 5))
+        receiver.dataloaders["train"] = _resume_loader(range(1, 5))
+        iterator = iter(donor.dataloaders["train"])
+        donor.train_step(next(iterator))
+        donor.train_step(next(iterator))
+        state = deepcopy(donor.fault_tolerance._state_dict())
+
+        class HealingManager(_QuorumManager):
+            def start_quorum(self):
+                super().start_quorum()
+                if self.starts == heal_on_start:
+                    receiver.fault_tolerance._load_state_dict(state)
+                    self.votes = donor.train_state.global_step
+
+        manager = HealingManager([True, True])
+        receiver.fault_tolerance._manager = manager
+        receiver.train_steps(["train"], [])
+        assert receiver.train_state.global_step == 2
+        assert manager.votes == 2
+        assert receiver.dataloaders["train"].state_dict()["_num_yielded"] == 2
+        for actual, expected in zip(receiver.model.parameters(), donor.model.parameters()):
+            torch.testing.assert_close(actual, expected)
+    finally:
+        receiver.close()
+        donor.close()
+
+
+def test_healing_replans_restored_split_target_before_fetching(tmp_path) -> None:
+    class RecordingRunner(TinyFaultToleranceRunner):
+        def __init__(self, config):
+            super().__init__(config)
+            self.consumed = []
+
+        def train_step(self, data):
+            self.consumed.append((self.split, int(data[0][0, 0].item())))
+            return super().train_step(data)
+
+    config = {"device": "cpu", "logging.enabled": False, "steps": 4, "ckpt.enabled": False}
+    donor = RecordingRunner({**config, "workspace.dir": str(tmp_path / "donor")})
+    receiver = RecordingRunner({**config, "workspace.dir": str(tmp_path / "receiver")})
+    try:
+        for runner in (donor, receiver):
+            runner.dataloaders["a"] = _resume_loader(range(1, 7))
+            runner.dataloaders["b"] = _resume_loader(range(11, 17))
+        b_iterator = iter(donor.dataloaders["b"])
+        donor.train_step(next(b_iterator))
+        donor.train_state.epoch = 2
+        donor.train_state.step_mode_split_index = 1
+        donor.train_state.step_mode_target = 3
+        donor.train_state.sampler_epochs = {"a": 0, "b": 0}
+        state = deepcopy(donor.fault_tolerance._state_dict())
+
+        class HealingManager(_QuorumManager):
+            def start_quorum(self):
+                super().start_quorum()
+                if self.starts == 1:
+                    receiver.fault_tolerance._load_state_dict(state)
+                    self.votes = 1
+
+        manager = HealingManager([True] * 4)
+        receiver.fault_tolerance._manager = manager
+        receiver.train_steps(["a", "b"], [])
+        assert receiver.consumed == [("b", 12), ("b", 13), ("a", 1)]
+        assert receiver.train_state.global_step == manager.votes == 4
+        assert receiver.dataloaders["a"].state_dict()["_num_yielded"] == 1
+        assert receiver.dataloaders["b"].state_dict()["_num_yielded"] == 3
+        donor.train_step(next(b_iterator))
+        donor.train_step(next(b_iterator))
+        donor.train_step(next(iter(donor.dataloaders["a"])))
+        for actual, expected in zip(receiver.model.parameters(), donor.model.parameters()):
+            torch.testing.assert_close(actual, expected)
+    finally:
+        receiver.close()
+        donor.close()
 
 
 def test_rejected_quorum_preserves_optimizer_scheduler_ema_and_update_count(tmp_path) -> None:
@@ -132,7 +222,7 @@ def test_zero_weight_window_finishes_quorum_without_advancing_updates(tmp_path) 
     try:
         runner.train_epoch("train")
         assert runner.train_state.global_step == 0
-        assert manager.starts == manager.votes == 1
+        assert manager.votes == 1
         assert not manager.errors
         for parameter, expected in zip(runner.model.parameters(), before):
             torch.testing.assert_close(parameter, expected)
