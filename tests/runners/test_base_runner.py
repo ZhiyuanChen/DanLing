@@ -78,6 +78,25 @@ def _config_hash(runner: MinimalRunner) -> str:
     return format(runner.config.fingerprint() & ((1 << 48) - 1), "012x")
 
 
+@pytest.mark.parametrize(
+    "metric,mode,expected",
+    [("loss", None, 2), ("accuracy", None, 9), ("custom_error", "min", 2), ("loss", "max", 9)],
+)
+def test_base_runner_score_direction_preserves_defaults_and_accepts_overrides(tmp_path, metric, mode, expected):
+    score = {"split": "val", "metric": metric}
+    if mode is not None:
+        score["mode"] = mode
+    runner = MinimalRunner(_config(tmp_path, score=score))
+    try:
+        runner.append_result({"val": {metric: 0.1}}, index=2)
+        runner.append_result({"val": {metric: 0.9}}, index=9)
+        assert runner.best_index == expected
+        assert runner.best_result["index"] == expected
+        assert runner.is_best is (expected == 9)
+    finally:
+        runner.close()
+
+
 def test_base_runner_log_interval_defaults_to_1024_for_unsized_loader() -> None:
     runner = MinimalRunner({"logging.enabled": False})
     try:

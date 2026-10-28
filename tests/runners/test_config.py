@@ -72,6 +72,20 @@ def _checkpoint_fault_tolerance_config() -> RunnerConfig:
     )
 
 
+@pytest.mark.parametrize("mode", ["auto", "MIN", "minimize"])
+def test_runner_config_rejects_unknown_score_direction(mode) -> None:
+    with pytest.raises(ValueError, match="score.mode"):
+        RunnerConfig({"score.mode": mode})
+
+
+def test_runner_config_validates_score_direction_after_cli_overrides() -> None:
+    config = RunnerConfig()
+    config.parse(["--score.mode", "min"])
+    assert config.score.mode == "min"
+    with pytest.raises(ValueError, match="score.mode"):
+        RunnerConfig().parse(["--score.mode", "auto"])
+
+
 def _fsdp_parallel_config() -> RunnerConfig:
     return RunnerConfig(
         {
@@ -169,6 +183,7 @@ def test_runner_config_identity_ignores_fault_tolerance_runtime_policy() -> None
 
 def test_runner_config_exposes_runtime_sections() -> None:
     config = RunnerConfig()
+    assert config.score.mode is None
 
     expected_sections = {
         "compile": CompileConfig,

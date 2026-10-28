@@ -308,14 +308,17 @@ class BaseRunner(metaclass=MetaRunner):
 
     @property
     def best_index(self) -> int:
-        """Best result index according to configured score metric."""
+        """Best result index using explicit score direction or the legacy metric rule."""
 
         if not self.scores:
             return 0
 
         scores = self.scores
         indices = list(scores.keys())
-        reducer = min if self.config.score.metric == "loss" else max
+        mode = self.config.score.mode
+        if mode is None:
+            mode = "min" if self.config.score.metric == "loss" else "max"
+        reducer = min if mode == "min" else max
         return reducer(reversed(indices), key=scores.get)
 
     @property

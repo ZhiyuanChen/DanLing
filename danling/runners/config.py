@@ -219,11 +219,14 @@ class ScoreConfig(chanfig.Config):
             infers once (`val` -> `validate` -> first available) and reuses it
             unless that split disappears from results.
         metric: Metric key to use for model selection. Defaults to `"loss"`.
+        mode: Optional explicit score direction, `"min"` or `"max"`. When unset,
+            preserve the existing rule: minimize `"loss"`, maximize other metrics.
         patience: Early-stop patience in epoch mode. Defaults to infinity.
     """
 
     split: Optional[str] = None
     metric: str = "loss"
+    mode: Optional[str] = None
     patience: Union[int, float] = float("inf")
 
 
@@ -734,6 +737,8 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
         self.validate()
 
     def validate(self) -> None:
+        if self.score.mode not in (None, "min", "max"):
+            raise ValueError("`score.mode` must be 'min', 'max', or None")
         if self.steps is not None and self.epochs is not None:
             raise ValueError("`steps` and `epochs` are mutually exclusive; set only one training boundary")
 
