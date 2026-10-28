@@ -1139,6 +1139,64 @@ def test_dcp_model_checkpoint_does_not_update_latest_pointer(tmp_path: Path) -> 
     assert manager.close(timeout=1.0) is True
 
 
+def test_ft_model_export_uses_one_writer_and_preserves_later_replica_resume(tmp_path: Path) -> None:
+    class Replica:
+        enabled = True
+
+        def __init__(self, replica_id):
+            self.replica_id = replica_id
+
+        def participating_rank(self):
+            return self.replica_id
+
+    runners, managers, expected_rng = [], [], []
+    for replica in range(2):
+        runner = _CheckpointRunner(tmp_path, config={"ckpt.dataloader_checkpoint.enabled": True}, dataloaders=True)
+        runner.fault_tolerance = Replica(replica)
+        rng = {
+            "python": random.Random(100 + replica).getstate(),
+            "torch_cpu": torch.Generator().manual_seed(200 + replica).get_state(),
+        }
+        expected_rng.append(rng)
+        export = runner.state_dict
+
+        def state_dict(export=export, rng=rng, replica=replica):
+            state = export()
+            state["model"]["weight"].fill_(replica + 2)
+            state["state"]["rng"] = deepcopy(rng)
+            state["fault_tolerance"] = {"step": replica + 7}
+            return state
+
+        runner.state_dict = state_dict
+        runner._export_checkpoint_local_state = lambda runner=runner: {
+            key: value
+            for key, value in runner.state_dict().items()
+            if key in {"dataloaders", "state", "fault_tolerance"}
+        }
+        runners.append(runner)
+        managers.append(TorchFTCheckpointManager(runner))
+
+    try:
+        for manager in managers:
+            manager.save_model_checkpoint()
+        model = managers[0].load_model_checkpoint("model")
+        torch.testing.assert_close(model["model"]["weight"], torch.full((2, 2), 2.0))
+        for replica, (runner, manager) in enumerate(zip(runners, managers)):
+            runner.train_state.global_step = 1
+            _restore_stateful_dataloader_position(runner.dataloaders["train"], replica + 3)
+            manager.save_checkpoint(force=True)
+        for replica, (runner, manager) in enumerate(zip(runners, managers)):
+            _restore_stateful_dataloader_position(runner.dataloaders["train"], 0)
+            checkpoint = manager.load_checkpoint("latest")
+            assert _stateful_dataloader_position(runner.dataloaders["train"]) == replica + 3
+            assert checkpoint["state"]["rng"]["python"] == expected_rng[replica]["python"]
+            torch.testing.assert_close(checkpoint["state"]["rng"]["torch_cpu"], expected_rng[replica]["torch_cpu"])
+            assert checkpoint["fault_tolerance"] == {"step": replica + 7}
+    finally:
+        for manager in managers:
+            manager.close()
+
+
 def test_dcp_step_mode_save_interval_aligns_with_global_step(tmp_path: Path) -> None:
     runner = _CheckpointRunner(tmp_path, config={"ckpt.interval": 2})
     runner.is_step_mode = True

@@ -448,6 +448,10 @@ class TorchDistributedCheckpointManager(CheckpointManager):
                 self._on_checkpoint_task_failed(task, exc)
             self.raise_checkpoint_error_if_requested()
 
+    def _should_save_full_checkpoint(self) -> bool:
+        """Whether this replica writes shared model-bearing checkpoints."""
+        return True
+
     def save_model_checkpoint(self, name: str = "model") -> None:
         if not self.runner.config.get("ckpt.enabled", True):
             return
@@ -455,6 +459,10 @@ class TorchDistributedCheckpointManager(CheckpointManager):
         async_mode = self.checkpoint_async_mode()
         normalized_name = self._normalize_name(name)
         target_name = self._build_target_name(normalized_name)
+        # All replicas consume a sequence number so later full checkpoints
+        # still match their per-replica loader/RNG snapshots by target name.
+        if not self._should_save_full_checkpoint():
+            return
         pointers = _PendingPointers(
             checkpoint_id=os.path.join(self.runner.workspace.checkpoint_dir, target_name),
             target_name=target_name,
