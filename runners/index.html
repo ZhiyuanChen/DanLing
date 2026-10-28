@@ -1224,6 +1224,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#validation-during-training" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation during training
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#loss-reduction-and-clipping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Loss reduction and clipping
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#checkpoint-semantics" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1316,6 +1338,17 @@
     <span class="md-ellipsis">
       
         Platform support
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#update-commits-and-runtime-diagnostics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Update commits and runtime diagnostics
       
     </span>
   </a>
@@ -1444,6 +1477,61 @@ metadata once user-owned attributes are present.</p>
 <li><code>evaluate_steps(split, steps=None)</code> is always bounded-step evaluation.
   When <code>steps</code> is omitted, it defaults to <code>max(steps_budget // 20, 1)</code>.</li>
 </ul>
+<h2 id="validation-during-training">Validation during training<a class="headerlink" href="#validation-during-training" title="Permanent link">&para;</a></h2>
+<p>The default schedule is unchanged. Configure validation independently from
+checkpoint frequency:</p>
+<div class="language-yaml highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">YAML</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1</span>
+<span class="normal">2</span>
+<span class="normal">3</span>
+<span class="normal">4</span>
+<span class="normal">5</span>
+<span class="normal">6</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nt">evaluation</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span><span class="w"> </span><span class="c1"># Successful optimizer updates; 0 disables this cadence.</span>
+<span class="w">  </span><span class="nt">steps</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span><span class="w"> </span><span class="c1"># Full split; a positive integer limits the number of batches.</span>
+<span class="nt">score</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">metric</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">custom_error</span>
+<span class="w">  </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">min</span>
+</code></pre></div></td></tr></table></div>
+<p><code>steps</code> also works without an interval. Epoch boundaries and the
+end of training still validate; a completed validation at the same global step
+is reused. Accumulation microbatches and rejected updates do not trigger the
+cadence. Epoch-mode <code>score.patience</code> continues to count epochs.</p>
+<p>Training-time validation automatically restores training meters, metric
+references, module modes and RNG state, including after an exception.
+Checkpoints saved during validation capture the entering training RNG and
+original loader positions. Each native map-style validation loader starts from
+its sample-index origin, including for bounded validation. Override
+<code>build_evaluation_dataloader(split)</code> for custom samplers, stateful datasets or
+streams, and <code>build_evaluation_metrics()</code> for custom collectors shared with
+training. These factories provide independent validation resources; standalone
+<code>evaluate</code>, <code>evaluate_epoch</code> and <code>evaluate_steps</code> keep their existing modes,
+loader consumption, return values and logging semantics.</p>
+<p>Only a successful validation of every selected split publishes a result row and
+participates in native best selection. <code>ckpt.interval</code> retains its normal units
+and history cadence; validation can publish an improving best between those
+boundaries. An ordinary checkpoint does not republish an older validation score
+as the current model&rsquo;s best. Native FT replicas each cover the validation set
+within their local data-parallel group.</p>
+<p>When these evaluation options are used, result rows use global-step indices in
+both training modes. Otherwise epoch-mode rows keep epoch indices. Full resume
+preserves the last completed validation step and avoids repeating it. A run with
+existing epoch-indexed history must retain that indexing mode on full resume;
+model-only loading can start a new run with the new schedule.</p>
+<p><code>score.mode</code> accepts <code>min</code> or <code>max</code>. Leaving it unset preserves the existing
+rule: minimize <code>loss</code>, maximize other metric names.</p>
+<h2 id="loss-reduction-and-clipping">Loss reduction and clipping<a class="headerlink" href="#loss-reduction-and-clipping" title="Permanent link">&para;</a></h2>
+<p>Mean losses accumulate as numerators and are divided once by the global window&rsquo;s
+denominator. Weighted CE/NLL uses the valid target class-weight sum. Batch
+<code>loss_normalizer</code> metadata can supply a nonnegative real denominator/weight for
+custom objectives. A criterion with <code>reduction="sum"</code> accumulates additively;
+with explicit <code>loss_normalizer</code>, it declares a summed numerator to divide by that
+denominator. Unknown criteria retain microbatch-mean accumulation by default.
+Custom objectives can override <code>_get_loss_normalizer()</code> and <code>_get_loss_reduction()</code>.
+Zero-weight microbatches contribute no gradient; an entirely zero-weight global
+window skips the optimizer, step scheduler, EMA and update counter.</p>
+<p>Pipeline <code>max_grad_norm</code> uses one model norm across stages and DTensor meshes.
+Runner-owned fp16 scales the backward loss on the final pipeline stage, keeps
+scales consistent on overflow, and includes scaler state in full checkpoints.</p>
 <p>Checkpoint/score contracts (all overridable):</p>
 <ul>
 <li><code>load_model</code></li>
@@ -1490,7 +1578,7 @@ All checkpoint writes are gated by <code>ckpt.enabled</code>; loading paths are 
 <li><code>DeepSpeedRunner.save_checkpoint</code> uses DeepSpeed engine checkpointing for full-state saves; all ranks participate in those saves.</li>
 <li><code>DeepSpeedRunner.save_model_checkpoint</code> exports the unwrapped engine module as a DanLing model-only checkpoint for publication or <code>pretrained</code>.</li>
 <li>When <code>config.ft.enabled=True</code> under <code>TorchRunner</code>/DDP or <code>ParallelRunner</code> FSDP, full DCP saves are gated to the TorchFT participating replica group.
-  Other replica groups save only their per-replica dataloader state.</li>
+  Each replica group also saves its own dataloader, RNG and Manager state.</li>
 </ul>
 <p>Checkpoint persistence internals are implemented under <code>danling.runners.checkpoints</code>:</p>
 <ul>
@@ -1499,6 +1587,12 @@ All checkpoint writes are gated by <code>ckpt.enabled</code>; loading paths are 
 <li><code>TorchDistributedCheckpointManager</code>: Torch DCP backend used when <code>ckpt.backend="dcp"</code> in <code>TorchRunner</code></li>
 </ul>
 <p><code>ParallelRunner</code> forces <code>ckpt.backend="dcp"</code> by default.</p>
+<p>Full checkpoints expose native result rows as the top-level <code>results</code> mapping,
+preserving their indices, metric keys, and best-score history on resume.
+<code>load_pretrained</code> only imports weights and leaves that history untouched.
+Legacy checkpoints without <code>results</code> retain the current runner&rsquo;s history.
+DCP stores this growing mapping as one opaque item and decodes it before returning
+the public checkpoint payload; <code>runner.results</code> remains readable and appendable.</p>
 <h2 id="dataloader-state">Dataloader state<a class="headerlink" href="#dataloader-state" title="Permanent link">&para;</a></h2>
 <p>Full-state checkpoints include split-keyed dataloader progress under the top-level
 <code>dataloaders</code> payload.</p>
@@ -1507,10 +1601,15 @@ All checkpoint writes are gated by <code>ckpt.enabled</code>; loading paths are 
 <li>User-provided dataloaders participate when they implement <code>state_dict()</code> and <code>load_state_dict()</code>.</li>
 <li>Non-stateful dataloaders are skipped rather than wrapped or special-cased.</li>
 <li><code>BaseRunner.load_checkpoint()</code> restores dataloaders after model/EMA/optimizer/scheduler state.</li>
-<li>DCP checkpoints carry dataloader state in the main checkpoint payload.</li>
-<li>With TorchFT enabled, per-replica dataloader checkpoints take precedence over the main checkpoint dataloader payload during restore.</li>
-<li><code>ParallelRunner</code> middle-stage proxy loaders delegate <code>state_dict()</code> and <code>load_state_dict()</code> to the real first-stage loader while yielding placeholders locally.</li>
+<li>DCP stores RNG, dataloader and FT state under rank-specific keys, retaining the public payload shape when loaded.</li>
+<li>With TorchFT enabled, each replica&rsquo;s local checkpoint takes precedence for its dataloader, RNG and Manager state.</li>
+<li><code>ParallelRunner</code> middle-stage proxy loaders save their placeholder cursor along with the underlying loader state.</li>
 </ul>
+<p>Step-mode checkpoints retain the active split target and each split&rsquo;s sampler
+epoch. A graceful SIGTERM waits until the current accumulation window finishes,
+before fetching another batch, then saves and drains checkpoint I/O. A second
+SIGTERM exits immediately. Custom loops can override <code>can_checkpoint_for_shutdown()</code>
+to declare their own consistent data/update boundary.</p>
 <h2 id="torchft">TorchFT<a class="headerlink" href="#torchft" title="Permanent link">&para;</a></h2>
 <p>DanLing has an opt-in TorchFT integration for replicated-weight runners:</p>
 <ul>
@@ -1536,11 +1635,12 @@ All checkpoint writes are gated by <code>ckpt.enabled</code>; loading paths are 
 </ul>
 <p>When TorchFT is enabled:</p>
 <ul>
+<li>automatic checkpoint backend selection uses DCP, including single-process replica groups</li>
 <li>dataloader sharding and seed bias are expanded across replica groups using
   <code>ft.replica_id</code> and <code>ft.group_size</code></li>
 <li>FSDP2 replicated-dimension all-reduce hooks use TorchFT-managed process groups</li>
-<li>loss/normalizer logging reductions use the TorchFT managed replica group when available</li>
-<li>per-replica dataloader checkpoints are enabled automatically through the DCP checkpoint manager and win over main-checkpoint dataloader state on restore</li>
+<li>DDP gradients and loss/normalizer reductions span replica-local ranks and the TorchFT managed replica group</li>
+<li>per-replica local-state checkpoints are enabled automatically through the DCP checkpoint manager</li>
 </ul>
 <p>Distributed state-dict invariants:</p>
 <ul>
@@ -1684,6 +1784,43 @@ not diverge on step/skip boundaries.
 by default so train dataloader progress is checkpointable across restart paths.
 Explicit user-provided dataloaders are not rewrapped.</p>
 <p><code>ParallelRunner</code> exposes topology-, pipeline-, and FSDP-aware extension points:</p>
+<p>For models that must be sharded before allocating their parameters, opt in with
+<code>model_init.meta=True</code> and override <code>build_model() -&gt; nn.Module</code>. The runner calls
+that hook inside <code>torch.device("meta")</code>; already-bound meta models are also
+accepted. <code>ParallelRunner</code> applies parallel transforms and FSDP before allocating
+storage, then calls <code>initialize_model(model) -&gt; None</code> before building the optimizer.
+The default initialization calls <code>model.init_weights()</code>; override the hook to
+initialize or load all parameters and buffers, including non-persistent buffers.
+Normal checkpoint/pretrained restoration still follows initialization. Repeated
+references to the same parameter or buffer remain tied during allocation, and
+their dtypes are retained. Already-initialized models keep their values and the
+ordinary device-move path. Mixed initialized/meta tensors require a custom
+<code>materialize_model_values(model) -&gt; nn.Module</code>; do not bind an optimizer to meta
+parameters before materialization.
+<code>model_init_device(model)</code> defaults to the runtime device; <code>ParallelRunner</code>
+selects CPU parameter allocation for <code>CPUOffloadPolicy</code>, while buffers are
+allocated on the runtime device before the model-owned initialization/load hook.
+Buffers recreated by that hook are then moved to the runtime device, preserving
+their values, dtypes, and current aliases.</p>
+<p><code>compile.regions=["blocks"]</code> selects named module groups instead of compiling the
+whole model. Override <code>compile_regions(model) -&gt; Mapping[str, Sequence[nn.Module]]</code>
+or implement <code>model.compile_regions()</code> with the same mapping. Groups are resolved
+after model transforms and activation-checkpoint wrapping, and use the existing
+shared-cache <code>Compiler.compile_modules</code>; module identities, state-dict names, and
+call hooks remain intact. Unselected modules stay eager. Compilation still
+requires <code>compile.enabled=True</code>; <code>GraphRunner</code> retains its whole-step boundary.</p>
+<p>For named activation-checkpoint boundaries, set
+<code>activation_checkpoint.enabled=True</code> and <code>activation_checkpoint.regions=["blocks"]</code>
+instead of <code>module_classes</code>. Override <code>activation_checkpoint_regions(model)</code> or
+implement <code>model.activation_checkpoint_regions()</code> to return names mapped to
+module FQNs (an empty FQN selects the root). The optional
+<code>activation_checkpoint_policy(model, name)</code> runner hook, or
+<code>model.activation_checkpoint_policy(name)</code>, returns a native selective-checkpoint
+policy callable or list of <code>OpOverload</code> objects to save. Other operations are
+recomputed. Selective policies require non-reentrant checkpointing;
+<code>activation_checkpoint.preserve_rng_state</code> is forwarded to native checkpointing
+and defaults to <code>True</code>.
+These hooks are scoped to the model and introduce no global region registry.</p>
 <ul>
 <li><code>build_topology</code>: validate/construct ordered parallel axes from config + world state</li>
 <li><code>init_model_parallel_groups</code>: initialize model-parallel process groups/device mesh</li>
@@ -1749,6 +1886,32 @@ non-interleaved for current pipeline+FSDP stability, with migration to
 </tr>
 </tbody>
 </table>
+<h2 id="update-commits-and-runtime-diagnostics">Update commits and runtime diagnostics<a class="headerlink" href="#update-commits-and-runtime-diagnostics" title="Permanent link">&para;</a></h2>
+<p>TorchFT starts one quorum per optimizer accumulation window, before consuming its
+first batch. An update must pass <code>Manager.should_commit()</code> before the optimizer,
+step scheduler, EMA or global update counter advances. Nonfinite losses reject
+the entire window, including when <code>skip_nonfinite_loss</code> replaces a microbatch
+with zero. <code>ft.use_async_quorum</code> must remain <code>false</code> so healing restores model
+and loader state before forward; <code>ft.manager_timeout_seconds</code> controls recovery
+and <code>ft.max_consecutive_nonfinite_steps</code> bounds retries of divergent training.
+Manager step metadata is saved with full checkpoints. Asynchronous healing is
+rejected because TorchFT applies its recovered state after forward/backward.
+Custom training loops should call <code>_begin_optimizer_window()</code> before reading
+window data, use <code>train_context()</code> and finish through <code>optimizer_step()</code>.</p>
+<p><code>profiling.events: true</code> writes per-rank JSONL events under
+<code>profiling.trace_dir/&lt;timestamp&gt;/rank-&lt;rank&gt;/events-&lt;pid&gt;.jsonl</code>. Events include
+run, rank, optimizer/microstep, process and thread context. Host phase durations
+cover microbatches, garbage collection, checkpoint submission, staging waits
+and async staging/upload completion; they do not synchronize CUDA. Future
+completion events retain the context of their submission and checkpoint target.
+Event writes are serialized within each rank and diagnostics are disabled by default.</p>
+<p>On CUDA, <code>profiling.memory_history: true</code> enables PyTorch allocator history with
+at most <code>memory_history_max_entries</code> records. <code>memory_snapshot_interval</code> enables
+periodic dumps; <code>memory_snapshot_on_oom</code> dumps on a training-context CUDA OOM.
+Only the latest <code>memory_snapshot_keep</code> dumps from that runner are retained.
+This optional facility uses PyTorch&rsquo;s experimental allocator snapshot API and
+requires a build providing it. Events also include allocator retry/OOM counters.
+CPU runs leave CUDA memory diagnostics inactive.</p>
 
 
 

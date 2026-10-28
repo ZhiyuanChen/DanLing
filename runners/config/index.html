@@ -1372,7 +1372,7 @@ deepspeed: Optional raw DeepSpeed config mapping.</p>
 
 <details class="nested-sections" open>
   <summary>Nested sections</summary>
-  <p><code>optim</code>, <code>sched</code>, <code>score</code>, <code>workspace</code>, <code>logging</code>, <code>tensorboard</code>,
+  <p><code>optim</code>, <code>sched</code>, <code>score</code>, <code>evaluation</code>, <code>workspace</code>, <code>logging</code>, <code>tensorboard</code>,
 <code>wandb</code>, <code>mlflow</code>, <code>ft</code>, <code>compile</code>, <code>dist</code>, <code>gc</code>, <code>profiling</code>, <code>heartbeat</code>,
 <code>ckpt</code>, <code>dataloader</code>, <code>performance</code>, <code>activation_checkpoint</code>,
 <code>fsdp</code>, and <code>parallel</code>.</p>
@@ -1462,52 +1462,7 @@ The RunnerConfig is automatically saved with checkpoints, enabling exact resumpt
 
               <details class="mkdocstrings-source">
                 <summary>Source code in <code>danling/runners/config.py</code></summary>
-                <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">555</span>
-<span class="normal">556</span>
-<span class="normal">557</span>
-<span class="normal">558</span>
-<span class="normal">559</span>
-<span class="normal">560</span>
-<span class="normal">561</span>
-<span class="normal">562</span>
-<span class="normal">563</span>
-<span class="normal">564</span>
-<span class="normal">565</span>
-<span class="normal">566</span>
-<span class="normal">567</span>
-<span class="normal">568</span>
-<span class="normal">569</span>
-<span class="normal">570</span>
-<span class="normal">571</span>
-<span class="normal">572</span>
-<span class="normal">573</span>
-<span class="normal">574</span>
-<span class="normal">575</span>
-<span class="normal">576</span>
-<span class="normal">577</span>
-<span class="normal">578</span>
-<span class="normal">579</span>
-<span class="normal">580</span>
-<span class="normal">581</span>
-<span class="normal">582</span>
-<span class="normal">583</span>
-<span class="normal">584</span>
-<span class="normal">585</span>
-<span class="normal">586</span>
-<span class="normal">587</span>
-<span class="normal">588</span>
-<span class="normal">589</span>
-<span class="normal">590</span>
-<span class="normal">591</span>
-<span class="normal">592</span>
-<span class="normal">593</span>
-<span class="normal">594</span>
-<span class="normal">595</span>
-<span class="normal">596</span>
-<span class="normal">597</span>
-<span class="normal">598</span>
-<span class="normal">599</span>
-<span class="normal">600</span>
+                <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">600</span>
 <span class="normal">601</span>
 <span class="normal">602</span>
 <span class="normal">603</span>
@@ -1666,7 +1621,62 @@ The RunnerConfig is automatically saved with checkpoints, enabling exact resumpt
 <span class="normal">756</span>
 <span class="normal">757</span>
 <span class="normal">758</span>
-<span class="normal">759</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">RunnerConfig</span><span class="p">(</span><span class="n">chanfig</span><span class="o">.</span><span class="n">Config</span><span class="p">):</span>  <span class="c1"># pylint: disable=too-many-instance-attributes</span>
+<span class="normal">759</span>
+<span class="normal">760</span>
+<span class="normal">761</span>
+<span class="normal">762</span>
+<span class="normal">763</span>
+<span class="normal">764</span>
+<span class="normal">765</span>
+<span class="normal">766</span>
+<span class="normal">767</span>
+<span class="normal">768</span>
+<span class="normal">769</span>
+<span class="normal">770</span>
+<span class="normal">771</span>
+<span class="normal">772</span>
+<span class="normal">773</span>
+<span class="normal">774</span>
+<span class="normal">775</span>
+<span class="normal">776</span>
+<span class="normal">777</span>
+<span class="normal">778</span>
+<span class="normal">779</span>
+<span class="normal">780</span>
+<span class="normal">781</span>
+<span class="normal">782</span>
+<span class="normal">783</span>
+<span class="normal">784</span>
+<span class="normal">785</span>
+<span class="normal">786</span>
+<span class="normal">787</span>
+<span class="normal">788</span>
+<span class="normal">789</span>
+<span class="normal">790</span>
+<span class="normal">791</span>
+<span class="normal">792</span>
+<span class="normal">793</span>
+<span class="normal">794</span>
+<span class="normal">795</span>
+<span class="normal">796</span>
+<span class="normal">797</span>
+<span class="normal">798</span>
+<span class="normal">799</span>
+<span class="normal">800</span>
+<span class="normal">801</span>
+<span class="normal">802</span>
+<span class="normal">803</span>
+<span class="normal">804</span>
+<span class="normal">805</span>
+<span class="normal">806</span>
+<span class="normal">807</span>
+<span class="normal">808</span>
+<span class="normal">809</span>
+<span class="normal">810</span>
+<span class="normal">811</span>
+<span class="normal">812</span>
+<span class="normal">813</span>
+<span class="normal">814</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">RunnerConfig</span><span class="p">(</span><span class="n">chanfig</span><span class="o">.</span><span class="n">Config</span><span class="p">):</span>  <span class="c1"># pylint: disable=too-many-instance-attributes</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    Top-level configuration for DanLing runners.</span>
 
@@ -1709,7 +1719,7 @@ The RunnerConfig is automatically saved with checkpoints, enabling exact resumpt
 <span class="sd">        deepspeed: Optional raw DeepSpeed config mapping.</span>
 
 <span class="sd">    Nested sections:</span>
-<span class="sd">        `optim`, `sched`, `score`, `workspace`, `logging`, `tensorboard`,</span>
+<span class="sd">        `optim`, `sched`, `score`, `evaluation`, `workspace`, `logging`, `tensorboard`,</span>
 <span class="sd">        `wandb`, `mlflow`, `ft`, `compile`, `dist`, `gc`, `profiling`, `heartbeat`,</span>
 <span class="sd">        `ckpt`, `dataloader`, `performance`, `activation_checkpoint`,</span>
 <span class="sd">        `fsdp`, and `parallel`.</span>
@@ -1794,6 +1804,7 @@ The RunnerConfig is automatically saved with checkpoints, enabling exact resumpt
     <span class="n">deepspeed</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="n">score</span><span class="p">:</span> <span class="n">ScoreConfig</span> <span class="o">=</span> <span class="n">ScoreConfig</span><span class="p">()</span>
+    <span class="n">evaluation</span><span class="p">:</span> <span class="n">EvaluationConfig</span> <span class="o">=</span> <span class="n">EvaluationConfig</span><span class="p">()</span>
     <span class="n">workspace</span><span class="p">:</span> <span class="n">WorkspaceConfig</span> <span class="o">=</span> <span class="n">WorkspaceConfig</span><span class="p">()</span>
     <span class="n">logging</span><span class="p">:</span> <span class="n">LoggingConfig</span> <span class="o">=</span> <span class="n">LoggingConfig</span><span class="p">()</span>
     <span class="n">tensorboard</span><span class="p">:</span> <span class="n">TensorboardConfig</span> <span class="o">=</span> <span class="n">TensorboardConfig</span><span class="p">()</span>
@@ -1802,6 +1813,7 @@ The RunnerConfig is automatically saved with checkpoints, enabling exact resumpt
     <span class="n">ft</span><span class="p">:</span> <span class="n">FaultToleranceConfig</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="p">()</span>
 
     <span class="nb">compile</span><span class="p">:</span> <span class="n">CompileConfig</span> <span class="o">=</span> <span class="n">CompileConfig</span><span class="p">()</span>
+    <span class="n">model_init</span><span class="p">:</span> <span class="n">ModelInitConfig</span> <span class="o">=</span> <span class="n">ModelInitConfig</span><span class="p">()</span>
     <span class="n">dist</span><span class="p">:</span> <span class="n">DistributedConfig</span> <span class="o">=</span> <span class="n">DistributedConfig</span><span class="p">()</span>
     <span class="n">ddp</span><span class="p">:</span> <span class="n">DdpConfig</span> <span class="o">=</span> <span class="n">DdpConfig</span><span class="p">()</span>
     <span class="n">gc</span><span class="p">:</span> <span class="n">GcConfig</span> <span class="o">=</span> <span class="n">GcConfig</span><span class="p">()</span>
@@ -1823,8 +1835,16 @@ The RunnerConfig is automatically saved with checkpoints, enabling exact resumpt
         <span class="bp">self</span><span class="o">.</span><span class="n">validate</span><span class="p">()</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">score</span><span class="o">.</span><span class="n">mode</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="kc">None</span><span class="p">,</span> <span class="s2">"min"</span><span class="p">,</span> <span class="s2">"max"</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"`score.mode` must be 'min', 'max', or None"</span><span class="p">)</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">steps</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">epochs</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"`steps` and `epochs` are mutually exclusive; set only one training boundary"</span><span class="p">)</span>
+        <span class="n">interval</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">evaluation</span><span class="o">.</span><span class="n">interval</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">interval</span><span class="p">,</span> <span class="nb">bool</span><span class="p">)</span> <span class="ow">or</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">interval</span><span class="p">,</span> <span class="nb">int</span><span class="p">)</span> <span class="ow">or</span> <span class="n">interval</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"evaluation.interval must be a non-negative integer"</span><span class="p">)</span>
+        <span class="n">budget</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">evaluation</span><span class="o">.</span><span class="n">steps</span>
+        <span class="k">if</span> <span class="n">budget</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="p">(</span><span class="nb">isinstance</span><span class="p">(</span><span class="n">budget</span><span class="p">,</span> <span class="nb">bool</span><span class="p">)</span> <span class="ow">or</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">budget</span><span class="p">,</span> <span class="nb">int</span><span class="p">)</span> <span class="ow">or</span> <span class="n">budget</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"evaluation.steps must be a positive integer or None for a full split"</span><span class="p">)</span>
 
     <span class="nd">@staticmethod</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">_semantic_section</span><span class="p">(</span><span class="n">section</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">defaults</span><span class="p">:</span> <span class="n">chanfig</span><span class="o">.</span><span class="n">Config</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">chanfig</span><span class="o">.</span><span class="n">NestedDict</span><span class="p">:</span>
@@ -1932,19 +1952,19 @@ this method recomputes the fingerprint on each call.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/runners/config.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">747</span>
-<span class="normal">748</span>
-<span class="normal">749</span>
-<span class="normal">750</span>
-<span class="normal">751</span>
-<span class="normal">752</span>
-<span class="normal">753</span>
-<span class="normal">754</span>
-<span class="normal">755</span>
-<span class="normal">756</span>
-<span class="normal">757</span>
-<span class="normal">758</span>
-<span class="normal">759</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fingerprint</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">802</span>
+<span class="normal">803</span>
+<span class="normal">804</span>
+<span class="normal">805</span>
+<span class="normal">806</span>
+<span class="normal">807</span>
+<span class="normal">808</span>
+<span class="normal">809</span>
+<span class="normal">810</span>
+<span class="normal">811</span>
+<span class="normal">812</span>
+<span class="normal">813</span>
+<span class="normal">814</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fingerprint</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Return an unsigned 64-bit fingerprint of the current canonical config.</span>
 
 <span class="sd">    Hash the UTF-8 canonical YAML with SHA-1 and interpret its first eight</span>
