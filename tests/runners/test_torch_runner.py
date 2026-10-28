@@ -1994,6 +1994,42 @@ class TestTorchRunnerEpochExecution:
 
 class TestTorchRunnerLoopResultStability:
 
+    @pytest.mark.parametrize("steps", [None, 0, 1])
+    def test_evaluation_uses_fresh_meter_schema_and_keeps_results_readable(self, steps) -> None:
+        class Collector:
+            def __init__(self):
+                self.observations = ["previous"]
+
+            def reset(self):
+                self.observations.clear()
+
+            def average(self):
+                return {"loss.avg": 7.0}
+
+        runner = TinyTorchRunner({"logging.enabled": False, "logging.interval": 0})
+        try:
+            collector = Collector()
+            runner.evaluate_metrics = collector
+            runner.meters.loss.update(3.0)
+            runner.meters.lr.update(0.1)
+            runner.meters.grad_norm.update(1.0)
+            runner.dataloaders["val"] = [None]
+
+            def evaluate_step(_data):
+                collector.observations.append("validation")
+                return None, None
+
+            runner.evaluate_step = evaluate_step
+            result = runner.evaluate_epoch("val") if steps is None else runner.evaluate_steps("val", steps=steps)
+            assert result["loss.avg"] == 7.0
+            assert "lr" not in result and "grad_norm" not in result
+            assert runner.mode == "evaluate" and runner.split == "val"
+            assert runner.metrics is runner.evaluate_metrics is collector
+            assert collector.observations == ([] if steps == 0 else ["validation"])
+            assert runner.get_epoch_result()["loss.avg"] == 7.0
+        finally:
+            runner.close()
+
     def test_train_epoch_result_is_independent_of_log_interval(self) -> None:
         runner = StreamingEpochRunner({"logging.enabled": False, "logging.interval": 2})
         try:

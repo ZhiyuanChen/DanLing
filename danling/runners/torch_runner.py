@@ -50,6 +50,7 @@ except ImportError:
     np_random = None  # type: ignore[assignment]
 
 from danling.data import to_device
+from danling.metrics import AverageMeters
 from danling.optim import OPTIMIZERS, SCHEDULERS
 from danling.optim.optimizer import (
     SCHEDULER_METRIC_UNSET,
@@ -2841,7 +2842,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         last_loss_n: float | None = None
         self.mode = RunnerMode.evaluate
         self.split = split
-        self.meters.reset()
+        self.meters = AverageMeters()
         self.metrics = self.evaluate_metrics
         if self.metrics is not None:
             self.metrics.reset()
@@ -2933,7 +2934,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         self.mode = RunnerMode.evaluate
         self.split = split
         if steps == 0:
-            self.meters.reset()
+            self.meters = AverageMeters()
             self.metrics = self.evaluate_metrics
             if self.metrics is not None:
                 self.metrics.reset()
@@ -2941,7 +2942,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             self.write_result(result, split, self.train_state.global_step)
             return result
 
-        self.meters.reset()
+        self.meters = AverageMeters()
         self.metrics = self.evaluate_metrics
         if self.metrics is not None:
             self.metrics.reset()
