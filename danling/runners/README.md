@@ -82,6 +82,52 @@ Step-mode semantics:
 - `evaluate_steps(split, steps=None)` is always bounded-step evaluation.
   When `steps` is omitted, it defaults to `max(steps_budget // 20, 1)`.
 
+## Validation during training
+
+The default schedule is unchanged. Configure validation independently from
+checkpoint frequency:
+
+```yaml
+evaluation:
+  interval: 1000 # Successful optimizer updates; 0 disables this cadence.
+  steps: null # Full split; a positive integer limits the number of batches.
+score:
+  metric: custom_error
+  mode: min
+```
+
+`steps` also works without an interval. Epoch boundaries and the
+end of training still validate; a completed validation at the same global step
+is reused. Accumulation microbatches and rejected updates do not trigger the
+cadence. Epoch-mode `score.patience` continues to count epochs.
+
+Training-time validation automatically restores training meters, metric
+references, module modes and RNG state, including after an exception.
+Checkpoints saved during validation capture the entering training RNG and
+original loader positions. Each native map-style validation loader starts from
+its sample-index origin, including for bounded validation. Override
+`build_evaluation_dataloader(split)` for custom samplers, stateful datasets or
+streams, and `build_evaluation_metrics()` for custom collectors shared with
+training. These factories provide independent validation resources; standalone
+`evaluate`, `evaluate_epoch` and `evaluate_steps` keep their existing modes,
+loader consumption, return values and logging semantics.
+
+Only a successful validation of every selected split publishes a result row and
+participates in native best selection. `ckpt.interval` retains its normal units
+and history cadence; validation can publish an improving best between those
+boundaries. An ordinary checkpoint does not republish an older validation score
+as the current model's best. Native FT replicas each cover the validation set
+within their local data-parallel group.
+
+When these evaluation options are used, result rows use global-step indices in
+both training modes. Otherwise epoch-mode rows keep epoch indices. Full resume
+preserves the last completed validation step and avoids repeating it. A run with
+existing epoch-indexed history must retain that indexing mode on full resume;
+model-only loading can start a new run with the new schedule.
+
+`score.mode` accepts `min` or `max`. Leaving it unset preserves the existing
+rule: minimize `loss`, maximize other metric names.
+
 ## Loss reduction and clipping
 
 Mean losses accumulate as numerators and are divided once by the global window's

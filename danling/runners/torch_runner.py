@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import copy
 import math
 import os
 import random
@@ -41,7 +42,9 @@ from torch.backends import cudnn
 from torch.nn import functional as F
 from torch.nn.utils import clip_grad_value_
 from torchdata.stateful_dataloader import StatefulDataLoader
+from torchdata.stateful_dataloader.sampler import BatchSampler as StatefulBatchSampler
 from torchdata.stateful_dataloader.sampler import RandomSampler as StatefulRandomSampler
+from torchmetrics import Metric as TorchMetric
 from tqdm import tqdm
 
 try:
@@ -50,7 +53,7 @@ except ImportError:
     np_random = None  # type: ignore[assignment]
 
 from danling.data import to_device
-from danling.metrics import AverageMeters
+from danling.metrics import AverageMeters, GlobalMetrics, MetricMeter, MultiTaskMetrics, StreamMetrics
 from danling.optim import OPTIMIZERS, SCHEDULERS
 from danling.optim.optimizer import (
     SCHEDULER_METRIC_UNSET,
@@ -1849,6 +1852,231 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             return nullcontext()
         return torch.autocast(self.device.type, dtype=get_precision(precision))
 
+    @staticmethod
+    def _metric_state_ids(metrics) -> set[int]:
+        state = {id(metrics)} if metrics is not None else set()
+        if type(metrics) in (MultiTaskMetrics, StreamMetrics):
+            for child in metrics.values():
+                state.update(TorchRunner._metric_state_ids(child))
+        elif type(metrics) is MetricMeter and isinstance(metrics.metric, TorchMetric):
+            state.update(id(module) for module in metrics.metric.modules() if isinstance(module, TorchMetric))
+        return state
+
+    def build_evaluation_metrics(self):
+        """Provide a collector for an isolated training-time validation pass.
+
+        A separate evaluation collector retains its normal reset/update
+        semantics. Native collectors shared with training are rebuilt from
+        their metric definitions. Override this factory for a shared custom
+        collector; it must return an independent instance, not a training one.
+        TorchMetrics Metric callables use their public clone/reset lifecycle.
+        Other metric functions and preprocessing callbacks must be stateless;
+        override this factory when their callable objects carry mutable state.
+        """
+        metrics = self.evaluate_metrics
+        training = self._metric_state_ids(self.train_metrics) | self._metric_state_ids(self.metrics)
+        if not (self._metric_state_ids(metrics) & training):
+            return metrics
+
+        def fresh_metric(metric):
+            if isinstance(metric, TorchMetric):
+                metric = metric.clone()
+                metric.reset()
+            return metric
+
+        def fresh(source):
+            if type(source) is GlobalMetrics:
+                return GlobalMetrics(
+                    preprocess=source.preprocess,
+                    distributed=source.distributed,
+                    device=source.device,
+                    **source.metrics,
+                )
+            if type(source) is StreamMetrics:
+                return StreamMetrics(
+                    preprocess=source.preprocess,
+                    distributed=source.distributed,
+                    device=source.device,
+                    **{name: fresh_metric(meter.metric) for name, meter in source.all_items()},
+                )
+            if type(source) is MultiTaskMetrics:
+                return MultiTaskMetrics(
+                    aggregate=source.getattr("_aggregate", None),
+                    aggregate_weights=source.getattr("_aggregate_weights", None),
+                    **{name: fresh(child) for name, child in source.items()},
+                )
+            raise TypeError("shared custom metrics require build_evaluation_metrics() to return a fresh collector")
+
+        return fresh(metrics)
+
+    def _evaluation_data_parallel_info(self) -> tuple[int, int]:
+        """Validation covers the dataset within each native replica group."""
+        return self.world_size, self.rank
+
+    def build_evaluation_dataloader(self, split: str):
+        """Provide a validation loader starting at its sample-index origin.
+
+        Only training-time validation calls this factory. Native
+        map-style loaders with standard samplers are reconstructed from public
+        configuration at epoch zero. Custom loaders, stateful datasets and
+        iterable streams must override this hook to define their fresh origin.
+        Standalone evaluation continues to consume the caller's original loader.
+        """
+        # ParallelRunner exposes StepProxyLoader views via __getitem__; its
+        # items remain the native loaders. Replacing raw entries lets that
+        # mapping create fresh stage-specific proxies without unwrapping them.
+        source = dict(self.dataloaders.items())[split]
+        if type(source) in (list, tuple, range):
+            return source
+        if type(source) not in (utils.data.DataLoader, StatefulDataLoader):
+            raise TypeError("custom validation loaders must provide build_evaluation_dataloader(split)")
+        dataset = source.dataset
+        if isinstance(dataset, utils.data.IterableDataset) or callable(getattr(dataset, "load_state_dict", None)):
+            raise TypeError("stateful or iterable validation datasets must provide build_evaluation_dataloader(split)")
+
+        def generator(original):
+            seed = torch.initial_seed() if self.config.seed is None else int(self.config.seed) + self.rank
+            return torch.Generator().manual_seed(original.initial_seed() if original is not None else seed)
+
+        sampler = source.sampler
+        if type(sampler) is utils.data.SequentialSampler:
+            sampler = utils.data.SequentialSampler(dataset)
+        elif type(sampler) is utils.data.distributed.DistributedSampler:
+            degree, rank = self._evaluation_data_parallel_info()
+            sampler = utils.data.distributed.DistributedSampler(
+                dataset,
+                num_replicas=degree,
+                rank=rank,
+                shuffle=sampler.shuffle,
+                seed=sampler.seed,
+                drop_last=sampler.drop_last,
+            )
+        elif type(sampler) in (utils.data.RandomSampler, StatefulRandomSampler):
+            sampler = type(sampler)(
+                dataset,
+                replacement=sampler.replacement,
+                num_samples=sampler.num_samples,
+                generator=generator(sampler.generator),
+            )
+        else:
+            raise TypeError("custom validation samplers must provide build_evaluation_dataloader(split)")
+        kwargs = {
+            name: getattr(source, name)
+            for name in (
+                "num_workers",
+                "collate_fn",
+                "pin_memory",
+                "timeout",
+                "worker_init_fn",
+                "multiprocessing_context",
+                "prefetch_factor",
+                "persistent_workers",
+                "pin_memory_device",
+                "in_order",
+                "snapshot_every_n_steps",
+            )
+            if hasattr(source, name)
+        }
+        kwargs["generator"] = generator(source.generator)
+        if source.batch_size is None and source.batch_sampler is not None:
+            batch_sampler = source.batch_sampler
+            if type(batch_sampler) not in (utils.data.BatchSampler, StatefulBatchSampler):
+                raise TypeError("custom validation batching must provide build_evaluation_dataloader(split)")
+            kwargs["batch_sampler"] = type(batch_sampler)(sampler, batch_sampler.batch_size, batch_sampler.drop_last)
+        else:
+            kwargs.update(sampler=sampler, batch_size=source.batch_size, drop_last=source.drop_last)
+        return type(source)(dataset, **kwargs)
+
+    @contextmanager
+    def _evaluation_context(self, evaluate_splits: Sequence[str]):
+        """Isolate validation inserted at a safe training boundary.
+
+        Callers must complete any distributed healing before entering. Factories
+        execute after the RNG snapshot and are covered by exception restoration.
+        This scope does not begin an optimizer/FT transaction or change progress.
+        Checkpoints within it export the entering training RNG and loader state.
+        """
+        names = (
+            "meters",
+            "metrics",
+            "train_metrics",
+            "evaluate_metrics",
+            "split",
+            "_evaluation_result_index",
+            "_loss_reporting_reduction",
+            "_pending_loss_normalizer",
+            "_pending_loss_reduction",
+            "_accumulation_mode",
+            "_accumulation_divisor_local",
+            "_accumulation_divisor_total",
+            "_pipeline_loss_reduction",
+            "_pipeline_loss_divisor_local",
+            "_pipeline_loss_weighting",
+            "_pipeline_backward_scaled",
+            "_pipeline_batch_normalizer",
+            "_pipeline_target_normalizer",
+            "_pipeline_normalizer_ratio",
+        )
+        absent = object()
+        saved = {name: getattr(self, name, absent) for name in names}
+        mode = self.mode
+        modules: dict[int, tuple[nn.Module, bool]] = {}
+        for model in [self.model, self.ema, *(getattr(self, "model_parts", None) or ())]:
+            if isinstance(model, nn.Module):
+                for module in model.modules():
+                    modules.setdefault(id(module), (module, module.training))
+        python_rng = random.getstate()
+        numpy_rng = np_random.get_state() if np_random is not None else None
+        cpu_rng = torch.get_rng_state()
+        devices = [torch.cuda.current_device()] if torch.cuda.is_initialized() else []
+        if self.device.type == "cuda":
+            device = self.device.index if self.device.index is not None else torch.cuda.current_device()
+            if device not in devices:
+                devices.append(device)
+        cuda_rng = {device: torch.cuda.get_rng_state(device) for device in devices}
+        stored_rng = self.rng_state.state_dict()
+        previous_rng = getattr(self, "_evaluation_training_rng", None)
+        previous_loaders = getattr(self, "_evaluation_training_dataloaders", None)
+        original_loaders = self.dataloaders
+        try:
+            with torch.random.fork_rng(devices=devices):
+                self._evaluation_training_rng = previous_rng or {
+                    "python": python_rng,
+                    "numpy": numpy_rng,
+                    "torch_cpu": cpu_rng,
+                    "cuda": cuda_rng,
+                }
+                self._evaluation_training_dataloaders = (
+                    previous_loaders if previous_loaders is not None else copy.deepcopy(self.dataloaders.state_dict())
+                )
+                metrics = self.build_evaluation_metrics()
+                training_metrics = self._metric_state_ids(self.train_metrics) | self._metric_state_ids(self.metrics)
+                if self._metric_state_ids(metrics) & training_metrics:
+                    raise TypeError("build_evaluation_metrics() must not return a training collector")
+                loaders = {split: self.build_evaluation_dataloader(split) for split in evaluate_splits}
+                self.evaluate_metrics = metrics
+                self._evaluation_result_index = self.train_state.global_step
+                self.dataloaders = copy.copy(original_loaders)
+                for split, loader in loaders.items():
+                    self.dataloaders[split] = loader
+                yield
+        finally:
+            self._mode = mode
+            for module, training in modules.values():
+                module.training = training
+            self.dataloaders = original_loaders
+            for name, value in saved.items():
+                if value is absent:
+                    self.__dict__.pop(name, None)
+                else:
+                    setattr(self, name, value)
+            random.setstate(python_rng)
+            if numpy_rng is not None:
+                np_random.set_state(numpy_rng)
+            self.rng_state.load_state_dict(stored_rng)
+            self._evaluation_training_rng = previous_rng
+            self._evaluation_training_dataloaders = previous_loaders
+
     def _train_no_sync_targets(self) -> tuple[nn.Module, ...]:
         if isinstance(self.model, nn.parallel.DistributedDataParallel):
             return (self.model,)
@@ -2298,6 +2526,71 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         self.log_final_summary()
         return result
 
+    @contextmanager
+    def _training_evaluation_splits(self, splits: list[str]):
+        previous = getattr(self, "_active_evaluation_splits", None)
+        self._active_evaluation_splits = splits
+        try:
+            yield
+        finally:
+            if previous is None:
+                del self._active_evaluation_splits
+            else:
+                self._active_evaluation_splits = previous
+
+    def _maybe_evaluate_during_training(
+        self,
+        splits: list[str],
+        *,
+        force: bool = False,
+        checkpoint: bool = True,
+    ) -> bool:
+        """Publish one complete validation row at a safe optimizer boundary.
+
+        This is training orchestration; public evaluation methods continue to
+        return/log a split without publishing model-selection history.
+        """
+        interval = self.config.evaluation.interval
+        step = self.train_state.global_step
+        if not self._training_evaluation_enabled or not splits or self.train_state.last_evaluation_step == step:
+            return False
+        if not force and (interval <= 0 or step == 0 or step % interval != 0):
+            return False
+
+        result = RoundDict()
+        with self._evaluation_context(splits):
+            for split in splits:
+                if self.config.evaluation.steps is None:
+                    result[split] = self.evaluate_epoch(split)
+                else:
+                    result[split] = self.evaluate_steps(split, steps=self.config.evaluation.steps)
+
+        self.append_result(result, index=step)
+        self.train_state.last_evaluation_step = step
+        if checkpoint:
+            self.save_result()
+            self._save_evaluation_checkpoint()
+        self.supervisor.maybe_handle_termination_signal()
+        return True
+
+    def _save_evaluation_checkpoint(self, *, epochs: int | None = None, at_epoch_end: bool = False) -> None:
+        # Every collective participant must enter a best-triggered save. The
+        # writer still decides whether to publish its own native best alias.
+        improved = self.is_best
+        if dist.is_available() and dist.is_initialized():
+            vote = torch.tensor(float(improved), device=self.all_reduce_device())
+            dist.all_reduce(vote, op=dist.ReduceOp.MAX)
+            group = None if self.fault_tolerance is None else self.fault_tolerance.replicate_process_group
+            if group is not None:
+                dist.all_reduce(vote, op=dist.ReduceOp.MAX, group=group)
+            improved = bool(vote.item())
+        previous = getattr(self, "_checkpoint_from_evaluation", False)
+        self._checkpoint_from_evaluation = not at_epoch_end
+        try:
+            self.save_checkpoint(epochs=epochs, force=improved)
+        finally:
+            self._checkpoint_from_evaluation = previous
+
     def train_epochs(
         self,
         train_splits: list[str] | None = None,
@@ -2336,26 +2629,37 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         # collective checkpoint/export; no batch is fetched by this handshake.
         self._begin_optimizer_window()
         print(f"train: epoch mode start epoch={self.train_state.epoch} total_epochs={total_epochs}")
+        periodic = self._training_evaluation_enabled
         early_stop_counter = 0
         patience = self.patience
         for epoch in range(self.train_state.epoch, total_epochs):
             self.supervisor.maybe_handle_termination_signal()
             self.train_state.epoch = epoch
             result = RoundDict()
-            for split in train_splits:
-                result[split] = self.train_epoch(split)
-                self.supervisor.maybe_handle_termination_signal()
-            for split in evaluate_splits:
-                result[split] = self.evaluate_epoch(split)
-                self.supervisor.maybe_handle_termination_signal()
+            with self._training_evaluation_splits(evaluate_splits):
+                for split in train_splits:
+                    result[split] = self.train_epoch(split)
+                    self.supervisor.maybe_handle_termination_signal()
+            if periodic:
+                self._maybe_evaluate_during_training(evaluate_splits, force=True, checkpoint=False)
+                row = self.results.get(self.train_state.global_step, {})
+                result.update({split: row[split] for split in evaluate_splits if split in row})
+            else:
+                for split in evaluate_splits:
+                    result[split] = self.evaluate_epoch(split)
+                    self.supervisor.maybe_handle_termination_signal()
             self._step_epoch_scheduler(result)
-            self.append_result(result, index=epoch)
+            index = self.train_state.global_step if periodic else epoch
+            self.append_result(result, index=index)
             print(self.format_epoch_result(result, epochs=epoch, total_epochs=total_epochs))
             self.save_result()
             self.train_state.epoch = epoch + 1
             # Call every epoch: the manager persists periodic history on cadence and
             # publishes `best.pth` whenever the score improved this epoch.
-            self.save_checkpoint(epochs=epoch)
+            if periodic:
+                self._save_evaluation_checkpoint(epochs=epoch, at_epoch_end=True)
+            else:
+                self.save_checkpoint(epochs=epoch)
             early_stop_counter = 0 if self.is_best else early_stop_counter + 1
             if early_stop_counter > patience:
                 print("train: early-stop triggered")
@@ -2422,6 +2726,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
 
         for iteration, data, will_flush in self._iter_train_batches(loader):
             self.supervisor.maybe_handle_termination_signal()
+            step_before = self.train_state.global_step
             loss_n = self._get_loss_normalizer(data)
             self._pending_loss_normalizer = loss_n
             self._pending_loss_reduction = self._get_loss_reduction(data)
@@ -2443,6 +2748,10 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             if loss is not None:
                 self._update_loss_meter(loss, loss_n)
             telemetry.observe(iteration=iteration, data=data, current_time=current_time)
+
+            if self.train_state.global_step > step_before:
+                splits = getattr(self, "_active_evaluation_splits", self.evaluate_splits)
+                self._maybe_evaluate_during_training(splits)
 
             if self.log_interval > 0 and (
                 (iteration > 0 and iteration % self.log_interval == 0) or iteration == length
@@ -2518,6 +2827,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
             raise ValueError("cannot run step-mode training: config.steps could not be resolved")
         self._begin_optimizer_window()
         print(f"train: step mode start global_step={self.train_state.global_step} steps={total_steps}")
+        periodic = self._training_evaluation_enabled
         result = RoundDict()
         step_mode_iterators: dict[str, Iterator[tuple[int, Any, bool]] | None] = dict.fromkeys(train_splits)
         step_mode_sampler_epochs = self.train_state.sampler_epochs
@@ -2645,8 +2955,14 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                     telemetry.observe(iteration=batch_iteration, data=data, current_time=current_time)
 
                     step_after = self.train_state.global_step
-                    if checkpoint_cadence > 0 and step_after != step_before and step_after % checkpoint_cadence == 0:
-                        self.save_checkpoint()
+                    evaluated = step_after > step_before and self._maybe_evaluate_during_training(evaluate_splits)
+                    if (
+                        not evaluated
+                        and checkpoint_cadence > 0
+                        and step_after != step_before
+                        and step_after % checkpoint_cadence == 0
+                    ):
+                        self.save_checkpoint(save_best=False) if periodic else self.save_checkpoint()
 
                     global_step = step_after if step_after != step_before else None
                     is_log_step = (
@@ -2704,8 +3020,13 @@ class TorchRunner(Fp8Mixin, BaseRunner):
                 RuntimeWarning,
                 stacklevel=2,
             )
-        for split in evaluate_splits:
-            result[split] = self.evaluate_steps(split=split)
+        if periodic:
+            self._maybe_evaluate_during_training(evaluate_splits, force=True, checkpoint=False)
+            row = self.results.get(self.train_state.global_step, {})
+            result.update({split: row[split] for split in evaluate_splits if split in row})
+        else:
+            for split in evaluate_splits:
+                result[split] = self.evaluate_steps(split=split)
         self.append_result(result, index=self.train_state.global_step)
         self.save_result()
         self.save_checkpoint(last_step=True)
@@ -2894,7 +3215,7 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         telemetry.finalize_result(
             result, elapsed_seconds=self.loop_time(sync=True) - telemetry.start_time, steps=consumed
         )
-        self.write_result(result, split, self.train_state.epoch)
+        self.write_result(result, split, getattr(self, "_evaluation_result_index", self.train_state.epoch))
         return result
 
     @torch.inference_mode()
@@ -3156,10 +3477,25 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         state["model"] = self.unwrap(self.model).state_dict()
         return state
 
+    def _checkpoint_rng_state(self) -> Mapping[str, Any]:
+        rng = dict(super()._checkpoint_rng_state())
+        rng["torch_cpu"] = torch.get_rng_state()
+        rng["torch_cuda"] = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        training = getattr(self, "_evaluation_training_rng", None)
+        if training is not None:
+            for name in ("python", "numpy", "torch_cpu"):
+                rng[name] = training[name]
+            if rng["torch_cuda"] is not None:
+                for device, state in training["cuda"].items():
+                    rng["torch_cuda"][device] = state
+        return rng
+
+    def _checkpoint_dataloader_state(self) -> Mapping[str, Any]:
+        training = getattr(self, "_evaluation_training_dataloaders", None)
+        return super()._checkpoint_dataloader_state() if training is None else training
+
     def _export_checkpoint_local_state(self) -> Mapping[str, Any]:
         """Snapshot replica-local resume state without gathering model/optimizer weights."""
-        self.rng_state.torch_cpu = torch.get_rng_state()
-        self.rng_state.torch_cuda = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
         state = BaseRunner.state_dict(self)
         local = {"state": {"rng": state["state"]["rng"]}, "dataloaders": state["dataloaders"]}
         fault_tolerance = self.fault_tolerance
@@ -3187,8 +3523,6 @@ class TorchRunner(Fp8Mixin, BaseRunner):
         **Side effects:** snapshots Python/NumPy/Torch RNG state before
         exporting.
         """
-        self.rng_state.torch_cpu = torch.get_rng_state()
-        self.rng_state.torch_cuda = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
         state = cls(super().state_dict(cls))
         state.update(self._export_checkpoint_metadata(cls))
         state.update(self._export_checkpoint_components(cls))

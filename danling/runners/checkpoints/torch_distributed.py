@@ -594,10 +594,10 @@ class TorchDistributedCheckpointManager(CheckpointManager):
                 stacklevel=2,
             )
         runner_state = state.get("state")
-        if not saved_ranks and isinstance(runner_state, Mapping) and isinstance(runner_state.get("train"), Mapping):
+        if isinstance(runner_state, Mapping) and isinstance(runner_state.get("train"), Mapping):
             state["state"] = runner_state = dict(runner_state)
             runner_state["train"] = train_state = dict(runner_state["train"])
-            for key in ("sampler_epochs", "step_mode_split_index", "step_mode_target"):
+            for key in ("sampler_epochs", "step_mode_split_index", "step_mode_target", "last_evaluation_step"):
                 prefix_key = "state.train." + key
                 if not any(
                     name == prefix_key or name.startswith(prefix_key + ".") for name in metadata.state_dict_metadata

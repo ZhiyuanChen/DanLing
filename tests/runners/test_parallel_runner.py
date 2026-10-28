@@ -1658,6 +1658,37 @@ class TestParallelRunnerRuntimeBehavior:
         finally:
             runner.close()
 
+    def test_training_evaluation_preserves_pipeline_proxy_and_uses_native_data_sampling(self) -> None:
+        class EvaluationRunner(TinyParallelRunner):
+            def __init__(self, config):
+                super().__init__(config)
+                self.pipeline_schedule = object()
+                self.pipeline_has_first_stage = False
+                self.pipeline_has_last_stage = False
+
+        runner = EvaluationRunner({"logging.enabled": False, **_parallel_config(shard=2, pipeline=8)})
+        try:
+            dataset = list(range(8))
+            sampler = torch.utils.data.DistributedSampler(dataset, num_replicas=4, rank=3, shuffle=False)
+            source = StatefulDataLoader(dataset, sampler=sampler, batch_size=1)
+            runner.dataloaders["val"] = source
+            mapping = runner.dataloaders
+            original = mapping["val"]
+            iterator = iter(original)
+            assert isinstance(original, StepProxyLoader) and next(iterator) is None
+            for _ in range(2):
+                with runner._evaluation_context(["val"]):
+                    raw = runner.dataloaders.get("val")
+                    assert [batch.item() for batch in raw] == list(range(runner.data_rank, 8, runner.data_degree))
+                    proxy = runner.dataloaders["val"]
+                    assert isinstance(proxy, StepProxyLoader) and list(proxy) == [None] * len(raw)
+                    state = runner._checkpoint_dataloader_state()
+                    assert state["val"]["position"] == 1
+            assert runner.dataloaders is mapping and mapping["val"] is original
+            assert list(iterator) == [None]
+        finally:
+            runner.close()
+
     def test_timeout_process_groups_include_parallel_subgroups(self) -> None:
         runner = TinyParallelRunner({"logging.enabled": False, **_parallel_config(shard=2, pipeline=8, tensor=1)})
         try:

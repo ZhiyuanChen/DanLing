@@ -572,6 +572,11 @@ class CheckpointManager(ABC):
         if last_step:
             return True
 
+        # Mid-epoch validation can publish best independently. It must not
+        # interpret the current epoch as an already completed history boundary.
+        if not self.runner.is_step_mode and getattr(self.runner, "_checkpoint_from_evaluation", False):
+            return False
+
         interval = self.runner.checkpoint_interval
         if self.runner.is_step_mode:
             progress_index = self.runner.train_state.global_step
@@ -659,6 +664,8 @@ class CheckpointManager(ABC):
         """Return periodic history checkpoint name for the active train mode."""
 
         is_step_mode = self.runner.is_step_mode
+        if not is_step_mode and getattr(self.runner, "_checkpoint_from_evaluation", False):
+            return None
         checkpoint_interval = self.runner.checkpoint_interval
         if is_step_mode:
             history_index = self.runner.train_state.global_step

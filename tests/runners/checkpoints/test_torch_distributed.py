@@ -87,7 +87,8 @@ def test_checkpoint_resume_preserves_dynamic_result_history_and_best(tmp_path, b
         restored.close()
 
 
-def test_dcp_loads_legacy_checkpoint_without_result_history(tmp_path):
+@pytest.mark.parametrize("with_results", [False, True])
+def test_dcp_loads_legacy_checkpoint_without_evaluation_progress(tmp_path, with_results):
     class LegacyRunner(TorchRunner):
         legacy_payload = False
 
@@ -98,7 +99,9 @@ def test_dcp_loads_legacy_checkpoint_without_result_history(tmp_path):
         def state_dict(self, cls=dict):
             state = super().state_dict(cls)
             if self.legacy_payload:
-                state.pop("results")
+                state["state"]["train"].pop("last_evaluation_step")
+                if not with_results:
+                    state.pop("results")
             return state
 
     config = {
@@ -111,10 +114,12 @@ def test_dcp_loads_legacy_checkpoint_without_result_history(tmp_path):
     try:
         source.legacy_payload = True
         source.train_state.global_step = 4
+        source.append_result({"val": {"loss": 0.1}}, index=4)
         source.save_checkpoint(force=True)
         restored.load_checkpoint("latest")
         assert restored.train_state.global_step == 4
-        assert not restored.results
+        assert restored.train_state.last_evaluation_step is None
+        assert restored.results == (source.results if with_results else {})
     finally:
         source.close()
         restored.close()

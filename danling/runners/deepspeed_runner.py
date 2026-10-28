@@ -378,6 +378,10 @@ class DeepSpeedRunner(TorchRunner):
         physical_tag, track_for_retention = self._resolve_physical_checkpoint_tag(
             name=name, epochs=epochs, should_update_best=should_update_best
         )
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            tags = [physical_tag]
+            torch.distributed.broadcast_object_list(tags, src=0)
+            physical_tag = tags[0]
         try:
             self.model.save_checkpoint(
                 self.workspace.checkpoint_dir,

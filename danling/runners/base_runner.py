@@ -370,6 +370,11 @@ class BaseRunner(metaclass=MetaRunner):
         return self.scores[self.best_index]
 
     @property
+    def _training_evaluation_enabled(self) -> bool:
+        evaluation = self.config.evaluation
+        return evaluation.interval > 0 or evaluation.steps is not None
+
+    @property
     def is_best(self) -> bool:
         """Whether latest score matches current best score.
 
@@ -380,6 +385,10 @@ class BaseRunner(metaclass=MetaRunner):
         in that case would trigger phantom "best" checkpoint copies.
         """
 
+        if self._training_evaluation_enabled:
+            step = self.train_state.global_step
+            if self.train_state.last_evaluation_step != step or step not in (self.scores or {}):
+                return False
         if not self.results:
             return True
 
@@ -1012,6 +1021,12 @@ class BaseRunner(metaclass=MetaRunner):
 
         return model
 
+    def _checkpoint_rng_state(self) -> Mapping[str, Any]:
+        return {"python": random.getstate(), "numpy": np_random.get_state() if np_random is not None else None}
+
+    def _checkpoint_dataloader_state(self) -> Mapping[str, Any]:
+        return self.dataloaders.state_dict()
+
     def state_dict(self, cls: type = dict) -> Mapping:
         """
         Build the backend-neutral runner checkpoint payload.
@@ -1043,14 +1058,13 @@ class BaseRunner(metaclass=MetaRunner):
               checkpoint format.
         """
 
-        self.rng_state.python = random.getstate()
-        self.rng_state.numpy = np_random.get_state() if np_random is not None else None
+        self.rng_state.load_state_dict(self._checkpoint_rng_state())
 
         state = self.state.state_dict()
         if cls is not dict:
             state = cls(state)
 
-        dataloader_state = self.dataloaders.state_dict()
+        dataloader_state = self._checkpoint_dataloader_state()
         if cls is not dict:
             dataloader_state = cls(dataloader_state)
 
@@ -1087,13 +1101,25 @@ class BaseRunner(metaclass=MetaRunner):
 
         runner_config = checkpoint.get("runner")
         if runner_config is not None:
-            checkpoint_config = RunnerConfig(runner_config).canonical()
+            checkpoint_settings = RunnerConfig(runner_config)
+            checkpoint_config = checkpoint_settings.canonical()
             current_config = self.config.canonical()
             semantic_diff = NestedDict(checkpoint_config).diff(current_config).dict()
             if semantic_diff:
                 raise ValueError(
                     "cannot load checkpoint: runner config is semantically different from current config; "
                     f"start a new experiment or align config. diff={semantic_diff}"
+                )
+            evaluation = checkpoint_settings.evaluation
+            previous_schedule = evaluation.interval > 0 or evaluation.steps is not None
+            if (
+                self.config.epochs is not None
+                and checkpoint.get("results")
+                and previous_schedule != self._training_evaluation_enabled
+            ):
+                raise ValueError(
+                    "cannot mix epoch-indexed and global-step-indexed result history on full resume; "
+                    "keep the evaluation scheduling mode or start from a model-only checkpoint"
                 )
 
         state_dict = checkpoint.get("state") or {}

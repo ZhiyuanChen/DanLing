@@ -28,6 +28,7 @@ from danling.runners.config import (
     DataloaderCheckpointConfig,
     DataloaderConfig,
     DistributedConfig,
+    EvaluationConfig,
     FaultToleranceConfig,
     Fp8Config,
     FsdpConfig,
@@ -184,6 +185,8 @@ def test_runner_config_identity_ignores_fault_tolerance_runtime_policy() -> None
 def test_runner_config_exposes_runtime_sections() -> None:
     config = RunnerConfig()
     assert config.score.mode is None
+    assert config.evaluation.interval == 0
+    assert config.evaluation.steps is None
 
     expected_sections = {
         "compile": CompileConfig,
@@ -194,6 +197,7 @@ def test_runner_config_exposes_runtime_sections() -> None:
         "wandb": WandbConfig,
         "mlflow": MlflowConfig,
         "score": ScoreConfig,
+        "evaluation": EvaluationConfig,
         "fp8": Fp8Config,
         "ft": FaultToleranceConfig,
         "dist": DistributedConfig,

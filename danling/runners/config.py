@@ -230,6 +230,23 @@ class ScoreConfig(chanfig.Config):
     patience: Union[int, float] = float("inf")
 
 
+class EvaluationConfig(chanfig.Config):
+    """Optional validation during training.
+
+    ``interval=0`` disables periodic updates. A positive interval
+    evaluates after that many successful optimizer updates. With both fields at
+    their defaults, the existing schedule is preserved.
+    ``steps=None`` evaluates a full
+    split; a positive budget evaluates that many batches from its defined origin,
+    including boundary evaluations when the interval is zero.
+    Epoch boundaries and the end of training still evaluate, without repeating a
+    validation already completed at the same global step.
+    """
+
+    interval: int = 0
+    steps: Optional[int] = None
+
+
 class WorkspaceConfig(chanfig.Config):
     r"""
     Experiment workspace layout settings.
@@ -551,6 +568,7 @@ def normalize_stack_name(stack: object) -> str:
 
 NON_SEMANTIC_CONFIG_KEYS: tuple[str, ...] = (
     "score",
+    "evaluation",
     "name",
     "logging",
     "tensorboard",
@@ -622,7 +640,7 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
         deepspeed: Optional raw DeepSpeed config mapping.
 
     Nested sections:
-        `optim`, `sched`, `score`, `workspace`, `logging`, `tensorboard`,
+        `optim`, `sched`, `score`, `evaluation`, `workspace`, `logging`, `tensorboard`,
         `wandb`, `mlflow`, `ft`, `compile`, `dist`, `gc`, `profiling`, `heartbeat`,
         `ckpt`, `dataloader`, `performance`, `activation_checkpoint`,
         `fsdp`, and `parallel`.
@@ -707,6 +725,7 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
     deepspeed: Optional[Mapping[str, Any]] = None
 
     score: ScoreConfig = ScoreConfig()
+    evaluation: EvaluationConfig = EvaluationConfig()
     workspace: WorkspaceConfig = WorkspaceConfig()
     logging: LoggingConfig = LoggingConfig()
     tensorboard: TensorboardConfig = TensorboardConfig()
@@ -741,6 +760,12 @@ class RunnerConfig(chanfig.Config):  # pylint: disable=too-many-instance-attribu
             raise ValueError("`score.mode` must be 'min', 'max', or None")
         if self.steps is not None and self.epochs is not None:
             raise ValueError("`steps` and `epochs` are mutually exclusive; set only one training boundary")
+        interval = self.evaluation.interval
+        if isinstance(interval, bool) or not isinstance(interval, int) or interval < 0:
+            raise ValueError("evaluation.interval must be a non-negative integer")
+        budget = self.evaluation.steps
+        if budget is not None and (isinstance(budget, bool) or not isinstance(budget, int) or budget <= 0):
+            raise ValueError("evaluation.steps must be a positive integer or None for a full split")
 
     @staticmethod
     def _semantic_section(section: Any, defaults: chanfig.Config) -> chanfig.NestedDict:

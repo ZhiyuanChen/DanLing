@@ -61,6 +61,7 @@ class RunnerTrainState:
         sampler_epochs: Actual loader-pass epoch for each step-mode split.
         step_mode_split_index: Split to continue after an interrupted step round.
         step_mode_target: Existing optimizer-step target for that split.
+        last_evaluation_step: Last global step with a complete periodic validation.
     """
 
     global_step: int = 0
@@ -69,6 +70,7 @@ class RunnerTrainState:
     sampler_epochs: dict[str, int] = field(default_factory=dict)
     step_mode_split_index: int = 0
     step_mode_target: int = 0
+    last_evaluation_step: int | None = None
 
     def state_dict(self) -> dict[str, Any]:
         return asdict(self)

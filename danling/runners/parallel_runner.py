@@ -80,6 +80,11 @@ class _ParallelDataLoaderDict(DataLoaderDict):
         object.__setattr__(self, "_runner", runner)
         object.__setattr__(self, "_step_proxies", {})
 
+    def __copy__(self):
+        copied = type(self)(self._runner)
+        copied.update(self.items())
+        return copied
+
     def __getitem__(self, key):
         loader = super().__getitem__(key)
         if self._runner._use_step_only_loader() and not isinstance(loader, StepProxyLoader):
@@ -1171,6 +1176,9 @@ class ParallelRunner(TorchRunner):
             loss_fn=loss_fn,
             scale_grads=False,
         )
+
+    def _evaluation_data_parallel_info(self) -> tuple[int, int]:
+        return self.data_degree, self.data_rank
 
     def build_datasampler(self, dataset: Any, *, split: str, shuffle: bool) -> Any:
         """

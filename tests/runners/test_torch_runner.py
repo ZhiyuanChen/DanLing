@@ -19,9 +19,11 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import math
 import os
+import random
 import signal
 from collections import OrderedDict
 from pathlib import Path
@@ -33,6 +35,8 @@ import torch.distributed as dist
 from torch import nn, optim
 
 import danling.runners.torch_runner as torch_runner_module
+from danling.metrics import GlobalMetrics, MultiTaskMetrics, StreamMetrics
+from danling.metrics.functional import mse
 from danling.runners import RunnerConfig, TorchRunner
 from danling.tensors import NestedTensor
 from tests.runners.distributed import configure_distributed_env, process_group, require_gloo, run_distributed
@@ -1994,6 +1998,258 @@ class TestTorchRunnerEpochExecution:
 
 class TestTorchRunnerLoopResultStability:
 
+    @pytest.mark.parametrize("device", ["cpu", "cuda"])
+    @pytest.mark.parametrize("failure", [None, "factory", "evaluation"])
+    def test_training_evaluation_restores_state_rng_and_shared_custom_metrics(self, device, failure) -> None:
+        if device == "cuda" and not torch.cuda.is_available():
+            pytest.skip("CUDA is unavailable")
+
+        class Collector:
+            def __init__(self):
+                self.observations = ["training"]
+
+            def __deepcopy__(self, memo):
+                raise AssertionError("custom collector must use its factory")
+
+            def reset(self):
+                self.observations.clear()
+
+            def average(self):
+                return {"score": float(len(self.observations))}
+
+        runner = TinyTorchRunner({"device": device, "logging.enabled": False, "logging.interval": 0})
+        try:
+            runner.model = nn.Sequential(runner.model, nn.Dropout())
+            runner.model.train()
+            runner.model[0].eval()
+            runner.ema = copy.deepcopy(runner.model)
+            runner.ema.eval()
+            runner.ema[0].train()
+            flags = [(module, module.training) for model in (runner.model, runner.ema) for module in model.modules()]
+            collector = Collector()
+            runner.metrics = runner.train_metrics = runner.evaluate_metrics = collector
+            meters, loaders = runner.meters, runner.dataloaders
+            meters.loss.update(3.0, n=2)
+            runner.split = "train"
+            runner._loss_reporting_reduction = "sum"
+            runner.train_state.global_step = 7
+            runner.dataloaders["val"] = [None]
+            python_rng, cpu_rng = random.getstate(), torch.get_rng_state()
+            numpy_rng = None if torch_runner_module.np_random is None else torch_runner_module.np_random.get_state()
+            cuda_rng = torch.cuda.get_rng_state() if torch.cuda.is_initialized() else None
+            writes, snapshots = [], []
+            runner.write_result = lambda result, split, index: writes.append(index)
+
+            def consume_rng():
+                random.random()
+                torch.rand(5)
+                if torch_runner_module.np_random is not None:
+                    torch_runner_module.np_random.rand(5)
+                if cuda_rng is not None:
+                    torch.rand(5, device=torch.cuda.current_device())
+
+            def metrics_factory():
+                consume_rng()
+                if failure == "factory":
+                    raise RuntimeError("validation factory failed")
+                return Collector()
+
+            def evaluate_step(_data):
+                consume_rng()
+                runner.metrics.observations.append("validation")
+                snapshots.extend([runner.state_dict(), runner._export_checkpoint_local_state()])
+                if failure == "evaluation":
+                    raise RuntimeError("validation evaluation failed")
+                return None, None
+
+            runner.build_evaluation_metrics = metrics_factory
+            runner.evaluate_step = evaluate_step
+            if failure is None:
+                with runner._evaluation_context(["val"]):
+                    assert runner.evaluate_epoch("val")["score"] == 1
+                assert writes == [7]
+            else:
+                with (
+                    pytest.raises(RuntimeError, match=f"validation {failure} failed"),
+                    runner._evaluation_context(["val"]),
+                ):
+                    runner.evaluate_epoch("val")
+            assert runner.mode == "train" and runner.split == "train"
+            assert runner.meters is meters and meters.loss.count == 2
+            assert runner.dataloaders is loaders
+            assert runner.metrics is runner.train_metrics is runner.evaluate_metrics is collector
+            assert collector.observations == ["training"]
+            assert runner._loss_reporting_reduction == "sum"
+            assert all(module.training == flag for module, flag in flags)
+            assert random.getstate() == python_rng
+            torch.testing.assert_close(torch.get_rng_state(), cpu_rng)
+            if numpy_rng is not None:
+                actual = torch_runner_module.np_random.get_state()
+                assert actual[0] == numpy_rng[0] and actual[2:] == numpy_rng[2:]
+                assert actual[1].tolist() == numpy_rng[1].tolist()
+            if cuda_rng is not None:
+                torch.testing.assert_close(torch.cuda.get_rng_state(), cuda_rng)
+            for snapshot in snapshots:
+                rng = snapshot["state"]["rng"]
+                assert rng["python"] == python_rng
+                torch.testing.assert_close(rng["torch_cpu"], cpu_rng)
+                if cuda_rng is not None:
+                    torch.testing.assert_close(rng["torch_cuda"][torch.cuda.current_device()], cuda_rng)
+        finally:
+            runner.close()
+
+    @pytest.mark.parametrize("kind", ["global", "stream", "multitask", "multitask_child"])
+    def test_training_evaluation_preserves_shared_native_collector_state(self, kind) -> None:
+        runner = TinyTorchRunner({"device": "cpu", "logging.enabled": False, "logging.interval": 0})
+        try:
+            metrics = (
+                GlobalMetrics(mse(), distributed=False) if kind == "global" else StreamMetrics(mse(), distributed=False)
+            )
+            validation_metrics = metrics
+            if kind in ("multitask", "multitask_child"):
+                validation_metrics = MultiTaskMetrics(task=metrics, aggregate="macro")
+                metrics = MultiTaskMetrics(task=metrics, aggregate="macro")
+                if kind == "multitask":
+                    validation_metrics = metrics
+
+            def update(collector, value):
+                args = (torch.tensor([float(value)]), torch.zeros(1))
+                (
+                    collector.update({"task": args})
+                    if kind in ("multitask", "multitask_child")
+                    else collector.update(*args)
+                )
+
+            update(metrics, 3)
+            before = metrics.average().dict()
+            runner.metrics = runner.train_metrics = metrics
+            runner.evaluate_metrics = validation_metrics
+            runner.dataloaders["val"] = [None]
+
+            def evaluate_step(_data):
+                update(runner.metrics, 1)
+                return None, None
+
+            runner.evaluate_step = evaluate_step
+            with runner._evaluation_context(["val"]):
+                result = runner.evaluate_epoch("val")
+                assert result["task" if kind in ("multitask", "multitask_child") else "mse"] == pytest.approx(1)
+            assert runner.metrics is runner.train_metrics is metrics
+            assert runner.evaluate_metrics is validation_metrics
+            assert metrics.average().dict() == before
+        finally:
+            runner.close()
+
+    def test_training_evaluation_isolates_shared_stateful_metric_callable(self) -> None:
+        from torchmetrics import MeanSquaredError
+
+        metric = MeanSquaredError()
+        training = StreamMetrics(error=metric, distributed=False)
+        evaluation = StreamMetrics(error=metric, distributed=False)
+        training.update(torch.tensor([3.0]), torch.zeros(1))
+        runner = TinyTorchRunner({"device": "cpu", "logging.enabled": False, "logging.interval": 0})
+        try:
+            runner.metrics = runner.train_metrics = training
+            runner.evaluate_metrics = evaluation
+            runner.dataloaders["val"] = [None]
+
+            def evaluate_step(_data):
+                runner.metrics.update(torch.ones(1), torch.zeros(1))
+                assert runner.metrics["error"].metric.compute().item() == pytest.approx(1)
+                return None, None
+
+            runner.evaluate_step = evaluate_step
+            with runner._evaluation_context(["val"]):
+                assert runner.evaluate_epoch("val")["error"] == pytest.approx(1)
+            assert runner.metrics is runner.train_metrics is training
+            assert runner.evaluate_metrics is evaluation
+            assert training.average()["error"] == pytest.approx(9)
+            assert metric.compute().item() == pytest.approx(9)
+        finally:
+            runner.close()
+
+    def test_training_validation_replays_origin_and_preserves_checkpoint_loader_cursors(self) -> None:
+        configuration = {
+            "device": "cpu",
+            "logging.enabled": False,
+            "logging.interval": 0,
+            "dataloader.batch_size": 1,
+            "dataloader.shuffle": False,
+        }
+        runner = StatefulDatasetTorchRunner(configuration)
+        restored = None
+        try:
+            runner.datasets["val"] = torch.utils.data.TensorDataset(
+                torch.arange(4.0).view(4, 1).expand(4, 4), torch.zeros(4, 2)
+            )
+            runner.build_dataloaders()
+            train, val = runner.dataloaders["train"], runner.dataloaders["val"]
+            train_iterator, val_iterator = iter(train), iter(val)
+            for _ in range(2):
+                next(train_iterator)
+                next(val_iterator)
+            observations, checkpoints = [], []
+
+            def evaluate_step(data):
+                observations.append(data[0][0, 0].item())
+                checkpoints.append(copy.deepcopy(runner.state_dict()))
+                return None, None
+
+            runner.evaluate_step = evaluate_step
+            for _ in range(2):
+                with runner._evaluation_context(["val"]):
+                    runner.evaluate_steps("val", steps=2)
+            assert observations == [0, 1, 0, 1]
+            assert runner.dataloaders["train"] is train and runner.dataloaders["val"] is val
+            assert next(train_iterator).item() == 2
+            assert next(val_iterator)[0][0, 0].item() == 2
+            assert all(set(checkpoint["dataloaders"]) == {"train", "val"} for checkpoint in checkpoints)
+            restored = StatefulDatasetTorchRunner(configuration)
+            restored.datasets["val"] = runner.datasets["val"]
+            restored.build_dataloaders()
+            restored.load_checkpoint(checkpoints[0])
+            assert next(iter(restored.dataloaders["train"])).item() == 2
+            assert next(iter(restored.dataloaders["val"]))[0][0, 0].item() == 2
+        finally:
+            runner.close()
+            if restored is not None:
+                restored.close()
+
+    @pytest.mark.parametrize("factory", [False, True])
+    def test_training_evaluation_requires_an_independent_shared_custom_collector(self, factory) -> None:
+        runner = TinyTorchRunner({"device": "cpu", "logging.enabled": False})
+        try:
+            collector = object()
+            runner.metrics = runner.train_metrics = runner.evaluate_metrics = collector
+            runner.dataloaders["val"] = [None]
+            if factory:
+                runner.build_evaluation_metrics = lambda: collector
+            with (
+                pytest.raises(TypeError, match="fresh collector|training collector"),
+                runner._evaluation_context(["val"]),
+            ):
+                pytest.fail("a shared collector must not be reset by validation")
+            assert runner.metrics is runner.train_metrics is runner.evaluate_metrics is collector
+            assert runner.mode == "train"
+        finally:
+            runner.close()
+
+    def test_training_evaluation_custom_stream_uses_explicit_origin_factory(self) -> None:
+        runner = StreamingEpochRunner({"device": "cpu", "logging.enabled": False, "logging.interval": 0})
+        try:
+            stream = iter([1.0, 2.0, 3.0])
+            runner.dataloaders["val"] = stream
+            assert next(stream) == 1
+            with pytest.raises(TypeError, match="build_evaluation_dataloader"), runner._evaluation_context(["val"]):
+                pytest.fail("one-shot streams need a fresh-origin factory")
+            runner.build_evaluation_dataloader = lambda split: StreamingLoader(4.0, 6.0)
+            for _ in range(2):
+                with runner._evaluation_context(["val"]):
+                    assert runner.evaluate_steps("val", steps=2)["loss"] == pytest.approx(5)
+            assert runner.dataloaders["val"] is stream and next(stream) == 2
+        finally:
+            runner.close()
+
     @pytest.mark.parametrize("steps", [None, 0, 1])
     def test_evaluation_uses_fresh_meter_schema_and_keeps_results_readable(self, steps) -> None:
         class Collector:
@@ -2240,6 +2496,284 @@ class TestTorchRunnerStepExecution:
             assert positions == sorted(positions)
         finally:
             runner.close()
+
+
+class TestPeriodicEvaluation:
+
+    def test_validation_budget_works_without_an_interval(self, tmp_path):
+        class RecordingRunner(StreamingEpochRunner):
+            def __init__(self, config):
+                super().__init__(config)
+                self.validation = []
+
+            def evaluate_step(self, data):
+                self.validation.append(self.train_state.global_step)
+                return super().evaluate_step(data)
+
+        runner = RecordingRunner(
+            {
+                "device": "cpu",
+                "workspace.dir": str(tmp_path),
+                "logging.enabled": False,
+                "steps": 2,
+                "evaluation.steps": 1,
+                "ckpt.enabled": False,
+            }
+        )
+        try:
+            runner.dataloaders["train"] = [1.0, 2.0]
+            runner.dataloaders["val"] = [3.0, 4.0]
+            runner.train_steps(["train"], ["val"])
+            assert runner.validation == [2]
+        finally:
+            runner.close()
+
+    def test_cadence_counts_updates_and_best_contains_complete_validation(self, tmp_path):
+        class ScoredRunner(WeightedLossRunner):
+            def __init__(self, config):
+                super().__init__(config)
+                self.validation = []
+                self.validated_weights = {}
+
+            def evaluate_step(self, data):
+                del data
+                step = self.train_state.global_step
+                self.validation.append((self.split, step, self.train_state.micro_step))
+                self.validated_weights[step] = self.model.weight.detach().clone()
+                return None, torch.tensor({0: 0.5, 2: 0.1, 3: 0.9}[step])
+
+        runner = ScoredRunner(
+            {
+                "device": "cpu",
+                "workspace.dir": str(tmp_path),
+                "logging.enabled": False,
+                "logging.interval": 0,
+                "steps": 3,
+                "accum_steps": 2,
+                "skip_nonfinite_grad": True,
+                "evaluation": {"interval": 2, "steps": 1},
+                "score": {"split": "val", "mode": "min"},
+                "ckpt": {"backend": "file", "interval": 1, "async_mode": "disabled"},
+            }
+        )
+        try:
+            good = (torch.ones(1, 1), torch.zeros(1, 1))
+            runner.dataloaders["train"] = [(torch.ones(1, 1), torch.full((1, 1), float("nan"))), *[good] * 7]
+            runner.dataloaders["val"] = [good, good]
+            runner.dataloaders["other"] = [good, good]
+            runner.train_steps(["train"], ["val", "other"])
+            assert runner.validation == [
+                (split, step, micro) for step, micro in ((2, 6), (3, 8)) for split in ("val", "other")
+            ]
+            assert list(runner.results) == [2, 3]
+            assert runner.best_index == 2
+            checkpoint = torch.load(Path(runner.workspace.checkpoint_dir) / "best.pth", weights_only=False)
+            assert checkpoint["state"]["train"]["global_step"] == 2
+            assert checkpoint["state"]["train"]["last_evaluation_step"] == 2
+            assert {"val", "other"} <= checkpoint["results"][2].keys()
+            torch.testing.assert_close(checkpoint["model"]["weight"], runner.validated_weights[2])
+        finally:
+            runner.close()
+
+    def test_epoch_boundaries_share_global_step_indices_and_do_not_repeat_validation(self, tmp_path):
+        class EpochRunner(StreamingEpochRunner):
+            def __init__(self, config):
+                super().__init__(config)
+                self.validated_steps = []
+
+            def evaluate_step(self, data):
+                self.validated_steps.append(self.train_state.global_step)
+                return super().evaluate_step(data)
+
+        runner = EpochRunner(
+            {
+                "device": "cpu",
+                "workspace.dir": str(tmp_path),
+                "logging.enabled": False,
+                "logging.interval": 0,
+                "epochs": 2,
+                "evaluation.interval": 1,
+                "ckpt.enabled": False,
+            }
+        )
+        try:
+            runner.dataloaders["train"] = [1.0, 2.0]
+            runner.dataloaders["val"] = [3.0]
+            runner.train_epochs(["train"], ["val"])
+            assert runner.validated_steps == [1, 2, 3, 4]
+            assert list(runner.results) == [1, 2, 3, 4]
+            assert [step for step, result in runner.results.items() if "train" in result] == [2, 4]
+        finally:
+            runner.close()
+
+    def test_failed_split_does_not_publish_partial_results(self, tmp_path):
+        class FailingRunner(StreamingEpochRunner):
+            def evaluate_step(self, data):
+                if self.split == "broken":
+                    raise RuntimeError("validation failed")
+                return super().evaluate_step(data)
+
+        runner = FailingRunner(
+            {
+                "device": "cpu",
+                "workspace.dir": str(tmp_path),
+                "logging.enabled": False,
+                "steps": 1,
+                "evaluation.interval": 1,
+                "ckpt.enabled": False,
+            }
+        )
+        try:
+            runner.dataloaders["train"] = [1.0]
+            runner.dataloaders["val"] = [2.0]
+            runner.dataloaders["broken"] = [3.0]
+            with pytest.raises(RuntimeError, match="validation failed"):
+                runner.train_steps(["train"], ["val", "broken"])
+            assert not runner.results
+            assert runner.train_state.last_evaluation_step is None
+            assert runner.mode == torch_runner_module.RunnerMode.train
+        finally:
+            runner.close()
+
+    def test_mid_epoch_validation_keeps_checkpoint_history_on_epoch_boundaries(self, tmp_path):
+        class ScoredRunner(StreamingEpochRunner):
+            def evaluate_step(self, data):
+                del data
+                step = self.train_state.global_step
+                if step == 4:
+                    assert not (Path(self.workspace.checkpoint_dir) / "ckpt-e000002.pth").exists()
+                return None, torch.tensor(0.1 if step == 1 else 0.9)
+
+        runner = ScoredRunner(
+            {
+                "device": "cpu",
+                "workspace.dir": str(tmp_path),
+                "logging.enabled": False,
+                "logging.interval": 0,
+                "epochs": 2,
+                "evaluation.interval": 1,
+                "score.split": "val",
+                "ckpt": {"backend": "file", "interval": 2, "async_mode": "disabled"},
+            }
+        )
+        try:
+            runner.dataloaders["train"] = [1.0, 2.0]
+            runner.dataloaders["val"] = [3.0]
+            runner.train_epochs(["train"], ["val"])
+            checkpoints = Path(runner.workspace.checkpoint_dir)
+            assert [path.name for path in checkpoints.glob("ckpt-e*.pth")] == ["ckpt-e000002.pth"]
+            best = torch.load(checkpoints / "best.pth", weights_only=False)
+            latest = torch.load(checkpoints / "latest.pth", weights_only=False)
+            assert best["state"]["train"]["global_step"] == 1
+            assert latest["state"]["train"]["global_step"] == 4
+            assert latest["state"]["train"]["epoch"] == 2
+        finally:
+            runner.close()
+
+    def test_validation_and_resume_preserve_stochastic_training(self, tmp_path):
+        class StochasticRunner(TinyTorchRunner):
+            def __init__(self, config):
+                super().__init__(config)
+                self.model = nn.Sequential(nn.Linear(4, 8), nn.Dropout(0.4), nn.Linear(8, 2))
+                self.optimizer = optim.Adam(self.model.parameters(), lr=0.01)
+                self.datasets["train"] = [(torch.full((4,), index / 10), torch.zeros(2)) for index in range(8)]
+                self.datasets["val"] = [(torch.ones(4), torch.zeros(2))] * 4
+                self.seen = []
+                self.validation = []
+                self.interrupt = False
+
+            def train_step(self, data):
+                self.seen.extend(data[0][:, 0].tolist())
+                noise = random.random() + float(torch_runner_module.np_random.random())
+                return super().train_step((data[0] + noise, data[1]))
+
+            def evaluate_step(self, data):
+                self.validation.append(self.train_state.global_step)
+                random.random()
+                torch_runner_module.np_random.random()
+                torch.rand(3)
+                return super().evaluate_step(data)
+
+            def save_checkpoint(self, *args, **kwargs):
+                super().save_checkpoint(*args, **kwargs)
+                if self.interrupt and self.train_state.global_step == 2:
+                    raise RuntimeError("pause after saved validation")
+
+        def build(path, interval):
+            torch.manual_seed(42)
+            return StochasticRunner(
+                {
+                    "device": "cpu",
+                    "seed": 42,
+                    "workspace.dir": str(path),
+                    "logging.enabled": False,
+                    "logging.interval": 0,
+                    "steps": 4,
+                    "accum_steps": 2,
+                    "dataloader.batch_size": 2,
+                    "evaluation": {"interval": interval, "steps": 1},
+                    "ckpt": {"backend": "file", "interval": 0, "async_mode": "disabled"},
+                }
+            )
+
+        def snapshot(runner):
+            return (
+                copy.deepcopy(runner.model.state_dict()),
+                copy.deepcopy(runner.optimizer.state_dict()),
+                torch.rand(3),
+                random.random(),
+                float(torch_runner_module.np_random.random()),
+            )
+
+        baseline = build(tmp_path / "baseline", 0)
+        try:
+            baseline.train_steps(["train"], [])
+            expected, seen = snapshot(baseline), baseline.seen
+        finally:
+            baseline.close()
+        uninterrupted = build(tmp_path / "uninterrupted", 2)
+        try:
+            uninterrupted.train_steps(["train"], ["val"])
+            torch.testing.assert_close(snapshot(uninterrupted), expected, rtol=0, atol=0)
+            assert uninterrupted.validation == [2, 4]
+            assert uninterrupted.seen == seen
+        finally:
+            uninterrupted.close()
+        source = build(tmp_path / "resumed", 2)
+        checkpoint = Path(source.workspace.checkpoint_dir) / "latest.pth"
+        try:
+            source.interrupt = True
+            with pytest.raises(RuntimeError, match="pause after saved validation"):
+                source.train_steps(["train"], ["val"])
+            consumed = source.seen
+        finally:
+            source.close()
+        restored = build(tmp_path / "resumed", 2)
+        try:
+            restored.load_checkpoint(checkpoint)
+            restored.train_steps(["train"], ["val"])
+            assert restored.validation == [4]
+            assert consumed + restored.seen == seen
+            torch.testing.assert_close(snapshot(restored), expected, rtol=0, atol=0)
+        finally:
+            restored.close()
+
+    @pytest.mark.parametrize("source_interval", [0, 1])
+    def test_epoch_resume_rejects_switching_result_index_conventions(self, tmp_path, source_interval):
+        config = {"device": "cpu", "logging.enabled": False, "epochs": 2, "ckpt.enabled": False}
+        source = StreamingEpochRunner(
+            {**config, "workspace.dir": str(tmp_path / "source"), "evaluation.interval": source_interval}
+        )
+        restored = StreamingEpochRunner(
+            {**config, "workspace.dir": str(tmp_path / "restored"), "evaluation.interval": 1 - source_interval}
+        )
+        try:
+            source.append_result({"val": {"loss": 0.1}}, index=0)
+            with pytest.raises(ValueError, match="cannot mix epoch-indexed and global-step-indexed"):
+                restored.load_state_dict(source.state_dict())
+        finally:
+            source.close()
+            restored.close()
 
 
 class TestTorchRunnerStepEvaluation:
