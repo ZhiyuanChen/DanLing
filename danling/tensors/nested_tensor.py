@@ -6258,7 +6258,8 @@ class _PackedValuesAutograd(torch.autograd.Function):
         # Returning the child itself would attach this node to the wrapper's
         # own backing tensor and create a reference cycle through the saved
         # layout. A fresh view preserves storage and version aliases.
-        return input._packed_values.view_as(input._packed_values)
+        with torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False):
+            return input._packed_values.view_as(input._packed_values)
 
     @staticmethod
     def setup_context(ctx, inputs, output):

@@ -852,6 +852,90 @@ class TestComplementarySingletonBroadcast:
 
 class TestInPlace:
 
+    def test_convolution_residual_preserves_aliases_and_gradients(self, device):
+        elements = [
+            torch.randn(length, length, 2, device=device, dtype=torch.float64, requires_grad=True) for length in (3, 5)
+        ]
+        references = [element.detach().clone().requires_grad_() for element in elements]
+        weight = torch.randn(2, 2, 1, 1, device=device, dtype=torch.float64, requires_grad=True)
+        bias = torch.randn(2, device=device, dtype=torch.float64, requires_grad=True)
+        reference_weight = weight.detach().clone().requires_grad_()
+        reference_bias = bias.detach().clone().requires_grad_()
+        source = NestedTensor(elements, ragged_dims=(0, 1)).permute(0, 3, 1, 2)
+        output = F.conv2d(source, weight, bias)
+        alias = output.detach()
+        _ = alias.tensor
+
+        assert output.add_(source, alpha=0.25) is output
+
+        expected = [
+            F.conv2d(element.permute(2, 0, 1), reference_weight, reference_bias) + 0.25 * element.permute(2, 0, 1)
+            for element in references
+        ]
+        assert_elements_close(output, expected)
+        assert_elements_close(alias, expected)
+        torch.testing.assert_close(alias.tensor, output.tensor)
+        gradients = torch.autograd.grad(output.concat.square().sum(), (*elements, weight, bias))
+        reference_gradients = torch.autograd.grad(
+            sum(element.square().sum() for element in expected), (*references, reference_weight, reference_bias)
+        )
+        torch.testing.assert_close(gradients, reference_gradients)
+
+    @pytest.mark.parametrize("operation", ["add_", "relu_", "copy_"])
+    @pytest.mark.parametrize("detached", [False, True])
+    def test_saved_packed_values_detect_inplace_mutation(self, operation, detached):
+        elements = [torch.randn(length, 3, requires_grad=True) for length in (2, 4)]
+        output = NestedTensor(elements).sin()
+        if detached:
+            alias = output.detach().concat
+            weight = torch.ones_like(alias, requires_grad=True)
+            loss = (alias * weight).sum()
+        else:
+            loss = output.concat.square().sum()
+        if operation == "relu_":
+            output.relu_()
+        else:
+            getattr(output, operation)(NestedTensor([torch.ones_like(element) for element in elements]))
+        with pytest.raises(RuntimeError, match="modified.*inplace|view.*modified|version"):
+            loss.backward()
+
+    @pytest.mark.parametrize("view", [False, True])
+    def test_leaf_storage_is_protected_by_inplace_autograd(self, view):
+        leaf = torch.randn(6, 3, requires_grad=True)
+        values = leaf.view_as(leaf) if view else leaf
+        template = NestedTensor([torch.empty(2, 3), torch.empty(4, 3)])
+        output = template.packed_like(values)
+        other = NestedTensor([torch.ones(2, 3), torch.ones(4, 3)])
+        before = leaf.detach().clone()
+        with pytest.raises(RuntimeError, match="leaf Variable"):
+            output.add_(other)
+        torch.testing.assert_close(leaf, before)
+        with torch.no_grad():
+            output.add_(other)
+        torch.testing.assert_close(leaf, before + 1)
+
+    def test_split_view_storage_rejects_inplace_mutation_like_dense(self):
+        base = torch.randn(10, 3, requires_grad=True) * 2
+        values = base.split((6, 4))[0]
+        template = NestedTensor([torch.empty(2, 3), torch.empty(4, 3)])
+        output = template.packed_like(values)
+        before = base.detach().clone()
+        with pytest.raises(RuntimeError, match="multiple views"):
+            values.mul_(3)
+        with pytest.raises(RuntimeError, match="multiple views"):
+            output.mul_(NestedTensor([torch.full((2, 3), 3.0), torch.full((4, 3), 3.0)]))
+        torch.testing.assert_close(base, before)
+
+    @pytest.mark.parametrize("operation", ["add_", "copy_"])
+    def test_rhs_projection_keeps_version_checks_after_inplace_use(self, operation):
+        rhs = NestedTensor([torch.randn(length, 3, requires_grad=True) for length in (2, 4)]).sin()
+        lhs = NestedTensor([torch.randn(length, 3, requires_grad=True) for length in (2, 4)]).cos()
+        getattr(lhs, operation)(rhs)
+        loss = rhs.concat.square().sum()
+        rhs.mul_(3)
+        with pytest.raises(RuntimeError, match="modified.*inplace|view.*modified|version"):
+            loss.backward()
+
     @pytest.mark.parametrize("operation", ["add_", "sub_", "mul_"])
     def test_matches_out_of_place_operation(self, operation):
         elements = [torch.randn(3, length, 5) for length in (2, 4)]

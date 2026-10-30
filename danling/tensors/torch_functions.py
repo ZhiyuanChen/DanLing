@@ -6611,35 +6611,14 @@ def _boolean_reduce_handler(input, dim=None, keepdim=False, *, _fn=None, **kwarg
     return result
 
 
-_INPLACE_TO_VALUES_OP = {
-    torch.Tensor.add_: torch.Tensor.add_,
-    torch.Tensor.sub_: torch.Tensor.sub_,
-    torch.Tensor.mul_: torch.Tensor.mul_,
-    torch.Tensor.div_: torch.Tensor.div_,
-    torch.Tensor.remainder_: torch.Tensor.remainder_,
-    torch.Tensor.floor_divide_: torch.Tensor.floor_divide_,
-    torch.Tensor.pow_: torch.Tensor.pow_,
-    torch.Tensor.fmod_: torch.Tensor.fmod_,
-}
-
-
 def _inplace_binary_torch_handler(self, other, *args, _fn=None, **kwargs):
-    r"""Torch-level handler for in-place binary ops.
-
-    Converts tensor operands and applies the inplace op directly on packed
-    ``concat`` to avoid autograd errors on wrapper-subclass leaf tensors.
-    """
+    r"""Align dense operands and let native autograd own the wrapper mutation."""
     from .nested_tensor import NestedTensor
 
     if isinstance(other, Tensor) and other.dim() > 0 and not isinstance(other, NestedTensor):
         aligned = self._maybe_exact_shape_nested_like(other)
         if aligned is not None:
             other = aligned
-    # Same-structure: apply inplace on packed concat directly.
-    if isinstance(other, NestedTensor) and self._has_same_structure(other):
-        _INPLACE_TO_VALUES_OP[_fn](self.concat, other.concat, *args, **kwargs)
-        self._invalidate_transient_caches()
-        return self
     with torch._C.DisableTorchFunctionSubclass():
         return _fn(self, other, *args, **kwargs)
 

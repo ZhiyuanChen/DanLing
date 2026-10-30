@@ -1478,6 +1478,29 @@ def _masked_scatter_handler(func, args, kwargs):
 # ---------------------------------------------------------------------------
 
 
+def _mutate_packed_values(source, func, args, kwargs):
+    r"""Mutate storage below autograd while keeping its leaf and version checks."""
+    values = source._packed_values
+    if torch.is_grad_enabled() and values.requires_grad:
+        if values.is_leaf:
+            raise RuntimeError("a leaf Variable that requires grad is being used in an in-place operation.")
+        base = values._base
+        if (
+            base is not None
+            and torch._C._autograd._get_creation_meta(values) == torch._C._autograd.CreationMeta.MULTI_OUTPUT_NODE
+        ):
+            raise RuntimeError("a view created by a function that returns multiple views cannot be modified inplace.")
+        if base is not None and base.is_leaf and base.requires_grad:
+            raise RuntimeError("a view of a leaf Variable that requires grad is being used in an in-place operation.")
+    func(values, *args, **kwargs)
+    # The outer dispatcher increments the wrapper's version. Its storage-free
+    # wrapper and packed child have separate counters, so saved packed tensors
+    # must also observe the write.
+    torch.autograd.graph.increment_version(values)
+    source._invalidate_transient_caches()
+    return source
+
+
 @NestedTensorAtenRegistry.implement(aten.copy_.default)
 def copy(func, args, kwargs):
     r"""In-place copy from src to dest, using packed ``_values`` only for exact layout matches."""
@@ -1485,9 +1508,7 @@ def copy(func, args, kwargs):
 
     dest, src = args[0], args[1]
     if isinstance(src, NestedTensor) and dest._has_same_layout(src):
-        func(dest.concat, src.concat, *args[2:], **kwargs)
-        dest._invalidate_transient_caches()
-        return dest
+        return _mutate_packed_values(dest, func, (src.concat, *args[2:]), kwargs)
     raise NotImplementedError(f"NestedTensor: {func} requires matching packed layout")
 
 
@@ -1516,9 +1537,7 @@ ATEN_INPLACE_UNARY_OPS = [
 def _inplace_unary_handler(func, args, kwargs):
     r"""Dispatch handler for in-place unary ops applied to _values."""
     source = args[0]
-    func(source.concat, *args[1:], **kwargs)
-    source._invalidate_transient_caches()
-    return source
+    return _mutate_packed_values(source, func, args[1:], kwargs)
 
 
 ATEN_INPLACE_BINARY_OPS = [
@@ -1548,9 +1567,7 @@ def _inplace_binary_handler(func, args, kwargs):
     r"""Dispatch handler for in-place binary ops applied to _values."""
     source = args[0]
     resolved = _resolve_other(source, args[1], func)
-    func(source.concat, resolved, *args[2:], **kwargs)
-    source._invalidate_transient_caches()
-    return source
+    return _mutate_packed_values(source, func, (resolved, *args[2:]), kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -7782,6 +7799,10 @@ def detach(func, args, kwargs):
     from .nested_tensor import NestedTensor
 
     source = args[0]
+    # Dispatch runs below ADInplaceOrView. Restore only view bookkeeping for
+    # this detach so the packed alias shares its storage's version counter.
+    with torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False):
+        values = source._packed_values.detach()
     if (
         type(source) is NestedTensor
         and type(source._packed_values) is Tensor
@@ -7794,10 +7815,10 @@ def detach(func, args, kwargs):
         # same metadata objects instead of normalizing a fresh layout. Keep the
         # actual numerical detach and the outer Tensor detach dispatch intact,
         # including PyTorch's wrapper version sharing and checkpoint hooks.
-        return source._packed_like_unchecked_raw(source.concat.detach())
+        return source._packed_like_unchecked_raw(values)
     ragged_offsets = source._persistent_ragged_offsets()
     return type(source).from_packed(
-        source.concat.detach(),
+        values,
         source._offsets.detach(),
         source._physical_shape.detach(),
         batch_first=source.batch_first,
