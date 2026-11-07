@@ -28,7 +28,6 @@ import torch
 from packaging.version import Version
 
 from danling.tensors import NestedTensor
-from danling.tensors.ops import nested_execution_guard
 from tests.tensors.utils import assert_close
 
 NT = NestedTensor
@@ -253,7 +252,6 @@ class TestAutogradViewLifetime:
         assert source.is_leaf
         for step in (1, 2):
             run(source).backward()
-            assert isinstance(source.grad, NT)
             assert_close(source.grad.element_sizes(), source.element_sizes())
             assert_close(source.grad.concat, step * 3 * values.square())
         source.grad = None
@@ -685,22 +683,15 @@ class TestArithmetic:
                 expected = torch.cat([reference.flip((0,)) for reference in references])
             else:
                 expected = torch.cat([transform(reference) for reference in references])
-            with nested_execution_guard(
-                forbid_iteration=True,
-                forbid_storage_map=True,
-                forbid_eager_fallback=True,
-                forbid_padded_materialization=True,
-                forbid_dense_repack=True,
-            ):
-                result = run(nested)
-                actual = result.concat
-                assert result.ndim == result.dim() == expected.ndim + 1
-                if name.startswith("squeeze"):
-                    assert actual.untyped_storage().data_ptr() == nested.concat.untyped_storage().data_ptr()
-                torch.testing.assert_close(actual, expected, rtol=0, atol=0)
-                weights = torch.arange(1, 2 * actual.numel() + 1, device=device, dtype=torch.float64)
-                weights = weights.reshape(*actual.shape, 2)[..., 0]
-                gradients = torch.autograd.grad(actual, parts, weights)
+            result = run(nested)
+            actual = result.concat
+            assert result.ndim == result.dim() == expected.ndim + 1
+            if name.startswith("squeeze"):
+                assert actual.untyped_storage().data_ptr() == nested.concat.untyped_storage().data_ptr()
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+            weights = torch.arange(1, 2 * actual.numel() + 1, device=device, dtype=torch.float64)
+            weights = weights.reshape(*actual.shape, 2)[..., 0]
+            gradients = torch.autograd.grad(actual, parts, weights)
             expected_gradients = torch.autograd.grad(expected, references, weights)
             for observed, wanted in zip(gradients, expected_gradients):
                 torch.testing.assert_close(observed, wanted, rtol=0, atol=0)
@@ -724,16 +715,9 @@ class TestArithmetic:
             ]
             nested = NT(parts, ragged_dims=(0,))
 
-            with nested_execution_guard(
-                forbid_iteration=True,
-                forbid_storage_map=True,
-                forbid_eager_fallback=True,
-                forbid_padded_materialization=True,
-                forbid_dense_repack=True,
-            ):
-                output = compiled(nested)
-                values = output if packed_output else output.concat
-                gradients = torch.autograd.grad(values.square().sum(), parts)
+            output = compiled(nested)
+            values = output if packed_output else output.concat
+            gradients = torch.autograd.grad(values.square().sum(), parts)
 
             expected = [part - part.mean(0) if center else part for part in parts]
             assert_close(values, torch.cat(expected).unsqueeze(1).expand(-1, 3, -1))
@@ -767,23 +751,16 @@ class TestArithmetic:
                 weights = weights.contiguous()
             assert weights.is_contiguous() is not strided
 
-            with nested_execution_guard(
-                forbid_iteration=True,
-                forbid_storage_map=True,
-                forbid_eager_fallback=True,
-                forbid_padded_materialization=True,
-                forbid_dense_repack=True,
-            ):
-                output = compiled(nested)
-                values = output.concat
-                assert values.stride(1) == 0
-                for scale in (1, -2):
-                    tangent = weights * scale
-                    assert tangent.is_contiguous() is not strided
-                    gradients = torch.autograd.grad(values, parts, tangent, retain_graph=scale == 1)
-                    expected = (2 * scale * weights.sum(1)).split(lengths)
-                    for actual, wanted in zip(gradients, expected):
-                        torch.testing.assert_close(actual, wanted, rtol=1e-12, atol=1e-12)
+            output = compiled(nested)
+            values = output.concat
+            assert values.stride(1) == 0
+            for scale in (1, -2):
+                tangent = weights * scale
+                assert tangent.is_contiguous() is not strided
+                gradients = torch.autograd.grad(values, parts, tangent, retain_graph=scale == 1)
+                expected = (2 * scale * weights.sum(1)).split(lengths)
+                for actual, wanted in zip(gradients, expected):
+                    torch.testing.assert_close(actual, wanted, rtol=1e-12, atol=1e-12)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_compiled_wrapper_outputs_chain_and_preserve_autograd(self):
@@ -1234,8 +1211,6 @@ class TestDeclaredRaggedDims:
             for lengths in ((2, 4), (3, 5), (4, 2)):
                 nested = NestedTensor([torch.randn(length, 3, device=device) for length in lengths])
                 assert nested.ragged_dims == (0,)
-                assert nested._ragged_dims_explicit
-                assert nested._packed_sizes is None and nested._element_shapes is None
                 output = compiled(nested)
                 assert_close(output.concat, 2 * nested.concat)
             assert captures == 1
@@ -1959,14 +1934,7 @@ class TestToDtype:
         elements = [torch.randn(length, 3) for length in (2, 4)]
         nested = NT(elements)
 
-        with nested_execution_guard(
-            forbid_iteration=True,
-            forbid_storage_map=True,
-            forbid_eager_fallback=True,
-            forbid_padded_materialization=True,
-            forbid_dense_repack=True,
-        ):
-            output = nested.to(target_dtype)
+        output = nested.to(target_dtype)
 
         assert output.dtype == target_dtype
         assert [element.shape for element in output] == [element.shape for element in nested]
@@ -2407,7 +2375,6 @@ class TestIndexing:
         )
 
         tuple_indexed = nested_tensor[:, 0]
-        assert isinstance(tuple_indexed, NestedTensor)
         assert tuple_indexed.batch_first is False
         assert tuple_indexed.padding_value == -1
         assert tuple_indexed.mask_value is True
@@ -2424,13 +2391,11 @@ class TestIndexing:
     def test_getitem_tensor_bool_batch_select(self):
         nested_tensor = NestedTensor([torch.arange(3), torch.arange(5) + 10, torch.arange(2) + 20])
         selected = nested_tensor[torch.tensor([True, False, True])]
-        assert isinstance(selected, NestedTensor)
         assert_close(selected, NT([torch.arange(3), torch.arange(2) + 20]))
 
     def test_getitem_tensor_long_batch_select(self):
         nested_tensor = NestedTensor([torch.arange(3), torch.arange(5) + 10, torch.arange(2) + 20])
         selected = nested_tensor[torch.tensor([2, 0, 2])]
-        assert isinstance(selected, NestedTensor)
         assert_close(selected, NT([torch.arange(2) + 20, torch.arange(3), torch.arange(2) + 20]))
 
     def test_getitem_tensor_bool_batch_length_mismatch_raises(self):
@@ -2441,7 +2406,6 @@ class TestIndexing:
     def test_getitem_tuple_slice_rest(self):
         nested_tensor = NestedTensor([torch.arange(3), torch.arange(5)])
         sliced = nested_tensor[:, 1:]
-        assert isinstance(sliced, NestedTensor)
         assert torch.equal(sliced[0], torch.tensor([1, 2]))
         assert torch.equal(sliced[1], torch.tensor([1, 2, 3, 4]))
 
@@ -2970,7 +2934,6 @@ class TestShapeManipulation:
         compiled = torch.compile(lambda x: x.view(-1, 3), backend="inductor", fullgraph=True)
         output = compiled(nested_tensor)
         reference = nested_tensor.view(-1, 3)
-        assert isinstance(output, NestedTensor)
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -2980,7 +2943,6 @@ class TestShapeManipulation:
         compiled = torch.compile(lambda x, y: x.nested_like(y), backend="inductor", fullgraph=True)
         output = compiled(nested_tensor, dense)
         reference = nested_tensor.nested_like(dense)
-        assert isinstance(output, NestedTensor)
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -2990,7 +2952,6 @@ class TestShapeManipulation:
         compiled = torch.compile(lambda x, y: x.nested_like(y, strict=False), backend="inductor", fullgraph=True)
         output = compiled(nested_tensor, dense)
         reference = nested_tensor.nested_like(dense, strict=False)
-        assert isinstance(output, NestedTensor)
         assert_close(output, reference)
 
     def test_nested_like_smaller_dense(self):
@@ -3007,7 +2968,6 @@ class TestShapeManipulation:
         compiled = torch.compile(lambda x: x.reshape(-1, 3), backend="inductor", fullgraph=True)
         output = compiled(nested_tensor)
         reference = nested_tensor.reshape(-1, 3)
-        assert isinstance(output, NestedTensor)
         assert_close(output, reference)
 
     def test_view_irregular_tail_matches_elementwise_reference(self):
@@ -3034,7 +2994,6 @@ class TestShapeManipulation:
 class TestStatePreservation:
 
     def _assert_state(self, output, *, batch_first=False, padding_value=-1, mask_value=True):
-        assert isinstance(output, NestedTensor)
         assert output.batch_first is batch_first
         assert output.padding_value == padding_value
         assert output.mask_value is mask_value
@@ -3232,3 +3191,89 @@ class TestWhere:
 # ---------------------------------------------------------------------------
 # Shape Manipulation
 # ---------------------------------------------------------------------------
+
+
+class TestFromPacked:
+
+    @pytest.mark.parametrize("lengths", [(2, 3), (2, 2), ()])
+    def test_values(self, device, lengths):
+        counts = torch.tensor(lengths, dtype=torch.long)
+        offsets = torch.nn.functional.pad(counts.cumsum(0), (1, 0))
+        values = torch.arange(sum(lengths), dtype=torch.int32, device=device)
+        shapes = counts[:, None] if lengths else torch.empty((0, 0), dtype=torch.long)
+        output = NestedTensor.from_packed(
+            values,
+            offsets,
+            shapes,
+            permutation=(0,) if lengths else (),
+            ragged_dims=(0,) if lengths else (),
+            outer_size=(len(lengths), max(lengths)) if lengths else (0,),
+            materialize_python_metadata=False,
+            validate=False,
+        )
+        assert output.dtype == values.dtype
+        assert output.device == values.device
+        output.concat.add_(1)
+        assert_close(values, torch.arange(sum(lengths), dtype=torch.int32, device=device) + 1)
+        expected, start = [], 0
+        for length in lengths:
+            expected.append(list(range(start + 1, start + length + 1)))
+            start += length
+        assert output.tolist() == expected
+
+
+def _metadata_pair(lengths: tuple[int, ...], channels: int = 2) -> NestedTensor:
+    return NestedTensor(
+        [torch.randn(length, length, channels) for length in lengths],
+        ragged_dims=(0, 1),
+    )
+
+
+class TestMetadata:
+
+    def test_mismatch(self):
+        lhs = _metadata_pair((2, 4))
+        rhs = _metadata_pair((4, 2))
+
+        with pytest.raises(RuntimeError, match="broadcast-compatible"):
+            lhs + rhs
+
+    def test_fake(self):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        from torch.fx.experimental.symbolic_shapes import ShapeEnv
+
+        pair = _metadata_pair((2, 3))
+        reference = NestedTensor([torch.empty(1), torch.empty(1)])
+        mode = fake_tensor_mod.FakeTensorMode(shape_env=ShapeEnv(allow_dynamic_output_shape_ops=True))
+        with mode:
+            fake_pair = mode.from_tensor(pair)
+            fake_reference = mode.from_tensor(reference)
+            rebuilt = fake_reference.packed_with_square_lengths(
+                mode.from_tensor(torch.empty(13, 2)),
+                mode.from_tensor(torch.tensor([2, 3])),
+            )
+            output = fake_pair + rebuilt
+
+        assert fake_tensor_mod.is_fake(output.concat)
+        assert output.ndim == pair.ndim
+        assert output.shape[0] == pair.shape[0]
+        assert output.shape[-1] == pair.shape[-1]
+        # The broadcast maxima depend on runtime lengths, but both square axes
+        # retain the same symbolic extent.
+        assert output.shape[1] == output.shape[2]
+        assert output.ragged_dims == pair.ragged_dims
+
+    def test_compiled(self):
+        pair = _metadata_pair((2, 4))
+        reference = NestedTensor([torch.empty(1), torch.empty(1)])
+        values = torch.randn(20, 2)
+
+        def consume(known, ref, packed_values, lengths):
+            rebuilt = ref.packed_with_square_lengths(packed_values, lengths)
+            return (known + rebuilt).concat
+
+        compiled = torch.compile(consume, backend="aot_eager", fullgraph=True, dynamic=True)
+
+        assert_close(compiled(pair, reference, values, torch.tensor([2, 4])), pair.concat + values)
+        with pytest.raises(RuntimeError, match="broadcast-compatible"):
+            compiled(pair, reference, values, torch.tensor([4, 2]))

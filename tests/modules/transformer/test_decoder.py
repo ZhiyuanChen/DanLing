@@ -17,39 +17,46 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 # See the LICENSE file for more details.
 
+import pytest
 import torch
+from torch import nn
 
-from danling.modules.transformer import TransformerDecoder, TransformerDecoderLayer
+from danling.modules.transformer.decoder import TransformerDecoder, TransformerDecoderLayer
 
 
-def _build_decoder_layer() -> TransformerDecoderLayer:
+@pytest.fixture
+def decoder_layer():
     return TransformerDecoderLayer(
-        embed_dim=8,
-        num_heads=2,
-        dropout=0.0,
-        attn_dropout=0.0,
-        ffn_dropout=0.0,
-        batch_first=True,
+        embed_dim=8, num_heads=2, dropout=0.0, attn_dropout=0.0, ffn_dropout=0.0, batch_first=True
     )
 
 
-def test_transformer_decoder_layer_forward_shape():
-    layer = _build_decoder_layer()
-    target = torch.randn(2, 3, 8)
-    memory = torch.randn(2, 5, 8)
+class TestDecoderLayer:
+    def test_forward(self, decoder_layer):
+        target = torch.randn(2, 3, 8)
+        memory = torch.randn(2, 5, 8)
+        outputs, weights = decoder_layer(target, memory, need_weights=True)
+        assert outputs.shape == target.shape
+        assert weights.shape == (2, 2, 3, 5)
 
-    outputs, weights = layer(target, memory, need_weights=True)
+    def test_residual(self):
+        inputs = torch.randn(2, 4, 8) + 5
+        layer = TransformerDecoderLayer(8, 2, norm_first=True, dropout=0, attn_dropout=0, ffn_dropout=0)
+        with torch.no_grad():
+            for module in layer.modules():
+                if isinstance(module, nn.Linear):
+                    module.weight.zero_()
+                    if module.bias is not None:
+                        module.bias.zero_()
+        outputs, _ = layer(inputs, inputs)
+        torch.testing.assert_close(outputs, inputs)
 
-    assert outputs.shape == target.shape
-    assert weights.shape == (2, 2, 3, 5)
 
-
-def test_transformer_decoder_stacks_attention_weights():
-    decoder = TransformerDecoder(_build_decoder_layer(), num_layers=2)
-    target = torch.randn(2, 3, 8)
-    memory = torch.randn(2, 5, 8)
-
-    outputs, weights = decoder(target, memory, need_weights=True)
-
-    assert outputs.shape == target.shape
-    assert weights.shape == (2, 2, 2, 3, 5)
+class TestDecoder:
+    def test_weights(self, decoder_layer):
+        decoder = TransformerDecoder(decoder_layer, num_layers=2)
+        target = torch.randn(2, 3, 8)
+        memory = torch.randn(2, 5, 8)
+        outputs, weights = decoder(target, memory, need_weights=True)
+        assert outputs.shape == target.shape
+        assert weights.shape == (2, 2, 2, 3, 5)

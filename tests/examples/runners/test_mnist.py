@@ -49,7 +49,11 @@ def mnist_data_root(tmp_path_factory):
 def runner(torch_mnist_module, mnist_data_root):
     config = torch_mnist_module.MNISTConfig().boot()
     config.dataset.root = str(mnist_data_root)
-    return torch_mnist_module.MNISTRunner(config)
+    instance = torch_mnist_module.MNISTRunner(config)
+    try:
+        yield instance
+    finally:
+        instance.close()
 
 
 def test_train(runner):

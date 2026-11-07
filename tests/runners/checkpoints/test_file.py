@@ -20,14 +20,15 @@
 from __future__ import annotations
 
 import errno
-from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Event
 
 import pytest
 import torch
 
-from danling.runners.checkpoints.file import CheckpointTask, FileCheckpointManager
+import danling.runners.checkpoints.file as file_module
+from danling.runners.checkpoints.file import FileCheckpointManager
 
 
 @dataclass
@@ -76,35 +77,20 @@ class _FailingSaveRunner(_CheckpointRunner):
         raise OSError(errno.ENOSPC, "disk full")
 
 
-class _CoalescingFileCheckpointManager(FileCheckpointManager):
-    def __init__(self, runner) -> None:
-        super().__init__(runner)
-        self.started_steps: list[int] = []
-        self.started_names: list[str] = []
-        self.first_future: Future = Future()
+class BlockingRunner(_CheckpointRunner):
+    def __init__(self, checkpoint_dir: Path) -> None:
+        super().__init__(checkpoint_dir)
+        self.config["ckpt.async_mode"] = "async"
+        self.started = Event()
+        self.release = Event()
+        self.saved_payloads = []
 
-    def _start_async_task_locked(self, task: CheckpointTask):
-        self.started_names.append(task.name)
-        state = task.payload.get("state")
-        if state is not None:
-            self.started_steps.append(int(state["train"]["global_step"]))
-        if len(self.started_names) == 1:
-            return self.first_future
-        self._persist_checkpoint_payload(task)
-        future: Future = Future()
-        future.set_result(None)
-        return future
-
-
-class _CapturingFileCheckpointManager(FileCheckpointManager):
-    def __init__(self, runner) -> None:
-        super().__init__(runner)
-        self.task: CheckpointTask | None = None
-        self.future: Future = Future()
-
-    def _start_async_task_locked(self, task: CheckpointTask):
-        self.task = task
-        return self.future
+    def save(self, obj, file):
+        self.started.set()
+        self.release.wait()
+        result = super().save(obj, file)
+        self.saved_payloads.append(obj)
+        return result
 
 
 def _retaining_file_manager(tmp_path: Path) -> tuple[_CheckpointRunner, FileCheckpointManager]:
@@ -342,125 +328,93 @@ def test_file_async_checkpoint_save_failure_warns_and_keeps_running(
 
 
 def test_file_close_timeout_preserves_running_state_for_retry(tmp_path: Path) -> None:
-    runner = _CheckpointRunner(tmp_path)
-    runner.config.update({"ckpt.async_mode": "async", "ckpt.keep_latest_k": 1})
-    manager = _CapturingFileCheckpointManager(runner)
-
-    manager.save_checkpoint(force=True)
-    purge_thread = manager._purge_thread
-    assert purge_thread is not None
-    assert purge_thread.is_alive()
-    assert manager._inflight is manager.future
-
-    assert manager.close(timeout=0.0) is False
-
-    assert manager._inflight is manager.future
-    assert manager._pending_latest is None
-    assert len(manager._pending_reliable) == 0
-    assert manager._purge_thread is purge_thread
-    assert purge_thread.is_alive()
-
-    manager.future.set_result(None)
-    assert manager.close(timeout=1.0) is True
-    assert manager._inflight is None
-    assert manager._purge_thread is None
-    assert manager._purge_queue is None
-    assert purge_thread.is_alive() is False
+    runner = BlockingRunner(tmp_path)
+    manager = FileCheckpointManager(runner)
+    try:
+        manager.save_checkpoint(force=True)
+        assert runner.started.wait(timeout=5.0)
+        assert manager.close(timeout=0.0) is False
+        assert not (tmp_path / "latest.pth").exists()
+        runner.release.set()
+        assert manager.close(timeout=1.0) is True
+        assert _checkpoint_step(tmp_path / "latest.pth") == 0
+    finally:
+        runner.release.set()
+        manager.close(timeout=1.0)
 
 
-def test_file_callback_ignores_submit_after_shutdown(tmp_path: Path) -> None:
-    class _ShutdownExecutor:
-        @staticmethod
-        def submit(*args, **kwargs):
+def test_file_async_save_handles_executor_shutdown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class ShutdownExecutor:
+        def submit(self, *args, **kwargs):
             raise RuntimeError("cannot schedule new futures after interpreter shutdown")
 
+        def shutdown(self, *args, **kwargs):
+            return
+
+    monkeypatch.setattr(file_module, "ThreadPoolExecutor", lambda **kwargs: ShutdownExecutor())
     runner = _CheckpointRunner(tmp_path)
-    runner.config.update({"ckpt.async_mode": "async"})
+    runner.config["ckpt.async_mode"] = "async"
     manager = FileCheckpointManager(runner)
-
-    completed = Future()
-    completed.set_result(None)
-    manager._inflight = completed
-    manager._executor = _ShutdownExecutor()  # type: ignore[assignment]
-    manager._pending_reliable.append(
-        CheckpointTask(
-            payload=runner.state_dict(), name="latest", history_name="ckpt-e000000.pth", should_update_best=False
-        )
-    )
-
-    manager._on_async_task_done(
-        completed,
-        CheckpointTask(payload=runner.state_dict(), name="latest", history_name=None, should_update_best=False),
-    )
-
-    assert manager._closing is True
-    assert manager._inflight is None
-    assert manager._pending_latest is None
-    assert len(manager._pending_reliable) == 0
-    assert len(manager._history_names_inflight_or_pending) == 0
+    manager.save_checkpoint(force=True)
+    assert manager.close(timeout=1.0) is True
+    assert not (tmp_path / "latest.pth").exists()
 
 
 def test_file_async_latest_wins_coalesces_pending_saves(tmp_path: Path) -> None:
-    runner = _CheckpointRunner(tmp_path)
-    runner.config.update({"ckpt.async_mode": "async"})
-    manager = _CoalescingFileCheckpointManager(runner)
-
-    runner.train_state.global_step = 1
-    manager.save_checkpoint(force=True)
-    runner.train_state.global_step = 2
-    manager.save_checkpoint(force=True)
-    runner.train_state.global_step = 3
-    manager.save_checkpoint(force=True)
-
-    assert manager._pending_latest is not None
-    assert manager._pending_latest.payload["state"]["train"]["global_step"] == 3
-    manager.first_future.set_result(None)
-
-    assert manager.started_steps == [1, 3]
-    assert manager.wait(timeout=1.0) is True
-    assert manager.close(timeout=1.0) is True
+    runner = BlockingRunner(tmp_path)
+    manager = FileCheckpointManager(runner)
+    try:
+        runner.train_state.global_step = 1
+        manager.save_checkpoint(force=True)
+        assert runner.started.wait(timeout=5.0)
+        for step in (2, 3):
+            runner.train_state.global_step = step
+            manager.save_checkpoint(force=True)
+        runner.release.set()
+        assert manager.close(timeout=1.0) is True
+        assert [payload["state"]["train"]["global_step"] for payload in runner.saved_payloads] == [1, 3]
+        assert _checkpoint_step(tmp_path / "latest.pth") == 3
+    finally:
+        runner.release.set()
+        manager.close(timeout=1.0)
 
 
 def test_file_async_final_latest_and_model_export_are_both_reliable(tmp_path: Path) -> None:
-    runner = _CheckpointRunner(tmp_path)
-    runner.config.update({"ckpt.async_mode": "async", "ckpt.export_dtype": "fp16"})
-    manager = _CoalescingFileCheckpointManager(runner)
-
-    runner.train_state.global_step = 1
-    manager.save_checkpoint(force=True)
-    runner.train_state.global_step = 2
-    manager.save_checkpoint(last_step=True)
-    runner.train_state.global_step = 3
-    manager.save_model_checkpoint()
-
-    assert manager._pending_latest is None
-    assert [task.name for task in manager._pending_reliable] == ["latest", "model"]
-
-    manager.first_future.set_result(None)
-
-    assert manager.wait(timeout=1.0) is True
-    assert manager.close(timeout=1.0) is True
-    assert manager.started_names == ["latest", "latest", "model"]
-    assert manager.started_steps == [1, 2]
-    assert _checkpoint_step(tmp_path / "latest.pth") == 2
-    model_payload = torch.load(tmp_path / "model.pth", map_location="cpu", weights_only=False)
-    assert list(model_payload) == ["model"]
-    assert model_payload["model"]["weight"].dtype == torch.float16
+    runner = BlockingRunner(tmp_path)
+    runner.config["ckpt.export_dtype"] = "fp16"
+    manager = FileCheckpointManager(runner)
+    try:
+        runner.train_state.global_step = 1
+        manager.save_checkpoint(force=True)
+        assert runner.started.wait(timeout=5.0)
+        runner.train_state.global_step = 2
+        manager.save_checkpoint(last_step=True)
+        runner.train_state.global_step = 3
+        manager.save_model_checkpoint()
+        runner.release.set()
+        assert manager.close(timeout=1.0) is True
+        assert _checkpoint_step(tmp_path / "latest.pth") == 2
+        model_payload = torch.load(tmp_path / "model.pth", map_location="cpu", weights_only=False)
+        assert list(model_payload) == ["model"]
+        assert model_payload["model"]["weight"].dtype == torch.float16
+    finally:
+        runner.release.set()
+        manager.close(timeout=1.0)
 
 
 def test_file_async_checkpoint_saves_tensor_state_snapshot(tmp_path: Path) -> None:
-    runner = _CheckpointRunner(tmp_path)
-    runner.config.update({"ckpt.async_mode": "async"})
+    runner = BlockingRunner(tmp_path)
     weight = torch.ones(2, 2)
     runner.state_dict = lambda: {"model": {"weight": weight}}  # type: ignore[method-assign]
-    manager = _CapturingFileCheckpointManager(runner)
-
+    manager = FileCheckpointManager(runner)
     try:
         manager.save_checkpoint(force=True)
+        assert runner.started.wait(timeout=5.0)
         weight.fill_(9.0)
-
-        assert manager.task is not None
-        torch.testing.assert_close(manager.task.payload["model"]["weight"], torch.ones(2, 2))
+        runner.release.set()
+        assert manager.close(timeout=1.0) is True
+        payload = torch.load(tmp_path / "latest.pth", map_location="cpu", weights_only=False)
+        torch.testing.assert_close(payload["model"]["weight"], torch.ones(2, 2))
     finally:
-        manager.future.set_result(None)
+        runner.release.set()
         manager.close(timeout=1.0)

@@ -20,6 +20,10 @@
 # Makes `tests` importable for helper modules.
 
 
+import subprocess
+import sys
+import textwrap
+
 import pytest
 
 from tests.tensors.utils import FLOAT_DTYPES, available_devices
@@ -27,23 +31,18 @@ from tests.tensors.utils import FLOAT_DTYPES, available_devices
 collect_ignore = ["nn_overrides.py"]
 
 
-@pytest.fixture(autouse=True)
-def restore_builtin_print():
-    """Isolate tests from the runner's global ``builtins.print`` monkeypatch.
+@pytest.fixture
+def run_isolated():
+    def run(code):
+        completed = subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(code)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert completed.returncode == 0, f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
 
-    A runner installs a print router on ``builtins.print`` and only restores it on
-    ``close()``. A test that builds a runner without closing it would leak an active
-    router that swallows later tests' ``print`` output into a stale logger (this is
-    how ``test_profiler_close_reports_artifacts`` saw empty stdout in the full suite).
-    Snapshotting and restoring ``builtins.print`` around every test keeps them isolated.
-    """
-    import builtins
-
-    saved = builtins.print
-    try:
-        yield
-    finally:
-        builtins.print = saved
+    return run
 
 
 @pytest.fixture(autouse=True)

@@ -20,52 +20,21 @@
 import pytest
 import torch
 
-from danling.modules.mlp import MLP, Dense
+from danling.modules.mlp.mlp import MLP
 
 
-def test_dense_forward_shape_with_residual():
-    module = Dense(in_features=8, out_features=8, dropout=0.0)
-    inputs = torch.randn(2, 8)
+class TestMLP:
+    @pytest.mark.parametrize("features", [(8, 16, 4), ([8, 16, 4],), ((8, 16, 4),)])
+    @pytest.mark.parametrize("linear_output", [True, False])
+    def test_forward(self, features, linear_output):
+        model = MLP(*features, dropout=0.0, linear_output=linear_output)
+        assert model(torch.randn(3, 8)).shape == (3, 4)
 
-    outputs = module(inputs)
+    @pytest.mark.parametrize("features", [(), (8,), ([8],)])
+    def test_feature_count(self, features):
+        with pytest.raises(ValueError, match="at least 2 elements"):
+            MLP(*features)
 
-    assert outputs.shape == inputs.shape
-
-
-def test_dense_without_residual_uses_output_features():
-    module = Dense(
-        in_features=8,
-        out_features=4,
-        norm=None,
-        activation=None,
-        dropout=0.0,
-        pool=None,
-        residual=False,
-    )
-    inputs = torch.randn(2, 8)
-
-    outputs = module(inputs)
-
-    assert outputs.shape == (2, 4)
-
-
-@pytest.mark.parametrize("features", [(8, 16, 4), ([8, 16, 4],), ((8, 16, 4),)])
-@pytest.mark.parametrize("linear_output", [True, False])
-def test_mlp_forward_shape(features, linear_output):
-    model = MLP(*features, dropout=0.0, linear_output=linear_output)
-    inputs = torch.randn(3, 8)
-
-    outputs = model(inputs)
-
-    assert outputs.shape == (3, 4)
-
-
-@pytest.mark.parametrize("features", [(), (8,), ([8],)])
-def test_mlp_requires_multiple_feature_sizes(features):
-    with pytest.raises(ValueError, match="at least 2 elements"):
-        MLP(*features)
-
-
-def test_mlp_rejects_mixed_sizes():
-    with pytest.raises(TypeError, match="feature sizes must be integers"):
-        MLP(8, [16, 4])
+    def test_mixed_sizes(self):
+        with pytest.raises(TypeError, match="feature sizes must be integers"):
+            MLP(8, [16, 4])

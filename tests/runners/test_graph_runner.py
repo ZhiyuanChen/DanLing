@@ -29,7 +29,7 @@ from torch import nn, optim
 from danling.runners import GraphRunner, TorchRunner
 
 
-class TinyTorchRunner(TorchRunner):
+class EagerRunner(TorchRunner):
     def init_distributed(self) -> None:
         return
 
@@ -40,7 +40,7 @@ class TinyTorchRunner(TorchRunner):
         self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
 
 
-class TinyGraphRunner(GraphRunner):
+class Runner(GraphRunner):
     def init_distributed(self) -> None:
         return
 
@@ -49,26 +49,6 @@ class TinyGraphRunner(GraphRunner):
         self.model = nn.Linear(2, 1, bias=False)
         self.criterion = nn.MSELoss()
         self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
-
-
-class CountingGraphRunner(TinyGraphRunner):
-    def __init__(self, config):
-        self.iter_optimizer_parameter_calls = 0
-        super().__init__(config)
-
-    def iter_optimizer_parameters(self):
-        self.iter_optimizer_parameter_calls += 1
-        yield from super().iter_optimizer_parameters()
-
-
-class BuildCountingGraphRunner(TinyGraphRunner):
-    def __init__(self, config):
-        self.build_graph_train_step_calls = 0
-        super().__init__(config)
-
-    def build_graph_train_step(self, params):
-        self.build_graph_train_step_calls += 1
-        return super().build_graph_train_step(params)
 
 
 def _batch() -> dict[str, torch.Tensor]:
@@ -79,8 +59,8 @@ def _batch() -> dict[str, torch.Tensor]:
 
 
 def test_graph_runner_train_step_matches_eager_update() -> None:
-    eager = TinyTorchRunner({"logging.enabled": False})
-    graph = TinyGraphRunner({"logging.enabled": False})
+    eager = EagerRunner({"logging.enabled": False})
+    graph = Runner({"logging.enabled": False})
     try:
         assert eager.model is not None
         assert graph.model is not None
@@ -88,11 +68,11 @@ def test_graph_runner_train_step_matches_eager_update() -> None:
             eager.model.weight.copy_(torch.tensor([[0.25, -0.5]]))
             graph.model.weight.copy_(eager.model.weight)
 
-        eager.train_step(_batch())
-        graph.train_step(_batch())
-
-        assert graph.train_state.global_step == eager.train_state.global_step == 1
-        assert torch.allclose(graph.model.weight, eager.model.weight)
+        for step in range(1, 4):
+            eager.train_step(_batch())
+            graph.train_step(_batch())
+            assert graph.train_state.global_step == eager.train_state.global_step == step
+            torch.testing.assert_close(graph.model.weight, eager.model.weight)
     finally:
         eager.close()
         graph.close()
@@ -100,7 +80,7 @@ def test_graph_runner_train_step_matches_eager_update() -> None:
 
 @pytest.mark.parametrize("empty_first", [False, True])
 def test_graph_runner_zero_weight_discards_nonfinite_vjp(empty_first) -> None:
-    runner = TinyGraphRunner({"device": "cpu", "logging.enabled": False, "accum_steps": 2, "logging.interval": 0})
+    runner = Runner({"device": "cpu", "logging.enabled": False, "accum_steps": 2, "logging.interval": 0})
     try:
         runner.model.double()
         initial = runner.model.weight.detach().clone()
@@ -127,7 +107,7 @@ def test_graph_runner_zero_weight_discards_nonfinite_vjp(empty_first) -> None:
 
 
 def test_graph_runner_replaces_nonfinite_loss_without_accumulating_gradients() -> None:
-    runner = TinyGraphRunner({"logging.enabled": False, "skip_nonfinite_loss": True})
+    runner = Runner({"logging.enabled": False, "skip_nonfinite_loss": True})
     try:
         assert runner.model is not None
         initial = runner.model.weight.detach().clone()
@@ -146,145 +126,54 @@ def test_graph_runner_replaces_nonfinite_loss_without_accumulating_gradients() -
         runner.close()
 
 
-def test_graph_runner_traces_optimizer_parameters_once() -> None:
-    runner = CountingGraphRunner({"logging.enabled": False})
-    try:
-        runner.train_step(_batch())
-
-        assert runner.iter_optimizer_parameter_calls == 1
-    finally:
-        runner.close()
-
-
-def test_graph_runner_reuses_built_graph_train_step() -> None:
-    runner = BuildCountingGraphRunner({"logging.enabled": False})
-    try:
-        runner.train_step(_batch())
-        runner.train_step(_batch())
-
-        assert runner.build_graph_train_step_calls == 1
-    finally:
-        runner.close()
-
-
 def test_graph_runner_rejects_non_default_memory_policy() -> None:
     with pytest.raises(NotImplementedError, match="memory_policy"):
-        TinyGraphRunner({"logging.enabled": False, "compile": {"memory_policy": "budget_limited_offload"}})
+        Runner({"logging.enabled": False, "compile": {"memory_policy": "budget_limited_offload"}})
 
 
 def test_graph_runner_requires_compile_for_cache_artifacts() -> None:
     with pytest.raises(ValueError, match="precompile_artifact_dir"):
-        TinyGraphRunner({"logging.enabled": False, "compile": {"precompile_artifact_dir": "/tmp/danling-graph-cache"}})
+        Runner({"logging.enabled": False, "compile": {"precompile_artifact_dir": "/tmp/danling-graph-cache"}})
 
 
-def test_graph_runner_persists_torch_compile_cache_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    compiled_calls: list[dict[str, object]] = []
-
-    def fake_compile(fn, **kwargs):
-        compiled_calls.append(dict(kwargs))
-        return fn
-
-    monkeypatch.setattr(torch, "compile", fake_compile)
-    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", lambda: (b"cache-bytes", object()))
-
-    runner = TinyGraphRunner(
-        {
-            "logging.enabled": False,
-            "compile": {
-                "enabled": True,
-                "backend": "eager",
-                "precompile_artifact_dir": str(tmp_path),
-            },
-        }
+@pytest.fixture
+def cache_runner(tmp_path: Path, runner_factory, monkeypatch):
+    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", lambda: None)
+    return runner_factory(
+        {"device": "cpu", "compile": {"enabled": True, "backend": "eager", "precompile_artifact_dir": str(tmp_path)}},
+        runner_type=Runner,
     )
-    try:
-        runner.train_step(_batch())
 
-        artifact_path = runner.graph_cache_artifact_path()
-        assert artifact_path is not None
+
+class TestCache:
+    def test_save(self, cache_runner, monkeypatch):
+        monkeypatch.setattr(torch.compiler, "save_cache_artifacts", lambda: (b"cache-bytes", object()))
+        cache_runner.train_step(_batch())
+        artifact_path = cache_runner.graph_cache_artifact_path()
         assert artifact_path.read_bytes() == b"cache-bytes"
-        metadata_path = runner.graph_cache_metadata_path(artifact_path)
-        assert metadata_path is not None
+        metadata_path = cache_runner.graph_cache_metadata_path(artifact_path)
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         assert metadata["format"] == "danling.graph_cache.v1"
-        assert metadata["fingerprint"] == runner.graph_artifact_fingerprint()
+        assert metadata["fingerprint"] == cache_runner.graph_artifact_fingerprint()
         assert metadata["compile"]["backend"] == "eager"
-        assert compiled_calls == [{"backend": "eager"}]
-    finally:
-        runner.close()
 
-
-def test_graph_runner_loads_existing_torch_compile_cache_artifact(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    loaded: list[bytes] = []
-
-    def fake_compile(fn, **kwargs):
-        del kwargs
-        return fn
-
-    monkeypatch.setattr(torch, "compile", fake_compile)
-    monkeypatch.setattr(torch.compiler, "load_cache_artifacts", lambda payload: loaded.append(payload))
-    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", lambda: None)
-
-    runner = TinyGraphRunner(
-        {
-            "logging.enabled": False,
-            "compile": {
-                "enabled": True,
-                "backend": "eager",
-                "precompile_artifact_dir": str(tmp_path),
-            },
-        }
-    )
-    try:
-        artifact_path = runner.graph_cache_artifact_path()
-        assert artifact_path is not None
+    def test_load(self, cache_runner, monkeypatch):
+        loaded = []
+        monkeypatch.setattr(torch.compiler, "load_cache_artifacts", loaded.append)
+        artifact_path = cache_runner.graph_cache_artifact_path()
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         artifact_path.write_bytes(b"existing-cache")
-
-        runner.train_step(_batch())
-
+        cache_runner.train_step(_batch())
         assert loaded == [b"existing-cache"]
-    finally:
-        runner.close()
 
-
-def test_graph_runner_skips_existing_cache_with_mismatched_metadata(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    loaded: list[bytes] = []
-
-    def fake_compile(fn, **kwargs):
-        del kwargs
-        return fn
-
-    monkeypatch.setattr(torch, "compile", fake_compile)
-    monkeypatch.setattr(torch.compiler, "load_cache_artifacts", lambda payload: loaded.append(payload))
-    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", lambda: None)
-
-    runner = TinyGraphRunner(
-        {
-            "logging.enabled": False,
-            "compile": {
-                "enabled": True,
-                "backend": "eager",
-                "precompile_artifact_dir": str(tmp_path),
-            },
-        }
-    )
-    try:
-        artifact_path = runner.graph_cache_artifact_path()
-        assert artifact_path is not None
+    def test_stale(self, cache_runner, monkeypatch):
+        loaded = []
+        monkeypatch.setattr(torch.compiler, "load_cache_artifacts", loaded.append)
+        artifact_path = cache_runner.graph_cache_artifact_path()
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         artifact_path.write_bytes(b"stale-cache")
-        metadata_path = runner.graph_cache_metadata_path(artifact_path)
-        assert metadata_path is not None
+        metadata_path = cache_runner.graph_cache_metadata_path(artifact_path)
         metadata_path.write_text(json.dumps({"fingerprint": "stale"}), encoding="utf-8")
-
         with pytest.warns(RuntimeWarning, match="metadata fingerprint"):
-            runner.train_step(_batch())
-
+            cache_runner.train_step(_batch())
         assert loaded == []
-    finally:
-        runner.close()

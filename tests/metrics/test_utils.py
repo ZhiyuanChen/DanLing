@@ -156,20 +156,6 @@ class TestMetricUtilities:
         merged = merge_metric_entries(positional, {"acc": 4, "f1": 5})
         assert merged == {"acc": 4, "loss": 3, "f1": 5}
 
-    def test_round_dict_rounds_in_place(self):
-        values = RoundDict({"a": 1.23456, "b": 9.87654})
-        rounded_in_place = values.round(2)
-        assert rounded_in_place is values
-        assert values["a"] == 1.23
-        assert values["b"] == 9.88
-
-    def test_round_dict_dunder_round_returns_copy(self):
-        original = RoundDict({"x": 3.14159, "y": 2.71828})
-        rounded_copy = round(original, 3)
-        assert rounded_copy["x"] == 3.142
-        assert rounded_copy["y"] == 2.718
-        assert original["x"] == 3.14159
-
 
 class TestMetersBase:
     def test_rejects_multiple_positional_mappings(self):

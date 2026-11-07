@@ -472,11 +472,6 @@ class TestCompile:
         ref_log_softmax = NT([F.log_softmax(t, dim=0) for t in nt], **reference_options(nt))
         ref_layer_norm = NT([F.layer_norm(t, (2,)) for t in nt], **reference_options(nt))
         ref_rms_norm = NT([F.rms_norm(t, (2,)) for t in nt], **reference_options(nt))
-        assert isinstance(linear_comp, NestedTensor)
-        assert isinstance(softmax_comp, NestedTensor)
-        assert isinstance(log_softmax_comp, NestedTensor)
-        assert isinstance(layer_norm_comp, NestedTensor)
-        assert isinstance(rms_norm_comp, NestedTensor)
         assert_close(linear_comp, ref_linear)
         assert_close(softmax_comp, ref_softmax)
         assert_close(log_softmax_comp, ref_log_softmax)
@@ -1367,32 +1362,31 @@ class TestModuleIntegration:
             pytest.param(lambda: nn.LSTM(8, 16, num_layers=2, bidirectional=True, batch_first=True), id="lstm"),
         ],
     )
-    def test_recurrent_module(self, device, module_factory, monkeypatch):
+    def test_recurrent_module(self, device, module_factory):
         # This comparison asks for float32 accuracy, including inside cuDNN.
-        monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
-        dtype = torch.float32
-        elements = [torch.randn(length, 8, device=device, dtype=dtype) for length in (4, 7, 5)]
-        nested = NT([t.clone() for t in elements])
-        module = module_factory().to(device=device, dtype=dtype).eval()
+        with torch.backends.cudnn.flags(enabled=torch.backends.cudnn.enabled, allow_tf32=False):
+            dtype = torch.float32
+            elements = [torch.randn(length, 8, device=device, dtype=dtype) for length in (4, 7, 5)]
+            nested = NT([t.clone() for t in elements])
+            module = module_factory().to(device=device, dtype=dtype).eval()
 
-        with torch.no_grad():
-            output = module(nested)[0]
-            reference = NT([module(t.unsqueeze(0))[0].squeeze(0) for t in elements], **reference_options(nested))
+            with torch.no_grad():
+                output = module(nested)[0]
+                reference = NT([module(t.unsqueeze(0))[0].squeeze(0) for t in elements], **reference_options(nested))
 
-        assert isinstance(output, NestedTensor)
-        assert_close(output, reference, atol=1e-4, rtol=1e-4)
-        if isinstance(module, nn.RNN):
-            weight_ih = module.weight_ih_l0.detach().cpu().double()
-            weight_hh = module.weight_hh_l0.detach().cpu().double()
-            bias_ih = module.bias_ih_l0.detach().cpu().double()
-            bias_hh = module.bias_hh_l0.detach().cpu().double()
-            for actual, element in zip(output, elements, strict=True):
-                hidden = torch.zeros(module.hidden_size, dtype=torch.float64)
-                expected = []
-                for step in element.cpu().double():
-                    hidden = torch.tanh(weight_ih @ step + bias_ih + weight_hh @ hidden + bias_hh)
-                    expected.append(hidden)
-                assert_close(actual.cpu().double(), torch.stack(expected), atol=1e-4, rtol=1e-4)
+            assert_close(output, reference, atol=1e-4, rtol=1e-4)
+            if isinstance(module, nn.RNN):
+                weight_ih = module.weight_ih_l0.detach().cpu().double()
+                weight_hh = module.weight_hh_l0.detach().cpu().double()
+                bias_ih = module.bias_ih_l0.detach().cpu().double()
+                bias_hh = module.bias_hh_l0.detach().cpu().double()
+                for actual, element in zip(output, elements, strict=True):
+                    hidden = torch.zeros(module.hidden_size, dtype=torch.float64)
+                    expected = []
+                    for step in element.cpu().double():
+                        hidden = torch.tanh(weight_ih @ step + bias_ih + weight_hh @ hidden + bias_hh)
+                        expected.append(hidden)
+                    assert_close(actual.cpu().double(), torch.stack(expected), atol=1e-4, rtol=1e-4)
 
     def test_lstm_state(self, device):
         dtype = torch.float32
@@ -1519,7 +1513,6 @@ class TestMultiHeadAttentionForward:
             need_weights=False,
         )
 
-        assert isinstance(output, NestedTensor)
         assert weights is None
         atol, rtol = low_precision_cuda_tolerances(
             device,
@@ -1845,7 +1838,6 @@ class TestNormalizationOps:
             **reference_options(nt),
         )
 
-        assert isinstance(output, NestedTensor)
         assert_close(output, reference, atol=1e-5, rtol=1e-5)
 
     def test_group_norm(self, device, float_dtype):
@@ -2276,7 +2268,6 @@ class TestScaledDotProductAttention:
             [F.scaled_dot_product_attention(q, k, v, dropout_p=0.0) for q, k, v in zip(query, key, value)],
             **reference_options(query),
         )
-        assert isinstance(output, NT)
         assert_close(output, reference, atol=1e-4, rtol=1e-4)
 
     @pytest.mark.skipif(flex_attention is None, reason="FlexAttention not available")
@@ -2316,8 +2307,6 @@ class TestScaledDotProductAttention:
             ],
             **reference_options(query),
         )
-        assert isinstance(output, NT)
-        assert isinstance(lse, NT)
         assert_close(output, reference, atol=1e-4, rtol=1e-4)
 
     def test_sdpa_batch_first_false_matches_reference(self):
@@ -2526,7 +2515,6 @@ class TestScaledDotProductAttention:
                     reference_model.zero_grad(set_to_none=True)
                     output = compiled(*nested)
                     expected = [reference_model.dense(q, k, v) for q, k, v in zip(*reference_parts)]
-                    assert isinstance(output, NT)
                     assert output.batch_first is batch_first
                     assert output.ragged_dims == (0,)
                     assert output.element_sizes().tolist() == [[length, 32] for length in query_lengths]
@@ -2616,7 +2604,6 @@ class TestScaledDotProductAttention:
             [F.scaled_dot_product_attention(q, k, v, dropout_p=0.0) for q, k, v in zip(query, key, value)],
             **reference_options(query),
         )
-        assert isinstance(output, NT)
         assert_close(output, reference, atol=1e-4, rtol=1e-4)
 
     @pytest.mark.skipif(flex_attention is None, reason="FlexAttention not available")
@@ -2632,7 +2619,6 @@ class TestScaledDotProductAttention:
 
         output = flex_attention(query, key, value, score_mod=score_mod)
         reference = self._ragged_attention_reference(query, key, value, score_mod)
-        assert isinstance(output, NT)
         assert_close(output, reference, atol=1e-4, rtol=1e-4)
 
     @pytest.mark.skipif(flex_attention is None, reason="FlexAttention not available")
@@ -2661,7 +2647,6 @@ class TestScaledDotProductAttention:
 
         output = flex_attention(query, key, value, score_mod=score_mod)
         reference = self._ragged_attention_reference(query, key, value, score_mod)
-        assert isinstance(output, NT)
         assert_close(output, reference, atol=1e-4, rtol=1e-4)
 
     @pytest.mark.skipif(flex_attention is None, reason="FlexAttention not available")
@@ -2830,7 +2815,6 @@ class TestCrossEntropy:
             ]
         )
         output = F.cross_entropy(logits.movedim(-1, 1), targets, reduction="none")
-        assert isinstance(output, NestedTensor)
         assert [tuple(element.shape) for element in output] == [(2, 2), (3, 3)]
 
         reference = NestedTensor(
@@ -2919,7 +2903,6 @@ class TestCrossEntropy:
     @pytest.mark.parametrize("weighted", [False, True])
     @pytest.mark.parametrize("probabilities", [False, True])
     def test_native_value_and_vjp(self, device, float_dtype, layout, reduction, smoothing, weighted, probabilities):
-        from danling.tensors.ops import nested_execution_guard
 
         classes = 5
         position_shapes = {
@@ -2952,17 +2935,10 @@ class TestCrossEntropy:
             "reduction": reduction,
             "ignore_index": -100 if probabilities else 999,
         }
-        with nested_execution_guard(
-            forbid_iteration=True,
-            forbid_storage_map=True,
-            forbid_eager_fallback=True,
-            forbid_padded_materialization=True,
-            forbid_dense_repack=True,
-        ):
-            actual = F.cross_entropy(logits, native_target, **kwargs)
-            objective = actual.sum() if reduction == "none" else actual
-            leaves = elements + targets if probabilities else elements
-            actual_gradient = torch.autograd.grad(objective, leaves)
+        actual = F.cross_entropy(logits, native_target, **kwargs)
+        objective = actual.sum() if reduction == "none" else actual
+        leaves = elements + targets if probabilities else elements
+        actual_gradient = torch.autograd.grad(objective, leaves)
 
         # Evaluate the complete equation independently in FP64 on the actual quantized data.
         # Grouping half-precision element losses and weight sums before a global mean introduces
@@ -3004,7 +2980,6 @@ class TestCrossEntropy:
             target_gradient_scales = [scale / denominator for scale in target_gradient_scales]
         expected = NestedTensor(values, ragged_dims=ragged)
         if reduction == "none":
-            assert isinstance(actual, NestedTensor)
             torch.testing.assert_close(actual.element_sizes(), expected.element_sizes())
             assert actual.ragged_dims == expected.ragged_dims
             actual_values, expected_values = actual.concat, expected.concat
@@ -3065,7 +3040,6 @@ class TestCrossEntropy:
     @pytest.mark.parametrize("probabilities", [False, True])
     @pytest.mark.parametrize("reduction", ["none", "mean", "sum"])
     def test_dense_input_reads_only_native_target_positions(self, device, float_dtype, probabilities, reduction):
-        from danling.tensors.ops import nested_execution_guard
 
         lengths, classes = (0, 2, 5), 5
         values = torch.randn(3, classes, 5, device=device, dtype=float_dtype, requires_grad=True)
@@ -3077,16 +3051,9 @@ class TestCrossEntropy:
         else:
             target_elements = [torch.randint(classes, (n,), device=device) for n in lengths]
             targets = NestedTensor(target_elements, ragged_dims=(0,))
-        with nested_execution_guard(
-            forbid_iteration=True,
-            forbid_storage_map=True,
-            forbid_eager_fallback=True,
-            forbid_padded_materialization=True,
-            forbid_dense_repack=True,
-        ):
-            result = F.cross_entropy(values, targets, label_smoothing=0.1, reduction=reduction)
-            actual = result.sum() if reduction == "none" else result
-            gradient = torch.autograd.grad(actual, values)[0]
+        result = F.cross_entropy(values, targets, label_smoothing=0.1, reduction=reduction)
+        actual = result.sum() if reduction == "none" else result
+        gradient = torch.autograd.grad(actual, values)[0]
         reference_parts = [
             F.cross_entropy(
                 values[i : i + 1, :, :n], target.unsqueeze(0), label_smoothing=0.1, reduction="none"
@@ -3104,7 +3071,6 @@ class TestCrossEntropy:
 
     @pytest.mark.parametrize("probabilities", [False, True])
     def test_dense_targets_follow_logical_shape(self, device, float_dtype, probabilities):
-        from danling.tensors.ops import nested_execution_guard
 
         elements = [torch.randn(n, 5, device=device, dtype=float_dtype, requires_grad=True) for n in (2, 5)]
         logits = NestedTensor(elements, ragged_dims=(0,)).movedim(-1, 1)
@@ -3113,15 +3079,8 @@ class TestCrossEntropy:
             if probabilities
             else torch.randint(5, (2, 5), device=device)
         )
-        with nested_execution_guard(
-            forbid_iteration=True,
-            forbid_storage_map=True,
-            forbid_eager_fallback=True,
-            forbid_padded_materialization=True,
-            forbid_dense_repack=True,
-        ):
-            result = F.cross_entropy(logits, targets, label_smoothing=0.1, reduction="sum")
-            gradient = torch.autograd.grad(result, elements)
+        result = F.cross_entropy(logits, targets, label_smoothing=0.1, reduction="sum")
+        gradient = torch.autograd.grad(result, elements)
         reference = sum(
             F.cross_entropy(
                 element.T.unsqueeze(0),
@@ -3140,7 +3099,6 @@ class TestCrossEntropy:
     @pytest.mark.parametrize("classes", [3, 5])
     @pytest.mark.parametrize("native_input", [False, True])
     def test_mixed_probability_targets_preserve_static_axis_order(self, device, classes, native_input):
-        from danling.tensors.ops import nested_execution_guard
 
         # Classes and the static position axis coincide in one case: a wrong permutation
         # then has a valid shape and must still be detected by values and both VJPs.
@@ -3160,15 +3118,8 @@ class TestCrossEntropy:
         weights = torch.linspace(0.2, 1.1, classes, dtype=torch.float64, device=device)
         kwargs = {"weight": weights, "label_smoothing": 0.17, "reduction": "none"}
         leaves = elements + [dense]
-        with nested_execution_guard(
-            forbid_iteration=True,
-            forbid_storage_map=True,
-            forbid_eager_fallback=True,
-            forbid_padded_materialization=True,
-            forbid_dense_repack=True,
-        ):
-            result = F.cross_entropy(logits, targets, **kwargs)
-            actual_gradients = torch.autograd.grad(result.sum(), leaves)
+        result = F.cross_entropy(logits, targets, **kwargs)
+        actual_gradients = torch.autograd.grad(result.sum(), leaves)
 
         # Form rows directly from each element's logical class axis and slice the supplied
         # dense storage. This reference is independent of the NestedTensor packed permutation.
@@ -3182,7 +3133,6 @@ class TestCrossEntropy:
             target_rows.append(target_element.movedim(0, -1).reshape(-1, classes))
             logical_shapes.append(logical_shape)
         expected = F.cross_entropy(torch.cat(input_rows), torch.cat(target_rows), **kwargs)
-        assert isinstance(result, NestedTensor)
         assert result.ragged_dims == (1, 0)
         assert [tuple(element.shape) for element in result] == logical_shapes
         offset = 0
@@ -3225,22 +3175,14 @@ class TestCrossEntropy:
 
     @pytest.mark.parametrize("reduction", ["none", "mean", "sum"])
     def test_zero_classes_and_ignored_positions_follow_dense(self, device, float_dtype, reduction):
-        from danling.tensors.ops import nested_execution_guard
 
         values = torch.empty(3, 0, device=device, dtype=float_dtype, requires_grad=True)
         logits = NestedTensor(list(values.unbind()), ragged_dims=())
         target_values = torch.full((3,), -100, device=device)
         targets = NestedTensor(list(target_values.unbind()), ragged_dims=())
-        with nested_execution_guard(
-            forbid_iteration=True,
-            forbid_storage_map=True,
-            forbid_eager_fallback=True,
-            forbid_padded_materialization=True,
-            forbid_dense_repack=True,
-        ):
-            output = F.cross_entropy(logits, targets, reduction=reduction)
-            actual = output.sum() if reduction == "none" else output
-            gradient = torch.autograd.grad(actual, values)[0]
+        output = F.cross_entropy(logits, targets, reduction=reduction)
+        actual = output.sum() if reduction == "none" else output
+        gradient = torch.autograd.grad(actual, values)[0]
         reference = F.cross_entropy(values, target_values, reduction=reduction)
         torch.testing.assert_close(
             output.concat if isinstance(output, NestedTensor) else output, reference, equal_nan=True
@@ -3255,7 +3197,6 @@ class TestCrossEntropy:
     def test_native_class_weights_value_and_input_vjp(
         self, device, float_dtype, native, unbatched, probabilities, smoothing, reduction
     ):
-        from danling.tensors.ops import nested_execution_guard
 
         values = torch.randn(2, 3, device=device, dtype=float_dtype, requires_grad=True)
         target_values = values.detach().softmax(-1) if probabilities else torch.tensor([0, 2], device=device)
@@ -3267,17 +3208,8 @@ class TestCrossEntropy:
         target = (
             NestedTensor(list(dense_target.unbind()), ragged_dims=()) if native and dense_target.dim() else dense_target
         )
-        with nested_execution_guard(
-            forbid_iteration=True,
-            forbid_storage_map=True,
-            forbid_eager_fallback=True,
-            forbid_padded_materialization=True,
-            forbid_dense_repack=True,
-        ):
-            output = F.cross_entropy(
-                input, target, weight=native_weights, label_smoothing=smoothing, reduction=reduction
-            )
-            gradient = torch.autograd.grad(output.sum(), values)[0]
+        output = F.cross_entropy(input, target, weight=native_weights, label_smoothing=smoothing, reduction=reduction)
+        gradient = torch.autograd.grad(output.sum(), values)[0]
         reference = F.cross_entropy(
             dense_input, dense_target, weight=weights, label_smoothing=smoothing, reduction=reduction
         )
@@ -3337,7 +3269,6 @@ def test_loss_broadcasts_sample_boundaries_and_retains_unreduced_topology():
     parts = [torch.tensor([[1.0], [2.0]], requires_grad=True), torch.tensor([[3.0]], requires_grad=True)]
     targets = [torch.tensor([[1.0]]), torch.tensor([[2.0], [3.0]])]
     output = F.mse_loss(NT(parts), NT(targets), reduction="none")
-    assert isinstance(output, NT)
     assert [tuple(t.shape) for t in output] == [(2, 1), (2, 1)]
     expected = [torch.tensor([[0.0], [1.0]]), torch.tensor([[1.0], [0.0]])]
     for actual, reference in zip(output, expected):

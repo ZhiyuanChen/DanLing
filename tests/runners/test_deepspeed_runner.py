@@ -76,34 +76,19 @@ def _bare_deepspeed_runner(
 
 class TestDeepSpeedRunnerCheckpointPaths:
 
-    def test_deepspeed_runner_resolves_pointer_file_and_checkpoint_dir(self, tmp_path: Path) -> None:
+    def test_read_config_accepts_checkpoint_paths(self, tmp_path: Path) -> None:
         checkpoint_dir = tmp_path / "checkpoints"
-        checkpoint_tag = "ckpt-s000000000001"
-        (checkpoint_dir / checkpoint_tag).mkdir(parents=True)
-        latest_pointer = checkpoint_dir / "latest.pointer"
-        best_pointer = checkpoint_dir / "best.pointer"
-        latest_pointer.write_text(checkpoint_tag, encoding="utf-8")
-        best_pointer.write_text(checkpoint_tag, encoding="utf-8")
-
-        assert DeepSpeedRunner._resolve_deepspeed_checkpoint(checkpoint_dir) == (str(checkpoint_dir), checkpoint_tag)
-        assert DeepSpeedRunner._resolve_deepspeed_checkpoint(best_pointer) == (str(checkpoint_dir), checkpoint_tag)
-        assert DeepSpeedRunner._resolve_deepspeed_checkpoint(checkpoint_dir / checkpoint_tag) == (
-            str(checkpoint_dir),
-            checkpoint_tag,
-        )
-
-    def test_deepspeed_runner_read_config_accepts_pointer_aliases(self, tmp_path: Path) -> None:
-        checkpoint_dir = tmp_path / "checkpoints"
-        checkpoint_tag = "ckpt-s000000000001"
-        tag_dir = checkpoint_dir / checkpoint_tag
+        tag_dir = checkpoint_dir / "ckpt-s000000000001"
         tag_dir.mkdir(parents=True)
         RunnerConfig({"logging.enabled": False, "seed": 1016}).yaml(tag_dir / "runner.yaml")
-        (checkpoint_dir / "latest.pointer").write_text(checkpoint_tag, encoding="utf-8")
-
-        config = DeepSpeedRunner.read_config(checkpoint_dir)
-
-        assert config["seed"] == 1016
-        assert config.get("logging.enabled") is False
+        latest_pointer = checkpoint_dir / "latest.pointer"
+        best_pointer = checkpoint_dir / "best.pointer"
+        for pointer in (latest_pointer, best_pointer):
+            pointer.write_text(tag_dir.name, encoding="utf-8")
+        for checkpoint in (checkpoint_dir, latest_pointer, best_pointer, tag_dir):
+            config = DeepSpeedRunner.read_config(checkpoint)
+            assert config.seed == 1016
+            assert config.logging.enabled is False
 
     def test_deepspeed_checkpoint_save_failure_warns_and_keeps_running(self, tmp_path: Path) -> None:
         class FailingModel:
@@ -175,12 +160,6 @@ class TestDeepSpeedRunnerCheckpointPaths:
         assert not (tmp_path / "ckpt-e000002").exists()
         assert (tmp_path / "ckpt-e000003").is_dir()
         assert (tmp_path / "latest.pointer").read_text(encoding="utf-8") == "ckpt-e000003"
-
-
-class TestDeepSpeedRunnerRuntimeBoundaries:
-
-    def test_deepspeed_runner_declares_torchft_runtime_unsupported(self) -> None:
-        assert DeepSpeedRunner._supports_torchft_runtime is False
 
 
 class TestDeepSpeedRunnerRealBackend:
