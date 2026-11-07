@@ -1424,7 +1424,27 @@ def _split_like(input: NestedTensor, dim: int, spans_for, op_name: str):
     return tuple(NestedTensor([parts[index] for parts in per_element], **input._meta()) for index in range(counts[0]))
 
 
-@NestedTensorFuncRegistry.implement(torch.chunk)
+def _chunk_static_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
+    r"""Admit compiled chunk only when its dimension is a packed static axis."""
+    from .aten_functions import _packed_static_dim
+    from .nested_tensor import NestedTensor
+
+    input = args[0] if args else kwargs.get("input")
+    chunks = args[1] if len(args) > 1 else kwargs.get("chunks")
+    dim = args[2] if len(args) > 2 else kwargs.get("dim", 0)
+    if not isinstance(input, NestedTensor) or not isinstance(chunks, int) or not isinstance(dim, int):
+        return False
+    try:
+        logical_dim = _normalize_dim(dim, input.dim())
+        if logical_dim == _get_batch_dim(input):
+            return False
+        physical_dim = _translate_dim(input, logical_dim)
+        return _packed_static_dim(input, physical_dim) is not None
+    except (AttributeError, TypeError, ValueError, IndexError):
+        return False
+
+
+@NestedTensorFuncRegistry.implement(torch.chunk, compile_safe=True, compile_guard=_chunk_static_compile_safe)
 def chunk(input: NestedTensor, chunks: int, dim: int = 0):
     r"""
     Attempts to split a tensor into the specified number of chunks. Each chunk is a view of the input tensor.

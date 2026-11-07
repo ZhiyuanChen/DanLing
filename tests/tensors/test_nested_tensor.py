@@ -2266,6 +2266,56 @@ class TestFromFactoryMethods:
 # ---------------------------------------------------------------------------
 
 
+class TestSlicing:
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager"])
+    @pytest.mark.parametrize(
+        ("selection", "transpose"),
+        [
+            pytest.param(slice(None), False, id="all"),
+            pytest.param(slice(None, -3), True, id="trim"),
+            pytest.param(slice(1, -1, 2), False, id="step"),
+            pytest.param(slice(-4, None), True, id="suffix"),
+            pytest.param(slice(2, 2), False, id="empty"),
+            pytest.param(slice(-99, 99), True, id="bounds"),
+            pytest.param(slice(-3, 2), False, id="mixed"),
+        ],
+    )
+    def test_ragged(self, device, backend, selection, transpose):
+        torch._dynamo.reset()
+
+        def select(template, values):
+            source = template.packed_like(values)
+            if transpose:
+                return source.transpose(1, 2)[..., selection]
+            return source[:, selection]
+
+        operation = select if backend is None else torch.compile(select, backend=backend, fullgraph=True, dynamic=True)
+        with torch._dynamo.config.patch(capture_dynamic_output_shape_ops=True):
+            for lengths in ((0, 1, 3, 7), (2, 5, 1, 4)):
+                template = NT([torch.empty(length, 3, device=device) for length in lengths], ragged_dims=(0,))
+                values = torch.randn(sum(lengths), 3, device=device, dtype=torch.float64, requires_grad=True)
+                reference_values = values.detach().clone().requires_grad_()
+                parts = reference_values.split(lengths)
+                expected = [part.T[..., selection] if transpose else part[selection] for part in parts]
+
+                actual = operation(template, values)
+
+                shape = (len(expected), *(max(part.shape[dim] for part in expected) for dim in range(2)))
+                assert actual.shape == torch.Size(shape)
+                torch.testing.assert_close(
+                    actual.element_sizes(), torch.tensor([tuple(part.shape) for part in expected])
+                )
+                torch.testing.assert_close(actual.unbind(), expected)
+                probes = [torch.randn_like(part) for part in expected]
+                torch.testing.assert_close(
+                    torch.autograd.grad(sum((part * probe).sum() for part, probe in zip(actual, probes)), values),
+                    torch.autograd.grad(
+                        sum((part * probe).sum() for part, probe in zip(expected, probes)), reference_values
+                    ),
+                )
+
+
 class TestIndexing:
 
     @pytest.mark.parametrize("position", [0, -1])

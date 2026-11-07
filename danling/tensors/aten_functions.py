@@ -6608,11 +6608,32 @@ def _tensor_backed_view_like(func, source: NestedTensor, target: tuple[int, ...]
 
     ragged_dim = source._ragged_dims[0]
     columns = _view_target_columns(element_target, max_sizes)
-    if any(size == -1 for size in element_target[1:]) or any(column == ragged_dim for column in columns[1:]):
+    if any(column == ragged_dim for column in columns[1:]):
         _compile_unsupported(
             "NestedTensor view/reshape",
             "only the leading target dimension may vary across elements",
         )
+
+    # If the leading target preserves the ragged axis, a single inferred tail
+    # dimension depends only on the static feature dimensions. This is the
+    # usual transformer projection view (batch, sequence, -1, head_dim).
+    inferred_tail = [i for i, size in enumerate(element_target[1:], start=1) if size == -1]
+    if inferred_tail:
+        if len(inferred_tail) != 1 or columns[0] != ragged_dim:
+            _compile_unsupported(
+                "NestedTensor view/reshape",
+                "an inferred target tail requires an unchanged leading ragged dimension",
+            )
+        static_numel = 1
+        for dim in source._static_dims:
+            static_numel *= max_sizes[dim]
+        known_tail_numel = 1
+        for i, size in enumerate(element_target[1:], start=1):
+            if i != inferred_tail[0]:
+                known_tail_numel *= size
+        torch._check(known_tail_numel != 0, lambda: "Cannot infer a view dimension with a zero-sized known tail")
+        torch._check(static_numel % known_tail_numel == 0, lambda: "View target is incompatible with feature size")
+        element_target[inferred_tail[0]] = static_numel // known_tail_numel
 
     tail_numel = 1
     for size in element_target[1:]:
