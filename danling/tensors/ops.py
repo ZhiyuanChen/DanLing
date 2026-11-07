@@ -1643,21 +1643,23 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
         return op(lhs, rhs, *extra_args, **extra_kwargs)
 
     if len(input) == 0 and not isinstance(other, cls):
-        resolved = _as_tensor_like(other, input.concat)
         new_values = (
-            op(resolved, input.concat, *extra_args, **extra_kwargs)
+            op(other, input.concat, *extra_args, **extra_kwargs)
             if reverse
-            else op(input.concat, resolved, *extra_args, **extra_kwargs)
+            else op(input.concat, other, *extra_args, **extra_kwargs)
         )
         return _rebuild(new_values)
 
     # NT + scalar or 0-d tensor (most common in training)
     if not isinstance(other, Tensor) or other.dim() == 0:
-        val = _as_tensor_like(other, input.concat)
+        # Preserve PyTorch's weak Python-scalar semantics. Converting a Python
+        # float to a zero-dimensional tensor of the result dtype rounds it
+        # before the operation (notably for fp16/bf16). Keep actual 0-D tensor
+        # operands unchanged too, including device and autograd behavior.
         new_values = (
-            op(val, input.concat, *extra_args, **extra_kwargs)
+            op(other, input.concat, *extra_args, **extra_kwargs)
             if reverse
-            else op(input.concat, val, *extra_args, **extra_kwargs)
+            else op(input.concat, other, *extra_args, **extra_kwargs)
         )
         return input._packed_like_unchecked(new_values)
 
