@@ -134,6 +134,19 @@ Operations on NestedTensor are handled by a **three-tier dispatch system**, orde
 
 **Fallback**: Any aten op without an explicit handler falls back to `per_element_fallback`, which unpacks to individual tensors, applies the op element-by-element, and repacks. Under `torch.compile`, DanLing prefers explicit failure over silently entering those eager-only fallbacks.
 
+Depthwise `F.conv1d` has a packed training path for `(channels, length_i)`
+elements with a static channel axis, stride 1, and integer padding/dilation.
+It supports channel multipliers and fullgraph compilation. Each sample has
+its own convolution boundary. For a width-4 causal convolution with dilation 1:
+
+```python
+output = F.silu(F.conv1d(input, weight, bias, padding=3, groups=channels)[..., :-3])
+```
+
+The relative slice removes three positions from each sample independently.
+Compiling ragged slices with data-dependent output lengths requires
+`torch._dynamo.config.capture_dynamic_output_shape_ops = True`.
+
 ```text
 torch.some_op(nested_tensor)
     │
