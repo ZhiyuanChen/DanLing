@@ -2384,12 +2384,14 @@ class NestedTensor(torch.Tensor):
         r"""Return local coordinates within the selected packed ragged level."""
         target_device = self.device if device is None else torch.device(device)
         level = int(level)
-        key = (level, str(target_device), dtype, self._shape_cache_token())
-        if self._cached_packed_local_indices is not None:
+        device_key = type(self)._offset_conversion_device_key(target_device)
+        token = self._offset_conversion_cache_token() if device_key is not None else None
+        key = None if device_key is None or token is None else (level, device_key, dtype, token)
+        if key is not None and self._cached_packed_local_indices is not None:
             cached = self._cached_packed_local_indices.get(key)
             if cached is not None:
                 return cached
-        elif not _is_fake_tensor(self._offsets) and not _is_compiling():
+        elif key is not None:
             self._cached_packed_local_indices = {}
 
         packed_sizes = self._packed_sizes
@@ -2432,7 +2434,7 @@ class NestedTensor(torch.Tensor):
         positions = torch.arange(total, dtype=dtype, device=target_device)
         starts = torch.repeat_interleave(starts_source, lengths.to(target_device), output_size=total)
         local_indices = positions - starts
-        if self._cached_packed_local_indices is not None:
+        if key is not None and self._cached_packed_local_indices is not None:
             self._cached_packed_local_indices[key] = local_indices
         return local_indices
 
@@ -2444,8 +2446,9 @@ class NestedTensor(torch.Tensor):
     ) -> Tensor:
         r"""Return batch coordinates for packed values."""
         target_device = self.device if device is None else torch.device(device)
-        token = self._offset_conversion_cache_token()
-        key = (str(target_device), dtype, token) if token is not None else None
+        device_key = type(self)._offset_conversion_device_key(target_device)
+        token = self._offset_conversion_cache_token() if device_key is not None else None
+        key = None if device_key is None or token is None else (device_key, dtype, token)
         if key is not None and self._cached_packed_batch_indices is not None:
             cached = self._cached_packed_batch_indices.get(key)
             if cached is not None:

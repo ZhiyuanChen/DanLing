@@ -1444,6 +1444,40 @@ class TestPackedLike:
         default_sizes[:, -1].fill_(5)
         assert_close(nested.element_sizes(device=device, dtype=dtype), default_sizes.to(device=device, dtype=dtype))
 
+    @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Two CUDA devices are required")
+    @pytest.mark.parametrize(
+        ("accessor", "coordinates"),
+        [
+            ("packed_local_indices", [0, 1, 0, 1, 2, 3]),
+            ("packed_batch_indices", [0, 0, 1, 1, 1, 1]),
+        ],
+    )
+    @pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
+    def test_packed_indices_follow_current_and_explicit_devices(self, accessor, coordinates, dtype):
+        nested = NestedTensor([torch.empty(2, 3), torch.empty(4, 3)])
+        indices = getattr(nested, accessor)
+        for current in (0, 1, 0):
+            with torch.cuda.device(current):
+                assert_close(
+                    indices(device="cuda", dtype=dtype),
+                    torch.tensor(coordinates, device=torch.device("cuda", current), dtype=dtype),
+                )
+                for target in (0, 1):
+                    device = torch.device("cuda", target)
+                    assert_close(
+                        indices(device=device, dtype=dtype), torch.tensor(coordinates, device=device, dtype=dtype)
+                    )
+
+    @pytest.mark.parametrize("accessor", ["packed_local_indices", "packed_batch_indices"])
+    def test_packed_indices_do_not_reuse_eager_results_in_fake_mode(self, accessor):
+        fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
+        nested = NestedTensor([torch.empty(2, 3), torch.empty(4, 3)])
+        indices = getattr(nested, accessor)
+        expected = indices().clone()
+        with fake_tensor_mod.FakeTensorMode(allow_non_fake_inputs=True):
+            assert fake_tensor_mod.is_fake(indices())
+        assert_close(indices(), expected)
+
     @pytest.mark.parametrize("warm_cuda", [False, True])
     def test_packed_layout_accessors_support_empty_and_fake_tensors(self, warm_cuda):
         fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
