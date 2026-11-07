@@ -42,6 +42,139 @@ def reference_options(source: NestedTensor) -> dict:
 
 class TestElementwiseOps:
 
+    @pytest.mark.parametrize("backend", [None])
+    @pytest.mark.parametrize("derived", [False, True])
+    @pytest.mark.parametrize(
+        "shape,expected_shape",
+        [
+            ((0, 2), (0, 2)),
+            ((-1,), (0, 0)),
+            ((-1, 2), (0, 0, 2)),
+            ((2, -1), (0, 2, 0)),
+            ((0, -1), (0, 0)),
+            ((-2,), None),
+            ((-1, -1), None),
+            ((-1, 3, -1), None),
+            ((-1, 0), None),
+            ((0, 0, -1), None),
+        ],
+    )
+    def test_empty_reshape(self, device, backend, derived, shape, expected_shape):
+        torch.compiler.reset()
+        leaf = torch.randn(2, 3, device=device, dtype=torch.float64, requires_grad=True)
+        source = NT([leaf])[:0] if derived else NT([], device=device, dtype=leaf.dtype)
+
+        def reshape(value):
+            return torch.ops.aten.reshape.default(value, shape)
+
+        operation = reshape if backend is None else torch.compile(reshape, backend=backend, fullgraph=True)
+        if expected_shape is None:
+            with pytest.raises(RuntimeError):
+                torch.empty(0, device=device).reshape(shape)
+            with pytest.raises(RuntimeError):
+                operation(source)
+            return
+        output = operation(source)
+        assert isinstance(output, NT)
+        assert output.shape == expected_shape
+        torch.testing.assert_close(output.tensor, torch.empty(expected_shape, device=device, dtype=source.dtype))
+        assert output.numel() == 0
+        if derived:
+            gradient = torch.autograd.grad(output.concat.sum(), leaf)[0]
+            torch.testing.assert_close(gradient, torch.zeros_like(leaf))
+
+    @pytest.mark.parametrize("inference", [False, True])
+    @pytest.mark.parametrize(
+        "operation,reference",
+        [
+            (lambda x: torch.ops.aten.squeeze.default(self=x), lambda x: x.squeeze()),
+            (lambda x: torch.ops.aten.squeeze.dim(self=x, dim=2), lambda x: x.squeeze(1)),
+            (lambda x: torch.ops.aten.unsqueeze.default(self=x, dim=2), lambda x: x.unsqueeze(1)),
+            (lambda x: torch.ops.aten.transpose.int(self=x, dim0=1, dim1=3), lambda x: x.transpose(0, 2)),
+            (lambda x: torch.ops.aten.permute.default(self=x, dims=[0, 3, 2, 1]), lambda x: x.permute(2, 1, 0)),
+            (lambda x: torch.ops.aten.select.int(self=x, dim=1, index=-1), lambda x: x.select(0, -1)),
+            (
+                lambda x: torch.ops.aten.as_strided.default(x, x.shape, x.stride()),
+                lambda x: x.as_strided(x.shape, x.stride()),
+            ),
+        ],
+        ids=["default-squeeze", "squeeze", "unsqueeze", "transpose", "permute", "select", "as-strided"],
+    )
+    def test_native_views(self, device, inference, operation, reference):
+        parts = [torch.randn(n, 1, 3, device=device, dtype=torch.float64, requires_grad=True) for n in (2, 4)]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=(0,))
+        with torch.inference_mode(inference):
+            output = operation(source)
+            expected = [reference(part) for part in references]
+            torch.testing.assert_close(output.unbind(), expected)
+        if not inference:
+            actual_gradients = torch.autograd.grad(output.square().sum(), parts)
+            expected_gradients = torch.autograd.grad(sum(part.square().sum() for part in expected), references)
+            torch.testing.assert_close(actual_gradients, expected_gradients)
+
+    @pytest.mark.parametrize("dim", [0, 1])
+    @pytest.mark.parametrize("batch_first", [False, True])
+    @pytest.mark.parametrize("mode", ["eager", "inference"])
+    def test_scalar_unsqueeze(self, device, dim, batch_first, mode):
+        torch.compiler.reset()
+        parts = [torch.randn((), device=device, dtype=torch.float64, requires_grad=True) for _ in range(2)]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, batch_first=batch_first)
+        dense = torch.stack(references)
+
+        def unsqueeze(value):
+            return torch.ops.aten.unsqueeze.default(value, dim)
+
+        operation = unsqueeze if mode != "compiled" else torch.compile(unsqueeze, backend="aot_eager", fullgraph=True)
+        with torch.inference_mode(mode == "inference"):
+            actual = operation(source)
+            expected = dense.unsqueeze(dim)
+            assert actual.shape == expected.shape
+            assert actual.batch_first is (dim == 1)
+            assert actual.element_sizes().tolist() == [[1], [1]]
+            torch.testing.assert_close(actual.tensor, expected)
+        if mode != "inference":
+            torch.testing.assert_close(
+                torch.autograd.grad(actual.square().sum(), parts),
+                torch.autograd.grad(expected.square().sum(), references),
+            )
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("lengths", [(2, 3), (2, 4), (17, 34)])
+    def test_reshape(self, device, batch_first, lengths):
+        parts = [torch.randn(length, 4, device=device, requires_grad=True) for length in lengths]
+        source = NT([part.reshape(1, -1) for part in parts], ragged_dims=(1,), batch_first=batch_first)
+        shape = (-1, 4)
+        mixed = list(shape)
+        for output in (
+            source.reshape(shape),
+            source.reshape(mixed),
+            torch.ops.aten.reshape.default(self=source, shape=shape),
+            torch.ops.aten.view.default(self=source, size=shape),
+        ):
+            torch.testing.assert_close(output.unbind(0 if batch_first else 1), tuple(parts))
+            actual = torch.autograd.grad(output.square().sum(), parts, retain_graph=True)
+            expected = torch.autograd.grad(sum(part.square().sum() for part in parts), parts)
+            torch.testing.assert_close(actual, expected)
+
+    def test_batch_view(self, device):
+        parts = [torch.randn(length, 3, device=device, dtype=torch.float64, requires_grad=True) for length in (2, 5)]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        output = torch.ops.aten.transpose.int(NT(parts, ragged_dims=(0,)).sin(), 0, 1)
+        expected = [part.sin() for part in references]
+        assert output.batch_first is False
+        assert output.shape == (5, 2, 3)
+        torch.testing.assert_close(output.unbind(1), expected)
+        probes = [torch.randn_like(part) for part in expected]
+        actual_gradients = torch.autograd.grad(
+            sum((part * probe).sum() for part, probe in zip(output.unbind(1), probes)), parts
+        )
+        reference_gradients = torch.autograd.grad(
+            sum((part * probe).sum() for part, probe in zip(expected, probes)), references
+        )
+        torch.testing.assert_close(actual_gradients, reference_gradients)
+
     @pytest.mark.parametrize("width", [1, 4], ids=["identity", "static-expansion"])
     def test_native_expand_preserves_logical_ragged_axes(self, device, width):
         leaves = [torch.randn(1, length, device=device, dtype=torch.float64, requires_grad=True) for length in (2, 3)]
@@ -348,6 +481,49 @@ class TestInPlace:
 
 
 class TestIndexingOps:
+    @pytest.mark.parametrize("operation", [torch.select, torch.Tensor.select, torch.ops.aten.select.int])
+    @pytest.mark.parametrize("mode", ["grad", "inference", "leaf"])
+    @pytest.mark.parametrize("dim,index", [(-3, 0), (-2, -1), (-1, 1)])
+    def test_select(self, device, operation, mode, dim, index):
+        parts = [torch.randn(m, n, 3, dtype=torch.float64, device=device) for m, n in ((1, 2), (2, 4))]
+        references = [part.clone().requires_grad_() for part in parts]
+        if mode == "grad":
+            parts = [part.requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=(0, 1))
+        if mode == "leaf":
+            source.requires_grad_()
+        with torch.inference_mode(mode == "inference"):
+            output = operation(source, dim, index)
+            expected = [part.select(dim, index) for part in references]
+            torch.testing.assert_close(output.unbind(), expected)
+        if mode != "inference":
+            actual_gradients = torch.autograd.grad(output.square().sum(), source if mode == "leaf" else parts)
+            expected_gradients = torch.autograd.grad(sum(part.square().sum() for part in expected), references)
+            if mode == "leaf":
+                actual_gradients = actual_gradients[0].unbind()
+            torch.testing.assert_close(actual_gradients, expected_gradients)
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_select_layout(self, device, batch_first):
+        parts = [torch.randn(m, 3, n, device=device, requires_grad=True) for m, n in ((1, 2), (2, 4))]
+        source = NT(parts, ragged_dims=(0, 2), batch_first=batch_first).transpose(-1, -2)
+        elements = [part.transpose(-1, -2) for part in parts]
+        for dim in range(source.dim()):
+            for index in (0, -1):
+                output = source.select(dim, index)
+                batch_dim = 0 if batch_first else 1
+                if dim == batch_dim:
+                    torch.testing.assert_close(output, elements[index])
+                else:
+                    physical_dim = dim - (dim > batch_dim)
+                    expected = [part.select(physical_dim, index) for part in elements]
+                    output_batch = batch_dim - (dim < batch_dim)
+                    torch.testing.assert_close(output.unbind(output_batch), expected)
+                    actual = torch.autograd.grad(output.sum(), parts, retain_graph=True)
+                    reference = torch.autograd.grad(sum(part.sum() for part in expected), parts, retain_graph=True)
+                    torch.testing.assert_close(actual, reference)
+        with pytest.raises(IndexError):
+            source.select(1 if batch_first else 0, 1)
 
     @pytest.mark.parametrize("dim,start,stop,step", [(-1, -3, -1, 1), (1, 0, 3, 2)])
     def test_slice_noncanonical_axes_and_gradients(self, device, dim, start, stop, step):

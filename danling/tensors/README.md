@@ -353,7 +353,10 @@ lengths in tensor-backed offsets and shape metadata rather than Python tuples,
 so its tracing cost does not grow with metadata rank. The current compiled
 contract covers structural index consumers, runtime-validated same-layout
 elementwise operations, static-tail broadcasting, and static-tail
-normalization. Tensor-backed view/index remapping, padding,
+normalization. Batch-first single-ragged-axis slices support per-sample bounds and positive
+steps; compiling their data-dependent output lengths requires
+`torch._dynamo.config.capture_dynamic_output_shape_ops = True`.
+Other tensor-backed view/index remapping, padding,
 `broadcast_tensors`, global-query `einsum`, and ragged-dimension softmax remain
 staged; these paths raise an explicit compile error instead of materializing
 Python metadata or silently assuming a layout.
@@ -406,14 +409,78 @@ and `dtype` conversions are cached on the `NestedTensor` instance. An explicit
 accelerator index is required for device caching; index-less device requests
 retain PyTorch's current-device semantics and are converted on every call.
 
+`shape` and `size()` return a standard `torch.Size` of logical padded maxima;
+`size(dim)` returns the corresponding integer. Shapes, tuples, lists and single
+dimensions can be saved and loaded with ordinary `torch.save` / `torch.load`
+without importing DanLing. These values describe padded extents. Use
+`element_sizes()` for each sample's extents and `reshape_as(reference)` when
+restoring a ragged layout from flattened values.
+
+Native `view(size=...)` and `reshape(shape=...)` signatures support fullgraph
+compilation. Dtype reinterpretation preserves native storage aliases in eager
+execution. Its compiled path requires equal element sizes and the same
+real/complex kind; unsupported conversions raise a compilation error.
+PyTorch 2.13 and 2.15 cannot reliably replay element-size-changing output views
+of traceable wrappers, although the corresponding dense operations work.
+The standalone check below reproduces that limitation without importing DanLing.
+
+<details>
+<summary>Standalone PyTorch wrapper reproducer</summary>
+
+```python
+import torch
+from torch.utils._python_dispatch import return_and_correct_aliasing
+from torch.utils._pytree import tree_map_only
+
+
+class Wrapper(torch.Tensor):
+    @staticmethod
+    def __new__(cls, values, size=None, stride=None):
+        result = torch.Tensor._make_wrapper_subclass(
+            cls, values.shape if size is None else size,
+            strides=values.stride() if stride is None else stride,
+            dtype=values.dtype, device=values.device,
+            requires_grad=values.requires_grad,
+        )
+        result.values = values
+        return result
+
+    def __tensor_flatten__(self):
+        return ["values"], None
+
+    @staticmethod
+    def __tensor_unflatten__(inner, metadata, size, stride):
+        return Wrapper(inner["values"], size, stride)
+
+    @classmethod
+    def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
+        kwargs = {} if kwargs is None else kwargs
+        unwrap = lambda value: value.values
+        result = func(
+            *tree_map_only(Wrapper, unwrap, args),
+            **tree_map_only(Wrapper, unwrap, kwargs),
+        )
+        result = tree_map_only(torch.Tensor, Wrapper, result)
+        return return_and_correct_aliasing(func, args, kwargs, result)
+
+
+source = Wrapper(torch.ones(2, 4)).requires_grad_().sin()
+operation = torch.compile(
+    lambda value: value.view(torch.float64), backend="aot_eager", fullgraph=True
+)
+assert operation(source).shape == (2, 2)  # PyTorch 2.13/2.15 return (2, 1).
+```
+
+</details>
+
 `element_sizes()` returns the exact logical shape of every batch element as a
 CPU `torch.int64` tensor with shape `(batch_size, element_rank)`. Columns remain
 in logical element-dimension order regardless of `batch_first` or
 `packed_dim_order`, so zero-volume shapes such as `(0, 3)` and `(0, 7)` remain
-distinguishable even when their packed offsets coincide. The method returns the
-canonical tensor-backed metadata without a copy. It intentionally has no
-device or dtype conversion arguments; consumers that need another placement or
-integer width can apply `.to(...)` explicitly.
+distinguishable even when their packed offsets coincide. By default, the method
+returns the canonical tensor-backed metadata without a copy. Optional `device`
+and `dtype` arguments return converted metadata, cached under the same device
+and layout rules as `packed_offsets()`.
 
 `torch.repeat_interleave(input, repeats, dim=batch_dim)` and
 `input.repeat_interleave(repeats, dim=batch_dim)` accept a non-negative integer

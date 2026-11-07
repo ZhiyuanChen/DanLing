@@ -2010,6 +2010,32 @@ class TestToDtype:
 
 class TestCopySemantics:
 
+    @pytest.mark.parametrize("batch_first", [False, True])
+    def test_shape_checkpoint(self, batch_first, tmp_path, run_isolated):
+        source = NT([torch.zeros(4, 3), torch.zeros(2, 3)], ragged_dims=(0,), batch_first=batch_first)
+        path = tmp_path / "shape.pt"
+        shape = source.shape
+        torch.save(
+            {
+                "shape": shape,
+                "tuple": tuple(shape),
+                "list": list(shape),
+                "axes": [source.size(dim) for dim in range(source.ndim)],
+            },
+            path,
+        )
+        expected = tuple(shape)
+        run_isolated(f"""
+            import torch
+            values = torch.load({str(path)!r})
+            assert type(values['shape']) is torch.Size
+            assert type(values['tuple']) is tuple
+            assert type(values['list']) is list
+            for shape in values.values():
+                assert tuple(shape) == {expected!r}
+                assert all(type(dim) is int for dim in shape)
+            """)
+
     @pytest.mark.parametrize("duplicate", [copy.copy, copy.deepcopy])
     def test_copy_preserves_independent_explicit_leaf_gradients(self, duplicate):
         source = NT([torch.arange(1.0, 4.0), torch.arange(1.0, 3.0)]).requires_grad_()
@@ -2264,6 +2290,74 @@ class TestFromFactoryMethods:
 # ---------------------------------------------------------------------------
 # Tensor / Mask Properties
 # ---------------------------------------------------------------------------
+
+
+class TestSlicing:
+
+    @pytest.mark.parametrize("batch_first", [False, True])
+    @pytest.mark.parametrize("selector", [slice(None, 2), slice(1, None), slice(None, None, 2), slice(0, 0)])
+    def test_empty_batch(self, device, batch_first, selector):
+        source = NT(
+            [torch.zeros(4, 3, device=device), torch.zeros(2, 3, device=device)],
+            ragged_dims=(0,),
+            batch_first=batch_first,
+        )
+        ragged_axis = 1 if batch_first else 0
+        empty = source[:0]
+        index = [slice(None)] * empty.dim()
+        index[ragged_axis] = selector
+        expected = torch.empty(tuple(empty.shape), device=device)[tuple(index)]
+        output = empty[:, selector]
+        assert output.shape == expected.shape
+        assert output.element_sizes().shape == (0, 2)
+        assert output.numel() == 0
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager"])
+    @pytest.mark.parametrize(
+        ("selection", "transpose"),
+        [
+            pytest.param(slice(None), False, id="all"),
+            pytest.param(slice(None, -3), True, id="trim"),
+            pytest.param(slice(1, -1, 2), False, id="step"),
+            pytest.param(slice(-4, None), True, id="suffix"),
+            pytest.param(slice(2, 2), False, id="empty"),
+            pytest.param(slice(-99, 99), True, id="bounds"),
+            pytest.param(slice(-3, 2), False, id="mixed"),
+        ],
+    )
+    def test_ragged(self, device, backend, selection, transpose):
+        torch._dynamo.reset()
+
+        def select(template, values):
+            source = template.packed_like(values)
+            if transpose:
+                return source.transpose(1, 2)[..., selection]
+            return source[:, selection]
+
+        operation = select if backend is None else torch.compile(select, backend=backend, fullgraph=True, dynamic=True)
+        with torch._dynamo.config.patch(capture_dynamic_output_shape_ops=True):
+            for lengths in ((0, 1, 3, 7), (2, 5, 1, 4)):
+                template = NT([torch.empty(length, 3, device=device) for length in lengths], ragged_dims=(0,))
+                values = torch.randn(sum(lengths), 3, device=device, dtype=torch.float64, requires_grad=True)
+                reference_values = values.detach().clone().requires_grad_()
+                parts = reference_values.split(lengths)
+                expected = [part.T[..., selection] if transpose else part[selection] for part in parts]
+
+                actual = operation(template, values)
+
+                shape = (len(expected), *(max(part.shape[dim] for part in expected) for dim in range(2)))
+                assert actual.shape == torch.Size(shape)
+                torch.testing.assert_close(
+                    actual.element_sizes(), torch.tensor([tuple(part.shape) for part in expected])
+                )
+                torch.testing.assert_close(actual.unbind(), expected)
+                probes = [torch.randn_like(part) for part in expected]
+                torch.testing.assert_close(
+                    torch.autograd.grad(sum((part * probe).sum() for part, probe in zip(actual, probes)), values),
+                    torch.autograd.grad(
+                        sum((part * probe).sum() for part, probe in zip(expected, probes)), reference_values
+                    ),
+                )
 
 
 class TestIndexing:
@@ -2852,8 +2946,10 @@ class TestShapeManipulation:
         with pytest.raises(ValueError, match="Invalid permutation dims .* for shape with . dims"):
             nested_tensor3.permute(1, 2, -1)
 
-        with pytest.raises(ValueError, match="batch dimension"):
-            nested_tensor.permute(1, 0, 2, 3)
+        batch_permuted = nested_tensor.permute(1, 0, 2, 3)
+        assert batch_permuted.batch_first is False
+        assert batch_permuted.shape == (3, 2, 4, 5)
+        assert_close(batch_permuted.unbind(1), nested_tensor.unbind())
 
     def test_transpose(self):
         nested_tensor = NestedTensor([torch.randn(3, 4), torch.randn(2, 4)])
@@ -3005,12 +3101,20 @@ class TestShapeManipulation:
         reference = nested_tensor.reshape(-1, 3)
         assert_close(output, reference)
 
-    def test_view_irregular_tail_matches_elementwise_reference(self):
-        nested_tensor = NestedTensor([torch.arange(8.0).reshape(2, 4), torch.arange(8.0, 14.0).reshape(3, 2)])
+    def test_irregular_view(self):
+        parts = [torch.randn(shape, dtype=torch.float64, requires_grad=True) for shape in ((2, 4), (3, 2))]
+        nested_tensor = NestedTensor(parts)
         viewed = nested_tensor.view(len(nested_tensor), 2, -1)
 
-        for actual, element in zip(viewed, nested_tensor):
+        for actual, element in zip(viewed, parts):
             assert_close(actual, element.view(2, -1))
+        gradients = torch.autograd.grad(viewed.square().sum(), parts)
+        assert_close(gradients, [2 * part for part in parts])
+        with torch.no_grad():
+            viewed.add_(1)
+            assert_close(nested_tensor.unbind(), [part + 1 for part in parts])
+            nested_tensor.mul_(2)
+            assert_close(viewed.unbind(), [(part + 1).view(2, -1) * 2 for part in parts])
 
     def test_method_chaining(self):
         nested_tensor = NestedTensor([torch.randn(2, 3, 4), torch.randn(2, 3, 4)])
@@ -3267,6 +3371,67 @@ def _metadata_pair(lengths: tuple[int, ...], channels: int = 2) -> NestedTensor:
 
 
 class TestMetadata:
+
+    def test_shape_values(self):
+        parts = [
+            torch.arange(length * 4.0, dtype=torch.float64).reshape(length, 4).requires_grad_() for length in (17, 34)
+        ]
+        source = NT(parts, ragged_dims=(0,))
+        shape = source.shape
+        assert type(shape) is torch.Size
+        assert all(type(dim) is int for dim in shape)
+        restored = pickle.loads(pickle.dumps(shape))
+        assert shape == torch.Size((2, 34, 4))
+        assert restored == shape
+        assert repr(restored) == "torch.Size([2, 34, 4])"
+        assert torch.empty(restored).shape == restored
+        assert torch.arange(2 * 34 * 4).reshape(restored).shape == restored
+        output = source.reshape(-1).reshape_as(source)
+        torch.testing.assert_close(output.unbind(0), tuple(parts))
+        torch.testing.assert_close(torch.autograd.grad(output.square().sum(), parts), tuple(2 * part for part in parts))
+        with pytest.raises(RuntimeError, match="invalid for input"):
+            source.reshape(-1).reshape(restored)
+        current = NT([torch.ones(2), torch.ones(4)], ragged_dims=(0,))
+        old_shape = current.shape
+        current[0] = torch.ones(3)
+        assert old_shape == (2, 4)
+        assert current.shape == (2, 4)
+        torch.testing.assert_close(current.reshape(old_shape).unbind(0), current.unbind(0))
+        transposed = NT([torch.arange(length * 2.0).reshape(length, 2) for length in (1, 2)], ragged_dims=(0,)).T
+        identity = transposed.reshape(tuple(transposed.shape))
+        assert identity.batch_first == transposed.batch_first
+        torch.testing.assert_close(identity.unbind(0), transposed.unbind(0))
+        empty = NT([])
+        assert torch.empty(empty.shape).shape == (0,)
+        torch.testing.assert_close(empty.reshape(empty.shape).concat, empty.concat)
+        assert empty.reshape((*empty.shape, 2)).shape == (0, 2)
+
+    @pytest.mark.parametrize("split", [False, True])
+    @pytest.mark.parametrize("operation", ["reshape", "view"])
+    def test_captured_shape(self, split, operation):
+        torch.compiler.reset()
+        parts = [torch.randn(length, 4, requires_grad=True) for length in (2, 4)]
+        source = NT(parts, ragged_dims=(0,))
+        shape = (*source.shape[:-1], 2, 2) if split else source.shape
+
+        def reshape(value):
+            return getattr(value, operation)(shape)
+
+        compiled = torch.compile(reshape, backend="aot_eager", fullgraph=True)
+        output = compiled(source)
+        expected = tuple(part.reshape(-1, 2, 2) if split else part for part in parts)
+        torch.testing.assert_close(output.unbind(0), expected)
+        torch.testing.assert_close(torch.autograd.grad(output.square().sum(), parts), tuple(2 * part for part in parts))
+        mismatched = NT([torch.randn(length, 4) for length in (3, 4)], ragged_dims=(0,))
+        expected = tuple(part.reshape(-1, 2, 2) if split else part for part in mismatched.unbind())
+        torch.testing.assert_close(reshape(mismatched).unbind(), expected)
+        torch.testing.assert_close(compiled(mismatched).unbind(), expected)
+        wrong_batch = NT([torch.randn(2, 4)], ragged_dims=(0,))
+        with pytest.raises(RuntimeError):
+            reshape(wrong_batch)
+        with pytest.raises(RuntimeError):
+            compiled(wrong_batch)
+        torch.compiler.reset()
 
     def test_mismatch(self):
         lhs = _metadata_pair((2, 4))

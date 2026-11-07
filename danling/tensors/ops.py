@@ -2036,8 +2036,8 @@ def _concat_dim_for_tensor_dim(input: NestedTensor, dim: int) -> int | None:
 
 
 def _get_batch_dim(input: NestedTensor) -> int:
-    r"""Return the batch dimension index (0 if batch_first, else 1)."""
-    return 0 if input.batch_first else 1
+    r"""Return the owner axis, which is always zero for scalar samples."""
+    return type(input)._batch_dim_from_logical_shape(input._logical_shape, input.batch_first)
 
 
 def _normalize_dim(dim: int, ndim: int) -> int:

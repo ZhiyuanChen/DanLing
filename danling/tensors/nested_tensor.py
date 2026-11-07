@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import math
+import operator
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Iterable, SupportsFloat, TypeVar, cast, overload
 
@@ -157,6 +158,40 @@ def _metadata_tensors_equal(lhs: Tensor, rhs: Tensor) -> Tensor:
 def _metadata_tensors_equal_fake(lhs: Tensor, rhs: Tensor) -> Tensor:
     del rhs
     return lhs.new_empty((), dtype=torch.bool)
+
+
+@torch.library.custom_op("danling::_packed_slice_size_bindings", mutates_args=())
+def _packed_slice_size_bindings(lengths: Tensor) -> tuple[Tensor, Tensor]:
+    r"""Bind a slice's packed extent and actual logical maximum from CPU metadata."""
+    total = int(lengths.sum().item())
+    maximum = int(lengths.max().item()) if lengths.numel() else 0
+    return lengths.new_empty((total, 0)), lengths.new_empty((maximum, 0))
+
+
+@_packed_slice_size_bindings.register_fake
+def _packed_slice_size_bindings_fake(lengths: Tensor) -> tuple[Tensor, Tensor]:
+    ctx = torch.library.get_ctx()
+    total = ctx.new_dynamic_size(min=0)
+    maximum = ctx.new_dynamic_size(min=0)
+    return lengths.new_empty((total, 0)), lengths.new_empty((maximum, 0))
+
+
+def _packed_slice_bounds(lengths: Tensor, selector: slice) -> tuple[Tensor, Tensor]:
+    r"""Normalize positive-step Python slices independently for tensor-backed lengths."""
+    step = min(selector.indices(0)[2], _INT64_MAX)
+
+    def bound(value, default):
+        if value is None:
+            return default
+        value = max(-_INT64_MAX, min(_INT64_MAX, operator.index(value)))
+        position = lengths + value if value < 0 else torch.full_like(lengths, value)
+        return torch.minimum(position.clamp_min(0), lengths)
+
+    starts = bound(selector.start, torch.zeros_like(lengths))
+    stops = bound(selector.stop, lengths)
+    span = (stops - starts).clamp_min(0)
+    sizes = torch.div(span - 1, step, rounding_mode="floor") + 1
+    return starts, sizes
 
 
 @torch.library.custom_op("danling::_square_row_splits", mutates_args=())
@@ -4668,11 +4703,6 @@ class NestedTensor(torch.Tensor):
                 if len(varying_dims) != 1 or dim != varying_dims[0] or ragged_selector is not None:
                     return None
                 ragged_selector = (dim, selector)
-                size = int(physical_dims[dim])
-                start, stop, step = selector.indices(size)
-                retained_size = len(range(start, stop, step))
-                replace_dims[dim] = retained_size
-                physical_dims[dim] = retained_size
                 changed = True
             else:
                 size = int(physical_dims[dim])
@@ -4688,75 +4718,61 @@ class NestedTensor(torch.Tensor):
         packed_sizes = self._packed_sizes
         offsets = self._offsets
         values = self.concat[tuple(value_index)]
+        max_length_binding = vars(self).get("_compile_max_length_binding")
+        new_sizes = None
         if ragged_selector is not None:
             ragged_dim, selector = ragged_selector
-            if self._packed_sizes is None and (
-                _is_compiling() or _is_fake_tensor(self._offsets) or _is_fake_tensor(self._physical_shape)
-            ):
-                _compile_unsupported(
-                    "NestedTensor slice",
-                    "tensor-backed ragged slice metadata is not implemented",
-                )
-            if _is_fake_tensor(self._offsets):
+            if not _is_compiling() and _is_fake_tensor(self._offsets) and self._packed_sizes is not None:
                 return None
-            starts = []
-            new_sizes = []
-            lengths = (self._offsets[1:] - self._offsets[:-1]).tolist()
-            step = 1
-            for length in lengths:
-                start, stop, step = selector.indices(int(length))
-                starts.append(start)
-                new_sizes.append(len(range(start, stop, step)))
-            offsets = type(self)._offsets_from_sizes(new_sizes, dtype=self._offsets.dtype)
-            total = int(offsets[-1].item()) if len(new_sizes) > 0 else 0
-            if total == 0:
-                gather = torch.empty((0,), device=self.concat.device, dtype=torch.long)
+            lengths = (self._offsets[1:] - self._offsets[:-1]).to(dtype=torch.long)
+            _, new_sizes = _packed_slice_bounds(lengths, selector)
+            if len(self):
+                size_binding, max_length_binding = _packed_slice_size_bindings(new_sizes)
+                total = size_binding.shape[0]
             else:
-                offsets_dev = self._offsets.to(device=self.concat.device, dtype=torch.long)
-                new_offsets_dev = offsets.to(device=self.concat.device, dtype=torch.long)
-                starts_dev = torch.as_tensor(starts, device=self.concat.device, dtype=torch.long)
-                sizes_dev = torch.as_tensor(new_sizes, device=self.concat.device, dtype=torch.long)
-                batch_idx = torch.arange(len(new_sizes), device=self.concat.device, dtype=torch.long).repeat_interleave(
-                    sizes_dev, output_size=total
-                )
-                local_rank = (
-                    torch.arange(total, device=self.concat.device, dtype=torch.long) - new_offsets_dev[batch_idx]
-                )
-                gather = offsets_dev[batch_idx] + starts_dev[batch_idx] + local_rank * step
-            values = self.concat.index_select(0, gather)[tuple(value_index)]
-            if new_sizes or not (len(self) == 0 and self._ragged_dims_explicit):
-                replace_dims[ragged_dim] = max(new_sizes, default=0)
-                physical_dims[ragged_dim] = max(new_sizes, default=0)
-            packed_sizes = tuple(new_sizes)
+                # Empty batches still retain a logical extent to slice.
+                max_length_binding = self._offsets.new_empty(()).expand(physical_dims[ragged_dim])[selector]
+                total = values.shape[0]
+            torch._check(total <= values.shape[0])
+            offsets = torch.nn.functional.pad(new_sizes.cumsum(0), (1, 0)).to(dtype=self._offsets.dtype)
+            physical_dims[ragged_dim] = max_length_binding.shape[0]
+            replace_dims[ragged_dim] = max_length_binding.shape[0]
+            step = min(selector.indices(0)[2], _INT64_MAX)
+            offsets_dev = self.packed_offsets(device=values.device, dtype=torch.long)
+            starts_dev, sizes_dev = _packed_slice_bounds(offsets_dev[1:] - offsets_dev[:-1], selector)
+            new_offsets_dev = torch.nn.functional.pad(sizes_dev.cumsum(0), (1, 0))
+            batch_idx = torch.repeat_interleave(
+                torch.arange(len(self), device=values.device), sizes_dev, output_size=total
+            )
+            local_rank = torch.arange(total, device=values.device) - new_offsets_dev.index_select(0, batch_idx)
+            gather = offsets_dev.index_select(0, batch_idx) + starts_dev.index_select(0, batch_idx) + local_rank * step
+            values = values[gather]
+            packed_sizes = None
 
         element_shapes = None
-        if self._element_shapes is not None:
+        if ragged_selector is None and self._element_shapes is not None:
             if any(len(shape) != physical_rank for shape in self._element_shapes):
                 return None
             rows = []
             for shape in self._element_shapes:
                 row = []
                 for dim, size in enumerate(shape):
-                    if ragged_selector is not None and dim == ragged_selector[0]:
-                        start, stop, step = ragged_selector[1].indices(int(size))
-                        row.append(len(range(start, stop, step)))
-                    else:
-                        row.append(replace_dims.get(dim, int(size)))
+                    row.append(replace_dims.get(dim, int(size)))
                 rows.append(tuple(row))
             element_shapes = tuple(rows)
 
         new_physical_shape = self._physical_shape.clone()
         for dim, size in replace_dims.items():
-            if ragged_selector is not None and dim == ragged_selector[0] and packed_sizes is not None:
-                new_physical_shape[:, dim] = new_physical_shape.new_tensor(packed_sizes)
+            if ragged_selector is not None and dim == ragged_selector[0]:
+                new_physical_shape[:, dim] = new_sizes
             else:
                 new_physical_shape[:, dim] = size
-        return type(self).from_packed(
+        result = type(self).from_packed(
             values,
             offsets,
             new_physical_shape,
             permutation=self._permutation,
-            ragged_dims=self._ragged_dims if self._ragged_dims_explicit else None,
+            ragged_dims=self._ragged_dims if self._ragged_dims_explicit or ragged_selector is not None else None,
             batch_first=self.batch_first,
             padding_value=self.padding_value,
             mask_value=self.mask_value,
@@ -4764,9 +4780,13 @@ class NestedTensor(torch.Tensor):
             outer_size=self._logical_shape_from_physical_dims(physical_dims),
             packed_sizes=packed_sizes,
             element_shapes=element_shapes,
-            ragged_offsets=self._persistent_ragged_offsets() if ragged_selector is None else None,
+            ragged_offsets=self._persistent_ragged_offsets() if ragged_selector is None else (offsets,),
             validate=False,
+            mark_dynamic=not _is_compiling(),
         )
+        if max_length_binding is not None:
+            result._max_length_binding = max_length_binding
+        return result._packed_like_unchecked(values, reuse_wrapper=True)
 
     def _packed_static_integer_index(self, rest: tuple) -> Self | None:
         r"""Consume one static element axis directly on packed values."""
@@ -5005,6 +5025,20 @@ class NestedTensor(torch.Tensor):
                 n_expand = self.dim() - n_explicit
                 index = index[:eidx] + (slice(None),) * n_expand + index[eidx + 1 :]
 
+            # Python's 0::1 and : spell the same full slice on every axis,
+            # including ragged ones whose extents are not known during tracing.
+            index = tuple(
+                (
+                    slice(None)
+                    if isinstance(entry, slice)
+                    and (entry.start is None or (isinstance(entry.start, int) and entry.start == 0))
+                    and entry.stop is None
+                    and (entry.step is None or (isinstance(entry.step, int) and entry.step == 1))
+                    else entry
+                )
+                for entry in index
+            )
+
             batch_index, *rest = index
 
             symbolic_tensor_metadata = self._packed_sizes is None and (
@@ -5017,6 +5051,9 @@ class NestedTensor(torch.Tensor):
                 integer_output = self._packed_static_integer_index(tuple(rest))
                 if integer_output is not None:
                     return integer_output
+                slice_output = self._packed_physical_slice(tuple(rest))
+                if slice_output is not None:
+                    return slice_output
                 first_selector = rest[0]
                 if isinstance(first_selector, int):
                     _compile_unsupported(
@@ -5754,9 +5791,11 @@ class NestedTensor(torch.Tensor):
         self.requires_grad = requires_grad
         return self
 
-    def reshape(self, *shape) -> Self:
+    def reshape(self, *shape, **kwargs) -> Self:
         r"""
         Reshape each tensor in the NestedTensor.
+
+        The target also accepts the native ``shape=`` keyword.
 
         Args:
             *shape (int | tuple[int, ...] | list[int] | torch.Size): Target sizes as separate
@@ -5771,10 +5810,9 @@ class NestedTensor(torch.Tensor):
             >>> reshaped.shape
             torch.Size([2, 4])
         """
-        if not shape:
-            raise TypeError("reshape() missing shape")
-        target_shape = shape[0] if len(shape) == 1 and isinstance(shape[0], (tuple, list, torch.Size)) else shape
-        return cast(Self, torch.reshape(self, target_shape))
+        from .torch_functions import _reshape_method
+
+        return cast(Self, _reshape_method(self, *shape, **kwargs))
 
     def repeat_batch(self, repeats: int, *, output_size: int | None = None) -> Self:
         r"""Repeat complete logical batch elements in interleaved order."""
@@ -5803,6 +5841,10 @@ class NestedTensor(torch.Tensor):
         r"""
         Returns the size of the self `NestedTensor`.
 
+        The returned shape contains logical padded maxima, with ordinary integer
+        dimensions in eager execution. Use ``element_sizes()`` to inspect each
+        sample's extent or ``reshape_as(reference)`` to restore a ragged layout.
+
         Args:
             dim: If not specified, the returned value is a `torch.Size`, a subclass of `tuple`.
                 If specified, returns an `int` holding the size of that dimension.
@@ -5825,12 +5867,12 @@ class NestedTensor(torch.Tensor):
         else:
             with torch._C.DisableTorchFunctionSubclass():
                 full_size = torch.Tensor.size(self)
+        if dim is not None and not -len(full_size) <= dim < len(full_size):
+            raise IndexError(
+                f"Dimension out of range (expected to be in range of [{-len(full_size)}, "
+                f"{len(full_size) - 1}], but got {dim})"
+            )
         if dim is not None:
-            if not -len(full_size) <= dim < len(full_size):
-                raise IndexError(
-                    f"Dimension out of range (expected to be in range of [{-len(full_size)}, "
-                    f"{len(full_size) - 1}], but got {dim})"
-                )
             return full_size[dim]
         return full_size
 
@@ -5983,9 +6025,11 @@ class NestedTensor(torch.Tensor):
         r"""Rotate each tensor in the NestedTensor by 90 degrees in the given plane."""
         return cast(Self, torch.rot90(self, k, tuple(dims)))
 
-    def view(self, *shape) -> Self:
+    def view(self, *shape, **kwargs) -> Self:
         r"""
         View each tensor in the NestedTensor with a different shape.
+
+        The native ``size=`` and ``dtype=`` overloads share this entry point.
 
         Args:
             *shape (int | tuple[int, ...] | list[int] | torch.Size): Target sizes as separate
@@ -6002,12 +6046,9 @@ class NestedTensor(torch.Tensor):
             >>> type(viewed).__name__
             'NestedTensor'
         """
-        if not shape:
-            raise TypeError("view() missing shape")
-        target_shape = shape[0] if len(shape) == 1 and isinstance(shape[0], (tuple, list, torch.Size)) else shape
-        return NestedTensorAtenRegistry[torch.ops.aten.view.default](
-            torch.ops.aten.view.default, (self, list(target_shape)), {}
-        )
+        from .torch_functions import _view_method
+
+        return cast(Self, _view_method(self, *shape, **kwargs))
 
     def _view_shapes(self, shape) -> list[tuple[int, ...]]:  # type: ignore[valid-type]
         r"""
@@ -6396,6 +6437,34 @@ def _traceable_cdist(
 # method itself; registering the substitution without assigning it lets AOT
 # build a backward graph but disconnects pre-existing packed leaves.
 NestedTensor.cdist = _traceable_cdist  # type: ignore[method-assign]
+
+
+_reshape_eager = NestedTensor.reshape
+
+
+@torch.compiler.substitute_in_graph(_reshape_eager)
+def _traceable_reshape(self: NestedTensor, *shape, **kwargs) -> NestedTensor:
+    r"""Trace the shared reshape implementation for wrapper-subclass inputs."""
+    from .torch_functions import _reshape_method
+
+    return _reshape_method(self, *shape, **kwargs)
+
+
+NestedTensor.reshape = _traceable_reshape  # type: ignore[method-assign]
+
+
+_view_eager = NestedTensor.view
+
+
+@torch.compiler.substitute_in_graph(_view_eager)
+def _traceable_view(self: NestedTensor, *shape, **kwargs) -> NestedTensor:
+    r"""Trace the shared view implementation for wrapper-subclass inputs."""
+    from .torch_functions import _view_method
+
+    return _view_method(self, *shape, **kwargs)
+
+
+NestedTensor.view = _traceable_view  # type: ignore[method-assign]
 
 
 _cumprod_eager = NestedTensor.cumprod

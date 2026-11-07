@@ -482,6 +482,35 @@ class TestArithmeticFunctions:
 
 class TestCompile:
 
+    @pytest.mark.parametrize("native", [False, True])
+    def test_captured_shape(self, native):
+        parts = [torch.randn(length, 4, requires_grad=True) for length in (2, 4)]
+        source = NT(parts, ragged_dims=(0,))
+        shape = source.shape
+
+        def operation(value, target=shape):
+            if native:
+                return torch.ops.aten.reshape.default(value, target)
+            return torch.reshape(value, target)
+
+        compiled = torch.compile(operation, backend="aot_eager", fullgraph=True, dynamic=True)
+        output = compiled(source)
+        torch.testing.assert_close(output.unbind(0), tuple(parts))
+        torch.testing.assert_close(
+            torch.autograd.grad(output.concat.square().sum(), parts), tuple(2 * part for part in parts)
+        )
+        changed = [torch.randn(length, 4, requires_grad=True) for length in (3, 4)]
+        changed_output = compiled(NT(changed, ragged_dims=(0,)))
+        torch.testing.assert_close(changed_output.unbind(0), tuple(changed))
+        torch.testing.assert_close(
+            torch.autograd.grad(changed_output.concat.square().sum(), changed), tuple(2 * part for part in changed)
+        )
+        torch.testing.assert_close(compiled(source, tuple(map(int, shape))).unbind(0), tuple(parts))
+        dense = torch.randn(2, 4, 4, requires_grad=True)
+        dense_output = compiled(dense)
+        torch.testing.assert_close(dense_output, dense)
+        torch.testing.assert_close(torch.autograd.grad(dense_output.square().sum(), dense)[0], 2 * dense)
+
     @pytest.fixture(autouse=True)
     def isolate_compiler(self):
         # Independent tests can otherwise exhaust the shared torch function wrapper cache.
@@ -635,16 +664,44 @@ class TestDimensionTransforms:
         reference = torch.moveaxis(nt.tensor, 1, 2)
         assert_close(output, reference)
 
-    def test_squeeze_default(self, device, float_dtype):
-        nt = NT(
-            [
-                torch.randn(2, 1, 3, device=device, dtype=float_dtype),
-                torch.randn(3, 1, 3, device=device, dtype=float_dtype),
-            ]
+    @pytest.mark.parametrize(
+        "shapes,ragged,batch_first",
+        [(((2, 1, 3), (3, 1, 3)), (0,), True), (((2, 1, 3),), (1,), True), (((1, 2, 3), (1, 4, 3)), (1,), False)],
+        ids=["static", "packed-singleton", "before-batch"],
+    )
+    def test_squeeze_default(self, device, float_dtype, shapes, ragged, batch_first):
+        parts = [torch.randn(shape, device=device, dtype=float_dtype, requires_grad=True) for shape in shapes]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=ragged, batch_first=batch_first)
+        output = torch.squeeze(source)
+        expected = [part.squeeze() for part in references]
+        assert output.batch_first
+        torch.testing.assert_close(output.unbind(), expected)
+        gradients = torch.autograd.grad(output.square().sum(), parts)
+        reference_gradients = torch.autograd.grad(sum(part.square().sum() for part in expected), references)
+        torch.testing.assert_close(gradients, reference_gradients)
+
+    @pytest.mark.parametrize("native", [False, True])
+    def test_unbind_before_batch(self, device, native):
+        parts = [torch.randn(2, n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in (2, 4)]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=(1,), batch_first=False)
+        output = torch.ops.aten.unbind.int(self=source, dim=0) if native else source.unbind(0)
+        expected = [[part.select(0, index) for part in references] for index in range(2)]
+        for actual, reference in zip(output, expected):
+            assert actual.batch_first
+            assert actual.shape == (2, 4, 3)
+            torch.testing.assert_close(actual.unbind(), reference)
+        gradients = torch.autograd.grad(sum(part.square().sum() for part in output), parts)
+        reference_gradients = torch.autograd.grad(
+            sum(part.square().sum() for group in expected for part in group), references
         )
-        output = torch.squeeze(nt)
-        reference = NT([torch.squeeze(t) for t in nt], **reference_options(nt))
-        assert_close(output, reference)
+        torch.testing.assert_close(gradients, reference_gradients)
+        with torch.inference_mode():
+            output = torch.ops.aten.unbind.int(self=source, dim=0) if native else source.unbind(0)
+            for actual, reference in zip(output, expected):
+                assert actual.batch_first
+                torch.testing.assert_close(actual.unbind(), reference)
 
     def test_squeeze_default_with_all_ragged_ones(self, device, float_dtype):
         nt = NT(
@@ -1189,6 +1246,174 @@ class TestEinsum:
 
 class TestFlattenUnflatten:
 
+    @pytest.mark.parametrize("backend", [None, "aot_eager"])
+    @pytest.mark.parametrize("method,keyword", [(torch.Tensor.view, "size"), (torch.Tensor.reshape, "shape")])
+    def test_native_signature(self, device, method, keyword, backend):
+        torch.compiler.reset()
+        parts = [torch.arange(6.0, device=device).requires_grad_() for _ in range(2)]
+        source = NT(parts, ragged_dims=(0,))
+
+        def operation(value):
+            return method(value, **{keyword: (3, 2)})
+
+        run = operation if backend is None else torch.compile(operation, backend=backend, fullgraph=True)
+        output = run(source)
+        torch.testing.assert_close(output.unbind(), [part.reshape(3, 2) for part in parts])
+        torch.testing.assert_close(
+            torch.autograd.grad(output.concat.square().sum(), parts), [2 * part for part in parts]
+        )
+        with pytest.raises(TypeError):
+            method(source, (3, 2), **{keyword: (3, 2)})
+        with pytest.raises(TypeError):
+            method(source)
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager"])
+    @pytest.mark.parametrize(
+        "source_dtype,dtype",
+        [
+            (torch.float32, torch.int32),
+            (torch.float32, torch.uint8),
+            (torch.float32, torch.float64),
+            (torch.complex64, torch.float64),
+        ],
+    )
+    @pytest.mark.parametrize("ragged", [False, True])
+    def test_dtype_view(self, device, source_dtype, dtype, ragged, backend):
+        torch.compiler.reset()
+        shapes = [(2, 4), (3, 6 if ragged else 4)]
+        source = NT(
+            [
+                torch.arange(math.prod(shape), device=device, dtype=torch.float32)
+                .to(source_dtype)
+                .reshape(shape)
+                .requires_grad_()
+                for shape in shapes
+            ],
+            ragged_dims=(0, 1) if ragged else (0,),
+        ).sin()
+        expected = [part.view(dtype) for part in source.unbind()]
+        loss = source.square().sum()
+        native_loss = torch.ops.aten.square.default(source).sum()
+
+        def operation(value):
+            return torch.Tensor.view(value, dtype)
+
+        run = operation if backend is None else torch.compile(operation, backend=backend, fullgraph=True)
+        if backend is not None and (
+            source_dtype.itemsize != dtype.itemsize or source_dtype.is_complex != dtype.is_complex
+        ):
+            with pytest.raises(torch._dynamo.exc.Unsupported, match="eager-only"):
+                run(source)
+            return
+        output = run(source)
+        torch.testing.assert_close(output.unbind(), expected)
+        assert not output.requires_grad
+        output.zero_()
+        torch.testing.assert_close(source.concat, torch.zeros_like(source.concat))
+        with pytest.raises(RuntimeError, match="modified"):
+            loss.backward(torch.ones_like(loss))
+        with pytest.raises(RuntimeError, match="modified"):
+            native_loss.backward(torch.ones_like(native_loss))
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager"])
+    @pytest.mark.parametrize("batch_first", [False, True])
+    @pytest.mark.parametrize("batched", [False, True])
+    def test_dense_template(self, device, batch_first, batched, backend):
+        torch.compiler.reset()
+        parts = [torch.arange(6.0, device=device, dtype=torch.float64).requires_grad_() for _ in range(2)]
+        source = NT(parts, ragged_dims=(0,), batch_first=batch_first)
+        shape = (2, 3, 2) if batch_first else (3, 2, 2)
+        reference = torch.empty(shape if batched else (3, 2), device=device)
+
+        def reshape(value, template):
+            return value.reshape_as(template)
+
+        operation = reshape if backend is None else torch.compile(reshape, backend=backend, fullgraph=True)
+        output = operation(source, reference)
+        torch.testing.assert_close(output.unbind(0 if batch_first else 1), [part.reshape(3, 2) for part in parts])
+        torch.testing.assert_close(
+            torch.autograd.grad(output.concat.square().sum(), parts), [2 * part for part in parts]
+        )
+
+    @pytest.mark.parametrize("transposed", [False, True])
+    def test_view_as(self, device, transposed):
+        parts = [torch.arange(n * n, device=device, dtype=torch.float64).requires_grad_() for n in (2, 3)]
+        source = NT(parts, ragged_dims=(0,))
+        reference = NT([torch.empty(n, n, device=device) for n in (2, 3)], ragged_dims=(0, 1))
+        if transposed:
+            reference = reference.transpose(1, 2)
+        output = source.view_as(reference)
+        expected = tuple(part.view(n, n) for part, n in zip(parts, (2, 3)))
+        torch.testing.assert_close(output.unbind(0), expected)
+        native = torch.ops.aten.view_as.default(self=source, other=reference)
+        torch.testing.assert_close(native.unbind(0), expected)
+        torch.testing.assert_close(torch.autograd.grad(output.square().sum(), parts), tuple(2 * part for part in parts))
+        with torch.no_grad():
+            source.concat.add_(7)
+            torch.testing.assert_close(output.concat, source.concat)
+
+    def test_view_strides(self, device):
+        uniform = NT([torch.arange(6.0, device=device), torch.arange(6.0, device=device)], ragged_dims=(0,))
+        dense_reference = torch.empty(3, 2, device=device)
+        torch.testing.assert_close(
+            uniform.view_as(dense_reference).unbind(0),
+            tuple(part.view_as(dense_reference) for part in uniform.unbind(0)),
+        )
+        parts = [torch.arange(n * 3.0, device=device).reshape(n, 3) for n in (2, 4)]
+        contiguous = NT(parts, ragged_dims=(0,))
+        viewed = contiguous.view(1, -1)
+        torch.testing.assert_close(viewed.unbind(0), tuple(part.view(1, -1) for part in parts))
+        contiguous.concat.add_(7)
+        torch.testing.assert_close(viewed.unbind(0), tuple((part + 7).view(1, -1) for part in parts))
+        source = NT(parts, ragged_dims=(0,)).transpose(1, 2)
+        with pytest.raises(RuntimeError, match="view size is not compatible"):
+            source.view(-1)
+        torch.testing.assert_close(source.reshape(-1).unbind(0), tuple(part.T.reshape(-1) for part in parts))
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager"])
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("transposed", [True, False])
+    def test_reshape_as(self, device, batch_first, transposed, native, backend):
+        torch.compiler.reset()
+        parts = [torch.randn(n * n, device=device, dtype=torch.float64, requires_grad=True) for n in (2, 3)]
+        source = NT(parts, ragged_dims=(0,), batch_first=batch_first, padding_value=-1, mask_value=False)
+        reference = NT(
+            [torch.empty(n, n, device=device) for n in (2, 3)],
+            ragged_dims=(0, 1),
+            batch_first=batch_first,
+            padding_value=99,
+            mask_value=True,
+        )
+        if transposed:
+            reference = reference.transpose(1, 2) if batch_first else reference.transpose(0, 2)
+
+        def reshape(value, template):
+            if native:
+                return torch.ops.aten.reshape_as.default(self=value, other=template)
+            return value.reshape_as(template)
+
+        operation = reshape if backend is None else torch.compile(reshape, backend=backend, fullgraph=True)
+        output = operation(source, reference)
+        expected = [part.reshape(n, n) for part, n in zip(parts, (2, 3))]
+        torch.testing.assert_close(output.unbind(0 if batch_first else 1), expected)
+        assert output.ragged_dims == reference.ragged_dims
+        assert output.padding_value == source.padding_value
+        assert output.mask_value == source.mask_value
+        gradients = torch.autograd.grad(output.square().sum(), parts)
+        torch.testing.assert_close(gradients, [2 * part for part in parts])
+        with torch.inference_mode():
+            torch.testing.assert_close(source.reshape_as(reference).unbind(0 if batch_first else 1), expected)
+        with pytest.raises(RuntimeError, match="same number"):
+            NT([torch.ones(3), torch.ones(9)], ragged_dims=(0,)).reshape_as(reference)
+        wrong = NT(
+            [torch.ones(length, device=device, dtype=torch.float64) for length in (5, 8)],
+            ragged_dims=(0,),
+            batch_first=batch_first,
+        )
+        with pytest.raises(RuntimeError, match="same number"):
+            operation(wrong, reference)
+
     def test_flatten_and_unflatten_round_trip(self):
         nt = NT(
             [
@@ -1201,6 +1426,36 @@ class TestFlattenUnflatten:
         assert_close(flattened, reference)
         unflattened = torch.unflatten(flattened, dim=1, sizes=(2, 2, 2))
         assert_close(unflattened, nt)
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize(
+        "spatial_sizes",
+        [((2, 4), (2, 4)), ((2, 4), (3, 4)), ((2, 6), (5, 2))],
+        ids=["equal", "unequal", "different-axis-maxima"],
+    )
+    def test_flatten_ragged_spatial_axes_preserves_structure_and_vjp(self, device, batch_first, spatial_sizes):
+        parts = [
+            torch.randn(3, height, width, device=device, dtype=torch.float64, requires_grad=True)
+            for height, width in spatial_sizes
+        ]
+        source = NT(parts, ragged_dims=(1, 2), batch_first=batch_first)
+        flattened = source.flatten(2)
+        max_tokens = max(height * width for height, width in spatial_sizes)
+        expected_shape = (2, 3, max_tokens) if batch_first else (3, 2, max_tokens)
+        assert flattened.shape == expected_shape
+        assert flattened.ragged_dims == (1,)
+        tokens = flattened.transpose(1, 2) if batch_first else flattened.transpose(0, 2)
+        positions = [
+            torch.randn(height * width, 3, device=device, dtype=torch.float64) for height, width in spatial_sizes
+        ]
+        position = NT(positions, ragged_dims=(0,), batch_first=batch_first)
+        output = tokens + position
+        expected = [part.flatten(1).T + position for part, position in zip(parts, positions)]
+        assert output.ragged_dims == (0,)
+        torch.testing.assert_close(output.unbind(0 if batch_first else 1), expected)
+        gradients = torch.autograd.grad(output.concat.square().sum(), parts)
+        expected_gradients = torch.autograd.grad(sum(value.square().sum() for value in expected), parts)
+        torch.testing.assert_close(gradients, expected_gradients)
 
     def test_flatten_static_dims_after_multi_ragged_prefix(self):
         nt = NT(
@@ -1298,10 +1553,32 @@ class TestFlattenUnflatten:
         assert not isinstance(dense, NestedTensor)
         assert_close(dense, torch.flatten(grid.tensor, 1, 2))
 
-    def test_unflatten_batch_dim_not_supported(self):
-        nt = NestedTensor([torch.tensor([[1, 2]])])
-        with pytest.raises(ValueError):
-            torch.unflatten(nt, dim=0, sizes=(1, 2))
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_unflatten_batch(self, device, batch_first):
+        parts = [torch.randn(n, n, device=device, dtype=torch.float64, requires_grad=True) for n in (2, 2, 3, 3)]
+        source = NT(parts, ragged_dims=(0, 1), batch_first=batch_first)
+        dim = 0 if batch_first else 1
+        output = source.unflatten(dim, (2, -1))
+        member_dim = 0 if batch_first else 1
+        expected = [torch.stack(parts[start : start + 2], dim=member_dim) for start in (0, 2)]
+        torch.testing.assert_close(output.unbind(dim), expected)
+        native = torch.ops.aten.unflatten.int(self=source, dim=dim, sizes=[2, -1])
+        torch.testing.assert_close(native.unbind(dim), expected)
+        assert output.ragged_dims == ((1, 2) if batch_first else (0, 2))
+        gradients = torch.autograd.grad(output.square().sum(), parts)
+        torch.testing.assert_close(gradients, [2 * part for part in parts])
+        with torch.inference_mode():
+            torch.testing.assert_close(source.unflatten(dim, (2, -1)).unbind(dim), expected)
+        with pytest.raises(ValueError, match="within each"):
+            source.unflatten(dim, (1, 4))
+        with pytest.raises(RuntimeError):
+            source.unflatten(dim, (3, 2))
+
+    @pytest.mark.parametrize("sizes", [(0, 2), (2, 0)])
+    def test_unflatten_empty(self, sizes):
+        output = NT([]).unflatten(0, sizes)
+        assert output.shape == sizes
+        assert output.numel() == 0
 
 
 class TestExpand:
@@ -1358,7 +1635,7 @@ class TestExpand:
         reference_parts = [part.detach().clone().requires_grad_() for part in parts]
         nt = NT(parts)
 
-        output = nt.unsqueeze(-3).expand(-1, 4, -1, -1)
+        output = nt.unsqueeze(-3).expand(-1, 4, nt.size(-2), -1)
         reference = [part.unsqueeze(0).expand(4, -1, -1) for part in reference_parts]
         for actual, expected in zip(output, reference):
             assert_close(actual, expected)
@@ -1375,7 +1652,7 @@ class TestExpand:
     def test_expand_sample_axis_compiles_with_vjp(self, device):
         def consume(template, values):
             reference_positions = template.packed_like(values)
-            sampled = reference_positions.unsqueeze(-3).expand(-1, 4, -1, -1)
+            sampled = reference_positions.unsqueeze(-3).expand(-1, 4, reference_positions.size(-2), -1)
             return sampled.concat.square().sum()
 
         compiled = torch.compile(consume, backend="aot_eager", fullgraph=True, dynamic=True)
@@ -7676,6 +7953,44 @@ class TestCat:
             torch.cat((NT(left), NT(right)), dim=0)
 
 
+class TestBatchTransforms:
+
+    @pytest.mark.parametrize("operation", ["stack", "movedim", "permute"])
+    def test_values(self, device, operation):
+        parts = [torch.randn(length, 3, device=device, dtype=torch.float64, requires_grad=True) for length in (2, 5)]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=(0,))
+        if operation == "stack":
+            output = torch.stack((source, source.sin()), dim=0)
+            expected = [torch.stack((part, part.sin())) for part in references]
+            shape = (2, 2, 5, 3)
+        else:
+            output = torch.movedim(source, 0, 1) if operation == "movedim" else torch.permute(source, (1, 0, 2))
+            expected = references
+            shape = (5, 2, 3)
+        assert output.batch_first is False
+        assert output.shape == shape
+        torch.testing.assert_close(output.unbind(1), expected)
+        restored = torch.permute(output, (1, 0, *range(2, output.dim())))
+        assert restored.batch_first is True
+        torch.testing.assert_close(restored.unbind(0), expected)
+        probes = [torch.randn_like(part) for part in expected]
+        actual_gradients = torch.autograd.grad(
+            sum((part * probe).sum() for part, probe in zip(restored, probes)), parts
+        )
+        reference_gradients = torch.autograd.grad(
+            sum((part * probe).sum() for part, probe in zip(expected, probes)), references
+        )
+        torch.testing.assert_close(actual_gradients, reference_gradients)
+
+    def test_limit(self):
+        source = NT([torch.zeros(2, 3), torch.zeros(5, 3)], ragged_dims=(0,))
+        with pytest.raises(ValueError, match="position zero or one"):
+            torch.permute(source, (1, 2, 0))
+        with pytest.raises(ValueError, match="position zero or one"):
+            torch.movedim(source, 0, 2)
+
+
 class TestStack:
 
     @pytest.mark.parametrize("batch_first", [False, True])
@@ -7692,11 +8007,12 @@ class TestStack:
 
         _assert_elements(output, [torch.stack((a, b), dim=1) for a, b in zip(left, right)])
 
-    def test_batch_dimension_is_refused(self):
-        nested = NT(_element_values([(3, 4), (5, 4)]))
+    @pytest.mark.parametrize("dim", [0, 1])
+    def test_batch_limit(self, dim):
+        nested = NT(_element_values([(3, 4), (5, 4)]), batch_first=False)
 
         with pytest.raises(NotImplementedError, match="batch dimension"):
-            torch.stack((nested, nested), dim=0)
+            torch.stack((nested, nested), dim=dim)
 
     def test_common_stack_aliases(self):
         left = _element_values([(3, 4), (5, 4)])

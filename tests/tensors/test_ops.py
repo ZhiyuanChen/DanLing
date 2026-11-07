@@ -355,6 +355,20 @@ class TestBroadcastTensors:
 
 class TestLayoutPreservation:
 
+    @pytest.mark.parametrize("batch_first", [False, True])
+    def test_scalar_owner(self, device, batch_first):
+        parts = [torch.randn((), device=device, dtype=torch.float64, requires_grad=True) for _ in range(2)]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, batch_first=batch_first)
+        assert source.shape == (2,)
+        torch.testing.assert_close(source.unbind(0), parts)
+        actual = source.unsqueeze(-1)
+        expected = torch.stack(references).unsqueeze(-1)
+        torch.testing.assert_close(actual.tensor, expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(actual.square().sum(), parts), torch.autograd.grad(expected.square().sum(), references)
+        )
+
     @pytest.mark.parametrize("lengths", [(3, 3), (3,), (0, 4)], ids=["equal", "single", "empty"])
     def test_declared_ragged_dimension_is_preserved(self, lengths):
         elements = [torch.randn(2, length, 5) for length in lengths]
