@@ -431,6 +431,8 @@ def _build_sdpa_mask(
     is_causal: bool,
     query_tensor: Tensor,
     key_tensor: Tensor,
+    *,
+    enable_gqa: bool = False,
 ) -> tuple:
     r"""
     Build combined attention mask for batched SDPA.
@@ -447,6 +449,10 @@ def _build_sdpa_mask(
     key_attn_mask = None
     if isinstance(key, NestedTensor):
         key_mask = _nested_attention_valid_mask(key, key_tensor)
+        if enable_gqa and _is_native_attention_layout(key) and key_mask.dim() == 3:
+            # Native layout has a static head axis, so validity is shared over
+            # every key head. Broadcast one mask to all query heads in GQA.
+            key_mask = key_mask[:, :1, :]
 
         # Expand to match SDPA score dimensions (batch/head..., T_q, T_k).
         # Key mask is (..., T_k) -> (..., 1, T_k).
@@ -510,6 +516,7 @@ def _sdpa_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
     value = args[2] if len(args) > 2 else kwargs.get("value")
     attn_mask = args[3] if len(args) > 3 else kwargs.get("attn_mask")
     dropout_p = float(cast(Any, args[4] if len(args) > 4 else kwargs.get("dropout_p", 0.0)))
+    is_causal = bool(args[5] if len(args) > 5 else kwargs.get("is_causal", False))
     enable_gqa = bool(args[7] if len(args) > 7 else kwargs.get("enable_gqa", False))
 
     if not isinstance(query, NestedTensor):
@@ -520,7 +527,7 @@ def _sdpa_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
         return True
     if query.batch_first != key.batch_first or query.batch_first != value.batch_first:
         return True
-    if attn_mask is not None or enable_gqa:
+    if attn_mask is not None:
         return False
     if not (
         _is_native_attention_layout(query)
@@ -533,9 +540,23 @@ def _sdpa_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
         query.dtype in _LOW_PRECISION_CUDA_DTYPES
         and torch.backends.cuda.flash_sdp_enabled()
         and max(query.concat.size(-1), value.concat.size(-1)) <= 256
+        and _sdpa_causal_alignment_is_safe(query, key, is_causal)
     ):
         return True
-    return dropout_p == 0.0 and _flex_attention_available
+    return not enable_gqa and dropout_p == 0.0 and _flex_attention_available
+
+
+def _sdpa_causal_alignment_is_safe(query: NestedTensor, key: NestedTensor, is_causal: bool) -> bool:
+    r"""Flash's bottom-right causal alignment equals SDPA's upper-left rule when lengths match."""
+    if not is_causal or query._offsets is key._offsets:
+        return True
+    from .aten_functions import _is_fake_tensor
+
+    # Compiled/fake execution checks equal partition contents at runtime before
+    # the native call rather than specializing or relying on object identity.
+    if _is_compiling() or _is_fake_tensor(query._offsets) or _is_fake_tensor(key._offsets):
+        return True
+    return torch.equal(query._offsets, key._offsets)
 
 
 def _mha_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
@@ -660,7 +681,7 @@ def _as_flex_packed_dense(nt: NestedTensor) -> Tensor:
         raise RuntimeError("FlexAttention is unavailable in this PyTorch build.")
     if not _is_native_attention_layout(nt):
         raise ValueError("DanLing FlexAttention expects elements shaped like (heads, seq, dim).")
-    return nt.concat.contiguous().movedim(1, 0).unsqueeze(0).contiguous()
+    return nt.concat.contiguous().movedim(1, 0).unsqueeze(0)
 
 
 def _restore_flex_dense_tensor(output: Tensor, query: NestedTensor) -> NestedTensor:
@@ -1523,14 +1544,34 @@ def scaled_dot_product_attention(
         and _is_native_attention_layout(key)
         and _is_native_attention_layout(value)
         and attn_mask is None
-        and not enable_gqa
         and query.concat.is_cuda
     ):
         if (
             query.dtype in _LOW_PRECISION_CUDA_DTYPES
             and torch.backends.cuda.flash_sdp_enabled()
             and max(query.concat.size(-1), value.concat.size(-1)) <= 256
+            and _sdpa_causal_alignment_is_safe(query, key, is_causal)
         ):
+            if enable_gqa:
+                # Heads are static feature axes of the packed values. Inspect
+                # raw shape metadata rather than creating autograd projections.
+                q_heads = query._packed_values.shape[1]
+                k_heads = key._packed_values.shape[1]
+                v_heads = value._packed_values.shape[1]
+                torch._check(k_heads > 0, lambda: "GQA requires a positive number of key/value heads")
+                torch._check(k_heads == v_heads, lambda: "GQA key and value head counts must match")
+                torch._check(q_heads % k_heads == 0, lambda: "GQA query heads must be divisible by key/value heads")
+            if (
+                is_causal
+                and query._offsets is not key._offsets
+                and not type(query)._meta_tensor_equal(
+                    query._offsets,
+                    key._offsets,
+                    "Compiled causal SDPA requires matching query and key partitions",
+                    runtime_assert=True,
+                )
+            ):
+                raise ValueError("Causal SDPA requires matching query and key partitions for native Flash")
             return _sdpa_via_native_flash(
                 query,
                 key,
@@ -1539,7 +1580,7 @@ def scaled_dot_product_attention(
                 is_causal=is_causal,
                 scale=scale,
             )
-        if dropout_p == 0.0 and _flex_attention_available:
+        if not enable_gqa and dropout_p == 0.0 and _flex_attention_available:
             return flex_attention(query, key, value, scale=scale, enable_gqa=enable_gqa, is_causal=is_causal)
 
     if _is_compiling():
@@ -1567,7 +1608,9 @@ def scaled_dot_product_attention(
         if isinstance(user_attn_mask, Tensor) and user_attn_mask.dim() >= 3:
             user_attn_mask = user_attn_mask.transpose(0, 1)
 
-    combined_mask, is_causal = _build_sdpa_mask(key, user_attn_mask, is_causal, q_padded, k_padded)
+    combined_mask, is_causal = _build_sdpa_mask(
+        key, user_attn_mask, is_causal, q_padded, k_padded, enable_gqa=enable_gqa
+    )
     if (
         combined_mask is not None
         and isinstance(combined_mask, Tensor)
