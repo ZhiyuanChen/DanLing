@@ -467,6 +467,133 @@ def _parallel_gloo_optimizer_skip_worker(rank: int, world_size: int, workspace_r
         runner.close()
 
 
+def _query_context_ddp_worker(rank: int, world_size: int, workspace_root: str) -> None:
+    class QueryModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.first = nn.Linear(3, 4, bias=False, dtype=torch.float64)
+            self.second = nn.Linear(4, 2, bias=False, dtype=torch.float64)
+            with torch.no_grad():
+                self.first.weight.copy_(torch.arange(12).reshape(4, 3) / 19)
+                self.second.weight.copy_(torch.arange(8).reshape(2, 4) / 13)
+
+        def parallelize(self, parallel):
+            self.parallel = parallel
+            return nn.parallel.DistributedDataParallel(self, process_group=parallel.group("loss"))
+
+        def forward(self, value):
+            rows = torch.arange(self.parallel.topology.axis_rank("context"), value.shape[0], 2)
+            local = self.first(value.index_select(0, rows))
+            partial = local.new_zeros((value.shape[0], local.shape[1])).index_copy(0, rows, local)
+            complete = self.parallel.all_reduce(partial, domain="context", autograd=True)
+            return self.second(complete).tanh()
+
+    samples = [torch.arange(n * 3, dtype=torch.float64).reshape(n, 3) / 11 for n in (1, 4, 3, 2)]
+
+    class QueryRunner(ParallelRunner):
+        def __init__(self, config):
+            super().__init__(config)
+            self.model = QueryModel()
+            self.criterion = nn.MSELoss()
+            self.optimizer = optim.SGD(self.model.parameters(), lr=0.1, momentum=0.9)
+            self.datasets["train"] = [
+                {"input": value, "target": value.new_zeros((value.shape[0], 2)), "loss_normalizer": value.shape[0]}
+                for value in samples
+            ]
+
+        @staticmethod
+        def collate_fn(batch):
+            return batch[0]
+
+    configure_distributed_env(rank, world_size)
+    runner = QueryRunner(
+        {
+            "device": "cpu",
+            "dist.backend": "gloo",
+            "seed": 77,
+            "steps": 1,
+            "logging.enabled": False,
+            "logging.interval": 0,
+            "workspace.root": workspace_root,
+            "max_grad_norm": None,
+            "ckpt": {"async_mode": "disabled", "interval": 0},
+            "dataloader": {"batch_size": 1, "num_workers": 0, "shuffle": False},
+            **_parallel_config(replicate=2, context=2, mesh_device_type="cpu"),
+        }
+    )
+    try:
+        sampler = runner.dataloaders["train"].sampler
+        assert list(sampler) == list(range(runner.data_rank, len(samples), runner.data_degree))
+        rng = torch.get_rng_state()
+        random = torch.rand(4)
+        context_values = [torch.empty_like(random) for _ in range(2)]
+        dist.all_gather(context_values, random, group=runner.parallel.group("context"))
+        assert torch.equal(context_values[0], context_values[1])
+        torch.set_rng_state(rng)
+        model = runner.unwrap(runner.model)
+        first = model.first.weight.detach().clone().requires_grad_()
+        second = model.second.weight.detach().clone().requires_grad_()
+        expected = [nn.functional.linear(nn.functional.linear(value, first), second).tanh() for value in samples[:2]]
+        reference_loss = sum(value.square().sum() for value in expected) / sum(value.numel() for value in expected)
+        gradients = torch.autograd.grad(reference_loss, (first, second))
+        runner.train()
+        assert runner.train_state.global_step == 1
+        for actual, original, gradient in zip((model.first.weight, model.second.weight), (first, second), gradients):
+            torch.testing.assert_close(actual, original - 0.1 * gradient, rtol=1e-12, atol=1e-12)
+        saved = {name: value.detach().clone() for name, value in model.state_dict().items()}
+        moments = [runner.optimizer.state[p]["momentum_buffer"].clone() for p in model.parameters()]
+        rng = torch.get_rng_state()
+        runner.save_checkpoint(force=True)
+        with torch.no_grad():
+            for parameter in model.parameters():
+                parameter.add_(10)
+                runner.optimizer.state[parameter]["momentum_buffer"].zero_()
+        torch.rand(7)
+        runner.load_checkpoint("latest")
+        for name, value in model.state_dict().items():
+            torch.testing.assert_close(value, saved[name], rtol=0, atol=0)
+        for parameter, expected_moment in zip(model.parameters(), moments, strict=True):
+            torch.testing.assert_close(
+                runner.optimizer.state[parameter]["momentum_buffer"], expected_moment, rtol=0, atol=0
+            )
+        assert torch.equal(torch.get_rng_state(), rng)
+    finally:
+        runner.close()
+
+
+def _parallel_loss_domain_group_worker(rank: int, world_size: int, workspace_root: str) -> None:
+    """Check a composite context/data group excludes an unrelated model axis."""
+
+    class NamedDomainParallelRunner(DistributedSmokeParallelRunner):
+        def build_topology(self):
+            topology = super().build_topology()
+            return type(topology)(
+                world_size=topology.world_size,
+                rank=topology.rank,
+                axes={**topology.axes, "replicate_context": 1},
+                domains=topology.domains,
+            )
+
+    configure_distributed_env(rank, world_size)
+    runner = NamedDomainParallelRunner(
+        {
+            "device": "cpu",
+            "dist.backend": "gloo",
+            "logging.enabled": False,
+            "workspace.root": workspace_root,
+            **_parallel_config(replicate=2, context=2, tensor=2, loss_parallel=False, mesh_device_type="cpu"),
+        }
+    )
+    try:
+        group = runner.parallel.group("loss")
+        assert dist.get_world_size(group) == 4
+        value = torch.tensor(float(rank + 1))
+        dist.all_reduce(value, group=group)
+        assert value.item() == 16 + 4 * runner.tensor_rank
+    finally:
+        runner.close()
+
+
 # ---------------------------------------------------------------------------
 # Topology & Data Distribution
 # ---------------------------------------------------------------------------
@@ -596,6 +723,14 @@ class TestParallelRunnerTopology:
     def test_parallel_runner_skips_optimizer_step_across_optimizer_domain(self, tmp_path) -> None:
         require_gloo()
         run_distributed(_parallel_gloo_optimizer_skip_worker, world_size=4, worker_args=(str(tmp_path),))
+
+    def test_query_context_model_hook_matches_ragged_ddp_update(self, tmp_path) -> None:
+        require_gloo(world_size=4)
+        run_distributed(_query_context_ddp_worker, world_size=4, worker_args=(str(tmp_path),))
+
+    def test_composite_loss_group_excludes_unrelated_model_axis(self, tmp_path) -> None:
+        require_gloo(world_size=8)
+        run_distributed(_parallel_loss_domain_group_worker, world_size=8, worker_args=(str(tmp_path),))
 
 
 # ---------------------------------------------------------------------------
