@@ -2533,51 +2533,141 @@ class TestMatrixMultiplication:
         assert_close(output, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_baddbmm_compile_fullgraph_tensor_lhs(self, device, float_dtype):
+    def test_baddbmm_compile(self, device, float_dtype):
         bias = torch.randn(2, 3, 1, device=device, dtype=float_dtype)
         left = torch.randn(2, 3, 4, device=device, dtype=float_dtype)
-        right = NT(
-            [
-                torch.randn(2, 4, 5, device=device, dtype=float_dtype),
-                torch.randn(2, 4, 3, device=device, dtype=float_dtype),
-            ]
-        )
+        right_parts = [torch.randn(4, n, device=device, dtype=float_dtype) for n in (5, 3)]
+        right = NT(right_parts, ragged_dims=(1,))
         compiled = torch.compile(lambda x, y, z: torch.baddbmm(x, y, z), backend="inductor", fullgraph=True)
         output = compiled(bias, left, right)
-        reference = NT([torch.baddbmm(bias, left, b) for b in right], **reference_options(right))
-        assert_close(output, reference)
+        expected = [
+            torch.baddbmm(bias[index], left[index].unsqueeze(0), part.unsqueeze(0)).squeeze(0)
+            for index, part in enumerate(right_parts)
+        ]
+        for actual, reference in zip(output.unbind(), expected):
+            assert_close(actual, reference)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_bmm_compile_fullgraph_tensor_lhs(self, device, float_dtype):
+    @pytest.mark.parametrize("operation", [torch.bmm, torch.matmul])
+    def test_bmm_compile(self, device, float_dtype, operation):
+        torch.compiler.reset()
         left = torch.randn(2, 3, 4, device=device, dtype=float_dtype)
-        right = NT(
-            [
-                torch.randn(2, 4, 5, device=device, dtype=float_dtype),
-                torch.randn(2, 4, 3, device=device, dtype=float_dtype),
-            ]
-        )
-        compiled = torch.compile(lambda x, y: torch.bmm(x, y), backend="inductor", fullgraph=True)
+        right_parts = [torch.randn(4, n, device=device, dtype=float_dtype) for n in (5, 3)]
+        right = NT(right_parts, ragged_dims=(1,))
+        compiled = torch.compile(lambda x, y: operation(x, y), backend="inductor", fullgraph=True)
         output = compiled(left, right)
-        reference = NT([torch.bmm(left, b) for b in right], **reference_options(right))
-        assert_close(output, reference)
+        for actual, reference in zip(output.unbind(), [left[index] @ part for index, part in enumerate(right_parts)]):
+            assert_close(actual, reference)
 
-    def test_bmm(self, device, float_dtype):
-        left = NT(
-            [
-                torch.randn(2, 1, 3, device=device, dtype=float_dtype),
-                torch.randn(1, 2, 3, device=device, dtype=float_dtype),
-            ]
+    @pytest.mark.parametrize("ordering", ["left", "right", "both"])
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("operation", [torch.bmm, torch.matmul])
+    def test_bmm(self, device, ordering, batch_first, operation):
+        dtype = torch.float64
+        lengths = (2, 5)
+        if ordering == "right":
+            left = torch.randn(2, 4, 3, device=device, dtype=dtype, requires_grad=True)
+            right_parts = [torch.randn(3, n, device=device, dtype=dtype, requires_grad=True) for n in lengths]
+            right = NT(right_parts, ragged_dims=(1,), batch_first=batch_first)
+            reference_left = left.detach().clone().requires_grad_()
+            reference_right = [part.detach().clone().requires_grad_() for part in right_parts]
+            actual_inputs, reference_inputs = (left, *right_parts), (reference_left, *reference_right)
+            expected = [reference_left[index] @ part for index, part in enumerate(reference_right)]
+        else:
+            left_parts = [torch.randn(n, 3, device=device, dtype=dtype, requires_grad=True) for n in lengths]
+            left = NT(left_parts, ragged_dims=(0,), batch_first=batch_first)
+            reference_left = [part.detach().clone().requires_grad_() for part in left_parts]
+            if ordering == "both":
+                right_parts = [torch.randn(3, 4, device=device, dtype=dtype, requires_grad=True) for _ in lengths]
+                right = NT(right_parts, ragged_dims=(0,), batch_first=batch_first)
+                reference_right = [part.detach().clone().requires_grad_() for part in right_parts]
+                actual_inputs, reference_inputs = (*left_parts, *right_parts), (*reference_left, *reference_right)
+            else:
+                right = torch.randn(2, 3, 4, device=device, dtype=dtype, requires_grad=True)
+                reference_right = right.detach().clone().requires_grad_()
+                actual_inputs, reference_inputs = (*left_parts, right), (*reference_left, reference_right)
+            expected = [part @ reference_right[index] for index, part in enumerate(reference_left)]
+        output = operation(left, right)
+        assert output.batch_first is batch_first
+        torch.testing.assert_close(output.unbind(0 if batch_first else 1), expected)
+        probes = [torch.randn_like(part) for part in expected]
+        gradients = torch.autograd.grad(sum((part * probe).sum() for part, probe in zip(output, probes)), actual_inputs)
+        references = torch.autograd.grad(
+            sum((part * probe).sum() for part, probe in zip(expected, probes)), reference_inputs
         )
-        right = NT(
-            [
-                torch.randn(2, 3, 4, device=device, dtype=float_dtype),
-                torch.randn(1, 3, 5, device=device, dtype=float_dtype),
-            ],
-            **reference_options(left),
+        torch.testing.assert_close(gradients, references)
+
+    @pytest.mark.parametrize("ordering", ["left", "right"])
+    def test_matmul_hvp(self, device, ordering):
+        parts = [torch.randn(3, 3, device=device, dtype=torch.float64, requires_grad=True) for _ in range(2)]
+        dense = torch.randn(2, 3, 3, device=device, dtype=torch.float64, requires_grad=True)
+        reference_parts = [part.detach().clone().requires_grad_() for part in parts]
+        reference_dense = dense.detach().clone().requires_grad_()
+        nested = NT(parts, ragged_dims=(0,) if ordering == "left" else (1,))
+        output = torch.matmul(nested, dense) if ordering == "left" else torch.matmul(dense, nested)
+        expected = [
+            part @ reference_dense[index] if ordering == "left" else reference_dense[index] @ part
+            for index, part in enumerate(reference_parts)
+        ]
+        inputs, reference_inputs = (*parts, dense), (*reference_parts, reference_dense)
+        gradients = torch.autograd.grad(output.concat.square().sum(), inputs, create_graph=True)
+        references = torch.autograd.grad(
+            sum(part.square().sum() for part in expected), reference_inputs, create_graph=True
         )
-        output = torch.bmm(left, right)
-        reference = NT([torch.bmm(a, b) for a, b in zip(left, right)], **reference_options(left))
-        assert_close(output, reference)
+        vectors = [torch.randn_like(part) for part in inputs]
+        actual = torch.autograd.grad(sum((grad * vector).sum() for grad, vector in zip(gradients, vectors)), inputs)
+        reference = torch.autograd.grad(
+            sum((grad * vector).sum() for grad, vector in zip(references, vectors)), reference_inputs
+        )
+        torch.testing.assert_close(actual, reference)
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("beta", [0, 0.7])
+    def test_baddbmm(self, device, batch_first, beta):
+        parts = [torch.randn(n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in (2, 5)]
+        right = torch.randn(2, 3, 4, device=device, dtype=torch.float64, requires_grad=True)
+        bias = torch.randn(2, 1, 4, device=device, dtype=torch.float64, requires_grad=True)
+        if beta == 0:
+            with torch.no_grad():
+                bias.fill_(float("nan"))
+        reference_parts = [part.detach().clone().requires_grad_() for part in parts]
+        reference_right = right.detach().clone().requires_grad_()
+        reference_bias = bias.detach().clone().requires_grad_()
+        output = torch.baddbmm(bias, NT(parts, ragged_dims=(0,), batch_first=batch_first), right, alpha=0.5, beta=beta)
+        expected = [
+            torch.baddbmm(
+                reference_bias[index], part.unsqueeze(0), reference_right[index].unsqueeze(0), alpha=0.5, beta=beta
+            ).squeeze(0)
+            for index, part in enumerate(reference_parts)
+        ]
+        torch.testing.assert_close(output.unbind(0 if batch_first else 1), expected)
+        gradients = torch.autograd.grad(output.concat.square().sum(), (*parts, right, bias))
+        references = torch.autograd.grad(
+            sum(part.square().sum() for part in expected), (*reference_parts, reference_right, reference_bias)
+        )
+        torch.testing.assert_close(gradients, references)
+
+    @pytest.mark.parametrize("operation", [torch.bmm, torch.baddbmm])
+    def test_bmm_errors(self, device, operation):
+        left = NT([torch.randn(n, 3, device=device) for n in (2, 5)], ragged_dims=(0,))
+        right = torch.randn(2, 3, 4, device=device)
+
+        def call(a, b, **kwargs):
+            return (
+                operation(a, b, **kwargs)
+                if operation is torch.bmm
+                else operation(torch.zeros((), device=device), a, b, **kwargs)
+            )
+
+        for invalid in (NT([torch.randn(3, device=device)]), NT([torch.randn(2, 3, 4, device=device)])):
+            with pytest.raises(RuntimeError, match="3-D"):
+                call(invalid, right)
+        with pytest.raises(RuntimeError, match="batch"):
+            call(left, torch.randn(1, 3, 4, device=device))
+        with pytest.raises(RuntimeError, match="contracted"):
+            call(left, torch.randn(2, 2, 4, device=device))
+        with pytest.raises(NotImplementedError, match="out"):
+            call(left, right, out=torch.empty(2, 5, 4, device=device))
 
     def test_jagged_attention_matmul(self, device, float_dtype):
         query = NT(
