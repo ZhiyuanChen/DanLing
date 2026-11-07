@@ -52,6 +52,38 @@ class TestDropoutValidation:
 class TestDenseBinaryOperands:
     r"""Dense operands that pair with a NestedTensor without materializing padding."""
 
+    @pytest.mark.parametrize("extent", [(4, 1), (1, 3), (4, 3)], ids=["first", "second", "both"])
+    @pytest.mark.parametrize("transpose", [False, True])
+    def test_multi_ragged(self, device, extent, transpose):
+        parts = [
+            torch.randn(n, 4, p, 1, 3, 1, device=device, dtype=torch.float64, requires_grad=True)
+            for n, p in ((2, 3), (4, 2))
+        ]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        dense = torch.randn(2, extent[0], 1, extent[1], 1, 3, 3, device=device, dtype=torch.float64, requires_grad=True)
+        reference_dense = dense.detach().clone().requires_grad_()
+        source = NT(parts, ragged_dims=(0, 2))
+        operand = dense
+        if transpose:
+            source = source.transpose(1, 3)
+            operand = dense.transpose(1, 3)
+
+        output = operand - source
+        expected = []
+        for index, part in enumerate(references):
+            selected = reference_dense[index, : part.shape[0], :, : part.shape[2]]
+            value = selected - part
+            expected.append(value.transpose(0, 2) if transpose else value)
+        actual = output.unbind()
+        torch.testing.assert_close(actual, expected)
+        probes = [torch.randn_like(value) for value in expected]
+        torch.testing.assert_close(
+            torch.autograd.grad(sum((value * probe).sum() for value, probe in zip(actual, probes)), (*parts, dense)),
+            torch.autograd.grad(
+                sum((value * probe).sum() for value, probe in zip(expected, probes)), (*references, reference_dense)
+            ),
+        )
+
     def test_dense_operand_matching_concat_shape_is_elementwise(self):
         nt = NT([torch.randn(2, 3), torch.randn(4, 3)])
         dense = torch.randn_like(nt.concat)
