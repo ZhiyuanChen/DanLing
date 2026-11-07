@@ -353,7 +353,10 @@ lengths in tensor-backed offsets and shape metadata rather than Python tuples,
 so its tracing cost does not grow with metadata rank. The current compiled
 contract covers structural index consumers, runtime-validated same-layout
 elementwise operations, static-tail broadcasting, and static-tail
-normalization. Tensor-backed view/index remapping, padding,
+normalization. Batch-first single-ragged-axis slices support per-sample bounds and positive
+steps; compiling their data-dependent output lengths requires
+`torch._dynamo.config.capture_dynamic_output_shape_ops = True`.
+Other tensor-backed view/index remapping, padding,
 `broadcast_tensors`, global-query `einsum`, and ragged-dimension softmax remain
 staged; these paths raise an explicit compile error instead of materializing
 Python metadata or silently assuming a layout.

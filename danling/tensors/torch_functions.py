@@ -1424,7 +1424,27 @@ def _split_like(input: NestedTensor, dim: int, spans_for, op_name: str):
     return tuple(NestedTensor([parts[index] for parts in per_element], **input._meta()) for index in range(counts[0]))
 
 
-@NestedTensorFuncRegistry.implement(torch.chunk)
+def _chunk_static_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
+    r"""Admit compiled chunk only when its dimension is a packed static axis."""
+    from .aten_functions import _packed_static_dim
+    from .nested_tensor import NestedTensor
+
+    input = args[0] if args else kwargs.get("input")
+    chunks = args[1] if len(args) > 1 else kwargs.get("chunks")
+    dim = args[2] if len(args) > 2 else kwargs.get("dim", 0)
+    if not isinstance(input, NestedTensor) or not isinstance(chunks, int) or not isinstance(dim, int):
+        return False
+    try:
+        logical_dim = _normalize_dim(dim, input.dim())
+        if logical_dim == _get_batch_dim(input):
+            return False
+        physical_dim = _translate_dim(input, logical_dim)
+        return _packed_static_dim(input, physical_dim) is not None
+    except (AttributeError, TypeError, ValueError, IndexError):
+        return False
+
+
+@NestedTensorFuncRegistry.implement(torch.chunk, compile_safe=True, compile_guard=_chunk_static_compile_safe)
 def chunk(input: NestedTensor, chunks: int, dim: int = 0):
     r"""
     Attempts to split a tensor into the specified number of chunks. Each chunk is a view of the input tensor.
@@ -1597,10 +1617,12 @@ def stack(*args, **kwargs):
         >>> torch.equal(out, ref)
         True
 
-        A new dimension at or before the batch dimension has nowhere to live:
-        >>> torch.stack((nt, nt), dim=0)
-        Traceback (most recent call last):
-        NotImplementedError: torch.stack dim 0 must be after the NestedTensor batch dimension (0).
+        A leading stack dimension moves the sample batch to position one:
+        >>> out = torch.stack((nt, nt), dim=0)
+        >>> out.batch_first
+        False
+        >>> torch.equal(out.unbind(1)[1], torch.stack((nt[1], nt[1])))
+        True
     """
     tensors = args[0] if args else kwargs.get("tensors", ())
     if len(args) > 1:
@@ -1629,10 +1651,10 @@ def stack(*args, **kwargs):
         raise NotImplementedError("torch.stack for NestedTensor requires all inputs to share the same packed layout.")
     dim = _normalize_dim(int(dim), first.dim() + 1)
     batch_dim = _get_batch_dim(first)
+    if dim == 0 and batch_dim == 0:
+        return transpose(stack(tensors, dim=1), 0, 1)
     if dim <= batch_dim:
-        # Stacking here would put a new outermost axis in front of the batch, i.e. a batch of
-        # batches. A NestedTensor holds exactly one batch dimension, so there is nowhere to put
-        # it; silently stacking a per-element dim instead answers a different question.
+        # Only logical positions zero and one can represent the sample batch.
         raise NotImplementedError(
             f"torch.stack dim {dim} must be after the NestedTensor batch dimension ({batch_dim})."
         )
@@ -1753,6 +1775,12 @@ def unbind(input: NestedTensor, dim: int = 0):
     if values_dim is None:
         raise RuntimeError("A static element dimension must have a packed axis")
     return [_packed_without_dim(input, element_dim, values) for values in input.concat.unbind(values_dim)]
+
+
+@NestedTensorFuncRegistry.implement(torch.ops.aten.unbind.int)
+def _unbind_native(self, dim=0):
+    r"""Preserve packed samples for the native operator's ``self`` keyword."""
+    return tuple(unbind(self, dim))
 
 
 # Dropout & Sampling
@@ -3006,7 +3034,7 @@ def det(input):
 def _packed_index_from_element_flat(source, batch, local):
     r"""Map logical per-element flat positions onto scalar packed storage."""
     values = source.concat
-    sizes = source._physical_shape.to(device=values.device, dtype=torch.long)[batch]
+    sizes = source._physical_shape.to(device=batch.device, dtype=torch.long)[batch]
     coordinates = [local] * source._physical_shape.shape[1]
     for dim in range(len(coordinates) - 1, -1, -1):
         coordinates[dim] = local.remainder(sizes[:, dim])
@@ -3014,7 +3042,7 @@ def _packed_index_from_element_flat(source, batch, local):
     rows = torch.zeros_like(batch)
     for dim in source._ragged_dims:
         rows = rows * sizes[:, dim] + coordinates[dim]
-    indices = source.packed_offsets(device=values.device)[batch] + rows
+    indices = source.packed_offsets(device=batch.device)[batch] + rows
     for dim, extent in zip(source._static_dims, values.shape[1:]):
         indices = indices * extent + coordinates[dim]
     return indices
@@ -4964,8 +4992,8 @@ def permute(input: NestedTensor, dims: Sequence[int]) -> NestedTensor:
     batch_dim = _get_batch_dim(input)
     if set(normalized_dims) != set(range(dim_count)):
         raise ValueError(f"Invalid permutation dims {dims} for shape with {dim_count} dims")
-    if normalized_dims[batch_dim] != batch_dim:
-        raise ValueError("Permuting the batch dimension is not supported for NestedTensor.")
+    if normalized_dims.index(batch_dim) > 1:
+        raise ValueError("NestedTensor's logical batch dimension must stay at position zero or one.")
 
     from .aten_functions import _permute_nested
 
@@ -5189,6 +5217,129 @@ def reshape(input: NestedTensor, shape: Sequence[int]) -> NestedTensor:
     return _aten_view_like(torch.ops.aten.reshape.default, (input, list(shape)), {})
 
 
+@NestedTensorFuncRegistry.implement(torch.ops.aten.reshape.default, compile_safe=True)
+def _reshape_native(self, shape):
+    r"""Consume shape-axis metadata before native SymInt argument normalization."""
+    return reshape(self, shape)
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.reshape, compile_safe=True)
+def _reshape_method(input, *shape):
+    target = shape[0] if len(shape) == 1 and isinstance(shape[0], (tuple, list, torch.Size)) else shape
+    return reshape(input, target)
+
+
+@NestedTensorFuncRegistry.implement(torch.ops.aten.view.default, compile_safe=True)
+def _view_native(self, size):
+    r"""Consume shape-axis metadata before native view normalizes its sizes."""
+    from .aten_functions import view_like
+
+    return view_like(torch.ops.aten.view.default, (self, size), {})
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.view, compile_safe=True)
+def _view_method(input, *shape):
+    target = shape[0] if len(shape) == 1 and isinstance(shape[0], (tuple, list, torch.Size)) else shape
+    return _view_native(input, target)
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.reshape_as)
+def reshape_as(input, other):
+    r"""Reshape each sample to its reference shape without padded extents."""
+    from .nested_tensor import NestedTensor
+
+    if isinstance(input, NestedTensor):
+        flat, lengths = _packed_flatten_elements(input)
+    else:
+        batch_dim = _get_batch_dim(other)
+        if input.dim() <= batch_dim or input.shape[batch_dim] != len(other):
+            raise RuntimeError("reshape_as requires matching batch sizes")
+        batched = input.movedim(batch_dim, 0)
+        flat = batched.reshape(-1)
+        lengths = other._physical_shape.new_full((len(other),), math.prod(batched.shape[1:]))
+
+    if not isinstance(other, NestedTensor):
+        batch_dim = _get_batch_dim(input)
+        if other.dim() <= batch_dim or other.shape[batch_dim] != len(input):
+            raise RuntimeError("reshape_as requires matching batch sizes")
+        shape = tuple(size for dim, size in enumerate(other.shape) if dim != batch_dim)
+        if not bool(lengths.eq(math.prod(shape)).all()):
+            raise RuntimeError("reshape_as requires the same number of elements in each sample")
+        return type(input).from_packed(
+            flat.reshape(len(input), *shape),
+            torch.arange(len(input) + 1, dtype=input._offsets.dtype, device=input._offsets.device),
+            input._physical_shape.new_tensor(shape).reshape(1, -1).expand(len(input), -1).clone(),
+            permutation=tuple(range(len(shape))),
+            ragged_dims=(),
+            batch_first=input.batch_first,
+            padding_value=input.padding_value,
+            mask_value=input.mask_value,
+            pin_memory=input._pin_memory,
+            outer_size=other.shape,
+            validate=False,
+        )
+
+    if lengths.shape != other._physical_shape.shape[:1] or not torch.equal(lengths, other._physical_shape.prod(1)):
+        raise RuntimeError("reshape_as requires the same number of elements in each sample")
+    offsets = _offsets_from_packed_lengths(lengths).to(flat.device)
+    batch = torch.repeat_interleave(
+        torch.arange(len(other), device=flat.device), lengths.to(flat.device), output_size=flat.numel()
+    )
+    local = torch.arange(flat.numel(), device=flat.device) - offsets[batch]
+    target = _packed_index_from_element_flat(other, batch, local)
+    values = flat.new_empty(flat.shape).scatter(0, target, flat).reshape(other.concat.shape)
+    result = other.packed_like(values)
+    if isinstance(input, NestedTensor):
+        result.padding_value = input.padding_value
+        result.mask_value = input.mask_value
+    return result
+
+
+@NestedTensorFuncRegistry.implement(torch.ops.aten.reshape_as.default)
+def _reshape_as_native(self, other):
+    r"""Accept the native operator's ``self`` keyword."""
+    return reshape_as(self, other)
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.view_as)
+def view_as(input, other):
+    r"""View each sample with the reference shape while preserving storage aliases."""
+    from .aten_functions import _packed_view_shapes, view_like
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(input, NestedTensor):
+        batch_dim = _get_batch_dim(other)
+        if input.dim() <= batch_dim or input.shape[batch_dim] != len(other):
+            raise RuntimeError("view_as requires matching batch sizes")
+        batched = input.movedim(batch_dim, 0)
+        shape = tuple(batched.shape[1:])
+        rows = shape[0] if shape else 1
+        input = type(other).from_packed(
+            batched.view(len(other) * rows, *shape[1:]),
+            other._offsets.new_tensor(range(len(other) + 1)) * rows,
+            other._physical_shape.new_tensor(shape).reshape(1, -1).expand(len(other), -1).clone(),
+            permutation=tuple(range(len(shape))),
+            ragged_dims=(0,) if shape else (),
+            batch_first=other.batch_first,
+            validate=False,
+        )
+    if not isinstance(other, NestedTensor):
+        return view_like(torch.ops.aten.view.default, (input, tuple(other.shape)), {})
+    return _packed_view_shapes(
+        input,
+        tuple(tuple(shape) for shape in other._original_shapes()),
+        ragged_dims=other.ragged_dims,
+        batch_first=other.batch_first,
+        empty_shape=other._max_physical_dims(),
+    )
+
+
+@NestedTensorFuncRegistry.implement(torch.ops.aten.view_as.default)
+def _view_as_native(self, other):
+    r"""Accept the native operator's self keyword before its composite view lowering."""
+    return view_as(self, other)
+
+
 def _packed_reindex_ragged(source, *, shifts=None, flips=()):
     r"""Gather ragged coordinates within each sample, preserving its packed layout."""
     values = source.concat
@@ -5375,16 +5526,9 @@ def squeeze(input: NestedTensor, dim: int | None = None):
         >>> torch.equal(out, ref)
         True
     """
-    from .aten_functions import squeeze_default as _aten_squeeze_default
-    from .aten_functions import squeeze_dim as _aten_squeeze_dim
+    from .aten_functions import _squeeze_nested
 
-    if dim is None:
-        return _aten_squeeze_default(torch.ops.aten.squeeze.default, (input,), {})
-    dim_norm = _normalize_dim(dim, input.dim())
-    batch_dim = _get_batch_dim(input)
-    if dim_norm <= batch_dim:
-        raise ValueError("Cannot squeeze the batch dimension or dimensions before it for NestedTensor.")
-    return _aten_squeeze_dim(torch.ops.aten.squeeze.dim, (input, dim_norm), {})
+    return _squeeze_nested(input, dim)
 
 
 @NestedTensorFuncRegistry.implement(torch.swapaxes, compile_safe=True)
@@ -5470,13 +5614,13 @@ def expand(input: NestedTensor, *sizes) -> NestedTensor:
     ragged_dims = set(input._varying_dims)
     for dim in ragged_dims:
         target = elem_sizes[dim]
-        # A ragged dimension has no single extent to name, matching torch.nested, which accepts
-        # only -1 there. The padded logical extent is not "the current size": accepting it would
-        # silently leave every shorter element unexpanded.
-        if target != -1:
+        # Naming the current logical extent preserves every sample's true
+        # length, matching the native expand handler's interpretation of -1.
+        logical_dim = _logical_dim_for_element_dim(input, dim)
+        if target != -1 and target != input.size(logical_dim):
             raise RuntimeError(
                 "NestedTensor.expand cannot change a ragged dimension; "
-                f"dim {dim} is ragged, got target {target}. Pass -1."
+                f"dim {dim} is ragged, got target {target}. Pass -1 or its current logical size."
             )
 
     packed_targets = [-1]
@@ -5967,9 +6111,9 @@ def transpose(input: NestedTensor, dim0: int, dim1: int) -> NestedTensor:
             ragged_offsets=input._persistent_ragged_offsets(),
             validate=False,
         )
-    from .aten_functions import transpose as _aten_transpose
+    from .aten_functions import _transpose_nested
 
-    return _aten_transpose(torch.ops.aten.transpose.int, (input, dim0, dim1), {})
+    return _transpose_nested(torch.ops.aten.transpose.int, (input, dim0, dim1), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.unflatten)
@@ -5996,12 +6140,15 @@ def unflatten(input: NestedTensor, dim: int, sizes):
         True
     """
     dim = _normalize_dim(dim, input.dim())
-    batch_dim = _get_batch_dim(input)
-    if dim <= batch_dim:
-        raise ValueError("unflatten at or before the batch dimension is not supported for NestedTensor.")
     from .aten_functions import unflatten as _aten_unflatten
 
     return _aten_unflatten(torch.ops.aten.unflatten.int, (input, dim, sizes), {})
+
+
+@NestedTensorFuncRegistry.implement(torch.ops.aten.unflatten.int)
+def _unflatten_native(self, dim, sizes):
+    r"""Accept the native operator's ``self`` keyword."""
+    return unflatten(self, dim, sizes)
 
 
 @NestedTensorFuncRegistry.implement(torch.unsqueeze)
@@ -6038,9 +6185,9 @@ def unsqueeze(input: NestedTensor, dim: int):
     if _needs_outer_autograd(input):
         with torch._C.DisableTorchFunctionSubclass():
             return torch.unsqueeze(input, dim)
-    from .aten_functions import unsqueeze as _aten_unsqueeze
+    from .aten_functions import _unsqueeze_nested
 
-    return _aten_unsqueeze(torch.ops.aten.unsqueeze.default, (input, dim), {})
+    return _unsqueeze_nested(torch.ops.aten.unsqueeze.default, (input, dim), {})
 
 
 # Softmax
@@ -6853,3 +7000,76 @@ for _alias_method, _alias_func in (
             compile_safe=NestedTensorFuncRegistry.is_compile_safe(_alias_func),
             compile_guard=NestedTensorFuncRegistry.get_compile_guard(_alias_func),
         )
+
+
+def _install_shape_compiler_entries():
+    r"""Preserve tagged NT shapes before Dynamo lowers integer subclasses to proxies."""
+    try:
+        from torch._dynamo.guards import GuardBuilder
+        from torch._dynamo.source import AttrSource
+        from torch._dynamo.variables import (
+            TensorVariable,
+            UserDefinedObjectVariable,
+            UserFunctionVariable,
+            VariableTracker,
+        )
+        from torch._dynamo.variables.builder import VariableBuilder
+        from torch._dynamo.variables.lists import BaseListVariable
+        from torch._dynamo.variables.torch import TorchInGraphFunctionVariable
+    except ImportError:
+        return False
+    from .nested_tensor import NestedTensor, _NestedDim
+
+    dispatch_factory = getattr(VariableBuilder, "_id_dispatch", None)
+    if not callable(dispatch_factory):
+        return False
+    dispatch = dispatch_factory()
+    if not isinstance(dispatch, dict):
+        return False
+
+    def tagged(variable):
+        variable = variable.realize()
+        if isinstance(variable, BaseListVariable):
+            return any(tagged(item) for item in variable.items)
+        return isinstance(variable, UserDefinedObjectVariable) and isinstance(variable.value, _NestedDim)
+
+    class ShapeFunctionVariable(TorchInGraphFunctionVariable):
+        def call_function(self, tx, args, kwargs):
+            operand = args[0] if args else kwargs.get("input", kwargs.get("self"))
+            operand = operand.realize() if operand is not None else None
+            if (
+                isinstance(operand, TensorVariable)
+                and isinstance(operand.as_proxy().node.meta.get("example_value"), NestedTensor)
+                and any(tagged(item) for item in (*args[1:], *kwargs.values()))
+            ):
+                operation = self.value.default if isinstance(self.value, torch._ops.OpOverloadPacket) else self.value
+                return UserFunctionVariable(NestedTensorFuncRegistry[operation]).call_function(tx, args, kwargs)
+            return super().call_function(tx, args, kwargs)
+
+    class ShapePacketVariable(UserDefinedObjectVariable):
+        def var_getattr(self, tx, name):
+            source = AttrSource(self.source, name) if self.source is not None else None
+            return VariableTracker.build(tx, getattr(self.value, name), source=source)
+
+        def call_function(self, tx, args, kwargs):
+            return ShapeFunctionVariable(self.value, source=self.source).call_function(tx, args, kwargs)
+
+    def wrap(builder, value):
+        builder.install_guards(GuardBuilder.ID_MATCH)
+        cls = ShapePacketVariable if isinstance(value, torch._ops.OpOverloadPacket) else ShapeFunctionVariable
+        return cls(value, source=builder.source)
+
+    for operation in (
+        torch.reshape,
+        torch.Tensor.reshape,
+        torch.ops.aten.reshape.default,
+        torch.Tensor.view,
+        torch.ops.aten.view.default,
+    ):
+        dispatch.setdefault(id(operation), wrap)
+    for packet in (torch.ops.aten.reshape, torch.ops.aten.view):
+        dispatch.setdefault(id(packet), wrap)
+    return True
+
+
+_shape_compiler_entries = _install_shape_compiler_entries()
