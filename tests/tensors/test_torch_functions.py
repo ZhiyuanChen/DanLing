@@ -6892,6 +6892,60 @@ class TestGatherErrors:
 
 class TestAdditionalSpellings:
 
+    @pytest.mark.parametrize("dense_source,index_rows", [(True, 2), (False, 2), (False, 9)])
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_mixed_take(self, device, dense_source, index_rows, batch_first):
+        elements = [
+            torch.randn(length, 3, device=device, requires_grad=True) for length in ((9, 9) if dense_source else (4, 9))
+        ]
+        source = torch.stack(elements) if dense_source else NT(elements, ragged_dims=(0,), batch_first=batch_first)
+        indices = [torch.tensor([[0], [3]], device=device), torch.tensor([[1], [8]], device=device)]
+        if index_rows == 9:
+            indices = [idx.repeat(5, 1)[:index_rows].expand(-1, 3) for idx in indices]
+        index = NT(indices, ragged_dims=(0,), batch_first=batch_first) if dense_source else torch.stack(indices)
+        if not batch_first:
+            if dense_source:
+                source = source.movedim(0, 1)
+            else:
+                index = index.movedim(0, 1)
+        dim = 1 if batch_first else 0
+        expected = [torch.take_along_dim(part, idx, dim=0) for part, idx in zip(elements, indices)]
+        for operation in (torch.take_along_dim, torch.Tensor.take_along_dim):
+            output = operation(source, index, dim=dim)
+            torch.testing.assert_close(output.unbind(0 if batch_first else 1), expected)
+            actual_grad = torch.autograd.grad(output.square().sum(), elements, retain_graph=True)
+            expected_grad = torch.autograd.grad(
+                sum(part.square().sum() for part in expected), elements, retain_graph=True
+            )
+            torch.testing.assert_close(actual_grad, expected_grad)
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("lengths,index_batch", [((4, 4), 2), ((2, 4), 2), ((2, 4), 1)])
+    @pytest.mark.parametrize("selected", [1, 3])
+    def test_batched_take(self, device, batch_first, lengths, index_batch, selected):
+        elements = [torch.randn(length, 2, 3, device=device, requires_grad=True) for length in lengths]
+        source = NT(elements, ragged_dims=(0,), batch_first=batch_first)
+        index = (
+            torch.arange(4 * selected, device=device).reshape(1, 4, selected, 1)
+            + torch.arange(index_batch, device=device).reshape(-1, 1, 1, 1)
+        ) % 2
+        reference_index = index.expand(2, -1, -1, -1)
+        if not batch_first:
+            index = index.movedim(0, 1)
+        expected = [
+            torch.take_along_dim(element, sample[:length], dim=-2)
+            for element, sample, length in zip(elements, reference_index, lengths)
+        ]
+
+        for output in (torch.take_along_dim(source, index, dim=-2), source.take_along_dim(index, dim=-2)):
+            _assert_elements(output, expected)
+            actual_grad = torch.autograd.grad(output.concat.square().sum(), elements, retain_graph=True)
+            reference_grad = torch.autograd.grad(
+                sum(value.square().sum() for value in expected), elements, retain_graph=True
+            )
+            for actual, reference in zip(actual_grad, reference_grad, strict=True):
+                torch.testing.assert_close(actual, reference)
+
     def test_flattened_take(self):
         elements = _element_values([(3, 4), (5, 4), (2, 4)])
         indices = [torch.tensor([0, 3, 5]), torch.tensor([1, 2]), torch.tensor([7])]
@@ -8215,6 +8269,62 @@ class TestSplitAutograd:
             torch.testing.assert_close(actual, reference)
         gradient = torch.autograd.grad(output.concat.sum(), values)[0]
         torch.testing.assert_close(gradient, torch.full_like(values, 2))
+
+
+class TestDenseMask:
+
+    @pytest.mark.parametrize("layout", ["vector", "matrix", "static"])
+    def test_values(self, device, layout):
+        shapes = {"vector": ((3,), (5,)), "matrix": ((2, 3), (3, 2)), "static": ((2, 3), (2, 5))}[layout]
+        masks = [torch.arange(math.prod(shape), device=device).reshape(shape) % 2 == 0 for shape in shapes]
+        mask = NT(masks, ragged_dims=(1,) if layout == "static" else tuple(range(len(shapes[0]))))
+        logical_shape = tuple(max(shape[axis] for shape in shapes) for axis in range(len(shapes[0])))
+        reference_mask = torch.zeros((2, *logical_shape), device=device, dtype=torch.bool)
+        for i, part in enumerate(masks):
+            reference_mask[(i, *(slice(0, size) for size in part.shape))] = part
+        tail = (2,) if layout == "vector" else ()
+        values = torch.randn(2, *logical_shape, *tail, device=device, dtype=torch.float64, requires_grad=True)
+        reference_values = values.detach().clone().requires_grad_()
+        output = values[mask]
+        expected = reference_values[reference_mask]
+        torch.testing.assert_close(output, expected)
+        probe = torch.randn_like(expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(output, values, probe), torch.autograd.grad(expected, reference_values, probe)
+        )
+
+        for method in (False, True):
+            values = values.detach().requires_grad_()
+            reference_values = values.detach().clone().requires_grad_()
+            updates = [
+                torch.randn(int(part.sum()), *tail, device=device, dtype=torch.float64, requires_grad=True)
+                for part in masks
+            ]
+            references = [part.detach().clone().requires_grad_() for part in updates]
+            source = values * 2
+            expected = reference_values * 2
+            alias = source.detach()
+            if method:
+                source.index_put_((mask,), NT(updates, ragged_dims=(0,)))
+                expected.index_put_((reference_mask,), torch.cat(references))
+            else:
+                source[mask] = NT(updates, ragged_dims=(0,))
+                expected[reference_mask] = torch.cat(references)
+            torch.testing.assert_close(source, expected)
+            torch.testing.assert_close(alias, expected)
+            probe = torch.randn_like(expected)
+            torch.testing.assert_close(
+                torch.autograd.grad(source, (values, *updates), probe),
+                torch.autograd.grad(expected, (reference_values, *references), probe),
+            )
+
+    def test_errors(self):
+        mask = NT([torch.tensor([True, False]), torch.tensor([False, True])], ragged_dims=(0,))
+        with pytest.raises(IndexError, match="mask shape"):
+            torch.ones(2, 3)[mask]
+        source = torch.ones(2, 2, requires_grad=True)
+        with pytest.raises(RuntimeError, match="leaf Variable"):
+            source.index_put_((mask,), torch.ones(2))
 
 
 class TestMixedCat:

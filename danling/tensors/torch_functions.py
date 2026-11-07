@@ -1867,7 +1867,7 @@ def feature_alpha_dropout(input: NestedTensor, p: float = 0.5, train: bool = Fal
 
 @NestedTensorFuncRegistry.implement(torch.Tensor.__getitem__, compile_safe=True)
 def getitem(input: Tensor, index):
-    r"""Index a one-dimensional dense lookup table with packed long indices."""
+    r"""Index dense tensors with packed integer lookups or boolean masks."""
     from .aten_functions import per_element_fallback
     from .nested_tensor import NestedTensor
 
@@ -1881,7 +1881,43 @@ def getitem(input: Tensor, index):
     ):
         return nested_index._packed_like_unchecked(input[nested_index.concat])
     indices = list(index) if isinstance(index, tuple) else [index]
+    if (
+        not isinstance(input, NestedTensor)
+        and isinstance(nested_index, NestedTensor)
+        and nested_index.dtype == torch.bool
+    ):
+        op = torch.ops.aten.index.Tensor
+        return NestedTensorAtenRegistry[op](op, (input, indices), {})
     return per_element_fallback(torch.ops.aten.index.Tensor, (input, indices), {})
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.__setitem__, compile_safe=True)
+def setitem(input: Tensor, index, value):
+    r"""Keep packed boolean assignment above native dense autograd."""
+    from .aten_functions import _dense_boolean_index_coordinates
+    from .nested_tensor import NestedTensor
+
+    indices = list(index) if isinstance(index, tuple) else [index]
+    coordinates = _dense_boolean_index_coordinates(input, indices)
+    if coordinates is not None:
+        index = tuple(coordinates)
+        value = value.concat if isinstance(value, NestedTensor) else value
+    with torch._C.DisableTorchFunctionSubclass():
+        return torch.Tensor.__setitem__(input, index, value)
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.index_put_, compile_safe=True)
+def index_put_inplace(input: Tensor, indices, values: Tensor, accumulate: bool = False):
+    r"""Write packed boolean selections with native tensor value gradients."""
+    from .aten_functions import _dense_boolean_index_coordinates
+    from .nested_tensor import NestedTensor
+
+    coordinates = _dense_boolean_index_coordinates(input, indices)
+    if coordinates is not None:
+        indices = coordinates
+        values = values.concat if isinstance(values, NestedTensor) else values
+    with torch._C.DisableTorchFunctionSubclass():
+        return torch.Tensor.index_put_(input, tuple(indices), values, accumulate=accumulate)
 
 
 @NestedTensorFuncRegistry.implement(torch.gather)
@@ -2503,11 +2539,11 @@ def scatter(input: NestedTensor, dim: int, index, src):
         >>> torch.equal(out, ref)
         True
     """
-    from .nested_tensor import NestedTensor
+    from .aten_functions import scatter_src, scatter_value
 
-    if isinstance(src, (NestedTensor, Tensor)):
-        return torch.ops.aten.scatter.src(input, dim, index, src)
-    return torch.ops.aten.scatter.value(input, dim, index, src)
+    if isinstance(src, Tensor):
+        return scatter_src(torch.ops.aten.scatter.src, (input, dim, index, src), {})
+    return scatter_value(torch.ops.aten.scatter.value, (input, dim, index, src), {})
 
 
 @NestedTensorFuncRegistry.implement(torch.scatter_add, compile_safe=True)
@@ -2536,7 +2572,9 @@ def scatter_add(input: NestedTensor, dim: int, index, src):
         >>> torch.equal(out, ref)
         True
     """
-    return torch.ops.aten.scatter_add.default(input, dim, index, src)
+    from .aten_functions import scatter_add as _aten_scatter_add
+
+    return _aten_scatter_add(torch.ops.aten.scatter_add.default, (input, dim, index, src), {})
 
 
 if hasattr(torch, "scatter_reduce"):
@@ -2569,7 +2607,11 @@ if hasattr(torch, "scatter_reduce"):
             >>> torch.equal(out, ref)
             True
         """
-        return torch.ops.aten.scatter_reduce.two(input, dim, index, src, reduce, include_self=include_self)
+        from .aten_functions import scatter_reduce as _aten_scatter_reduce
+
+        return _aten_scatter_reduce(
+            torch.ops.aten.scatter_reduce.two, (input, dim, index, src, reduce), {"include_self": include_self}
+        )
 
 
 @NestedTensorFuncRegistry.implement(torch.take, compile_safe=True)
@@ -2641,11 +2683,36 @@ if hasattr(torch, "take_along_dim"):
             >>> torch.equal(out, ref)
             True
         """
-        from .aten_functions import _gather_equivalent_index
+        from .aten_functions import (
+            _gather_equivalent_index,
+            _pack_uniform_logical_dense,
+            _packed_static_dim,
+            _packed_with_static_tail_from_values,
+        )
         from .aten_functions import gather as _aten_gather
         from .nested_tensor import NestedTensor
+        from .ops import _dense_alignment_is_valid, _dense_alignment_to_values, _DenseReading
+
+        if not isinstance(input, NestedTensor) and isinstance(indices, NestedTensor):
+            if dim is None:
+                return indices._packed_like_unchecked(torch.take_along_dim(input, indices.concat, dim=None))
+            if input.dim() != indices.dim():
+                raise RuntimeError("take_along_dim: input and indices must have the same number of dimensions")
+            input = _pack_uniform_logical_dense(indices, input)
 
         dim_adj = None if dim is None else _translate_non_batch_dim(input, dim, name="take_along_dim")
+        if (
+            dim_adj is not None
+            and input._ragged_dims == (dim_adj,)
+            and isinstance(indices, Tensor)
+            and not isinstance(indices, NestedTensor)
+            and indices.dim() == input.dim()
+        ):
+            source_shape = list(input.shape)
+            source_shape[dim % input.dim()] = 1
+            shape = list(torch.broadcast_shapes(source_shape, indices.shape))
+            shape[dim % input.dim()] = indices.shape[dim % input.dim()]
+            return _aten_gather(torch.ops.aten.gather.default, (input, dim, indices.expand(shape)), {})
         aligned_indices = input._maybe_exact_shape_nested_like(indices)
         if aligned_indices is not None:
             indices = aligned_indices
@@ -2654,6 +2721,36 @@ if hasattr(torch, "take_along_dim"):
                 "NestedTensor batch length mismatch between input and indices: "
                 f"input={len(input)}, indices={len(indices)}"
             )
+
+        if (
+            dim_adj is not None
+            and input._ragged_dims == (dim_adj,)
+            and isinstance(indices, NestedTensor)
+            and indices._ragged_dims == input._ragged_dims
+            and indices._permutation == input._permutation
+        ):
+            tail = torch.broadcast_shapes(input.concat.shape[1:], indices.concat.shape[1:])
+            input = _packed_with_static_tail_from_values(input, input.concat.expand(input.concat.shape[0], *tail))
+            indices = _packed_with_static_tail_from_values(
+                indices, indices.concat.expand(indices.concat.shape[0], *tail)
+            )
+            return _aten_gather(torch.ops.aten.gather.default, (input, dim, indices), {})
+        if dim_adj is not None and isinstance(indices, Tensor) and not isinstance(indices, NestedTensor):
+            values_dim = _packed_static_dim(input, dim_adj)
+            if values_dim is not None and indices.dim() == input.dim():
+                aligned = tuple(indices.shape)
+                checked = list(aligned)
+                # Only retained axes broadcast; the selected extent is arbitrary.
+                checked[dim % input.dim()] = 1
+                checked[_get_batch_dim(input)] = len(input)
+                if aligned[_get_batch_dim(input)] in (1, len(input)) and _dense_alignment_is_valid(
+                    input, tuple(checked)
+                ):
+                    index_values = _dense_alignment_to_values(
+                        input, indices.to(device=input.device), _DenseReading(aligned, False)
+                    )
+                    values = torch.take_along_dim(input.concat, index_values, dim=values_dim)
+                    return _packed_with_static_tail_from_values(input, values)
 
         # Reading along a dim is gathering along it once the two operands agree everywhere else,
         # so hand the whole packed repertoire of ``gather`` to ``take_along_dim`` instead of

@@ -4674,6 +4674,44 @@ class NestedTensor(torch.Tensor):
             selected = selected[(slice(None), *tail_index)]
         return selected
 
+    def _packed_paired_index(self, index: tuple) -> Tensor | None:
+        r"""Select per-sample points through packed rows for paired integer indices."""
+        if (
+            not self.batch_first
+            or self._physical_shape.size(1) != 2
+            or self._ragged_dims != (0,)
+            or self._permutation != (0, 1)
+            or len(index) < 2
+        ):
+            return None
+        batch, points = index[:2]
+        if any(
+            not isinstance(item, Tensor)
+            or isinstance(item, NestedTensor)
+            or item.dtype not in (torch.int32, torch.int64)
+            for item in (batch, points)
+        ) or any(item is not None and not isinstance(item, slice) and type(item) is not int for item in index[2:]):
+            return None
+        values = self.concat
+        if any(item.device.type != "cpu" and item.device != values.device for item in (batch, points)):
+            return None
+        batch, points = torch.broadcast_tensors(
+            batch.to(device=values.device, dtype=torch.long), points.to(device=values.device, dtype=torch.long)
+        )
+        shape = (*batch.shape, values.shape[1])
+        batch = batch.reshape(-1)
+        batch = torch.where(batch < 0, batch + len(self), batch)
+        offsets = self.packed_offsets(device=values.device, dtype=torch.long)
+        lengths = (offsets[1:] - offsets[:-1]).index_select(0, batch)
+        points = points.reshape(-1)
+        points = torch.where(points < 0, points + lengths, points)
+        rows = offsets[:-1].index_select(0, batch) + points
+        # An invalid local point must fail native indexing, rather than read a
+        # neighbouring sample or a padded value.
+        rows = torch.where((points >= 0) & (points < lengths), rows, values.shape[0])
+        result = values.index_select(0, rows).reshape(shape)
+        return result[(slice(None),) * (len(shape) - 1) + index[2:]]
+
     def _packed_physical_slice(self, rest: tuple) -> Self | None:
         r"""Slice packed physical dims when the batch dim is untouched."""
         if not self.batch_first:
@@ -4684,18 +4722,26 @@ class NestedTensor(torch.Tensor):
         index = tuple(rest) + (slice(None),) * (physical_rank - len(rest))
         if not all(isinstance(selector, slice) for selector in index):
             return None
+        if any(selector.step is not None and selector.step <= 0 for selector in index):
+            raise ValueError("step must be greater than zero")
 
         static_dims = self._static_dims
         static_lookup = {dim: axis for axis, dim in enumerate(static_dims)}
         varying_dims = self._varying_dims
+        if len(varying_dims) > 1 and any(index[dim] != slice(None) for dim in varying_dims):
+            if self._element_shapes is not None and any(len(shape) != physical_rank for shape in self._element_shapes):
+                return None
+            result = self
+            for dim, selector in enumerate(index, start=1):
+                if selector != slice(None):
+                    result = torch.ops.aten.slice.Tensor(result, dim, selector.start, selector.stop, selector.step or 1)
+            return result
         physical_dims = list(self._max_physical_dims())
         value_index: list[slice] = [slice(None)] * self.concat.dim()
         replace_dims: dict[int, int] = {}
         ragged_selector: tuple[int, slice] | None = None
         changed = False
         for dim, selector in enumerate(index):
-            if selector.step is not None and selector.step <= 0:
-                raise ValueError("step must be greater than zero")
             axis = static_lookup.get(dim)
             if axis is None:
                 if selector.start is None and selector.stop is None and selector.step is None:
@@ -5039,6 +5085,10 @@ class NestedTensor(torch.Tensor):
                 for entry in index
             )
 
+            paired_output = self._packed_paired_index(index)
+            if paired_output is not None:
+                return paired_output
+
             batch_index, *rest = index
 
             symbolic_tensor_metadata = self._packed_sizes is None and (
@@ -5129,6 +5179,14 @@ class NestedTensor(torch.Tensor):
                     "NestedTensor batch length mismatch between self and index: "
                     f"self={len(self)}, index={len(index)}"
                 )
+            if (
+                index.dtype == torch.bool
+                and self.concat.dim() == 1
+                and self._permutation == tuple(range(self._physical_shape.size(1)))
+                and self._has_same_layout(index)
+            ):
+                op = torch.ops.aten.masked_select.default
+                return NestedTensorAtenRegistry[op](op, (self, index), {})
             return self.__class__(
                 [t[i] for t, i in zip(self._storage, index._storage)], **self._meta(include_dtype=True)
             )
@@ -6223,14 +6281,24 @@ class _PackedStructureReference:
 
     ``mark_dynamic`` flags a public factory result, which keeps Dynamo's dynamic-dim hints
     (see :meth:`NestedTensor._mark_tensor_backed_dynamic_dims`).
+    ``logical_input`` retains the original dense autograd edge across packing, including
+    sparse gradients whose coordinates must be restored without a sparse reshape.
     """
 
-    __slots__ = ("value", "reuse_wrapper", "mark_dynamic")
+    __slots__ = ("value", "reuse_wrapper", "mark_dynamic", "logical_input")
 
-    def __init__(self, value: NestedTensor, *, reuse_wrapper: bool = False, mark_dynamic: bool = False) -> None:
+    def __init__(
+        self,
+        value: NestedTensor,
+        *,
+        reuse_wrapper: bool = False,
+        mark_dynamic: bool = False,
+        logical_input: bool = False,
+    ) -> None:
         self.value = value
         self.reuse_wrapper = reuse_wrapper
         self.mark_dynamic = mark_dynamic
+        self.logical_input = logical_input
 
 
 class _PackedLikeAutograd(torch.autograd.Function):
@@ -6241,6 +6309,8 @@ class _PackedLikeAutograd(torch.autograd.Function):
         reference = structure.value
         max_length_binding = vars(reference).get("_compile_max_length_binding")
         result = reference if structure.reuse_wrapper else reference._packed_like_unchecked_raw(packed_values)
+        if structure.logical_input:
+            object.__setattr__(result, "_logical_input", True)
         if max_length_binding is not None:
             result._max_length_binding = max_length_binding
         if structure.mark_dynamic:
@@ -6251,7 +6321,8 @@ class _PackedLikeAutograd(torch.autograd.Function):
     def setup_context(ctx, inputs, output):
         packed_values, structure = inputs
         reference = structure.value
-        ctx.packed_shape = packed_values.shape
+        ctx.logical_input = structure.logical_input
+        ctx.packed_shape = reference._packed_values.shape if structure.logical_input else packed_values.shape
         ctx.jvp_layout = reference._layout_state()
         # Reverse and forward derivatives need geometry, not numerical storage
         # or the version counter of a wrapper that may subsequently be mutated.
@@ -6263,6 +6334,10 @@ class _PackedLikeAutograd(torch.autograd.Function):
         del structure_tangent
         if values_tangent is None:
             return None
+        if ctx.logical_input:
+            permutation, batch_first = ctx.jvp_layout[3], ctx.jvp_layout[6]
+            values_tangent = values_tangent.movedim(0 if batch_first else 1, 0)
+            values_tangent = values_tangent.permute(0, *(1 + axis for axis in permutation)).reshape(ctx.packed_shape)
         layout = NestedTensor._layout_from_state(ctx.jvp_layout, values_tangent, ctx.packed_shape)
         return _PackedLikeAutograd.apply(values_tangent, _PackedStructureReference(layout))
 
@@ -6278,6 +6353,13 @@ class _PackedLikeAutograd(torch.autograd.Function):
             dim=1,
         )
         values = packed_values.movedim(values_dim, -1)
+        logical_values = values
+        if structure.logical_input:
+            batch_dim = 0 if reference.batch_first else 1
+            values = values.movedim(batch_dim, 0).permute(
+                0, *(1 + axis for axis in reference._permutation), values.dim() - 1
+            )
+            values = values.reshape(*reference._packed_values.shape, info.batch_size).detach()
         layout = type(reference).from_packed(
             values,
             reference._offsets,
@@ -6292,11 +6374,23 @@ class _PackedLikeAutograd(torch.autograd.Function):
             ragged_offsets=reference._persistent_ragged_offsets(),
             validate=False,
         )
-        output = _PackedLikeAutograd.apply(values, _PackedStructureReference(layout))
+        output = _PackedLikeAutograd.apply(
+            logical_values if structure.logical_input else values,
+            _PackedStructureReference(
+                layout, reuse_wrapper=structure.logical_input, logical_input=structure.logical_input
+            ),
+        )
         return output, reference.dim()
 
     @staticmethod
     def backward(ctx, grad_output: NestedTensor):
+        if ctx.logical_input:
+            if isinstance(grad_output, NestedTensor):
+                from .aten_functions import _uniform_logical_from_values
+
+                layout = NestedTensor._layout_from_state(ctx.layout_state, grad_output.concat, ctx.packed_shape)
+                return _uniform_logical_from_values(layout, grad_output.concat), None
+            return grad_output, None
         state = getattr(ctx, "layout_state", None)
         if state is None:
             (reference,) = ctx.saved_tensors
@@ -6377,6 +6471,7 @@ class _PackedValuesAutograd(torch.autograd.Function):
         # Retain topology without owning activation storage.
         values = torch.empty((), device="meta", dtype=output.dtype).expand(output.shape)
         ctx.layout = layout._packed_like_unchecked_raw(values)
+        ctx.logical_input = vars(layout).get("_logical_input", False)
 
     @staticmethod
     def jvp(ctx, input_tangent):
@@ -6401,6 +6496,24 @@ class _PackedValuesAutograd(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_values: Tensor):
+        if ctx.logical_input:
+            if grad_values.layout == torch.sparse_coo:
+                gradient = grad_values.coalesce()
+                indices = gradient.indices()
+                coordinates = list(ctx.layout._packed_dense_index(indices[0], device=indices.device))
+                for axis, coordinate in zip(ctx.layout._static_dims, indices[1:]):
+                    coordinates[axis + 1] = coordinate
+                if not ctx.layout.batch_first:
+                    coordinates.insert(1, coordinates.pop(0))
+                return torch.sparse_coo_tensor(
+                    torch.stack(tuple(cast(Tensor, coordinate) for coordinate in coordinates)),
+                    gradient.values(),
+                    size=ctx.layout.shape,
+                    check_invariants=torch.sparse.check_sparse_tensor_invariants.is_enabled(),
+                )
+            from .aten_functions import _uniform_logical_from_values
+
+            return _uniform_logical_from_values(ctx.layout, grad_values)
         return ctx.layout._packed_like_unchecked(grad_values)
 
 

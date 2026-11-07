@@ -543,6 +543,181 @@ class TestInPlace:
 
 
 class TestIndexingOps:
+
+    @pytest.mark.parametrize("name", ["gather", "scatter"])
+    @pytest.mark.parametrize("index_dtype", [torch.int32, torch.int64, torch.float32])
+    def test_index_dtype(self, device, name, index_dtype):
+        parts = [torch.randn(shape, device=device, requires_grad=True) for shape in ((2, 3, 4), (3, 2, 4))]
+        indices = [torch.zeros(shape, device=device, dtype=index_dtype) for shape in ((1, 2, 3), (2, 1, 3))]
+        source = NT(parts, ragged_dims=(0, 1))
+        index = NT(indices, ragged_dims=(0, 1))
+        operation = getattr(torch, name)
+        rest = () if name == "gather" else (1.0,)
+        if index_dtype.is_floating_point:
+            with pytest.raises(RuntimeError):
+                operation(parts[0], 2, indices[0], *rest)
+            with pytest.raises(RuntimeError):
+                operation(source, 3, index, *rest)
+            return
+        output = operation(source, 3, index, *rest)
+        expected = [operation(part, 2, idx, *rest) for part, idx in zip(parts, indices)]
+        torch.testing.assert_close(output.unbind(), expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(output.concat.square().sum(), parts),
+            torch.autograd.grad(sum(part.square().sum() for part in expected), parts),
+        )
+
+    @pytest.mark.parametrize("operation", [torch.gather, torch.Tensor.gather, torch.ops.aten.gather.default])
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("element_dim", [0, 1])
+    def test_sparse_gather(self, device, operation, batch_first, element_dim):
+        base = torch.randn(2, 4, 3, device=device)
+        source = (base if batch_first else base.movedim(0, 1)).detach().requires_grad_()
+        references = [part.clone().requires_grad_() for part in base.unbind()]
+        shapes = [(2, 3), (3, 3)] if element_dim == 0 else [(2, 2), (3, 2)]
+        indices = [torch.arange(math.prod(shape), device=device).reshape(shape) % (4 - element_dim) for shape in shapes]
+        index = NT(indices, ragged_dims=(0,), batch_first=batch_first)
+        dim = element_dim + (batch_first or element_dim > 0)
+        output = operation(source, dim, index, sparse_grad=True)
+        expected = [torch.gather(part, element_dim, idx, sparse_grad=True) for part, idx in zip(references, indices)]
+        torch.testing.assert_close(output.unbind(0 if batch_first else 1), expected)
+        gradient = torch.autograd.grad(output.square().sum(), source)[0]
+        expected_gradients = torch.autograd.grad(sum(part.square().sum() for part in expected), references)
+        assert gradient.layout == torch.sparse_coo
+        expected_gradient = torch.stack([grad.to_dense() for grad in expected_gradients])
+        torch.testing.assert_close(
+            gradient.to_dense(), expected_gradient if batch_first else expected_gradient.movedim(0, 1)
+        )
+
+    @pytest.mark.parametrize("dense", [True, False])
+    @pytest.mark.parametrize("overlap", [True, False])
+    def test_index_overlap(self, device, dense, overlap):
+        base = torch.tensor([0, 1, 0, 1, 2], device=device)
+        before = base.clone()
+        offset = 2 if overlap else 3
+        source = (
+            base[:3].reshape(1, 3)
+            if dense
+            else NT.from_packed(base[:3], torch.tensor([0, 3]), torch.tensor([[3]]), ragged_dims=(0,))
+        )
+        index = NT.from_packed(base[offset : offset + 2], torch.tensor([0, 2]), torch.tensor([[2]]), ragged_dims=(0,))
+        if overlap:
+            with pytest.raises(RuntimeError, match="overlapping memory|single memory location"):
+                source.scatter_(1, index, 7)
+            torch.testing.assert_close(base, before)
+        else:
+            source.scatter_(1, index, 7)
+            before[:3].scatter_(0, before[3:], 7)
+            torch.testing.assert_close(base, before)
+
+    def test_native_keywords(self, device):
+        parts = [torch.arange(length, dtype=torch.float32, device=device) for length in (3, 5)]
+        indices = [torch.tensor([2, 0], device=device), torch.tensor([4], device=device)]
+        values = [torch.full(index.shape, -2.0, device=device) for index in indices]
+        source, index, src = NT(parts), NT(indices), NT(values)
+        for operation, kwargs, expected in (
+            (torch.ops.aten.gather.default, {}, [part.gather(0, idx) for part, idx in zip(parts, indices)]),
+            (
+                torch.ops.aten.scatter.value,
+                {"value": -2.0},
+                [part.scatter(0, idx, -2.0) for part, idx in zip(parts, indices)],
+            ),
+            (
+                torch.ops.aten.scatter.src,
+                {"src": src},
+                [part.scatter(0, idx, value) for part, idx, value in zip(parts, indices, values)],
+            ),
+        ):
+            output = operation(self=source, dim=1, index=index, **kwargs)
+            torch.testing.assert_close(output.unbind(), expected)
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("element_dim", [0, 1])
+    @pytest.mark.parametrize("operation", [torch.gather, torch.ops.aten.gather.default])
+    def test_dense_gather(self, device, batch_first, element_dim, operation):
+        source = torch.randn(2, 4, 3, device=device, requires_grad=True)
+        shapes = [(2, 3), (3, 3)] if element_dim == 0 else [(2, 2), (3, 2)]
+        indices = [torch.arange(math.prod(shape), device=device).reshape(shape) % (4 - element_dim) for shape in shapes]
+        index = NT(indices, ragged_dims=(0,), batch_first=batch_first)
+        logical_source = source if batch_first else source.movedim(0, 1)
+        dim = element_dim + (batch_first or element_dim > 0)
+
+        output = operation(logical_source, dim, index)
+        expected = [torch.gather(part, element_dim, idx) for part, idx in zip(source, indices)]
+        torch.testing.assert_close(output.unbind(0 if batch_first else 1), expected)
+        actual_grad = torch.autograd.grad(output.square().sum(), source, retain_graph=True)[0]
+        expected_grad = torch.autograd.grad(sum(part.square().sum() for part in expected), source)[0]
+        torch.testing.assert_close(actual_grad, expected_grad)
+
+    @pytest.mark.parametrize("dense", [True, False])
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize(
+        "name,inplace",
+        [
+            ("scatter", False),
+            ("scatter", True),
+            ("scatter_add", False),
+            ("scatter_add", True),
+            ("scatter_reduce", False),
+            ("scatter_reduce", True),
+        ],
+    )
+    def test_scatter_topology(self, device, dense, batch_first, name, inplace):
+        lengths = (9, 9) if dense else (4, 9)
+        parts = [torch.randn(length, 3, device=device, requires_grad=True) for length in lengths]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        indices = [
+            torch.tensor([0], device=device)[:, None].expand(-1, 3),
+            torch.tensor([1, 8], device=device)[:, None].expand(-1, 3),
+        ]
+        values = [torch.randn(index.shape, device=device, requires_grad=True) for index in indices]
+        ref_values = [value.detach().clone().requires_grad_() for value in values]
+        source = torch.stack(parts) if dense else NT(parts, ragged_dims=(0,), batch_first=batch_first)
+        if dense and not batch_first:
+            source = source.movedim(0, 1)
+        source = source.sin()
+        index = NT(indices, ragged_dims=(0,), batch_first=batch_first)
+        src = NT(values, ragged_dims=(0,), batch_first=batch_first)
+        dim = 1 if batch_first else 0
+        kwargs = {"reduce": "sum", "include_self": False} if name == "scatter_reduce" else {}
+        operation = getattr(torch.Tensor, name + "_") if inplace else getattr(torch, name)
+
+        output = operation(source, dim, index, src, **kwargs)
+        expected = [
+            getattr(torch, name)(part.sin(), 0, idx, value, **kwargs)
+            for part, idx, value in zip(references, indices, ref_values)
+        ]
+        torch.testing.assert_close(output.unbind(0 if batch_first else 1), expected)
+        if inplace:
+            assert output is source
+        actual_grad = torch.autograd.grad(output.square().sum(), [*parts, *values])
+        expected_grad = torch.autograd.grad(sum(part.square().sum() for part in expected), [*references, *ref_values])
+        torch.testing.assert_close(actual_grad, expected_grad)
+
+    @pytest.mark.parametrize("dense", [True, False])
+    def test_scalar_scatter(self, device, dense):
+        parts = [torch.zeros(length, dtype=torch.long, device=device) for length in ((9, 9) if dense else (4, 9))]
+        source = torch.stack(parts) if dense else NT(parts)
+        indices = [torch.tensor([0], device=device), torch.tensor([1, 8], device=device)]
+        output = source.scatter_(1, NT(indices), 1)
+        assert output is source
+        torch.testing.assert_close(output.unbind(), [part.scatter(0, idx, 1) for part, idx in zip(parts, indices)])
+
+    @pytest.mark.parametrize("dense", [True, False])
+    def test_scatter_mutation(self, device, dense):
+        parts = [torch.randn(length, device=device, requires_grad=True) for length in ((9, 9) if dense else (4, 9))]
+        source = torch.stack(parts) if dense else NT(parts)
+        index = NT([torch.tensor([0], device=device), torch.tensor([1, 8], device=device)])
+        saved = source.square().sum()
+        source.scatter_(1, index, 1)
+        with pytest.raises(RuntimeError, match="modified"):
+            torch.autograd.grad(saved, parts)
+        leaf = (torch.zeros(2, 9, device=device) if dense else NT([part.detach() for part in parts])).requires_grad_()
+        with pytest.raises(RuntimeError, match="leaf Variable"):
+            leaf.scatter_(1, index, 1)
+        with pytest.raises(RuntimeError, match="overlapping memory|single memory location"):
+            source.scatter_(1, index, source)
+
     @pytest.mark.parametrize("operation", [torch.select, torch.Tensor.select, torch.ops.aten.select.int])
     @pytest.mark.parametrize("mode", ["grad", "inference", "leaf"])
     @pytest.mark.parametrize("dim,index", [(-3, 0), (-2, -1), (-1, 1)])

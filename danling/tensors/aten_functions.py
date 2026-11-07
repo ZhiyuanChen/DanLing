@@ -52,6 +52,7 @@ from .ops import (
     NestedTensorFuncRegistry,
     _binary_complementary_singleton_square,
     _binary_op_maybe_tensor,
+    _bind_fn,
     _broadcast_lower_rank_nested_to_values,
     _broadcast_nested_to_values,
     _check_execution_guard,
@@ -1606,7 +1607,7 @@ def _inplace_binary_handler(func, args, kwargs):
 # ---------------------------------------------------------------------------
 
 
-@NestedTensorAtenRegistry.implement(aten.gather.default)
+@NestedTensorAtenRegistry.implement(aten.gather.default, compile_safe=True)
 def gather(func, args, kwargs):
     r"""Apply ``gather`` with packed fast paths when the index layout matches the source."""
     from .nested_tensor import NestedTensor
@@ -1638,6 +1639,12 @@ def gather(func, args, kwargs):
     else:
         sparse_grad = False if kw_sparse_grad is _MISSING else kw_sparse_grad
 
+    logical_source = not isinstance(source, NestedTensor)
+    if logical_source:
+        if not isinstance(index, NestedTensor) or source.dim() != index.dim():
+            raise RuntimeError("gather input and index must have the same number of dimensions")
+        source = _pack_uniform_logical_dense(index, source, logical_input=sparse_grad)
+
     if dim < -source.dim() or dim >= source.dim():
         raise IndexError(
             f"Dimension out of range (expected to be in range of [{-source.dim()}, {source.dim() - 1}], but got {dim})"
@@ -1656,6 +1663,27 @@ def gather(func, args, kwargs):
             # whichever integer dtypes this PyTorch version supports. Empty
             # indices deliberately skip native gather's dtype checks.
             func(source.concat.new_zeros(1), 0, index_values.new_zeros(1, device=source.concat.device))
+
+    if logical_source and sparse_grad:
+        positions = _packed_index_positions(source, index, dim_adj, "gather")
+        values = source.concat
+        values_dim = _packed_static_dim(source, dim_adj)
+        if values_dim is None:
+            rows = positions // builtins.max(1, math.prod(values.shape[1:]))
+            out_values = func(values, 0, rows, sparse_grad=True, **kwargs)
+        else:
+            batch, local = index._packed_batch_local_indices(device=values.device)
+            coordinates = index._packed_varying_coords(batch, local, device=values.device)
+            sizes = source._physical_shape.to(device=values.device).index_select(0, batch)
+            rows = source.packed_offsets(device=values.device).index_select(0, batch)
+            stride = torch.ones_like(rows)
+            for axis, coordinate in reversed(tuple(zip(source._ragged_dims, coordinates))):
+                rows = rows + coordinate * stride
+                stride = stride * sizes[:, axis]
+            row_index = rows.reshape(-1, *([1] * (values.dim() - 1))).expand(rows.shape[0], *values.shape[1:])
+            selected = func(values, 0, row_index, sparse_grad=True, **kwargs)
+            out_values = func(selected, values_dim, index.concat.to(device=values.device), sparse_grad=False, **kwargs)
+        return _packed_gather_output(source, index, out_values)
 
     if (
         isinstance(index, Tensor)
@@ -1696,7 +1724,8 @@ def gather(func, args, kwargs):
             out_values = func(source.concat, 0, packed_index, sparse_grad=sparse_grad, **kwargs)
             return _packed_gather_output(source, index, out_values)
 
-        if source._has_same_structure(index):
+        known_rows = not (_is_compiling() or _is_fake_tensor(source._offsets)) or source._same_row_splits(index)
+        if known_rows and source._has_same_structure(index):
             # Gather runs on the packed values, so a per-element dim has to be mapped onto its
             # packed axis: the packed axes are the permuted per-element dims with every ragged dim
             # collapsed into axis 0, so the two numberings agree only under an identity layout. A
@@ -1717,15 +1746,9 @@ def gather(func, args, kwargs):
                 out_values = func(source.concat, 0, packed_index, sparse_grad=sparse_grad, **kwargs)
                 return _packed_gather_output(source, index, out_values)
 
-        # Nothing above claimed a packed axis, so report the per-sample loop rather than letting a
-        # warm ``_storage`` cache carry it past the guards unannounced.
-        _check_execution_guard(_ExecutionGuardKind.EAGER_FALLBACK, "aten_functions.gather")
-        storage = []
-        for tensor, idx in zip(source._storage, index._storage):
-            if idx.device != tensor.device:
-                idx = idx.to(device=tensor.device)
-            storage.append(func(tensor, dim_adj, idx, sparse_grad=sparse_grad, **kwargs))
-        return type(source)(storage, **source._meta())
+        positions = _packed_index_positions(source, index, dim_adj, "gather")
+        out_values = func(source.concat.reshape(-1), 0, positions.reshape(-1), sparse_grad=sparse_grad, **kwargs)
+        return _packed_gather_output(source, index, out_values.reshape(index.concat.shape))
 
     if isinstance(index, Tensor) and _shared_index_gather_supported(source, dim_adj, index):
         return _shared_index_gather(source, dim, dim_adj, index, func, sparse_grad, kwargs)
@@ -1750,6 +1773,12 @@ def _single_ragged_gather_supported(source: NestedTensor, index: NestedTensor, d
         and source.concat.dim() == index.concat.dim()
         and _packed_inner_ragged_dim(source, dim_adj)
     )
+
+
+@NestedTensorFuncRegistry.implement(aten.gather.default, compile_safe=True)
+def gather_public(self, dim, index, *, sparse_grad=False):
+    r"""Preserve packed gradients before native gather's dense-only backward allocation."""
+    return gather(aten.gather.default, (self, dim, index), {"sparse_grad": sparse_grad})
 
 
 def _multi_ragged_outer_gather_supported(source: NestedTensor, index: NestedTensor, dim_adj: int) -> bool:
@@ -1841,8 +1870,12 @@ def _shared_index_gather(source: NestedTensor, dim, dim_adj: int, index: Tensor,
     )
 
 
-def _pack_uniform_logical_dense(source: NestedTensor, value: Tensor) -> NestedTensor:
+def _pack_uniform_logical_dense(source: NestedTensor, value: Tensor, *, logical_input: bool = False) -> NestedTensor:
     r"""Pack a logical dense batch with its actual uniform per-element extents."""
+    logical_input = logical_input and torch.is_grad_enabled() and value.requires_grad
+    original = value
+    if logical_input:
+        value = value.detach()
     batch_dim = _get_batch_dim(source)
     batch_size = int(value.shape[batch_dim])
     element_shape = tuple(int(size) for axis, size in enumerate(value.shape) if axis != batch_dim)
@@ -1853,7 +1886,7 @@ def _pack_uniform_logical_dense(source: NestedTensor, value: Tensor) -> NestedTe
     logical_shape = (
         (batch_size, *element_shape) if source.batch_first else (element_shape[0], batch_size, *element_shape[1:])
     )
-    return _packed_with_shape(
+    result = _packed_with_shape(
         source,
         values,
         physical_shape,
@@ -1863,6 +1896,13 @@ def _pack_uniform_logical_dense(source: NestedTensor, value: Tensor) -> NestedTe
         packed_sizes=(count,) * batch_size,
         element_shapes=(element_shape,) * batch_size,
     )
+    if logical_input:
+        from .nested_tensor import _PackedLikeAutograd, _PackedStructureReference
+
+        return _PackedLikeAutograd.apply(
+            original, _PackedStructureReference(result, reuse_wrapper=True, logical_input=True)
+        )
+    return result
 
 
 def _logical_batched_gather(source: NestedTensor, dim, dim_adj: int, index: Tensor, func, sparse_grad, kwargs):
@@ -2050,6 +2090,52 @@ def index_copy(func, args, kwargs):
     r"""Apply ``index_copy`` with packed fast paths when the source layout aligns with the input."""
     source, dim, index, src = args[0], args[1], args[2], args[3]
     return _index_write_like(source, dim, index, src, lambda t, d, i, s: func(t, d, i, s, **kwargs), "index_copy")
+
+
+def _dense_boolean_index_coordinates(source, indices):
+    r"""Map a packed boolean mask to native dense tensor coordinates in logical order."""
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(source, Tensor) or isinstance(source, NestedTensor) or len(indices) != 1:
+        return None
+    mask = indices[0]
+    if not isinstance(mask, NestedTensor) or mask.dtype != torch.bool or not mask.batch_first:
+        return None
+    if source.dim() < mask.dim() or tuple(source.shape[: mask.dim()]) != tuple(mask.shape):
+        raise IndexError(f"Boolean mask shape {tuple(mask.shape)} does not match tensor shape {tuple(source.shape)}")
+    if mask.device.type != "cpu" and mask.device != source.device:
+        raise RuntimeError("Boolean mask must be on CPU or on the same device as the indexed tensor")
+    packed = tuple(index.to(device=source.device) for index in mask.concat.nonzero(as_tuple=True))
+    coordinates = list(mask._packed_dense_index(packed[0], device=source.device))
+    for axis, index in zip(mask._static_dims, packed[1:]):
+        coordinates[axis + 1] = index
+    linear = coordinates[0]
+    for size, index in zip(mask.shape[1:], coordinates[1:]):
+        linear = linear * size + index
+    order = linear.argsort()
+    return tuple(index.index_select(0, order) for index in coordinates)
+
+
+@NestedTensorAtenRegistry.implement(aten.index.Tensor, compile_safe=True)
+def index_tensor(func, args, kwargs):
+    r"""Index dense tensors with packed boolean masks in native logical order."""
+    coordinates = _dense_boolean_index_coordinates(args[0], args[1])
+    if coordinates is not None:
+        return func(args[0], list(coordinates), **kwargs)
+    return per_element_fallback(func, args, kwargs)
+
+
+@NestedTensorAtenRegistry.implement(aten.index_put_.default, compile_safe=True)
+def index_put_inplace(func, args, kwargs):
+    r"""Write through a packed boolean mask using native dense mutation."""
+    coordinates = _dense_boolean_index_coordinates(args[0], args[1])
+    if coordinates is not None:
+        from .nested_tensor import NestedTensor
+
+        if isinstance(args[2], NestedTensor):
+            raise NotImplementedError("Use Tensor.index_put_ for assignment from NestedTensor values")
+        return func(args[0], list(coordinates), *args[2:], **kwargs)
+    return per_element_fallback(func, args, kwargs)
 
 
 def _is_integer_index_tensor(index) -> bool:
@@ -2363,6 +2449,8 @@ def _packed_scatter_src(source: NestedTensor, src):
     from .nested_tensor import NestedTensor
 
     if isinstance(src, NestedTensor):
+        if (_is_compiling() or _is_fake_tensor(source._offsets)) and not source._same_row_splits(src):
+            return _NO_PACKED_SRC
         if not source._has_same_structure(src):
             return _NO_PACKED_SRC
         values = src.concat
@@ -2498,29 +2586,87 @@ def _segmented_outer_row_index(
 
 
 def _scatter_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
-    r"""Return whether the scatter family resolves to a packed axis for these operands."""
+    r"""Return whether scatter can resolve every index in packed coordinates."""
     from .nested_tensor import NestedTensor
 
-    if len(args) < 4:
-        return False
-    source, dim, index, src = args[0], args[1], args[2], args[3]
-    if not isinstance(index, NestedTensor) or _packed_scatter_src(source, src) is _NO_PACKED_SRC:
+    source = args[0] if args else kwargs.get("self")
+    dim = args[1] if len(args) > 1 else kwargs.get("dim")
+    index = args[2] if len(args) > 2 else kwargs.get("index")
+    if not isinstance(source, Tensor) or not isinstance(index, NestedTensor) or source.dim() != index.dim():
         return False
     try:
-        dim = _normalize_dim(dim, source.dim())
-        if dim == _get_batch_dim(source):
+        dim = _normalize_dim(cast(int, dim), source.dim())
+        if dim == _get_batch_dim(index):
             return False
-        dim_adj = _translate_dim(source, dim)
     except (TypeError, ValueError, IndexError):
         return False
-    if not source._has_same_structure(index):
-        return False
-    return _packed_static_dim(source, dim_adj) is not None or _packed_inner_ragged_dim(source, dim_adj)
+    return True
+
+
+def _packed_index_positions(source: NestedTensor, index: NestedTensor, dim_adj: int | None, name: str) -> Tensor:
+    r"""Resolve sample-local coordinates to scalar positions in packed storage."""
+    from .segmented import align_rows
+
+    if source.dim() != index.dim():
+        raise RuntimeError(f"{name}: input and index must have the same number of dimensions")
+    if len(source) != len(index):
+        raise ValueError(f"{name}: NestedTensor batch length mismatch")
+    index_values = index.concat.to(device=source.device)
+    if index_values.dtype not in (torch.int32, torch.int64):
+        if not _is_compiling() and not _is_fake_tensor(index_values) and index_values.numel() == 0:
+            return index_values.to(dtype=torch.long)
+        raise RuntimeError(f"{name}: index must have dtype int32 or int64")
+    source_sizes = source._physical_shape.to(device=source.device)
+    index_sizes = index._physical_shape.to(device=source.device)
+    retained = [axis for axis in range(source_sizes.shape[1]) if axis != dim_adj]
+    empty = torch.scalar_tensor(index_values.numel(), device=source.device, dtype=torch.long) == 0
+    torch._assert_async(
+        empty | torch.all(index_sizes[:, retained] <= source_sizes[:, retained]),
+        f"{name}: index shape exceeds the input outside the selected dimension",
+    )
+    batch, local = index._packed_batch_local_indices(device=source.device)
+    coordinates = dict(zip(index._ragged_dims, index._packed_varying_coords(batch, local, device=source.device)))
+    coordinates = {axis: align_rows(value, index_values) for axis, value in coordinates.items()}
+    for packed_axis, axis in enumerate(index._static_dims, start=1):
+        shape = [1] * index_values.dim()
+        shape[packed_axis] = index_values.shape[packed_axis]
+        coordinates[axis] = torch.arange(shape[packed_axis], device=source.device).reshape(shape)
+    sizes = source_sizes.index_select(0, batch)
+    if dim_adj is not None:
+        _check_segment_index_bounds(index_values, sizes[:, dim_adj], dim_adj, name)
+        coordinates[dim_adj] = index_values
+    stride = torch.ones_like(batch)
+    positions = torch.zeros_like(index_values, dtype=torch.long)
+    for axis in reversed(source._permutation):
+        positions = positions + coordinates[axis] * align_rows(stride, index_values)
+        stride = stride * sizes[:, axis]
+    tail_size = math.prod(source.concat.shape[1:])
+    starts = source._offsets.to(device=source.device).index_select(0, batch) * tail_size
+    return positions + align_rows(starts, index_values)
+
+
+def _uniform_logical_from_values(source: NestedTensor, values: Tensor) -> Tensor:
+    r"""Restore the logical axis order of an originally dense uniform batch."""
+    element_shape = tuple(source.shape[axis] for axis in range(source.dim()) if axis != _get_batch_dim(source))
+    packed_shape = tuple(element_shape[axis] for axis in source._permutation)
+    inverse = tuple(source._permutation.index(axis) for axis in range(len(element_shape)))
+    return (
+        values.reshape(len(source), *packed_shape)
+        .permute(0, *(axis + 1 for axis in inverse))
+        .movedim(0, _get_batch_dim(source))
+    )
 
 
 def _scatter_like(source, dim, index, src, apply_fn, op_name: str):
     r"""Apply scatter-style writes on the packed values whenever the written dim maps to one axis."""
     from .nested_tensor import NestedTensor
+
+    if not isinstance(source, NestedTensor):
+        if not isinstance(index, NestedTensor) or source.dim() != index.dim():
+            raise RuntimeError(f"{op_name}: input and index must have the same number of dimensions")
+        packed_source = _pack_uniform_logical_dense(index, source)
+        result = _scatter_like(packed_source, dim, index, src, apply_fn, op_name)
+        return _uniform_logical_from_values(packed_source, result.concat)
 
     dim = _normalize_dim(dim, source.dim())
     batch_dim = _get_batch_dim(source)
@@ -2547,8 +2693,16 @@ def _scatter_like(source, dim, index, src, apply_fn, op_name: str):
         )
 
     src_values = _packed_scatter_src(source, src)
-    if isinstance(index, NestedTensor) and src_values is not _NO_PACKED_SRC and source._has_same_structure(index):
-        index_values = index.concat.to(device=source.concat.device, dtype=torch.long)
+    known_rows = not (_is_compiling() or _is_fake_tensor(source._offsets)) or (
+        isinstance(index, NestedTensor) and source._same_row_splits(index)
+    )
+    if (
+        isinstance(index, NestedTensor)
+        and src_values is not _NO_PACKED_SRC
+        and known_rows
+        and source._has_same_structure(index)
+    ):
+        index_values = index.concat.to(device=source.concat.device)
         # ``dim_adj`` numbers per-element dimensions and the packed axes are the permuted,
         # ragged-collapsed ones, so the two agree only under an identity layout. Map through the
         # layout instead: a static dim keeps its own axis, and the innermost ragged dim becomes
@@ -2559,6 +2713,27 @@ def _scatter_like(source, dim, index, src, apply_fn, op_name: str):
         if _packed_inner_ragged_dim(source, dim_adj):
             packed_index = _segmented_row_index(source, index_values, dim, op_name)
             return source._packed_like_unchecked(apply_fn(source.concat, 0, packed_index, src_values))
+
+    if isinstance(index, NestedTensor):
+        positions = _packed_index_positions(source, index, dim_adj, op_name)
+        if isinstance(src, NestedTensor):
+            source_positions = _packed_index_positions(src, index, None, op_name)
+            src_values = src.concat.reshape(-1).gather(0, source_positions.reshape(-1))
+        elif isinstance(src, Tensor):
+            dense_src = src
+            if dense_src.dim() == index.dim() - 1:
+                dense_src = dense_src.unsqueeze(batch_dim)
+                shape = list(dense_src.shape)
+                shape[batch_dim] = len(index)
+                dense_src = dense_src.expand(shape)
+            src_values = index._dense_to_packed_values(dense_src)
+            if src_values is None:
+                raise RuntimeError(f"{op_name}: source shape does not cover the index shape")
+            src_values = src_values.reshape(-1)
+        else:
+            src_values = src
+        values = apply_fn(source.concat.reshape(-1), 0, positions.reshape(-1), src_values)
+        return source._packed_like_unchecked(values.reshape(source.concat.shape))
 
     # Nothing above claimed a packed axis, so report the per-sample loop rather than letting a
     # warm ``_storage`` cache carry it past the guards unannounced.
@@ -2618,6 +2793,48 @@ def scatter_value(func, args, kwargs):
     return _scatter_like(source, dim, index, value, lambda t, d, i, s: func(t, d, i, s, **kwargs), "scatter")
 
 
+@NestedTensorAtenRegistry.implement(aten.scatter_.src, compile_safe=True, compile_guard=_scatter_compile_safe)
+@NestedTensorAtenRegistry.implement(aten.scatter_.value, compile_safe=True, compile_guard=_scatter_compile_safe)
+@NestedTensorAtenRegistry.implement(aten.scatter_add_.default, compile_safe=True, compile_guard=_scatter_compile_safe)
+@NestedTensorAtenRegistry.implement(aten.scatter_reduce_.two, compile_safe=True, compile_guard=_scatter_compile_safe)
+def scatter_inplace(func, args, kwargs):
+    r"""Keep native wrapper autograd and storage aliases for packed scatter mutations."""
+    from .nested_tensor import NestedTensor
+
+    source, dim, index, src = args[:4]
+    values = source._packed_values if isinstance(source, NestedTensor) else source
+    for read in (index, src):
+        read_values = read._packed_values if isinstance(read, NestedTensor) else read
+        if not isinstance(read_values, Tensor) or _is_compiling() or _is_fake_tensor(values):
+            continue
+        overlap = values.is_set_to(read_values)
+        dense = all(
+            tensor.permute(sorted(range(tensor.dim()), key=tensor.stride().__getitem__, reverse=True)).is_contiguous()
+            for tensor in (values, read_values)
+        )
+        if torch._C._overlaps(values, read_values) and dense:
+            start = values.storage_offset() * values.element_size()
+            src_start = read_values.storage_offset() * read_values.element_size()
+            overlap = (
+                start < src_start + read_values.numel() * read_values.element_size()
+                and src_start < start + values.numel() * values.element_size()
+            )
+        if overlap and values.numel() and read_values.numel():
+            raise RuntimeError("unsupported operation: input and read tensor refer to overlapping memory")
+    out_func = {
+        aten.scatter_.src: aten.scatter.src,
+        aten.scatter_.value: aten.scatter.value,
+        aten.scatter_add_.default: aten.scatter_add.default,
+        aten.scatter_reduce_.two: aten.scatter_reduce.two,
+    }[func]
+    result = _scatter_like(
+        source, dim, index, src, lambda t, d, i, s: out_func(t, d, i, s, *args[4:], **kwargs), "scatter"
+    )
+    if isinstance(source, NestedTensor):
+        return _mutate_packed_values(source, aten.copy_.default, (result.concat,), {})
+    return aten.copy_.default(source, result)
+
+
 if hasattr(aten, "scatter_reduce"):
 
     @NestedTensorAtenRegistry.implement(
@@ -2642,6 +2859,32 @@ if hasattr(aten, "scatter_reduce"):
             lambda t, d, i, s: func(t, d, i, s, reduce, include_self=include_self, **call_kwargs),
             "scatter_reduce",
         )
+
+
+def _scatter_public(*args, _fn=None, **kwargs):
+    r"""Retain packed autograd before scatter's logical dense shape inference."""
+    names = ("self", "dim", "index", "value" if _fn is aten.scatter.value else "src")
+    if _fn is aten.scatter_reduce.two:
+        names += ("reduce",)
+    if len(args) > len(names):
+        raise TypeError(f"{_fn}() takes at most {len(names)} positional arguments")
+    normalized = list(args)
+    for position, name in enumerate(names):
+        value = kwargs.pop(name, _MISSING)
+        if position < len(args):
+            if value is not _MISSING:
+                raise TypeError(f"{_fn}() got multiple values for argument '{name}'")
+        elif value is _MISSING:
+            raise TypeError(f"{_fn}() missing required argument '{name}'")
+        else:
+            normalized.append(value)
+    return NestedTensorAtenRegistry[_fn](_fn, tuple(normalized), kwargs)
+
+
+for _scatter_op in (aten.scatter.src, aten.scatter.value, aten.scatter_add.default, aten.scatter_reduce.two):
+    NestedTensorFuncRegistry.register(
+        _scatter_op, _bind_fn(_scatter_public, _scatter_op), compile_safe=True, compile_guard=_scatter_compile_safe
+    )
 
 
 @NestedTensorAtenRegistry.implement(aten.take.default)
@@ -3087,7 +3330,9 @@ def _packed_uniform_ragged_slice(source: NestedTensor, dim_adj: int, start: int,
     )
 
 
-def _packed_multi_ragged_slice(source: NestedTensor, dim_adj: int, start: int, length: int) -> NestedTensor:
+def _packed_multi_ragged_slice(
+    source: NestedTensor, dim_adj: int, start: int | slice, length: int | None = None
+) -> NestedTensor:
     r"""Keep a span of a collapsed ragged axis using only output-sized row indices.
 
     Ragged order determines the source stride, not logical dimension order.
@@ -3096,11 +3341,14 @@ def _packed_multi_ragged_slice(source: NestedTensor, dim_adj: int, start: int, l
     spans generally copies, as the existing sole-ragged slice does; batch and
     static-axis slices retain their separate view paths.
     """
+    selection = start if isinstance(start, slice) else None
+    narrow_start = cast(int, start)
+    narrow_length = cast(int, length)
     if _is_compiling() or any(
         _is_fake_tensor(tensor) for tensor in (source.concat, source._offsets, source._physical_shape)
     ):
         _compile_unsupported(
-            "torch.narrow",
+            "NestedTensor slice" if selection is not None else "torch.narrow",
             "multi-ragged slicing requires concrete eager extents; dynamic output cardinality "
             "and ragged partitions are not implemented",
         )
@@ -3110,27 +3358,34 @@ def _packed_multi_ragged_slice(source: NestedTensor, dim_adj: int, start: int, l
     shapes = source._element_shapes
     if shapes is None:
         shapes = tuple(tuple(int(size) for size in shape) for shape in source._physical_shape.tolist())
-    extents, suffixes, starts, counts = [], [], [], []
+    extents, suffixes, starts, lengths, counts = [], [], [], [], []
+    step = (selection.step or 1) if selection is not None else 1
     for position, shape in enumerate(shapes):
         extent = int(shape[dim_adj])
-        resolved = start + extent if start < 0 else start
-        if resolved < 0 or resolved + length > extent:
-            raise RuntimeError(
-                f"start ({start}) + length ({length}) exceeds dimension size ({extent}) "
-                f"for NestedTensor element {position}."
-            )
+        if selection is not None:
+            resolved, stop, _ = selection.indices(extent)
+            selected_length = len(range(resolved, stop, step))
+        else:
+            resolved = narrow_start + extent if narrow_start < 0 else narrow_start
+            selected_length = narrow_length
+            if resolved < 0 or resolved + selected_length > extent:
+                raise RuntimeError(
+                    f"start ({start}) + length ({length}) exceeds dimension size ({extent}) "
+                    f"for NestedTensor element {position}."
+                )
         prefix = math.prod(shape[dim] for dim in ragged[:axis])
         suffix = math.prod(shape[dim] for dim in ragged[axis + 1 :])  # noqa: E203
         extents.append(extent)
         suffixes.append(suffix)
         starts.append(resolved)
-        counts.append(prefix * length * suffix)
-    if not shapes:
+        lengths.append(selected_length)
+        counts.append(prefix * selected_length * suffix)
+    if not shapes and selection is None:
         # An empty batch still carries logical non-batch extents. Respect their
         # bounds instead of accepting every span merely because no samples exist.
         extent = int(source._max_physical_dims()[dim_adj])
-        resolved = start + extent if start < 0 else start
-        if resolved < 0 or resolved + length > extent:
+        resolved = narrow_start + extent if narrow_start < 0 else narrow_start
+        if resolved < 0 or resolved + narrow_length > extent:
             raise RuntimeError(f"start ({start}) + length ({length}) exceeds dimension size ({extent}).")
 
     packed_sizes = tuple(counts)
@@ -3149,22 +3404,31 @@ def _packed_multi_ragged_slice(source: NestedTensor, dim_adj: int, start: int, l
         suffix = torch.tensor(suffixes, device=device, dtype=torch.long)[batch_index]
         extent = torch.tensor(extents, device=device, dtype=torch.long)[batch_index]
         resolved = torch.tensor(starts, device=device, dtype=torch.long)[batch_index]
-        block = length * suffix
+        block = torch.tensor(lengths, device=device, dtype=torch.long)[batch_index] * suffix
+        selected = local.remainder(block)
         rows = (
             source._offsets.to(device=device, dtype=torch.long)[batch_index]
             + torch.div(local, block, rounding_mode="floor") * extent * suffix
-            + resolved * suffix
-            + local.remainder(block)
+            + (resolved + torch.div(selected, suffix, rounding_mode="floor") * step) * suffix
+            + selected.remainder(suffix)
         )
 
     physical_shape = source._physical_shape.clone()
-    physical_shape[:, dim_adj] = length
-    element_shapes = tuple((*shape[:dim_adj], length, *shape[dim_adj + 1 :]) for shape in shapes)  # noqa: E203
+    physical_shape[:, dim_adj] = physical_shape.new_tensor(lengths)
+    element_shapes = tuple(
+        (*shape[:dim_adj], selected_length, *shape[dim_adj + 1 :])  # noqa: E203
+        for shape, selected_length in zip(shapes, lengths)
+    )
+    extent = int(source._max_physical_dims()[dim_adj])
+    retained_length = len(range(*selection.indices(extent))) if selection is not None else narrow_length
+    outer_size = _outer_size(source, physical_shape, new_offsets, element_shapes)
+    if not shapes:
+        outer_size = source._logical_shape_from_components(replace_dims={dim_adj: retained_length})
     return _packed_with_shape(
         source,
         values.index_select(0, rows),
         physical_shape,
-        source._logical_shape_from_components(replace_dims={dim_adj: length}),
+        outer_size,
         offsets=new_offsets,
         permutation=source._permutation,
         packed_sizes=packed_sizes,
@@ -6401,6 +6665,8 @@ def slice_tensor(func, args, kwargs):
             [begin for begin, _, _ in spans],
             [builtins.max(end - begin, 0) for begin, end, _ in spans],
         )
+    if source._ragged_rank > 1 and dim_adj in source._varying_dims:
+        return _packed_multi_ragged_slice(source, dim_adj, slice(start, stop, step))
     return _apply_per_element_nested(source, lambda value: func(value, dim_adj, start, stop, step))
 
 
