@@ -339,8 +339,8 @@ def _dense_alignment_is_valid(nt: NestedTensor, aligned: tuple[int, ...]) -> boo
         # A non-singleton extent addresses positions *along* a ragged axis, which is only a
         # meaning when the operand also spells out the batch it is positioned within: a purely
         # positional broadcast such as ``nt[B, ragged, H] + dense[1, L, H]`` is refused. Reading
-        # it per row needs a row coordinate, which only a single ragged level has.
-        if aligned[_get_batch_dim(nt)] != len(nt) or len(nt._ragged_dims) != 1:
+        # it per packed row uses that sample's coordinates along every ragged axis.
+        if aligned[_get_batch_dim(nt)] != len(nt):
             return False
         if size != _padded_ragged_extent(nt, dim):
             return False
@@ -480,7 +480,15 @@ def _dense_alignment_to_values(nt: NestedTensor, other: Tensor, reading: _DenseR
             return view
         return view.index_select(0, nt.packed_batch_indices(device=other.device))
     if ragged_rank != 1:
-        return None
+        batch, local = nt._packed_batch_local_indices(device=other.device)
+        coordinates = nt._packed_varying_coords(batch, local, device=other.device)
+        # Index the existing dense view directly: flattening permuted ragged
+        # axes could copy a complete padded operand before selecting its rows.
+        index = (
+            batch if batch_extent != 1 else 0,
+            *(coordinate if extent != 1 else 0 for coordinate, extent in zip(coordinates, ragged_extents)),
+        )
+        return view[index]
     ragged_extent = ragged_extents[0]
     rows = nt.packed_local_indices(0, device=other.device)
     if batch_extent != 1:
@@ -1643,21 +1651,23 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
         return op(lhs, rhs, *extra_args, **extra_kwargs)
 
     if len(input) == 0 and not isinstance(other, cls):
-        resolved = _as_tensor_like(other, input.concat)
         new_values = (
-            op(resolved, input.concat, *extra_args, **extra_kwargs)
+            op(other, input.concat, *extra_args, **extra_kwargs)
             if reverse
-            else op(input.concat, resolved, *extra_args, **extra_kwargs)
+            else op(input.concat, other, *extra_args, **extra_kwargs)
         )
         return _rebuild(new_values)
 
     # NT + scalar or 0-d tensor (most common in training)
     if not isinstance(other, Tensor) or other.dim() == 0:
-        val = _as_tensor_like(other, input.concat)
+        # Preserve PyTorch's weak Python-scalar semantics. Converting a Python
+        # float to a zero-dimensional tensor of the result dtype rounds it
+        # before the operation (notably for fp16/bf16). Keep actual 0-D tensor
+        # operands unchanged too, including device and autograd behavior.
         new_values = (
-            op(val, input.concat, *extra_args, **extra_kwargs)
+            op(other, input.concat, *extra_args, **extra_kwargs)
             if reverse
-            else op(input.concat, val, *extra_args, **extra_kwargs)
+            else op(input.concat, other, *extra_args, **extra_kwargs)
         )
         return input._packed_like_unchecked(new_values)
 
@@ -2325,6 +2335,12 @@ ATEN_BINARY_ELEMENTWISE_OPS = [
     aten.bitwise_xor.Tensor,
     aten.bitwise_left_shift.Tensor,
     aten.bitwise_right_shift.Tensor,
+    # Python operator aliases can reach dispatch without decomposition in inference mode.
+    aten.__and__.Tensor,
+    aten.__or__.Tensor,
+    aten.__xor__.Tensor,
+    aten.__lshift__.Tensor,
+    aten.__rshift__.Tensor,
     # Scalar overloads (same op, different aten dispatch key)
     aten.add.Scalar,
     aten.sub.Scalar,
@@ -2339,6 +2355,11 @@ ATEN_BINARY_ELEMENTWISE_OPS = [
     aten.bitwise_xor.Scalar,
     aten.bitwise_left_shift.Tensor_Scalar,
     aten.bitwise_right_shift.Tensor_Scalar,
+    aten.__and__.Scalar,
+    aten.__or__.Scalar,
+    aten.__xor__.Scalar,
+    aten.__lshift__.Scalar,
+    aten.__rshift__.Scalar,
     # Aten-only: backward activation ops (grad_output, self/output → grad_input)
     aten.gelu_backward.default,
     aten.silu_backward.default,

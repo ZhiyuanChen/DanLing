@@ -20,6 +20,7 @@
 r"""Tests for ``danling.tensors.aten_functions`` — aten-level dispatch handlers."""
 
 import math
+import operator
 
 import pytest
 import torch
@@ -257,6 +258,50 @@ class TestTo:
                     sum((value * probe).sum() for value, probe in zip(expected, probes)), parts
                 )
                 torch.testing.assert_close(actual_gradients, expected_gradients)
+
+
+class TestBitwiseAliases:
+
+    @pytest.mark.parametrize(
+        "mode", [torch.enable_grad, torch.no_grad, torch.inference_mode], ids=["grad", "no-grad", "inference"]
+    )
+    @pytest.mark.parametrize(
+        ("operation", "alias", "dtype"),
+        [
+            pytest.param(operator.and_, torch.ops.aten.__and__, torch.bool, id="and"),
+            pytest.param(operator.or_, torch.ops.aten.__or__, torch.bool, id="or"),
+            pytest.param(operator.xor, torch.ops.aten.__xor__, torch.bool, id="xor"),
+            pytest.param(operator.lshift, torch.ops.aten.__lshift__, torch.int64, id="left-shift"),
+            pytest.param(operator.rshift, torch.ops.aten.__rshift__, torch.int64, id="right-shift"),
+        ],
+    )
+    def test_native(self, device, mode, operation, alias, dtype):
+        with mode():
+            lengths = (3, 5)
+            parts = [(torch.arange(length, device=device) % 3).to(dtype).unsqueeze(0) for length in lengths]
+            source = NT(parts, ragged_dims=(1,))
+            dense = torch.tensor([0, 2], device=device, dtype=dtype).reshape(2, 1, 1)
+            sizes = torch.tensor([[1, length] for length in lengths])
+
+            def check(actual, expected):
+                torch.testing.assert_close(actual.unbind(), expected)
+                assert actual.shape == (2, 1, max(lengths))
+                assert actual.ragged_dims == (1,)
+                torch.testing.assert_close(actual.element_sizes(), sizes)
+
+            for function in (operation, alias.Tensor):
+                check(function(dense, source), [operation(dense[i], part) for i, part in enumerate(parts)])
+                check(function(source, dense), [operation(part, dense[i]) for i, part in enumerate(parts)])
+            scalar = True if dtype == torch.bool else 1
+            check(operation(source, scalar), [operation(part, scalar) for part in parts])
+            check(operation(scalar, source), [operation(scalar, part) for part in parts])
+            check(alias.Scalar(source, scalar), [operation(part, scalar) for part in parts])
+            torch.testing.assert_close(source.unbind(), parts)
+            torch.testing.assert_close(source.element_sizes(), sizes)
+            assert source.shape == (2, 1, max(lengths))
+            assert source.ragged_dims == (1,)
+
+
 class TestInPlace:
 
     @pytest.mark.parametrize("axis", [0, 1])

@@ -6540,7 +6540,7 @@ def _needs_outer_autograd(*operands) -> bool:
 
 
 def _commutative_mul_handler(input, other, *args, **kwargs):
-    r"""Canonicalize the wrapper operand, then redispatch below torch-function.
+    r"""Handle multiplication while preserving scalar operand order.
 
     The aten redispatch lets Autograd attach the multiplication edge to the
     wrapper itself.  Calling the packed helper directly is numerically correct
@@ -6549,7 +6549,12 @@ def _commutative_mul_handler(input, other, *args, **kwargs):
     """
     from .nested_tensor import NestedTensor
 
-    if not isinstance(input, NestedTensor) and isinstance(other, NestedTensor):
+    if (
+        not isinstance(input, NestedTensor)
+        and isinstance(other, NestedTensor)
+        and isinstance(input, Tensor)
+        and input.dim() > 0
+    ):
         input, other = other, input
     if _needs_outer_autograd(input, other):
         with torch._C.DisableTorchFunctionSubclass():
