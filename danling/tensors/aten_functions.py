@@ -7924,6 +7924,24 @@ def native_dropout(func, args, kwargs):
     return cls(outputs, **source._meta()), cls(masks, **source._meta())
 
 
+@NestedTensorAtenRegistry.implement(aten.to.dtype, compile_safe=True)
+@NestedTensorAtenRegistry.implement(aten.to.device, compile_safe=True)
+@NestedTensorAtenRegistry.implement(aten.to.other, compile_safe=True)
+@NestedTensorAtenRegistry.implement(aten.to.dtype_layout, compile_safe=True)
+def to(func, args, kwargs):
+    r"""Convert packed values without rebuilding their logical axis order."""
+    from .nested_tensor import NestedTensor
+
+    source = args[0]
+    values = source.concat if isinstance(source, NestedTensor) else source
+    others = tuple(value.concat if isinstance(value, NestedTensor) else value for value in args[1:])
+    options = {key: value.concat if isinstance(value, NestedTensor) else value for key, value in kwargs.items()}
+    converted = func(values, *others, **options)
+    if not isinstance(source, NestedTensor):
+        return converted
+    return source if converted is values else source.packed_like(converted)
+
+
 @NestedTensorAtenRegistry.implement(aten._to_copy.default, compile_safe=True)
 def to_copy(func, args, kwargs):
     r"""
@@ -7934,9 +7952,26 @@ def to_copy(func, args, kwargs):
     meaningful per-element layout since _values is a concatenation of
     variable-length elements.
     """
+    from .nested_tensor import NestedTensor
+
     source = args[0]
     # Offsets and _physical_shape stay on CPU — they are metadata, not compute tensors.
-    return source.packed_like(func(source.concat, **kwargs))
+    values = func(source.concat, **kwargs)
+    # A CUDA copy preserves packed geometry. The existing layout can therefore
+    # be reused without rebuilding it through the validating public factory.
+    # Keep pinned-memory and compiled paths on the general implementation.
+    if (
+        type(source) is NestedTensor
+        and type(values) is Tensor
+        and not _is_compiling()
+        and _get_current_dispatch_mode() is None
+        and not torch._is_functional_tensor(values)
+        and not torch._C._are_functorch_transforms_active()
+        and values.is_cuda
+        and not source._pin_memory
+    ):
+        return source._packed_like_unchecked(values)
+    return source.packed_like(values)
 
 
 # ---------------------------------------------------------------------------
