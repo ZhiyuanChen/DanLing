@@ -160,7 +160,12 @@ def _channel_shuffle_uniform(input: NestedTensor, groups: int) -> NestedTensor |
     if rank < 2:
         return None
 
-    output = F.channel_shuffle(values, groups)
+    channels = values.shape[1]
+    if groups <= 0 or channels % groups != 0:
+        # Preserve native validation for invalid group declarations.
+        F.channel_shuffle(values, groups)
+    output = values.reshape(values.shape[0], groups, channels // groups, *values.shape[2:])
+    output = output.transpose(1, 2).reshape_as(values)
     return _from_uniform_values(input, output, tuple(int(size) for size in output.shape[1:]))
 
 
@@ -174,7 +179,7 @@ def _channel_shuffle_packed(input: NestedTensor, groups: int) -> NestedTensor | 
 
     channel_dim = _packed_channel_dim_for_physical_dim(input, 0)
     if channel_dim is None:
-        return None
+        return _channel_shuffle_ragged(input, groups)
     values = input.concat
     moved = channel_dim != 1
     if moved:
@@ -200,6 +205,29 @@ def _channel_shuffle_packed(input: NestedTensor, groups: int) -> NestedTensor | 
         packed_sizes=input._packed_sizes,
         element_shapes=input._element_shapes,
     )
+
+
+def _channel_shuffle_ragged(input: NestedTensor, groups: int) -> NestedTensor:
+    r"""Permute varying channel coordinates directly in packed row order."""
+    channels = input._physical_shape[:, 0]
+    torch._assert_async(
+        torch.all(channels.remainder(groups) == 0), "channel_shuffle channels must be divisible by groups"
+    )
+    values = input.concat
+    batch, local = input._packed_batch_local_indices(device=values.device)
+    coordinates = input._packed_varying_coords(batch, local, device=values.device)
+    shapes = input._physical_shape.to(device=values.device)
+    source_local = torch.zeros_like(local)
+    for dim, coordinate in zip(input._varying_dims, coordinates):
+        width = shapes[:, dim].index_select(0, batch)
+        if dim == 0:
+            coordinate = coordinate.remainder(groups) * torch.div(width, groups, rounding_mode="floor") + torch.div(
+                coordinate, groups, rounding_mode="floor"
+            )
+        source_local = source_local * width + coordinate
+    offsets = input.packed_offsets(device=values.device)
+    rows = offsets.index_select(0, batch) + source_local
+    return input._packed_like_unchecked(values.index_select(0, rows))
 
 
 # ---------------------------------------------------------------------------
