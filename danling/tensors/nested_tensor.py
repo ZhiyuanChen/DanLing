@@ -31,6 +31,7 @@ and dispatch entry points.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import math
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Iterable, SupportsFloat, TypeVar, cast, overload
@@ -78,6 +79,7 @@ _PackedConstructor = Callable[
         tuple[int, ...] | None,
         tuple[tuple[int, ...], ...] | None,
         tuple[Tensor, ...] | None,
+        tuple[int, ...] | None,
     ],
     "NestedTensor",
 ]
@@ -1724,6 +1726,7 @@ class NestedTensor(torch.Tensor):
                     stored_packed_sizes,
                     stored_element_shapes,
                     resolved_ragged_offsets,
+                    None,
                 ),
             )
         else:
@@ -1904,12 +1907,14 @@ class NestedTensor(torch.Tensor):
             # Detect and correct so from_packed validation passes.
             batch_size = len(offsets) - 1
             outer = tuple(outer_size)
+            strides = tuple(outer_stride)
             batch_first = ctx.get("batch_first", True)
             if len(outer) >= 2 and (
                 (batch_first and outer[0] != batch_size and outer[1] == batch_size)
                 or (not batch_first and outer[1] != batch_size and outer[0] == batch_size)
             ):
                 outer = (outer[1], outer[0], *outer[2:])
+                strides = (strides[1], strides[0], *strides[2:])
             max_length_binding = inner_tensors.get("_max_length_binding")
             preserve_tensor_metadata = (
                 cls._is_tensor_backed_layout(ctx.get("permutation"), ctx.get("ragged_dims"))
@@ -1948,6 +1953,25 @@ class NestedTensor(torch.Tensor):
                 ragged_offsets=ragged_offsets,
                 **ctx,
             )
+            # AOT tracks symbolic wrapper strides separately from its logical
+            # sizes. Preserve both when rebuilding a functionalized input.
+            result = cls._compiled_packed_constructor(
+                result._packed_values,
+                result._offsets,
+                result._physical_shape,
+                result._logical_shape,
+                result._permutation,
+                result._ragged_dims,
+                result._ragged_dims_explicit,
+                result.batch_first,
+                result.padding_value,
+                result.mask_value,
+                result._pin_memory,
+                result._packed_sizes,
+                result._element_shapes,
+                result._persistent_ragged_offsets(),
+                strides,
+            )
             if torch.Tensor.requires_grad.__get__(result) != wrapper_requires_grad:
                 torch.Tensor.requires_grad.__set__(result, wrapper_requires_grad)
             if max_length_binding is not None:
@@ -1959,6 +1983,7 @@ class NestedTensor(torch.Tensor):
         result = torch.Tensor._make_wrapper_subclass(
             cls,
             torch.Size(outer_size),
+            strides=outer_stride,
             dtype=values.dtype,
             device=values.device,
             requires_grad=wrapper_requires_grad,
@@ -1969,6 +1994,7 @@ class NestedTensor(torch.Tensor):
         if shape_tensor is not None:
             result._physical_shape = shape_tensor
         result._logical_shape = torch.Size(outer_size)
+        result._logical_strides = tuple(outer_stride)
         result._set_runtime_config(
             batch_first=ctx["batch_first"],
             padding_value=ctx["padding_value"],
@@ -2008,6 +2034,11 @@ class NestedTensor(torch.Tensor):
 
     def __coerce_same_metadata_as_tangent__(self, expected_meta, expected_type=None):
         r"""Apply the tangent classification expected by AOT's compiled backward."""
+        if expected_type is Tensor and expected_meta is None:
+            # AOT can require a logical strided tangent after input mutation.
+            # Invalid entries are zero gradients, independent of display padding.
+            dense = self._materialize_batch_leading(0)
+            return dense if self.batch_first or dense.dim() <= 1 else dense.movedim(0, 1)
         if expected_type is not None and expected_type is not type(self):
             return None
         self._is_aot_tangent = bool(expected_meta.get("is_aot_tangent", False))
@@ -2027,6 +2058,10 @@ class NestedTensor(torch.Tensor):
             self = args[0]
             dim = args[1] if len(args) > 1 else kwargs.get("dim")
             return self.size(dim)
+        if func is torch.Tensor.stride:
+            self = args[0]
+            dim = args[1] if len(args) > 1 else kwargs.get("dim")
+            return self.stride(dim)
 
         if func is torch._VF._make_dual and all(isinstance(arg, cls) for arg in args[:2]):
             from .ops import _broadcast_nested_to_values
@@ -2192,6 +2227,7 @@ class NestedTensor(torch.Tensor):
         )
         with torch.no_grad(), torch._C.DisableTorchFunctionSubclass(), torch._C._DisableTorchDispatch():
             torch.Tensor.set_(self, layout)
+        self._logical_strides = layout.stride()
         self._invalidate_transient_caches()
         if (
             torch.is_grad_enabled()
@@ -3657,6 +3693,7 @@ class NestedTensor(torch.Tensor):
             result = torch.Tensor._make_wrapper_subclass(
                 type(self),
                 self._logical_shape,
+                strides=self.stride(),
                 dtype=values.dtype,
                 device=values.device,
                 requires_grad=values.requires_grad,
@@ -3665,6 +3702,7 @@ class NestedTensor(torch.Tensor):
             result._offsets = self._offsets
             result._physical_shape = self._physical_shape
             result._logical_shape = self._logical_shape
+            result._logical_strides = self.stride()
             result._permutation = self._permutation
             result._ragged_dims = self._ragged_dims
             result._ragged_dims_explicit = self._ragged_dims_explicit
@@ -3694,6 +3732,23 @@ class NestedTensor(torch.Tensor):
             element_shapes=self._element_shapes,
             ragged_offsets=self._persistent_ragged_offsets(),
             validate=False,
+        )
+        result = type(self)._compiled_packed_constructor(
+            result._packed_values,
+            result._offsets,
+            result._physical_shape,
+            result._logical_shape,
+            result._permutation,
+            result._ragged_dims,
+            result._ragged_dims_explicit,
+            result.batch_first,
+            result.padding_value,
+            result.mask_value,
+            result._pin_memory,
+            result._packed_sizes,
+            result._element_shapes,
+            result._persistent_ragged_offsets(),
+            self.stride(),
         )
         if (
             self._cached_hierarchical_offsets is not None
@@ -5275,6 +5330,7 @@ class NestedTensor(torch.Tensor):
                 running *= max(size, 1)
             with torch.no_grad(), torch._C.DisableTorchFunctionSubclass(), torch._C._DisableTorchDispatch():
                 torch.Tensor.as_strided_(self, self._logical_shape, stride)
+            self._logical_strides = tuple(stride)
         self._batch_first = new_value
         if hasattr(self, "_cached_tensor_view"):
             self._invalidate_transient_caches()
@@ -5775,6 +5831,27 @@ class NestedTensor(torch.Tensor):
             return full_size[dim]
         return full_size
 
+    @overload
+    def stride(self, dim: None = None) -> tuple[int, ...]: ...
+
+    @overload
+    def stride(self, dim: int) -> int: ...
+
+    def stride(self, dim: int | None = None) -> tuple[int, ...] | int:
+        r"""Retain symbolic logical strides supplied by the wrapper protocol."""
+        strides = vars(self).get("_logical_strides")
+        if strides is None:
+            with torch._C.DisableTorchFunctionSubclass():
+                strides = torch.Tensor.stride(self)
+        if dim is not None:
+            if not -len(strides) <= dim < len(strides):
+                raise IndexError(
+                    f"Dimension out of range (expected to be in range of [{-len(strides)}, "
+                    f"{len(strides) - 1}], but got {dim})"
+                )
+            return strides[dim]
+        return strides
+
     def sum(
         self,
         dim: int | Sequence[int] | None = None,
@@ -6130,26 +6207,12 @@ class _PackedLikeAutograd(torch.autograd.Function):
     def setup_context(ctx, inputs, output):
         packed_values, structure = inputs
         reference = structure.value
-        max_length_binding = vars(reference).get("_compile_max_length_binding")
         ctx.packed_shape = packed_values.shape
         ctx.jvp_layout = reference._layout_state()
-        if not _is_compiling() and not _is_fake_tensor(packed_values):
-            # Backward needs layout metadata only: the axis split for a packed tangent and, for
-            # a dense tangent, a storage-free layout wrapper rebuilt from these metadata tensors.
-            # Nothing here retains activation storage, so checkpoint regions can release the
-            # values this wrapper was built from, and the node survives the repeated backward
-            # passes of a factory-built wrapper reused as a graph input (AOTAutograd attaches
-            # CompiledFunctionBackward to the wrapper edge).
-            ctx.layout_state = reference._layout_state()
-            ctx.axes = (reference._ragged_dims, reference._static_dims)
-        else:
-            # A full wrapper also owns numerical storage. Saving a detached layout through
-            # autograd lets checkpoint hooks release/recompute that storage; retaining the
-            # wrapper in an opaque ctx attribute would keep it alive.
-            layout = reference.detach()
-            if max_length_binding is not None:
-                layout._max_length_binding = max_length_binding
-            ctx.save_for_backward(layout)
+        # Reverse and forward derivatives need geometry, not numerical storage
+        # or the version counter of a wrapper that may subsequently be mutated.
+        ctx.layout_state = ctx.jvp_layout
+        ctx.axes = (reference._ragged_dims, reference._static_dims)
 
     @staticmethod
     def jvp(ctx, values_tangent, structure_tangent):
@@ -6297,6 +6360,13 @@ class _PackedValuesAutograd(torch.autograd.Function):
         return ctx.layout._packed_like_unchecked(grad_values)
 
 
+# PyTorch binds setup_context-style Function arguments with inspect.signature on
+# every apply. These forward signatures are fixed, so cache the same signatures
+# once without changing argument binding or the autograd bridge.
+cast(Any, _PackedLikeAutograd.forward).__signature__ = inspect.signature(_PackedLikeAutograd.forward)
+cast(Any, _PackedValuesAutograd.forward).__signature__ = inspect.signature(_PackedValuesAutograd.forward)
+
+
 @torch.compiler.allow_in_graph
 def _project_packed_values(input: NestedTensor) -> Tensor:
     r"""Give Dynamo an explicit source for the wrapper-to-packed projection."""
@@ -6374,10 +6444,12 @@ def _make_nested_tensor_from_packed_impl(
     packed_sizes: tuple[int, ...] | None,
     element_shapes: tuple[tuple[int, ...], ...] | None,
     ragged_offsets: tuple[Tensor, ...] | None,
+    logical_strides: tuple[int, ...] | None = None,
 ) -> NestedTensor:
     result = torch.Tensor._make_wrapper_subclass(
         nested_tensor_cls,
         logical_shape,
+        strides=logical_strides,
         dtype=values.dtype,
         device=values.device,
         requires_grad=values.requires_grad,
@@ -6389,6 +6461,8 @@ def _make_nested_tensor_from_packed_impl(
     result._ragged_dims_explicit = ragged_dims_explicit
     result._physical_shape = shape_tensor
     result._logical_shape = logical_shape
+    if logical_strides is not None:
+        result._logical_strides = logical_strides
     result._set_runtime_config(
         batch_first=batch_first,
         padding_value=padding_value,
@@ -6417,6 +6491,7 @@ def _make_nested_tensor_from_packed(
     packed_sizes: tuple[int, ...] | None,
     element_shapes: tuple[tuple[int, ...], ...] | None,
     ragged_offsets: tuple[Tensor, ...] | None,
+    logical_strides: tuple[int, ...] | None = None,
 ) -> NestedTensor:
     r"""Construct the base wrapper through a stable module-level graph target."""
     return _make_nested_tensor_from_packed_impl(
@@ -6435,6 +6510,7 @@ def _make_nested_tensor_from_packed(
         packed_sizes,
         element_shapes,
         ragged_offsets,
+        logical_strides,
     )
 
 

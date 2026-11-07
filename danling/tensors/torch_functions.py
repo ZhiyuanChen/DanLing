@@ -51,6 +51,7 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
+from .aten_functions import ATEN_INPLACE_BINARY_OPS
 from .ops import (
     TORCH_BINARY_ELEMENTWISE_OPS,
     TORCH_UNARY_ELEMENTWISE_OPS,
@@ -6612,13 +6613,22 @@ def _boolean_reduce_handler(input, dim=None, keepdim=False, *, _fn=None, **kwarg
 
 
 def _inplace_binary_torch_handler(self, other, *args, _fn=None, **kwargs):
-    r"""Align dense operands and let native autograd own the wrapper mutation."""
+    r"""Align operands before native autograd owns the wrapper mutation."""
     from .nested_tensor import NestedTensor
 
-    if isinstance(other, Tensor) and other.dim() > 0 and not isinstance(other, NestedTensor):
-        aligned = self._maybe_exact_shape_nested_like(other)
-        if aligned is not None:
-            other = aligned
+    if isinstance(other, Tensor) and other.dim() > 0 and other is not self:
+        if (
+            isinstance(other, NestedTensor)
+            and self._packed_values is other._packed_values
+            and len(self._permutation) == len(other._permutation)
+            and self._permutation != other._permutation
+        ):
+            moved = [left for left, right in zip(self._permutation, other._permutation) if left != right]
+            torch._assert_async(
+                torch.all(self._physical_shape[:, moved] <= 1),
+                "unsupported operation: input and written tensor have overlapping memory",
+            )
+        other = other.expand_as(self)
     with torch._C.DisableTorchFunctionSubclass():
         return _fn(self, other, *args, **kwargs)
 
@@ -6644,6 +6654,13 @@ TORCH_INPLACE_METHOD_MAP = {
     torch.Tensor.floor_divide_: torch.Tensor.floor_divide_,
     torch.Tensor.pow_: torch.Tensor.pow_,
     torch.Tensor.fmod_: torch.Tensor.fmod_,
+    torch.Tensor.__iadd__: torch.Tensor.__iadd__,
+    torch.Tensor.__isub__: torch.Tensor.__isub__,
+    torch.Tensor.__imul__: torch.Tensor.__imul__,
+    torch.Tensor.__itruediv__: torch.Tensor.__itruediv__,
+    torch.Tensor.__ifloordiv__: torch.Tensor.__ifloordiv__,
+    torch.Tensor.__imod__: torch.Tensor.__imod__,
+    torch.Tensor.__ipow__: torch.Tensor.__ipow__,
 }
 
 
@@ -6670,6 +6687,11 @@ _TORCH_HANDLER_TABLE: list[tuple] = [
     ),
     # _inplace_binary_torch_handler — converts operands before aten in-place dispatch
     *((op, _inplace_binary_torch_handler) for op, _ in TORCH_INPLACE_METHOD_MAP.items()),
+    *(
+        (op, _inplace_binary_torch_handler)
+        for op in ATEN_INPLACE_BINARY_OPS
+        if str(op._schema.arguments[1].type) == "Tensor"
+    ),
     # _make_simple_reduce_handler — simple reductions delegating to _reduce
     *((op, _boolean_reduce_handler) for op in TORCH_BOOLEAN_REDUCE_OPS if op not in NestedTensorFuncRegistry),
     *(

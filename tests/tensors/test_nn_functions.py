@@ -60,6 +60,95 @@ def _compile_fullgraph(fn):
 class TestActivations:
 
     @pytest.mark.parametrize(
+        ("activation", "args", "kwargs"),
+        [
+            pytest.param(torch.Tensor.relu_, (), {}, id="tensor-relu"),
+            pytest.param(F.relu, (), {"inplace": True}, id="functional-relu"),
+            pytest.param(nn.ReLU(inplace=True), (), {}, id="module-relu"),
+            pytest.param(F.relu, (True,), {}, id="positional-relu"),
+            pytest.param(F.relu6, (), {"inplace": True}, id="relu6"),
+            pytest.param(F.elu, (0.7, True), {}, id="elu"),
+            pytest.param(F.celu, (), {"alpha": 0.7, "inplace": True}, id="celu"),
+            pytest.param(F.selu, (), {"inplace": True}, id="selu"),
+            pytest.param(F.silu, (), {"inplace": True}, id="silu"),
+            pytest.param(F.mish, (), {"inplace": True}, id="mish"),
+            pytest.param(F.leaky_relu, (0.2, True), {}, id="leaky-relu"),
+            pytest.param(F.rrelu, (), {"training": True, "inplace": True}, id="rrelu"),
+            pytest.param(F.hardsigmoid, (), {"inplace": True}, id="hardsigmoid"),
+            pytest.param(F.hardswish, (), {"inplace": True}, id="hardswish"),
+            pytest.param(F.hardtanh, (-0.5, 0.5, True), {}, id="hardtanh"),
+            pytest.param(F.threshold, (0.0, -0.1, True), {}, id="threshold"),
+            pytest.param(F.dropout, (0.3, True, True), {}, id="dropout"),
+            pytest.param(F.alpha_dropout, (0.3, True, True), {}, id="alpha-dropout"),
+        ],
+    )
+    def test_inplace_preserves_aliases_and_gradients(self, activation, args, kwargs, device):
+        parts = [torch.randn(length, 3, device=device, dtype=torch.float64, requires_grad=True) for length in (2, 4)]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        output = NT(parts, ragged_dims=(0,)).sin()
+        expected = torch.cat(references).sin()
+        alias = output.detach()
+        _ = alias.tensor
+
+        torch.manual_seed(1234)
+        assert activation(output, *args, **kwargs) is output
+        torch.manual_seed(1234)
+        activation(expected, *args, **kwargs)
+
+        torch.testing.assert_close(output.concat, expected)
+        torch.testing.assert_close(alias.tensor, output.tensor)
+        torch.testing.assert_close(
+            torch.autograd.grad(output.concat.square().sum(), parts),
+            torch.autograd.grad(expected.square().sum(), references),
+        )
+
+    @pytest.mark.parametrize("activation", [F.relu, F.mish, F.rrelu, F.threshold, F.dropout, F.alpha_dropout])
+    @pytest.mark.parametrize("detached", [False, True])
+    def test_inplace_detects_saved_packed_mutation(self, activation, detached):
+        output = NT([torch.randn(length, 3, requires_grad=True) for length in (2, 4)]).sin()
+        if detached:
+            saved = output.detach().concat
+            weight = torch.ones_like(saved, requires_grad=True)
+            loss = (saved * weight).sum()
+        else:
+            loss = output.concat.square().sum()
+        kwargs = {"p": 0.3, "training": True} if activation in (F.dropout, F.alpha_dropout) else {}
+        if activation is F.threshold:
+            kwargs = {"threshold": 0.0, "value": -0.1}
+        activation(output, inplace=True, **kwargs)
+        with pytest.raises(RuntimeError, match="modified.*inplace|view.*modified|version"):
+            loss.backward()
+
+    @pytest.mark.parametrize("activation", [F.relu, F.dropout, F.alpha_dropout])
+    def test_inplace_rejects_wrapper_leaf(self, activation):
+        source = NT([torch.randn(length, 3) for length in (2, 4)]).requires_grad_()
+        before = source.concat.detach().clone()
+        kwargs = {} if activation is F.relu else {"p": 0.3, "training": True}
+        with pytest.raises(RuntimeError, match="leaf Variable"):
+            activation(source, inplace=True, **kwargs)
+        torch.testing.assert_close(source.concat, before)
+
+    @pytest.mark.parametrize("activation", [F.relu, F.mish, F.rrelu, F.dropout, F.alpha_dropout])
+    def test_inplace_fullgraph_gradients(self, activation, device):
+        torch._dynamo.reset()
+        kwargs = {"p": 1.0, "training": True} if activation in (F.dropout, F.alpha_dropout) else {}
+
+        def activate(template, values):
+            return activation(template.packed_like(values).sin(), inplace=True, **kwargs).concat
+
+        template = NT([torch.empty(length, 3, device=device) for length in (2, 4)])
+        values = torch.randn_like(template.concat, requires_grad=True)
+        reference_values = values.detach().clone().requires_grad_()
+        compiled = torch.compile(activate, backend="aot_eager", fullgraph=True)
+        actual = compiled(template, values)
+        expected = activation(reference_values.sin(), inplace=True, **kwargs)
+        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(actual.square().sum(), values),
+            torch.autograd.grad(expected.square().sum(), reference_values),
+        )
+
+    @pytest.mark.parametrize(
         ("activation", "shape", "kwargs"),
         [
             pytest.param(F.softsign, [(2, 3), (1, 3)], {}, id="softsign"),
@@ -694,6 +783,36 @@ class TestConvTranspose:
 
 
 class TestDropout:
+
+    @pytest.mark.parametrize(
+        ("activation", "shape"),
+        [
+            (F.dropout1d, (2, 3)),
+            (F.dropout2d, (2, 3, 2)),
+            (F.dropout3d, (2, 3, 2, 2)),
+            (F.feature_alpha_dropout, (2, 3)),
+        ],
+    )
+    def test_inplace_channel_dropout_preserves_aliases_and_gradients(self, activation, shape, device):
+        parts = [
+            torch.randn(*shape, length, device=device, dtype=torch.float64, requires_grad=True) for length in (2, 4)
+        ]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        output = NT(parts).sin()
+        alias = output.detach()
+        _ = alias.tensor
+
+        torch.manual_seed(1234)
+        assert activation(output, 0.3, True, True) is output
+        torch.manual_seed(1234)
+        expected = [activation(part.sin(), p=0.3, training=True, inplace=True) for part in references]
+
+        torch.testing.assert_close(output.unbind(), expected)
+        torch.testing.assert_close(alias.tensor, output.tensor)
+        torch.testing.assert_close(
+            torch.autograd.grad(output.concat.square().sum(), parts),
+            torch.autograd.grad(sum(part.square().sum() for part in expected), references),
+        )
 
     def test_dropout_eval_is_identity(self, device, float_dtype):
         nt = nested_rand([(2, 3), (1, 3)], device, float_dtype)

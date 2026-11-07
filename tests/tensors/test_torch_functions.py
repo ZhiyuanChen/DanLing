@@ -19,6 +19,7 @@
 
 import itertools
 import math
+import operator
 from functools import partial
 from itertools import accumulate
 
@@ -82,6 +83,103 @@ def _run_or_expect_unsupported(nested_call, tensor_call):
             nested_call()
         return None
     return nested_call(), reference
+
+
+class TestInPlace:
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager"])
+    def test_dense(self, device, backend):
+        torch.compiler.reset()
+        parts = [torch.randn(3, 4, device=device, dtype=torch.float64, requires_grad=True) for _ in range(2)]
+        bias = torch.randn(2, 3, device=device, dtype=torch.float64, requires_grad=True)
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        reference_bias = bias.detach().clone().requires_grad_()
+        output = NT(parts, ragged_dims=(0,)).sin()
+        other = bias.cos().view(2, 3, 1)
+
+        def mutate(left, right):
+            return left.add_(right)
+
+        run = mutate if backend is None else torch.compile(mutate, backend=backend, fullgraph=True)
+        assert run(output, other) is output
+        expected = [part.sin().add_(operand) for part, operand in zip(references, reference_bias.cos().view(2, 3, 1))]
+        torch.testing.assert_close(output.unbind(), expected)
+        probes = [torch.randn_like(part) for part in expected]
+        torch.testing.assert_close(
+            torch.autograd.grad(sum((part * probe).sum() for part, probe in zip(output, probes)), (*parts, bias)),
+            torch.autograd.grad(
+                sum((part * probe).sum() for part, probe in zip(expected, probes)), (*references, reference_bias)
+            ),
+        )
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_scalar_gradient(self, batch_first):
+        torch.compiler.reset()
+        parts = [torch.randn(length, dtype=torch.float64, requires_grad=True) for length in (3, 5)]
+        bias = torch.tensor(0.3, dtype=torch.float64, requires_grad=True)
+        source = NT(parts, ragged_dims=(0,), padding_value=123.0, batch_first=batch_first).sin()
+        operation = torch.compile(lambda left, right: left.add_(right), backend="aot_eager", fullgraph=True)
+        result = operation(source, bias)
+        gradients = torch.autograd.grad(result.concat.sum(), (*parts, bias))
+        torch.testing.assert_close(gradients, (*[part.cos() for part in parts], torch.tensor(8.0, dtype=torch.float64)))
+
+    @pytest.mark.parametrize(
+        ("operation", "backend", "vector"),
+        [
+            pytest.param(lambda left, right: left.add_(right), None, False, id="method"),
+            pytest.param(torch.ops.aten.add_.Tensor, None, False, id="aten"),
+            pytest.param(operator.iadd, None, False, id="iadd"),
+            pytest.param(operator.isub, None, False, id="isub"),
+            pytest.param(operator.imul, None, False, id="imul"),
+            pytest.param(operator.itruediv, None, False, id="idiv"),
+            pytest.param(operator.iadd, "aot_eager", False, id="compiled"),
+            pytest.param(operator.iadd, "aot_eager", True, id="vector"),
+        ],
+    )
+    def test_broadcast(self, device, operation, backend, vector):
+        torch._dynamo.reset()
+        shapes = ((2, 3), (4, 5))
+        parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+        operand_shapes = ((3,), (5,)) if vector else ((1, 3), (4, 1))
+        operands = [
+            torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in operand_shapes
+        ]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        reference_operands = [part.detach().clone().requires_grad_() for part in operands]
+        output = NT(parts, ragged_dims=(0, 1)).sin()
+        other = NT(operands, ragged_dims=(0,) if vector else (0, 1)).cos() + 2
+        alias = output.detach()
+        _ = alias.tensor
+
+        def mutate(left, right):
+            return operation(left, right)
+
+        run = mutate if backend is None else torch.compile(mutate, backend=backend, fullgraph=True)
+        assert run(output, other) is output
+
+        expected = [operation(part.sin(), operand.cos() + 2) for part, operand in zip(references, reference_operands)]
+        torch.testing.assert_close(output.unbind(), expected)
+        torch.testing.assert_close(alias.tensor, output.tensor)
+        probes = [torch.randn_like(part) for part in expected]
+        torch.testing.assert_close(
+            torch.autograd.grad(sum((part * probe).sum() for part, probe in zip(output, probes)), (*parts, *operands)),
+            torch.autograd.grad(
+                sum((part * probe).sum() for part, probe in zip(expected, probes)), (*references, *reference_operands)
+            ),
+        )
+
+    def test_overlap(self, device):
+        parts = [torch.randn(size, size, device=device) for size in (2, 3)]
+        source = NT(parts, ragged_dims=(0, 1))
+        expected = [part.clone() for part in parts]
+        with pytest.raises(RuntimeError, match="memory|overlap"):
+            expected[0].add_(expected[0].T)
+        with pytest.raises(RuntimeError, match="memory|overlap"):
+            source.add_(source.transpose(-1, -2))
+        torch.testing.assert_close(source.unbind(), expected)
+        scalar = NT([torch.ones(1, 1, device=device)], ragged_dims=(0, 1))
+        scalar.add_(scalar.transpose(-1, -2))
+        torch.testing.assert_close(scalar[0], torch.tensor([[2.0]], device=device))
 
 
 class TestArithmeticFunctions:
