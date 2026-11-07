@@ -1601,6 +1601,15 @@ The core feature is the <a class="autorefs autorefs-internal" title="&lt;code cl
 <p><strong>Level 2 — Torch function dispatch</strong> (<code>torch_functions.py</code>): Intercepts <code>torch.*</code> calls via <code>__torch_function__</code>. Handles ops that need dimension translation (e.g., <code>torch.flatten</code>, <code>torch.softmax</code> with non-default dim), multi-operand dispatch (e.g., <code>torch.einsum</code>), per-element matrix ops (e.g., <code>torch.det</code>, <code>torch.linalg.svd</code>), and fused attention (<code>torch._native_multi_head_attention</code>, <code>torch._transformer_encoder_layer_fwd</code>).</p>
 <p><strong>Level 3 — NN function dispatch</strong> (<code>nn_functions.py</code>): Also via <code>__torch_function__</code>, handles <code>torch.nn.functional.*</code> ops including convolutions, pooling, normalization, attention, embedding, activations (F.relu, F.gelu, F.silu, &hellip;), and loss functions. Transformer-hot ops use packed fast paths; supported inplace activations update the packed values and invalidate materialized views, subject to ordinary autograd leaf/view restrictions.</p>
 <p><strong>Fallback</strong>: Any aten op without an explicit handler falls back to <code>per_element_fallback</code>, which unpacks to individual tensors, applies the op element-by-element, and repacks. Under <code>torch.compile</code>, DanLing prefers explicit failure over silently entering those eager-only fallbacks.</p>
+<p>Depthwise <code>F.conv1d</code> has a packed training path for <code>(channels, length_i)</code>
+elements with a static channel axis, stride 1, and integer padding/dilation.
+It supports channel multipliers and fullgraph compilation. Each sample has
+its own convolution boundary. For a width-4 causal convolution with dilation 1:</p>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="n">output</span> <span class="o">=</span> <span class="n">F</span><span class="o">.</span><span class="n">silu</span><span class="p">(</span><span class="n">F</span><span class="o">.</span><span class="n">conv1d</span><span class="p">(</span><span class="nb">input</span><span class="p">,</span> <span class="n">weight</span><span class="p">,</span> <span class="n">bias</span><span class="p">,</span> <span class="n">padding</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span> <span class="n">groups</span><span class="o">=</span><span class="n">channels</span><span class="p">)[</span><span class="o">...</span><span class="p">,</span> <span class="p">:</span><span class="o">-</span><span class="mi">3</span><span class="p">])</span>
+</code></pre></div></td></tr></table></div>
+<p>The relative slice removes three positions from each sample independently.
+Compiling ragged slices with data-dependent output lengths requires
+<code>torch._dynamo.config.capture_dynamic_output_shape_ops = True</code>.</p>
 <div class="language-text highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Text Only</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 1</span>
 <span class="normal"> 2</span>
 <span class="normal"> 3</span>
@@ -1865,7 +1874,10 @@ lengths in tensor-backed offsets and shape metadata rather than Python tuples,
 so its tracing cost does not grow with metadata rank. The current compiled
 contract covers structural index consumers, runtime-validated same-layout
 elementwise operations, static-tail broadcasting, and static-tail
-normalization. Tensor-backed view/index remapping, padding,
+normalization. Batch-first single-ragged-axis slices support per-sample bounds and positive
+steps; compiling their data-dependent output lengths requires
+<code>torch._dynamo.config.capture_dynamic_output_shape_ops = True</code>.
+Other tensor-backed view/index remapping, padding,
 <code>broadcast_tensors</code>, global-query <code>einsum</code>, and ragged-dimension softmax remain
 staged; these paths raise an explicit compile error instead of materializing
 Python metadata or silently assuming a layout.</p>
