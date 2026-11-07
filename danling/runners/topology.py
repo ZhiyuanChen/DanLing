@@ -24,7 +24,21 @@ from dataclasses import dataclass, field
 from math import prod
 from typing import Any
 
+import torch
 from torch import distributed as dist
+
+
+class _AllReduceSum(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, tensor, group):
+        ctx.group = group
+        output = tensor.clone(memory_format=torch.contiguous_format)
+        dist.all_reduce(output, op=dist.ReduceOp.SUM, group=group)
+        return output
+
+    @staticmethod
+    def backward(ctx, gradient):
+        return _AllReduceSum.apply(gradient, ctx.group), None
 
 
 @dataclass
@@ -98,6 +112,10 @@ class ParallelTopology:
                 missing = [axis for axis in normalized_axes if axis not in axis_degrees]
                 if missing:
                     raise ValueError(f"invalid {label}: domain {domain!r} references unknown axes {missing}")
+                if len(set(normalized_axes)) != len(normalized_axes):
+                    raise ValueError(f"invalid {label}: domain {domain!r} contains duplicate axes {normalized_axes}")
+                if str(domain) in axis_degrees and normalized_axes != (str(domain),):
+                    raise ValueError(f"invalid {label}: domain {domain!r} cannot redefine an axis name")
                 domain_axes[str(domain)] = normalized_axes
 
         self.world_size = world_size
@@ -176,15 +194,32 @@ class ParallelContext:
         self.groups = dict(groups or {})
 
     def group(self, axis: str) -> Any | None:
+        """Return an initialized axis or named-domain process group."""
         return self.groups.get(axis)
 
-    def all_reduce(self, tensor, *, domain: str = "data", op=dist.ReduceOp.SUM):
-        for axis in self.topology.domain_axes(domain):
-            if self.topology.axis_degree(axis) > 1:
-                group = self.group(axis)
-                if group is None:
-                    raise RuntimeError(
-                        f"cannot all-reduce domain {domain!r}: process group for axis {axis!r} is not initialized"
-                    )
+    def all_reduce(self, tensor, *, domain: str = "data", op=dist.ReduceOp.SUM, autograd: bool = False):
+        """Reduce over a domain, optionally preserving a differentiable SUM.
+
+        The default mutates ``tensor`` in place for runner bookkeeping. With
+        ``autograd=True``, return a new tensor and sum incoming gradients over
+        the same domain in backward. Model code must use that returned tensor;
+        replicated losses still require their usual replica normalization.
+        Every member must participate in backward; empty local work should
+        retain a zero-valued gradient dependency rather than disconnect it.
+        """
+        if autograd and op != dist.ReduceOp.SUM:
+            raise ValueError("autograd all_reduce supports SUM only")
+        axes = tuple(axis for axis in self.topology.domain_axes(domain) if self.topology.axis_degree(axis) > 1)
+        if autograd and not axes:
+            return tensor.clone()
+        for axis in axes:
+            group = self.group(axis)
+            if group is None:
+                raise RuntimeError(
+                    f"cannot all-reduce domain {domain!r}: process group for axis {axis!r} is not initialized"
+                )
+            if autograd:
+                tensor = _AllReduceSum.apply(tensor, group)
+            else:
                 dist.all_reduce(tensor, op=op, group=group)
         return tensor
