@@ -2637,7 +2637,8 @@ class TestScaledDotProductAttention:
         )
         assert_close(output, reference, atol=atol, rtol=rtol)
 
-    def test_sdpa_matches_reference(self, device, float_dtype):
+    @pytest.mark.parametrize("checkpointed", [False, True])
+    def test_sdpa_matches_reference(self, device, float_dtype, checkpointed):
         query_parts = [
             torch.randn(2, length, 8, device=device, dtype=float_dtype, requires_grad=True) for length in (6, 4)
         ]
@@ -2653,7 +2654,18 @@ class TestScaledDotProductAttention:
         query = NT(query_parts)
         key = NT(key_parts)
         value = NT(value_parts)
-        output = F.scaled_dot_product_attention(query, key, value, dropout_p=0.0)
+        if checkpointed:
+            from torch.utils.checkpoint import checkpoint
+
+            output = checkpoint(
+                lambda q, k, v: F.scaled_dot_product_attention(q, k, v, dropout_p=0.0),
+                query,
+                key,
+                value,
+                use_reentrant=False,
+            )
+        else:
+            output = F.scaled_dot_product_attention(query, key, value, dropout_p=0.0)
         reference = [
             F.scaled_dot_product_attention(q, k, v, dropout_p=0.0)
             for q, k, v in zip(reference_query, reference_key, reference_value)
