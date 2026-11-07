@@ -67,8 +67,8 @@ def test_runner_resolve_runner_class_maps_supported_stacks(stack: str, expected_
     assert Runner.resolve_runner_class({"stack": stack}) is expected_cls
 
 
-def test_runner_defaults_to_torch_stack() -> None:
-    runner = TinyRunner({"logging.enabled": False})
+def test_runner_defaults_to_torch_stack(runner_factory) -> None:
+    runner = runner_factory({"logging.enabled": False}, runner_type=TinyRunner)
     assert isinstance(runner, TorchRunner)
     assert runner.config.stack == "ddp"
 

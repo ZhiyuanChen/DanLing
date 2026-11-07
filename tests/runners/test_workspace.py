@@ -31,30 +31,15 @@ from danling.runners.utils import get_git_hash
 from danling.runners.workspace import ColorFormatter
 
 
-class MinimalRunner(BaseRunner):
-    pass
-
-
-class PostInitMetadataRunner(BaseRunner):
+class MetadataRunner(BaseRunner):
     def __post_init__(self) -> None:
         self.config.post_init_only = "finalized"
         super().__post_init__()
 
 
-class FailingPostInitRunner(BaseRunner):
+class FailingRunner(BaseRunner):
     def __post_init__(self) -> None:
         raise RuntimeError("post init exploded")
-
-
-def _config(tmp_path: Path, **kwargs):
-    config = {
-        "logging.enabled": False,
-        "workspace.root": str(tmp_path),
-        "workspace.lineage": "lineage-a",
-        "workspace.experiment": "experiment-a",
-    }
-    config.update(kwargs)
-    return config
 
 
 def _expected_base_dir(tmp_path: Path, lineage: str) -> Path:
@@ -64,11 +49,11 @@ def _expected_base_dir(tmp_path: Path, lineage: str) -> Path:
     return tmp_path / f"{lineage}-{git_hash}"
 
 
-def _config_hash(runner: MinimalRunner) -> str:
+def _config_hash(runner: BaseRunner) -> str:
     return format(runner.config.fingerprint() & ((1 << 48) - 1), "012x")
 
 
-def _expected_id(runner: MinimalRunner) -> str:
+def _expected_id(runner: BaseRunner) -> str:
     git_hash = get_git_hash()
     config_hash = _config_hash(runner)
     if git_hash is None:
@@ -76,46 +61,36 @@ def _expected_id(runner: MinimalRunner) -> str:
     return f"{git_hash}-{config_hash}"
 
 
-def test_runner_workspace_dir_layout(tmp_path: Path) -> None:
-    runner = MinimalRunner(_config(tmp_path))
-    try:
-        expected_id = _expected_id(runner)
-        expected_dir = _expected_base_dir(tmp_path, "lineage-a") / expected_id
-        assert runner.id == expected_id
-        assert runner.workspace.dir == str(expected_dir)
-        assert runner.name == "lineage-a-experiment-a"
-    finally:
-        runner.close()
+def test_runner_workspace_dir_layout(tmp_path: Path, runner_factory) -> None:
+    runner = runner_factory()
+    expected_id = _expected_id(runner)
+    expected_dir = _expected_base_dir(tmp_path, "lineage-a") / expected_id
+    assert runner.id == expected_id
+    assert runner.workspace.dir == str(expected_dir)
+    assert runner.name == "lineage-a-experiment-a"
 
 
-def test_runner_workspace_log_file_layout(tmp_path: Path) -> None:
-    runner = MinimalRunner(_config(tmp_path))
-    try:
-        expected_dir = _expected_base_dir(tmp_path, "lineage-a") / _expected_id(runner)
-        assert runner.workspace.log_file == str(expected_dir / "logs" / f"{runner.timestamp}.log")
-    finally:
-        runner.close()
+def test_runner_workspace_log_file_layout(tmp_path: Path, runner_factory) -> None:
+    runner = runner_factory()
+    expected_dir = _expected_base_dir(tmp_path, "lineage-a") / _expected_id(runner)
+    assert runner.workspace.log_file == str(expected_dir / "logs" / f"{runner.timestamp}.log")
 
 
-def test_runner_workspace_uses_logging_file_override(tmp_path: Path) -> None:
+def test_runner_workspace_uses_logging_file_override(tmp_path: Path, runner_factory) -> None:
     log_file = tmp_path / "custom.log"
-    runner = MinimalRunner(_config(tmp_path, **{"logging.file": str(log_file)}))
-    try:
-        assert runner.workspace.log_file == str(log_file)
-    finally:
-        runner.close()
+    runner = runner_factory({"logging.file": str(log_file)})
+    assert runner.workspace.log_file == str(log_file)
 
 
-def test_runner_workspace_checkpoint_dir_uses_ckpt_dir(tmp_path: Path) -> None:
-    runner = MinimalRunner(_config(tmp_path, **{"ckpt.dir": "states"}))
-    try:
-        expected_dir = _expected_base_dir(tmp_path, "lineage-a") / _expected_id(runner)
-        assert runner.workspace.checkpoint_dir == str(expected_dir / "states")
-    finally:
-        runner.close()
+def test_runner_workspace_checkpoint_dir_uses_ckpt_dir(tmp_path: Path, runner_factory) -> None:
+    runner = runner_factory({"ckpt.dir": "states"})
+    expected_dir = _expected_base_dir(tmp_path, "lineage-a") / _expected_id(runner)
+    assert runner.workspace.checkpoint_dir == str(expected_dir / "states")
 
 
-def test_runner_workspace_writes_metadata_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runner_workspace_writes_metadata_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner_factory
+) -> None:
     repository = Repo.init(tmp_path / "repository")
     tracked = Path(repository.working_tree_dir) / "tracked.txt"
     tracked.write_text("original\n", encoding="utf-8")
@@ -125,28 +100,22 @@ def test_runner_workspace_writes_metadata_files(tmp_path: Path, monkeypatch: pyt
     tracked.write_text("changed\n", encoding="utf-8")
     monkeypatch.chdir(repository.working_tree_dir)
 
-    runner = MinimalRunner(_config(tmp_path, epochs=1))
-    try:
-        metadata_dir = _expected_base_dir(tmp_path, "lineage-a") / _expected_id(runner) / "metadata"
-        assert (metadata_dir / "config.full.yaml").exists()
-        assert (metadata_dir / "config.canonical.yaml").exists()
-        assert (metadata_dir / "git.yaml").exists()
-        assert (metadata_dir / "git.diff").exists()
-        git_diff = (metadata_dir / "git.diff").read_text(encoding="utf-8")
-        assert "-original" in git_diff
-        assert "+changed" in git_diff
-    finally:
-        runner.close()
+    runner = runner_factory({"epochs": 1})
+    metadata_dir = _expected_base_dir(tmp_path, "lineage-a") / _expected_id(runner) / "metadata"
+    assert (metadata_dir / "config.full.yaml").exists()
+    assert (metadata_dir / "config.canonical.yaml").exists()
+    assert (metadata_dir / "git.yaml").exists()
+    assert (metadata_dir / "git.diff").exists()
+    git_diff = (metadata_dir / "git.diff").read_text(encoding="utf-8")
+    assert "-original" in git_diff
+    assert "+changed" in git_diff
 
 
-def test_runner_workspace_saves_metadata_after_setup(tmp_path: Path) -> None:
-    runner = PostInitMetadataRunner(_config(tmp_path))
-    try:
-        metadata_dir = _expected_base_dir(tmp_path, "lineage-a") / _expected_id(runner) / "metadata"
-        full_config = (metadata_dir / "config.full.yaml").read_text(encoding="utf-8")
-        assert "post_init_only: finalized" in full_config
-    finally:
-        runner.close()
+def test_runner_workspace_saves_metadata_after_setup(tmp_path: Path, runner_factory) -> None:
+    runner = runner_factory(runner_type=MetadataRunner)
+    metadata_dir = _expected_base_dir(tmp_path, "lineage-a") / _expected_id(runner) / "metadata"
+    full_config = (metadata_dir / "config.full.yaml").read_text(encoding="utf-8")
+    assert "post_init_only: finalized" in full_config
 
 
 def test_color_formatter_emits_ansi_sequences() -> None:
@@ -161,21 +130,19 @@ def test_color_formatter_emits_ansi_sequences() -> None:
     assert "[INFO]" in formatted
 
 
-def test_runner_workspace_logging_keeps_file_output_plain(tmp_path: Path) -> None:
-    runner = MinimalRunner(_config(tmp_path, **{"logging.enabled": True}))
+def test_runner_workspace_logging_keeps_file_output_plain(tmp_path: Path, runner_factory) -> None:
+    runner = runner_factory({"logging.enabled": True})
     log_file = Path(runner.workspace.log_file)
-    try:
-        assert runner.logger is not None
-        runner.logger.info("hello log file")
-    finally:
-        runner.close()
+    assert runner.logger is not None
+    runner.logger.info("hello log file")
+    runner.close()
 
     file_log = log_file.read_text(encoding="utf-8")
     assert "hello log file" in file_log
     assert "\x1b[" not in file_log
 
 
-def test_runner_workspace_nested_print_patch_restores_safely(tmp_path: Path, monkeypatch) -> None:
+def test_runner_workspace_nested_print_patch_restores_safely(tmp_path: Path, monkeypatch, runner_factory) -> None:
     calls: list[str] = []
 
     def fake_print(*args, sep=" ", end="\n", file=None, flush=False, **kwargs):
@@ -184,24 +151,18 @@ def test_runner_workspace_nested_print_patch_restores_safely(tmp_path: Path, mon
 
     monkeypatch.setattr(builtins, "print", fake_print)
 
-    runner_a = MinimalRunner(_config(tmp_path / "a"))
-    runner_b = MinimalRunner(_config(tmp_path / "b"))
-    try:
-        runner_a.close()
-        builtins.print("inner still active")
-        runner_b.close()
-        builtins.print("restored")
-    finally:
-        if getattr(runner_a, "workspace", None) is not None:
-            runner_a.close()
-        if getattr(runner_b, "workspace", None) is not None:
-            runner_b.close()
+    runner_a = runner_factory({"workspace.root": str(tmp_path / "a")})
+    runner_b = runner_factory({"workspace.root": str(tmp_path / "b")})
+    runner_a.close()
+    builtins.print("inner still active")
+    runner_b.close()
+    builtins.print("restored")
 
     assert calls == ["inner still active", "restored"]
     assert builtins.print is fake_print
 
 
-def test_runner_workspace_restores_print_after_setup_failure(tmp_path: Path, monkeypatch) -> None:
+def test_runner_workspace_restores_print_after_setup_failure(tmp_path: Path, monkeypatch, runner_factory) -> None:
     calls: list[str] = []
 
     def fake_print(*args, sep=" ", end="\n", file=None, flush=False, **kwargs):
@@ -211,7 +172,7 @@ def test_runner_workspace_restores_print_after_setup_failure(tmp_path: Path, mon
     monkeypatch.setattr(builtins, "print", fake_print)
 
     with pytest.raises(RuntimeError, match="post init exploded"):
-        FailingPostInitRunner(_config(tmp_path))
+        runner_factory(runner_type=FailingRunner)
 
     builtins.print("restored after failure")
 

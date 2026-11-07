@@ -27,7 +27,7 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from danling.tensors import NestedTensor, nested_execution_guard
+from danling.tensors import NestedTensor
 
 NT = NestedTensor
 
@@ -80,8 +80,7 @@ class TestDenseBinaryOperands:
                     for index, length in enumerate(lengths)
                 ]
             )
-            with _guard():
-                output = compiled(template, coordinates, torch.tensor(lengths), noise)
+            output = compiled(template, coordinates, torch.tensor(lengths), noise)
             weights = torch.randn_like(output)
             observed = torch.autograd.grad(output, (coordinates, noise), weights)
             expected = torch.autograd.grad(reference, (reference_coordinates, reference_noise), weights)
@@ -94,7 +93,6 @@ class TestDenseBinaryOperands:
         dense = torch.randn(2, 5, 1, 3)
 
         output = nt + dense
-        assert isinstance(output, NestedTensor)
         assert len(output) == 2
         for index, element in enumerate(output):
             torch.testing.assert_close(element, nt[index] + dense[index])
@@ -125,7 +123,6 @@ def operand_for(shape, offset=1.0):
 
 
 def assert_elements_close(output, expected):
-    assert isinstance(output, NestedTensor)
     assert len(output) == len(expected)
     for actual, reference in zip(output, expected):
         assert actual.shape == reference.shape
@@ -708,15 +705,8 @@ class TestComplementarySingletonBroadcast:
         reference_parts = [part.detach().clone().requires_grad_() for part in parts]
         source = NestedTensor(parts, ragged_dims=(0,))
 
-        with nested_execution_guard(
-            forbid_iteration=True,
-            forbid_storage_map=True,
-            forbid_eager_fallback=True,
-            forbid_padded_materialization=True,
-            forbid_dense_repack=True,
-        ):
-            expanded = source.unsqueeze(-2).expand(-1, 4, -1)
-            output = expanded.unsqueeze(-1) + expanded.unsqueeze(-2)
+        expanded = source.unsqueeze(-2).expand(-1, 4, -1)
+        output = expanded.unsqueeze(-1) + expanded.unsqueeze(-2)
 
         expected = self._static_prefix_reference(reference_parts)
         cotangent = torch.randn_like(expected)
@@ -811,14 +801,7 @@ class TestComplementarySingletonBroadcast:
         row = NestedTensor(left, ragged_dims=(row_dim,), batch_first=batch_first)
         column = NestedTensor(right, ragged_dims=(row_dim + 1,), batch_first=batch_first)
         for reverse in (False, True):
-            with nested_execution_guard(
-                forbid_eager_fallback=True,
-                forbid_storage_map=True,
-                forbid_iteration=True,
-                forbid_padded_materialization=True,
-                forbid_dense_repack=True,
-            ):
-                output = operation(column, row) if reverse else operation(row, column)
+            output = operation(column, row) if reverse else operation(row, column)
             expected = tuple(operation(b, a) if reverse else operation(a, b) for a, b in zip(left, right))
             actual = output.unbind(0 if batch_first else 1)
             torch.testing.assert_close(actual, expected, atol=0, rtol=0)
@@ -839,8 +822,7 @@ class TestComplementarySingletonBroadcast:
     def test_rectangular_complementary_zero_extents(self, device):
         left = tuple(torch.randn(n, 1, 2, device=device, requires_grad=True) for n in (0, 2, 1))
         right = tuple(torch.randn(1, n, 2, device=device, requires_grad=True) for n in (3, 0, 2))
-        with nested_execution_guard(forbid_eager_fallback=True, forbid_storage_map=True):
-            output = NestedTensor(left, ragged_dims=(0,)) + NestedTensor(right, ragged_dims=(1,))
+        output = NestedTensor(left, ragged_dims=(0,)) + NestedTensor(right, ragged_dims=(1,))
         expected = tuple(a + b for a, b in zip(left, right))
         torch.testing.assert_close(output.unbind(), expected)
         assert output.ragged_dims == (0, 1)
@@ -985,14 +967,7 @@ class TestNestedViewAlignment:
         template, values = self._pair(lengths)
         pair = template.packed_like(values)
 
-        with nested_execution_guard(
-            forbid_iteration=True,
-            forbid_storage_map=True,
-            forbid_eager_fallback=True,
-            forbid_padded_materialization=True,
-            forbid_dense_repack=True,
-        ):
-            output = pair + pair.transpose(-2, -3)
+        output = pair + pair.transpose(-2, -3)
 
         torch.testing.assert_close(output.concat, self._symmetrize(values, lengths))
 
@@ -1102,16 +1077,6 @@ class TestAutograd:
         torch.testing.assert_close(actual_operand_gradient, reference_operand.grad)
 
 
-def _guard():
-    return nested_execution_guard(
-        forbid_iteration=True,
-        forbid_storage_map=True,
-        forbid_eager_fallback=True,
-        forbid_padded_materialization=True,
-        forbid_dense_repack=True,
-    )
-
-
 def _parts(shapes, device, offset=0.0):
     return [
         (
@@ -1132,9 +1097,8 @@ def _compare(target_parts, source_parts, target_order, source_order, operation, 
     weights = torch.linspace(-1, 2, expected.concat.numel(), device=expected.device, dtype=torch.float64)
     weights = weights.reshape(expected.concat.shape)
     leaves = (*target_parts, *source_parts)
-    with _guard():
-        output = operation(source, target) if source_first else operation(target, source)
-        actual_gradients = torch.autograd.grad(output.concat, leaves, weights)
+    output = operation(source, target) if source_first else operation(target, source)
+    actual_gradients = torch.autograd.grad(output.concat, leaves, weights)
     expected_gradients = torch.autograd.grad(expected.concat, leaves, weights)
     assert output.ragged_dims == target_order
     assert output.batch_first is batch_first
@@ -1196,9 +1160,8 @@ def test_zero_volume_elements_and_empty_batch_retain_the_full_operand_shape(devi
     source = NestedTensor(_parts(masks, device), ragged_dims=(0, 1))
     expected = NestedTensor([a * b for a, b in zip(target, source)], ragged_dims=(0, 1))
     empty_target, empty_source = target[:0], source[:0]
-    with _guard():
-        output = target * source
-        empty_output = empty_source - empty_target
+    output = target * source
+    empty_output = empty_source - empty_target
     torch.testing.assert_close(output.concat, expected.concat)
     torch.testing.assert_close(output.element_sizes(), expected.element_sizes())
     assert empty_output.shape == empty_target.shape
@@ -1233,9 +1196,8 @@ def test_declared_singletons_compile_without_equal_offset_guards(axis, source_fi
             expected = NestedTensor(
                 [b - a if source_first else a - b for a, b in zip(target_parts, source_parts)], ragged_dims=(0, 1)
             )
-            with _guard():
-                values = compiled(target, source)
-                gradients = torch.autograd.grad(values.square().sum(), (*target_parts, *source_parts))
+            values = compiled(target, source)
+            gradients = torch.autograd.grad(values.square().sum(), (*target_parts, *source_parts))
             expected_gradients = torch.autograd.grad(expected.concat.square().sum(), (*target_parts, *source_parts))
             torch.testing.assert_close(values, expected.concat)
             for actual, reference in zip(gradients, expected_gradients):

@@ -22,42 +22,41 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from danling.utils import RoundDict
+from danling.utils.round_dict import RoundDict
 
 
-def test_round_dict_round_methods():
-    values = RoundDict({"a": 1.23456, "b": 9.87654})
-    rounded_in_place = values.round(2)
-    assert rounded_in_place is values
-    assert values["a"] == 1.23
-    assert values["b"] == 9.88
+class TestRoundDict:
+    def test_round(self):
+        values = RoundDict({"a": 1.23456, "b": 9.87654})
+        rounded_in_place = values.round(2)
+        assert rounded_in_place is values
+        assert values["a"] == 1.23
+        assert values["b"] == 9.88
 
-    original = RoundDict({"x": 3.14159, "y": 2.71828})
-    rounded_copy = round(original, 3)
-    assert rounded_copy["x"] == 3.142
-    assert rounded_copy["y"] == 2.718
-    assert original["x"] == 3.14159
+        original = RoundDict({"x": 3.14159, "y": 2.71828})
+        rounded_copy = round(original, 3)
+        assert rounded_copy["x"] == 3.142
+        assert rounded_copy["y"] == 2.718
+        assert original["x"] == 3.14159
 
+    def test_tensor(self):
+        values = RoundDict({"vec": torch.tensor([1.23456, 2.34567])})
+        values.round(3)
+        assert values["vec"] == [1.235, 2.346]
+        formatted = format(values, ".3f")
+        assert "[1.235, 2.346]" not in formatted
+        assert "1.235 2.346" in formatted
 
-def test_round_dict_round_tensor_vector_to_flist():
-    values = RoundDict({"vec": torch.tensor([1.23456, 2.34567])})
-    values.round(3)
-    assert values["vec"] == [1.235, 2.346]
-    formatted = format(values, ".3f")
-    assert "[1.235, 2.346]" not in formatted
-    assert "1.235 2.346" in formatted
-
-
-def test_round_dict_format_handles_tensor_and_ndarray_values():
-    values = RoundDict(
-        {
-            "scalar": torch.tensor(1.23456),
-            "tensor_vec": torch.tensor([1.23456, 2.34567]),
-            "array_vec": np.array([3.45678, 4.56789]),
-        }
-    )
-    formatted = format(values, ".2f")
-    assert "scalar" in formatted
-    assert "1.23" in formatted
-    assert "2.35" in formatted
-    assert "3.46 4.57" in formatted
+    def test_format(self):
+        values = RoundDict(
+            {
+                "scalar": torch.tensor(1.23456),
+                "tensor_vec": torch.tensor([1.23456, 2.34567]),
+                "array_vec": np.array([3.45678, 4.56789]),
+            }
+        )
+        formatted = format(values, ".2f")
+        assert "scalar" in formatted
+        assert "1.23" in formatted
+        assert "2.35" in formatted
+        assert "3.46 4.57" in formatted

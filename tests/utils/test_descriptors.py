@@ -45,45 +45,44 @@ class Class:
         return str(self.root / "temp" / "test")
 
 
-def test_ensure_dir(tmp_path):
-    obj = Class(tmp_path)
-    assert Path(obj.ensure_dir).exists()
-    Path(obj.cached_ensure_dir).rmdir()
-    # Run twice for cached version to ensure caching won't break `makedirs`
-    assert Path(obj.cached_ensure_dir).exists()
-    Path(obj.ensure_dir).rmdir()
-    assert Path(obj.cached_ensure_dir).exists()
-    Path(obj.ensure_dir).rmdir()
+class TestPaths:
+    def test_directory(self, tmp_path):
+        obj = Class(tmp_path)
+        assert Path(obj.ensure_dir).exists()
+        Path(obj.cached_ensure_dir).rmdir()
+        # Run twice for cached version to ensure caching won't break `makedirs`
+        assert Path(obj.cached_ensure_dir).exists()
+        Path(obj.ensure_dir).rmdir()
+        assert Path(obj.cached_ensure_dir).exists()
+        Path(obj.ensure_dir).rmdir()
 
+    def test_parent(self, tmp_path):
+        obj = Class(tmp_path)
+        parent_dir = Path(obj.ensure_parent_dir).parent
+        assert parent_dir.exists()
+        parent_dir.rmdir()
+        # Run twice for cached version to ensure caching won't break `makedirs`
+        parent_dir = Path(obj.cached_ensure_parent_dir).parent
+        assert parent_dir.exists()
+        parent_dir.rmdir()
+        parent_dir = Path(obj.cached_ensure_parent_dir).parent
+        assert parent_dir.exists()
+        parent_dir.rmdir()
 
-def test_ensure_parent_dir(tmp_path):
-    obj = Class(tmp_path)
-    parent_dir = Path(obj.ensure_parent_dir).parent
-    assert parent_dir.exists()
-    parent_dir.rmdir()
-    # Run twice for cached version to ensure caching won't break `makedirs`
-    parent_dir = Path(obj.cached_ensure_parent_dir).parent
-    assert parent_dir.exists()
-    parent_dir.rmdir()
-    parent_dir = Path(obj.cached_ensure_parent_dir).parent
-    assert parent_dir.exists()
-    parent_dir.rmdir()
+    def test_class_access(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
 
+        class Paths:
+            @descriptors.ensure_parent_dir
+            def file(self):
+                return "result.json"
 
-def test_directory_properties_support_class_access_and_relative_basename(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+            @descriptors.cached_ensure_parent_dir
+            def cached_file(self):
+                return "cached.json"
 
-    class Paths:
-        @descriptors.ensure_parent_dir
-        def file(self):
-            return "result.json"
-
-        @descriptors.cached_ensure_parent_dir
-        def cached_file(self):
-            return "cached.json"
-
-    assert Paths.file is not None
-    assert Paths.cached_file is not None
-    paths = Paths()
-    assert paths.file == "result.json"
-    assert paths.cached_file == "cached.json"
+        assert Paths.file is not None
+        assert Paths.cached_file is not None
+        paths = Paths()
+        assert paths.file == "result.json"
+        assert paths.cached_file == "cached.json"

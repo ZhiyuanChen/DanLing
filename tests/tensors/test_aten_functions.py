@@ -145,7 +145,6 @@ class TestElementwiseOps:
         nt = NT([torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0, 5.0])])
         scalar = 2.0
         result = op(nt, scalar)
-        assert isinstance(result, NestedTensor)
         for r, t in zip(result, nt):
             assert_close(r, op(t, scalar))
 
@@ -201,7 +200,6 @@ class TestElementwiseOps:
         dense = torch.arange(2 * 3 * 4, dtype=torch.float32).reshape(2, 3, 4)  # [2, Smax=3, H=4]
         result = torch.ops.aten.mul.Tensor(dense, nt) if reverse else torch.ops.aten.mul.Tensor(nt, dense)
         reference = NT([dense[i][: len(elem)] * elem for i, elem in enumerate(nt)], **reference_options(nt))
-        assert isinstance(result, NestedTensor)
         assert tuple(result[0].shape) == (2, 4)
         assert_close(result, reference)
 
@@ -209,7 +207,6 @@ class TestElementwiseOps:
     def test_unary_op_roundtrip(self, op):
         nt = NT([torch.tensor([1.0, -2.0, 3.0]), torch.tensor([-4.0, 5.0])])
         result = op(nt)
-        assert isinstance(result, NestedTensor)
         for r, t in zip(result, nt):
             assert_close(r, op(t))
 

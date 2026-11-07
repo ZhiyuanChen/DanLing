@@ -21,7 +21,7 @@ import pytest
 import torch
 from torch import optim
 
-from danling.optim import LRScheduler
+from danling.optim.lr_scheduler.lr_scheduler import LRScheduler
 
 # fmt: off
 LR_LINEAR_NUMERICAL_100 = [0.198, 0.392, 0.582, 0.768, 0.95, 0.9401, 0.9301, 0.9201, 0.9101, 0.9001, 0.8901, 0.8801, 0.8701, 0.8601, 0.8501, 0.8402, 0.8302, 0.8202, 0.8102, 0.8002, 0.7902, 0.7802, 0.7702, 0.7602, 0.7502, 0.7403, 0.7303, 0.7203, 0.7103, 0.7003, 0.6903, 0.6803, 0.6703, 0.6603, 0.6503, 0.6404, 0.6304, 0.6204, 0.6104, 0.6004, 0.5904, 0.5804, 0.5704, 0.5604, 0.5504, 0.5405, 0.5305, 0.5205, 0.5105, 0.5005, 0.4905, 0.4805, 0.4705, 0.4605, 0.4505, 0.4406, 0.4306, 0.4206, 0.4106, 0.4006, 0.3906, 0.3806, 0.3706, 0.3606, 0.3506, 0.3407, 0.3307, 0.3207, 0.3107, 0.3007, 0.2907, 0.2807, 0.2707, 0.2607, 0.2507, 0.2408, 0.2308, 0.2208, 0.2108, 0.2008, 0.1813, 0.1627, 0.1452, 0.1287, 0.1131, 0.0986, 0.0851, 0.0725, 0.061, 0.0505, 0.0409, 0.0324, 0.0248, 0.0183, 0.0127, 0.0082, 0.0046, 0.0021, 0.0005, 0.0]  # noqa
@@ -32,77 +32,64 @@ LR_CONSTANT_100 = [0.2, 0.4, 0.6, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1
 # fmt: on
 
 
-def _build_optimizer() -> optim.SGD:
-    return optim.SGD([{"params": torch.tensor([0])}], lr=1, momentum=0.9)
-
-
-def _get_lrs(strategy, method, steps: int = 100, final_lr_ratio: float = 0.001):
-    optimizer = _build_optimizer()
-    lrs = []
-    scheduler = LRScheduler(
-        optimizer,
-        total_steps=steps,
-        final_lr_ratio=final_lr_ratio,
-        method=strategy,
-        scaling=method,
+class TestLRScheduler:
+    @pytest.mark.parametrize(
+        ("method", "scaling", "expected"),
+        [
+            ("cosine", "percentile", LR_COSINE_PERCENTILE_100),
+            ("cosine", "numerical", LR_COSINE_NUMERICAL_100),
+            ("linear", "percentile", LR_LINEAR_PERCENTILE_100),
+            ("linear", "numerical", LR_LINEAR_NUMERICAL_100),
+            ("constant", "percentile", LR_CONSTANT_100),
+            ("constant", "numerical", LR_CONSTANT_100),
+        ],
     )
-    for _ in range(100):
-        lrs.append(scheduler.get_lr()[0])
-        scheduler.step()
-    return [round(lr, 4) for lr in lrs]
-
-
-def test_cosine():
-    assert _get_lrs("cosine", "percentile") == LR_COSINE_PERCENTILE_100
-    assert _get_lrs("cosine", "numerical") == LR_COSINE_NUMERICAL_100
-
-
-def test_linear():
-    assert _get_lrs("linear", "percentile") == LR_LINEAR_PERCENTILE_100
-    assert _get_lrs("linear", "numerical") == LR_LINEAR_NUMERICAL_100
-
-
-def test_constant():
-    assert _get_lrs("constant", "percentile") == LR_CONSTANT_100
-    assert _get_lrs("constant", "numerical") == LR_CONSTANT_100
-
-
-@pytest.mark.parametrize("scaling", ["percentile", "numerical"])
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_tensor_lr_schedule(scaling, dtype):
-    initial_lr = torch.tensor(1.0, dtype=dtype)
-    optimizer = optim.SGD([torch.nn.Parameter(torch.ones(1))], lr=initial_lr)
-    scheduler = LRScheduler(
-        optimizer,
-        total_steps=10,
-        final_lr_ratio=0.1,
-        method="linear",
-        scaling=scaling,
-        warmup_steps=0,
-        cooldown_steps=0,
-        min_lr=0.2,
-    )
-    for step in range(1, 11):
-        progress = step / 10
-        expected = max(0.2, 0.1**progress if scaling == "percentile" else 1 - 0.9 * progress)
-        for _ in range(2):
-            actual = scheduler.get_lr()[0]
-            assert isinstance(actual, torch.Tensor)
-            assert actual.dtype == dtype
-            torch.testing.assert_close(actual, torch.tensor(expected, dtype=dtype))
-        assert optimizer.param_groups[0]["lr"] is initial_lr
-        torch.testing.assert_close(initial_lr, torch.tensor(expected, dtype=dtype))
-        torch.testing.assert_close(scheduler.base_lrs[0], torch.tensor(1.0, dtype=dtype))
-        if step < 10:
+    def test_curve(self, optimizer, method, scaling, expected):
+        scheduler = LRScheduler(
+            optimizer, total_steps=len(expected), final_lr_ratio=0.001, method=method, scaling=scaling
+        )
+        rates = []
+        for _ in expected:
+            rates.append(round(scheduler.get_lr()[0], 4))
             optimizer.step()
             scheduler.step()
+        assert rates == expected
 
+    @pytest.mark.parametrize("scaling", ["percentile", "numerical"])
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+    def test_tensor_rate(self, scaling, dtype):
+        initial_lr = torch.tensor(1.0, dtype=dtype)
+        optimizer = optim.SGD([torch.nn.Parameter(torch.ones(1))], lr=initial_lr)
+        scheduler = LRScheduler(
+            optimizer,
+            total_steps=10,
+            final_lr_ratio=0.1,
+            method="linear",
+            scaling=scaling,
+            warmup_steps=0,
+            cooldown_steps=0,
+            min_lr=0.2,
+        )
+        for step in range(1, 11):
+            progress = step / 10
+            expected = max(0.2, 0.1**progress if scaling == "percentile" else 1 - 0.9 * progress)
+            for _ in range(2):
+                actual = scheduler.get_lr()[0]
+                assert isinstance(actual, torch.Tensor)
+                assert actual.dtype == dtype
+                torch.testing.assert_close(actual, torch.tensor(expected, dtype=dtype))
+            assert optimizer.param_groups[0]["lr"] is initial_lr
+            torch.testing.assert_close(initial_lr, torch.tensor(expected, dtype=dtype))
+            torch.testing.assert_close(scheduler.base_lrs[0], torch.tensor(1.0, dtype=dtype))
+            if step < 10:
+                optimizer.step()
+                scheduler.step()
 
-@pytest.mark.parametrize("rate", [0.0, torch.tensor(0.0)])
-def test_zero_learning_rate_group_remains_frozen(rate):
-    optimizer = torch.optim.SGD([torch.nn.Parameter(torch.ones(1))], lr=rate)
-    scheduler = LRScheduler(optimizer, total_steps=4, warmup_steps=0, cooldown_steps=0, min_lr=0)
-    for _ in range(4):
-        assert float(optimizer.param_groups[0]["lr"]) == 0
-        optimizer.step()
-        scheduler.step()
+    @pytest.mark.parametrize("rate", [0.0, torch.tensor(0.0)])
+    def test_frozen(self, rate):
+        optimizer = torch.optim.SGD([torch.nn.Parameter(torch.ones(1))], lr=rate)
+        scheduler = LRScheduler(optimizer, total_steps=4, warmup_steps=0, cooldown_steps=0, min_lr=0)
+        for _ in range(4):
+            assert float(optimizer.param_groups[0]["lr"]) == 0
+            optimizer.step()
+            scheduler.step()
