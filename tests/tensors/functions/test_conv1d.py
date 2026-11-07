@@ -47,6 +47,91 @@ def _compare_conv1d(device, tolerances, *, kernel_size: int, padding: int):
     torch.testing.assert_close(actual_gradients, reference_gradients, atol=atol, rtol=rtol)
 
 
+class TestDepthwise:
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
+    def test_causal(self, device, backend):
+        torch._dynamo.reset()
+        channels = 8192 if device.type == "cuda" else 3
+        dtype = torch.bfloat16 if device.type == "cuda" else torch.float64
+
+        def causal(template, values, weight, bias):
+            source = template.packed_like(values)
+            return F.silu(F.conv1d(source, weight, bias, padding=3, groups=channels)[..., :-3])
+
+        operation = causal if backend is None else torch.compile(causal, backend=backend, fullgraph=True, dynamic=True)
+        for lengths in ((1, 3, 7, 13), (2, 5, 1)):
+            template = NT(
+                [torch.empty(channels, length, device=device, dtype=dtype) for length in lengths], ragged_dims=(1,)
+            )
+            values = (
+                torch.randn(sum(lengths), channels * 2, device=device, dtype=dtype)[:, ::2].detach().requires_grad_()
+            )
+            weight = (torch.randn(channels, 1, 4, device=device, dtype=dtype) / 4).requires_grad_()
+            bias = (torch.randn(channels, device=device, dtype=dtype) / 4).requires_grad_()
+            reference_values = values.detach().clone().to(torch.float64).requires_grad_()
+            reference_weight = weight.detach().clone().to(torch.float64).requires_grad_()
+            reference_bias = bias.detach().clone().to(torch.float64).requires_grad_()
+            with torch._dynamo.config.patch(capture_dynamic_output_shape_ops=True):
+                actual = operation(template, values, weight, bias)
+            expected = [
+                F.silu(F.conv1d(part.T, reference_weight, reference_bias, padding=3, groups=channels)[..., :-3])
+                for part in reference_values.split(lengths)
+            ]
+            atol, rtol = (0.03, 0.03) if dtype == torch.bfloat16 else (1e-10, 1e-10)
+            assert actual.dtype == dtype
+            torch.testing.assert_close(actual.element_sizes(), torch.tensor([(channels, length) for length in lengths]))
+            torch.testing.assert_close(actual.unbind(), expected, atol=atol, rtol=rtol, check_dtype=False)
+            probes = [torch.randn_like(part, dtype=dtype) for part in expected]
+            gradients = torch.autograd.grad(
+                sum((part * probe).sum() for (part, probe) in zip(actual, probes)), (values, weight, bias)
+            )
+            reference_gradients = torch.autograd.grad(
+                sum((part * probe).sum() for (part, probe) in zip(expected, probes)),
+                (reference_values, reference_weight, reference_bias),
+            )
+            torch.testing.assert_close(gradients, reference_gradients, atol=atol, rtol=rtol, check_dtype=False)
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager"])
+    @pytest.mark.parametrize(("kernel", "padding", "dilation", "multiplier"), [(3, 1, 2, 2), (4, 3, 1, 1)])
+    def test_convolution(self, device, backend, kernel, padding, dilation, multiplier):
+        torch._dynamo.reset()
+        channels = 3
+        parts = [
+            torch.randn(channels, length, device=device, dtype=torch.float64, requires_grad=True) for length in (3, 7)
+        ]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        weight = torch.randn(channels * multiplier, 1, kernel, device=device, dtype=torch.float64, requires_grad=True)
+        bias = torch.randn(channels * multiplier, device=device, dtype=torch.float64, requires_grad=True)
+        reference_weight = weight.detach().clone().requires_grad_()
+        reference_bias = bias.detach().clone().requires_grad_()
+
+        def convolve(source, weight, bias):
+            return F.conv1d(source, weight, bias, padding=padding, dilation=dilation, groups=channels)
+
+        operation = convolve if backend is None else torch.compile(convolve, backend=backend, fullgraph=True)
+        actual = operation(NT(parts, ragged_dims=(1,)), weight, bias)
+        expected = [convolve(part, reference_weight, reference_bias) for part in references]
+        torch.testing.assert_close(actual.unbind(), expected)
+        probes = [torch.randn_like(part) for part in expected]
+        torch.testing.assert_close(
+            torch.autograd.grad(
+                sum((part * probe).sum() for (part, probe) in zip(actual, probes)), (*parts, weight, bias)
+            ),
+            torch.autograd.grad(
+                sum((part * probe).sum() for (part, probe) in zip(expected, probes)),
+                (*references, reference_weight, reference_bias),
+            ),
+        )
+
+    def test_boundary(self, device):
+        parts = [torch.full((2, 2), float("nan"), device=device), torch.tensor([[2.0], [-3.0]], device=device)]
+        weight = torch.ones(2, 1, 4, device=device)
+        actual = F.conv1d(NT(parts, ragged_dims=(1,)), weight, padding=3, groups=2)[..., :-3]
+        expected = [F.conv1d(part, weight, padding=3, groups=2)[..., :-3] for part in parts]
+        torch.testing.assert_close(actual.unbind(), expected, equal_nan=True)
+
+
 class TestConvolution:
 
     def test_pointwise(self, device, tolerances):

@@ -63,7 +63,7 @@ def _unwrap_single_conv_arg(value):
 
 
 def conv1d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1, *, _fn=None):
-    r"""Use packed pointwise or spatial tile conv1d, otherwise fall back to per-element conv."""
+    r"""Use packed pointwise/depthwise or spatial tile conv1d before per-element fallback."""
     stride = _unwrap_single_conv_arg(stride)
     padding = _unwrap_single_conv_arg(padding)
     dilation = _unwrap_single_conv_arg(dilation)
@@ -71,6 +71,8 @@ def conv1d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1, 
         channel_dim = _packed_pointwise_conv1d_channel_dim(input, weight, stride, padding, dilation, groups)
         if channel_dim is not None:
             return _packed_pointwise_conv1d(input, weight, bias, channel_dim)
+        if _can_use_packed_depthwise_conv1d(input, weight, bias, stride, padding, dilation, groups):
+            return _packed_depthwise_conv1d(input, weight, bias, padding, dilation)
         output = _spatial_tile_conv1d(input, weight, bias, stride, padding, dilation, groups)
         if output is not None:
             return output
@@ -80,6 +82,108 @@ def conv1d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1, 
 # ---------------------------------------------------------------------------
 # Dispatch helpers
 # ---------------------------------------------------------------------------
+
+
+def _can_use_packed_depthwise_conv1d(input, weight, bias, stride, padding, dilation, groups) -> bool:
+    r"""Whether a stride-one depthwise convolution has one packed sequence axis."""
+    stride = _unwrap_single_conv_arg(stride)
+    padding = _unwrap_single_conv_arg(padding)
+    dilation = _unwrap_single_conv_arg(dilation)
+    if (
+        stride != 1
+        or not isinstance(padding, (int, torch.SymInt))
+        or padding < 0
+        or not isinstance(dilation, (int, torch.SymInt))
+        or dilation <= 0
+        or not isinstance(groups, (int, torch.SymInt))
+        or groups <= 0
+        or not isinstance(weight, Tensor)
+        or weight.dim() != 3
+        or weight.shape[1] != 1
+        or weight.shape[2] <= 0
+        or weight.shape[0] <= 0
+        or weight.shape[0] % groups != 0
+    ):
+        return False
+    if (
+        input._physical_shape.size(0) == 0
+        or input._physical_shape.size(1) != 2
+        or input._ragged_dims != (1,)
+        or input._permutation != (1, 0)
+    ):
+        return False
+    values = input._packed_values
+    if values.dim() != 2 or values.shape[1] != groups or values.device != weight.device:
+        return False
+    if bias is not None and (
+        not isinstance(bias, Tensor)
+        or bias.dim() != 1
+        or bias.shape[0] != weight.shape[0]
+        or bias.device != values.device
+    ):
+        return False
+    return True
+
+
+def _packed_depthwise_conv1d(input: NestedTensor, weight: Tensor, bias: Tensor | None, padding: int, dilation: int):
+    r"""Run one convolution on a packed stream, keeping only within-sample windows."""
+    from ..aten_functions import _packed_with_shape
+
+    values = input.concat
+    channels = values.shape[1]
+    out_channels = weight.shape[0]
+    kernel_size = weight.shape[2]
+    shift = 2 * padding - dilation * (kernel_size - 1)
+    input_lengths = input._offsets[1:] - input._offsets[:-1]
+    torch._assert_async(torch.all(input_lengths > 0), "conv1d requires a positive input length for every sample")
+    torch._assert_async(
+        torch.all(input_lengths + shift > 0), "conv1d kernel size cannot exceed the padded input length"
+    )
+
+    # Stride one changes every sample by the same amount, so the packed output
+    # extent follows from tensor shapes instead of reading metadata scalars.
+    batch_size = len(input)
+    total = values.shape[0] + batch_size * shift
+    offsets = input.packed_offsets(device=values.device)
+    output_offsets = offsets + torch.arange(batch_size + 1, device=values.device, dtype=offsets.dtype) * shift
+    output_lengths = output_offsets[1:] - output_offsets[:-1]
+    batch = torch.repeat_interleave(torch.arange(batch_size, device=values.device), output_lengths, output_size=total)
+    local = torch.arange(total, device=values.device) - output_offsets.index_select(0, batch)
+    padded_offsets = offsets + torch.arange(batch_size + 1, device=values.device, dtype=offsets.dtype) * (2 * padding)
+    stream = values
+    if padding:
+        padded_total = values.shape[0] + 2 * padding * batch_size
+        padded_lengths = padded_offsets[1:] - padded_offsets[:-1]
+        padded_batch = torch.repeat_interleave(
+            torch.arange(batch_size, device=values.device), padded_lengths, output_size=padded_total
+        )
+        position = (
+            torch.arange(padded_total, device=values.device) - padded_offsets.index_select(0, padded_batch) - padding
+        )
+        lengths = (offsets[1:] - offsets[:-1]).index_select(0, padded_batch)
+        rows = torch.where(
+            (position >= 0) & (position < lengths), offsets.index_select(0, padded_batch) + position, values.shape[0]
+        )
+        stream = torch.cat((values, values.new_zeros((1, channels)))).index_select(0, rows)
+    convolved = F.conv1d(stream.T.unsqueeze(0), weight, bias, dilation=dilation, groups=channels).squeeze(0).T
+    output = convolved.index_select(0, padded_offsets.index_select(0, batch) + local)
+
+    physical_shape = input._physical_shape.clone()
+    physical_shape[:, 0] = out_channels
+    physical_shape[:, 1] = physical_shape[:, 1] + shift
+    cpu_offsets = input._offsets
+    if shift != 0:
+        cpu_offsets = cpu_offsets + torch.arange(batch_size + 1, dtype=cpu_offsets.dtype) * shift
+    return _packed_with_shape(
+        input,
+        output,
+        physical_shape,
+        input._logical_shape_from_components(replace_dims={0: out_channels, 1: input._max_physical_dims()[1] + shift}),
+        offsets=cpu_offsets,
+        permutation=(1, 0),
+        force_explicit_ragged_dims=(1,),
+        preserve_ragged_offsets=shift == 0,
+    )
 
 
 def _packed_pointwise_conv1d_channel_dim(input: NestedTensor, weight, stride, padding, dilation, groups) -> int | None:
