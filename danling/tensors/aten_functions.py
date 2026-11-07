@@ -62,6 +62,7 @@ from .ops import (
     _dense_alignment_to_values,
     _dense_operand_for_element,
     _ExecutionGuardKind,
+    _expand_nested_as_values,
     _get_batch_dim,
     _is_compiling,
     _is_packed_identity,
@@ -263,7 +264,7 @@ def _resolve_other(source, other, func):
     Resolve the *other* operand for a binary op where *source* is a NestedTensor.
 
     Returns the value to use alongside ``source.concat``:
-    - NestedTensor with matching packed layout → ``other.concat``
+    - NestedTensor → broadcast its values into the source's packed coordinates
     - Scalar or 0-dim tensor → ``other`` (broadcast-compatible with packed _values)
     - Dense tensor with shape matching ``source.shape`` → packed via ``nested_like(..., strict=False)``
     - Anything else → raises ``NotImplementedError``
@@ -278,7 +279,7 @@ def _resolve_other(source, other, func):
                 "NestedTensor batch length mismatch between source and other: "
                 f"source={len(source)}, other={len(other)}"
             )
-        raise NotImplementedError(f"NestedTensor: {func} with mismatched packing layouts")
+        return _expand_nested_as_values(source, other)
     device = source.concat.device
     if isinstance(other, Tensor) and other.dim() > 0:
         aligned = _maybe_align_dense_to_nested(source, other)
@@ -1516,8 +1517,11 @@ def copy(func, args, kwargs):
 # In-place variants of elementwise ops
 # ---------------------------------------------------------------------------
 ATEN_INPLACE_UNARY_OPS = [
+    aten.zero_.default,
     aten.relu_.default,
     aten.silu_.default,
+    aten.mish_.default,
+    aten.threshold_.default,
     aten.hardswish_.default,
     aten.hardsigmoid_.default,
     aten.hardtanh_.default,
@@ -1538,6 +1542,33 @@ def _inplace_unary_handler(func, args, kwargs):
     r"""Dispatch handler for in-place unary ops applied to _values."""
     source = args[0]
     return _mutate_packed_values(source, func, args[1:], kwargs)
+
+
+@NestedTensorAtenRegistry.implement(aten.rrelu_with_noise_.default, compile_safe=True)
+def rrelu_with_noise_(func, args, kwargs):
+    r"""Preserve both mutated payloads and their versions during native RReLU."""
+    from .nested_tensor import NestedTensor
+
+    source, noise = args[:2]
+    if not isinstance(noise, NestedTensor) or not source._has_same_layout(noise):
+        raise NotImplementedError(f"NestedTensor: {func} requires matching input and noise layouts")
+    result = _mutate_packed_values(source, func, (noise._packed_values, *args[2:]), kwargs)
+    torch.autograd.graph.increment_version(noise._packed_values)
+    noise._invalidate_transient_caches()
+    return result
+
+
+@NestedTensorAtenRegistry.implement(aten.rrelu_with_noise_backward.default, compile_safe=True)
+def rrelu_with_noise_backward(func, args, kwargs):
+    r"""Apply native RReLU backward to matching packed payloads."""
+    from .nested_tensor import NestedTensor
+
+    sources = [operand for operand in args[:3] if isinstance(operand, NestedTensor)]
+    source = sources[0]
+    if any(not source._has_same_layout(other) for other in sources[1:]):
+        return per_element_fallback(func, args, kwargs)
+    values = tuple(operand.concat if isinstance(operand, NestedTensor) else operand for operand in args[:3])
+    return source._packed_like_unchecked(func(*values, *args[3:], **kwargs))
 
 
 ATEN_INPLACE_BINARY_OPS = [
@@ -7656,6 +7687,12 @@ def alias(func, args, kwargs):
     return source._packed_like_unchecked(func(source.concat, **kwargs))
 
 
+@NestedTensorAtenRegistry.implement(aten.size.default, compile_safe=True)
+def size(func, args, kwargs):
+    r"""Expose logical wrapper sizes for native autograd metadata checks."""
+    return list(args[0]._logical_shape)
+
+
 @NestedTensorAtenRegistry.implement(aten._has_same_storage_numel.default)
 def has_same_storage_numel(func, args, kwargs):
     r"""Compare numerical storage, excluding the logical wrapper's placeholder."""
@@ -7667,12 +7704,12 @@ def has_same_storage_numel(func, args, kwargs):
     return func(left, right, **kwargs)
 
 
-@NestedTensorAtenRegistry.implement(aten.clone.default)
+@NestedTensorAtenRegistry.implement(aten.clone.default, compile_safe=True)
 def clone(func, args, kwargs):
     r"""Clone all internal tensors of a NestedTensor."""
     source = args[0]
     ragged_offsets = source._persistent_ragged_offsets()
-    return type(source).from_packed(
+    result = type(source).from_packed(
         source.concat.clone(),
         source._offsets.clone(),
         source._physical_shape.clone(),
@@ -7687,6 +7724,23 @@ def clone(func, args, kwargs):
         ragged_dims=source._ragged_dims if source._ragged_dims_explicit else None,
         ragged_offsets=tuple(level_offsets.clone() for level_offsets in ragged_offsets) if ragged_offsets else None,
         validate=False,
+    )
+    return type(source)._compiled_packed_constructor(
+        result._packed_values,
+        result._offsets,
+        result._physical_shape,
+        result._logical_shape,
+        result._permutation,
+        result._ragged_dims,
+        result._ragged_dims_explicit,
+        result.batch_first,
+        result.padding_value,
+        result.mask_value,
+        result._pin_memory,
+        result._packed_sizes,
+        result._element_shapes,
+        result._persistent_ragged_offsets(),
+        source.stride(),
     )
 
 
@@ -7817,7 +7871,7 @@ def detach(func, args, kwargs):
         # including PyTorch's wrapper version sharing and checkpoint hooks.
         return source._packed_like_unchecked_raw(values)
     ragged_offsets = source._persistent_ragged_offsets()
-    return type(source).from_packed(
+    result = type(source).from_packed(
         values,
         source._offsets.detach(),
         source._physical_shape.detach(),
@@ -7832,6 +7886,23 @@ def detach(func, args, kwargs):
         ragged_dims=source._ragged_dims if source._ragged_dims_explicit else None,
         ragged_offsets=tuple(level_offsets.detach() for level_offsets in ragged_offsets) if ragged_offsets else None,
         validate=False,
+    )
+    return type(source)._compiled_packed_constructor(
+        result._packed_values,
+        result._offsets,
+        result._physical_shape,
+        result._logical_shape,
+        result._permutation,
+        result._ragged_dims,
+        result._ragged_dims_explicit,
+        result.batch_first,
+        result.padding_value,
+        result.mask_value,
+        result._pin_memory,
+        result._packed_sizes,
+        result._element_shapes,
+        result._persistent_ragged_offsets(),
+        source.stride(),
     )
 
 

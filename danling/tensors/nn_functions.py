@@ -358,16 +358,14 @@ def _apply_packed(input: NestedTensor, op: Callable, *args, **kwargs) -> NestedT
     return _concat_apply_same_shape(input, lambda t: op(t, *args, **kwargs))
 
 
-# Activations — registered so they run on packed concat with autograd preserved.
-# In-place activations update the same packed storage and invalidate materialized views.
+# Out-of-place activations run on packed values; mutations need wrapper autograd.
 
 
 def _activation_handler(input: NestedTensor, *args, _fn=None, inplace=False, **kwargs):
     r"""Run an activation on packed storage with native in-place behavior."""
     if inplace:
-        _fn(input.concat, *args, inplace=True, **kwargs)
-        input._invalidate_transient_caches()
-        return input
+        with torch._C.DisableTorchFunctionSubclass():
+            return _fn(input, *args, inplace=True, **kwargs)
     new_values = _fn(input.concat, *args, **kwargs)
     return input._packed_like_unchecked(new_values)
 
@@ -2750,9 +2748,8 @@ def alpha_dropout(input, p=0.5, training=False, inplace=False):
     if (not training) or p == 0:
         return input
     if inplace:
-        F.alpha_dropout(input.concat, p=p, training=training, inplace=True)
-        input._invalidate_transient_caches()
-        return input
+        with torch._C.DisableTorchFunctionSubclass():
+            return F.alpha_dropout(input, p=p, training=training, inplace=True)
     return input._packed_like_unchecked(torch.ops.aten.alpha_dropout.default(input.concat, p, training))
 
 
@@ -2777,9 +2774,8 @@ def dropout(input, p=0.5, training=True, inplace=False):
     if (not training) or p == 0:
         return input
     if inplace:
-        F.dropout(input.concat, p=p, training=training, inplace=True)
-        input._invalidate_transient_caches()
-        return input
+        with torch._C.DisableTorchFunctionSubclass():
+            return F.dropout(input, p=p, training=training, inplace=True)
     return input._packed_like_unchecked(torch.ops.aten.dropout.default(input.concat, p, training))
 
 
@@ -3234,6 +3230,16 @@ def _dropout_handler(input, *args, _fn=None, **kwargs):
     _validate_probability(float(p), error_type=ValueError)
     if (not training) or p == 0:
         return input
+    inplace = args[2] if len(args) > 2 else kwargs.get("inplace", False)
+    if inplace:
+        # Compute per-sample dropout out of place, then mutate through wrapper
+        # autograd. This keeps channel masks and the original storage aliases.
+        if len(args) > 2:
+            args = (*args[:2], False, *args[3:])
+        else:
+            kwargs = {**kwargs, "inplace": False}
+        output = _map_storage_serial(input, lambda t: _fn(t, *args, **kwargs))
+        return input.copy_(output)
     return _map_storage_serial(input, lambda t: _fn(t, *args, **kwargs))
 
 
@@ -3501,7 +3507,7 @@ for _op in (F.dropout, F.alpha_dropout):
     if _op in NestedTensorFuncRegistry:
         NestedTensorFuncRegistry.set_compile_guard(_op, None)
 
-# Activations — elementwise on packed concat, compile-safe (aten handles the real work).
+# Activations are compile-safe; aten handles native wrapper mutations.
 for _op in NN_ACTIVATION_OPS:
     NestedTensorFuncRegistry.register(_op, _bind_fn(_activation_handler, _op), compile_safe=True)
 
