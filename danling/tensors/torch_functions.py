@@ -2996,101 +2996,50 @@ def addr(input, vec1, vec2, *, beta=1, alpha=1, out=None):
     return torch.addr(input, vec1, vec2, beta=beta, alpha=alpha)
 
 
+@NestedTensorFuncRegistry.implement(torch.Tensor.baddbmm, compile_safe=True)
 @NestedTensorFuncRegistry.implement(torch.baddbmm)
 def baddbmm(input, batch1, batch2, *, beta=1, alpha=1, out=None):
-    r"""
-    Performs a batch matrix-matrix product of matrices in ``batch1`` and ``batch2`` and adds ``input``.
-    See also [torch.baddbmm][].
+    r"""Multiply logical rank-three matrix batches and add a broadcast bias.
+
+    NestedTensor samples are two-dimensional matrices. Its designated sample
+    batch is preserved, including ``batch_first=False``; dense operands always
+    use their leading dimension as the batch. Matrix batches do not broadcast.
     """
     from .aten_functions import baddbmm as _aten_baddbmm
-    from .nested_tensor import NestedTensor
-
-    for operand in (batch1, batch2):
-        rank = operand._physical_shape.size(1) if isinstance(operand, NestedTensor) else operand.dim()
-        if rank != 3:
-            raise RuntimeError("baddbmm expects 3-D matrix operands")
 
     if out is not None:
         raise NotImplementedError("torch.baddbmm(..., out=...) is not supported for NestedTensor.")
-
-    if isinstance(batch1, Tensor) and isinstance(batch2, NestedTensor):
-        with contextlib.suppress(NotImplementedError):
-            return _aten_baddbmm(
-                torch.ops.aten.baddbmm.default, (input, batch1, batch2), {"beta": beta, "alpha": alpha}
-            )
-
-    if isinstance(batch1, NestedTensor) or isinstance(batch2, NestedTensor):
-        result = torch.matmul(batch1, batch2)
-        if alpha != 1:
-            result = torch.mul(result, alpha)
-        if beta == 0:
-            return result
-        bias = input if beta == 1 else torch.mul(input, beta)
-        return torch.add(result, bias)
-
-    if isinstance(input, NestedTensor):
-        from .aten_functions import per_element_fallback
-
-        return per_element_fallback(
-            torch.ops.aten.baddbmm.default, (input, batch1, batch2), {"alpha": alpha, "beta": beta}
-        )
-
-    return torch.baddbmm(input, batch1, batch2, beta=beta, alpha=alpha)
+    return _aten_baddbmm(torch.ops.aten.baddbmm.default, (input, batch1, batch2), {"beta": beta, "alpha": alpha})
 
 
+@NestedTensorFuncRegistry.implement(torch.Tensor.bmm, compile_safe=True)
 @NestedTensorFuncRegistry.implement(torch.bmm)
 def bmm(input, mat2, *, out=None):
-    r"""
-    Performs a batch matrix-matrix product of matrices stored in `input` and `mat2`.
-    See also [torch.bmm][].
+    r"""Multiply logical rank-three batches, pairing two-dimensional sample matrices.
 
-    Args:
-        input: The first batch of matrices.
-        mat2: The second batch of matrices.
-        out: Not supported for NestedTensor.
+    A NestedTensor uses its designated sample batch, including when
+    ``batch_first=False``. A dense operand uses its leading batch dimension.
+    Both operands must have exactly the same batch size; no batch broadcasting
+    or extra per-sample batch dimensions are accepted.
 
-    Returns:
-        NestedTensor: The batch matrix-matrix product.
+    Packed weighted-row products support first-order autograd. Their native
+    PyTorch embedding-bag backend currently does not implement double backward.
 
     Examples:
         >>> import torch
         >>> from danling.tensors import NestedTensor
-        >>> a = torch.arange(8.0).reshape(1, 2, 4)
-        >>> b = torch.arange(8.0).reshape(1, 4, 2)
-        >>> nt_a = NestedTensor(a, a)
-        >>> nt_b = NestedTensor(b, b)
-        >>> out = torch.bmm(nt_a, nt_b)
-        >>> ref = NestedTensor(torch.bmm(a, b), torch.bmm(a, b))
-        >>> torch.allclose(out, ref)
+        >>> a = torch.arange(8.0).reshape(2, 4)
+        >>> b = torch.arange(8.0).reshape(4, 2)
+        >>> left, right = NestedTensor(a, a), NestedTensor(b, b)
+        >>> output = torch.bmm(left, right)
+        >>> torch.allclose(output, NestedTensor(a @ b, a @ b))
         True
     """
     from .aten_functions import bmm as _aten_bmm
-    from .nested_tensor import NestedTensor
-
-    for operand in (input, mat2):
-        rank = operand._physical_shape.size(1) if isinstance(operand, NestedTensor) else operand.dim()
-        if rank != 3:
-            raise RuntimeError("bmm expects 3-D matrix operands")
 
     if out is not None:
         raise NotImplementedError("torch.bmm(..., out=...) is not supported for NestedTensor.")
-
-    if isinstance(input, NestedTensor) and isinstance(mat2, NestedTensor):
-        if len(input) != len(mat2):
-            raise ValueError(
-                "NestedTensor batch length mismatch between input and mat2: " f"input={len(input)}, mat2={len(mat2)}"
-            )
-        if input._has_same_structure(mat2) and input.concat.dim() > 2 and mat2.concat.dim() > 2:
-            return _aten_bmm(torch.ops.aten.bmm.default, (input, mat2), {})
-        return torch.matmul(input, mat2)
-
-    if isinstance(input, NestedTensor) or isinstance(mat2, NestedTensor):
-        if isinstance(input, Tensor) and isinstance(mat2, NestedTensor) and input.dim() == 3 and mat2.concat.dim() == 3:
-            with contextlib.suppress(NotImplementedError):
-                return _aten_bmm(torch.ops.aten.bmm.default, (input, mat2), {})
-        return torch.matmul(input, mat2)
-
-    return torch.bmm(input, mat2)
+    return _aten_bmm(torch.ops.aten.bmm.default, (input, mat2), {})
 
 
 def _matrix_last2_to_scalar_public(input, op):
@@ -4042,6 +3991,10 @@ def matmul(input, other, *, out=None):
     r"""
     Matrix product of two tensors.
     See also [torch.matmul][].
+
+    Mixed rank-three matrix batches pair each dense batch entry with its
+    NestedTensor sample. Ragged batch products have the autograd limitations
+    documented in ``bmm``.
 
     Args:
         input: The first tensor to multiply.
