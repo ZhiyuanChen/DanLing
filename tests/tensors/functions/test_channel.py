@@ -22,172 +22,76 @@ import torch
 from torch.nn import functional as F
 
 from danling.tensors import NestedTensor as NT
-from danling.tensors.ops import nested_execution_guard
-from tests.tensors.utils import assert_close
 
 
-def test_channel_shuffle_uses_logical_batch_channels(device):
-    tensor = torch.arange(4 * 4, device=device, dtype=torch.float32).reshape(4, 4, 1)
-    input = NT([tensor])
-
-    output = F.channel_shuffle(input, groups=2)
-    per_sample = F.channel_shuffle(tensor, groups=2)
-    batched_channel = F.channel_shuffle(tensor.unsqueeze(0), groups=2).squeeze(0)
-
-    assert_close(output[0], batched_channel)
-    assert not torch.equal(output[0], per_sample)
-
-
-def test_channel_shuffle(device):
-    tensors = [
-        torch.randn(4, 2, 3, device=device),
-        torch.randn(6, 2, 7, device=device),
-    ]
-    input = NT(tensors)
-
-    output = F.channel_shuffle(input, groups=2)
-    reference = NT([F.channel_shuffle(t.unsqueeze(0), groups=2).squeeze(0) for t in tensors])
-
-    assert_close(output, reference)
-
-
-def test_channel_shuffle_packed_chw_fast_path(device):
-    if torch.device(device).type != "cuda":
-        pytest.skip("packed CHW channel_shuffle fast path is CUDA-only")
-    tensors = [
-        torch.randn(4, 6, 5, device=device),
-        torch.randn(4, 4, 3, device=device),
-    ]
-    input = NT(tensors)
-
-    assert input._permutation == (1, 2, 0)
-    with nested_execution_guard(forbid_storage_map=True):
-        output = F.channel_shuffle(input, groups=2)
-    reference = NT([F.channel_shuffle(t.unsqueeze(0), groups=2).squeeze(0) for t in tensors], **input._meta())
-
-    assert_close(output, reference)
-
-
-def test_channel_shuffle_packed_chw_backward(device):
-    if torch.device(device).type != "cuda":
-        pytest.skip("packed CHW channel_shuffle fast path is CUDA-only")
-    tensors = [
-        torch.randn(4, 6, 5, device=device, requires_grad=True),
-        torch.randn(4, 4, 3, device=device, requires_grad=True),
-    ]
-    reference_tensors = [tensor.detach().clone().requires_grad_() for tensor in tensors]
-    input = NT(tensors)
-    reference_input = NT(reference_tensors)
-
-    output = F.channel_shuffle(input, groups=2)
-    reference = NT([F.channel_shuffle(t.unsqueeze(0), groups=2).squeeze(0) for t in reference_input], **input._meta())
-
-    assert_close(output, reference)
-    output.concat.square().sum().backward()
-    reference.concat.square().sum().backward()
-    for tensor, reference_tensor in zip(tensors, reference_tensors):
-        assert_close(tensor.grad, reference_tensor.grad)
-
-
-def test_pixel_shuffle(device):
-    tensors = [
-        torch.randn(4, 2, 3, device=device),
-        torch.randn(4, 5, 7, device=device),
-    ]
-    input = NT(tensors)
-
-    output = F.pixel_shuffle(input, upscale_factor=2)
-    reference = F.pixel_shuffle(input.tensor, upscale_factor=2)
-
-    assert_close(output, reference)
-
-
-def test_pixel_shuffle_backward(device):
-    tensors = [
-        torch.randn(4, 2, 3, device=device, requires_grad=True),
-        torch.randn(4, 5, 7, device=device, requires_grad=True),
-    ]
-    reference_tensors = [tensor.detach().clone().requires_grad_() for tensor in tensors]
-    input = NT(tensors)
-    reference_input = NT(reference_tensors)
-
-    output = F.pixel_shuffle(input, upscale_factor=2)
-    reference = NT([F.pixel_shuffle(t, upscale_factor=2) for t in reference_input], **input._meta())
-
-    assert_close(output, reference)
-    output.concat.square().sum().backward()
-    reference.concat.square().sum().backward()
-    for tensor, reference_tensor in zip(tensors, reference_tensors):
-        assert_close(tensor.grad, reference_tensor.grad)
-
-
-def test_pixel_shuffle_round_trip(device):
-    input = NT(
-        [
-            torch.randn(4, 2, 3, device=device),
-            torch.randn(4, 5, 7, device=device),
-        ]
+def _assert_vjp(actual, expected, parts, references):
+    torch.testing.assert_close(actual.unbind(), expected)
+    probes = [torch.randn_like(part) for part in expected]
+    actual_gradients = torch.autograd.grad(sum((part * probe).sum() for part, probe in zip(actual, probes)), parts)
+    expected_gradients = torch.autograd.grad(
+        sum((part * probe).sum() for part, probe in zip(expected, probes)), references
     )
-
-    output = F.pixel_unshuffle(F.pixel_shuffle(input, upscale_factor=2), downscale_factor=2)
-
-    assert_close(output, input)
+    torch.testing.assert_close(actual_gradients, expected_gradients)
 
 
-def test_pixel_unshuffle_backward(device):
-    tensors = [
-        torch.randn(2, 4, 6, device=device, requires_grad=True),
-        torch.randn(2, 8, 10, device=device, requires_grad=True),
-    ]
-    reference_tensors = [tensor.detach().clone().requires_grad_() for tensor in tensors]
-    input = NT(tensors)
-    reference_input = NT(reference_tensors)
+class TestChannel:
+    @pytest.mark.parametrize("groups", [1, 4])
+    @pytest.mark.parametrize("uniform", [False, True])
+    def test_identity(self, device, groups, uniform):
+        shapes = [(4, 2, 3), (4, 2 if uniform else 5, 3)]
+        parts = [torch.randn(shape, device=device) for shape in shapes]
+        references = [part.clone() for part in parts]
+        source = NT(parts)
+        actual = F.channel_shuffle(source, groups)
+        expected = [F.channel_shuffle(part.unsqueeze(0), groups).squeeze(0) for part in references]
+        torch.testing.assert_close(actual.unbind(), expected)
+        actual.add_(100)
+        for value in expected:
+            value.add_(100)
+        torch.testing.assert_close(source.unbind(), references)
 
-    output = F.pixel_unshuffle(input, downscale_factor=2)
-    reference = NT([F.pixel_unshuffle(t, downscale_factor=2) for t in reference_input], **input._meta())
+    def test_channels(self, device):
+        value = torch.arange(16, device=device, dtype=torch.float32).reshape(4, 4, 1)
+        actual = F.channel_shuffle(NT([value]), groups=2)
+        expected = F.channel_shuffle(value.unsqueeze(0), groups=2).squeeze(0)
+        torch.testing.assert_close(actual[0], expected)
 
-    assert_close(output, reference)
-    output.concat.square().sum().backward()
-    reference.concat.square().sum().backward()
-    for tensor, reference_tensor in zip(tensors, reference_tensors):
-        assert_close(tensor.grad, reference_tensor.grad)
+    @pytest.mark.parametrize("shapes", [[(4, 2, 3), (6, 2, 7)], [(4, 6, 5), (4, 4, 3)]])
+    def test_shuffle(self, device, shapes):
+        parts = [torch.randn(shape, device=device, requires_grad=True) for shape in shapes]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        actual = F.channel_shuffle(NT(parts), groups=2)
+        expected = [F.channel_shuffle(part.unsqueeze(0), groups=2).squeeze(0) for part in references]
+        _assert_vjp(actual, expected, parts, references)
 
-
-@pytest.mark.parametrize("op", ["channel_shuffle", "pixel_shuffle", "pixel_unshuffle"])
-def test_packed_channel_op_sum_backward(device, op):
-    if torch.device(device).type != "cuda":
-        pytest.skip("packed channel op fast paths are CUDA-only")
-    if op == "channel_shuffle":
-        tensors = [
-            torch.randn(4, 8, 5, device=device, requires_grad=True),
-            torch.randn(4, 4, 3, device=device, requires_grad=True),
+    def test_strided_gradient(self, device):
+        parts = [torch.randn(4, 2, 3, device=device, requires_grad=True) for _ in range(2)]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        cotangent = torch.randn(8, 3, 2, device=device).transpose(1, 2)
+        actual = F.channel_shuffle(NT(parts), groups=2)
+        gradients = torch.autograd.grad(actual.concat, parts, cotangent)
+        expected = [F.channel_shuffle(part.unsqueeze(0), groups=2).squeeze(0) for part in references]
+        reference_gradients = [
+            torch.autograd.grad(part, reference, probe.contiguous())[0]
+            for part, reference, probe in zip(expected, references, cotangent.split(4))
         ]
-    else:
-        tensors = [
-            torch.randn(4, 8, 6, device=device, requires_grad=True),
-            torch.randn(4, 4, 4, device=device, requires_grad=True),
-        ]
-    reference_tensors = [tensor.detach().clone().requires_grad_() for tensor in tensors]
-    input = NT(tensors)
-    reference_input = NT(reference_tensors)
+        torch.testing.assert_close(actual.unbind(), expected)
+        torch.testing.assert_close(gradients, reference_gradients)
 
-    if op == "channel_shuffle":
-        with nested_execution_guard(forbid_storage_map=True):
-            output = F.channel_shuffle(input, groups=2)
-        reference = NT(
-            [F.channel_shuffle(t.unsqueeze(0), groups=2).squeeze(0) for t in reference_input], **input._meta()
-        )
-    elif op == "pixel_shuffle":
-        with nested_execution_guard(forbid_storage_map=True):
-            output = F.pixel_shuffle(input, upscale_factor=2)
-        reference = NT([F.pixel_shuffle(t, upscale_factor=2) for t in reference_input], **input._meta())
-    else:
-        with nested_execution_guard(forbid_storage_map=True):
-            output = F.pixel_unshuffle(input, downscale_factor=2)
-        reference = NT([F.pixel_unshuffle(t, downscale_factor=2) for t in reference_input], **input._meta())
+    @pytest.mark.parametrize("operation", ["shuffle", "unshuffle"])
+    def test_pixels(self, device, operation):
+        shapes = [(4, 2, 3), (4, 5, 7)] if operation == "shuffle" else [(4, 4, 6), (4, 6, 8)]
+        parts = [torch.randn(shape, device=device, requires_grad=True) for shape in shapes]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        if operation == "shuffle":
+            actual = F.pixel_shuffle(NT(parts), upscale_factor=2)
+            expected = [F.pixel_shuffle(part, upscale_factor=2) for part in references]
+        else:
+            actual = F.pixel_unshuffle(NT(parts), downscale_factor=2)
+            expected = [F.pixel_unshuffle(part, downscale_factor=2) for part in references]
+        _assert_vjp(actual, expected, parts, references)
 
-    assert_close(output, reference)
-    output.sum().backward()
-    reference.sum().backward()
-    for tensor, reference_tensor in zip(tensors, reference_tensors):
-        assert_close(tensor.grad, reference_tensor.grad)
+    def test_roundtrip(self, device):
+        parts = [torch.randn(4, 2, 3, device=device), torch.randn(4, 5, 7, device=device)]
+        restored = F.pixel_unshuffle(F.pixel_shuffle(NT(parts), upscale_factor=2), downscale_factor=2)
+        torch.testing.assert_close(restored.unbind(), parts)

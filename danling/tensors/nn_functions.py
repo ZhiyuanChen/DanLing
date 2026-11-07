@@ -77,7 +77,6 @@ from .ops import (
     _physical_to_values_dim,
     _run_layer_norm,
     _run_rms_norm,
-    _static_channels_match,
     _translate_non_batch_dim,
     _validate_probability,
 )
@@ -2092,14 +2091,48 @@ def linear(input: NestedTensor, weight: Tensor, bias: Tensor | None = None) -> N
 
             new_values = F.linear(input.concat.reshape(len(input), in_features), weight, bias)
             return _from_uniform_batched_output(input, new_values)
-    if input.concat.dim() >= 2:
+    last_dim = int(input._physical_shape.size(1)) - 1
+    if weight.dim() == 2 and last_dim in input._ragged_dims:
+        from .aten_functions import _packed_index_positions, _packed_reshape_shapes, _packed_with_shape
+
+        if _is_compiling():
+            _compile_unsupported(
+                "torch.nn.functional.linear", "a declared ragged feature axis requires concrete layout metadata"
+            )
+        torch._assert_async(
+            torch.all(input._physical_shape[:, last_dim] == weight.shape[1]),
+            "linear requires every input feature extent to equal in_features",
+        )
+        source = input
+        shapes = tuple(tuple(shape) for shape in input._original_shapes())
+        ragged = tuple(axis for axis in input._ragged_dims if axis != last_dim)
+        input = _packed_reshape_shapes(input, shapes, ragged, input.batch_first)
+        if last_dim in input._ragged_dims:
+            static = tuple(axis for axis in range(last_dim + 1) if axis not in ragged)
+            counts = source._physical_shape[:, list(ragged)].prod(1)
+            offsets = torch.cat((counts.new_zeros(1), counts.cumsum(0)))
+            packed_shape = (int(offsets[-1]), *(shapes[0][axis] for axis in static))
+            placeholder = torch.empty((), dtype=torch.long, device=source.device).expand(packed_shape)
+            reference = _packed_with_shape(
+                source,
+                placeholder,
+                source._physical_shape,
+                source._logical_shape,
+                offsets=offsets,
+                permutation=(*ragged, *static),
+                force_explicit_ragged_dims=ragged,
+            )
+            positions = _packed_index_positions(source, reference, None, "linear")
+            values = source.concat.reshape(-1).index_select(0, positions.reshape(-1)).reshape(packed_shape)
+            input = reference._packed_like_unchecked(values)
+    if input._static_dims:
         from .aten_functions import _packed_new_last_dim, _packed_with_shape
 
         last_dim = int(input._physical_shape.size(1)) - 1
         values_dim = _physical_to_values_dim(input, last_dim)
         if values_dim is not None:
             packed_values = input.concat
-            values = packed_values.movedim(values_dim, -1)
+            values = packed_values if values_dim == packed_values.dim() - 1 else packed_values.movedim(values_dim, -1)
             new_values = F.linear(values, weight, bias)
             if values_dim == packed_values.dim() - 1:
                 return _packed_new_last_dim(input, new_values, weight.shape[0])
@@ -2272,102 +2305,81 @@ if hasattr(F, "scaled_mm"):
 # Normalization
 
 
-def _batch_norm_eval_values(
-    values: Tensor,
-    running_mean: Tensor,
-    running_var: Tensor,
-    weight: Tensor | None,
-    bias: Tensor | None,
-    channel_dim: int,
-    eps: float,
-) -> Tensor:
-    if values.dim() == 1:
-        return F.batch_norm(
-            values.reshape(-1, running_mean.numel()),
-            running_mean,
-            running_var,
-            weight,
-            bias,
-            False,
-            0.0,
-            eps,
-        ).reshape_as(values)
+def _batch_norm_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
+    from .nested_tensor import NestedTensor
 
-    order = [channel_dim, *(dim for dim in range(values.dim()) if dim != channel_dim)]
-    normalized = F.batch_norm(
-        values.permute(order).unsqueeze(0),
-        running_mean,
-        running_var,
-        weight,
-        bias,
-        False,
-        0.0,
-        eps,
-    ).squeeze(0)
-    inverse = [0] * values.dim()
-    for new_dim, old_dim in enumerate(order):
-        inverse[old_dim] = new_dim
-    return normalized.permute(inverse)
+    input = args[0] if args else kwargs.get("input")
+    if not isinstance(input, NestedTensor) or input._physical_shape.size(1) < 1:
+        return False
+    training = args[5] if len(args) > 5 else kwargs.get("training", False)
+    return 0 in input._static_dims or input._varying_dims == (0,) or not training
 
 
-def _batch_norm_eval_packed_affine(
+def _batch_norm_packed(
     input: NestedTensor,
     running_mean: Tensor | None,
     running_var: Tensor | None,
     weight: Tensor | None,
     bias: Tensor | None,
+    training: bool,
+    momentum: float,
     eps: float,
-) -> NestedTensor | None:
-    if running_mean is None or running_var is None:
-        return None
+) -> NestedTensor:
+    r"""Normalize physical channel zero using only valid packed observations."""
     if input._physical_shape.size(1) < 1:
-        return None
-
-    num_features = int(running_mean.shape[0])
-    if not _static_channels_match(input._physical_shape, num_features):
-        return None
-
+        raise ValueError("batch_norm requires a channel dimension in every sample")
     values = input.concat
-    running_mean = running_mean.to(device=values.device, dtype=values.dtype)
-    running_var = running_var.to(device=values.device, dtype=values.dtype)
-    if weight is not None:
-        weight = weight.to(device=values.device, dtype=values.dtype)
-    if bias is not None:
-        bias = bias.to(device=values.device, dtype=values.dtype)
-
-    if input._physical_shape.size(1) == 1:
-        if values.numel() % num_features != 0:
-            return None
-        output_values = _batch_norm_eval_values(values, running_mean, running_var, weight, bias, 0, eps)
+    channel_dim = _physical_to_values_dim(input, 0)
+    if channel_dim is not None:
+        channels_first = values.movedim(channel_dim, 0).unsqueeze(0).contiguous()
+        normalized = F.batch_norm(channels_first, running_mean, running_var, weight, bias, training, momentum, eps)
+        return input._packed_like_unchecked(normalized.squeeze(0).movedim(0, channel_dim))
+    if not training and input._varying_dims != (0,):
+        channels = input._max_physical_dims()[0]
+        torch._assert_async(
+            torch.all(input._physical_shape[:, 0] == channels),
+            "batch_norm requires equal channel counts across samples",
+        )
+        if channels == 0:
+            normalized = F.batch_norm(
+                values.reshape(1, 0, 0), running_mean, running_var, weight, bias, False, momentum, eps
+            )
+            return input._packed_like_unchecked(normalized.reshape_as(values))
+        torch._check(values.shape[0] % channels == 0)
+        rows = values.shape[0] // channels
+        batch, local = input._packed_batch_local_indices(device=values.device)
+        coordinates = input._packed_varying_coords(batch, local, device=values.device)
+        shapes = input.element_sizes(device=values.device)
+        channel = coordinates[input._varying_dims.index(0)]
+        spatial = torch.zeros_like(local)
+        for dim, coordinate in zip(input._varying_dims, coordinates):
+            if dim != 0:
+                spatial = spatial * shapes[:, dim].index_select(0, batch) + coordinate
+        offsets = input.packed_offsets(device=values.device).div(channels, rounding_mode="floor")
+        destination = channel * rows + offsets.index_select(0, batch) + spatial
+        planes = values.new_empty(values.shape).index_copy(0, destination, values)
+        normalized = F.batch_norm(
+            planes.reshape(1, channels, -1), running_mean, running_var, weight, bias, False, momentum, eps
+        )
+        return input._packed_like_unchecked(normalized.reshape_as(values).index_select(0, destination))
+    if input._varying_dims != (0,):
+        raise NotImplementedError("batch_norm requires a static channel axis when spatial dimensions are ragged")
+    batch = len(input)
+    if batch:
+        torch._check(values.shape[0] % batch == 0, lambda: "batch_norm requires equal channel counts across samples")
+        channels = values.shape[0] // batch
     else:
-        suffix_rank = values.dim() - 1
-        if suffix_rank <= 0:
-            return None
-        static_dims = tuple(int(dim) for dim in input._permutation[-suffix_rank:])
-        if 0 not in static_dims:
-            return None
-        channel_dim = 1 + static_dims.index(0)
-        if int(values.shape[channel_dim]) != num_features:
-            return None
-        output_values = _batch_norm_eval_values(values, running_mean, running_var, weight, bias, channel_dim, eps)
-
-    return type(input).from_packed(
-        output_values,
-        input._offsets,
-        input._physical_shape,
-        permutation=input._permutation,
-        ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
-        batch_first=input.batch_first,
-        padding_value=input.padding_value,
-        mask_value=input.mask_value,
-        pin_memory=input._pin_memory,
-        outer_size=input.shape,
-        packed_sizes=input._packed_sizes,
-        element_shapes=input._element_shapes,
+        channels = input._max_physical_dims()[0]
+    torch._assert_async(
+        torch.all(input._physical_shape[:, 0] == channels),
+        "batch_norm requires equal channel counts across samples",
     )
+    channels_first = values.reshape(batch, channels, *values.shape[1:])
+    normalized = F.batch_norm(channels_first, running_mean, running_var, weight, bias, training, momentum, eps)
+    return input._packed_like_unchecked(normalized.reshape_as(values))
 
 
-@NestedTensorFuncRegistry.implement(F.batch_norm)
+@NestedTensorFuncRegistry.implement(F.batch_norm, compile_safe=True, compile_guard=_batch_norm_compile_safe)
 def batch_norm(
     input: NestedTensor,
     running_mean: Tensor | None = None,
@@ -2410,20 +2422,7 @@ def batch_norm(
         >>> torch.allclose(out, ref)
         True
     """
-    if not training:
-        # Eval mode is a per-channel affine transform — padding doesn't affect valid positions
-        output = _batch_norm_eval_packed_affine(input, running_mean, running_var, weight, bias, eps)
-        if output is not None:
-            return output
-        dense_output = F.batch_norm(input.tensor, running_mean, running_var, weight, bias, False, momentum, eps)
-        return input.nested_like(dense_output, strict=False)
-
-    # Training mode: concatenate to compute batch statistics without padding contamination
-    from .nested_tensor import NestedTensor
-
-    concat, shapes = input.concatenate()
-    normalized = F.batch_norm(concat, running_mean, running_var, weight, bias, training, momentum, eps)
-    return NestedTensor.from_concatenated(normalized, shapes, **input._meta())
+    return _batch_norm_packed(input, running_mean, running_var, weight, bias, training, momentum, eps)
 
 
 @NestedTensorFuncRegistry.implement(F.group_norm)

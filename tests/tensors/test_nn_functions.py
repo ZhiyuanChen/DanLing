@@ -21,6 +21,7 @@ import math
 import os
 import subprocess
 import sys
+from copy import deepcopy
 
 import pytest
 import torch
@@ -1147,6 +1148,22 @@ class TestInterpolate:
 
 class TestLinear:
 
+    @pytest.mark.parametrize("ragged_dims", [(0,), (0, 1), (1, 0)])
+    def test_declared_features(self, device, ragged_dims):
+        parts = [torch.randn(length, 14, device=device, dtype=torch.float64, requires_grad=True) for length in (2, 4)]
+        weight = torch.randn(6, 14, device=device, dtype=torch.float64, requires_grad=True)
+        bias = torch.randn(6, device=device, dtype=torch.float64, requires_grad=True)
+        source = NT(parts, ragged_dims=ragged_dims)
+        output = F.linear(source, weight, bias)
+        expected = [F.linear(part, weight, bias) for part in parts]
+        torch.testing.assert_close(output.unbind(), expected)
+        assert output.ragged_dims == (0,)
+        for coordinate, column in enumerate(output.unbind(-1)):
+            torch.testing.assert_close(column.unbind(), [part[..., coordinate] for part in expected])
+        actual_grad = torch.autograd.grad(output.square().sum(), (*parts, weight, bias), retain_graph=True)
+        expected_grad = torch.autograd.grad(sum(part.square().sum() for part in expected), (*parts, weight, bias))
+        torch.testing.assert_close(actual_grad, expected_grad)
+
     @pytest.mark.parametrize("shape", [[(3, 5), (3, 5)], [(3, 5), (2, 5)], [(2, 3, 5), (3, 2, 5)]])
     def test_linear(self, shape):
         input = NT([torch.randn(*i) for i in shape])
@@ -1921,43 +1938,120 @@ class TestMultiHeadAttentionForward:
         assert weights.shape[0] == query.tensor.shape[1]
 
 
-class TestNormalizationOps:
+class TestBatchNorm:
 
-    def test_batch_norm(self, device, float_dtype):
-        nt = nested_rand([(2, 3), (1, 3)], device, float_dtype)
-        running_mean = torch.zeros(3, device=device, dtype=float_dtype)
-        running_var = torch.ones(3, device=device, dtype=float_dtype)
-        output = F.batch_norm(nt, running_mean=running_mean, running_var=running_var, training=True)
-        concat, shapes = nt.concatenate()
-        reference = NestedTensor.from_concatenated(
-            F.batch_norm(concat, running_mean=running_mean, running_var=running_var, training=True),
-            shapes,
-            **reference_options(nt),
-        )
-        assert_close(output, reference, atol=1e-5, rtol=1e-5)
-
-    def test_batch_norm_eval_channel_first_stays_packed(self, device, float_dtype):
-        nt = NT(
-            [
-                torch.randn(4, 17, device=device, dtype=float_dtype),
-                torch.randn(4, 29, device=device, dtype=float_dtype),
+    @pytest.mark.parametrize(
+        ("momentum", "backend", "dtype", "spatial_tail"),
+        [
+            (0.1, None, torch.float32, ()),
+            (None, None, torch.float32, ()),
+            (0.1, "aot_eager", torch.float32, ()),
+            (0.1, None, torch.bfloat16, ()),
+            (0.1, "aot_eager", torch.float32, (2,)),
+        ],
+    )
+    def test_train(self, device, momentum, backend, dtype, spatial_tail):
+        torch._dynamo.reset()
+        batch_norm = nn.BatchNorm2d if spatial_tail else nn.BatchNorm1d
+        module = batch_norm(3, momentum=momentum).to(device)
+        with torch.no_grad():
+            module.weight.copy_(torch.tensor([0.7, -1.3, 1.8], device=device))
+            module.bias.copy_(torch.tensor([0.2, 0.3, -0.4], device=device))
+        reference = deepcopy(module)
+        operation = module if backend is None else torch.compile(module, backend=backend, fullgraph=True, dynamic=True)
+        for step, lengths in enumerate(((1, 4), (3, 3)), 1):
+            parts = [
+                (torch.randn(3, length, *spatial_tail, device=device, dtype=dtype) + index * 2).requires_grad_()
+                for index, length in enumerate(lengths)
             ]
-        )
-        running_mean = torch.randn(4, device=device, dtype=float_dtype)
-        running_var = torch.rand(4, device=device, dtype=float_dtype) + 0.5
-        weight = torch.randn(4, device=device, dtype=float_dtype)
-        bias = torch.randn(4, device=device, dtype=float_dtype)
+            references = [part.detach().clone().requires_grad_() for part in parts]
+            source = NT(parts, ragged_dims=(1,)) if lengths[0] != lengths[1] else NT(parts)
+            actual = operation(source)
+            expected = reference(torch.cat(references, dim=1).unsqueeze(0)).squeeze(0).split(lengths, dim=1)
+            tolerance = 0.03 if dtype == torch.bfloat16 else 2e-5
+            torch.testing.assert_close(actual.unbind(), expected, atol=tolerance, rtol=tolerance)
+            probes = [torch.randn_like(part) for part in expected]
+            torch.testing.assert_close(
+                torch.autograd.grad(
+                    sum((part * probe).sum() for part, probe in zip(actual, probes)),
+                    (*parts, module.weight, module.bias),
+                ),
+                torch.autograd.grad(
+                    sum((part * probe).sum() for part, probe in zip(expected, probes)),
+                    (*references, reference.weight, reference.bias),
+                ),
+                atol=tolerance,
+                rtol=tolerance,
+            )
+            torch.testing.assert_close(module.running_mean, reference.running_mean, atol=2e-5, rtol=2e-5)
+            torch.testing.assert_close(module.running_var, reference.running_var, atol=2e-5, rtol=2e-5)
+            assert module.running_var.dtype == torch.float32
+            assert module.num_batches_tracked.item() == reference.num_batches_tracked.item() == step
 
-        output = F.batch_norm(nt, running_mean, running_var, weight, bias, training=False)
-        reference = NT(
-            [
-                F.batch_norm(t.unsqueeze(0), running_mean, running_var, weight, bias, training=False).squeeze(0)
-                for t in nt
-            ],
-            **reference_options(nt),
+    @pytest.mark.parametrize("backend", [None, "aot_eager"])
+    @pytest.mark.parametrize("ragged_dims", [(1,), (0, 1), (1, 0)])
+    def test_eval(self, device, backend, ragged_dims):
+        torch._dynamo.reset()
+        module = nn.BatchNorm1d(2).to(device).eval()
+        with torch.no_grad():
+            module.running_mean.copy_(torch.tensor([1.003, -2.007], device=device))
+            module.running_var.copy_(torch.tensor([0.011, 0.023], device=device))
+            module.weight.copy_(torch.tensor([1.003, 0.997], device=device))
+            module.bias.copy_(torch.tensor([0.003, -0.007], device=device))
+        reference = deepcopy(module)
+        parts = [
+            torch.tensor([[1.0], [-2.0]], device=device, dtype=torch.bfloat16)
+            .expand(-1, length)
+            .clone()
+            .requires_grad_()
+            for length in (1, 4)
+        ]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        operation = module if backend is None else torch.compile(module, backend=backend, fullgraph=True, dynamic=True)
+        actual = operation(NT(parts, ragged_dims=ragged_dims))
+        assert actual.ragged_dims == ragged_dims
+        expected = [reference(part.unsqueeze(0)).squeeze(0) for part in references]
+        torch.testing.assert_close(actual.unbind(), expected)
+        probes = [torch.randn_like(part) for part in expected]
+        torch.testing.assert_close(
+            torch.autograd.grad(
+                sum((part * probe).sum() for part, probe in zip(actual, probes)), (*parts, module.weight, module.bias)
+            ),
+            torch.autograd.grad(
+                sum((part * probe).sum() for part, probe in zip(expected, probes)),
+                (*references, reference.weight, reference.bias),
+            ),
+            atol=0.03,
+            rtol=0.03,
         )
+        torch.testing.assert_close(module.running_mean, reference.running_mean)
+        torch.testing.assert_close(module.running_var, reference.running_var)
+        assert module.num_batches_tracked.item() == 0
 
-        assert_close(output, reference, atol=1e-5, rtol=1e-5)
+    @pytest.mark.parametrize("shapes", [((3, 0), (3, 1)), ((3, 0), (3, 0)), ((2, 3), (4, 3))])
+    def test_counts(self, device, shapes):
+        module = nn.BatchNorm1d(3).to(device)
+        parts = [torch.randn(shape, device=device) for shape in shapes]
+        if shapes[0][0] != shapes[1][0]:
+            with pytest.raises(RuntimeError, match="channel"):
+                module(NT(parts))
+            return
+        reference = deepcopy(module)
+        dense = torch.cat(parts, dim=1).unsqueeze(0)
+        if dense.shape[-1] == 1:
+            with pytest.raises(ValueError, match="more than 1 value"):
+                module(NT(parts, ragged_dims=(1,)))
+            with pytest.raises(ValueError, match="more than 1 value"):
+                reference(dense)
+        else:
+            actual = module(NT(parts, ragged_dims=(1,)))
+            expected = reference(dense).squeeze(0).split([shape[1] for shape in shapes], dim=1)
+            torch.testing.assert_close(actual.unbind(), expected)
+        torch.testing.assert_close(module.running_mean, reference.running_mean)
+        torch.testing.assert_close(module.running_var, reference.running_var)
+
+
+class TestNormalizationOps:
 
     def test_group_norm(self, device, float_dtype):
         nt = nested_rand([(3, 4), (2, 4)], device, float_dtype)
