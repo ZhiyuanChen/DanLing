@@ -4033,9 +4033,22 @@ def _has_static_last_axis(source: NestedTensor) -> bool:
     return source._physical_shape.size(1) - 1 in source._static_dims
 
 
+def _matmul_is_exact_bmm(lhs, rhs) -> bool:
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(lhs, Tensor) or not isinstance(rhs, Tensor) or lhs.dim() != 3 or rhs.dim() != 3:
+        return False
+    if isinstance(lhs, NestedTensor) == isinstance(rhs, NestedTensor):
+        return False
+    nested, dense = (lhs, rhs) if isinstance(lhs, NestedTensor) else (rhs, lhs)
+    return nested.concat.dim() == 2 and dense.shape[0] == len(nested)
+
+
 def _matmul_has_packed_path(lhs, rhs) -> bool:
     from .nested_tensor import NestedTensor
 
+    if _matmul_is_exact_bmm(lhs, rhs):
+        return True
     if isinstance(lhs, NestedTensor):
         if isinstance(rhs, NestedTensor):
             return (
@@ -5655,88 +5668,260 @@ def addmm(func, args, kwargs):
     return per_element_fallback(func, args, kwargs)
 
 
-@NestedTensorAtenRegistry.implement(aten.baddbmm.default)
+def _bmm_static_extent(operand, dim):
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(operand, NestedTensor):
+        return operand.shape[dim + 1]
+    if dim not in operand._static_dims:
+        return None
+    return operand.concat.shape[1 + operand._static_dims.index(dim)]
+
+
+def _bmm_dense_batch(operand, rows, columns):
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(operand, NestedTensor):
+        torch._check(operand.shape[1] == rows)
+        torch._check(operand.shape[2] == columns)
+        return operand
+    torch._assert_async(torch.all(operand._physical_shape[:, 0] == rows), "bmm matrix row sizes must match")
+    torch._assert_async(torch.all(operand._physical_shape[:, 1] == columns), "bmm matrix column sizes must match")
+    sizes = (rows, columns)
+    values = operand.concat.reshape(len(operand), *(sizes[dim] for dim in operand._permutation))
+    inverse = type(operand)._inverse_permutation(operand._permutation)
+    return values.permute(0, *(dim + 1 for dim in inverse))
+
+
+def _bmm_weighted_rows(values, matrices, batch, offsets):
+    r"""Multiply packed rows with bounded matrix replication and row padding."""
+    device_type = values.device.type
+    floating = (torch.float16, torch.bfloat16, torch.float32)
+    if (
+        device_type in ("cpu", "cuda")
+        and torch.is_autocast_enabled(device_type)
+        and values.dtype in floating
+        and matrices.dtype in floating
+    ):
+        dtype = torch.get_autocast_dtype(device_type)
+        values, matrices = values.to(dtype), matrices.to(dtype)
+    if values.dtype != matrices.dtype:
+        raise RuntimeError("bmm operands must have the same dtype")
+    use_cpu_metadata = (
+        not _is_compiling()
+        and type(values) is Tensor
+        and _get_current_dispatch_mode() is None
+        and not torch._C._are_functorch_transforms_active()
+        and not _is_fake_tensor(offsets)
+    )
+    bounds = offsets.tolist() if use_cpu_metadata else None
+    # Compiled tile dimensions use only packed input shapes. A separate ragged
+    # maximum is not an input-shape symbol available to the generated backward.
+    average_rows = (values.shape[0] + matrices.shape[0] - 1) // torch.sym_max(1, matrices.shape[0])
+    feature_rows = torch.sym_max(64, values.shape[1] + matrices.shape[-1])
+    rows_per_tile = torch.sym_min(feature_rows, torch.sym_max(64, average_rows))
+    if bounds is not None:
+        maximum = max((end - start for start, end in zip(bounds[:-1], bounds[1:])), default=0)
+        rows_per_tile = max(1, min(maximum, rows_per_tile))
+    positions = torch.arange(rows_per_tile, device=values.device)
+    if bounds is not None:
+        # Canonical CPU offsets can plan exact tiles without CUDA scalar reads
+        # or a launch per metadata arithmetic operation.
+        metadata = []
+        corrections = []
+        for sample, (start, end) in enumerate(zip(bounds[:-1], bounds[1:])):
+            corrections.append(len(metadata) * rows_per_tile - start)
+            metadata.extend((sample, row, min(rows_per_tile, end - row)) for row in range(start, end, rows_per_tile))
+        tiles_metadata = torch.tensor(metadata, device=values.device, dtype=torch.long).reshape(-1, 3)
+        capacity = tiles_metadata.shape[0]
+        owner = tiles_metadata[:, 0]
+        rows = torch.where(
+            positions < tiles_metadata[:, 2, None],
+            tiles_metadata[:, 1, None] + positions,
+            values.shape[0],
+        )
+        correction = torch.tensor(corrections, device=values.device, dtype=torch.long)
+    else:
+        offsets = offsets.to(device=values.device, dtype=torch.long)
+        lengths = offsets[1:] - offsets[:-1]
+        tile_counts = torch.div(lengths + rows_per_tile - 1, rows_per_tile, rounding_mode="floor")
+        tile_offsets = torch.cat((tile_counts.new_zeros(1), tile_counts.cumsum(0)))
+        # The bound includes partial tiles without reading metadata back from CUDA.
+        capacity = (values.shape[0] + matrices.shape[0] * (rows_per_tile - 1)) // rows_per_tile
+        tile = torch.arange(capacity, device=values.device)
+        owner = torch.bucketize(tile, tile_offsets[1:], right=True).clamp(max=matrices.shape[0] - 1)
+        local = (tile - tile_offsets.index_select(0, owner))[:, None] * rows_per_tile + positions
+        valid = (tile[:, None] < tile_offsets[-1]) & (local < lengths.index_select(0, owner)[:, None])
+        rows = torch.where(valid, offsets.index_select(0, owner)[:, None] + local, values.shape[0])
+        correction = tile_offsets[:-1] * rows_per_tile - offsets[:-1]
+    # A sentinel row also handles an entirely empty packed batch. Padding is
+    # confined to independent matrix rows, so no unused contraction can add
+    # zero times a nonfinite value to a valid output or weight gradient.
+    padded = torch.cat((values, values.new_zeros((1, values.shape[1]))))
+    tiles = padded.index_select(0, rows.reshape(-1)).reshape(capacity, rows_per_tile, values.shape[1])
+    with torch.autocast(device_type=device_type, enabled=False):
+        output = torch.bmm(tiles, matrices.index_select(0, owner))
+    output_row = torch.arange(values.shape[0], device=values.device) + correction.index_select(0, batch)
+    return output.reshape(capacity * rows_per_tile, matrices.shape[-1]).index_select(0, output_row)
+
+
+def _bmm_uniform_result(reference, values):
+    batch, rows, columns = values.shape
+    column_packed = reference._ragged_dims == (1,)
+    packed_size, tail_size = (columns, rows) if column_packed else (rows, columns)
+    packed_values = values.transpose(1, 2) if column_packed else values
+    offsets = torch.arange(batch + 1, dtype=reference._offsets.dtype, device=reference._offsets.device) * packed_size
+    shape = reference._physical_shape.new_empty((batch, 2))
+    shape[:, 0], shape[:, 1] = rows, columns
+    logical = (batch, rows, columns) if reference.batch_first else (rows, batch, columns)
+    return _packed_with_shape(
+        reference,
+        packed_values.reshape(batch * packed_size, tail_size),
+        shape,
+        logical,
+        offsets=offsets,
+        permutation=(1, 0) if column_packed else (0, 1),
+        force_explicit_ragged_dims=(1,) if column_packed else (0,),
+    )
+
+
+def _bmm_bias_values(input, result):
+    from .nested_tensor import NestedTensor
+
+    if isinstance(input, NestedTensor):
+        if len(input) != len(result) or input.batch_first != result.batch_first:
+            raise RuntimeError("baddbmm bias batch placement and size must match the matrix batch")
+        if input._physical_shape.size(1) != 2:
+            raise NotImplementedError("NestedTensor baddbmm bias requires per-sample matrices")
+        values = _broadcast_nested_to_values(result, input)
+    else:
+        if not isinstance(input, Tensor):
+            raise TypeError("baddbmm input must be a Tensor")
+        rows, columns = result._max_physical_dims()
+        shape = (len(result), rows, columns)
+        if torch.broadcast_shapes(input.shape, shape) != shape:
+            raise RuntimeError("baddbmm input must be broadcastable to the output matrix batch")
+        bias = input.movedim(0, 1) if not result.batch_first and input.dim() == 3 else input
+        values = _resolve_dense_for_values(result, bias)
+    if values is None:
+        raise RuntimeError("baddbmm input must be broadcastable to every output matrix")
+    if values.device != result.device:
+        raise RuntimeError("baddbmm operands must be on the same device")
+    if values.dtype != result.dtype:
+        floating = (torch.float16, torch.bfloat16, torch.float32)
+        if torch.is_autocast_enabled(result.device.type) and values.dtype in floating and result.dtype in floating:
+            values = values.to(result.dtype)
+        else:
+            raise RuntimeError("baddbmm operands must have the same dtype")
+    return values
+
+
+@NestedTensorAtenRegistry.implement(aten.baddbmm.default, compile_safe=True)
 def baddbmm(func, args, kwargs):
-    r"""Dispatch handler for dense x NestedTensor batched addmm on packed _values."""
+    r"""Batched matrix multiplication with a broadcast bias over the represented sample batch."""
     from .nested_tensor import NestedTensor
 
-    bias, batch1, batch2 = args[0], args[1], args[2]
-    if isinstance(batch1, NestedTensor):
-        batch1 = _canonical_static_layout(batch1)
-    if isinstance(batch2, NestedTensor):
-        batch2 = _canonical_static_layout(batch2)
+    input, lhs, rhs = args[:3]
+    beta, alpha = kwargs.get("beta", 1), kwargs.get("alpha", 1)
+    if not all(isinstance(operand, Tensor) for operand in (input, lhs, rhs)):
+        raise TypeError("baddbmm operands must be Tensors")
+    device_type = lhs.device.type
+    floating = (torch.float16, torch.bfloat16, torch.float32)
+    autocast = device_type in ("cpu", "cuda") and torch.is_autocast_enabled(device_type)
+    if autocast and all(operand.dtype in floating for operand in (input, lhs, rhs)):
+        dtype = torch.get_autocast_dtype(device_type)
+    else:
+        if input.dtype != lhs.dtype or lhs.dtype != rhs.dtype:
+            raise RuntimeError("baddbmm operands must have the same dtype")
+        dtype = lhs.dtype
+    # Native baddbmm adds the bias before rounding its accumulator. Quantize
+    # autocast inputs first, then keep low-precision products and bias in FP32
+    # until the final output cast.
+    compute_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+    with torch.autocast(device_type=device_type, enabled=False):
+        input = input.to(dtype).to(compute_dtype)
+        lhs, rhs = lhs.to(dtype).to(compute_dtype), rhs.to(dtype).to(compute_dtype)
+        result = bmm(aten.bmm.default, (lhs, rhs), {})
+        if not isinstance(result, NestedTensor):
+            if not isinstance(input, NestedTensor):
+                return func(*args, **kwargs)
+            result = _bmm_uniform_result(input, result)
+        bias = _bmm_bias_values(input, result)
+        values = result.concat
+        if alpha != 1:
+            values = values * alpha
+        if beta == 0:
+            # An empty reduction connects a zero bias gradient without touching
+            # NaN/Inf values. Shape and dtype validation above still applies.
+            values = values + bias.unsqueeze(0)[:0].sum()
+        else:
+            values = values + bias * beta
+        return result._packed_like_unchecked(values.to(dtype))
 
-    if (
-        isinstance(batch1, Tensor)
-        and not isinstance(batch1, NestedTensor)
-        and isinstance(batch2, NestedTensor)
-        and batch1.dim() == 3
-        and batch2.concat.dim() == 3
-        and (
-            (0 not in batch2._varying_dims and 1 not in batch2._varying_dims)
-            or (
-                batch2._physical_shape.size(1) > 1
-                and 1 not in batch2._varying_dims
-                and _uniform_physical_extent(batch2._physical_shape, 0) is not None
-            )
-        )
-    ):
-        # Transpose the bias to match the transposed packed computation
-        packed_bias = bias
-        if isinstance(bias, Tensor) and bias.dim() == 3:
-            if bias.shape[1] == batch1.shape[1] and bias.shape[2] == 1 and bias.shape[0] in (1, batch1.shape[0]):
-                packed_bias = bias.permute(0, 2, 1)
-            else:
-                raise NotImplementedError(
-                    f"NestedTensor: {func} requires scalar bias or bias broadcastable with singleton ragged dim"
-                )
-        new_values = func(packed_bias, batch2.concat.permute(1, 0, 2), batch1.transpose(1, 2), **kwargs).permute(
-            1, 0, 2
-        )
-        return _packed_new_dim_size(batch2, new_values, 1, int(batch1.shape[1]))
 
-    return per_element_fallback(func, args, kwargs)
-
-
-# See also torch_functions.py::bmm for the torch-level handler (mismatched offsets).
-@NestedTensorAtenRegistry.implement(aten.bmm.default)
+@NestedTensorAtenRegistry.implement(aten.bmm.default, compile_safe=True)
 def bmm(func, args, kwargs):
-    r"""Dispatch handler for batched matrix multiply between two NestedTensors."""
+    r"""Multiply logical rank-three batches, pairing each sample's two-dimensional matrices."""
     from .nested_tensor import NestedTensor
 
-    mat1, mat2 = args[0], args[1]
-    if isinstance(mat1, NestedTensor):
-        mat1 = _canonical_static_layout(mat1)
-    if isinstance(mat2, NestedTensor):
-        mat2 = _canonical_static_layout(mat2)
-
-    if (
-        isinstance(mat1, NestedTensor)
-        and isinstance(mat2, NestedTensor)
-        and mat1._has_same_structure(mat2)
-        and _has_static_matrix_axes(mat1)
-        and _has_static_matrix_axes(mat2)
-    ):
-        new_values = func(mat1.concat, mat2.concat, **kwargs)
-        return _packed_new_last_dim(mat1, new_values, mat2.concat.shape[-1])
-    if (
-        isinstance(mat1, Tensor)
-        and not isinstance(mat1, NestedTensor)
-        and isinstance(mat2, NestedTensor)
-        and mat1.dim() == 3
-        and mat2.concat.dim() == 3
-        and (
-            (0 not in mat2._varying_dims and 1 not in mat2._varying_dims)
-            or (
-                mat2._physical_shape.size(1) > 1
-                and 1 not in mat2._varying_dims
-                and _uniform_physical_extent(mat2._physical_shape, 0) is not None
+    lhs, rhs = args[:2]
+    if not isinstance(lhs, Tensor) or not isinstance(rhs, Tensor):
+        raise TypeError("bmm matrix operands must be Tensors")
+    if lhs.dim() != 3 or rhs.dim() != 3:
+        raise RuntimeError("bmm expects 3-D matrix operands")
+    nested = [operand for operand in (lhs, rhs) if isinstance(operand, NestedTensor)]
+    if not nested:
+        return func(*args, **kwargs)
+    if any(operand._physical_shape.size(1) != 2 for operand in nested):
+        raise RuntimeError("bmm expects batches of two-dimensional matrices")
+    batches = [len(operand) if isinstance(operand, NestedTensor) else operand.shape[0] for operand in (lhs, rhs)]
+    torch._check(batches[0] == batches[1], lambda: "bmm matrix batch sizes must match without broadcasting")
+    if len(nested) == 2 and lhs.batch_first != rhs.batch_first:
+        raise RuntimeError("bmm NestedTensor batch placement must match")
+    if lhs.device != rhs.device:
+        raise RuntimeError("bmm operands must be on the same device")
+    for index, operand in enumerate((lhs, rhs)):
+        if isinstance(operand, NestedTensor):
+            if index == 0:
+                lhs = _canonical_static_layout(operand)
+            else:
+                rhs = _canonical_static_layout(operand)
+    left_inner, right_inner = _bmm_static_extent(lhs, 1), _bmm_static_extent(rhs, 0)
+    if left_inner is None and right_inner is None:
+        if isinstance(lhs, NestedTensor) and isinstance(rhs, NestedTensor):
+            output = _packed_jagged_matmul(lhs, rhs)
+            if output is not None:
+                return output
+        raise NotImplementedError("packed bmm requires a static contracted feature dimension")
+    contracted = left_inner if left_inner is not None else right_inner
+    for operand, dim in ((lhs, 1), (rhs, 0)):
+        if isinstance(operand, NestedTensor):
+            torch._assert_async(
+                torch.all(operand._physical_shape[:, dim] == contracted), "bmm contracted dimensions must match"
             )
-        )
-    ):
-        new_values = torch.bmm(mat2.concat.permute(1, 0, 2), mat1.transpose(1, 2)).permute(1, 0, 2)
-        return _packed_new_dim_size(mat2, new_values, 1, int(mat1.shape[1]))
-    return per_element_fallback(func, args, kwargs)
+        else:
+            torch._check(operand.shape[dim + 1] == contracted, lambda: "bmm contracted dimensions must match")
+    columns = _bmm_static_extent(rhs, 1)
+    if isinstance(lhs, NestedTensor) and lhs._ragged_dims == (0,) and columns is not None:
+        matrices = _bmm_dense_batch(rhs, contracted, columns)
+        batch = lhs.packed_batch_indices(device=lhs.device)
+        values = _bmm_weighted_rows(lhs.concat, matrices, batch, lhs._offsets)
+        return _packed_new_last_dim(lhs, values, columns)
+    rows = _bmm_static_extent(lhs, 0)
+    if isinstance(rhs, NestedTensor) and rhs._ragged_dims == (1,) and rows is not None:
+        matrices = _bmm_dense_batch(lhs, rows, contracted).transpose(1, 2)
+        batch = rhs.packed_batch_indices(device=rhs.device)
+        values = _bmm_weighted_rows(rhs.concat, matrices, batch, rhs._offsets)
+        return _packed_new_dim_size(rhs, values, 0, rows)
+    if rows is not None and columns is not None:
+        left = _bmm_dense_batch(lhs, rows, contracted)
+        right = _bmm_dense_batch(rhs, contracted, columns)
+        return _bmm_uniform_result(nested[0], torch.bmm(left, right))
+    if isinstance(lhs, NestedTensor) and isinstance(rhs, NestedTensor):
+        output = _packed_jagged_matmul(lhs, rhs)
+        if output is not None:
+            return output
+    raise NotImplementedError("packed bmm requires a static output dimension on one operand")
 
 
 @NestedTensorAtenRegistry.implement(aten.diagonal.default)
@@ -6020,6 +6205,15 @@ def matmul(func, args, kwargs):
     from .nested_tensor import NestedTensor
 
     lhs, rhs = args[0], args[1]
+    if _matmul_is_exact_bmm(lhs, rhs):
+        source = lhs if isinstance(lhs, NestedTensor) else rhs
+        rows = _uniform_physical_extent(source._physical_shape, 0)
+        columns = _uniform_physical_extent(source._physical_shape, 1)
+        if rows is not None and columns is not None:
+            left = _bmm_dense_batch(lhs, rows, columns) if isinstance(lhs, NestedTensor) else lhs
+            right = _bmm_dense_batch(rhs, rows, columns) if isinstance(rhs, NestedTensor) else rhs
+            return _bmm_uniform_result(source, torch.bmm(left, right))
+        return bmm(aten.bmm.default, (lhs, rhs), {})
     if isinstance(lhs, NestedTensor):
         lhs = _canonical_static_layout(lhs)
     if isinstance(rhs, NestedTensor):

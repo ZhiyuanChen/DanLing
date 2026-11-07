@@ -1262,6 +1262,88 @@ class TestIndexingOps:
 
 class TestLinearAlgebraOps:
 
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("ordering", ["left", "right"])
+    def test_sliced_matrix(self, device, backend, ordering):
+        torch.compiler.reset()
+
+        def multiply(value, weight):
+            if ordering == "left":
+                return torch.bmm(value[:, 1:], weight)
+            return torch.bmm(weight, value[:, :, 1:])
+
+        with torch._dynamo.config.patch(capture_dynamic_output_shape_ops=True):
+            compiled = torch.compile(multiply, backend=backend, fullgraph=True, dynamic=True)
+            for lengths in ((3, 6), (5, 9), (1, 4), (1, 1)):
+                shapes = [(length, 3) if ordering == "left" else (3, length) for length in lengths]
+                parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+                weight = torch.randn(
+                    (2, 3, 4) if ordering == "left" else (2, 4, 3),
+                    device=device,
+                    dtype=torch.float64,
+                    requires_grad=True,
+                )
+                references = [part.detach().clone().requires_grad_() for part in (*parts, weight)]
+                nested = NT(parts, ragged_dims=(0,) if ordering == "left" else (1,))
+                output = compiled(nested, weight)
+                expected = [
+                    part[1:] @ references[-1][index] if ordering == "left" else references[-1][index] @ part[:, 1:]
+                    for index, part in enumerate(references[:-1])
+                ]
+                torch.testing.assert_close(output.unbind(), expected)
+                torch.testing.assert_close(
+                    torch.autograd.grad(output.concat.square().sum(), (*parts, weight)),
+                    torch.autograd.grad(sum(part.square().sum() for part in expected), references),
+                )
+
+    @pytest.mark.parametrize("operation", [torch.bmm, torch.matmul])
+    @pytest.mark.parametrize("ordering", ["left", "right"])
+    @pytest.mark.parametrize("dtype", [torch.int64, torch.complex64, torch.float64])
+    @pytest.mark.parametrize("dimensions", [((2, 67), 3, 4), ((0, 1, 2), 5, 7), ((1, 137), 33, 35)])
+    def test_batched_matrix(self, device, operation, ordering, dtype, dimensions):
+        lengths, contracted, output_size = dimensions
+
+        def random(shape):
+            if dtype == torch.int64:
+                return torch.randint(-3, 4, shape, device=device)
+            return torch.randn(shape, device=device, dtype=dtype) / contracted**0.5
+
+        parts = [random((length, contracted) if ordering == "left" else (contracted, length)) for length in lengths]
+        dense = random(
+            (len(lengths), contracted, output_size) if ordering == "left" else (len(lengths), output_size, contracted)
+        )
+        if dtype != torch.int64:
+            parts = [part.requires_grad_() for part in parts]
+            dense.requires_grad_()
+        nested = NT(parts, ragged_dims=(0,) if ordering == "left" else (1,))
+        left, right = (nested, dense) if ordering == "left" else (dense, nested)
+        try:
+            expected = [
+                (
+                    torch.bmm(part.unsqueeze(0), dense[i : i + 1]).squeeze(0)
+                    if ordering == "left"
+                    else torch.bmm(dense[i : i + 1], part.unsqueeze(0)).squeeze(0)
+                )
+                for i, part in enumerate(parts)
+            ]
+        except RuntimeError:
+            with pytest.raises(RuntimeError):
+                operation(left, right)
+            return
+        output = operation(left, right)
+        assert output.dtype == dtype
+        torch.testing.assert_close(output.unbind(), expected)
+        if dtype == torch.int64:
+            return
+        inputs = (*parts, dense)
+        gradients = torch.autograd.grad(output.concat.abs().square().sum(), inputs, create_graph=True)
+        references = torch.autograd.grad(sum(part.abs().square().sum() for part in expected), inputs, create_graph=True)
+        torch.testing.assert_close(gradients, references)
+        torch.testing.assert_close(
+            torch.autograd.grad(sum(grad.real.sum() for grad in gradients), inputs),
+            torch.autograd.grad(sum(grad.real.sum() for grad in references), inputs),
+        )
+
     def test_matrix_kernels_follow_permuted_logical_axes(self):
         parts = [torch.randn(rows, 3, 3, dtype=torch.float64) for rows in (2, 4)]
         source = torch.permute(NT(parts, ragged_dims=(0,)), (0, 1, 3, 2))
