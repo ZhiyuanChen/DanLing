@@ -2268,6 +2268,33 @@ class TestFromFactoryMethods:
 
 class TestSlicing:
 
+    @pytest.mark.parametrize(
+        ("selection", "dim", "transpose"),
+        [
+            (slice(1, None), 1, False),
+            (slice(-3, 9, 2), 2, True),
+            (slice(None, None, 2), 2, False),
+            (slice(4, 4), 1, False),
+        ],
+    )
+    def test_multi_ragged(self, device, selection, dim, transpose):
+        parts = [
+            torch.randn(*shape, 3, device=device, dtype=torch.float64, requires_grad=True) for shape in ((1, 2), (2, 4))
+        ]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=(0, 1))
+        if transpose:
+            source = source.transpose(1, 2)
+        index = (slice(None),) * dim + (selection,)
+        actual = source[index]
+        expected = [(part.transpose(0, 1) if transpose else part)[index[1:]] for part in references]
+        torch.testing.assert_close(actual.unbind(), expected)
+        torch.testing.assert_close(actual.element_sizes(), torch.tensor([tuple(part.shape) for part in expected]))
+        torch.testing.assert_close(
+            torch.autograd.grad(actual.concat.square().sum(), parts),
+            torch.autograd.grad(sum(part.square().sum() for part in expected), references),
+        )
+
     @pytest.mark.parametrize("backend", [None, "aot_eager"])
     @pytest.mark.parametrize(
         ("selection", "transpose"),
@@ -2314,6 +2341,64 @@ class TestSlicing:
                         sum((part * probe).sum() for part, probe in zip(expected, probes)), reference_values
                     ),
                 )
+
+
+class TestPackedMask:
+
+    def test_values(self, device):
+        parts = [torch.randn(n, device=device, dtype=torch.float64, requires_grad=True) for n in (3, 5)]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        masks = [
+            torch.zeros(3, device=device, dtype=torch.bool),
+            torch.tensor([True, False, True, True, False], device=device),
+        ]
+        output = NT(parts, ragged_dims=(0,))[NT(masks, ragged_dims=(0,))]
+        expected = [part[mask] for part, mask in zip(references, masks)]
+        for actual, wanted in zip(output, expected):
+            torch.testing.assert_close(actual, wanted)
+        probe = torch.randn_like(output.concat)
+        torch.testing.assert_close(
+            torch.autograd.grad(output.concat, parts, probe),
+            torch.autograd.grad(torch.cat(expected), references, probe),
+        )
+
+
+class TestPairedIndex:
+    @pytest.mark.parametrize("grouped", [False, True])
+    def test_values(self, device, grouped):
+        lengths = (3, 5)
+        template = NT([torch.empty(length, 3, device=device) for length in lengths], ragged_dims=(0,))
+        if grouped:
+            points = torch.tensor([[[0, -1], [1, 1]], [[0, 2], [-1, 2]]], device=device)
+            tail = slice(1, None)
+        else:
+            points = torch.tensor([[0, -1, 1], [1, -1, 1]], device=device)
+            tail = slice(None)
+        batch = torch.tensor([0, -1], device=device).reshape(2, *([1] * (points.dim() - 1)))
+
+        def select(reference, values, batch, points):
+            return reference.packed_like(values)[batch, points, tail]
+
+        for backend in (None, "aot_eager"):
+            values = torch.arange(sum(lengths) * 3, device=device, dtype=torch.float64).reshape(-1, 3).requires_grad_()
+            reference_values = values.detach().clone().requires_grad_()
+            expected = torch.stack(
+                [part[index][..., tail] for part, index in zip(reference_values.split(lengths), points)]
+            )
+            operation = select if backend is None else torch.compile(select, backend=backend, fullgraph=True)
+            actual = operation(template, values, batch, points)
+            torch.testing.assert_close(actual, expected)
+            probe = torch.arange(actual.numel(), device=device, dtype=actual.dtype).reshape_as(actual) / 7
+            torch.testing.assert_close(
+                torch.autograd.grad(actual, values, probe),
+                torch.autograd.grad(expected, reference_values, probe),
+            )
+
+    @pytest.mark.parametrize("point", [3, -4])
+    def test_bounds(self, point):
+        source = NT([torch.zeros(3, 2), torch.zeros(5, 2)], ragged_dims=(0,))
+        with pytest.raises(IndexError):
+            source[torch.tensor([0, 1]), torch.tensor([point, 0]), :]
 
 
 class TestIndexing:
