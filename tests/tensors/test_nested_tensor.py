@@ -2599,7 +2599,7 @@ class TestIndexing:
 class TestMutationCoherence:
 
     @pytest.mark.parametrize("explicit_leaf", [False, True])
-    def test_shape_assignment_updates_wrapper_gradient_layout(self, explicit_leaf):
+    def test_assignment_gradient(self, explicit_leaf):
         parts = [
             torch.arange(12.0, dtype=torch.float64).reshape(2, 3, 2).requires_grad_(),
             torch.arange(16.0, dtype=torch.float64).reshape(4, 2, 2).requires_grad_(),
@@ -2620,6 +2620,7 @@ class TestMutationCoherence:
             assert_close(gradients[0], torch.zeros_like(parts[0]))
             assert_close(gradients[1], 2 * parts[1])
             assert_close(gradients[2], torch.ones_like(replacement))
+        assert source.stride() == torch.empty(source.shape).stride()
 
     def test_shape_change_preserves_independent_alias_topology(self):
         source = NT([torch.arange(12.0).reshape(2, 3, 2), torch.arange(16.0).reshape(4, 2, 2)], ragged_dims=(0, 1))
@@ -3068,9 +3069,9 @@ class TestStatePreservation:
         with pytest.raises(AttributeError, match="read-only"):
             nested_tensor.device = torch.device("cpu")
 
-    def test_batch_first_mutation_reorients_logical_shape(self):
+    def test_batch_layout(self):
         nested_tensor = NestedTensor(
-            [torch.tensor([[1, 2], [3, 4]]), torch.tensor([[5, 6]])],
+            [torch.tensor([[1, 2], [3, 4], [7, 8]]), torch.tensor([[5, 6]])],
             batch_first=True,
             padding_value=-1,
         )
@@ -3078,12 +3079,14 @@ class TestStatePreservation:
         batch_first_tensor = nested_tensor.tensor
         nested_tensor.batch_first = False
 
-        assert nested_tensor.shape == torch.Size([2, 2, 2])
+        assert nested_tensor.shape == torch.Size([3, 2, 2])
+        assert nested_tensor.stride() == (4, 2, 1)
         assert_close(nested_tensor.tensor, batch_first_tensor.movedim(0, 1))
-        assert_close(nested_tensor.mask, torch.tensor([[True, True], [True, False]]))
+        assert_close(nested_tensor.mask, torch.tensor([[True, True], [True, False], [True, False]]))
 
         nested_tensor.batch_first = True
-        assert nested_tensor.shape == torch.Size([2, 2, 2])
+        assert nested_tensor.shape == torch.Size([2, 3, 2])
+        assert nested_tensor.stride() == (6, 2, 1)
         assert_close(nested_tensor.tensor, batch_first_tensor)
 
     def test_runtime_config_setters_validate_types(self):

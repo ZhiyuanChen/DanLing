@@ -211,6 +211,51 @@ class TestElementwiseOps:
             assert_close(r, op(t))
 
 
+class TestInPlace:
+
+    @pytest.mark.parametrize("axis", [0, 1])
+    def test_broadcast(self, device, axis):
+        operation = torch.ops.aten.add_.Tensor
+        shapes = ((2, 3), (4, 5))
+        parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+        operands = [
+            torch.randn(
+                *(1 if dim == axis else size for dim, size in enumerate(shape)),
+                device=device,
+                dtype=torch.float64,
+                requires_grad=True,
+            )
+            for shape in shapes
+        ]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        reference_operands = [part.detach().clone().requires_grad_() for part in operands]
+        output = NT(parts, ragged_dims=(0, 1)).sin()
+        other = NT(operands, ragged_dims=(1 - axis,)).cos()
+        alias = output.detach()
+        _ = alias.tensor
+
+        assert operation(output, other) is output
+
+        expected = [operation(part.sin(), operand.cos()) for part, operand in zip(references, reference_operands)]
+        torch.testing.assert_close(output.unbind(), expected)
+        torch.testing.assert_close(alias.tensor, output.tensor)
+        probes = [torch.randn_like(part) for part in expected]
+        torch.testing.assert_close(
+            torch.autograd.grad(sum((part * probe).sum() for part, probe in zip(output, probes)), (*parts, *operands)),
+            torch.autograd.grad(
+                sum((part * probe).sum() for part, probe in zip(expected, probes)), (*references, *reference_operands)
+            ),
+        )
+
+    def test_shape(self):
+        source = NT([torch.randn(length, 1) for length in (2, 4)], ragged_dims=(0,))
+        other = NT([torch.randn(length, 3) for length in (2, 4)], ragged_dims=(0,))
+        expected = [part.clone() for part in source]
+        with pytest.raises(RuntimeError, match="shape|broadcast"):
+            torch.ops.aten.add_.Tensor(source, other)
+        torch.testing.assert_close(source.unbind(), expected)
+
+
 class TestIndexingOps:
 
     @pytest.mark.parametrize("dim,start,stop,step", [(-1, -3, -1, 1), (1, 0, 3, 2)])

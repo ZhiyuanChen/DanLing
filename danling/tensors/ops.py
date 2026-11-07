@@ -319,7 +319,10 @@ def _padded_ragged_extent(nt: NestedTensor, element_dim: int) -> int | None:
     if nt._element_shapes is not None:
         return max(int(shape[element_dim]) for shape in nt._element_shapes)
     if _is_compiling() or _is_fake_tensor(nt._offsets):
-        return None
+        from torch.fx.experimental.symbolic_shapes import has_free_unbacked_symbols
+
+        extent = nt.shape[_logical_dim_for_element_dim(nt, element_dim)]
+        return None if has_free_unbacked_symbols(extent) else extent
     return int(nt.shape[_logical_dim_for_element_dim(nt, element_dim)])
 
 
@@ -735,8 +738,10 @@ def _can_broadcast_nested_to(
 
     from torch.fx.experimental.symbolic_shapes import statically_known_true
 
+    # These are layout-only checks. Reading shape from the backing tensor
+    # avoids constructing an autograd projection for metadata inspection.
     for dim in omitted_ragged:
-        source_extent = source.concat.shape[1 + source_static.index(dim)]
+        source_extent = source._packed_values.shape[1 + source_static.index(dim)]
         if statically_known_true(source_extent != 1):
             return False
 
@@ -745,8 +750,8 @@ def _can_broadcast_nested_to(
     if len(remaining_source_static) != len(target_static) or set(remaining_source_static) != set(target_static):
         return False
     for dim in target_static:
-        source_extent = source.concat.shape[1 + source_static.index(dim)]
-        target_extent = target.concat.shape[1 + target_static.index(dim)]
+        source_extent = source._packed_values.shape[1 + source_static.index(dim)]
+        target_extent = target._packed_values.shape[1 + target_static.index(dim)]
         source_is_not_singleton = statically_known_true(source_extent != 1)
         target_is_not_singleton = statically_known_true(target_extent != 1)
         if source_is_not_singleton and (
