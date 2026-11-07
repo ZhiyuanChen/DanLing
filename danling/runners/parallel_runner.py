@@ -284,10 +284,29 @@ class ParallelRunner(TorchRunner):
             mesh_shape=self.topology.mesh_shape,
             mesh_dim_names=self.topology.axis_names,
         )
+        groups = {axis: self.device_mesh.get_group(axis) for axis in self.topology.axis_names}
+        domain_groups = {}
+        for domain, axes in self.topology.domains.items():
+            if domain in groups:
+                continue
+            active = tuple(
+                axis for axis in self.topology.axis_names if axis in axes and self.topology.axis_degree(axis) > 1
+            )
+            if active not in domain_groups:
+                if not active:
+                    group = groups[axes[0]]
+                elif len(active) == 1:
+                    group = groups[active[0]]
+                elif self.topology.domain_degree(domain) == self.world_size:
+                    group = dist.group.WORLD
+                else:
+                    group = self.device_mesh[active]._flatten(mesh_dim_name=domain).get_group()
+                domain_groups[active] = group
+            groups[domain] = domain_groups[active]
         self.parallel = ParallelContext(
             self.topology,
             device_mesh=self.device_mesh,
-            groups={axis: self.device_mesh.get_group(axis) for axis in self.topology.axis_names},
+            groups=groups,
         )
         self.shard_group = self.parallel.group("shard")
         self.replicate_group = self.parallel.group("replicate")
@@ -300,7 +319,11 @@ class ParallelRunner(TorchRunner):
     def _timeout_process_groups(self) -> tuple[Any | None, ...]:
         groups = list(super()._timeout_process_groups())
         if hasattr(self, "parallel"):
-            groups.extend(group for group in self.parallel.groups.values() if group is not None)
+            seen = {id(dist.group.WORLD if group is None else group) for group in groups}
+            for group in self.parallel.groups.values():
+                if group is not None and id(group) not in seen:
+                    groups.append(group)
+                    seen.add(id(group))
         return tuple(groups)
 
     def __post_init__(self):
@@ -653,6 +676,11 @@ class ParallelRunner(TorchRunner):
             The transformed model. If the model defines
             `model.parallelize(parallel)`, that method may mutate in place and
             return `None`.
+
+        Without FSDP, this hook also owns any replicated-parameter gradient
+        synchronization. It may return DDP using an appropriate named domain
+        from `parallel.group(...)`; model-parallel shards must not be reduced
+        as though they were parameter replicas.
 
         Raises:
             TypeError: `model.parallelize` returns a non-module value.
