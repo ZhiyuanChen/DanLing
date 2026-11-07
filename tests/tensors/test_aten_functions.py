@@ -211,6 +211,52 @@ class TestElementwiseOps:
             assert_close(r, op(t))
 
 
+class TestTo:
+
+    @pytest.mark.parametrize(
+        "mode", [torch.enable_grad, torch.no_grad, torch.inference_mode], ids=["grad", "no-grad", "inference"]
+    )
+    @pytest.mark.parametrize(
+        ("method", "dtype", "target"),
+        [
+            pytest.param("bool", torch.bool, torch.bool, id="bool-identity"),
+            pytest.param("to", torch.bool, torch.bool, id="to-identity"),
+            pytest.param("bool", torch.bfloat16, torch.bool, id="bool"),
+            pytest.param("float", torch.bfloat16, torch.float32, id="float"),
+            pytest.param("to", torch.bfloat16, torch.float32, id="to"),
+            pytest.param("aten", torch.bfloat16, torch.float32, id="aten"),
+        ],
+    )
+    def test_dtype(self, device, mode, method, dtype, target):
+        with mode():
+            parts = [
+                torch.arange(length * length, device=device).reshape(length, length).to(dtype) for length in (2, 3)
+            ]
+            if dtype.is_floating_point and torch.is_grad_enabled():
+                parts = [part.requires_grad_() for part in parts]
+            source = NT(parts, ragged_dims=(0, 1)).transpose(1, 2)
+            if method == "aten":
+                result = torch.ops.aten.to.dtype(source, target)
+            elif method == "to":
+                result = source.to(target)
+            else:
+                result = getattr(source, method)()
+            expected = [part.t().to(target) for part in parts]
+            torch.testing.assert_close(result.unbind(), expected)
+            assert result.ragged_dims == source.ragged_dims
+            assert result.packed_dim_order == source.packed_dim_order
+            torch.testing.assert_close(result.element_sizes(), source.element_sizes())
+            if dtype == target:
+                assert result is source
+            if target.is_floating_point and torch.is_grad_enabled():
+                probes = [torch.randn_like(value) for value in expected]
+                actual_gradients = torch.autograd.grad(
+                    sum((value * probe).sum() for value, probe in zip(result, probes)), parts
+                )
+                expected_gradients = torch.autograd.grad(
+                    sum((value * probe).sum() for value, probe in zip(expected, probes)), parts
+                )
+                torch.testing.assert_close(actual_gradients, expected_gradients)
 class TestInPlace:
 
     @pytest.mark.parametrize("axis", [0, 1])
