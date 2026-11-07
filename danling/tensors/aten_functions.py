@@ -381,6 +381,8 @@ ATEN_GLOBAL_REDUCTION_OPS = [
     aten.sum.default,
     aten.any.default,
     aten.all.default,
+    aten._is_all_true.default,
+    aten._is_any_true.default,
     aten.mean.default,
     aten.max.default,
     aten.min.default,
@@ -725,6 +727,15 @@ def prod_dim_reduction(func, args, kwargs):
     return _reduce_non_ragged_packed(source, output, dim_adj, keepdim)
 
 
+@NestedTensorAtenRegistry.implement(aten.count_nonzero.default, compile_safe=True)
+def count_nonzero_default(func, args, kwargs):
+    r"""Share public count semantics with the native optional-axis overload."""
+    from .torch_functions import count_nonzero
+
+    dim = args[1] if len(args) > 1 else kwargs.get("dim")
+    return count_nonzero(args[0], dim=dim)
+
+
 @NestedTensorAtenRegistry.implement(aten.count_nonzero.dim_IntList, compile_safe=True)
 def count_nonzero_dim_reduction(func, args, kwargs):
     r"""Handle ``count_nonzero`` dim reductions on packed values for common dim patterns."""
@@ -972,6 +983,19 @@ def max_min_dim_reduction(func, args, kwargs):
     dim_adj = _translate_dim(source, dim)
     values_dim = _physical_to_values_dim(source, dim_adj)
     if values_dim is None:
+        if (
+            len(source) > 0
+            and source.dtype in (torch.float16, torch.bfloat16, torch.float32, torch.float64)
+            and _has_single_packed_ragged_dim(source, dim_adj)
+        ):
+            if _is_compiling() or _is_fake_tensor(source._physical_shape):
+                torch._assert_async(
+                    torch.all(source._physical_shape[:, dim_adj] > 0),
+                    "max/min(): Expected reduction dim to have non-zero size.",
+                )
+            reduced = _segment_max_min_ragged_dim(source, dim_adj, keepdim, largest=largest)
+            if reduced is not None:
+                return reduced
         return _packed_max_min_reduction(source, (dim_adj,), keepdim, largest=largest)
 
     values, indices = func(source.concat, values_dim, keepdim, **kwargs)
@@ -6168,6 +6192,17 @@ def native_layer_norm_backward(func, args, kwargs):
 # ---------------------------------------------------------------------------
 # Random tensor creation ops — same pattern as empty_like/zeros_like
 # ---------------------------------------------------------------------------
+
+
+@NestedTensorAtenRegistry.implement(aten.multinomial.default)
+def multinomial(func, args, kwargs):
+    r"""Sample static categories independently for every packed probability row."""
+    source = args[0]
+    if source._ragged_dims != (0,) or source.concat.dim() != 2:
+        return per_element_fallback(func, args, kwargs)
+    values = func(source.concat, *args[1:], **kwargs)
+    return _packed_with_static_tail_from_values(source, values)
+
 
 ATEN_RANDOM_CREATION_OPS = [
     aten.rand_like.default,
