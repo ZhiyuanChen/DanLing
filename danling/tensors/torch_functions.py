@@ -1856,7 +1856,7 @@ def feature_alpha_dropout(input: NestedTensor, p: float = 0.5, train: bool = Fal
 
 @NestedTensorFuncRegistry.implement(torch.Tensor.__getitem__, compile_safe=True)
 def getitem(input: Tensor, index):
-    r"""Index a one-dimensional dense lookup table with packed long indices."""
+    r"""Index dense tensors with packed integer lookups or boolean masks."""
     from .aten_functions import per_element_fallback
     from .nested_tensor import NestedTensor
 
@@ -1870,7 +1870,43 @@ def getitem(input: Tensor, index):
     ):
         return nested_index._packed_like_unchecked(input[nested_index.concat])
     indices = list(index) if isinstance(index, tuple) else [index]
+    if (
+        not isinstance(input, NestedTensor)
+        and isinstance(nested_index, NestedTensor)
+        and nested_index.dtype == torch.bool
+    ):
+        op = torch.ops.aten.index.Tensor
+        return NestedTensorAtenRegistry[op](op, (input, indices), {})
     return per_element_fallback(torch.ops.aten.index.Tensor, (input, indices), {})
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.__setitem__, compile_safe=True)
+def setitem(input: Tensor, index, value):
+    r"""Keep packed boolean assignment above native dense autograd."""
+    from .aten_functions import _dense_boolean_index_coordinates
+    from .nested_tensor import NestedTensor
+
+    indices = list(index) if isinstance(index, tuple) else [index]
+    coordinates = _dense_boolean_index_coordinates(input, indices)
+    if coordinates is not None:
+        index = tuple(coordinates)
+        value = value.concat if isinstance(value, NestedTensor) else value
+    with torch._C.DisableTorchFunctionSubclass():
+        return torch.Tensor.__setitem__(input, index, value)
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.index_put_, compile_safe=True)
+def index_put_inplace(input: Tensor, indices, values: Tensor, accumulate: bool = False):
+    r"""Write packed boolean selections with native tensor value gradients."""
+    from .aten_functions import _dense_boolean_index_coordinates
+    from .nested_tensor import NestedTensor
+
+    coordinates = _dense_boolean_index_coordinates(input, indices)
+    if coordinates is not None:
+        indices = coordinates
+        values = values.concat if isinstance(values, NestedTensor) else values
+    with torch._C.DisableTorchFunctionSubclass():
+        return torch.Tensor.index_put_(input, tuple(indices), values, accumulate=accumulate)
 
 
 @NestedTensorFuncRegistry.implement(torch.gather)

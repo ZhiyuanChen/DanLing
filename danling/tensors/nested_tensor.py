@@ -4674,6 +4674,44 @@ class NestedTensor(torch.Tensor):
             selected = selected[(slice(None), *tail_index)]
         return selected
 
+    def _packed_paired_index(self, index: tuple) -> Tensor | None:
+        r"""Select per-sample points through packed rows for paired integer indices."""
+        if (
+            not self.batch_first
+            or self._physical_shape.size(1) != 2
+            or self._ragged_dims != (0,)
+            or self._permutation != (0, 1)
+            or len(index) < 2
+        ):
+            return None
+        batch, points = index[:2]
+        if any(
+            not isinstance(item, Tensor)
+            or isinstance(item, NestedTensor)
+            or item.dtype not in (torch.int32, torch.int64)
+            for item in (batch, points)
+        ) or any(item is not None and not isinstance(item, slice) and type(item) is not int for item in index[2:]):
+            return None
+        values = self.concat
+        if any(item.device.type != "cpu" and item.device != values.device for item in (batch, points)):
+            return None
+        batch, points = torch.broadcast_tensors(
+            batch.to(device=values.device, dtype=torch.long), points.to(device=values.device, dtype=torch.long)
+        )
+        shape = (*batch.shape, values.shape[1])
+        batch = batch.reshape(-1)
+        batch = torch.where(batch < 0, batch + len(self), batch)
+        offsets = self.packed_offsets(device=values.device, dtype=torch.long)
+        lengths = (offsets[1:] - offsets[:-1]).index_select(0, batch)
+        points = points.reshape(-1)
+        points = torch.where(points < 0, points + lengths, points)
+        rows = offsets[:-1].index_select(0, batch) + points
+        # An invalid local point must fail native indexing, rather than read a
+        # neighbouring sample or a padded value.
+        rows = torch.where((points >= 0) & (points < lengths), rows, values.shape[0])
+        result = values.index_select(0, rows).reshape(shape)
+        return result[(slice(None),) * (len(shape) - 1) + index[2:]]
+
     def _packed_physical_slice(self, rest: tuple) -> Self | None:
         r"""Slice packed physical dims when the batch dim is untouched."""
         if not self.batch_first:
@@ -5034,6 +5072,10 @@ class NestedTensor(torch.Tensor):
                 for entry in index
             )
 
+            paired_output = self._packed_paired_index(index)
+            if paired_output is not None:
+                return paired_output
+
             batch_index, *rest = index
 
             symbolic_tensor_metadata = self._packed_sizes is None and (
@@ -5124,6 +5166,14 @@ class NestedTensor(torch.Tensor):
                     "NestedTensor batch length mismatch between self and index: "
                     f"self={len(self)}, index={len(index)}"
                 )
+            if (
+                index.dtype == torch.bool
+                and self.concat.dim() == 1
+                and self._permutation == tuple(range(self._physical_shape.size(1)))
+                and self._has_same_layout(index)
+            ):
+                op = torch.ops.aten.masked_select.default
+                return NestedTensorAtenRegistry[op](op, (self, index), {})
             return self.__class__(
                 [t[i] for t, i in zip(self._storage, index._storage)], **self._meta(include_dtype=True)
             )

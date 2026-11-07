@@ -2051,6 +2051,52 @@ def index_copy(func, args, kwargs):
     return _index_write_like(source, dim, index, src, lambda t, d, i, s: func(t, d, i, s, **kwargs), "index_copy")
 
 
+def _dense_boolean_index_coordinates(source, indices):
+    r"""Map a packed boolean mask to native dense tensor coordinates in logical order."""
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(source, Tensor) or isinstance(source, NestedTensor) or len(indices) != 1:
+        return None
+    mask = indices[0]
+    if not isinstance(mask, NestedTensor) or mask.dtype != torch.bool or not mask.batch_first:
+        return None
+    if source.dim() < mask.dim() or tuple(source.shape[: mask.dim()]) != tuple(mask.shape):
+        raise IndexError(f"Boolean mask shape {tuple(mask.shape)} does not match tensor shape {tuple(source.shape)}")
+    if mask.device.type != "cpu" and mask.device != source.device:
+        raise RuntimeError("Boolean mask must be on CPU or on the same device as the indexed tensor")
+    packed = tuple(index.to(device=source.device) for index in mask.concat.nonzero(as_tuple=True))
+    coordinates = list(mask._packed_dense_index(packed[0], device=source.device))
+    for axis, index in zip(mask._static_dims, packed[1:]):
+        coordinates[axis + 1] = index
+    linear = coordinates[0]
+    for size, index in zip(mask.shape[1:], coordinates[1:]):
+        linear = linear * size + index
+    order = linear.argsort()
+    return tuple(index.index_select(0, order) for index in coordinates)
+
+
+@NestedTensorAtenRegistry.implement(aten.index.Tensor, compile_safe=True)
+def index_tensor(func, args, kwargs):
+    r"""Index dense tensors with packed boolean masks in native logical order."""
+    coordinates = _dense_boolean_index_coordinates(args[0], args[1])
+    if coordinates is not None:
+        return func(args[0], list(coordinates), **kwargs)
+    return per_element_fallback(func, args, kwargs)
+
+
+@NestedTensorAtenRegistry.implement(aten.index_put_.default, compile_safe=True)
+def index_put_inplace(func, args, kwargs):
+    r"""Write through a packed boolean mask using native dense mutation."""
+    coordinates = _dense_boolean_index_coordinates(args[0], args[1])
+    if coordinates is not None:
+        from .nested_tensor import NestedTensor
+
+        if isinstance(args[2], NestedTensor):
+            raise NotImplementedError("Use Tensor.index_put_ for assignment from NestedTensor values")
+        return func(args[0], list(coordinates), *args[2:], **kwargs)
+    return per_element_fallback(func, args, kwargs)
+
+
 def _is_integer_index_tensor(index) -> bool:
     from .nested_tensor import NestedTensor
 
