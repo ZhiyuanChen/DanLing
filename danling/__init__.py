@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .data import to_device
+    from .distributions import Categorical
     from .metrics import (
         METRICS,
         AverageMeter,
@@ -57,6 +58,7 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
+    "Categorical",
     "RunnerConfig",
     "Runner",
     "BaseRunner",
@@ -90,6 +92,7 @@ __all__ = [
 ]
 
 _LAZY_IMPORTS = {
+    "Categorical": (".distributions", "Categorical"),
     "RunnerConfig": (".runners", "RunnerConfig"),
     "Runner": (".runners", "Runner"),
     "BaseRunner": (".runners", "BaseRunner"),
@@ -122,7 +125,7 @@ _LAZY_IMPORTS = {
     "is_json_serializable": (".utils", "is_json_serializable"),
 }
 
-_LAZY_MODULES = frozenset({"data", "metrics", "optim", "runners", "tensors", "utils"})
+_LAZY_MODULES = frozenset({"data", "distributions", "metrics", "optim", "runners", "tensors", "utils"})
 
 
 def __getattr__(name: str) -> Any:

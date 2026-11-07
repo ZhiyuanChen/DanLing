@@ -1523,6 +1523,58 @@ class TestMaskingOps:
 
 class TestReductionOps:
 
+    @pytest.mark.parametrize("case", ["true", "false", "empty"])
+    def test_all_true(self, device, case):
+        lengths = (0, 0) if case == "empty" else (2, 3)
+        parts = [torch.ones(length, 4, dtype=torch.bool, device=device) for length in lengths]
+        if case == "false":
+            parts[0][0, 0] = False
+        source = NT(parts, ragged_dims=(0,))
+        expected = torch.all(torch.cat(parts))
+        for actual in (torch._is_all_true(source), torch.ops.aten._is_all_true.default(source)):
+            torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(torch.ops.aten._is_any_true.default(source), torch.any(torch.cat(parts)))
+
+    @pytest.mark.parametrize("lengths", [(2, 3), (0, 0)])
+    def test_native_count(self, device, lengths):
+        parts = [torch.arange(length * 3, device=device).reshape(length, 3).remainder(2) for length in lengths]
+        source = NT(parts, ragged_dims=(0,))
+        operation = torch.ops.aten.count_nonzero.default
+        torch.testing.assert_close(operation(source), torch.count_nonzero(torch.cat(parts)))
+        for dim in (1, -1):
+            expected = [torch.count_nonzero(part, dim=dim - 1 if dim > 0 else dim) for part in parts]
+            actual = operation(source, dim=dim)
+            if isinstance(actual, NT):
+                torch.testing.assert_close(actual.unbind(), expected)
+            else:
+                torch.testing.assert_close(actual, torch.stack(expected))
+
+    def test_multinomial(self, device):
+        source = NT([torch.ones(length, 3, device=device) for length in (2, 3)], ragged_dims=(0,))
+        generator = torch.Generator(device=device).manual_seed(23)
+        reference_generator = torch.Generator(device=device).manual_seed(23)
+        actual = torch.ops.aten.multinomial.default(source, 2, True, generator=generator)
+        expected = torch.multinomial(source.concat, 2, True, generator=reference_generator)
+        torch.testing.assert_close(actual.concat, expected)
+        assert tuple(part.shape for part in actual.unbind(0)) == ((2, 2), (3, 2))
+        torch.testing.assert_close(generator.get_state(), reference_generator.get_state())
+
+    def test_categorical(self, device):
+        parts = [torch.randn(length, 4, 3, dtype=torch.float64, device=device, requires_grad=True) for length in (2, 3)]
+        distribution = torch.distributions.Categorical(logits=NT(parts, ragged_dims=(0,)), validate_args=True)
+        references = [torch.distributions.Categorical(logits=part, validate_args=True) for part in parts]
+        torch.testing.assert_close(distribution.probs.unbind(0), tuple(reference.probs for reference in references))
+        labels = NT([torch.zeros(part.shape[:-1], dtype=torch.long, device=device) for part in parts], ragged_dims=(0,))
+        output = distribution.log_prob(labels)
+        expected = [reference.log_prob(label) for reference, label in zip(references, labels)]
+        torch.testing.assert_close(output.unbind(0), tuple(expected))
+        gradients = torch.autograd.grad(output.concat.sum(), parts, retain_graph=True)
+        reference_gradients = torch.autograd.grad(sum(value.sum() for value in expected), parts)
+        torch.testing.assert_close(gradients, reference_gradients)
+        invalid = [torch.full_like(part, torch.nan) for part in parts]
+        with pytest.raises(ValueError, match="invalid values"):
+            torch.distributions.Categorical(logits=NT(invalid, ragged_dims=(0,)), validate_args=True)
+
     @pytest.mark.parametrize("operation,data", [(torch.std, [1.0, 2.0, 3.0]), (torch.prod, [0.0, 2.0, 3.0])])
     def test_reductions_preserve_second_derivatives(self, operation, data):
         values = torch.tensor(data, dtype=torch.float64, requires_grad=True)

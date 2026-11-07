@@ -112,6 +112,26 @@ tensor, mask = nested.tensor_mask
 first_item = nested[0]  # Returns the first tensor
 ```
 
+### Categorical sampling
+
+Use `danling.distributions.Categorical` for NestedTensor parameters. It extends
+the PyTorch interface, keeps parameter validation enabled, and samples only real
+probability rows with native `torch.multinomial`. The result retains the current
+ragged layout and uses zero padding for integer category indices. Dense inputs
+use PyTorch's existing sampling implementation. Torch itself is unchanged.
+
+```python
+from danling import Categorical
+
+distribution = Categorical(logits=nested_logits)
+samples = distribution.sample()
+log_prob = distribution.log_prob(samples)
+```
+
+NestedTensor sampling supports no sample prefix, or one sample axis before a
+batch-leading input. More sample axes require a layout with its batch axis
+beyond the currently supported positions zero and one.
+
 ## Architecture
 
 NestedTensor uses a **packed representation** that stores all variable-length elements concatenated into a single contiguous tensor, tracked by offset metadata:
