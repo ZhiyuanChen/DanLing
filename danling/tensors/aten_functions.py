@@ -5123,12 +5123,7 @@ def _packed_to_padded(source: NestedTensor, *, fill_value) -> tuple[Tensor, Tens
 
 def _is_native_attention_layout(nt: NestedTensor) -> bool:
     r"""Return True when attention elements are stored as second-dim ragged packed values."""
-    return (
-        nt._physical_shape.size(1) == 3
-        and nt.concat.dim() == 3
-        and nt._varying_dims == (1,)
-        and nt._static_dims == (0, 2)
-    )
+    return nt._physical_shape.size(1) == 3 and nt._varying_dims == (1,) and nt._static_dims == (0, 2)
 
 
 def _sdpa_pack_native(nt: NestedTensor) -> tuple[Tensor, Tensor, int]:
@@ -7105,6 +7100,42 @@ def _packed_view_shapes(source, shapes, *, ragged_dims=None, batch_first=None, e
         ragged_dims = tuple(axis for axis in range(rank) if len({shape[axis] for shape in shapes}) > 1)
         if not ragged_dims and rank and source._ragged_dims:
             ragged_dims = (0,)
+    ragged_rank = len(source._ragged_dims)
+    static_tail = shapes[0][ragged_rank:]
+    if (
+        source._ragged_dims == tuple(range(ragged_rank)) == ragged_dims
+        and source._permutation == tuple(range(len(original_shapes[0])))
+        and (batch_first is None or batch_first == source.batch_first)
+        and all(size >= 0 for size in static_tail)
+        and all(
+            target[:ragged_rank] == original[:ragged_rank]
+            and target[ragged_rank:] == static_tail
+            and math.prod(original[ragged_rank:]) == math.prod(static_tail)
+            for original, target in zip(original_shapes, shapes)
+        )
+    ):
+        # Keep the packed rows fixed and let the native view validate their
+        # static strides. Its backward can reshape the tangent directly rather
+        # than allocating and copying the whole storage as as_strided does.
+        try:
+            viewed = values.view(values.shape[0], *static_tail)
+        except RuntimeError:
+            pass  # Singleton and empty layouts still use the general stride check below.
+        else:
+            shape, packed_sizes, element_shapes = source._shape_meta_from_components(
+                keep_dims=source._ragged_dims, suffix=static_tail
+            )
+            return _packed_with_shape(
+                source,
+                viewed,
+                shape,
+                source._logical_shape_from_components(keep_dims=source._ragged_dims, suffix=static_tail),
+                permutation=tuple(range(rank)),
+                packed_sizes=packed_sizes,
+                element_shapes=element_shapes,
+                preserve_ragged_offsets=True,
+                force_explicit_ragged_dims=ragged_dims,
+            )
     view_strides = []
     for original, target in zip(original_shapes, shapes):
         strides = [0] * len(original)

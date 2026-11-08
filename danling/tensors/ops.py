@@ -309,7 +309,7 @@ def _logical_dim_for_element_dim(nt: NestedTensor, element_dim: int) -> int:
 
 def _packed_static_extents(nt: NestedTensor) -> tuple[tuple[int, int], ...]:
     r"""Pair every static per-element dim with the extent its packed axis carries."""
-    return tuple((dim, int(nt.concat.shape[1 + axis])) for axis, dim in enumerate(nt._static_dims))
+    return tuple((dim, int(nt._packed_values.shape[1 + axis])) for axis, dim in enumerate(nt._static_dims))
 
 
 def _padded_ragged_extent(nt: NestedTensor, element_dim: int) -> int | None:
@@ -517,7 +517,8 @@ def _resolve_dense_for_values(nt: NestedTensor, other) -> Tensor | None:
     if not isinstance(other, Tensor) or other.dim() == 0:
         return None
 
-    if len(nt) == 0 or nt.concat.dim() == 0:
+    packed_shape = nt._packed_values.shape
+    if len(nt) == 0 or not packed_shape:
         return None
 
     from torch.fx.experimental.symbolic_shapes import statically_known_true
@@ -525,8 +526,8 @@ def _resolve_dense_for_values(nt: NestedTensor, other) -> Tensor | None:
     # A data-derived packed row count cannot be compared with a dense batch
     # extent in Python. Use this shortcut only when equality is already known;
     # otherwise resolve the operand through its logical/sample alignment.
-    packed_match = other.dim() == nt.concat.dim() and all(
-        statically_known_true(dense == packed) for dense, packed in zip(other.shape, nt.concat.shape)
+    packed_match = other.dim() == len(packed_shape) and all(
+        statically_known_true(dense == packed) for dense, packed in zip(other.shape, packed_shape)
     )
     if nt._ragged_dims and packed_match:
         return other
@@ -1620,15 +1621,15 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
     from .aten_functions import _is_fake_tensor, _packed_with_static_tail_from_values, _packed_with_tail_from_values
     from .nested_tensor import NestedTensor
 
-    def _rebuild_from(reference, values):
-        if tuple(values.shape[1:]) != tuple(reference.concat.shape[1:]):
-            if values.dim() == reference.concat.dim():
+    def _rebuild_from(reference, values, reference_values):
+        if values.shape[1:] != reference_values.shape[1:]:
+            if values.dim() == reference_values.dim():
                 return _packed_with_static_tail_from_values(reference, values)
             return _packed_with_tail_from_values(reference, values)
         return reference._packed_like_unchecked(values)
 
-    def _rebuild(values):
-        return _rebuild_from(input, values)
+    def _rebuild(values, reference_values):
+        return _rebuild_from(input, values, reference_values)
 
     # Normalize: input is always the NestedTensor
     cls = type(input) if isinstance(input, NestedTensor) else type(other)
@@ -1651,12 +1652,13 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
         return op(lhs, rhs, *extra_args, **extra_kwargs)
 
     if len(input) == 0 and not isinstance(other, cls):
+        input_values = input.concat
         new_values = (
-            op(other, input.concat, *extra_args, **extra_kwargs)
+            op(other, input_values, *extra_args, **extra_kwargs)
             if reverse
-            else op(input.concat, other, *extra_args, **extra_kwargs)
+            else op(input_values, other, *extra_args, **extra_kwargs)
         )
-        return _rebuild(new_values)
+        return _rebuild(new_values, input_values)
 
     # NT + scalar or 0-d tensor (most common in training)
     if not isinstance(other, Tensor) or other.dim() == 0:
@@ -1678,8 +1680,9 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
     if not isinstance(other, cls):
         resolved = _resolve_dense_for_values(input, other)
         if resolved is not None:
-            lhs, rhs = (resolved, input.concat) if reverse else (input.concat, resolved)
-            return _rebuild(op(lhs, rhs, *extra_args, **extra_kwargs))
+            input_values = input.concat
+            lhs, rhs = (resolved, input_values) if reverse else (input_values, resolved)
+            return _rebuild(op(lhs, rhs, *extra_args, **extra_kwargs), input_values)
 
         # Convert padded tensor to NT if shapes match and no packed-value
         # resolver applies. This is a fallback, not the transformer hot path.
@@ -1693,7 +1696,6 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
             raise ValueError(
                 "NestedTensor batch length mismatch between input and other: " f"input={len(input)}, other={len(other)}"
             )
-        lhs_v, rhs_v = (other.concat, input.concat) if reverse else (input.concat, other.concat)
         if _needs_joint_ragged_broadcast(input, other):
             lhs, rhs = (other, input) if reverse else (input, other)
             return _binary_joint_ragged_broadcast(lhs, rhs, op, extra_args, extra_kwargs)
@@ -1705,19 +1707,22 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
                 continue
             aligned = _broadcast_nested_to_values(target, source, allow_target_static_broadcast=True)
             if aligned is not None:
-                lhs, rhs = (target.concat, aligned) if target_is_input else (aligned, target.concat)
+                target_values = target.concat
+                lhs, rhs = (target_values, aligned) if target_is_input else (aligned, target_values)
                 if reverse:
                     lhs, rhs = rhs, lhs
-                return _rebuild_from(target, op(lhs, rhs, *extra_args, **extra_kwargs))
+                return _rebuild_from(target, op(lhs, rhs, *extra_args, **extra_kwargs), target_values)
         if input._has_same_structure(other):
             if not _empty_same_structure_broadcast_matches(input, other):
                 raise ValueError("Empty NestedTensor operands have incompatible retained logical extents")
+            input_values, other_values = input.concat, other.concat
+            lhs_v, rhs_v = (other_values, input_values) if reverse else (input_values, other_values)
             new_values = op(lhs_v, rhs_v, *extra_args, **extra_kwargs)
             # Fast path (the common elementwise case): the op preserved the static tail, so the ragged
             # metadata is reused as-is -- a single ``torch.Size`` comparison, no rebuild. Only when the
             # trailing (non-ragged) dims actually broadcast -- e.g. (N,1,5,1,3) - (N,K,1,5,3) -> (N,K,5,5,3)
             # -- is the tail re-derived, rather than silently copying the left operand's element shape.
-            if new_values.shape[1:] == input.concat.shape[1:]:
+            if new_values.shape[1:] == input_values.shape[1:]:
                 return input._packed_like_unchecked(new_values)
             return _packed_with_static_tail_from_values(input, new_values)
 
@@ -1726,7 +1731,7 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
         # decide whether that specialization applies. Shared offsets remain a
         # structurally known square; otherwise trace the rectangular product.
         if input._offsets is not other._offsets and (
-            _is_compiling() or _is_fake_tensor(input.concat) or _is_fake_tensor(other.concat)
+            _is_compiling() or _is_fake_tensor(input._packed_values) or _is_fake_tensor(other._packed_values)
         ):
             rectangular = _binary_complementary_singleton_rectangular(input, other, op, extra_args, extra_kwargs)
             if rectangular is not None:
@@ -1771,24 +1776,28 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
 
         aligned_other = _broadcast_nested_to_values(input, other, allow_target_static_broadcast=True)
         if aligned_other is not None:
-            new_values = op(input.concat, aligned_other, *extra_args, **extra_kwargs)
-            return _rebuild_from(input, new_values)
+            input_values = input.concat
+            new_values = op(input_values, aligned_other, *extra_args, **extra_kwargs)
+            return _rebuild_from(input, new_values, input_values)
 
         aligned_input = _broadcast_nested_to_values(other, input, allow_target_static_broadcast=True)
         if aligned_input is not None:
-            new_values = op(aligned_input, other.concat, *extra_args, **extra_kwargs)
-            return _rebuild_from(other, new_values)
+            other_values = other.concat
+            new_values = op(aligned_input, other_values, *extra_args, **extra_kwargs)
+            return _rebuild_from(other, new_values, other_values)
 
         aligned_other = _broadcast_lower_rank_nested_to_values(input, other)
         if aligned_other is not None:
-            lhs, rhs = (aligned_other, input.concat) if reverse else (input.concat, aligned_other)
-            return _rebuild(op(lhs, rhs, *extra_args, **extra_kwargs))
+            input_values = input.concat
+            lhs, rhs = (aligned_other, input_values) if reverse else (input_values, aligned_other)
+            return _rebuild(op(lhs, rhs, *extra_args, **extra_kwargs), input_values)
 
         aligned_input = _broadcast_lower_rank_nested_to_values(other, input)
         if aligned_input is not None:
-            lhs, rhs = (other.concat, aligned_input) if reverse else (aligned_input, other.concat)
+            other_values = other.concat
+            lhs, rhs = (other_values, aligned_input) if reverse else (aligned_input, other_values)
             new_values = op(lhs, rhs, *extra_args, **extra_kwargs)
-            if new_values.shape[1:] == other.concat.shape[1:]:
+            if new_values.shape[1:] == other_values.shape[1:]:
                 return other._packed_like_unchecked(new_values)
             return _packed_with_static_tail_from_values(other, new_values)
 

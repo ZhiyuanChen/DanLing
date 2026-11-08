@@ -158,6 +158,41 @@ class TestElementwiseOps:
             expected = torch.autograd.grad(sum(part.square().sum() for part in parts), parts)
             torch.testing.assert_close(actual, expected)
 
+    @pytest.mark.parametrize("strided", [False, True])
+    def test_static_view(self, device, strided):
+        parts = [
+            torch.randn(length, 12 if strided else 6, device=device, dtype=torch.float64, requires_grad=True)
+            for length in (2, 5)
+        ]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=(0,))
+        if strided:
+            source = source.packed_with_static_tail(source.concat[:, 1::2])
+            elements = [part[:, 1::2] for part in references]
+        else:
+            elements = references
+        expected = tuple(part.view(part.shape[0], 2, 3) for part in elements)
+        target = (*source.shape[:-1], 2, 3)
+        output = torch.ops.aten.view.default(source, target)
+        reshaped = torch.ops.aten.reshape.default(source, target)
+        collapsed = torch.ops.aten.view.default(output, source.shape)
+        torch.testing.assert_close(output.unbind(), expected)
+        torch.testing.assert_close(reshaped.unbind(), expected)
+        torch.testing.assert_close(collapsed.unbind(), tuple(elements))
+        actual = torch.autograd.grad(output.concat.sin().sum(), parts, create_graph=True)
+        reference = torch.autograd.grad(sum(part.sin().sum() for part in expected), references, create_graph=True)
+        torch.testing.assert_close(actual, reference)
+        torch.testing.assert_close(
+            torch.autograd.grad(sum(part.sum() for part in actual), parts),
+            torch.autograd.grad(sum(part.sum() for part in reference), references),
+        )
+        before = source.concat.detach().clone()
+        with torch.no_grad():
+            output.concat.add_(1)
+            torch.testing.assert_close(source.concat, before + 1)
+            source.concat.mul_(2)
+            torch.testing.assert_close(output.concat, (2 * (before + 1)).view(-1, 2, 3))
+
     def test_batch_view(self, device):
         parts = [torch.randn(length, 3, device=device, dtype=torch.float64, requires_grad=True) for length in (2, 5)]
         references = [part.detach().clone().requires_grad_() for part in parts]
