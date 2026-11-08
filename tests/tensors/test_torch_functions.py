@@ -1431,7 +1431,8 @@ class TestFlattenUnflatten:
     def test_flatten_batch_first_false_rows(self):
         grid = NestedTensor([torch.randn(4, 4, 3), torch.randn(6, 6, 3)], batch_first=False)
         rows = grid.flatten(0, 1)
-        assert rows.batch_first is False
+        assert rows.batch_first is True
+        assert rows.shape == torch.Size((10, 6, 3))
         assert [tuple(x.shape) for x in rows] == [(4, 3), (6, 3)] * 4 + [(6, 3)] * 2
         ref = []
         for row in range(6):
@@ -6239,16 +6240,23 @@ class TestBatchRepeat:
         assert type(output) is _RepeatTensor
         assert_close(output, expected)
 
-    def test_compiled_gradient(self):
+    @pytest.mark.parametrize("outside_loss", [False, True])
+    def test_compiled_gradient(self, outside_loss):
         source, values = _repeat_leaf(((2, 3, 4), (1, 4, 4)), ragged_dims=(1, 0))
+
+        def repeat(input_):
+            output = input_.repeat_batch(2)
+            return output if outside_loss else output.concat.square().sum()
+
         compiled = torch.compile(
-            lambda input_: input_.repeat_batch(2).concat.square().sum(),
+            repeat,
             backend="aot_eager",
             fullgraph=True,
             dynamic=True,
         )
 
-        loss = compiled(source)
+        output = compiled(source)
+        loss = output.square().sum() if outside_loss else output
         loss.backward()
 
         assert_close(values.grad, 4 * values)

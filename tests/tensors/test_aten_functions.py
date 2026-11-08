@@ -274,6 +274,68 @@ class TestElementwiseOps:
             assert_close(r, op(t))
 
 
+class TestBatchFlatten:
+
+    @pytest.mark.parametrize("pair", [False, True])
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize(
+        "operation",
+        [
+            lambda x: x.flatten(0, 1),
+            lambda x: torch.flatten(x, 0, 1),
+            lambda x: torch.ops.aten.flatten.using_ints(self=x, start_dim=0, end_dim=1),
+        ],
+        ids=["method", "torch", "native"],
+    )
+    def test_values(self, device, pair, batch_first, operation):
+        parts = [
+            torch.randn(2, n, *((n,) if pair else ()), 3, device=device, dtype=torch.float64, requires_grad=True)
+            for n in (2, 5)
+        ]
+        source = NT(parts, ragged_dims=(1, 2) if pair else (1,), batch_first=batch_first)
+        expected = (
+            [part[index] for part in parts for index in range(2)]
+            if batch_first
+            else [part[index] for index in range(2) for part in parts]
+        )
+        output = operation(source)
+        assert isinstance(output, NT) and output.batch_first
+        assert output.ragged_dims == ((0, 1) if pair else (0,))
+        torch.testing.assert_close(output.unbind(), expected)
+        torch.testing.assert_close(torch.autograd.grad(output.square().sum(), parts), [2 * part for part in parts])
+        with torch.inference_mode():
+            torch.testing.assert_close(operation(source).unbind(), expected)
+        dim = 0 if batch_first else 1
+        assert torch.flatten(source, dim, dim) is source
+        assert torch.ops.aten.flatten.using_ints(source, dim, dim) is source
+
+    @pytest.mark.parametrize("pair", [False, True])
+    @pytest.mark.parametrize("static", [False, True])
+    def test_roundtrip(self, device, pair, static):
+        fake = pytest.importorskip("torch._subclasses.fake_tensor")
+
+        def fold(source):
+            return source.flatten(0, 1).unflatten(0, (2, 2))
+
+        compiled = torch.compile(fold, backend="aot_eager", fullgraph=True, dynamic=True)
+        ragged = (1, 2) if pair else (1,)
+        if not static:
+            ragged = (0, *ragged)
+        for lengths in ((2, 5), (4, 1)):
+            parts = [
+                torch.randn(2, n, *((n,) if pair else ()), 3, device=device, dtype=torch.float64, requires_grad=True)
+                for n in lengths
+            ]
+            source = NT(parts, ragged_dims=ragged)
+            actual = compiled(source)
+            torch.testing.assert_close(actual.unbind(), parts)
+            torch.testing.assert_close(torch.autograd.grad(actual.square().sum(), parts), [2 * part for part in parts])
+        with fake.FakeTensorMode() as mode:
+            actual = fold(mode.from_tensor(source))
+        assert isinstance(actual, NT) and fake.is_fake(actual.concat)
+        assert actual.shape == source.shape
+
+
 class TestTo:
 
     @pytest.mark.parametrize(
