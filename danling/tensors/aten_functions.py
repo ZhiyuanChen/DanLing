@@ -5811,7 +5811,86 @@ def _shape_ragged_offsets(shape: Tensor, ragged_dims: tuple[int, ...], parent_si
     return tuple(offsets)
 
 
-@NestedTensorAtenRegistry.implement(aten.flatten.using_ints)
+def _flatten_batch_rows(source: NestedTensor):
+    r"""Merge the batch and first element axis using packed coordinates."""
+    values = source.concat
+    static_position = next((axis for axis, dim in enumerate(source._static_dims) if dim == 0), None)
+    levels = source._persistent_ragged_offsets() or source._hierarchical_offsets
+    counts = source._physical_shape[:, 0]
+    if static_position is not None:
+        width = values.shape[static_position + 1]
+        batch_size = len(source) * width
+        packed_rows = values.shape[0] * width
+        retained_levels = levels
+    else:
+        width = 1
+        packed_rows = values.shape[0]
+        if source._varying_dims[0] == 0:
+            batch_size = levels[1].numel() - 1 if len(levels) > 1 else packed_rows
+            retained_levels = levels[1:]
+        else:
+            if _is_compiling() or _is_fake_tensor(source._physical_shape):
+                _compile_unsupported("torch.flatten", "a nonleading ragged sample axis needs concrete extents")
+            batch_size = int(counts.sum())
+            retained_levels = ()
+
+    batch = torch.repeat_interleave(torch.arange(len(source), device=counts.device), counts, output_size=batch_size)
+    starts = torch.cat((counts.new_zeros(1), counts.cumsum(0)))
+    sample = torch.arange(batch_size, device=counts.device) - starts[batch]
+    if not source.batch_first:
+        order = (sample * len(source) + batch).argsort()
+        batch, sample = batch[order], sample[order]
+    shape = source._physical_shape[:, 1:].index_select(0, batch)
+    lengths = source._offsets[1:] - source._offsets[:-1]
+    if static_position is None:
+        lengths = lengths.div(counts.clamp_min(1), rounding_mode="floor")
+    lengths = lengths[batch]
+    offsets = torch.cat((lengths.new_zeros(1), lengths.cumsum(0)))
+    output_batch = torch.repeat_interleave(
+        torch.arange(batch_size, device=values.device), lengths.to(values.device), output_size=packed_rows
+    )
+    local = torch.arange(packed_rows, device=values.device) - offsets.to(values.device)[output_batch]
+    old_batch = batch.to(values.device)[output_batch]
+    coordinates = {0: sample.to(values.device)[output_batch]}
+    physical = source._physical_shape.to(values.device)[old_batch]
+    for dim in reversed(source._varying_dims):
+        if dim != 0:
+            extent = physical[:, dim].clamp_min(1)
+            coordinates[dim] = local.remainder(extent)
+            local = local.div(extent, rounding_mode="floor")
+    rows = torch.zeros_like(old_batch)
+    for dim in source._varying_dims:
+        rows = rows * physical[:, dim] + coordinates[dim]
+    rows = rows + source._offsets.to(values.device)[old_batch]
+    output = values[(rows, *(coordinates[0] if dim == 0 else slice(None) for dim in source._static_dims))]
+    ragged = tuple(dim - 1 for dim in source._varying_dims if dim != 0)
+    static = tuple(dim - 1 for dim in source._static_dims if dim != 0)
+    if not ragged:
+        return output.permute(0, *(1 + static.index(dim) for dim in range(shape.shape[1])))
+
+    ragged_offsets: tuple[Tensor, ...] = (offsets,)
+    if len(ragged) > 1:
+        parent_sizes = tuple((level.numel() - 1) * width for level in retained_levels) or None
+        ragged_offsets = _shape_ragged_offsets(shape, ragged, parent_sizes)
+    result = type(source).from_packed(
+        output,
+        offsets,
+        shape,
+        permutation=(*ragged, *static),
+        ragged_dims=ragged,
+        ragged_offsets=ragged_offsets,
+        batch_first=True,
+        padding_value=source.padding_value,
+        mask_value=source.mask_value,
+        pin_memory=source._pin_memory,
+        outer_size=torch.Size((batch_size, *source._max_physical_dims()[1:])),
+        validate=False,
+        materialize_python_metadata=False,
+    )
+    return result._packed_like_unchecked(output, reuse_wrapper=True)
+
+
+@NestedTensorAtenRegistry.implement(aten.flatten.using_ints, compile_safe=True)
 def flatten(func, args, kwargs):
     r"""Flatten static per-element dims on packed values when the batch axis is untouched."""
     source = args[0]
@@ -5836,103 +5915,13 @@ def flatten(func, args, kwargs):
         raise IndexError(f"start_dim and end_dim must be in range [0, {ndims}), got ({start_dim}, {end_dim})")
     if start > end:
         raise ValueError(f"start_dim must be <= end_dim, got ({start_dim}, {end_dim})")
+    if start == end:
+        return source
+    if start == 0 and end == 1:
+        return _flatten_batch_rows(source)
 
     batch_dim = _get_batch_dim(source)
     if start <= batch_dim <= end:
-        if source._ragged_rank >= 2 and start == 0 and end == 1:
-            element_shapes = source._element_shapes
-            if element_shapes is None:
-                element_shapes = tuple(tuple(int(size) for size in shape) for shape in source._original_shapes())
-            row_counts = tuple(int(shape[0]) for shape in element_shapes)
-            if source.batch_first:
-                row_pairs = tuple((batch, row) for batch, count in enumerate(row_counts) for row in range(count))
-            else:
-                max_rows = max(row_counts, default=0)
-                row_pairs = tuple(
-                    (batch, row) for row in range(max_rows) for batch, count in enumerate(row_counts) if row < count
-                )
-            row_shapes = tuple(element_shapes[batch][1:] for batch, _ in row_pairs)
-            rank = int(source._physical_shape.size(1)) - 1
-            if not row_shapes:
-                shape = source._physical_shape.new_empty((0, rank))
-                max_dims = tuple(
-                    int(source._physical_shape[:, dim].max()) if source._physical_shape.size(0) else 0
-                    for dim in range(1, rank + 1)
-                )
-                outer_size = (
-                    torch.Size((0, *max_dims)) if source.batch_first else torch.Size((max_dims[0], 0, *max_dims[1:]))
-                )
-                return type(source).from_packed(
-                    source.concat,
-                    type(source)._offsets_from_sizes((), dtype=source._offsets.dtype),
-                    shape,
-                    permutation=tuple(range(rank)),
-                    batch_first=source.batch_first,
-                    padding_value=source.padding_value,
-                    mask_value=source.mask_value,
-                    pin_memory=source._pin_memory,
-                    outer_size=outer_size,
-                    packed_sizes=(),
-                    element_shapes=(),
-                    validate=False,
-                )
-            if source._permutation[:1] == (0,):
-                row_varying, row_static = type(source)._pack_layout_from_element_shapes(row_shapes)
-                packed_sizes = tuple(type(source)._packed_size_from_shape(shape, row_varying) for shape in row_shapes)
-                offsets = type(source)._offsets_from_sizes(packed_sizes, dtype=source._offsets.dtype)
-                row_block_sizes = []
-                for element_shape in element_shapes:
-                    block = 1
-                    for dim in source._varying_dims:
-                        if dim != 0:
-                            block *= int(element_shape[dim])
-                    row_block_sizes.append(block)
-                if source.batch_first:
-                    values = source.concat
-                else:
-                    starts = [int(source._offsets[batch]) + row * row_block_sizes[batch] for batch, row in row_pairs]
-                    starts_t = torch.tensor(starts, dtype=torch.long, device=source.concat.device)
-                    lengths_t = torch.tensor(packed_sizes, dtype=torch.long, device=source.concat.device)
-                    row_id = torch.repeat_interleave(
-                        torch.arange(len(row_pairs), device=source.concat.device),
-                        lengths_t,
-                    )
-                    prefix = lengths_t.cumsum(0)
-                    local = (
-                        torch.arange(int(prefix[-1]), device=source.concat.device) - prefix[row_id] + lengths_t[row_id]
-                    )
-                    values = source.concat.index_select(0, starts_t[row_id] + local)
-                shape = source._physical_shape.new_tensor(row_shapes)
-                max_dims = tuple(max(shape[dim] for shape in row_shapes) for dim in range(len(row_shapes[0])))
-                outer_size = (
-                    torch.Size((len(row_shapes), *max_dims))
-                    if source.batch_first
-                    else torch.Size((max_dims[0], len(row_shapes), *max_dims[1:]))
-                )
-                return type(source).from_packed(
-                    values,
-                    offsets,
-                    shape,
-                    permutation=row_varying + row_static,
-                    batch_first=source.batch_first,
-                    padding_value=source.padding_value,
-                    mask_value=source.mask_value,
-                    pin_memory=source._pin_memory,
-                    outer_size=outer_size,
-                    packed_sizes=packed_sizes,
-                    element_shapes=row_shapes,
-                    validate=False,
-                )
-            rows: list = []
-            storage = source._storage
-            if source.batch_first:
-                for element in storage:
-                    rows.extend(element.unbind(0))
-            else:
-                max_rows = max((element.shape[0] for element in storage), default=0)
-                for row in range(max_rows):
-                    rows.extend(element[row] for element in storage if row < element.shape[0])
-            return type(source)(rows, **source._meta())
         return func(source.tensor, start_dim, end_dim, **kwargs)
 
     start_adj = _translate_dim(source, start)
@@ -6101,6 +6090,12 @@ def view_dtype(func, args, kwargs):
     with torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False):
         result = _native_view_result(source, _view_dtype(source, dtype))
     return return_and_correct_aliasing(func, (source, dtype), {}, result)
+
+
+@NestedTensorFuncRegistry.implement(aten.flatten.using_ints, compile_safe=True)
+def public_flatten_native(self, start_dim=0, end_dim=-1):
+    r"""Preserve the logical sample axis before native flatten lowers to view."""
+    return flatten(aten.flatten.using_ints, (self, start_dim, end_dim), {})
 
 
 @NestedTensorAtenRegistry.implement(aten.permute.default)
@@ -6597,7 +6592,10 @@ def _unflatten_packed_batch(source: NestedTensor, sizes) -> NestedTensor:
     rank = source._physical_shape.shape[1]
     if members:
         grouped_shapes = source._physical_shape.reshape(groups, members, rank)
-        if not torch.equal(grouped_shapes, grouped_shapes[:, :1].expand_as(grouped_shapes)):
+        matches = torch.all(grouped_shapes == grouped_shapes[:, :1])
+        if _is_compiling() or _is_fake_tensor(source._physical_shape):
+            torch._assert_async(matches, "unflatten requires equal element shapes within each new batch group")
+        elif not bool(matches):
             raise ValueError("unflatten requires equal element shapes within each new batch group")
         base_shape = grouped_shapes[:, 0]
         lengths = (source._offsets[1:] - source._offsets[:-1]).reshape(groups, members)[:, 0]
@@ -6610,7 +6608,11 @@ def _unflatten_packed_batch(source: NestedTensor, sizes) -> NestedTensor:
     shape = torch.cat((base_shape[:, :batch_dim], inserted, base_shape[:, batch_dim:]), dim=1)
     offsets = torch.cat((source._offsets.new_zeros(1), lengths.cumsum(0)))
     values = source.concat
-    total = int(offsets[-1])
+    total = (
+        values.shape[0] // members
+        if members
+        else groups * math.prod(source._max_physical_dims()[dim] for dim in source._ragged_dims)
+    )
     batch = torch.repeat_interleave(
         torch.arange(groups, device=values.device), lengths.to(values.device), output_size=total
     )
@@ -6626,19 +6628,34 @@ def _unflatten_packed_batch(source: NestedTensor, sizes) -> NestedTensor:
     ragged = tuple(translated[dim] for dim in source._ragged_dims)
     static = (*range(batch_dim, batch_dim + shift), *(translated[dim] for dim in source._static_dims))
     outer_size = (*source.shape[:batch_dim], *resolved, *source.shape[batch_dim + 1 :])
-    return type(source).from_packed(
+    ragged_offsets: tuple[Tensor, ...] | None = (offsets,) if ragged else None
+    if len(ragged) > 1:
+        source_levels = source._persistent_ragged_offsets() or source._hierarchical_offsets
+        parent_sizes = (
+            tuple((level.numel() - 1) // members for level in source_levels)
+            if members
+            else tuple(
+                groups * math.prod(source._max_physical_dims()[dim] for dim in source._ragged_dims[:level])
+                for level in range(len(ragged))
+            )
+        )
+        ragged_offsets = _shape_ragged_offsets(shape, ragged, parent_sizes or None)
+    result = type(source).from_packed(
         output,
         offsets,
         shape,
         permutation=(*ragged, *static),
         ragged_dims=ragged,
+        ragged_offsets=ragged_offsets,
         batch_first=source.batch_first,
         padding_value=source.padding_value,
         mask_value=source.mask_value,
         pin_memory=source._pin_memory,
         outer_size=outer_size,
         validate=False,
+        materialize_python_metadata=False,
     )
+    return result._packed_like_unchecked(output, reuse_wrapper=True)
 
 
 @NestedTensorAtenRegistry.implement(aten.expand.default, compile_safe=True)

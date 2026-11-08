@@ -5134,7 +5134,7 @@ def _repeat_interleave_packed_batch(
 
     logical_shape = list(input._logical_shape)
     logical_shape[_get_batch_dim(input)] = expected_output_size
-    return type(input).from_packed(
+    result = type(input).from_packed(
         output_values,
         output_offsets,
         output_shape,
@@ -5149,6 +5149,7 @@ def _repeat_interleave_packed_batch(
         validate=False,
         materialize_python_metadata=False,
     )
+    return result._packed_like_unchecked(output_values, reuse_wrapper=True)
 
 
 @NestedTensorFuncRegistry.implement(torch.repeat_interleave, compile_safe=True)
@@ -6251,7 +6252,7 @@ def unflatten(input: NestedTensor, dim: int, sizes):
     return _aten_unflatten(torch.ops.aten.unflatten.int, (input, dim, sizes), {})
 
 
-@NestedTensorFuncRegistry.implement(torch.ops.aten.unflatten.int)
+@NestedTensorFuncRegistry.implement(torch.ops.aten.unflatten.int, compile_safe=True)
 def _unflatten_native(self, dim, sizes):
     r"""Accept the native operator's ``self`` keyword."""
     return unflatten(self, dim, sizes)
