@@ -203,6 +203,18 @@ class TestFunctionTransforms:
 
 class TestAutogradViewLifetime:
 
+    def test_saved_hooks(self, device):
+        parts = [
+            torch.randn(a, b, 2, device=device, dtype=torch.float64, requires_grad=True) for a, b in ((2, 3), (4, 2))
+        ]
+        source = NT(parts, ragged_dims=(1, 0), batch_first=False)
+        with torch.autograd.graph.saved_tensors_hooks(lambda value: value.detach().clone(), lambda value: value):
+            output = source.sin()
+            gradients = torch.autograd.grad(output.concat.square().sum(), parts, create_graph=True)
+        torch.testing.assert_close(gradients, tuple(2 * value.sin() * value.cos() for value in parts))
+        second = torch.autograd.grad(sum(value.sum() for value in gradients), parts)
+        torch.testing.assert_close(second, tuple(2 * (2 * value).cos() for value in parts))
+
     def test_eager_intermediate_wrapper_receives_gradients_and_hooks(self):
         leaf = torch.arange(1.0, 6.0, requires_grad=True)
         output = NT([leaf[:2], leaf[2:]]).square()
@@ -1533,39 +1545,49 @@ class TestPackedLike:
 
 class TestPackedWithStaticTail:
 
-    def test_packed_with_static_tail_preserves_values_config_and_autograd(self):
+    @pytest.mark.parametrize("same_shape", [False, True])
+    @pytest.mark.parametrize("strided", [False, True])
+    def test_values(self, same_shape, strided):
         reference = NestedTensor(
-            [torch.empty(2), torch.empty(4)],
+            [torch.empty(2, 2, 3), torch.empty(4, 2, 3)] if same_shape else [torch.empty(2), torch.empty(4)],
             batch_first=False,
             padding_value=-2.5,
             mask_value=True,
         )
-        leaf = torch.randn(6, 2, 3, dtype=torch.float64, requires_grad=True)
+        leaf = torch.randn((6, 3, 2) if strided else (6, 2, 3), dtype=torch.float64, requires_grad=True)
         packed_values = leaf.square()
+        if strided:
+            packed_values = packed_values.transpose(1, 2)
 
         output = reference.packed_with_static_tail(packed_values)
         gradient = torch.autograd.grad(output.concat.sum(), leaf)[0]
 
-        assert output.concat.untyped_storage().data_ptr() == packed_values.untyped_storage().data_ptr()
         assert output.concat.stride() == packed_values.stride()
+        assert output.dtype == packed_values.dtype
+        assert output.device == packed_values.device
         assert output.shape == (4, 2, 2, 3)
         assert output.batch_first is False
         assert output.padding_value == -2.5
         assert output.mask_value is True
         assert [tuple(element.shape) for element in output] == [(2, 2, 3), (4, 2, 3)]
         assert_close(gradient, 2 * leaf)
+        expected = packed_values.detach().clone()
+        with torch.no_grad():
+            packed_values.add_(1)
+        assert_close(output.concat, expected + 1)
 
-    def test_packed_with_static_tail_supports_nonleading_ragged_dimension(self):
+    @pytest.mark.parametrize("width", [3, 7])
+    def test_nonleading(self, width):
         reference = NestedTensor(
             [torch.empty(2, 2, 3), torch.empty(2, 4, 3)],
             ragged_dims=(1,),
         )
-        packed_values = torch.randn(6, 2, 7)
+        packed_values = torch.randn(6, 2, width)
 
         output = reference.packed_with_static_tail(packed_values)
 
         assert output.concat is packed_values
-        assert output.shape == (2, 2, 4, 7)
+        assert output.shape == (2, 2, 4, width)
         assert output.ragged_dims == (1,)
         expected = (packed_values[:2].permute(1, 0, 2), packed_values[2:].permute(1, 0, 2))
         for actual, wanted in zip(output, expected):
@@ -1581,13 +1603,17 @@ class TestPackedWithStaticTail:
         assert retailed.ragged_dims == permuted.ragged_dims
         assert retailed.concat.shape == (permuted.concat.shape[0], 5)
         with pytest.raises(ValueError, match="at least one ragged dimension"):
-            scalar.packed_with_static_tail(torch.empty(2, 5))
+            scalar.packed_with_static_tail(torch.empty_like(scalar.concat))
+        unsupported = NT([torch.empty(2, 2, 3), torch.empty(4, 4, 3)], ragged_dims=(0, 1)).permute(0, 3, 1, 2)
+        with pytest.raises(ValueError, match="canonical packed order"):
+            unsupported.packed_with_static_tail(torch.empty_like(unsupported.concat))
         with pytest.raises(TypeError, match="dense Tensor"):
             reference.packed_with_static_tail(object())  # type: ignore[arg-type]
         with pytest.raises(ValueError, match="reference packed length"):
             reference.packed_with_static_tail(torch.empty(5, 3))
 
-    def test_packed_with_static_tail_supports_fake_values(self):
+    @pytest.mark.parametrize("width", [3, 7])
+    def test_fake(self, width):
         fake_tensor_mod = pytest.importorskip("torch._subclasses.fake_tensor")
         reference = NestedTensor(
             [torch.empty(2, 2, 3), torch.empty(2, 4, 3)],
@@ -1595,15 +1621,16 @@ class TestPackedWithStaticTail:
         )
 
         with fake_tensor_mod.FakeTensorMode() as mode:
-            output = mode.from_tensor(reference).packed_with_static_tail(mode.from_tensor(torch.empty(6, 2, 7)))
+            output = mode.from_tensor(reference).packed_with_static_tail(mode.from_tensor(torch.empty(6, 2, width)))
 
         assert fake_tensor_mod.is_fake(output.concat)
-        assert output.shape == (2, 2, 4, 7)
+        assert output.shape == (2, 2, 4, width)
         assert output.ragged_dims == (1,)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
-    def test_packed_with_static_tail_fullgraph_backward(self):
-        reference = NestedTensor([torch.empty(2), torch.empty(4)])
+    @pytest.mark.parametrize("same_shape", [False, True])
+    def test_compiled(self, same_shape):
+        reference = NT([torch.empty(2, 3), torch.empty(4, 3)] if same_shape else [torch.empty(2), torch.empty(4)])
         packed_values = torch.randn(6, 3, requires_grad=True)
         compiled = torch.compile(
             lambda ref, values: ref.packed_with_static_tail(values).concat.square().sum(),
@@ -1616,6 +1643,47 @@ class TestPackedWithStaticTail:
 
         assert_close(loss, packed_values.detach().square().sum())
         assert_close(packed_values.grad, 2 * packed_values)
+
+    @pytest.mark.parametrize("kind", ["subclass", "strided"])
+    def test_reference(self, kind):
+        class Derived(NT):
+            pass
+
+        factory = Derived if kind == "subclass" else NT
+        reference = factory([torch.empty(2, 3), torch.empty(4, 3)], batch_first=False)
+        if kind == "strided":
+            names, metadata = reference.__tensor_flatten__()
+            reference = NT.__tensor_unflatten__(
+                {name: getattr(reference, name) for name in names}, metadata, reference.shape, (3, 12, 1)
+            )
+        values = torch.randn(6, 3, dtype=torch.float64, requires_grad=True)
+        output = reference.packed_with_static_tail(values)
+        assert type(output) is factory
+        assert output.stride() == torch.empty(output.shape).stride()
+        assert_close(output.unbind(1), (values[:2], values[2:]))
+        assert_close(torch.autograd.grad(output.concat.square().sum(), values)[0], 2 * values)
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="pin_memory requires CUDA")
+    @pytest.mark.parametrize(
+        "reference_pinned,values_pinned", [(False, False), (False, True), (True, False), (True, True)]
+    )
+    def test_pinning(self, reference_pinned, values_pinned):
+        reference = NT([torch.empty(2, 3), torch.empty(4, 3)], pin_memory=reference_pinned)
+        values = torch.empty(6, 3, pin_memory=values_pinned).normal_().requires_grad_()
+        output = reference.packed_with_static_tail(values)
+        assert output.concat.is_pinned() is values_pinned
+        assert_close(output.concat, values)
+        assert_close(torch.autograd.grad(output.concat.square().sum(), values)[0], 2 * values)
+        with torch.no_grad():
+            values.add_(1)
+        assert_close(output.concat, values)
+
+    def test_device(self):
+        reference = NT([torch.empty(2, 3), torch.empty(4, 3)])
+        values = torch.empty(6, 3, device="meta")
+        output = reference.packed_with_static_tail(values)
+        assert output.device.type == "meta"
+        assert output.shape == reference.shape
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])

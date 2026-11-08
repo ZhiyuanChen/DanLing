@@ -1555,20 +1555,20 @@ def scaled_dot_product_attention(
         and _is_native_attention_layout(key)
         and _is_native_attention_layout(value)
         and attn_mask is None
-        and query.concat.is_cuda
+        and query.device.type == "cuda"
     ):
         if (
             query.dtype in _LOW_PRECISION_CUDA_DTYPES
             and torch.backends.cuda.flash_sdp_enabled()
-            and max(query.concat.size(-1), value.concat.size(-1)) <= 256
+            and max(query._logical_shape[-1], value._logical_shape[-1]) <= 256
             and _sdpa_causal_alignment_is_safe(query, key, is_causal)
         ):
             if enable_gqa:
-                # Heads are static feature axes of the packed values. Inspect
-                # raw shape metadata rather than creating autograd projections.
-                q_heads = query._packed_values.shape[1]
-                k_heads = key._packed_values.shape[1]
-                v_heads = value._packed_values.shape[1]
+                # The validated layout places the static head count first
+                # among the logical element axes in either batch order.
+                q_heads = query._max_physical_dims()[0]
+                k_heads = key._max_physical_dims()[0]
+                v_heads = value._max_physical_dims()[0]
                 torch._check(k_heads > 0, lambda: "GQA requires a positive number of key/value heads")
                 torch._check(k_heads == v_heads, lambda: "GQA key and value head counts must match")
                 torch._check(q_heads % k_heads == 0, lambda: "GQA query heads must be divisible by key/value heads")
@@ -2179,14 +2179,14 @@ def linear(input: NestedTensor, weight: Tensor, bias: Tensor | None = None) -> N
             positions = _packed_index_positions(source, reference, None, "linear")
             values = source.concat.reshape(-1).index_select(0, positions.reshape(-1)).reshape(packed_shape)
             input = reference._packed_like_unchecked(values)
-    if input.concat.dim() >= 2:
+    if input._static_dims:
         from .aten_functions import _packed_new_last_dim, _packed_with_shape
 
         last_dim = int(input._physical_shape.size(1)) - 1
         values_dim = _physical_to_values_dim(input, last_dim)
         if values_dim is not None:
             packed_values = input.concat
-            values = packed_values.movedim(values_dim, -1)
+            values = packed_values if values_dim == packed_values.dim() - 1 else packed_values.movedim(values_dim, -1)
             new_values = F.linear(values, weight, bias)
             if values_dim == packed_values.dim() - 1:
                 return _packed_new_last_dim(input, new_values, weight.shape[0])
