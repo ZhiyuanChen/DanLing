@@ -5577,6 +5577,48 @@ class TestTernaryAutograd:
 
 class TestPackedStaticTailEinsum:
 
+    @pytest.mark.parametrize(
+        "samples,ragged,batch_first,parameter_prefix",
+        [
+            (2, (1,), True, "batch"),
+            (3, (1,), True, "batch"),
+            (2, (0, 1), True, "batch"),
+            (3, (1,), False, "batch"),
+            (3, (1,), True, "shared"),
+            (3, (1,), False, "shared"),
+            (3, (1,), True, "global"),
+        ],
+    )
+    @pytest.mark.parametrize("equation", ["...ij,...nj->...ni", "...np,...qp->...nq", "...j,...nj->...n"])
+    def test_named_ragged(self, device, samples, ragged, batch_first, parameter_prefix, equation):
+        parts = [
+            torch.randn(samples, length, 3, device=device, dtype=torch.float64, requires_grad=True) for length in (4, 6)
+        ]
+        source = NT(parts, ragged_dims=ragged, batch_first=batch_first)
+        tail = (3,) if equation == "...j,...nj->...n" else ((5, 3) if equation == "...np,...qp->...nq" else (3, 3))
+        prefix = (2, samples) if parameter_prefix == "batch" else ((samples,) if parameter_prefix == "shared" else ())
+        weight = torch.randn(*prefix, *tail, device=device, dtype=torch.float64, requires_grad=True)
+        if not batch_first and parameter_prefix == "batch":
+            weight = weight.movedim(0, 1)
+        reverse = equation == "...np,...qp->...nq"
+        operands = (source, weight) if reverse else (weight, source)
+        expected = []
+        for index, part in enumerate(parts):
+            local = weight.select(0 if batch_first else 1, index) if parameter_prefix == "batch" else weight
+            expected.append(torch.einsum(equation, *((part, local) if reverse else (local, part))))
+        output = torch.einsum(equation, *operands)
+        torch.testing.assert_close(output.unbind(0 if batch_first else 1), expected)
+        assert output.ragged_dims == ragged
+        probes = [torch.randn_like(value) for value in expected]
+        gradients = torch.autograd.grad(
+            sum((value * probe).sum() for value, probe in zip(output.unbind(0 if batch_first else 1), probes)),
+            (*parts, weight),
+        )
+        references = torch.autograd.grad(
+            sum((value * probe).sum() for value, probe in zip(expected, probes)), (*parts, weight)
+        )
+        torch.testing.assert_close(gradients, references)
+
     @pytest.mark.parametrize("batch_first", [True, False])
     def test_dense_shared_prefix_expansion_and_vjps(self, device, batch_first):
         parts = [torch.randn(n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in (1, 4)]

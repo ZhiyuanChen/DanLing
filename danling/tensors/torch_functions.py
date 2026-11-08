@@ -3241,12 +3241,12 @@ def einsum(equation, *operands):
     r"""
     Apply [torch.einsum][] per element of a NestedTensor.
 
-    The equation string describes the dimensions of individual elements
-    (without the batch dimension). At least one operand must be a NestedTensor;
-    plain Tensor operands are broadcast to every element. A leading ellipsis retained by an
-    explicit output also supports native packed contractions over named static-tail axes. That
-    path preserves ragged row order and every logical static-prefix dimension inside
-    the ellipsis, with shared dense static-tail parameters remaining ordinary operands.
+    Equations can describe individual samples with shared dense parameters, or retain
+    logical batch axes in an ellipsis. A dense operand spelling out the complete logical
+    ellipsis prefix is read at the corresponding batch and ragged coordinates; shorter
+    per-element prefixes remain shared across samples. Packed contractions support named
+    static tails and leading named ragged axes retained by an explicit output, preserving
+    ragged row order and logical static-prefix dimensions.
     """
     from .nested_tensor import NestedTensor
 
@@ -3521,6 +3521,9 @@ def _einsum_packed_fastpath(equation: str, operands: tuple):
     result = _einsum_static_tail(equation, operands)
     if result is not None:
         return result
+    result = _einsum_retained_ragged(equation, operands)
+    if result is not None:
+        return result
     if equation == "bli,bli->bl":
         return _einsum_bli_bli_to_bl(*operands)
     if equation == "blqp,blyq->blyp":
@@ -3532,6 +3535,55 @@ def _einsum_packed_fastpath(equation: str, operands: tuple):
     if equation == "bhl,bhlv->bhv":
         return _einsum_bhl_bhlv_to_bhv(*operands)
     return None
+
+
+def _einsum_retained_ragged(equation: str, operands: tuple):
+    r"""Move retained leading named ragged axes into the common packed ellipsis."""
+    from .nested_tensor import NestedTensor
+
+    if equation.count("->") != 1:
+        return None
+    inputs, output = equation.split("->")
+    terms = inputs.split(",")
+    if len(terms) != len(operands) or not output.startswith("..."):
+        return None
+    ref_index = next((index for index, value in enumerate(operands) if isinstance(value, NestedTensor)), None)
+    if ref_index is None or not terms[ref_index].startswith("..."):
+        return None
+    ref = operands[ref_index]
+    names = terms[ref_index][3:]
+    prefix_rank = int(ref._physical_shape.size(1)) - len(names)
+    if prefix_rank < 0 or _get_batch_dim(ref) >= prefix_rank + 1:
+        return None
+    retained = "".join(name for axis, name in enumerate(names, start=prefix_rank) if axis in ref.ragged_dims)
+    if (
+        not retained
+        or len(set(retained)) != len(retained)
+        or not names.startswith(retained)
+        or not output[3:].startswith(retained)
+    ):
+        return None
+    rewritten, packed_operands = [], []
+    for term, operand in zip(terms, operands):
+        names = term[3:] if term.startswith("...") else term
+        present = "".join(name for name in retained if name in names)
+        if not names.startswith(present) or any(names.count(name) != 1 for name in present):
+            return None
+        if isinstance(operand, NestedTensor):
+            if not term.startswith("...") or present != retained:
+                return None
+        elif isinstance(operand, Tensor):
+            dense_prefix = operand.dim() - len(names)
+            if dense_prefix < 0 or (not term.startswith("...") and dense_prefix):
+                return None
+            for axis, name in enumerate(retained, start=dense_prefix):
+                if name not in present:
+                    operand = operand.unsqueeze(axis)
+        else:
+            return None
+        rewritten.append("..." + names[len(present) :])
+        packed_operands.append(operand)
+    return _einsum_static_tail(",".join(rewritten) + "->..." + output[3 + len(retained) :], tuple(packed_operands))
 
 
 def _is_standard_rowwise_einsum_pair(lhs, rhs, *, rank: int) -> bool:
