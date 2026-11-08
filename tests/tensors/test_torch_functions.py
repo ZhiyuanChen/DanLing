@@ -7885,6 +7885,44 @@ class TestSplitFamily:
 
 class TestUnbind:
 
+    @pytest.mark.parametrize(
+        "entry,ragged,batch_first,patterns",
+        [
+            ("torch", (1,), True, (((1, 3), (1, 5)), ((1, 0), (1, 1)))),
+            ("method", (0, 1), False, (((2, 3, 2), (4, 1, 2)), ((0, 2, 2), (1, 0, 2)))),
+            ("native", (1, 0), True, (((3, 2, 2), (1, 4, 2)), ((2, 0, 2), (1, 1, 2)))),
+        ],
+        ids=["torch-trailing", "method-multi", "native-permuted"],
+    )
+    def test_batch(self, device, entry, ragged, batch_first, patterns):
+        dim = 0 if batch_first else 1
+
+        def unbind(source):
+            if entry == "torch":
+                return torch.unbind(source, dim)
+            if entry == "method":
+                return source.unbind(dim)
+            return torch.ops.aten.unbind.int(self=source, dim=dim)
+
+        torch.compiler.reset()
+        compiled = torch.compile(unbind, backend="aot_eager", fullgraph=True, dynamic=True)
+        try:
+            for shapes in patterns:
+                parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+                references = [part.detach().clone().requires_grad_() for part in parts]
+                source = NT(parts, ragged_dims=ragged, batch_first=batch_first)
+                actual = compiled(source)
+                assert len(actual) == len(parts)
+                assert all(isinstance(part, torch.Tensor) and not isinstance(part, NT) for part in actual)
+                torch.testing.assert_close(actual, tuple(references))
+                gradients = torch.autograd.grad(sum(part.square().sum() for part in actual), parts)
+                reference_gradients = torch.autograd.grad(sum(part.square().sum() for part in references), references)
+                torch.testing.assert_close(gradients, reference_gradients)
+                with torch.inference_mode():
+                    torch.testing.assert_close(compiled(source), tuple(references))
+        finally:
+            torch.compiler.reset()
+
     def test_batch_and_static_dimensions(self):
         elements = _element_values([(3, 4), (5, 4), (2, 4)])
         nested = NT(elements, ragged_dims=(0,))

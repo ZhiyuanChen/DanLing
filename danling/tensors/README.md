@@ -356,6 +356,16 @@ elementwise operations, static-tail broadcasting, and static-tail
 normalization. Batch-first single-ragged-axis slices support per-sample bounds and positive
 steps; compiling their data-dependent output lengths requires
 `torch._dynamo.config.capture_dynamic_output_shape_ops = True`.
+Fixed sample indices such as `nt[0]` and `nt[-1]`, and batch-axis `select`
+and `unbind`, reconstruct dense views directly from tensor-backed metadata
+under compilation. Python iteration and `tuple(nt)` also support batch-first
+layouts. On PyTorch 2.13, Dynamo treats symbolic Python indices and iteration
+as operations on logical dimension zero; for `batch_first=False`, use the
+explicit batch-axis operations `nt.select(1, index)` and `nt.unbind(1)`.
+Dynamic reconstruction with explicit `ragged_dims` also supports symbolic
+element dimensions in compiled code. The constructor retains tensor-backed
+shape tables and row splits, so the rebuilt tensor can cross graph boundaries
+without requiring concrete Python element sizes.
 Other tensor-backed view/index remapping, padding,
 `broadcast_tensors`, global-query `einsum`, and ragged-dimension softmax remain
 staged; these paths raise an explicit compile error instead of materializing

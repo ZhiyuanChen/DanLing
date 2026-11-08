@@ -1501,7 +1501,6 @@ def _binary_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor, op, ext
         else:
             ragged_dims = tuple(sorted(lhs_ragged | rhs_ragged))
     rank = lhs._physical_shape.size(1)
-    static_dims = tuple(dim for dim in range(rank) if dim not in ragged_dims)
     lhs_shape, rhs_shape = lhs._physical_shape, rhs._physical_shape
     compatible = (lhs_shape == rhs_shape) | (lhs_shape == 1) | (rhs_shape == 1)
     torch._assert_async(compatible.all(), "NestedTensor per-element shapes are not broadcast-compatible")
@@ -1525,6 +1524,7 @@ def _binary_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor, op, ext
             levels = type(lhs)._hierarchical_level_sizes_from_element_shapes(element_shapes, ragged_dims)
             known_ragged_offsets = tuple(offsets.new_tensor((0, *accumulate(widths))) for widths in levels)
     rows = sum(packed_sizes) if packed_sizes is not None else _ragged_reduction_size_binding(counts).shape[0]
+    static_dims = tuple(dim for dim in range(rank) if dim not in ragged_dims)
 
     device = lhs.concat.device
     counts_device = counts.to(device=device)

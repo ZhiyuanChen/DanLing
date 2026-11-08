@@ -53,6 +53,7 @@ from torch.nn import functional as F
 
 from .aten_functions import (
     ATEN_INPLACE_BINARY_OPS,
+    _batch_dim_compile_safe,
     _dtype_view_compile_safe,
 )
 from .ops import (
@@ -1732,7 +1733,7 @@ def stack(*args, **kwargs):
     return NestedTensor(storage, **state)
 
 
-@NestedTensorFuncRegistry.implement(torch.unbind)
+@NestedTensorFuncRegistry.implement(torch.unbind, compile_safe=True, compile_guard=_batch_dim_compile_safe)
 def unbind(input: NestedTensor, dim: int = 0):
     r"""
     Removes a tensor dimension.
@@ -1780,7 +1781,7 @@ def unbind(input: NestedTensor, dim: int = 0):
     return [_packed_without_dim(input, element_dim, values) for values in input.concat.unbind(values_dim)]
 
 
-@NestedTensorFuncRegistry.implement(torch.ops.aten.unbind.int)
+@NestedTensorFuncRegistry.implement(torch.ops.aten.unbind.int, compile_safe=True, compile_guard=_batch_dim_compile_safe)
 def _unbind_native(self, dim=0):
     r"""Preserve packed samples for the native operator's ``self`` keyword."""
     return tuple(unbind(self, dim))

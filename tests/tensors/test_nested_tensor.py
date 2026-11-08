@@ -1005,6 +1005,46 @@ class TestComparison:
 
 class TestConstruction:
 
+    @pytest.mark.parametrize("fullgraph", [False, True])
+    @pytest.mark.parametrize(
+        "ragged_dims,batch_first,patterns",
+        [
+            ((0, 1), True, (((1, 3), (1, 5)), ((2, 3), (4, 1)), ((0, 2), (1, 0)))),
+            ((1, 0), False, (((2, 3, 2), (3, 4, 2)), ((1, 0, 2), (0, 1, 2)))),
+            ((1,), True, (((2, 3, 2), (2, 5, 2)), ((2, 0, 2), (2, 1, 2)))),
+        ],
+        ids=["multi", "permuted", "trailing"],
+    )
+    def test_dynamic_rebuild(self, device, fullgraph, ragged_dims, batch_first, patterns):
+        def rebuild(source):
+            return NT(
+                [part.sin() for part in source],
+                ragged_dims=ragged_dims,
+                batch_first=batch_first,
+                padding_value=-2,
+            )
+
+        torch.compiler.reset()
+        compiled = torch.compile(rebuild, backend="aot_eager", fullgraph=fullgraph, dynamic=True)
+        try:
+            for shapes in patterns:
+                parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+                source = NT(parts, ragged_dims=ragged_dims)
+                expected = tuple(part.sin() for part in parts)
+                actual = compiled(source)
+                torch.testing.assert_close(actual.unbind(0 if batch_first else 1), expected)
+                assert actual.ragged_dims == ragged_dims
+                assert actual.batch_first is batch_first
+                assert actual.padding_value == -2
+                assert actual.element_sizes().tolist() == [list(shape) for shape in shapes]
+                gradients = torch.autograd.grad(actual.concat.square().sum(), parts)
+                torch.testing.assert_close(gradients, tuple(2 * part.sin() * part.cos() for part in parts))
+                with torch.inference_mode():
+                    actual = compiled(source)
+                    torch.testing.assert_close(actual.unbind(0 if batch_first else 1), expected)
+        finally:
+            torch.compiler.reset()
+
     def test_invalid_inputs_raise(self):
         nested = NestedTensor([[2, 3, 4], [5, 6]])
         with pytest.raises(ValueError):
@@ -2446,6 +2486,63 @@ class TestPairedIndex:
 
 
 class TestIndexing:
+
+    @pytest.mark.parametrize(
+        "entry,index,ragged,batch_first,patterns",
+        [
+            ("int", 0, (1,), True, (((1, 3), (1, 5)), ((1, 0), (1, 1)))),
+            ("int", -1, (0,), False, (((2, 3), (4, 3)), ((0, 3), (1, 3)))),
+            ("tuple-int", 0, (0, 1), True, (((2, 3, 2), (4, 1, 2)), ((0, 2, 2), (1, 0, 2)))),
+            ("tuple-int", -1, (1, 0), False, (((3, 2, 2), (1, 4, 2)), ((2, 0, 2), (1, 1, 2)))),
+            ("iterate", 0, (0,), True, (((2, 3), (5, 3)), ((0, 3), (1, 3)))),
+            ("iterate", 0, (0, 1), True, (((1, 3, 2), (2, 4, 2)), ((0, 2, 2), (1, 1, 2)))),
+        ],
+        ids=["first-trailing", "last-leading", "first-multi", "last-permuted", "iterate-leading", "iterate-multi"],
+    )
+    def test_samples(self, device, entry, index, ragged, batch_first, patterns):
+        fake_tensor = pytest.importorskip("torch._subclasses.fake_tensor")
+
+        select = {
+            ("int", 0): lambda source: source[0],
+            ("int", -1): lambda source: source[-1],
+            ("tuple-int", 0): lambda source: source[0, ...],
+            ("tuple-int", -1): lambda source: source[-1, ...],
+            ("iterate", 0): lambda source: tuple(source),
+        }[entry, index]
+
+        torch.compiler.reset()
+        compiled = torch.compile(select, backend="aot_eager", fullgraph=True, dynamic=True)
+        try:
+            for shapes in patterns:
+                parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+                references = [part.detach().clone().requires_grad_() for part in parts]
+                source = NT(parts, ragged_dims=ragged, batch_first=batch_first)
+                actual = compiled(source)
+                expected = tuple(references) if entry == "iterate" else references[index]
+                torch.testing.assert_close(actual, expected)
+                outputs = actual if entry == "iterate" else (actual,)
+                expected_outputs = expected if entry == "iterate" else (expected,)
+                assert all(isinstance(part, torch.Tensor) and not isinstance(part, NT) for part in outputs)
+                gradients = torch.autograd.grad(
+                    sum(part.square().sum() for part in outputs), parts, allow_unused=True, materialize_grads=True
+                )
+                reference_gradients = torch.autograd.grad(
+                    sum(part.square().sum() for part in expected_outputs),
+                    references,
+                    allow_unused=True,
+                    materialize_grads=True,
+                )
+                torch.testing.assert_close(gradients, reference_gradients)
+                with torch.inference_mode():
+                    torch.testing.assert_close(compiled(source), expected)
+            with torch.no_grad(), fake_tensor.FakeTensorMode() as mode:
+                actual = select(mode.from_tensor(source))
+            outputs = actual if entry == "iterate" else (actual,)
+            for part, reference in zip(outputs, expected_outputs):
+                assert fake_tensor.is_fake(part) and not isinstance(part, NT)
+                assert part.shape == reference.shape
+        finally:
+            torch.compiler.reset()
 
     @pytest.mark.parametrize("position", [0, -1])
     def test_static_tail_integer_index_preserves_values_and_vjp(self, position):

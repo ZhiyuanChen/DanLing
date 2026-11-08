@@ -148,6 +148,24 @@ def _validate_concrete_square_lengths(lengths: Tensor) -> None:
         raise ValueError("the cumulative sum of squared lengths must fit in torch.int64")
 
 
+@torch.compiler.allow_in_graph
+def _layout_scalar(value: Tensor) -> int:
+    r"""Read a CPU layout scalar without breaking the surrounding packed graph."""
+    from torch._subclasses.fake_tensor import maybe_get_fake_mode
+
+    mode = maybe_get_fake_mode(value)
+    if mode is None or mode.shape_env is None or mode.shape_env.allow_scalar_outputs:
+        return cast(int, value.item())
+    # Fake propagation needs a symbolic scalar even in a partial compile. The
+    # opt-in belongs to this metadata read, not the user's Dynamo configuration.
+    allowed = mode.allow_scalar_outputs
+    try:
+        mode.allow_scalar_outputs = True
+        return cast(int, value.item())
+    finally:
+        mode.allow_scalar_outputs = allowed
+
+
 @torch.library.custom_op("danling::_metadata_tensors_equal", mutates_args=())
 def _metadata_tensors_equal(lhs: Tensor, rhs: Tensor) -> Tensor:
     r"""Compare metadata tensors opaquely, including shape and values."""
@@ -422,6 +440,66 @@ class NestedTensor(torch.Tensor):
         # Determine dtype/device from validated tensors or fallbacks
         out_dtype = validated[0].dtype if validated else (dtype or torch.get_default_dtype())
         out_device = validated[0].device if validated else (device or torch.device("cpu"))
+
+        if _is_compiling() and validated and ragged_dims and not _lenient_layout:
+            rank = validated[0].dim()
+            varying_dims = cls._normalize_ragged_dims(ragged_dims, rank)
+            static_dims = tuple(dim for dim in range(rank) if dim not in varying_dims)
+            permutation = varying_dims + static_dims
+            symbolic_shapes = [tensor.shape for tensor in validated]
+            for shape in symbolic_shapes[1:]:
+                for dim in static_dims:
+                    torch._check(shape[dim] == symbolic_shapes[0][dim])
+            packed = [
+                tensor.permute(permutation).reshape(
+                    math.prod([shape[dim] for dim in varying_dims]), *(shape[dim] for dim in static_dims)
+                )
+                for tensor, shape in zip(validated, symbolic_shapes)
+            ]
+            values = cls._maybe_pin_values(torch.cat(packed, dim=0), pin_memory)
+            shape_tensor = torch.stack(
+                [
+                    torch.stack([torch.scalar_tensor(size, dtype=torch.long, device="cpu") for size in shape])
+                    for shape in symbolic_shapes
+                ]
+            )
+            counts = shape_tensor[:, list(varying_dims)].prod(1)
+            offsets = cls._offsets_from_sizes(counts)
+            level_offsets = []
+            for level, dim in enumerate(varying_dims):
+                widths = torch.cat(
+                    [
+                        torch.full(
+                            (math.prod([shape[axis] for axis in varying_dims[:level]]),),
+                            shape[dim],
+                            dtype=torch.long,
+                            device="cpu",
+                        )
+                        for shape in symbolic_shapes
+                    ]
+                )
+                level_offsets.append(torch.cat((widths.new_zeros(1), widths.cumsum(0))))
+            maxima = list(symbolic_shapes[0])
+            for shape in symbolic_shapes[1:]:
+                maxima = [torch.sym_max(left, right) for left, right in zip(maxima, shape)]
+            maxima.insert(0 if batch_first else 1, len(validated))
+            result = cls.from_packed(
+                values,
+                offsets,
+                shape_tensor,
+                permutation=permutation,
+                ragged_dims=varying_dims,
+                ragged_offsets=tuple(level_offsets),
+                outer_size=tuple(maxima),
+                batch_first=batch_first,
+                padding_value=float(padding_value),
+                mask_value=mask_value,
+                pin_memory=pin_memory,
+                validate=False,
+                materialize_python_metadata=False,
+                mark_dynamic=False,
+            )
+            return result._packed_like_unchecked(values, reuse_wrapper=True)
 
         if ragged_dims is not None and _lenient_layout:
             # A rebuild from per-element results carries its source's declaration only where the
@@ -2160,6 +2238,55 @@ class NestedTensor(torch.Tensor):
     # Layout & Metadata Helpers
     # ------------------------------------------------------------------
 
+    def _packed_sample(self, index: int, values: Tensor | None = None) -> Tensor:
+        r"""View one sample using packed spans, keeping data-derived extents symbolic."""
+        index = operator.index(index)
+        size = len(self)
+        if index < 0:
+            index += size
+        if index < 0 or index >= size:
+            raise IndexError(f"NestedTensor batch index {index} is out of range for batch size {size}")
+        if values is None:
+            values = self.concat
+        permutation = self._permutation
+        ragged_rank = len(self._ragged_dims)
+        if ragged_rank == 0:
+            output = values.select(0, index)
+        else:
+            extents = []
+            if ragged_rank > 1:
+                for dim in permutation[:ragged_rank]:
+                    extent = (
+                        self._element_shapes[index][dim]
+                        if self._element_shapes is not None
+                        else _layout_scalar(self._physical_shape[index, dim])
+                    )
+                    torch._check_is_size(extent)
+                    extents.append(extent)
+                length = math.prod(extents)
+                torch._assert_async(self._offsets[index + 1] - self._offsets[index] == length)
+            if self._packed_sizes is not None:
+                start = sum(self._packed_sizes[:index])
+                if ragged_rank == 1:
+                    length = self._packed_sizes[index]
+            else:
+                start = _layout_scalar(self._offsets[index])
+                if ragged_rank == 1:
+                    length = _layout_scalar(self._offsets[index + 1] - self._offsets[index])
+                torch._check_is_size(start)
+                torch._check_is_size(length)
+                torch._check(start <= values.shape[0])
+                # Narrow checks the endpoint directly; separate bounds do not
+                # propagate through products of symbolic ragged extents.
+                torch._check(start + length >= 0)
+                torch._check(start + length <= values.shape[0])
+            output = values.narrow(0, start, length)
+            if ragged_rank > 1:
+                output = output.view(*extents, *values.shape[1:])
+        if permutation != tuple(range(len(permutation))):
+            return output.permute(type(self)._inverse_permutation(permutation))
+        return output
+
     def _unpack(self) -> tuple[Tensor, ...]:
         r"""Reconstruct individual tensors from packed representation."""
         _check_execution_guard(_ExecutionGuardKind.STORAGE_MAP, "NestedTensor._unpack")
@@ -2168,9 +2295,10 @@ class NestedTensor(torch.Tensor):
             return ()
 
         packed_sizes = self._packed_sizes
+        if packed_sizes is None and (_is_compiling() or _is_fake_tensor(self._offsets)):
+            values = self.concat
+            return tuple(self._packed_sample(index, values) for index in range(batch_size))
         if packed_sizes is None:
-            if _is_fake_tensor(self._offsets):
-                raise RuntimeError("NestedTensor packed sizes are unavailable for this instance.")
             packed_sizes = tuple(int(size) for size in (self._offsets[1:] - self._offsets[:-1]).tolist())
 
         element_shapes = self._element_shapes
@@ -2956,7 +3084,7 @@ class NestedTensor(torch.Tensor):
 
     @property
     def _storage(self) -> tuple[Tensor, ...]:
-        if not self._can_cache_materialized_views():
+        if _is_compiling() or not self._can_cache_materialized_views():
             return self._unpack()
         cached = self._cached_storage
         if cached is None or self._storage_cache_dropped_grad(cached):
@@ -5044,7 +5172,9 @@ class NestedTensor(torch.Tensor):
 
     def __getitem__(self, index: _Index | tuple[_Index, ...]) -> Tensor | NestedTensor:
         r"""Retrieve element(s) by index, slice, list, tuple, or tensor mask."""
-        if isinstance(index, int):
+        if isinstance(index, (int, torch.SymInt)):
+            if self._packed_sizes is None and (_is_compiling() or _is_fake_tensor(self._offsets)):
+                return self._packed_sample(index)
             return self._storage[index]
         if isinstance(index, (slice, list)):
             if isinstance(index, list) and index and all(isinstance(i, bool) for i in index):
@@ -5124,8 +5254,8 @@ class NestedTensor(torch.Tensor):
                     raise IndexError(f"Boolean index has length {len(batch_index)} but batch size is {len(self)}")
                 batch_index = [i for i, flag in enumerate(batch_index) if flag]
 
-            if isinstance(batch_index, int):
-                tensor = self._storage[batch_index]
+            if isinstance(batch_index, (int, torch.SymInt)):
+                tensor = self._packed_sample(batch_index) if symbolic_tensor_metadata else self._storage[batch_index]
                 if rest:
                     return tensor[tuple(rest)]
                 return tensor
@@ -6307,7 +6437,7 @@ class _PackedLikeAutograd(torch.autograd.Function):
     @staticmethod
     def forward(packed_values: Tensor, structure: _PackedStructureReference) -> NestedTensor:
         reference = structure.value
-        max_length_binding = vars(reference).get("_compile_max_length_binding")
+        max_length_binding = getattr(reference, "_compile_max_length_binding", None)
         result = reference if structure.reuse_wrapper else reference._packed_like_unchecked_raw(packed_values)
         if structure.logical_input:
             object.__setattr__(result, "_logical_input", True)
@@ -6471,7 +6601,7 @@ class _PackedValuesAutograd(torch.autograd.Function):
         # Retain topology without owning activation storage.
         values = torch.empty((), device="meta", dtype=output.dtype).expand(output.shape)
         ctx.layout = layout._packed_like_unchecked_raw(values)
-        ctx.logical_input = vars(layout).get("_logical_input", False)
+        ctx.logical_input = getattr(layout, "_logical_input", False)
 
     @staticmethod
     def jvp(ctx, input_tangent):

@@ -1045,6 +1045,51 @@ class TestNestedViewAlignment:
 
 class TestCompile:
 
+    @pytest.mark.parametrize("fullgraph", [False, True])
+    @pytest.mark.parametrize("boolean", [False, True], ids=["values", "masks"])
+    def test_joint_masks(self, device, fullgraph, boolean):
+        operation = torch.bitwise_and if boolean else torch.mul
+
+        def combine(atoms, residues, template):
+            valid = operation(template[..., None, None], residues[..., None, :, None])
+            return operation(atoms, valid)
+
+        torch.compiler.reset()
+        compiled = torch.compile(combine, backend="aot_eager", fullgraph=fullgraph, dynamic=True)
+        try:
+            for lengths in ((3, 5), (0, 1)):
+                if boolean:
+                    atoms = [torch.rand(1, length, 4, device=device) > 0.4 for length in lengths]
+                    residues = [torch.rand(length, device=device) > 0.4 for length in lengths]
+                    template = torch.tensor([[True], [False]], device=device)
+                else:
+                    atoms = [
+                        torch.randn(1, length, 4, device=device, dtype=torch.float64, requires_grad=True)
+                        for length in lengths
+                    ]
+                    residues = [
+                        torch.randn(length, device=device, dtype=torch.float64, requires_grad=True)
+                        for length in lengths
+                    ]
+                    template = torch.randn(2, 1, device=device, dtype=torch.float64, requires_grad=True)
+                expected = tuple(
+                    operation(atom, operation(template[index, :, None, None], residue[None, :, None]))
+                    for index, (atom, residue) in enumerate(zip(atoms, residues))
+                )
+                nested_atoms, nested_residues = NT(atoms), NT(residues)
+                with torch.inference_mode(boolean):
+                    actual = compiled(nested_atoms, nested_residues, template)
+                torch.testing.assert_close(actual.unbind(0), expected)
+                assert actual.ragged_dims == (1,)
+                assert actual.element_sizes().tolist() == [[1, length, 4] for length in lengths]
+                if not boolean:
+                    leaves = (*atoms, *residues, template)
+                    gradients = torch.autograd.grad(actual.concat.square().sum(), leaves)
+                    reference = torch.autograd.grad(sum(part.square().sum() for part in expected), leaves)
+                    torch.testing.assert_close(gradients, reference)
+        finally:
+            torch.compiler.reset()
+
     def test_nested_static_tail_expansion_fullgraph(self):
         def consume(target, source):
             output = target - source

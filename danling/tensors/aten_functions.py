@@ -6575,14 +6575,7 @@ def _select_nested(source: NestedTensor, dim: int, index: int):
         raise IndexError("Dimension out of range")
     dim = _normalize_dim(dim, source.dim())
     if dim == _get_batch_dim(source):
-        size = len(source)
-        resolved = index + size if index < 0 else index
-        if resolved < 0 or resolved >= size:
-            raise IndexError(f"select(): index {index} out of range for tensor of size {size} at dimension {dim}")
-        selected = _packed_batch_slice(source, resolved, 1, "torch.select")
-        shape = tuple(int(extent) for extent in source._physical_shape[resolved].tolist())
-        values = selected.concat.reshape(tuple(shape[axis] for axis in source._permutation))
-        return values.permute(type(source)._inverse_permutation(source._permutation)) if shape else values
+        return source._packed_sample(index)
 
     dim_adj = _translate_dim(source, dim)
     values_dim = _physical_to_values_dim(source, dim_adj)
@@ -6597,7 +6590,21 @@ def _select_nested(source: NestedTensor, dim: int, index: int):
     return result
 
 
-@NestedTensorAtenRegistry.implement(aten.select.int)
+def _batch_dim_compile_safe(args, kwargs):
+    r"""Admit packed sample extraction without enabling ragged-axis selection."""
+    source = args[0] if args else kwargs.get("input", kwargs.get("self"))
+    dim = args[1] if len(args) > 1 else kwargs.get("dim", 0)
+    if isinstance(dim, torch.SymInt):
+        dim = int(dim)
+    return (
+        source is not None
+        and isinstance(dim, int)
+        and -source.dim() <= dim < source.dim()
+        and _normalize_dim(dim, source.dim()) == _get_batch_dim(source)
+    )
+
+
+@NestedTensorAtenRegistry.implement(aten.select.int, compile_safe=True, compile_guard=_batch_dim_compile_safe)
 def select(func, args, kwargs):
     r"""Return fresh outer metadata for native select's differentiable-view layer."""
     from .nested_tensor import NestedTensor
@@ -6611,8 +6618,8 @@ def select(func, args, kwargs):
     return _native_view_result(source, result)
 
 
-@NestedTensorFuncRegistry.implement(torch.select)
-@NestedTensorFuncRegistry.implement(torch.Tensor.select)
+@NestedTensorFuncRegistry.implement(torch.select, compile_safe=True, compile_guard=_batch_dim_compile_safe)
+@NestedTensorFuncRegistry.implement(torch.Tensor.select, compile_safe=True, compile_guard=_batch_dim_compile_safe)
 def public_select(input: NestedTensor, dim: int, index: int):
     r"""Keep per-sample select sizes on the packed graph for autograd and inference.
 
@@ -6622,7 +6629,7 @@ def public_select(input: NestedTensor, dim: int, index: int):
     return _select_nested(input, dim, index)
 
 
-@NestedTensorFuncRegistry.implement(aten.select.int)
+@NestedTensorFuncRegistry.implement(aten.select.int, compile_safe=True, compile_guard=_batch_dim_compile_safe)
 def public_select_native(self, dim: int, index: int):
     r"""Accept the native operator's ``self`` keyword."""
     return _select_nested(self, dim, index)
