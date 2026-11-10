@@ -6592,7 +6592,7 @@ def _flatten_batch_rows(source: NestedTensor):
 
 @NestedTensorAtenRegistry.implement(aten.flatten.using_ints, compile_safe=True)
 def flatten(func, args, kwargs):
-    r"""Flatten static per-element dims on packed values when the batch axis is untouched."""
+    r"""Flatten logical axes while retaining only valid packed entries."""
     source = args[0]
     kw_start = kwargs.pop("start_dim", _MISSING)
     kw_end = kwargs.pop("end_dim", _MISSING)
@@ -6617,12 +6617,28 @@ def flatten(func, args, kwargs):
         raise ValueError(f"start_dim must be <= end_dim, got ({start_dim}, {end_dim})")
     if start == end:
         return source
-    if start == 0 and end == 1:
-        return _flatten_batch_rows(source)
-
     batch_dim = _get_batch_dim(source)
     if start <= batch_dim <= end:
-        return func(source.tensor, start_dim, end_dim, **kwargs)
+        from .nested_tensor import NestedTensor
+
+        result = source
+        if start == 1:
+            # Keep the preceding sample axis outside the merge. Moving it behind
+            # the merged axes lets the packed row transform retain its true size.
+            dimensions = (1, *range(2, end + 1), 0, *range(end + 1, ndims))
+            result = _permute_nested(aten.permute.default, (source, dimensions), {})
+        merges = end - start
+        for step in range(merges):
+            if not isinstance(result, NestedTensor):
+                result = func(result, 0, merges - step)
+                break
+            result = _flatten_batch_rows(result)
+        if start == 1:
+            if isinstance(result, NestedTensor):
+                dimensions = (1, 0, *range(2, result.dim()))
+                return _permute_nested(aten.permute.default, (result, dimensions), {})
+            return result.transpose(0, 1)
+        return result
 
     start_adj = _translate_dim(source, start)
     end_adj = _translate_dim(source, end)

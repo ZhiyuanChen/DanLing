@@ -545,6 +545,11 @@ without padding or the logical batch axis. A NestedTensor index instead selects
 within each corresponding sample. These coordinates generally differ from
 flattening the padded `.tensor` view.
 
+`flatten` across the batch axis merges valid entries in logical axis order,
+without inserting padding. The result remains a NestedTensor while a ragged
+axis remains; otherwise it is a dense tensor of the valid entries. Use
+`input.tensor.flatten(...)` to explicitly include padding.
+
 `concatenate()` returns shapes carrying the packed ragged/static axis order so
 that `from_concatenated(*value.concatenate())` can preserve noncanonical layouts.
 Converting those shapes to an ordinary tuple or list discards the layout metadata

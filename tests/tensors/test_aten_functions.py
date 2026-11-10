@@ -487,6 +487,24 @@ class TestBatchFlatten:
         assert torch.flatten(source, dim, dim) is source
         assert torch.ops.aten.flatten.using_ints(source, dim, dim) is source
 
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("end", [2, 3])
+    def test_prefix_values(self, device, batch_first, end):
+        parts = [torch.randn(n, n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in (2, 4)]
+        source = NT(parts, ragged_dims=(0, 1), batch_first=batch_first)
+        output = source.flatten(0, end)
+        rows = (
+            [row for part in parts for row in part]
+            if batch_first
+            else [part[row] for row in range(4) for part in parts if row < len(part)]
+        )
+        expected = torch.cat(rows)
+        if end == 3:
+            expected = expected.flatten()
+        assert not isinstance(output, NT)
+        torch.testing.assert_close(output, expected)
+        torch.testing.assert_close(torch.autograd.grad(output.square().sum(), parts), [2 * part for part in parts])
+
     @pytest.mark.parametrize("pair", [False, True])
     @pytest.mark.parametrize("static", [False, True])
     def test_roundtrip(self, device, pair, static):

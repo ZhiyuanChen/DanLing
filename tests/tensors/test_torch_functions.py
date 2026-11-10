@@ -1515,7 +1515,7 @@ class TestFlattenUnflatten:
         assert_close(loss, values.square().sum())
         assert_close(gradient, 2 * values)
 
-    def test_flatten_start_dim_zero_returns_tensor(self, device, float_dtype):
+    def test_flatten_all(self, device, float_dtype):
         nt = NestedTensor(
             [
                 torch.tensor([[1, 2], [3, 4]], device=device, dtype=float_dtype),
@@ -1548,12 +1548,14 @@ class TestFlattenUnflatten:
             ref.extend(grid[batch][row] for batch in range(2) if row < grid[batch].shape[0])
         assert all(torch.equal(rows[index], ref[index]) for index in range(len(ref)))
 
-    def test_flatten_batch_first_false_non_row_dense(self):
-        grid = NestedTensor([torch.randn(4, 4, 3), torch.randn(6, 6, 3)], batch_first=False)
-        dense = grid.flatten(1, 2)
-        assert isinstance(dense, torch.Tensor)
-        assert not isinstance(dense, NestedTensor)
-        assert_close(dense, torch.flatten(grid.tensor, 1, 2))
+    def test_flatten_batch_middle(self):
+        parts = [torch.randn(n, n, 3, requires_grad=True) for n in (4, 6)]
+        grid = NestedTensor(parts, batch_first=False)
+        output = grid.flatten(1, 2)
+        expected = [part[:, column] for part in parts for column in range(part.shape[1])]
+        assert isinstance(output, NestedTensor) and not output.batch_first
+        torch.testing.assert_close(output.unbind(1), expected)
+        torch.testing.assert_close(torch.autograd.grad(output.square().sum(), parts), [2 * part for part in parts])
 
     @pytest.mark.parametrize("batch_first", [True, False])
     def test_unflatten_batch(self, device, batch_first):
