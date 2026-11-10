@@ -123,6 +123,38 @@ class TestElementwiseOps:
             gradient = torch.autograd.grad(output.concat.sum(), leaf)[0]
             torch.testing.assert_close(gradient, torch.zeros_like(leaf))
 
+    @pytest.mark.parametrize("ragged", [False, True])
+    @pytest.mark.parametrize("operation", [torch.ops.aten.frexp.Tensor, torch.ops.aten.diag_embed.default])
+    def test_empty_native_outputs(self, device, ragged, operation):
+        values = torch.empty(0, 4, device=device)
+        source = NT.from_packed(
+            values,
+            torch.tensor([0]),
+            torch.empty(0, 2 if ragged else 1, dtype=torch.long),
+            ragged_dims=(0,) if ragged else (),
+            outer_size=(0, 5, 4) if ragged else (0, 4),
+        )
+        actual = operation(source)
+        expected = operation(values)
+        if isinstance(actual, torch.Tensor):
+            actual, expected = (actual,), (expected,)
+        for result, reference in zip(actual, expected):
+            assert result.shape == (0, *((5,) if ragged else ()), *reference.shape[1:])
+            assert result.ragged_dims == source.ragged_dims
+            assert result.dtype == reference.dtype
+            torch.testing.assert_close(result.concat, reference)
+
+    def test_empty_native_error(self, device):
+        values = torch.empty(0, 4, device=device, dtype=torch.int64)
+        source = NT.from_packed(
+            values, torch.tensor([0]), torch.empty(0, 1, dtype=torch.long), ragged_dims=(), outer_size=(0, 4)
+        )
+        operation = torch.ops.aten._fft_r2c.default
+        with pytest.raises((RuntimeError, TypeError)) as error:
+            operation(values, [1], 0, True)
+        with pytest.raises(type(error.value)):
+            operation(source, [1], 0, True)
+
     @pytest.mark.parametrize("inference", [False, True])
     @pytest.mark.parametrize(
         "operation,reference",

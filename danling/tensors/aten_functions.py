@@ -217,12 +217,29 @@ def per_element_fallback(func, args, kwargs):
         packed_kwargs = {k: replace_nested_with_values(v) for k, v in kwargs.items()} if kwargs else {}
 
         def rebuild_empty(t: Tensor):
-            return source.packed_like(t)
+            if t.shape == source.concat.shape:
+                return source.packed_like(t)
+            if not t.dim() or t.shape[0] != 0:
+                raise NotImplementedError("Empty NestedTensor fallback cannot infer a changed packed row axis")
+            if not source._ragged_dims:
+                tail = tuple(t.shape[1:])
+                return _packed_with_shape(
+                    source,
+                    t,
+                    source._physical_shape.new_empty((0, len(tail))),
+                    source._logical_shape_from_physical_dims(tail),
+                    permutation=tuple(range(len(tail))),
+                    packed_sizes=(),
+                    element_shapes=(),
+                    force_explicit_ragged_dims=(),
+                )
+            if source._ragged_dims == tuple(range(source._ragged_rank)) and source._static_dims == tuple(
+                range(source._ragged_rank, source._physical_shape.size(1))
+            ):
+                return _packed_with_tail_from_values(source, t)
+            raise NotImplementedError("Empty NestedTensor fallback shape changes require a trailing static suffix")
 
-        try:
-            empty_result = func(*packed_args, **packed_kwargs)
-        except (TypeError, RuntimeError, ValueError):
-            return rebuild_empty(source.concat)
+        empty_result = func(*packed_args, **packed_kwargs)
 
         if isinstance(empty_result, Tensor):
             return rebuild_empty(empty_result)
