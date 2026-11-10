@@ -441,7 +441,9 @@ def _segment_lengths(offsets: Tensor, total: int) -> list[int]:
         raise ValueError("segmented offsets must be a CPU tensor")
     if offsets.dtype != torch.long:
         raise TypeError("segmented offsets must use torch.int64")
-    positions = [int(offset) for offset in offsets.tolist()]
+    from .nested_tensor import _transform_metadata
+
+    positions = [int(offset) for offset in _transform_metadata(offsets).tolist()]
     if not positions or positions[0] != 0:
         raise ValueError("segmented offsets must start at zero")
     if any(left > right for left, right in zip(positions, positions[1:])):
@@ -597,7 +599,7 @@ segmented_cumprod_backward.register_autograd(
 
 
 @torch.library.custom_op("danling::_segmented_cumprod", mutates_args=())
-def segmented_cumprod(values: Tensor, offsets: Tensor) -> Tensor:
+def _segmented_cumprod(values: Tensor, offsets: Tensor) -> Tensor:
     r"""Run native cumprod independently over packed variable-length segments.
 
     Calling the device's native kernel per segment preserves its accumulation order, including
@@ -618,7 +620,7 @@ def segmented_cumprod(values: Tensor, offsets: Tensor) -> Tensor:
     return output
 
 
-@segmented_cumprod.register_fake
+@_segmented_cumprod.register_fake
 def _segmented_cumprod_fake(values: Tensor, offsets: Tensor) -> Tensor:
     del offsets
     return torch.empty_like(values)
@@ -643,10 +645,66 @@ def _segmented_cumprod_autograd_backward(ctx, grad_output):
 
 
 torch.library.register_autograd(
-    segmented_cumprod,
+    _segmented_cumprod,
     _segmented_cumprod_autograd_backward,
     setup_context=_segmented_cumprod_setup_context,
 )
+
+
+class _SegmentedCumprod(torch.autograd.Function):
+    r"""Expose the native segmented scan to reverse and forward transforms."""
+
+    @staticmethod
+    def vmap(info, in_dims, values: Tensor, offsets: Tensor):
+        values_dim, offsets_dim = in_dims
+        if offsets_dim is None:
+            if values_dim is None:
+                return _SegmentedCumprod.apply(values, offsets), None
+            # Scanning the leading row axis treats mapped values as independent
+            # static channels, so every member keeps the same sample boundaries.
+            return _SegmentedCumprod.apply(values.movedim(values_dim, -1), offsets), values.dim() - 1
+        results = [
+            _SegmentedCumprod.apply(
+                values.select(values_dim, index) if values_dim is not None else values,
+                offsets.select(offsets_dim, index),
+            )
+            for index in range(info.batch_size)
+        ]
+        return torch.stack(results), 0
+
+    @staticmethod
+    def forward(values: Tensor, offsets: Tensor) -> Tensor:
+        return _segmented_cumprod(values, offsets)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output) -> None:
+        _segmented_cumprod_setup_context(ctx, inputs, output)
+        ctx.save_for_forward(*inputs)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return _segmented_cumprod_autograd_backward(ctx, grad_output)
+
+    @staticmethod
+    def jvp(ctx, grad_values, grad_offsets):
+        del grad_offsets
+        values, offsets = ctx.saved_tensors
+        if grad_values is None:
+            return torch.zeros_like(values)
+        lengths = _segment_lengths(offsets, values.shape[0])
+        primals = values.split(lengths)
+        tangents = grad_values.split(lengths)
+        derivatives = [
+            torch.func.jvp(lambda value: value.cumprod(0), (value,), (tangent,))[1]
+            for value, tangent in zip(primals, tangents)
+        ]
+        return torch.cat(derivatives) if derivatives else grad_values.clone()
+
+
+@torch.compiler.allow_in_graph
+def segmented_cumprod(values: Tensor, offsets: Tensor) -> Tensor:
+    r"""Run native cumprod over packed segments with reverse and forward AD."""
+    return _SegmentedCumprod.apply(values, offsets)
 
 
 def align_rows(rows: Tensor, values: Tensor) -> Tensor:

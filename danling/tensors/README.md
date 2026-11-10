@@ -413,6 +413,8 @@ The segmented operator invokes
 the current device's native `cumprod` and backward kernel independently for
 each packed sample. It therefore preserves native rounding, underflow, zero,
 and non-finite behavior without padding or reassociating the product.
+The same segmented implementation supports reverse-mode function transforms
+and forward-mode tangents, including products containing zeros.
 
 Ragged cumulative sums also use a native scan for each packed sample. This
 isolates non-finite values between samples and preserves native within-sample

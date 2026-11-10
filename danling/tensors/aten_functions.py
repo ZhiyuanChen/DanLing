@@ -8445,13 +8445,6 @@ def cumulative(func, args, kwargs):
             # Cast before accumulating, not after: that is the dense op's contract, and the two
             # orders are not numerically equivalent.
             values = source.concat.to(result_dtype)
-            if not _is_compiling() and torch._C._are_functorch_transforms_active():
-                from .nested_tensor import _transform_metadata
-
-                offsets = _transform_metadata(source._offsets).tolist()
-                parts = [values[start:end].cumprod(0) for start, end in zip(offsets[:-1], offsets[1:])]
-                scanned = torch.cat(parts) if parts else values.clone()
-                return source._packed_like_unchecked(scanned)
             return source._packed_like_unchecked(segmented_cumprod(values, source._offsets))
         if _is_compiling():
             _compile_unsupported(

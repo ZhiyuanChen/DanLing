@@ -161,6 +161,45 @@ class TestSegmentedScan:
 
 class TestSegmentedCumprodComplex:
 
+    @pytest.mark.parametrize("case", ["zeros", "complex", "empty"])
+    def test_transforms(self, device, case):
+        dtype = torch.complex128 if case == "complex" else torch.float64
+        values = torch.tensor([0.0, 2.0, 3.0, 4.0, 0.0], device=device, dtype=dtype)
+        if case == "complex":
+            values = values + 0.5j
+        lengths = (3, 0, 2) if case != "empty" else (0, 0, 0)
+        if case == "empty":
+            values = values[:0]
+        offsets = torch.tensor([0, lengths[0], lengths[0], sum(lengths)])
+        direction = torch.randn_like(values)
+
+        def actual(data):
+            return segmented_cumprod(data, offsets)
+
+        def reference(data):
+            return torch.cat([part.cumprod(0) for part in data.split(lengths)])
+
+        torch.testing.assert_close(
+            torch.func.jvp(actual, (values,), (direction,)), torch.func.jvp(reference, (values,), (direction,))
+        )
+        torch.testing.assert_close(
+            torch.func.grad(lambda data: actual(data).abs().square().sum())(values),
+            torch.func.grad(lambda data: reference(data).abs().square().sum())(values),
+        )
+        batch = torch.stack((values, values + 1))
+        torch.testing.assert_close(torch.vmap(actual)(batch), torch.stack([reference(part) for part in batch]))
+        second_lengths = (2, 0, 3) if case != "empty" else lengths
+        split_batch = torch.stack(
+            (offsets, torch.tensor([0, second_lengths[0], second_lengths[0], sum(second_lengths)]))
+        )
+        expected = torch.stack(
+            [
+                torch.cat([part.cumprod(0) for part in data.split(sizes)])
+                for data, sizes in zip(batch, (lengths, second_lengths))
+            ]
+        )
+        torch.testing.assert_close(torch.vmap(segmented_cumprod)(batch, split_batch), expected)
+
     @pytest.mark.parametrize("conjugate", [False, True])
     def test_compiled_complex_gradient_matches_native(self, device, conjugate):
         values = torch.randn(5, 2, dtype=torch.complex128, device=device, requires_grad=True)
