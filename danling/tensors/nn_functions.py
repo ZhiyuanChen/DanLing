@@ -3571,7 +3571,6 @@ def _rnn_handler(input, hx, *rest, _fn):  # noqa: A002 — ``input`` mirrors the
     states = tuple(hx) if is_lstm else (hx,)  # hidden states in the original batch order
     *data_rest, _batch_first = rest  # the packed (.data) overload takes no batch_first flag
     elements = list(input._unpack())
-    batch_axis = 0 if input.batch_first else 1
 
     def _num_directions() -> int:
         return 2 if len(data_rest) > 5 and bool(data_rest[5]) else 1
@@ -3630,39 +3629,22 @@ def _rnn_handler(input, hx, *rest, _fn):  # noqa: A002 — ``input`` mirrors the
             full_hidden.append(full_state)
         return (output, *full_hidden)
 
-    try:
-        packed = pack_sequence(elements, enforce_sorted=False)
-        sorted_indices, unsorted_indices = packed.sorted_indices, packed.unsorted_indices
-        sorted_states = (
-            tuple(state.index_select(1, sorted_indices) for state in states) if sorted_indices is not None else states
-        )
-        hx_arg = list(sorted_states) if is_lstm else sorted_states[0]
-        with torch._C.DisableTorchFunctionSubclass():
-            result = _fn(packed.data, packed.batch_sizes, hx_arg, *data_rest)
-        out_data, hidden = result[0], tuple(result[1:])
-        output = type(input)(
-            unpack_sequence(PackedSequence(out_data, packed.batch_sizes, sorted_indices, unsorted_indices)),
-            **input._meta(),
-        )
-        if unsorted_indices is not None:
-            hidden = tuple(state.index_select(1, unsorted_indices) for state in hidden)
-        return (output, *hidden)
-    except (RuntimeError, ValueError):
-        outputs: list = []
-        collected: list[list] = []
-        for index, element in enumerate(elements):
-            state_i = tuple(state[:, index : index + 1].contiguous() for state in states)
-            hx_i = list(state_i) if is_lstm else state_i[0]
-            with torch._C.DisableTorchFunctionSubclass():
-                res = _fn(element.unsqueeze(batch_axis), hx_i, *rest)
-            outputs.append(res[0].squeeze(batch_axis))
-            if not collected:
-                collected = [[] for _ in res[1:]]
-            for slot, value in zip(collected, res[1:]):
-                slot.append(value)
-        output = type(input)(outputs, **input._meta())
-        hidden = tuple(torch.cat(parts, dim=1) for parts in collected)
-        return (output, *hidden)
+    packed = pack_sequence(elements, enforce_sorted=False)
+    sorted_indices, unsorted_indices = packed.sorted_indices, packed.unsorted_indices
+    sorted_states = (
+        tuple(state.index_select(1, sorted_indices) for state in states) if sorted_indices is not None else states
+    )
+    hx_arg = list(sorted_states) if is_lstm else sorted_states[0]
+    with torch._C.DisableTorchFunctionSubclass():
+        result = _fn(packed.data, packed.batch_sizes, hx_arg, *data_rest)
+    out_data, hidden = result[0], tuple(result[1:])
+    output = type(input)(
+        unpack_sequence(PackedSequence(out_data, packed.batch_sizes, sorted_indices, unsorted_indices)),
+        **input._meta(),
+    )
+    if unsorted_indices is not None:
+        hidden = tuple(state.index_select(1, unsorted_indices) for state in hidden)
+    return (output, *hidden)
 
 
 # nn.RNN modules dispatch through these private ``torch._VF`` entry points (eager-only).

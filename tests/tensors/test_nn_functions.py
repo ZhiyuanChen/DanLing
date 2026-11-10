@@ -1524,6 +1524,43 @@ class TestModuleIntegration:
                         expected.append(hidden)
                     assert_close(actual.cpu().double(), torch.stack(expected), atol=1e-4, rtol=1e-4)
 
+    @pytest.mark.parametrize("module_type", [nn.RNN, nn.GRU, nn.LSTM])
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_recurrent_training(self, device, module_type, batch_first):
+        from torch.nn.utils.rnn import pack_sequence, unpack_sequence
+
+        parts = [torch.randn(length, 3, device=device, requires_grad=True) for length in (3, 5, 2)]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        module = module_type(3, 4, num_layers=2, bidirectional=True, dropout=0.25, batch_first=batch_first).to(device)
+        reference_module = deepcopy(module)
+        states = [
+            torch.randn(4, 3, 4, device=device, requires_grad=True) for _ in range(2 if module_type is nn.LSTM else 1)
+        ]
+        reference_states = [state.detach().clone().requires_grad_() for state in states]
+        initial = tuple(states) if module_type is nn.LSTM else states[0]
+        reference_initial = tuple(reference_states) if module_type is nn.LSTM else reference_states[0]
+
+        torch.manual_seed(1234)
+        output, hidden = module(NT(parts, batch_first=batch_first), initial)
+        next_random = torch.rand(3, device=device)
+        torch.manual_seed(1234)
+        expected, expected_hidden = reference_module(pack_sequence(references, enforce_sorted=False), reference_initial)
+        assert_close(next_random, torch.rand(3, device=device))
+        expected_parts = unpack_sequence(expected)
+        assert_close(list(output), expected_parts, atol=1e-5, rtol=1e-4)
+        hidden = hidden if module_type is nn.LSTM else (hidden,)
+        expected_hidden = expected_hidden if module_type is nn.LSTM else (expected_hidden,)
+        assert_close(hidden, expected_hidden, atol=1e-5, rtol=1e-4)
+        loss = sum(part.square().sum() for part in output) + sum(state.square().sum() for state in hidden)
+        expected_loss = sum(part.square().sum() for part in expected_parts) + sum(
+            state.square().sum() for state in expected_hidden
+        )
+        gradients = torch.autograd.grad(loss, (*parts, *states, *module.parameters()))
+        expected_gradients = torch.autograd.grad(
+            expected_loss, (*references, *reference_states, *reference_module.parameters())
+        )
+        assert_close(gradients, expected_gradients, atol=1e-5, rtol=1e-4)
+
     def test_lstm_state(self, device):
         dtype = torch.float32
         elements = [torch.randn(length, 8, device=device, dtype=dtype) for length in (4, 7, 5)]
