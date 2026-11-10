@@ -133,6 +133,7 @@ class TestInPlace:
             pytest.param(operator.imul, None, False, id="imul"),
             pytest.param(operator.itruediv, None, False, id="idiv"),
             pytest.param(operator.iadd, "aot_eager", False, id="compiled"),
+            pytest.param(operator.iadd, "aot_eager", None, id="compiled-same"),
             pytest.param(operator.iadd, "aot_eager", True, id="vector"),
         ],
     )
@@ -140,7 +141,7 @@ class TestInPlace:
         torch._dynamo.reset()
         shapes = ((2, 3), (4, 5))
         parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
-        operand_shapes = ((3,), (5,)) if vector else ((1, 3), (4, 1))
+        operand_shapes = shapes if vector is None else ((3,), (5,)) if vector else ((1, 3), (4, 1))
         operands = [
             torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in operand_shapes
         ]
@@ -6864,12 +6865,21 @@ class TestGatherErrors:
         with pytest.raises(IndexError, match="out of bounds"):
             torch.gather(NT(elements), 1, NT(indices))
 
-    @pytest.mark.parametrize("bad_index", [-1, 5])
-    def test_index_select_out_of_range_raises(self, bad_index):
-        elements = [torch.zeros(3, 4), torch.zeros(2, 4)]
+    @pytest.mark.parametrize("backend,bad_index", [(None, -1), (None, 2), ("aot_eager", 2), ("inductor", 2)])
+    @pytest.mark.parametrize(
+        "operation", [torch.index_select, torch.Tensor.index_select, torch.ops.aten.index_select.default]
+    )
+    def test_index_select_bounds(self, backend, operation, bad_index):
+        elements = [torch.zeros(2, 4), torch.ones(3, 4)]
 
-        with pytest.raises(IndexError, match="out of bounds"):
-            torch.index_select(NT(elements), 1, torch.tensor([bad_index]))
+        def call(input_, index):
+            return operation(input_, 1, index)
+
+        if backend is not None:
+            call = torch.compile(call, backend=backend, fullgraph=True)
+
+        with pytest.raises(IndexError if backend is None else RuntimeError, match="out of bounds"):
+            call(NT(elements, ragged_dims=(0,)), torch.tensor([bad_index]))
 
     @pytest.mark.parametrize("operation", ["gather", "take_along_dim"])
     def test_nested_index_cannot_address_the_batch_dimension(self, operation):
@@ -7058,19 +7068,29 @@ class TestGatherCompile:
             [torch.gather(element, 1, index) for element, index in zip(elements, indices)],
         )
 
-    def test_index_select_fullgraph(self):
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize(
+        "operation", [torch.index_select, torch.Tensor.index_select, torch.ops.aten.index_select.default]
+    )
+    @pytest.mark.parametrize("dim", [1, 2])
+    def test_index_select_fullgraph(self, device, backend, operation, dim):
         shapes = [(3, 4), (5, 4), (2, 4)]
-        elements = _element_values(shapes)
-        index = torch.tensor([1, 0])
+        elements = [element.to(device).requires_grad_() for element in _element_values(shapes)]
+        index = torch.tensor([1, 0], device=device)
         compiled = torch.compile(
-            lambda input_, index_: torch.index_select(input_, 1, index_),
-            backend="aot_eager",
+            lambda input_, index_: operation(input_, dim, index_),
+            backend=backend,
             fullgraph=True,
         )
 
         output = compiled(NT(elements, ragged_dims=(0,)), index)
 
-        _assert_elements(output, [torch.index_select(element, 0, index) for element in elements])
+        expected = [torch.index_select(element, dim - 1, index) for element in elements]
+        _assert_elements(output, expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(output.square().sum(), elements),
+            torch.autograd.grad(sum(element.square().sum() for element in expected), elements),
+        )
 
     def test_projected_gather_fullgraph(self):
         projected = _gather_projected_case()
@@ -7161,6 +7181,60 @@ class TestGatherCompile:
 
 
 class TestLogicalDenseGather:
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize(
+        "ragged_dims,axis,retained", [((0, 1), 1, 2), ((0, 1), 1, 1), ((1, 0), 0, 1), ((0, 1), 2, 1)]
+    )
+    def test_multi_take(self, device, batch_first, ragged_dims, axis, retained):
+        shapes = ((2, 3, 4), (2 if retained == 2 else 3, 5, 4))
+        parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+        shape = [1, retained, 1, 1]
+        shape[axis + 1] = 2
+        index = torch.arange(math.prod(shape), device=device).reshape(shape) % min(part.shape[axis] for part in parts)
+        if not batch_first:
+            index = index.movedim(0, 1)
+        source = NT(parts, ragged_dims=ragged_dims, batch_first=batch_first)
+        dim = axis + (batch_first or axis > 0)
+        sample_index = index.select(0 if batch_first else 1, 0)
+        expected = [torch.take_along_dim(part, sample_index, dim=axis) for part in parts]
+        actual = torch.take_along_dim(source, index, dim=dim).unbind(0 if batch_first else 1)
+        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(sum(p.square().sum() for p in actual), parts, retain_graph=True),
+            torch.autograd.grad(sum(p.square().sum() for p in expected), parts),
+        )
+
+    @pytest.mark.parametrize("fullgraph", [False, True])
+    @pytest.mark.parametrize("broadcast", [False, True])
+    def test_multi_take_compile(self, device, fullgraph, broadcast):
+        torch.compiler.reset()
+        parts = [
+            torch.randn(m, n, 4, device=device, requires_grad=True) for m, n in ((2, 3), (3 if broadcast else 2, 5))
+        ]
+        source = NT(parts, ragged_dims=(0, 1))
+        index = torch.zeros((1, 1, 2, 1) if broadcast else (2, 2, 1, 4), device=device, dtype=torch.long)
+        try:
+            compiled = torch.compile(
+                lambda source, index: torch.take_along_dim(source, index, dim=2),
+                backend="aot_eager",
+                fullgraph=fullgraph,
+                dynamic=True,
+            )
+            actual = compiled(source, index)
+            expected = [
+                torch.take_along_dim(part, index[min(i, index.size(0) - 1)], dim=1) for i, part in enumerate(parts)
+            ]
+            if not broadcast:
+                assert not isinstance(actual, NT)
+            actual_parts = actual.unbind(0)
+            torch.testing.assert_close(actual_parts, expected)
+            torch.testing.assert_close(
+                torch.autograd.grad(sum(part.square().sum() for part in actual_parts), parts),
+                torch.autograd.grad(sum(part.square().sum() for part in expected), parts),
+            )
+        finally:
+            torch.compiler.reset()
 
     @pytest.mark.parametrize("batch_first", [True, False])
     def test_lengths(self, device, batch_first):

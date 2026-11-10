@@ -2678,7 +2678,7 @@ def pdist(input, p=2.0):
     maximum = input._logical_shape[1 if input.batch_first else 0]
     maximum = maximum * (maximum - 1) // 2
     outer_size = (len(input), maximum) if input.batch_first else (maximum, len(input))
-    result = type(input).from_packed(
+    result = type(input)._from_packed_raw(
         output,
         offsets,
         counts[:, None],
@@ -2816,7 +2816,7 @@ def one_hot(input, num_classes: int = -1):
     element_shapes = None
     if input._element_shapes is not None:
         element_shapes = tuple((*shape, num_classes) for shape in input._element_shapes)
-    return type(input).from_packed(
+    return type(input)._from_packed_raw(
         output_values,
         input._offsets,
         shape_tensor,
@@ -2829,6 +2829,7 @@ def one_hot(input, num_classes: int = -1):
         outer_size=(*input.shape, num_classes),
         packed_sizes=input._packed_sizes,
         element_shapes=element_shapes,
+        ragged_offsets=input._persistent_ragged_offsets(),
         validate=False,
     )
 
@@ -2892,7 +2893,7 @@ def _pad_packed_variable_last_dim(input: NestedTensor, pad: tuple[int, ...], val
             )
         packed_sizes = tuple(int(size) for size in new_sizes.tolist())
 
-    return type(input).from_packed(
+    return type(input)._from_packed_raw(
         output_values,
         new_offsets,
         shape_tensor,
@@ -3130,7 +3131,7 @@ def _fractional_max_pool(input, spatial_rank, kernel_size, output_size, output_r
     counts = output_shape[:, list(input._varying_dims)].prod(1)
     offsets = torch.cat((counts.new_zeros(1), counts.cumsum(0)))
     outer_size = (len(input), *maximum) if input.batch_first else (maximum[0], len(input), *maximum[1:])
-    output = type(input).from_packed(
+    output = type(input)._from_packed_raw(
         values,
         offsets,
         output_shape,
@@ -3193,7 +3194,7 @@ def _interpolate_packed_static_spatial(input, *args, _fn=None, **kwargs):
     if input._element_shapes is not None:
         element_shapes = tuple((shape[0], *output_spatial) for shape in input._element_shapes)
 
-    return type(input).from_packed(
+    return type(input)._from_packed_raw(
         output_values,
         input._offsets,
         output_shape,

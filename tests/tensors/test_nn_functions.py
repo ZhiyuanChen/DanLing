@@ -2097,6 +2097,34 @@ class TestNormalizeFunction:
 
 class TestOneHot:
 
+    @pytest.mark.parametrize("backend", ("aot_eager", "inductor"))
+    @pytest.mark.parametrize(
+        "ragged_dims,relative",
+        [(None, False), ((1, 0), False), ((0,), True)],
+        ids=["inferred", "permuted", "relative"],
+    )
+    def test_pair_encoding(self, device, backend, ragged_dims, relative):
+        def encode(source):
+            if relative:
+                source = (source.unsqueeze(-1) - source.unsqueeze(-2) + 32).clamp(0, 64)
+            return F.one_hot(source, num_classes=65)
+
+        torch.compiler.reset()
+        compiled = torch.compile(encode, backend=backend, fullgraph=True, dynamic=True)
+        try:
+            for lengths in ((3, 5), (0, 1)):
+                indices = [torch.arange(length, device=device) for length in lengths]
+                pairs = [(part[:, None] - part[None, :] + 32).clamp(0, 64) for part in indices]
+                source = NT(indices if relative else pairs, ragged_dims=ragged_dims)
+                expected = tuple(F.one_hot(part, num_classes=65) for part in pairs)
+                with torch.inference_mode():
+                    actual = compiled(source)
+                torch.testing.assert_close(actual.unbind(0), expected)
+                assert actual.element_sizes().tolist() == [[length, length, 65] for length in lengths]
+                assert actual.ragged_dims == ((1, 0) if ragged_dims == (1, 0) else (0, 1))
+        finally:
+            torch.compiler.reset()
+
     def test_one_hot(self):
         x = NT([torch.tensor([0, 1, 2], dtype=torch.long), torch.tensor([1, 0], dtype=torch.long)])
         output = F.one_hot(x, num_classes=3)

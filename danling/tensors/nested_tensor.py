@@ -129,6 +129,12 @@ def _transform_batch_dims(tensor: Tensor) -> tuple[int, ...]:
 
 def _needs_packed_bridge(values: Tensor) -> bool:
     r"""Transform wrappers must be lifted even when their current derivative is constant."""
+    if (
+        not _is_compiling()
+        and torch._C._are_functorch_transforms_active()
+        and (torch._C._functorch.is_gradtrackingtensor(values) or torch._C._functorch.is_batchedtensor(values))
+    ):
+        return False
     if torch.is_grad_enabled() and values.requires_grad:
         return True
     if not _is_compiling() and torch._C._functorch.is_gradtrackingtensor(values):
@@ -150,20 +156,16 @@ def _validate_concrete_square_lengths(lengths: Tensor) -> None:
 
 @torch.compiler.allow_in_graph
 def _layout_scalar(value: Tensor) -> int:
-    r"""Read a CPU layout scalar without breaking the surrounding packed graph."""
+    r"""Read CPU layout scalars through every fake-propagation pass of their graph."""
     from torch._subclasses.fake_tensor import maybe_get_fake_mode
 
     mode = maybe_get_fake_mode(value)
     if mode is None or mode.shape_env is None or mode.shape_env.allow_scalar_outputs:
         return cast(int, value.item())
-    # Fake propagation needs a symbolic scalar even in a partial compile. The
-    # opt-in belongs to this metadata read, not the user's Dynamo configuration.
-    allowed = mode.allow_scalar_outputs
-    try:
-        mode.allow_scalar_outputs = True
-        return cast(int, value.item())
-    finally:
-        mode.allow_scalar_outputs = allowed
+    # AOT and Inductor replay the captured item node with this same mode.
+    # Its opt-in must last for the graph, rather than just this Python call.
+    mode.allow_scalar_outputs = True
+    return cast(int, value.item())
 
 
 @torch.library.custom_op("danling::_metadata_tensors_equal", mutates_args=())
@@ -366,7 +368,7 @@ class NestedTensor(torch.Tensor):
     _pin_memory: bool
     _packed_sizes: tuple[int, ...] | None
     _element_shapes: tuple[tuple[int, ...], ...] | None
-    _cached_storage: tuple[Tensor, ...] | None
+    _cached_storage: tuple[tuple[int, ...], tuple[Tensor, ...]] | None
     _cached_packed_projection: tuple[tuple[int, ...], Tensor] | None
     _cached_hierarchical_offsets: tuple[Tensor, ...] | None
     _cached_tensor_view: tuple[bool, float, tuple[int, ...], Tensor] | None
@@ -380,13 +382,15 @@ class NestedTensor(torch.Tensor):
     _wrapper_grad_leaf: bool
     _is_aot_tangent: bool
     _RAGGED_OFFSETS_PREFIX = "_ragged_offsets_"
-    _AOT_CACHE_HASH_VERSION = 3
+    _AOT_CACHE_HASH_VERSION = 6
 
     # Construction & Initialization
 
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
         cls._compiled_packed_constructor = staticmethod(_make_nested_tensor_from_packed_constructor(cls))
+        if not getattr(cls, "_is_transform_proxy", False):
+            _register_transform_type(cls)
 
     @staticmethod
     def __new__(
@@ -441,12 +445,22 @@ class NestedTensor(torch.Tensor):
         out_dtype = validated[0].dtype if validated else (dtype or torch.get_default_dtype())
         out_device = validated[0].device if validated else (device or torch.device("cpu"))
 
-        if _is_compiling() and validated and ragged_dims and not _lenient_layout:
+        if _is_compiling() and validated and validated[0].dim() > 0 and ragged_dims != () and not _lenient_layout:
             rank = validated[0].dim()
-            varying_dims = cls._normalize_ragged_dims(ragged_dims, rank)
-            static_dims = tuple(dim for dim in range(rank) if dim not in varying_dims)
-            permutation = varying_dims + static_dims
             symbolic_shapes = [tensor.shape for tensor in validated]
+            if ragged_dims is None:
+                from torch.fx.experimental.symbolic_shapes import has_free_unbacked_symbols
+
+                if any(has_free_unbacked_symbols(tensor) for tensor in validated):
+                    raise torch._dynamo.exc.Unsupported(
+                        "Inferring ragged axes from data-dependent sizes requires a graph boundary; "
+                        "pass ragged_dims explicitly for fullgraph compilation"
+                    )
+                varying_dims, static_dims = cls._pack_layout_from_element_shapes(tuple(symbolic_shapes))
+            else:
+                varying_dims = cls._normalize_ragged_dims(ragged_dims, rank)
+                static_dims = tuple(dim for dim in range(rank) if dim not in varying_dims)
+            permutation = varying_dims + static_dims
             for shape in symbolic_shapes[1:]:
                 for dim in static_dims:
                     torch._check(shape[dim] == symbolic_shapes[0][dim])
@@ -483,8 +497,9 @@ class NestedTensor(torch.Tensor):
             for shape in symbolic_shapes[1:]:
                 maxima = [torch.sym_max(left, right) for left, right in zip(maxima, shape)]
             maxima.insert(0 if batch_first else 1, len(validated))
-            result = cls.from_packed(
-                values,
+            # The wrapper carries geometry until the packed bridge owns its derivative edge.
+            result = cls._from_packed_raw(
+                values.detach(),
                 offsets,
                 shape_tensor,
                 permutation=permutation,
@@ -530,32 +545,10 @@ class NestedTensor(torch.Tensor):
         logical_shape = cls._compute_logical_shape(validated, batch_first)
         if requires_grad is not None and values.requires_grad != requires_grad:
             values.requires_grad_(requires_grad)
-        out_requires_grad = values.requires_grad
-
-        result = torch.Tensor._make_wrapper_subclass(
-            cls,
-            logical_shape,
-            dtype=out_dtype,
-            device=out_device,
-            requires_grad=out_requires_grad,
-        )
-        result._packed_values = values
-        result._offsets = offsets
-        result._permutation = permutation
-        result._ragged_dims = resolved_ragged_dims
         # A layout inferred from this batch is declared from here on, exactly as if the caller
         # had passed ``ragged_dims``: later batches with coincidentally equal extents keep the
         # same schema, and the wrapper stays tensor-backed for compilation.
         declared = ragged_dims is not None or bool(resolved_ragged_dims)
-        result._ragged_dims_explicit = declared
-        result._physical_shape = shape_tensor
-        result._logical_shape = logical_shape
-        result._set_runtime_config(
-            batch_first=batch_first,
-            padding_value=padding_value,
-            mask_value=mask_value,
-        )
-        result._pin_memory = bool(pin_memory and _is_pinned(values))
         ragged_offsets = cls._resolve_persistent_ragged_offsets(
             offsets,
             shape_tensor,
@@ -568,24 +561,41 @@ class NestedTensor(torch.Tensor):
         # They still validate this construction from user tensors below.
         # Standalone FakeTensor execution keeps them: fake values leave no other source of sizes.
         keep_python_metadata = ragged_offsets is None or _is_fake_tensor(values)
-        result._packed_sizes = packed_sizes if keep_python_metadata else None
-        result._element_shapes = element_shapes if keep_python_metadata else None
-        cls._install_persistent_ragged_offsets(result, ragged_offsets)
-        result._invalidate_transient_caches()
-        result._mark_tensor_backed_dynamic_dims()
+        needs_bridge = _needs_packed_bridge(values)
         cls._validate_packed_metadata(
-            result.concat,
-            result._offsets,
-            result._physical_shape,
-            permutation=result._permutation,
-            ragged_dims=result._ragged_dims,
-            logical_shape=result._logical_shape,
-            batch_first=result.batch_first,
+            values,
+            offsets,
+            shape_tensor,
+            permutation=permutation,
+            ragged_dims=resolved_ragged_dims,
+            logical_shape=logical_shape,
+            batch_first=batch_first,
             packed_sizes=packed_sizes,
             element_shapes=element_shapes,
             ragged_offsets=ragged_offsets,
         )
-        if _needs_packed_bridge(values):
+        # A graph boundary must not expose an unused differentiable geometry wrapper.
+        result = cls._compiled_packed_constructor(
+            values.detach() if needs_bridge else values,
+            offsets,
+            shape_tensor,
+            logical_shape,
+            permutation,
+            resolved_ragged_dims,
+            declared,
+            batch_first,
+            float(padding_value),
+            mask_value,
+            bool(pin_memory and _is_pinned(values)),
+            packed_sizes if keep_python_metadata else None,
+            element_shapes if keep_python_metadata else None,
+            ragged_offsets,
+            None,
+        )
+        if _is_compiling():
+            return result._packed_like_unchecked(values, reuse_wrapper=True)
+        result._mark_tensor_backed_dynamic_dims()
+        if needs_bridge:
             return _PackedLikeAutograd.apply(values, _PackedStructureReference(result, mark_dynamic=True))
         return result
 
@@ -859,12 +869,9 @@ class NestedTensor(torch.Tensor):
 
     def _persistent_ragged_offsets(self) -> tuple[Tensor, ...] | None:
         r"""Return tensor-backed row splits when this instance owns a complete topology."""
-        instance_attrs = vars(self)
-        if (
-            "_offsets" not in instance_attrs
-            or "_permutation" not in instance_attrs
-            or "_ragged_dims" not in instance_attrs
-            or "_ragged_dims_explicit" not in instance_attrs
+        if any(
+            getattr(self, name, None) is None
+            for name in ("_offsets", "_permutation", "_ragged_dims", "_ragged_dims_explicit")
         ):
             return None
         declared_ragged_dims = self._ragged_dims if self._ragged_dims_explicit else None
@@ -877,9 +884,10 @@ class NestedTensor(torch.Tensor):
             # retain legacy per-element Python shape caches in the compile contract.
             return (self._offsets,)
         names = type(self)._ragged_offset_names(self._ragged_rank)
-        if any(name not in instance_attrs for name in names):
+        offsets = tuple(getattr(self, name, None) for name in names)
+        if any(offset is None for offset in offsets):
             return None
-        return tuple(instance_attrs[name] for name in names)
+        return cast(tuple[Tensor, ...], offsets)
 
     @classmethod
     def _pack_layout_from_declared_ragged_dims(
@@ -1503,7 +1511,7 @@ class NestedTensor(torch.Tensor):
         splits = self._persistent_ragged_offsets()
         tensor_backed_compile = _is_compiling() and splits is not None
         with torch._C.DisableTorchFunctionSubclass():
-            logical_strides = torch.Tensor.stride(self)
+            logical_strides = self.stride()
         return (
             type(self),
             self._offsets,
@@ -1567,7 +1575,7 @@ class NestedTensor(torch.Tensor):
                 splits,
                 logical_strides,
             )
-        return cls.from_packed(
+        return cls._from_packed_raw(
             like if packed_shape is None else like.new_empty(()).expand(packed_shape),
             offsets,
             shape_tensor,
@@ -1582,6 +1590,7 @@ class NestedTensor(torch.Tensor):
             element_shapes=element_shapes,
             validate=False,
             mark_dynamic=False,
+            logical_strides=logical_strides,
         )
 
     def _mark_tensor_backed_dynamic_dims(self, *, mark_values: bool = True) -> None:
@@ -1657,18 +1666,14 @@ class NestedTensor(torch.Tensor):
             for dim in self._dynamo_weak_dynamic_indices:
                 maybe_mark_dynamic(self._physical_shape, dim)
 
-    def _values_cache_token(self) -> tuple[int, ...]:
-        r"""Return a cache token for versioned packed values and layout metadata."""
-        return (self._cache_version(self.concat), *self._shape_cache_token())
+    def _shape_cache_token(self) -> tuple[int, ...] | None:
+        r"""Return a token only for real metadata with observable mutations."""
+        from torch._subclasses.fake_tensor import FakeTensor
 
-    def _shape_cache_token(self) -> tuple[int, ...]:
-        r"""Return a cache token for views that depend only on shape metadata."""
-        ragged_offsets = self._persistent_ragged_offsets() or ()
-        return (
-            self._cache_version(self._offsets),
-            self._cache_version(self._physical_shape),
-            *(self._cache_version(level_offsets) for level_offsets in ragged_offsets),
-        )
+        metadata = (self._offsets, self._physical_shape, *(self._persistent_ragged_offsets() or ()))
+        if any(isinstance(tensor, FakeTensor) or tensor.is_inference() for tensor in metadata):
+            return None
+        return tuple(self._cache_version(tensor) for tensor in metadata)
 
     @staticmethod
     def _cache_version(tensor: Tensor) -> int:
@@ -1692,18 +1697,15 @@ class NestedTensor(torch.Tensor):
             return None
         return str(device)
 
-    def _offset_conversion_cache_token(self) -> tuple[int, ...] | None:
+    def _metadata_cache_token(self) -> tuple[int, ...] | None:
         r"""Cache only real metadata whose mutations have observable version counters.
 
-        Dispatch modes must observe conversions themselves; in particular, a FakeTensor
-        conversion must neither read an eager tensor from nor write a fake tensor into
-        the shared eager cache. Inference metadata can legally change in inference mode
-        without changing a version counter, so its conversions cannot be cached.
+        Dispatch modes must observe derived tensors themselves; in particular, a FakeTensor
+        must neither read an eager tensor from nor write a fake tensor into the shared
+        eager cache. Inference metadata can legally change in inference mode without
+        changing a version counter, so results derived from it cannot be cached.
         """
-        if _is_compiling() or _get_current_dispatch_mode() is not None:
-            return None
-        metadata = (self._offsets, self._physical_shape, *(self._persistent_ragged_offsets() or ()))
-        if any(_is_fake_tensor(tensor) or tensor.is_inference() for tensor in metadata):
+        if _is_compiling() or _get_current_dispatch_mode() is not None or torch._C._are_functorch_transforms_active():
             return None
         return self._shape_cache_token()
 
@@ -1742,12 +1744,63 @@ class NestedTensor(torch.Tensor):
         mark_dynamic: bool = True,
         mark_values_dynamic: bool = True,
     ) -> Self:
-        r"""Construct a NestedTensor directly from packed representation.
+        r"""Construct a NestedTensor sharing packed storage and its autograd history.
 
         ``mark_dynamic`` hints Dynamo that the ragged extents may vary. Public factories and
         eager operator results need it; operator intermediates already inside a compiled
         region pass ``False`` (see :meth:`_mark_tensor_backed_dynamic_dims`).
         """
+        values = cls._maybe_pin_values(values, pin_memory)
+        needs_bridge = _is_compiling() or _needs_packed_bridge(values)
+        result = cls._from_packed_raw(
+            values.detach() if needs_bridge else values,
+            offsets,
+            shape_tensor,
+            permutation=permutation,
+            ragged_dims=ragged_dims,
+            batch_first=batch_first,
+            padding_value=padding_value,
+            mask_value=mask_value,
+            pin_memory=pin_memory,
+            outer_size=outer_size,
+            packed_sizes=packed_sizes,
+            element_shapes=element_shapes,
+            ragged_offsets=ragged_offsets,
+            validate=validate,
+            materialize_python_metadata=materialize_python_metadata,
+            mark_dynamic=False,
+            mark_values_dynamic=mark_values_dynamic,
+        )
+        if needs_bridge:
+            result = _PackedLikeAutograd.apply(values, _PackedStructureReference(result))
+        if mark_dynamic:
+            result._mark_tensor_backed_dynamic_dims(mark_values=mark_values_dynamic)
+        return result
+
+    @classmethod
+    def _from_packed_raw(
+        cls,
+        values: Tensor,
+        offsets: Tensor,
+        shape_tensor: Tensor,
+        *,
+        permutation: tuple[int, ...] | None = None,
+        ragged_dims: tuple[int, ...] | None = None,
+        batch_first: bool = True,
+        padding_value: float = 0.0,
+        mask_value: bool = False,
+        pin_memory: bool = False,
+        outer_size: torch.Size | tuple | None = None,
+        packed_sizes: tuple[int, ...] | None = None,
+        element_shapes: tuple[tuple[int, ...], ...] | None = None,
+        ragged_offsets: tuple[Tensor, ...] | None = None,
+        validate: bool = True,
+        materialize_python_metadata: bool = True,
+        mark_dynamic: bool = True,
+        mark_values_dynamic: bool = True,
+        logical_strides: tuple[int, ...] | None = None,
+    ) -> Self:
+        r"""Build complete geometry without attaching a packed autograd edge."""
         # offsets and shape_tensor MUST live on CPU to avoid implicit CUDA syncs
         # when handlers call .item() / .tolist() on them.
         if offsets.device.type != "cpu":
@@ -1871,54 +1924,23 @@ class NestedTensor(torch.Tensor):
                         )
 
         values = cls._maybe_pin_values(values, pin_memory)
-        result: Self
-        if compiling:
-            constructor = cls._compiled_packed_constructor
-            result = cast(
-                Self,
-                constructor(
-                    values,
-                    offsets,
-                    shape_tensor,
-                    logical_shape,
-                    resolved_permutation,
-                    resolved_ragged_dims,
-                    ragged_dims_explicit,
-                    bool(batch_first),
-                    float(padding_value),
-                    bool(mask_value),
-                    bool(pin_memory and _is_pinned(values)),
-                    stored_packed_sizes,
-                    stored_element_shapes,
-                    resolved_ragged_offsets,
-                    None,
-                ),
-            )
-        else:
-            result = torch.Tensor._make_wrapper_subclass(
-                cls,
-                logical_shape,
-                dtype=values.dtype,
-                device=values.device,
-                requires_grad=values.requires_grad,
-            )
-            result._packed_values = values
-            result._offsets = offsets
-            result._permutation = resolved_permutation
-            result._ragged_dims = resolved_ragged_dims
-            result._ragged_dims_explicit = ragged_dims_explicit
-            result._physical_shape = shape_tensor
-            result._logical_shape = logical_shape
-            result._set_runtime_config(
-                batch_first=batch_first,
-                padding_value=padding_value,
-                mask_value=mask_value,
-            )
-            result._pin_memory = bool(pin_memory and _is_pinned(values))
-            result._packed_sizes = stored_packed_sizes
-            result._element_shapes = stored_element_shapes
-            cls._install_persistent_ragged_offsets(result, resolved_ragged_offsets)
-            result._invalidate_transient_caches()
+        result = cls._compiled_packed_constructor(
+            values,
+            offsets,
+            shape_tensor,
+            logical_shape,
+            resolved_permutation,
+            resolved_ragged_dims,
+            ragged_dims_explicit,
+            bool(batch_first),
+            float(padding_value),
+            bool(mask_value),
+            bool(pin_memory and _is_pinned(values)),
+            stored_packed_sizes,
+            stored_element_shapes,
+            resolved_ragged_offsets,
+            logical_strides,
+        )
         if mark_dynamic:
             result._mark_tensor_backed_dynamic_dims(mark_values=mark_values_dynamic)
         if validate:
@@ -1942,22 +1964,31 @@ class NestedTensor(torch.Tensor):
 
     @staticmethod
     def _tensor_metadata_for_caching(tensor: Tensor) -> tuple[Any, ...]:
-        r"""Return stable tensor metadata without inspecting storage contents.
+        r"""Return tensor metadata, including hints for hidden symbolic dimensions.
 
-        Shapes and strides may contain ``SymInt`` expressions.  Their ``repr`` is
-        intentionally retained by :meth:`_stable_hash_for_caching`, matching the
-        representation-based stable hash used by PyTorch's ``DTensor`` cache
-        extension.  Storage addresses and tensor values are excluded;
-        ``storage_offset`` itself remains ordinary tensor metadata.
+        AOT's cache guards top-level symbolic inputs without recursively guarding
+        wrapper children. A backend can specialize a child's symbolic dimension
+        while lowering its backward, so the expression alone is insufficient to
+        identify that specialization on the next lookup. Preserve each backed
+        symbol with its existing guarding hint without creating a new guard.
+        Unbacked dimensions retain their expression and no hint. Tensor contents
+        and storage addresses never participate in the key.
         """
+
+        def dimension(value: int | torch.SymInt) -> int | tuple[str, str, int | None]:
+            if isinstance(value, torch.SymInt):
+                hint = value.node.hint
+                return "SymInt", str(value), hint if type(hint) is int else None
+            return value
+
         return (
             str(tensor.dtype),
             tensor.device.type,
             tensor.device.index,
             str(tensor.layout),
-            tuple(tensor.shape),
-            tuple(tensor.stride()),
-            tensor.storage_offset(),
+            tuple(dimension(size) for size in tensor.shape),
+            tuple(dimension(stride) for stride in tensor.stride()),
+            dimension(tensor.storage_offset()),
             bool(tensor.requires_grad),
             bool(tensor.is_conj()),
             bool(tensor.is_neg()),
@@ -1965,15 +1996,14 @@ class NestedTensor(torch.Tensor):
         )
 
     def _stable_hash_for_caching(self) -> str:
-        r"""Return a deterministic metadata hash for PyTorch's AOTAutograd cache.
+        r"""Identify an AOTAutograd cache entry by wrapper and child metadata.
 
-        Tensor-backed offsets, physical shapes, and hierarchical row splits are
-        flattened children.  Only their tensor metadata participates in this hash;
-        their data does not.  Consequently, two dynamic calls with the same static
-        structure can reuse one cache entry even when their ragged lengths differ.
-        Legacy layouts whose topology still lives in ``packed_sizes`` or
-        ``element_shapes`` retain those tuples in the static flatten context and
-        therefore remain safely layout-specific.
+        Offsets and row-split contents are excluded, so layouts with equal tensor
+        metadata can share a cache entry even when sample partitions differ.
+        Hidden symbolic dimensions include their backed hints to distinguish
+        backend specializations when Dynamo retraces. Already compiled dynamic
+        graphs continue to run directly without another AOT cache lookup.
+        Legacy Python shape tuples remain part of their static flatten context.
         """
         inner_tensor_names, context = self.__tensor_flatten__()
         tensor_metadata = type(self)._tensor_metadata_for_caching
@@ -2067,19 +2097,19 @@ class NestedTensor(torch.Tensor):
         offsets = inner_tensors.get("_offsets")
         shape_tensor = inner_tensors.get("_physical_shape")
         if offsets is not None and shape_tensor is not None:
-            # During backward, outer_size may reflect a transposed view
-            # (e.g., (seq, batch, hidden) from MHA's batch-dim transpose).
-            # Detect and correct so from_packed validation passes.
-            batch_size = len(offsets) - 1
             outer = tuple(outer_size)
             strides = tuple(outer_stride)
-            batch_first = ctx.get("batch_first", True)
-            if len(outer) >= 2 and (
-                (batch_first and outer[0] != batch_size and outer[1] == batch_size)
-                or (not batch_first and outer[1] != batch_size and outer[0] == batch_size)
-            ):
-                outer = (outer[1], outer[0], *outer[2:])
-                strides = (strides[1], strides[0], *strides[2:])
+            batch_dim = 0 if ctx.get("batch_first", True) or len(outer) == 1 else 1
+            # These are identities of the layout, including when its extents
+            # are symbolic. Keep their constraints through AOT reconstruction.
+            torch._check(
+                offsets.numel() == shape_tensor.shape[0] + 1,
+                lambda: "NestedTensor offsets must have one more entry than the batch size",
+            )
+            torch._check(
+                outer[batch_dim] == shape_tensor.shape[0],
+                lambda: "NestedTensor outer batch axis must match its element shapes",
+            )
             max_length_binding = inner_tensors.get("_max_length_binding")
             preserve_tensor_metadata = (
                 cls._is_tensor_backed_layout(ctx.get("permutation"), ctx.get("ragged_dims"))
@@ -2108,7 +2138,7 @@ class NestedTensor(torch.Tensor):
                 ragged_offsets = tuple(inner_tensors[name] for name in cls._ragged_offset_names(ragged_rank))
             else:
                 ragged_offsets = None
-            result = cls.from_packed(
+            result = cls._from_packed_raw(
                 values,
                 offsets,
                 shape_tensor,
@@ -2116,26 +2146,8 @@ class NestedTensor(torch.Tensor):
                 validate=False,
                 materialize_python_metadata=not preserve_tensor_metadata,
                 ragged_offsets=ragged_offsets,
+                logical_strides=strides,
                 **ctx,
-            )
-            # AOT tracks symbolic wrapper strides separately from its logical
-            # sizes. Preserve both when rebuilding a functionalized input.
-            result = cls._compiled_packed_constructor(
-                result._packed_values,
-                result._offsets,
-                result._physical_shape,
-                result._logical_shape,
-                result._permutation,
-                result._ragged_dims,
-                result._ragged_dims_explicit,
-                result.batch_first,
-                result.padding_value,
-                result.mask_value,
-                result._pin_memory,
-                result._packed_sizes,
-                result._element_shapes,
-                result._persistent_ragged_offsets(),
-                strides,
             )
             if torch.Tensor.requires_grad.__get__(result) != wrapper_requires_grad:
                 torch.Tensor.requires_grad.__set__(result, wrapper_requires_grad)
@@ -2205,6 +2217,25 @@ class NestedTensor(torch.Tensor):
             dense = self._materialize_batch_leading(0)
             return dense if self.batch_first or dense.dim() <= 1 else dense.movedim(0, 1)
         if expected_type is not None and expected_type is not type(self):
+            if getattr(expected_type, "_is_transform_proxy", False) and type(self) is expected_type._public_type:
+                result = expected_type._from_packed_raw(
+                    self.concat,
+                    self._offsets,
+                    self._physical_shape,
+                    permutation=self._permutation,
+                    ragged_dims=self._ragged_dims,
+                    batch_first=self.batch_first,
+                    padding_value=self.padding_value,
+                    mask_value=self.mask_value,
+                    outer_size=self._logical_shape,
+                    ragged_offsets=self._persistent_ragged_offsets(),
+                    packed_sizes=self._packed_sizes,
+                    element_shapes=self._element_shapes,
+                    validate=False,
+                    mark_dynamic=False,
+                )
+                result._is_aot_tangent = bool(expected_meta.get("is_aot_tangent", False))
+                return result
             return None
         self._is_aot_tangent = bool(expected_meta.get("is_aot_tangent", False))
         return self
@@ -2217,6 +2248,11 @@ class NestedTensor(torch.Tensor):
     def __torch_function__(cls, func, types, args=(), kwargs=None) -> Any:
         if kwargs is None:
             kwargs = {}
+
+        if not _is_compiling():
+            result = _transform_delegate(func, args, kwargs, only_opaque=not kwargs.get("inplace", False))
+            if result is not NotImplemented:
+                return result
 
         # Handle size() specially to avoid infinite recursion
         if func is torch.Tensor.size:
@@ -2255,6 +2291,11 @@ class NestedTensor(torch.Tensor):
                 name = getattr(func, "__qualname__", getattr(func, "__name__", repr(func)))
                 _compile_unsupported(name, "handler is marked eager-only")
             return handler(*args, **kwargs)
+
+        if not _is_compiling():
+            result = _transform_delegate(func, args, kwargs)
+            if result is not NotImplemented:
+                return result
 
         with torch._C.DisableTorchFunctionSubclass():
             return func(*args, **kwargs)
@@ -2511,7 +2552,7 @@ class NestedTensor(torch.Tensor):
         if offsets.device == target_device and offsets.dtype == target_dtype:
             return offsets
         device_key = type(self)._offset_conversion_device_key(target_device)
-        token = self._offset_conversion_cache_token() if device_key is not None else None
+        token = self._metadata_cache_token() if device_key is not None else None
         key = None if device_key is None or token is None else (device_key, target_dtype, token)
         if key is not None and self._cached_packed_offsets is not None:
             cached = self._cached_packed_offsets.get(key)
@@ -2545,7 +2586,7 @@ class NestedTensor(torch.Tensor):
         if sizes.device == target_device and sizes.dtype == target_dtype:
             return sizes
         device_key = type(self)._offset_conversion_device_key(target_device)
-        token = self._offset_conversion_cache_token() if device_key is not None else None
+        token = self._metadata_cache_token() if device_key is not None else None
         key = None if device_key is None or token is None else (device_key, target_dtype, token)
         if key is not None and self._cached_element_sizes is not None:
             cached = self._cached_element_sizes.get(key)
@@ -2572,7 +2613,7 @@ class NestedTensor(torch.Tensor):
         if offsets.device == target_device and offsets.dtype == target_dtype:
             return offsets
         device_key = type(self)._offset_conversion_device_key(target_device)
-        token = self._offset_conversion_cache_token() if device_key is not None else None
+        token = self._metadata_cache_token() if device_key is not None else None
         key = None if device_key is None or token is None else (int(level), device_key, target_dtype, token)
         if key is not None and self._cached_ragged_level_offsets is not None:
             cached = self._cached_ragged_level_offsets.get(key)
@@ -2600,7 +2641,7 @@ class NestedTensor(torch.Tensor):
         target_device = self.device if device is None else torch.device(device)
         level = int(level)
         device_key = type(self)._offset_conversion_device_key(target_device)
-        token = self._offset_conversion_cache_token() if device_key is not None else None
+        token = self._metadata_cache_token() if device_key is not None else None
         key = None if device_key is None or token is None else (level, device_key, dtype, token)
         if key is not None and self._cached_packed_local_indices is not None:
             cached = self._cached_packed_local_indices.get(key)
@@ -2662,7 +2703,7 @@ class NestedTensor(torch.Tensor):
         r"""Return batch coordinates for packed values."""
         target_device = self.device if device is None else torch.device(device)
         device_key = type(self)._offset_conversion_device_key(target_device)
-        token = self._offset_conversion_cache_token() if device_key is not None else None
+        token = self._metadata_cache_token() if device_key is not None else None
         key = None if device_key is None or token is None else (device_key, dtype, token)
         if key is not None and self._cached_packed_batch_indices is not None:
             cached = self._cached_packed_batch_indices.get(key)
@@ -3044,7 +3085,7 @@ class NestedTensor(torch.Tensor):
         r"""Wrap one scalar per element using the canonical scalar-result metadata."""
         cls = type(self)
         offsets, shape, outer_size, packed_sizes, element_shapes = self._scalar_result_meta()
-        return cls.from_packed(
+        return cls._from_packed_raw(
             values,
             offsets,
             shape,
@@ -3120,7 +3161,7 @@ class NestedTensor(torch.Tensor):
                 shape for tensor in tensors for shape in cast(tuple[tuple[int, ...], ...], tensor._element_shapes)
             )
 
-        return cls.from_packed(
+        return cls._from_packed_raw(
             new_values,
             new_offsets,
             new_physical_shape,
@@ -3138,13 +3179,14 @@ class NestedTensor(torch.Tensor):
 
     @property
     def _storage(self) -> tuple[Tensor, ...]:
-        if _is_compiling() or not self._can_cache_materialized_views():
+        token = self._materialized_view_cache_token()
+        if token is None:
             return self._unpack()
         cached = self._cached_storage
-        if cached is None or self._storage_cache_dropped_grad(cached):
-            cached = self._unpack()
+        if cached is None or cached[0] != token or self._storage_cache_dropped_grad(cached[1]):
+            cached = (token, self._unpack())
             self._cached_storage = cached
-        return cached
+        return cached[1]
 
     @_storage.setter
     def _storage(self, tensors: Sequence) -> None:
@@ -3161,25 +3203,30 @@ class NestedTensor(torch.Tensor):
         """
         return torch.is_grad_enabled() and bool(cached) and self.concat.requires_grad and cached[0].grad_fn is None
 
-    def _can_cache_materialized_views(self) -> bool:
-        r"""Avoid retaining a differentiable view whose graph saves this wrapper."""
+    def _materialized_view_cache_token(self) -> tuple[int, ...] | None:
+        r"""Cache versioned layouts without retaining a graph that saves this wrapper."""
         # Inference tensors can mutate without a version counter. A numerical
         # materialization cannot be cached across accesses to that storage.
-        if self._packed_values.is_inference():
-            return False
-        if not torch.is_grad_enabled():
-            return True
-        wrapper_owned = vars(self).get("_unflattened_autograd", False) or vars(self).get("_wrapper_grad_leaf", False)
-        return not ((wrapper_owned and self.requires_grad) or self.grad_fn is not None)
+        token = self._metadata_cache_token()
+        if token is None or self._packed_values.is_inference():
+            return None
+        if torch.is_grad_enabled():
+            wrapper_owned = vars(self).get("_unflattened_autograd", False) or vars(self).get(
+                "_wrapper_grad_leaf", False
+            )
+            if (wrapper_owned and self.requires_grad) or self.grad_fn is not None:
+                return None
+        return token
 
     # ------------------------------------------------------------------
     # Cached materialized views
     # ------------------------------------------------------------------
 
     def _tensor_cached_view(self) -> Tensor:
-        cacheable = self._can_cache_materialized_views()
+        shape_token = self._materialized_view_cache_token()
+        cacheable = shape_token is not None
         cached = self._cached_tensor_view if cacheable else None
-        token = self._values_cache_token() if cacheable else ()
+        token = (self._cache_version(self.concat), *shape_token) if shape_token is not None else ()
         if (
             cached is not None
             and cached[0] is self.batch_first
@@ -3195,12 +3242,13 @@ class NestedTensor(torch.Tensor):
         return tensor
 
     def _mask_cached_view(self) -> Tensor:
-        cached = self._cached_mask_view
-        token = self._shape_cache_token()
+        token = self._metadata_cache_token()
+        cached = self._cached_mask_view if token is not None else None
         if cached is not None and cached[0] is self.batch_first and cached[1] is self.mask_value and cached[2] == token:
             return cached[3]
         mask = self._materialize_mask()
-        self._cached_mask_view = (self.batch_first, self.mask_value, token, mask)
+        if token is not None:
+            self._cached_mask_view = (self.batch_first, self.mask_value, token, mask)
         return mask
 
     @property
@@ -3343,15 +3391,32 @@ class NestedTensor(torch.Tensor):
             >>> nested_tensor.concat.shape
             torch.Size([202, 1, 5])
         """
+        leaf = getattr(self, "_transform_leaf", None)
+        if leaf is not None:
+            from torch._subclasses.fake_tensor import FakeTensor
+            from torch._subclasses.functional_tensor import FunctionalTensor
+            from torch.utils._python_dispatch import _detect_infra_mode
+
+            values = self._packed_values
+            if isinstance(values, FunctionalTensor):
+                if _detect_infra_mode(torch._C._TorchDispatchModeKey.FUNCTIONAL) is None:
+                    return values
+            elif (
+                isinstance(values, FakeTensor)
+                or torch._C._get_dispatch_mode(torch._C._TorchDispatchModeKey.FAKE) is not None
+            ):
+                return values
+            return _project_packed_values(leaf)
         values = self._packed_values
         if not torch.is_grad_enabled():
             return values
         # Attribute reads on the wrapper itself would each re-enter ``__torch_function__``.
         with torch._C.DisableTorchFunctionSubclass():
             grad_fn = self.grad_fn
+            wrapper_requires_grad = torch.Tensor.requires_grad.__get__(self)
             wrapper_version = self._cache_version(self)
-        if vars(self).get("_unflattened_autograd", False) or vars(self).get("_wrapper_grad_leaf", False):
-            needs_projection = self.requires_grad
+        if getattr(self, "_unflattened_autograd", False) or getattr(self, "_wrapper_grad_leaf", False):
+            needs_projection = wrapper_requires_grad
         else:
             # Saved-tensor hooks can restore this wrapper's autograd edge while
             # leaving its packed child detached. Ownership must remain the same
@@ -3376,15 +3441,22 @@ class NestedTensor(torch.Tensor):
         # AccumulateGrad, and functional tracing must build its own graph.
         # Saved-tensor hooks must observe each projection on both the original
         # forward and recomputation, so never reuse a graph across their scope.
+        # Real projections must stay stable during Dynamo's alias checks;
+        # only conversions and materialized views use the eager-context gate.
+        metadata_token = self._shape_cache_token() if grad_fn is not None else None
         cacheable = (
-            grad_fn is not None
+            metadata_token is not None
+            and not values.is_inference()
             and not isinstance(values, FunctionalTensor)
+            and (_is_compiling() or not torch._C._are_functorch_transforms_active())
             and torch._C._autograd._top_saved_tensors_default_hooks(True) is None
         )
         # Eager factory results must keep the wrapper edge visible to
         # autograd.grad, retain_grad, and hooks just like compiled outputs.
         token = (
-            (id(values), wrapper_version, self._cache_version(values), *self._shape_cache_token()) if cacheable else ()
+            (id(values), wrapper_version, self._cache_version(values), *metadata_token)
+            if metadata_token is not None
+            else ()
         )
         cached = vars(self).get("_cached_packed_projection") if cacheable else None
         if cached is not None and cached[0] == token:
@@ -3710,7 +3782,7 @@ class NestedTensor(torch.Tensor):
             torch.cumsum(torch.tensor(sizes, dtype=torch.long), dim=0, out=offsets[1:])
             shape_tensor = torch.tensor(element_shapes, dtype=torch.long)
             values = concat_tensor.clone(memory_format=torch.contiguous_format)
-            result = cls.from_packed(
+            result = cls._from_packed_raw(
                 values,
                 offsets,
                 shape_tensor,
@@ -3910,34 +3982,27 @@ class NestedTensor(torch.Tensor):
             and not (_is_fake_tensor(self._offsets) or _is_fake_tensor(self._physical_shape))
         ):
             values = type(self)._maybe_pin_values(packed_values, self._pin_memory)
-            result = torch.Tensor._make_wrapper_subclass(
-                type(self),
+            result = type(self)._compiled_packed_constructor(
+                values,
+                self._offsets,
+                self._physical_shape,
                 self._logical_shape,
-                strides=self.stride(),
-                dtype=values.dtype,
-                device=values.device,
-                requires_grad=values.requires_grad,
+                self._permutation,
+                self._ragged_dims,
+                self._ragged_dims_explicit,
+                self.batch_first,
+                self.padding_value,
+                self.mask_value,
+                bool(self._pin_memory and _is_pinned(values)),
+                self._packed_sizes,
+                self._element_shapes,
+                self._persistent_ragged_offsets(),
+                self.stride(),
             )
-            result._packed_values = values
-            result._offsets = self._offsets
-            result._physical_shape = self._physical_shape
-            result._logical_shape = self._logical_shape
-            result._logical_strides = self.stride()
-            result._permutation = self._permutation
-            result._ragged_dims = self._ragged_dims
-            result._ragged_dims_explicit = self._ragged_dims_explicit
-            result._batch_first = self._batch_first
-            result._padding_value = self._padding_value
-            result._mask_value = self._mask_value
-            result._pin_memory = bool(self._pin_memory and _is_pinned(values))
-            result._packed_sizes = self._packed_sizes
-            result._element_shapes = self._element_shapes
-            type(self)._install_persistent_ragged_offsets(result, self._persistent_ragged_offsets())
-            result._invalidate_transient_caches()
             self._share_offset_caches(result)
             result._inherit_tensor_backed_dynamic_dims(self)
             return result
-        result = type(self).from_packed(
+        result = type(self)._from_packed_raw(
             packed_values,
             self._offsets,
             self._physical_shape,
@@ -3952,23 +4017,7 @@ class NestedTensor(torch.Tensor):
             element_shapes=self._element_shapes,
             ragged_offsets=self._persistent_ragged_offsets(),
             validate=False,
-        )
-        result = type(self)._compiled_packed_constructor(
-            result._packed_values,
-            result._offsets,
-            result._physical_shape,
-            result._logical_shape,
-            result._permutation,
-            result._ragged_dims,
-            result._ragged_dims_explicit,
-            result.batch_first,
-            result.padding_value,
-            result.mask_value,
-            result._pin_memory,
-            result._packed_sizes,
-            result._element_shapes,
-            result._persistent_ragged_offsets(),
-            self.stride(),
+            logical_strides=self.stride(),
         )
         if (
             self._cached_hierarchical_offsets is not None
@@ -4048,7 +4097,7 @@ class NestedTensor(torch.Tensor):
                 f"got {packed_values.shape} and expected {self.concat.shape}"
             )
         pin_memory = _is_pinned(packed_values)
-        result = type(self).from_packed(
+        result = type(self)._from_packed_raw(
             packed_values,
             self._offsets,
             self._physical_shape,
@@ -4230,7 +4279,7 @@ class NestedTensor(torch.Tensor):
         if len(self) == 0:
             packed_sizes = ()
             element_shapes = ()
-        result = type(self).from_packed(
+        result = type(self)._from_packed_raw(
             packed_values,
             self._offsets,
             physical_shape,
@@ -4360,7 +4409,7 @@ class NestedTensor(torch.Tensor):
         else:
             logical_shape = torch.Size((max_length, len(self), *static_tail))
         pin_memory = _is_pinned(packed_values)
-        result = type(self).from_packed(
+        result = type(self)._from_packed_raw(
             packed_values,
             offsets,
             physical_shape,
@@ -4514,7 +4563,7 @@ class NestedTensor(torch.Tensor):
         # Both ragged axes and their offsets already carry the dynamic shape contract. Marking
         # caller-owned packed storage here would mutate a compiled graph input after Dynamo has
         # installed its guards, forcing an otherwise unnecessary second compilation.
-        result = type(self).from_packed(
+        result = type(self)._from_packed_raw(
             packed_values,
             outer_offsets,
             physical_shape,
@@ -4660,7 +4709,7 @@ class NestedTensor(torch.Tensor):
         else:
             logical_shape = torch.Size((max_rows, batch_size, max_columns, *static_tail))
         pin_memory = _is_pinned(packed_values)
-        result = type(self).from_packed(
+        result = type(self)._from_packed_raw(
             packed_values,
             outer_offsets,
             physical_shape,
@@ -4738,7 +4787,7 @@ class NestedTensor(torch.Tensor):
         values = self._dense_to_packed_values(tensor)
         if values is not None:
             element_shapes = self._element_shapes
-            return self.__class__.from_packed(
+            return self.__class__._from_packed_raw(
                 values,
                 self._offsets,
                 self._physical_shape,
@@ -5012,7 +5061,7 @@ class NestedTensor(torch.Tensor):
                 new_physical_shape[:, dim] = new_sizes
             else:
                 new_physical_shape[:, dim] = size
-        result = type(self).from_packed(
+        result = type(self)._from_packed_raw(
             values,
             offsets,
             new_physical_shape,
@@ -5190,7 +5239,7 @@ class NestedTensor(torch.Tensor):
         offsets = self._offsets.new_zeros((1,))
         physical_shape = self._physical_shape.new_empty((0, len(projected_extents)))
         ragged_offsets = tuple(offsets for _ in ragged_dims) if ragged_dims else None
-        return type(self).from_packed(
+        return type(self)._from_packed_raw(
             values,
             offsets,
             physical_shape,
@@ -5243,6 +5292,8 @@ class NestedTensor(torch.Tensor):
 
     def __getitem__(self, index: _Index | tuple[_Index, ...]) -> Tensor | NestedTensor:
         r"""Retrieve element(s) by index, slice, list, tuple, or tensor mask."""
+        if not _is_compiling() and _transform_opaque(self):
+            return _transform_delegate(torch.Tensor.__getitem__, (self, index), {})
         if isinstance(index, (int, torch.SymInt)):
             if self._packed_sizes is None and (_is_compiling() or _is_fake_tensor(self._offsets)):
                 return self._packed_sample(index)
@@ -5486,7 +5537,7 @@ class NestedTensor(torch.Tensor):
                 values = self._packed_values
                 if new_size != old_size:
                     values = torch.cat([self.concat[:old_start], new_payload, self.concat[old_end:]], dim=0)
-                candidate = self.__class__.from_packed(
+                candidate = self.__class__._from_packed_raw(
                     values,
                     offsets,
                     shape_tensor,
@@ -5812,7 +5863,7 @@ class NestedTensor(torch.Tensor):
         serialized_ragged_offsets = state["_ragged_offsets"]
         if serialized_ragged_offsets is not None:
             serialized_ragged_offsets = tuple(level_offsets.cpu() for level_offsets in serialized_ragged_offsets)
-        result = cls.from_packed(
+        result = cls._from_packed_raw(
             state["_packed_values"],
             state["_offsets"].cpu(),
             state["_physical_shape"].cpu(),
@@ -5834,7 +5885,7 @@ class NestedTensor(torch.Tensor):
         r"""Shallow copy: share storage while preserving independent leaf ownership."""
         wrapper_leaf = vars(self).get("_wrapper_grad_leaf", False)
         values = self._packed_values.detach().requires_grad_(self.requires_grad) if wrapper_leaf else self.concat
-        result = self.__class__.from_packed(
+        result = self.__class__._from_packed_raw(
             values,
             self._offsets,
             self._physical_shape,
@@ -5861,7 +5912,7 @@ class NestedTensor(torch.Tensor):
             if wrapper_leaf
             else self.concat.clone()
         )
-        result = self.__class__.from_packed(
+        result = self.__class__._from_packed_raw(
             values,
             self._offsets.clone(),
             self._physical_shape.clone(),
@@ -5944,6 +5995,9 @@ class NestedTensor(torch.Tensor):
             >>> nested_tensor.dim()
             2
         """
+        if not _is_compiling() and _transform_opaque(self):
+            with torch._C.DisableTorchFunctionSubclass():
+                return torch.Tensor.dim(vars(self)["_transform_leaf"])
         if not hasattr(self, "_logical_shape"):
             with torch._C.DisableTorchFunctionSubclass():
                 return len(torch.Tensor.size(self))
@@ -6016,7 +6070,7 @@ class NestedTensor(torch.Tensor):
 
     def pin_memory(self, device: torch.device | str | int | None = None) -> Self:
         r"""Pin the underlying tensor memory for faster host-to-device transfer."""
-        return type(self).from_packed(
+        return type(self)._from_packed_raw(
             self.concat.pin_memory(device=device),
             self._offsets,
             self._physical_shape,
@@ -6121,6 +6175,10 @@ class NestedTensor(torch.Tensor):
             >>> nested_tensor.size(1)
             4
         """
+        if not _is_compiling() and _transform_opaque(self):
+            with torch._C.DisableTorchFunctionSubclass():
+                leaf = vars(self)["_transform_leaf"]
+                return torch.Tensor.size(leaf) if dim is None else torch.Tensor.size(leaf, dim)
         if hasattr(self, "_logical_shape"):
             full_size = self._logical_shape
         else:
@@ -6561,7 +6619,7 @@ class _PackedLikeAutograd(torch.autograd.Function):
                 0, *(1 + axis for axis in reference._permutation), values.dim() - 1
             )
             values = values.reshape(*reference._packed_values.shape, info.batch_size).detach()
-        layout = type(reference).from_packed(
+        layout = type(reference)._from_packed_raw(
             values,
             reference._offsets,
             shape,
@@ -6592,13 +6650,8 @@ class _PackedLikeAutograd(torch.autograd.Function):
                 layout = NestedTensor._layout_from_state(ctx.layout_state, grad_output.concat, ctx.packed_shape)
                 return _uniform_logical_from_values(layout, grad_output.concat), None
             return grad_output, None
-        state = getattr(ctx, "layout_state", None)
-        if state is None:
-            (reference,) = ctx.saved_tensors
-            reference_ragged, reference_static = reference._ragged_dims, reference._static_dims
-        else:
-            reference = None
-            reference_ragged, reference_static = ctx.axes
+        state = ctx.layout_state
+        reference_ragged, reference_static = ctx.axes
         tangent_layout = grad_output if _is_compiling() else _transform_base(grad_output)
         nested_tangent = isinstance(tangent_layout, NestedTensor)
         values_grad = (
@@ -6622,8 +6675,8 @@ class _PackedLikeAutograd(torch.autograd.Function):
                     grad_ragged = tuple(dim - (dim > physical_dim) for dim in grad_ragged)
                     batch_dim -= logical_dim < batch_dim
             packed_tangent = grad_ragged == reference_ragged and set(grad_static) == set(reference_static)
-            reference_shapes = reference._physical_shape if state is None else state[2]
-            reference_offsets = reference._offsets if state is None else state[1]
+            reference_shapes = state[2]
+            reference_offsets = state[1]
             message = "NestedTensor tangent topology must match the output"
             if (
                 not packed_tangent
@@ -6641,8 +6694,7 @@ class _PackedLikeAutograd(torch.autograd.Function):
                 packed_order = (0, *(1 + grad_static.index(dim) for dim in reference_static))
                 values_grad = values_grad.permute(packed_order)
         elif values_grad.shape != ctx.packed_shape:
-            if reference is None:
-                reference = NestedTensor._layout_from_state(ctx.layout_state, values_grad, ctx.packed_shape)
+            reference = NestedTensor._layout_from_state(state, values_grad, ctx.packed_shape)
             packed_grad = reference._dense_to_packed_values(values_grad)
             if packed_grad is None:
                 raise RuntimeError(
@@ -6661,8 +6713,9 @@ class _PackedValuesAutograd(torch.autograd.Function):
         # Returning the child itself would attach this node to the wrapper's
         # own backing tensor and create a reference cycle through the saved
         # layout. A fresh view preserves storage and version aliases.
+        # Unlike view_as, alias also retains noncanonical empty strides.
         with torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False):
-            return input._packed_values.view_as(input._packed_values)
+            return torch.ops.aten.alias.default(input._packed_values)
 
     @staticmethod
     def setup_context(ctx, inputs, output):
@@ -6670,6 +6723,8 @@ class _PackedValuesAutograd(torch.autograd.Function):
         layout = (
             _transform_base(input) if not _is_compiling() and torch._C._are_functorch_transforms_active() else input
         )
+        if not _is_compiling() and torch._C._are_functorch_transforms_active():
+            layout = _transform_projection_layout(input, output, layout)
         ctx.layout_state = layout._layout_state()
         ctx.logical_input = getattr(layout, "_logical_input", False)
         ctx.layout = None
@@ -6831,6 +6886,19 @@ def _traceable_repeat_batch(self: _NestedTensorT, repeats: int, *, output_size: 
 NestedTensor.repeat_batch = _traceable_repeat_batch  # type: ignore[method-assign]
 
 
+def _literal_wrapper_dimension(value: int | torch.SymInt) -> int | torch.SymInt:
+    r"""Normalize literal symbols without changing AOT's captured dynamic slots."""
+    if isinstance(value, torch.SymInt):
+        expression = value.node.expr
+        # Native tensor metadata specializes zero and one. Other symbols must
+        # retain their ABI slots when later ShapeEnv guards make them constant.
+        if value.node._expr.is_Integer or (
+            value.node.shape_env.specialize_zero_one and expression.is_Integer and int(expression) in (0, 1)
+        ):
+            return int(expression)
+    return value
+
+
 def _make_nested_tensor_from_packed_impl(
     nested_tensor_cls: type[NestedTensor],
     values: Tensor,
@@ -6849,6 +6917,14 @@ def _make_nested_tensor_from_packed_impl(
     ragged_offsets: tuple[Tensor, ...] | None,
     logical_strides: tuple[int, ...] | None = None,
 ) -> NestedTensor:
+    logical_shape = torch.Size(_literal_wrapper_dimension(size) for size in logical_shape)
+    if logical_strides is not None:
+        logical_strides = tuple(_literal_wrapper_dimension(stride) for stride in logical_strides)
+    if not getattr(nested_tensor_cls, "_is_transform_proxy", False):
+        from torch._subclasses.functional_tensor import FunctionalTensor
+
+        if isinstance(values, FunctionalTensor):
+            nested_tensor_cls = _TRANSFORM_TYPES[nested_tensor_cls]
     result = torch.Tensor._make_wrapper_subclass(
         nested_tensor_cls,
         logical_shape,
@@ -6933,3 +7009,269 @@ def _make_nested_tensor_from_packed_constructor(nested_tensor_cls: type[NestedTe
 
 
 NestedTensor._compiled_packed_constructor = staticmethod(_make_nested_tensor_from_packed)
+
+
+class _TransformTensor(NestedTensor):
+    """Opaque tensor leaf retaining logical batching axes and packed autograd."""
+
+    _is_transform_proxy = True
+    _public_type = NestedTensor
+
+    @classmethod
+    def __tensor_unflatten__(cls, inner_tensors, metadata, outer_size, outer_stride):
+        result = super().__tensor_unflatten__(inner_tensors, metadata, outer_size, outer_stride)
+        from torch._subclasses.fake_tensor import FakeTensor
+        from torch._subclasses.functional_tensor import FunctionalTensor
+
+        values = result._packed_values
+        if (
+            not isinstance(values, (FunctionalTensor, FakeTensor))
+            and not torch._C._functorch.is_gradtrackingtensor(values)
+            and not torch._C._functorch.is_batchedtensor(values)
+        ):
+            return _transform_rebuild(result, cls._public_type)
+        return result
+
+    def _packed_like_unchecked(self, packed_values, *, reuse_wrapper=False):
+        if torch._C._functorch.is_gradtrackingtensor(packed_values) or torch._C._functorch.is_batchedtensor(
+            packed_values
+        ):
+            return _PackedLikeAutograd.apply(packed_values, _PackedStructureReference(self))
+        return super()._packed_like_unchecked(packed_values, reuse_wrapper=reuse_wrapper)
+
+
+def _transform_rebuild(value, cls, packed_values=None):
+    if packed_values is None:
+        packed_values = value._packed_values
+    result = cls._from_packed_raw(
+        packed_values,
+        value._offsets,
+        value._physical_shape,
+        permutation=value._permutation,
+        ragged_dims=value._ragged_dims,
+        batch_first=value.batch_first,
+        padding_value=value.padding_value,
+        mask_value=value.mask_value,
+        outer_size=value._logical_shape,
+        packed_sizes=value._packed_sizes,
+        element_shapes=value._element_shapes,
+        ragged_offsets=value._persistent_ragged_offsets(),
+        validate=False,
+        mark_dynamic=False,
+        # AOT counts symbolic-constant strides as separate ABI inputs.
+        logical_strides=value.stride(),
+    )
+    with torch._C.DisableTorchFunctionSubclass():
+        if value.requires_grad and not result.requires_grad:
+            torch.Tensor.requires_grad.__set__(result, True)
+    for name in ("_unflattened_autograd", "_is_aot_tangent", "_wrapper_grad_leaf"):
+        if vars(value).get(name, False):
+            object.__setattr__(result, name, True)
+    return result
+
+
+def _transform_autograd_bridge(value, cls, *, project=True):
+    """Cross the PyTree boundary once without re-entering the active transform."""
+    from torch._functorch.autograd_function import enable_single_level_autograd_function
+    from torch._functorch.pyfunctorch import temporarily_clear_interpreter_stack
+
+    with temporarily_clear_interpreter_stack(), torch._C._DisableFuncTorch(), enable_single_level_autograd_function():
+        values = _PackedValuesAutograd.apply(value) if project else value._packed_values
+        reference = _transform_rebuild(value, cls, values.detach())
+        return _PackedLikeAutograd.apply(values, _PackedStructureReference(reference))
+
+
+def _transform_flatten(value):
+    """Expose one logical tensor leaf without moving layout into static TreeSpec context."""
+    attrs = vars(value)
+    if "_transform_leaf" in attrs:
+        return [attrs["_transform_leaf"]], type(value)
+    values = value._packed_values
+    from torch._subclasses.fake_tensor import FakeTensor
+    from torch._subclasses.functional_tensor import FunctionalTensor
+
+    if isinstance(values, (FunctionalTensor, FakeTensor)):
+        return [_transform_rebuild(value, _TRANSFORM_TYPES[type(value)])], type(value)
+    transformed = torch._C._functorch.is_gradtrackingtensor(values) or torch._C._functorch.is_batchedtensor(values)
+    if transformed:
+        reference = _transform_rebuild(value, _TRANSFORM_TYPES[type(value)], values.detach())
+        leaf = _PackedLikeAutograd.apply(values, _PackedStructureReference(reference))
+    else:
+        with torch._C.DisableTorchFunctionSubclass():
+            owned = (
+                value.requires_grad
+                if attrs.get("_unflattened_autograd", False) or attrs.get("_wrapper_grad_leaf", False)
+                else value.grad_fn is not None
+            )
+        leaf = _transform_autograd_bridge(value, _TRANSFORM_TYPES[type(value)], project=owned)
+    return [leaf], type(value)
+
+
+def _transform_unflatten(leaves, cls):
+    """Restore the public wrapper around the exact leaf selected by the transform."""
+    (leaf,) = leaves
+    if not isinstance(leaf, torch.Tensor):
+        result = torch.Tensor._make_wrapper_subclass(cls, (0,), device="meta")
+        object.__setattr__(result, "_transform_leaf", leaf)
+        return result
+    raw = _transform_base(leaf)
+    from torch._subclasses.fake_tensor import FakeTensor
+    from torch._subclasses.functional_tensor import FunctionalTensor
+
+    # AOT differentiates this leaf itself. Rebuilding it would create a different target.
+    if (
+        _is_compiling()
+        and not torch._C._functorch.is_gradtrackingtensor(leaf)
+        and not torch._C._functorch.is_batchedtensor(leaf)
+        and isinstance(raw._packed_values, (FunctionalTensor, FakeTensor))
+    ):
+        return leaf
+    if (
+        not torch._C._functorch.is_gradtrackingtensor(leaf)
+        and not torch._C._functorch.is_batchedtensor(leaf)
+        and not isinstance(raw._packed_values, (FunctionalTensor, FakeTensor))
+    ):
+        return _transform_autograd_bridge(leaf, cls)
+    hidden = _transform_batch_dims(leaf)
+    batch_dim = 0 if raw.batch_first else 1
+    if batch_dim in hidden:
+        result = _transform_rebuild(raw, cls)
+        object.__setattr__(result, "_transform_leaf", leaf)
+        object.__setattr__(result, "_transform_opaque", True)
+        return result
+    if not hidden:
+        result = _transform_rebuild(raw, cls)
+    else:
+        hidden_physical = tuple(dim - (dim > batch_dim) for dim in hidden)
+        keep = tuple(dim for dim in range(raw._physical_shape.size(1)) if dim not in hidden_physical)
+        shape = raw._physical_shape[:, keep]
+        mapping = {old: new for new, old in enumerate(keep)}
+        permutation = tuple(mapping[dim] for dim in raw._permutation if dim in mapping)
+        ragged = tuple(mapping[dim] for dim in raw._ragged_dims)
+        values = _PackedValuesAutograd.apply(leaf)
+        result = cls._from_packed_raw(
+            values,
+            raw._offsets,
+            shape,
+            permutation=permutation,
+            ragged_dims=ragged,
+            batch_first=batch_dim - sum(dim < batch_dim for dim in hidden) == 0,
+            outer_size=tuple(leaf.shape),
+            ragged_offsets=raw._persistent_ragged_offsets(),
+            validate=False,
+            mark_dynamic=False,
+        )
+    object.__setattr__(result, "_transform_leaf", leaf)
+    return result
+
+
+def _transform_opaque(value):
+    return (
+        isinstance(value, NestedTensor)
+        and not isinstance(value, _TransformTensor)
+        and getattr(value, "_transform_opaque", False)
+    )
+
+
+def _transform_lift(value):
+    attrs = vars(value)
+    leaf = attrs.get("_transform_leaf")
+    if isinstance(leaf, torch.Tensor):
+        return leaf
+    values = attrs.get("_packed_values")
+    if not isinstance(values, torch.Tensor):
+        return None
+    if not (torch._C._functorch.is_gradtrackingtensor(values) or torch._C._functorch.is_batchedtensor(values)):
+        return None
+    leaf = _transform_flatten(value)[0][0]
+    object.__setattr__(value, "_transform_leaf", leaf)
+    return leaf
+
+
+def _map_transform_args(fn, value):
+    from torch.utils._pytree import tree_map
+
+    return tree_map(fn, value, is_leaf=lambda item: isinstance(item, Tensor))
+
+
+def _transform_delegate(func, args, kwargs, only_opaque=False):
+    """Keep native autograd, metadata queries, and hidden-batch operations on their owner."""
+    if not torch._C._are_functorch_transforms_active():
+        return NotImplemented
+    original = {}
+    public_class = None
+
+    def convert(value):
+        nonlocal public_class
+        if isinstance(value, NestedTensor) and not isinstance(value, _TransformTensor):
+            if only_opaque and not _transform_opaque(value):
+                return value
+            leaf = _transform_lift(value)
+            if leaf is not None:
+                original.setdefault(id(leaf), value)
+                if public_class is None:
+                    public_class = type(value)
+                return leaf
+        return value
+
+    converted_args = _map_transform_args(convert, args)
+    converted_kwargs = _map_transform_args(convert, kwargs)
+    if not original:
+        return NotImplemented
+    with torch._C.DisableTorchFunctionSubclass():
+        result = func(*converted_args, **converted_kwargs)
+
+    def restore(value):
+        if id(value) in original:
+            return original[id(value)]
+        if isinstance(value, torch.Tensor):
+            raw = _transform_base(value)
+            if isinstance(raw, NestedTensor):
+                return _transform_unflatten([value], public_class)
+        return value
+
+    return _map_transform_args(restore, result)
+
+
+def _transform_projection_layout(leaf, output, raw):
+    """Save visible geometry; mapped static axes are owned by the enclosing vmap rule."""
+    hidden = _transform_batch_dims(leaf)
+    if not hidden:
+        return raw
+    batch_dim = 0 if raw.batch_first else 1
+    if batch_dim in hidden:
+        return raw
+    hidden_physical = tuple(dim - (dim > batch_dim) for dim in hidden)
+    keep = tuple(dim for dim in range(raw._physical_shape.size(1)) if dim not in hidden_physical)
+    mapping = {old: new for new, old in enumerate(keep)}
+    values = torch.empty((), device="meta", dtype=output.dtype).expand(output.shape)
+    return type(raw)._from_packed_raw(
+        values,
+        raw._offsets,
+        raw._physical_shape[:, keep],
+        permutation=tuple(mapping[d] for d in raw._permutation if d in mapping),
+        ragged_dims=tuple(mapping[d] for d in raw._ragged_dims),
+        batch_first=batch_dim - sum(d < batch_dim for d in hidden) == 0,
+        outer_size=tuple(leaf.shape),
+        ragged_offsets=raw._persistent_ragged_offsets(),
+        validate=False,
+        mark_dynamic=False,
+    )
+
+
+_TRANSFORM_TYPES = {NestedTensor: _TransformTensor}
+
+
+def _register_transform_type(cls):
+    from torch.utils._pytree import register_pytree_node
+
+    if cls not in _TRANSFORM_TYPES:
+        _TRANSFORM_TYPES[cls] = type(
+            f"_Transform{cls.__name__}",
+            (_TransformTensor, cls),
+            {"_public_type": cls, "__module__": __name__},
+        )
+    register_pytree_node(cls, _transform_flatten, _transform_unflatten)
+
+
+_register_transform_type(NestedTensor)

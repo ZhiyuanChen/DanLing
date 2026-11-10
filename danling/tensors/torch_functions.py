@@ -28,7 +28,7 @@ registered handler.
 Handlers here use several strategies depending on the op's needs:
 
 * **Packed fast-path** — ops that work directly on the concatenated
-  ``concat`` tensor via ``NestedTensor.from_packed`` without knowing element
+  ``concat`` tensor via the internal packed constructor without knowing element
   boundaries.
 * **Per-element dispatch** — ops that must be applied to each element
   individually via ``_map_storage_serial``, e.g. when dimension indices need
@@ -55,6 +55,7 @@ from .aten_functions import (
     ATEN_INPLACE_BINARY_OPS,
     _batch_dim_compile_safe,
     _dtype_view_compile_safe,
+    _index_select_compile_safe,
 )
 from .ops import (
     TORCH_BINARY_ELEMENTWISE_OPS,
@@ -1125,7 +1126,7 @@ def _broadcast_nested_tensors_packed(tensors):
         if values is None:
             return None
         outputs.append(
-            type(tensor).from_packed(
+            type(tensor)._from_packed_raw(
                 values,
                 output_offsets,
                 output_shape,
@@ -1364,7 +1365,7 @@ def _split_like(input: NestedTensor, dim: int, spans_for, op_name: str):
         for start, length in spans_for(extent):
             if sole_ragged:
                 outputs.append(
-                    type(input).from_packed(
+                    type(input)._from_packed_raw(
                         input.concat,
                         input._offsets,
                         input._physical_shape,
@@ -2244,8 +2245,10 @@ def index_put(input: NestedTensor, indices, values, accumulate: bool = False):
     return NestedTensor(storage, **input._meta())
 
 
-@NestedTensorFuncRegistry.implement(torch.index_select)
-@NestedTensorFuncRegistry.implement(torch.Tensor.index_select)
+@NestedTensorFuncRegistry.implement(torch.index_select, compile_safe=True, compile_guard=_index_select_compile_safe)
+@NestedTensorFuncRegistry.implement(
+    torch.Tensor.index_select, compile_safe=True, compile_guard=_index_select_compile_safe
+)
 def index_select(input: NestedTensor, dim: int, index: Tensor):
     r"""
     Returns a new tensor which indexes the `input` tensor along dimension `dim` using the entries in
@@ -2276,6 +2279,14 @@ def index_select(input: NestedTensor, dim: int, index: Tensor):
     from .aten_functions import index_select as _aten_index_select
 
     return _aten_index_select(torch.ops.aten.index_select.default, (input, dim, index), {})
+
+
+@NestedTensorFuncRegistry.implement(
+    torch.ops.aten.index_select.default, compile_safe=True, compile_guard=_index_select_compile_safe
+)
+def _index_select_native(self, dim, index):
+    r"""Preserve packed autograd and accept the native operator's ``self`` keyword."""
+    return index_select(self, dim, index)
 
 
 @NestedTensorFuncRegistry.implement(torch.masked_fill)
@@ -2686,6 +2697,7 @@ if hasattr(torch, "take_along_dim"):
         """
         from .aten_functions import (
             _gather_equivalent_index,
+            _logical_batched_take_along,
             _pack_uniform_logical_dense,
             _packed_static_dim,
             _packed_with_static_tail_from_values,
@@ -2702,6 +2714,14 @@ if hasattr(torch, "take_along_dim"):
             input = _pack_uniform_logical_dense(indices, input)
 
         dim_adj = None if dim is None else _translate_non_batch_dim(input, dim, name="take_along_dim")
+        if (
+            dim_adj is not None
+            and len(input._ragged_dims) > 1
+            and isinstance(indices, Tensor)
+            and not isinstance(indices, NestedTensor)
+            and indices.dim() == input.dim()
+        ):
+            return _logical_batched_take_along(input, dim, dim_adj, indices)
         if (
             dim_adj is not None
             and input._ragged_dims == (dim_adj,)
@@ -5232,7 +5252,7 @@ def _repeat_interleave_packed_batch(
 
     logical_shape = list(input._logical_shape)
     logical_shape[_get_batch_dim(input)] = expected_output_size
-    result = type(input).from_packed(
+    result = type(input)._from_packed_raw(
         output_values,
         output_offsets,
         output_shape,
@@ -5519,7 +5539,7 @@ def view_as(input, other):
         batched = input.movedim(batch_dim, 0)
         shape = tuple(batched.shape[1:])
         rows = shape[0] if shape else 1
-        input = type(other).from_packed(
+        input = type(other)._from_packed_raw(
             batched.view(len(other) * rows, *shape[1:]),
             other._offsets.new_tensor(range(len(other) + 1)) * rows,
             other._physical_shape.new_tensor(shape).reshape(1, -1).expand(len(other), -1).clone(),
@@ -5887,7 +5907,7 @@ def _uniform_expand_as_target(source: NestedTensor, shape: torch.Size) -> Nested
         parents *= width
     packed_shape = (len(source) * count, *(element_shape[dim] for dim in source._static_dims))
     placeholder = source.concat.new_empty(()).expand(packed_shape)
-    return type(source).from_packed(
+    return type(source)._from_packed_raw(
         placeholder,
         offsets,
         physical_shape,
@@ -5934,7 +5954,7 @@ def expand_as(input, other):
             raise RuntimeError("expand_as(): dense input cannot expand to the NestedTensor target shape")
         values = values.expand(target._packed_values.shape)
         configuration = target
-    result = type(configuration).from_packed(
+    result = type(configuration)._from_packed_raw(
         values,
         target._offsets,
         target._physical_shape,
@@ -6300,7 +6320,7 @@ def transpose(input: NestedTensor, dim0: int, dim1: int) -> NestedTensor:
             raise ValueError("Cannot transpose the batch dimension with a non-sequence dimension for NestedTensor.")
         new_shape = list(input._logical_shape)
         new_shape[0], new_shape[1] = new_shape[1], new_shape[0]
-        return type(input).from_packed(
+        return type(input)._from_packed_raw(
             input.concat,
             input._offsets,
             input._physical_shape,
@@ -6986,6 +7006,12 @@ def _inplace_binary_torch_handler(self, other, *args, _fn=None, **kwargs):
                 "unsupported operation: input and written tensor have overlapping memory",
             )
         other = other.expand_as(self)
+    if not _is_compiling():
+        from .nested_tensor import _transform_delegate
+
+        result = _transform_delegate(_fn, (self, other, *args), kwargs)
+        if result is not NotImplemented:
+            return result
     with torch._C.DisableTorchFunctionSubclass():
         return _fn(self, other, *args, **kwargs)
 
@@ -7128,8 +7154,6 @@ TORCH_TIER1_COMPILE_SAFE_OPS: tuple = (
     torch.Tensor.gather,
     torch.take_along_dim,
     torch.Tensor.take_along_dim,
-    torch.index_select,
-    torch.Tensor.index_select,
     torch.scatter,
     torch.Tensor.scatter,
     torch.masked_fill,

@@ -2135,7 +2135,7 @@ def _spatial_tile_conv2d(
     total_out = int(output_offsets[-1].item())
     if total_out == 0:
         output_values = input.concat.new_empty((total_out, out_channels))
-        return type(input).from_packed(
+        return type(input)._from_packed_raw(
             output_values,
             output_offsets,
             output_shape_tensor,
@@ -2246,7 +2246,7 @@ def _spatial_tile_conv2d(
             tile_meta=tile_meta,
         )
 
-    return type(input).from_packed(
+    return type(input)._from_packed_raw(
         output_values,
         output_offsets,
         output_shape_tensor,

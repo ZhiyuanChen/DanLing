@@ -40,9 +40,49 @@ def reference_options(source: NestedTensor) -> dict:
     }
 
 
+class TestClone:
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
+    @pytest.mark.parametrize("batch_first,transposed", [(True, False), (False, True)])
+    def test_copy(self, device, backend, batch_first, transposed):
+        torch.compiler.reset()
+        operation = (
+            torch.clone
+            if backend is None
+            else torch.compile(torch.clone, backend=backend, fullgraph=True, dynamic=True)
+        )
+        for lengths in ((2, 4), (3, 5)):
+            parts = [
+                torch.randn(length, 3, 4, device=device, dtype=torch.float64, requires_grad=True) for length in lengths
+            ]
+            source = NT(parts, ragged_dims=(0,), batch_first=batch_first, padding_value=-1, mask_value=True)
+            expected = parts
+            if transposed:
+                source = source.transpose(-1, -2)
+                expected = [part.transpose(-1, -2) for part in parts]
+
+            output = operation(source)
+
+            assert output.shape == source.shape
+            assert output.stride() == source.stride()
+            assert output.ragged_dims == source.ragged_dims
+            assert output.batch_first is batch_first
+            assert output.padding_value == -1
+            assert output.mask_value is True
+            torch.testing.assert_close(output.element_sizes(), source.element_sizes())
+            torch.testing.assert_close(output.unbind(0 if batch_first else 1), expected)
+            torch.testing.assert_close(
+                torch.autograd.grad(output.concat.square().sum(), parts), [2 * part for part in parts]
+            )
+            before = source.concat.detach().clone()
+            with torch.no_grad():
+                output.add_(1)
+            torch.testing.assert_close(source.concat, before)
+
+
 class TestElementwiseOps:
 
-    @pytest.mark.parametrize("backend", [None])
+    @pytest.mark.parametrize("backend", [None, "aot_eager"])
     @pytest.mark.parametrize("derived", [False, True])
     @pytest.mark.parametrize(
         "shape,expected_shape",
@@ -601,6 +641,137 @@ class TestIndexingOps:
             torch.autograd.grad(output.concat.square().sum(), parts),
             torch.autograd.grad(sum(part.square().sum() for part in expected), parts),
         )
+
+    @pytest.mark.parametrize("operation", ["slice", "select"])
+    def test_view_backward(self, device, operation):
+        parts = [torch.randn(n, 2, device=device, dtype=torch.float64) for n in (2, 4)]
+        if operation == "slice":
+            source = NT(parts, ragged_dims=(0,))
+            actual = torch.ops.aten.slice_backward.default(source, (2, 4, 5), 2, 1, 5, 2)
+            expected = [torch.ops.aten.slice_backward.default(part, (part.size(0), 5), 1, 1, 5, 2) for part in parts]
+        else:
+            parts = [part[:, 0] for part in parts]
+            source = NT(parts, ragged_dims=(0,))
+            actual = torch.ops.aten.select_backward.default(source, (2, 4, 5), 2, 3)
+            expected = [torch.ops.aten.select_backward.default(part, (part.size(0), 5), 1, 3) for part in parts]
+        for result, reference in zip(actual, expected):
+            assert_close(result, reference)
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("ragged_dims,axis", [((0,), 0), ((0, 1), 1), ((1, 0), 0), ((0, 1), 2)])
+    @pytest.mark.parametrize(
+        "name,inplace",
+        [("gather", False), ("scatter", False), ("scatter", True), ("scatter_add", False), ("scatter_reduce", False)],
+    )
+    def test_batched_index(self, device, batch_first, ragged_dims, axis, name, inplace):
+        shapes = ((2, 3, 4), (3, 3 if len(ragged_dims) == 1 else 5, 4))
+        parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        shape = [2, 2, 2, 4]
+        shape[axis + 1] = 1
+        index = torch.arange(math.prod(shape), device=device).reshape(shape) % min(part.shape[axis] for part in parts)
+        values = torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True)
+        ref_values = values.detach().clone().requires_grad_()
+        if not batch_first:
+            index = index.movedim(0, 1)
+            values = values.movedim(0, 1)
+            ref_values = ref_values.movedim(0, 1)
+        source = NT(parts, ragged_dims=ragged_dims, batch_first=batch_first).sin()
+        dim = axis + (batch_first or axis > 0)
+        kwargs = {"reduce": "sum", "include_self": False} if name == "scatter_reduce" else {}
+        native = {
+            "gather": torch.ops.aten.gather.default,
+            "scatter": torch.ops.aten.scatter.src,
+            "scatter_add": torch.ops.aten.scatter_add.default,
+            "scatter_reduce": torch.ops.aten.scatter_reduce.two,
+        }[name]
+        if inplace:
+            output = source.scatter_(dim, index, values)
+            assert output is source
+        else:
+            output = native(source, dim, index, *(() if name == "gather" else (values,)), **kwargs)
+        expected = [
+            getattr(torch, name)(
+                part.sin(),
+                axis,
+                index.select(0 if batch_first else 1, i),
+                *(() if name == "gather" else (ref_values.select(0 if batch_first else 1, i),)),
+                **kwargs,
+            )
+            for i, part in enumerate(references)
+        ]
+        actual = output.unbind(0 if batch_first else 1)
+        torch.testing.assert_close(actual, expected)
+        leaves = parts if name == "gather" else [*parts, values]
+        ref_leaves = references if name == "gather" else [*references, ref_values]
+        torch.testing.assert_close(
+            torch.autograd.grad(sum(p.square().sum() for p in actual), leaves),
+            torch.autograd.grad(sum(p.square().sum() for p in expected), ref_leaves),
+        )
+
+    @pytest.mark.parametrize("name", ["gather", "scatter", "scatter_add", "scatter_reduce"])
+    @pytest.mark.parametrize("fullgraph", [False, True])
+    def test_batched_compile(self, device, name, fullgraph):
+        torch.compiler.reset()
+        parts = [torch.randn(m, n, 3, device=device, requires_grad=True) for m, n in ((2, 3), (3, 5))]
+        index = torch.tensor([0, 1], device=device).reshape(2, 1, 1, 1).expand(2, 2, 1, 3)
+        values = torch.randn(index.shape, device=device, requires_grad=True)
+        kwargs = {"reduce": "sum"} if name == "scatter_reduce" else {}
+
+        def operation(source, index, values):
+            return getattr(torch, name)(source, 2, index, *(() if name == "gather" else (values,)), **kwargs)
+
+        try:
+            compiled = torch.compile(operation, backend="aot_eager", fullgraph=fullgraph, dynamic=True)
+            output = compiled(NT(parts, ragged_dims=(0, 1)), index, values)
+            expected = [
+                getattr(torch, name)(part, 1, index[i], *(() if name == "gather" else (values[i],)), **kwargs)
+                for i, part in enumerate(parts)
+            ]
+            actual = output.unbind(0)
+            torch.testing.assert_close(actual, expected)
+            leaves = parts if name == "gather" else [*parts, values]
+            torch.testing.assert_close(
+                torch.autograd.grad(sum(p.square().sum() for p in actual), leaves),
+                torch.autograd.grad(sum(p.square().sum() for p in expected), leaves),
+            )
+        finally:
+            torch.compiler.reset()
+
+    @pytest.mark.parametrize("nested,dense", [(False, False), (True, False), (True, True)])
+    @pytest.mark.parametrize("source_batch", [1, 2])
+    def test_batched_prefix(self, device, nested, dense, source_batch):
+        parts = [torch.randn(2, 3, 4, device=device, requires_grad=True) for _ in range(2)]
+        values = torch.randn(source_batch, 2, 1, 4, device=device, requires_grad=True)
+        source = torch.stack(parts) if dense else NT(parts, ragged_dims=(0, 1))
+        src = NT(values.unbind(), ragged_dims=(0, 1)) if nested else values
+        index = torch.zeros(1, 2, 1, 4, device=device, dtype=torch.long)
+        actual = torch.scatter(source, 2, index, src)
+        expected = torch.scatter(torch.stack(parts), 2, index, values)
+        torch.testing.assert_close(actual.unbind(), expected.unbind())
+        reference = [parts[0].scatter(1, index[0], values[0]), parts[1]]
+        torch.testing.assert_close(
+            torch.autograd.grad(actual.square().sum(), [*parts, values]),
+            torch.autograd.grad(sum(part.square().sum() for part in reference), [*parts, values]),
+        )
+
+    @pytest.mark.parametrize("shape", [(1, 2, 1, 4), (2, 1, 1, 4)])
+    def test_batched_source(self, device, shape):
+        dense = torch.zeros(2, 2, 3, 4, device=device)
+        source = NT(dense.unbind(), ragged_dims=(0, 1))
+        index = torch.zeros(2, 2, 1, 4, device=device, dtype=torch.long)
+        values = torch.zeros(shape, device=device)
+        for target in (dense, source):
+            with pytest.raises((ValueError, RuntimeError)):
+                torch.scatter(target, 2, index, values)
+
+    @pytest.mark.parametrize("name", ["gather", "scatter"])
+    @pytest.mark.parametrize("bad", [-1, 3])
+    def test_batched_bounds(self, device, name, bad):
+        source = NT([torch.zeros(m, n, 4, device=device) for m, n in ((2, 3), (3, 5))], ragged_dims=(0, 1))
+        index = torch.full((2, 2, 1, 4), bad, device=device, dtype=torch.long)
+        with pytest.raises((IndexError, RuntimeError), match="bounds"):
+            getattr(torch, name)(source, 2, index, *(() if name == "gather" else (1.0,)))
 
     @pytest.mark.parametrize("operation", [torch.gather, torch.Tensor.gather, torch.ops.aten.gather.default])
     @pytest.mark.parametrize("batch_first", [True, False])

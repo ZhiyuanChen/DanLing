@@ -118,7 +118,7 @@ def _uniform_shape_tensor(input: NestedTensor, element_shape: tuple[int, ...]) -
 def _from_uniform_values(input: NestedTensor, values: torch.Tensor, element_shape: tuple[int, ...]) -> NestedTensor:
     packed_size = int(element_shape[0]) if element_shape else 1
     packed_values = values.reshape(len(input) * packed_size, *element_shape[1:])
-    return type(input).from_packed(
+    return type(input)._from_packed_raw(
         packed_values,
         type(input)._offsets_from_sizes((packed_size,) * len(input), dtype=torch.long),
         _uniform_shape_tensor(input, element_shape),
@@ -187,7 +187,7 @@ def _channel_shuffle_packed(input: NestedTensor, groups: int) -> NestedTensor | 
     if moved:
         output = output.movedim(1, channel_dim).contiguous()
 
-    return type(input).from_packed(
+    return type(input)._from_packed_raw(
         output,
         input._offsets,
         input._physical_shape.clone(),
@@ -508,7 +508,7 @@ def _packed_pixel2d(input: NestedTensor, factor: int, *, shuffle: bool) -> Neste
         block_c,
     )
 
-    return type(input).from_packed(
+    return type(input)._from_packed_raw(
         output_values,
         output_offsets,
         output_shape_tensor,

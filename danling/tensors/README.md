@@ -152,7 +152,8 @@ per_element_fallback  (unpack → apply per element → repack)
 
 ### Key Internal Helpers
 
-- `from_packed(values, offsets, shape_tensor, ...)`: Direct constructor from packed representation. Used by all aten handlers to build results without function call overhead.
+- `from_packed(values, offsets, shape_tensor, ...)`: Public constructor sharing packed storage and preserving its autograd history.
+- `_from_packed_raw(...)`: Internal geometry construction for native dispatch and autograd bridges; wrapper fields and cache state are installed by one atomic factory.
 - `_map_storage_serial(input, fn)`: Per-element slow path — applies `fn` to each element via `_unpack()`. Used when ops need individual element dimensionality.
 - `_translate_non_batch_dim(nt, dim)`: Converts a NestedTensor dim index to the corresponding element-level dim (skipping the batch dimension).
 
@@ -366,6 +367,10 @@ Dynamic reconstruction with explicit `ragged_dims` also supports symbolic
 element dimensions in compiled code. The constructor retains tensor-backed
 shape tables and row splits, so the rebuilt tensor can cross graph boundaries
 without requiring concrete Python element sizes.
+Automatic ragged-axis inference also compiles when element sizes come from
+dense input shapes. When choosing the ragged axes requires reading runtime
+metadata, ordinary compilation places a graph boundary around construction;
+use explicit `ragged_dims` for fullgraph compilation in that case.
 Other tensor-backed view/index remapping, padding,
 `broadcast_tensors`, global-query `einsum`, and ragged-dimension softmax remain
 staged; these paths raise an explicit compile error instead of materializing
@@ -535,6 +540,10 @@ For forward-mode Jacobians over true ragged values, differentiate the dense pack
 and reconstruct the fixed geometry with `template.packed_like(values)`.
 The packed adapter also keeps gradients in true-value coordinates when a native
 composite backward would return a dense padded tangent for a direct wrapper input.
+Function transforms preserve the packed layout through ragged slicing and selection,
+including multiple ragged axes, chained views, and derivatives of packed reconstructions.
+Logical batch and static axes retain their existing `vmap` meaning. For NT outputs,
+VJP cotangents use the same NestedTensor structure, for example `torch.ones_like(output)`.
 Complete Hessian transform compositions are not implemented yet. They expose
 additional DanLing layout and vectorized-broadcast gaps, including intermediate
 sample axes beyond the currently supported logical positions zero and one.
