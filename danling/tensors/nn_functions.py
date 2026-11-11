@@ -52,7 +52,9 @@ from .functions._convolution import _has_static_input_channels
 from .functions.channel import channel_shuffle as _channel_shuffle_handler
 from .functions.channel import pixel_shuffle as _pixel_shuffle_handler
 from .functions.channel import pixel_unshuffle as _pixel_unshuffle_handler
+from .functions.conv1d import _can_use_packed_conv1d
 from .functions.conv1d import conv1d as _conv1d_handler
+from .functions.conv2d import _can_use_packed_conv2d
 from .functions.conv2d import conv2d as _conv2d_handler
 from .functions.conv_transpose1d import conv_transpose1d as _conv_transpose1d_handler
 from .functions.conv_transpose2d import conv_transpose2d as _conv_transpose2d_handler
@@ -655,8 +657,8 @@ def _make_dropout_compile_guard(fn: Callable) -> Callable[[tuple, dict[str, obje
     return _dropout_compile_safe_inputs
 
 
-def _make_pointwise_conv_compile_guard(rank: int) -> Callable[[tuple, dict[str, object]], bool]:
-    r"""Admit only pointwise convolutions, which run as one packed linear op under compile."""
+def _make_conv_compile_guard(rank: int) -> Callable[[tuple, dict[str, object]], bool]:
+    r"""Admit convolution geometries implemented with packed tensor operations."""
 
     def _argument(args: tuple, kwargs: dict[str, object], position: int, name: str, default):
         return args[position] if len(args) > position else kwargs.get(name, default)
@@ -670,11 +672,22 @@ def _make_pointwise_conv_compile_guard(rank: int) -> Callable[[tuple, dict[str, 
             return False
         return all(item == unit for item in value)
 
-    def _pointwise_conv_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
+    def _conv_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
         input = _argument(args, kwargs, 0, "input", None)
         weight = _argument(args, kwargs, 1, "weight", None)
         if not hasattr(input, "_physical_shape") or not isinstance(weight, Tensor) or weight.dim() != rank + 2:
             return False
+        packed_supported = _can_use_packed_conv1d if rank == 1 else _can_use_packed_conv2d
+        if packed_supported(
+            input,
+            weight,
+            _argument(args, kwargs, 2, "bias", None),
+            _argument(args, kwargs, 3, "stride", 1),
+            _argument(args, kwargs, 4, "padding", 0),
+            _argument(args, kwargs, 5, "dilation", 1),
+            _argument(args, kwargs, 6, "groups", 1),
+        ):
+            return True
         if any(int(size) != 1 for size in weight.shape[2:]) or _argument(args, kwargs, 6, "groups", 1) != 1:
             return False
         if not (
@@ -685,7 +698,7 @@ def _make_pointwise_conv_compile_guard(rank: int) -> Callable[[tuple, dict[str, 
             return False
         return _has_static_input_channels(input, int(weight.shape[1]), rank)
 
-    return _pointwise_conv_compile_safe_inputs
+    return _conv_compile_safe_inputs
 
 
 def _as_flex_packed_dense(nt: NestedTensor) -> Tensor:
@@ -3496,7 +3509,7 @@ def _unpool_handler(input, indices, *args, _fn=None, **kwargs):
 # ---------------------------------------------------------------------------
 
 _NN_HANDLER_TABLE: list[tuple] = [
-    # Convolution handlers - packed 1x1 path, spatial tile path, per-element fallback
+    # Convolution handlers - packed pointwise/spatial paths and eager layout fallback.
     (F.conv1d, _conv1d_handler, False),
     (F.conv2d, _conv2d_handler, False),
     (F.conv_transpose1d, _conv_transpose1d_handler, False),
@@ -3589,12 +3602,11 @@ for _op in NN_TIER_B_EAGER_ONLY_OPS:
     if _op in NestedTensorFuncRegistry:
         NestedTensorFuncRegistry.set_compile_safe(_op, False)
 
-# Convolutions have a packed tensor-only path for pointwise kernels only; the guard
-# admits exactly that case and the gate rejects every other geometry explicitly.
+# Compile only geometries with packed implementations.
 for _op, _rank in ((F.conv1d, 1), (F.conv2d, 2)):
     if _op in NestedTensorFuncRegistry:
         NestedTensorFuncRegistry.set_compile_safe(_op, True)
-        NestedTensorFuncRegistry.set_compile_guard(_op, _make_pointwise_conv_compile_guard(_rank))
+        NestedTensorFuncRegistry.set_compile_guard(_op, _make_conv_compile_guard(_rank))
 
 for _op in NN_NOOP_DROPOUT_OPS:
     if _op in NestedTensorFuncRegistry:
