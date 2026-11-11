@@ -5519,6 +5519,169 @@ def _flash_attention_forward_values(
     )[0]
 
 
+def _empty_attention_values(query: Tensor, key: Tensor, value: Tensor, *, scale: float | None = None) -> Tensor:
+    """Use native math SDPA when no query-key pair exists."""
+    # Q or K is empty, so removing unused K/V entries preserves every valid
+    # pair and lets native slice backward return zeros to the original K/V.
+    # The literal empty key axis also gives the native operator exact metadata.
+    key, value = key[:0], value[:0]
+    # The native math primitive avoids the frontend's empty-key zero anchor.
+    output, _ = aten._scaled_dot_product_attention_math.default(
+        query.transpose(0, 1),
+        key.transpose(0, 1),
+        value.transpose(0, 1),
+        dropout_p=0.0,
+        scale=scale,
+        enable_gqa=True,
+    )
+    return output.transpose(0, 1).clone(memory_format=torch.contiguous_format)
+
+
+@torch.library.custom_op(
+    "danling::_conditional_flash_forward", mutates_args=(), tags=(torch.Tag.nondeterministic_seeded,)
+)
+def _conditional_flash_forward(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    q_offsets: Tensor,
+    k_offsets: Tensor,
+    max_q: Tensor,
+    max_k: Tensor,
+    dropout: float,
+    causal: bool,
+    scale: float,
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Dispatch native Flash or empty SDPA from runtime tensor shapes."""
+    if q.shape[0] == 0 or k.shape[0] == 0:
+        output = _empty_attention_values(q, k, v, scale=scale)
+        lse = q.new_full((q.shape[0] * q.shape[1],), -float("inf"), dtype=torch.float32)
+        return output, lse, q.new_empty((2,), dtype=torch.uint64), q.new_empty((), dtype=torch.uint64)
+    output, lse, rng, unused, _ = _flash_attention_forward_raw(
+        q,
+        k,
+        v,
+        q_offsets,
+        k_offsets,
+        int(max_q.item()),
+        int(max_k.item()),
+        dropout_p=dropout,
+        is_causal=causal,
+        return_debug_mask=False,
+        scale=scale,
+    )
+    return output, lse.reshape(q.shape[0] * q.shape[1]), rng, unused
+
+
+@_conditional_flash_forward.register_fake
+def _conditional_flash_forward_fake(q, k, v, q_offsets, k_offsets, max_q, max_k, dropout, causal, scale):
+    return (
+        q.new_empty(q.shape),
+        q.new_empty((q.shape[0] * q.shape[1],), dtype=torch.float32),
+        q.new_empty((2,), dtype=torch.uint64),
+        q.new_empty((), dtype=torch.uint64),
+    )
+
+
+@torch.library.custom_op("danling::_conditional_flash_backward", mutates_args=())
+def _conditional_flash_backward(
+    grad: Tensor,
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    output: Tensor,
+    logsumexp: Tensor,
+    q_offsets: Tensor,
+    k_offsets: Tensor,
+    max_q: Tensor,
+    max_k: Tensor,
+    dropout: float,
+    causal: bool,
+    rng: Tensor,
+    unused: Tensor,
+    scale: float,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Reuse actual forward state through native Flash or empty SDPA backward."""
+    if q.shape[0] == 0 or k.shape[0] == 0:
+
+        def operation(query, key, value):
+            return _empty_attention_values(query, key, value, scale=scale)
+
+        _, pullback = torch.func.vjp(operation, q, k, v)
+        return tuple(item.clone(memory_format=torch.contiguous_format) for item in pullback(grad))
+    return aten._flash_attention_backward.default(
+        grad,
+        q,
+        k,
+        v,
+        output,
+        logsumexp.reshape(q.shape[1], q.shape[0]),
+        q_offsets,
+        k_offsets,
+        int(max_q.item()),
+        int(max_k.item()),
+        dropout,
+        causal,
+        rng,
+        unused,
+        scale=scale,
+    )
+
+
+@_conditional_flash_backward.register_fake
+def _conditional_flash_backward_fake(
+    grad, q, k, v, output, logsumexp, q_offsets, k_offsets, max_q, max_k, dropout, causal, rng, unused, scale
+):
+    return torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
+
+
+class _EmptySafeFlashAttention(torch.autograd.Function):
+    """Preserve input aliases while pairing native dispatch with forward state."""
+
+    @staticmethod
+    def forward(query, key, value, q_cumulative, k_cumulative, q_max, k_max, dropout_p, is_causal, scale):
+        q_max = torch.scalar_tensor(q_max, dtype=torch.int64, device="cpu")
+        k_max = torch.scalar_tensor(k_max, dtype=torch.int64, device="cpu")
+        output = _conditional_flash_forward(
+            query, key, value, q_cumulative, k_cumulative, q_max, k_max, dropout_p, is_causal, scale
+        )
+        return (*output, q_max, k_max)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        query, key, value, q_cumulative, k_cumulative, q_max, k_max, dropout_p, is_causal, scale = inputs
+        attention, lse, rng, unused, q_max, k_max = output
+        # Keep original aliases and native saved-input version checks.
+        ctx.save_for_backward(query, key, value, q_cumulative, k_cumulative, attention, lse, rng, unused, q_max, k_max)
+        ctx.dropout_p, ctx.is_causal, ctx.scale = dropout_p, is_causal, scale
+        ctx.mark_non_differentiable(lse, rng, unused, q_max, k_max)
+        ctx.set_materialize_grads(False)
+
+    @staticmethod
+    def backward(ctx, grad_attention, *aux_grads):
+        if grad_attention is None:
+            return (None,) * 10
+        query, key, value, q_cumulative, k_cumulative, attention, lse, rng, unused, q_max, k_max = ctx.saved_tensors
+        dq, dk, dv = _conditional_flash_backward(
+            grad_attention,
+            query,
+            key,
+            value,
+            attention,
+            lse,
+            q_cumulative,
+            k_cumulative,
+            q_max,
+            k_max,
+            ctx.dropout_p,
+            ctx.is_causal,
+            rng,
+            unused,
+            ctx.scale,
+        )
+        return dq, dk, dv, None, None, None, None, None, None, None
+
+
 def _sdpa_via_native_flash(
     query: NestedTensor,
     key: NestedTensor,
@@ -5527,9 +5690,10 @@ def _sdpa_via_native_flash(
     dropout_p: float,
     is_causal: bool,
     scale: float | None,
-    alibi_slopes: Tensor | None = None,
 ) -> NestedTensor:
     r"""Run SDPA directly on DanLing storage via varlen Flash Attention kernels."""
+    if query.dtype != key.dtype or query.dtype != value.dtype:
+        raise RuntimeError("SDPA query, key and value must have the same dtype")
     type(key)._meta_tensor_equal(
         key._physical_shape[:, 1],
         value._physical_shape[:, 1],
@@ -5537,25 +5701,61 @@ def _sdpa_via_native_flash(
         runtime_assert=True,
     )
     q_values, q_cumulative, q_max = _sdpa_pack_native(query)
-    if _same_ragged_offsets(query, key):
+    if query is key:
+        k_values, k_cumulative, k_max = q_values, q_cumulative, q_max
+    elif _same_ragged_offsets(query, key):
         k_values = key.concat.contiguous()
         k_cumulative = q_cumulative
         k_max = q_max
     else:
         k_values, k_cumulative, k_max = _sdpa_pack_native(key)
-    attention = _flash_attention_forward_values(
-        q_values,
-        k_values,
-        value.concat.contiguous(),
-        q_cumulative,
-        k_cumulative,
-        q_max,
-        k_max,
-        dropout_p=dropout_p,
-        is_causal=is_causal,
-        scale=scale,
-        alibi_slopes=alibi_slopes,
-    )
+    if value is query:
+        v_values = q_values
+    elif value is key:
+        v_values = k_values
+    else:
+        v_values = value.concat.contiguous()
+    if q_values.shape[-1] != k_values.shape[-1]:
+        raise ValueError("SDPA query and key feature widths must match")
+    dropout_p = float(dropout_p)
+    if not 0.0 <= dropout_p <= 1.0:
+        raise RuntimeError("dropout probability must be between 0 and 1")
+    empty = (q_values.shape[0] == 0) | (k_values.shape[0] == 0)
+    if statically_known_true(empty):
+        attention = _empty_attention_values(q_values, k_values, v_values, scale=scale)
+    elif statically_known_true((q_values.shape[0] > 0) & (k_values.shape[0] > 0)):
+        attention = _flash_attention_forward_values(
+            q_values,
+            k_values,
+            v_values,
+            q_cumulative,
+            k_cumulative,
+            q_max,
+            k_max,
+            dropout_p=dropout_p,
+            is_causal=is_causal,
+            scale=scale,
+        )
+    else:
+        # Preserve the original packed autograd edges, including shared Q/K/V.
+        # Native dispatch reads aliases without numerical snapshots.
+        width = ((max(q_values.shape[-1], v_values.shape[-1]) + 7) // 8) * 8
+        q = _pad_last_dim_for_flash(q_values, width)
+        k = _pad_last_dim_for_flash(k_values, width)
+        v = _pad_last_dim_for_flash(v_values, width)
+        factor = float(scale) if scale is not None else float(q_values.shape[-1]) ** -0.5
+        attention = _EmptySafeFlashAttention.apply(
+            q,
+            k,
+            v,
+            q_cumulative,
+            k_cumulative,
+            q_max,
+            k_max,
+            dropout_p,
+            is_causal,
+            factor,
+        )[0][..., : v_values.shape[-1]]
     return _sdpa_restore_native(attention, query)
 
 
