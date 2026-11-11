@@ -1605,6 +1605,192 @@ class TestModuleIntegration:
 
 class TestMultiHeadAttentionForward:
 
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("empty_query", [False, True])
+    def test_dynamic_empty(self, device, backend, empty_query):
+        if device.type != "cuda" or not torch.cuda.is_bf16_supported():
+            pytest.skip("BF16 CUDA attention")
+        torch.compiler.reset()
+        model = nn.MultiheadAttention(16, 2, dropout=0.0, batch_first=True, device=device, dtype=torch.bfloat16)
+        reference = deepcopy(model)
+
+        def attention(query, key):
+            if empty_query:
+                query = query[:, 1:, :]
+            else:
+                key = key[:, 1:, :]
+            return model(query, key, key, need_weights=False)[0]
+
+        run = torch.compile(attention, backend=backend, dynamic=True, fullgraph=True)
+        for lengths in ((4, 6), (0, 1)):
+            query_lengths, key_lengths = (lengths, (3, 5)) if empty_query else ((3, 5), lengths)
+            query = [torch.randn(n, 16, device=device, dtype=torch.bfloat16, requires_grad=True) for n in query_lengths]
+            key = [torch.randn(n, 16, device=device, dtype=torch.bfloat16, requires_grad=True) for n in key_lengths]
+            query_ref = [part.detach().clone().requires_grad_() for part in query]
+            key_ref = [part.detach().clone().requires_grad_() for part in key]
+            output = run(NT(query, ragged_dims=(0,)), NT(key, ragged_dims=(0,)))
+            expected = []
+            for q, k in zip(query_ref, key_ref):
+                q = q[1:] if empty_query else q
+                k = k if empty_query else k[1:]
+                expected.append(reference(q.unsqueeze(0), k.unsqueeze(0), k.unsqueeze(0), need_weights=False)[0][0])
+            torch.testing.assert_close(output.unbind(), expected, atol=0.03, rtol=0.03)
+            torch.testing.assert_close(
+                torch.autograd.grad(output.concat.float().square().sum(), (*query, *key, *model.parameters())),
+                torch.autograd.grad(
+                    sum(part.float().square().sum() for part in expected),
+                    (*query_ref, *key_ref, *reference.parameters()),
+                ),
+                atol=0.03,
+                rtol=0.03,
+            )
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("need_weights", [True, False])
+    def test_dense_query_ragged_key_value(self, device, batch_first, need_weights):
+        torch.manual_seed(42)
+        model = nn.MultiheadAttention(8, 2, dropout=0.0, batch_first=batch_first).to(device).train()
+        reference = deepcopy(model)
+        shape = (2, 3, 8) if batch_first else (3, 2, 8)
+        query = torch.randn(shape, device=device, requires_grad=True)
+        query_ref = query.detach().clone().requires_grad_()
+        key = [torch.randn(n, 8, device=device, requires_grad=True) for n in (4, 6)]
+        value = [torch.randn(n, 8, device=device, requires_grad=True) for n in (4, 6)]
+        key_ref = [part.detach().clone().requires_grad_() for part in key]
+        value_ref = [part.detach().clone().requires_grad_() for part in value]
+        nested_key = NT(key, ragged_dims=(0,), batch_first=batch_first)
+        nested_value = NT(value, ragged_dims=(0,), batch_first=batch_first)
+        attention_mask = torch.zeros((3, 6), dtype=torch.bool, device=device)
+        attention_mask[0, 0] = True
+        actual, weights = model(query, nested_key, nested_value, need_weights=need_weights, attn_mask=attention_mask)
+        padded_key = torch.nn.utils.rnn.pad_sequence(key_ref, batch_first=batch_first)
+        padded_value = torch.nn.utils.rnn.pad_sequence(value_ref, batch_first=batch_first)
+        padding = torch.arange(6, device=device)[None, :] >= torch.tensor([4, 6], device=device)[:, None]
+        expected, expected_weights = reference(
+            query_ref,
+            padded_key,
+            padded_value,
+            need_weights=need_weights,
+            attn_mask=attention_mask,
+            key_padding_mask=padding,
+        )
+        assert type(actual) is torch.Tensor
+        torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
+        if need_weights:
+            torch.testing.assert_close(weights, expected_weights, atol=1e-5, rtol=1e-5)
+        else:
+            assert weights is None
+        actual_inputs = (query, *key, *value, *model.parameters())
+        expected_inputs = (query_ref, *key_ref, *value_ref, *reference.parameters())
+        actual_grad = torch.autograd.grad(actual.square().sum(), actual_inputs)
+        expected_grad = torch.autograd.grad(expected.square().sum(), expected_inputs)
+        torch.testing.assert_close(actual_grad, expected_grad, atol=1e-5, rtol=1e-5)
+
+    @pytest.mark.parametrize("nested_query", [False, True])
+    @pytest.mark.parametrize("empty_query", [False, True])
+    @pytest.mark.parametrize("need_weights", [False, True])
+    def test_empty_attention_gradients(self, device, nested_query, empty_query, need_weights):
+        model = nn.MultiheadAttention(8, 2, dropout=0.0, batch_first=True).to(device).train()
+        reference = deepcopy(model)
+        query_length = 0 if empty_query else 3
+        key_lengths = (4, 6) if empty_query else (0, 0)
+        query = [torch.randn(query_length, 8, device=device, requires_grad=True) for _ in range(2)]
+        key = [torch.randn(n, 8, device=device, requires_grad=True) for n in key_lengths]
+        query_ref = [part.detach().clone().requires_grad_() for part in query]
+        key_ref = [part.detach().clone().requires_grad_() for part in key]
+        query_input = NT(query, ragged_dims=(0,)) if nested_query else torch.stack(query)
+        nested_key = NT(key, ragged_dims=(0,))
+        actual, weights = model(query_input, nested_key, nested_key, need_weights=need_weights)
+        if nested_query:
+            actual = actual.concat.reshape(2, query_length, 8)
+        padded_key = torch.nn.utils.rnn.pad_sequence(key_ref, batch_first=True)
+        padding = (
+            torch.arange(max(key_lengths), device=device)[None, :] >= torch.tensor(key_lengths, device=device)[:, None]
+            if max(key_lengths)
+            else None
+        )
+        expected, expected_weights = reference(
+            torch.stack(query_ref), padded_key, padded_key, need_weights=need_weights, key_padding_mask=padding
+        )
+        torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
+        if need_weights:
+            torch.testing.assert_close(weights, expected_weights, atol=1e-5, rtol=1e-5)
+        else:
+            assert weights is None
+        actual_grad = torch.autograd.grad(actual.sum(), (*query, *key, *model.parameters()))
+        expected_grad = torch.autograd.grad(expected.sum(), (*query_ref, *key_ref, *reference.parameters()))
+        torch.testing.assert_close(actual_grad, expected_grad, atol=1e-5, rtol=1e-5)
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_dense_query_empty_batch(self, device, batch_first):
+        model = nn.MultiheadAttention(8, 2, batch_first=batch_first).to(device).train()
+        key = NT.from_packed(
+            torch.empty((0, 8), device=device),
+            torch.tensor([0]),
+            torch.empty((0, 2), dtype=torch.long),
+            ragged_dims=(0,),
+            batch_first=batch_first,
+            outer_size=(0, 0, 8),
+            validate=False,
+        )
+        shape = (0, 3, 8) if batch_first else (3, 0, 8)
+        query = torch.empty(shape, device=device, requires_grad=True)
+        with pytest.raises(NotImplementedError, match="empty batch"):
+            model(query, key, key, need_weights=False)
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("cross_attention", [False, True])
+    @pytest.mark.parametrize("checkpointed", [False, True])
+    def test_mha_values_and_gradients(self, device, batch_first, cross_attention, checkpointed):
+        from torch.utils.checkpoint import checkpoint
+
+        model = nn.MultiheadAttention(8, 2, dropout=0.0, batch_first=batch_first).to(device).train()
+        reference = deepcopy(model)
+        query = [torch.randn(length, 8, device=device, requires_grad=True) for length in (3, 5)]
+        query_ref = [part.detach().clone().requires_grad_() for part in query]
+        key = (
+            [torch.randn(length, 8, device=device, requires_grad=True) for length in (4, 6)]
+            if cross_attention
+            else query
+        )
+        key_ref = [part.detach().clone().requires_grad_() for part in key] if cross_attention else query_ref
+        nested_query = NT(query, ragged_dims=(0,), batch_first=batch_first)
+        nested_key = NT(key, ragged_dims=(0,), batch_first=batch_first) if cross_attention else nested_query
+
+        def attention(q, k):
+            return model(q, k, k, need_weights=False)[0]
+
+        actual = (
+            checkpoint(attention, nested_query, nested_key, use_reentrant=False)
+            if checkpointed
+            else attention(nested_query, nested_key)
+        )
+        dense_query = torch.nn.utils.rnn.pad_sequence(query_ref, batch_first=batch_first)
+        dense_key = (
+            torch.nn.utils.rnn.pad_sequence(key_ref, batch_first=batch_first) if cross_attention else dense_query
+        )
+        key_lengths = (4, 6) if cross_attention else (3, 5)
+        padding = torch.arange(max(key_lengths), device=device).unsqueeze(0) >= torch.tensor(
+            key_lengths, device=device
+        ).unsqueeze(1)
+        expected = reference(dense_query, dense_key, dense_key, key_padding_mask=padding, need_weights=False)[0]
+        expected = expected if batch_first else expected.transpose(0, 1)
+        expected_values = torch.cat([expected[i, :length] for i, length in enumerate((3, 5))])
+        torch.testing.assert_close(actual.concat, expected_values, atol=1e-5, rtol=1e-5)
+        probe = torch.randn_like(expected_values)
+        actual_inputs = (*query, *key, *model.parameters()) if cross_attention else (*query, *model.parameters())
+        expected_inputs = (
+            (*query_ref, *key_ref, *reference.parameters())
+            if cross_attention
+            else (*query_ref, *reference.parameters())
+        )
+        torch.testing.assert_close(
+            torch.autograd.grad((actual.concat * probe).sum(), actual_inputs),
+            torch.autograd.grad((expected_values * probe).sum(), expected_inputs),
+            atol=1e-5,
+            rtol=1e-5,
+        )
+
     def test_mha_batch_first_mismatch_raises_clear_error(self):
         embed_dim = 4
         num_heads = 2
@@ -1634,10 +1820,10 @@ class TestMultiHeadAttentionForward:
                 need_weights=False,
             )
 
-    def test_mha_requires_nested_query(self):
+    def test_query_batch_mismatch(self):
         tensor_query = torch.randn(2, 3, 4)
         nested_key = NestedTensor([torch.randn(3, 4)])
-        with pytest.raises(TypeError):
+        with pytest.raises(ValueError, match="batch lengths"):
             F.multi_head_attention_forward(
                 tensor_query,
                 nested_key,
@@ -1735,46 +1921,36 @@ class TestMultiHeadAttentionForward:
         assert weights is None
         assert_close(output, reference, atol=1e-5)
 
-    def test_multi_head_attention_cross_attention_with_dense_key_value(self):
-        torch.manual_seed(1016)
-        embed_dim = 4
-        num_heads = 2
-        mha = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True, dropout=0.0)
-        query = NestedTensor([torch.randn(2, embed_dim), torch.randn(1, embed_dim)])
-        key = NestedTensor([torch.randn(3, embed_dim), torch.randn(2, embed_dim)])
-        key_dense = key.tensor
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("key_length", [4, 6])
+    @pytest.mark.parametrize("masked", [False, True])
+    def test_mha_dense_keys(self, device, batch_first, key_length, masked):
+        model = nn.MultiheadAttention(8, 2, batch_first=batch_first, dropout=0.0).to(device)
+        reference = deepcopy(model)
+        parts = [torch.randn(length, 8, device=device, requires_grad=True) for length in (2, 4)]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=(0,), batch_first=batch_first)
+        dense_query = torch.nn.utils.rnn.pad_sequence(references, batch_first=batch_first)
+        key_shape = (2, key_length, 8) if batch_first else (key_length, 2, 8)
+        key = torch.randn(key_shape, device=device, requires_grad=True)
+        key_ref = key.detach().clone().requires_grad_()
+        padding = torch.zeros(2, key_length, device=device, dtype=torch.bool) if masked else None
+        if masked:
+            padding[0, -1] = True
 
-        output, weights = F.multi_head_attention_forward(
-            query,
-            key_dense,
-            key_dense,
-            embed_dim,
-            num_heads,
-            mha.in_proj_weight,
-            mha.in_proj_bias,
-            mha.bias_k,
-            mha.bias_v,
-            mha.add_zero_attn,
-            mha.dropout,
-            mha.out_proj.weight,
-            mha.out_proj.bias,
-            training=mha.training,
-            key_padding_mask=~key.mask,
-            need_weights=False,
-            attn_mask=None,
-            use_separate_proj_weight=False,
-            q_proj_weight=None,
-            k_proj_weight=None,
-            v_proj_weight=None,
-            static_k=None,
-            static_v=None,
-            average_attn_weights=True,
-            is_causal=False,
-        )
-        reference, _ = mha(query.tensor, key_dense, key_dense, key_padding_mask=~key.mask, need_weights=False)
-        reference = reference.masked_fill(~query.mask.unsqueeze(-1), 0)
+        output, weights = model(source, key, key, key_padding_mask=padding, need_weights=False)
+        expected, _ = reference(dense_query, key_ref, key_ref, key_padding_mask=padding, need_weights=False)
+        expected = expected if batch_first else expected.transpose(0, 1)
+        expected_values = torch.cat([expected[index, :length] for index, length in enumerate((2, 4))])
         assert weights is None
-        assert_close(output, reference, atol=1e-5)
+        torch.testing.assert_close(output.concat, expected_values, atol=1e-5, rtol=1e-5)
+        probe = torch.randn_like(expected_values)
+        torch.testing.assert_close(
+            torch.autograd.grad((output.concat * probe).sum(), (*parts, key, *model.parameters())),
+            torch.autograd.grad((expected_values * probe).sum(), (*references, key_ref, *reference.parameters())),
+            atol=1e-5,
+            rtol=1e-5,
+        )
 
     def test_multi_head_attention_custom_mask_value(self):
         torch.manual_seed(1016)
@@ -1973,6 +2149,100 @@ class TestMultiHeadAttentionForward:
         reference = reference.masked_fill(~query.mask.unsqueeze(-1), 0)
         assert_close(output, reference, atol=1e-5)
         assert weights.shape[0] == query.tensor.shape[1]
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("length", [3, 12])
+    def test_mha_feature_axis_values_and_gradients(self, device, batch_first, length):
+        model = nn.MultiheadAttention(8, 2, dropout=0.0, batch_first=batch_first).to(device).train()
+        reference = deepcopy(model)
+        parts = [torch.randn(length, 8, device=device, requires_grad=True) for _ in range(2)]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=(1,), batch_first=batch_first)
+        dense = torch.stack(references, dim=0 if batch_first else 1)
+        actual = model(source, source, source, need_weights=False)[0]
+        expected = reference(dense, dense, dense, need_weights=False)[0]
+        actual_values = torch.stack(actual.unbind(0 if batch_first else 1), dim=0 if batch_first else 1)
+        torch.testing.assert_close(actual_values, expected, atol=1e-5, rtol=1e-5)
+        probe = torch.randn_like(expected)
+        torch.testing.assert_close(
+            torch.autograd.grad((actual_values * probe).sum(), (*parts, *model.parameters())),
+            torch.autograd.grad((expected * probe).sum(), (*references, *reference.parameters())),
+            atol=1e-5,
+            rtol=1e-5,
+        )
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("add_zero_attn", [False, True])
+    def test_mha_causal_mask_values_and_gradients(self, device, batch_first, add_zero_attn):
+        model = (
+            nn.MultiheadAttention(8, 2, dropout=0.0, batch_first=batch_first, add_zero_attn=add_zero_attn)
+            .to(device)
+            .train()
+        )
+        reference = deepcopy(model)
+        parts = [torch.randn(length, 8, device=device, requires_grad=True) for length in (3, 5)]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=(0,), batch_first=batch_first)
+        padded = torch.nn.utils.rnn.pad_sequence(references, batch_first=batch_first)
+        mask = torch.ones(5, 5, device=device, dtype=torch.bool).triu(1)
+        padding = torch.arange(5, device=device).unsqueeze(0) >= torch.tensor([3, 5], device=device).unsqueeze(1)
+        actual = model(source, source, source, attn_mask=mask, is_causal=True, need_weights=False)[0]
+        expected = reference(
+            padded, padded, padded, key_padding_mask=padding, attn_mask=mask, is_causal=True, need_weights=False
+        )[0]
+        expected = expected if batch_first else expected.transpose(0, 1)
+        expected_values = torch.cat([expected[i, :length] for i, length in enumerate((3, 5))])
+        torch.testing.assert_close(actual.concat, expected_values, atol=1e-5, rtol=1e-5)
+        probe = torch.randn_like(expected_values)
+        torch.testing.assert_close(
+            torch.autograd.grad((actual.concat * probe).sum(), (*parts, *model.parameters())),
+            torch.autograd.grad((expected_values * probe).sum(), (*references, *reference.parameters())),
+            atol=1e-5,
+            rtol=1e-5,
+        )
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize(("causal", "cross_attention"), [(False, False), (True, False), (False, True)])
+    def test_compiled_mha_wrapper_values_and_gradients(self, batch_first, causal, cross_attention):
+        if not torch.cuda.is_bf16_supported() or torch.cuda.get_device_capability()[0] < 8:
+            pytest.skip("BF16 attention requires an Ampere-or-newer GPU")
+
+        model = nn.MultiheadAttention(32, 4, dropout=0.0, batch_first=batch_first).cuda().bfloat16().train()
+        reference = deepcopy(model)
+
+        def attention(query, key, mask):
+            return model(query, key, key, attn_mask=mask, is_causal=causal, need_weights=False)[0]
+
+        compiled = torch.compile(attention, backend="inductor", fullgraph=True, dynamic=True)
+        for lengths in ((3, 5), (4, 7)):
+            parts = [torch.randn(n, 32, device="cuda", dtype=torch.bfloat16, requires_grad=True) for n in lengths]
+            references = [part.detach().clone().requires_grad_() for part in parts]
+            source = NT(parts, ragged_dims=(0,), batch_first=batch_first)
+            source_ref = NT(references, ragged_dims=(0,), batch_first=batch_first)
+            keys = (
+                [torch.randn(n, 32, device="cuda", dtype=torch.bfloat16, requires_grad=True) for n in (6, 8)]
+                if cross_attention
+                else parts
+            )
+            key_refs = [part.detach().clone().requires_grad_() for part in keys] if cross_attention else references
+            key = NT(keys, ragged_dims=(0,), batch_first=batch_first) if cross_attention else source
+            key_ref = NT(key_refs, ragged_dims=(0,), batch_first=batch_first) if cross_attention else source_ref
+            mask = torch.ones(max(lengths), max(lengths), dtype=torch.bool, device="cuda").triu(1) if causal else None
+            actual = compiled(source, key, mask)
+            expected = reference(source_ref, key_ref, key_ref, attn_mask=mask, is_causal=causal, need_weights=False)[0]
+            assert actual.batch_first is batch_first
+            torch.testing.assert_close(actual.concat, expected.concat, atol=5e-3, rtol=2e-2)
+            probe = torch.randn_like(expected.concat)
+            actual_inputs = (*parts, *keys, *model.parameters()) if cross_attention else (*parts, *model.parameters())
+            expected_inputs = (
+                (*references, *key_refs, *reference.parameters())
+                if cross_attention
+                else (*references, *reference.parameters())
+            )
+            actual_grads = torch.autograd.grad((actual.concat.float() * probe.float()).sum(), actual_inputs)
+            expected_grads = torch.autograd.grad((expected.concat.float() * probe.float()).sum(), expected_inputs)
+            torch.testing.assert_close(actual_grads, expected_grads, atol=5e-2, rtol=2e-2)
 
 
 class TestBatchNorm:
@@ -2516,6 +2786,123 @@ class TestRegressionLosses:
 
 @pytest.mark.skipif(not hasattr(F, "scaled_dot_product_attention"), reason="scaled_dot_product_attention not available")
 class TestScaledDotProductAttention:
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    def test_dynamic_dropout(self, device, backend):
+        if device.type != "cuda" or not torch.cuda.is_bf16_supported():
+            pytest.skip("BF16 CUDA attention")
+        torch.compiler.reset()
+
+        def attention(query, key, value):
+            return F.scaled_dot_product_attention(query[:, :, 1:, :], key, value, dropout_p=0.25)
+
+        run = torch.compile(attention, backend=backend, dynamic=True, fullgraph=True)
+        for lengths in ((0, 1), (4, 6), (0, 1)):
+            groups = [
+                [torch.randn(2, n, 64, device=device, dtype=torch.bfloat16, requires_grad=True) for n in lens]
+                for lens in (lengths, (3, 5), (3, 5))
+            ]
+            references = [[part.detach().clone().requires_grad_() for part in group] for group in groups]
+            inputs = [NT(group, ragged_dims=(1,)) for group in groups]
+            reference_inputs = [NT(group, ragged_dims=(1,)) for group in references]
+            torch.manual_seed(321)
+            output = run(*inputs).concat
+            forward_rng = torch.cuda.get_rng_state(device)
+            gradients = torch.autograd.grad(output, tuple(part for group in groups for part in group), output.detach())
+            torch.testing.assert_close(torch.cuda.get_rng_state(device), forward_rng)
+            torch.manual_seed(321)
+            expected = attention(*reference_inputs).concat
+            expected_rng = torch.cuda.get_rng_state(device)
+            expected_gradients = torch.autograd.grad(
+                expected, tuple(part for group in references for part in group), expected.detach()
+            )
+            torch.testing.assert_close(output, expected, atol=0, rtol=0)
+            torch.testing.assert_close(gradients, expected_gradients, atol=0, rtol=0)
+            torch.testing.assert_close(forward_rng, expected_rng)
+            torch.testing.assert_close(torch.cuda.get_rng_state(device), expected_rng)
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("side", ["both", "query", "key", "raw"])
+    def test_dynamic_slice(self, device, backend, side):
+        if device.type != "cuda" or not torch.cuda.is_bf16_supported():
+            pytest.skip("BF16 CUDA attention")
+        torch.compiler.reset()
+
+        def attention(query, key, value):
+            if side in {"both", "query"}:
+                query = query[:, :, 1:, :]
+            if side in {"both", "key"}:
+                key, value = key[:, :, 1:, :], value[:, :, 1:, :]
+            return F.scaled_dot_product_attention(query, key, value, enable_gqa=side in {"query", "key"})
+
+        def dense_attention(query, key, value):
+            return F.scaled_dot_product_attention(query, key, value, enable_gqa=side in {"query", "key"})
+
+        run = torch.compile(attention, backend=backend, dynamic=True, fullgraph=True)
+        reference_run = torch.compile(dense_attention, backend=backend, dynamic=True, fullgraph=True)
+        for lengths in ((4, 6), (0, 0) if side == "raw" else (0, 1)):
+            query_lengths = lengths if side != "key" else (3, 5)
+            key_lengths = lengths if side in {"both", "key"} else (3, 5)
+            query = [
+                torch.randn(
+                    4 if side in {"query", "key"} else 2,
+                    n,
+                    64,
+                    device=device,
+                    dtype=torch.bfloat16,
+                    requires_grad=True,
+                )
+                for n in query_lengths
+            ]
+            if side == "both":
+                key = value = query
+            else:
+                key = [
+                    torch.randn(2, n, 64, device=device, dtype=torch.bfloat16, requires_grad=True) for n in key_lengths
+                ]
+                value = [
+                    torch.randn(
+                        2, n, 64 if side == "raw" else 32, device=device, dtype=torch.bfloat16, requires_grad=True
+                    )
+                    for n in key_lengths
+                ]
+            if lengths == (0, 1):
+                with torch.no_grad():
+                    if side == "key":
+                        for part in query:
+                            part.fill_(float("nan"))
+                    elif side == "query":
+                        for part in key:
+                            part.fill_(float("nan"))
+                        for part in value:
+                            part.fill_(float("inf"))
+            query_ref = [part.detach().clone().requires_grad_() for part in query]
+            key_ref = query_ref if side == "both" else [part.detach().clone().requires_grad_() for part in key]
+            value_ref = query_ref if side == "both" else [part.detach().clone().requires_grad_() for part in value]
+            nested_query = NT(query, ragged_dims=(1,))
+            nested_key = nested_value = nested_query
+            if side != "both":
+                nested_key, nested_value = NT(key, ragged_dims=(1,)), NT(value, ragged_dims=(1,))
+            output = run(nested_query, nested_key, nested_value)
+            expected = [
+                reference_run(
+                    q[:, 1:] if side in {"both", "query"} else q,
+                    k[:, 1:] if side in {"both", "key"} else k,
+                    v[:, 1:] if side in {"both", "key"} else v,
+                )
+                for q, k, v in zip(query_ref, key_ref, value_ref)
+            ]
+            actual = output.unbind()
+            torch.testing.assert_close(actual, expected, atol=0.03, rtol=0.03, equal_nan=True)
+            inputs = query if side == "both" else (*query, *key, *value)
+            refs = query_ref if side == "both" else (*query_ref, *key_ref, *value_ref)
+            probes = [torch.randn_like(part) for part in expected]
+            torch.testing.assert_close(
+                torch.autograd.grad(actual, inputs, probes),
+                torch.autograd.grad(expected, refs, probes),
+                atol=0.03,
+                rtol=0.03,
+            )
 
     @pytest.mark.skipif(flex_attention is None, reason="FlexAttention not available")
     def test_flex_attention_wrapper(self, device):

@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import torch
 from torch import Tensor
+from torch.fx.experimental.symbolic_shapes import statically_known_true
 from torch.nn import functional as F
 
 from .aten_functions import (
@@ -170,9 +171,14 @@ def _attention_outer_size(source: NestedTensor, num_heads: int, head_dim: int) -
     return torch.Size((num_heads, len(source), max_seq, head_dim))
 
 
+def _sequence_packed_attention_input(source: NestedTensor) -> bool:
+    return source._ragged_dims == (0,) and source._permutation == (0, 1)
+
+
 def _project_attention_values(source: NestedTensor, values: Tensor, num_heads: int, head_dim: int) -> NestedTensor:
     from .aten_functions import _packed_with_shape
 
+    sequence_packed = _sequence_packed_attention_input(source)
     shape, packed_sizes, element_shapes = source._shape_meta_from_components(
         prefix=(num_heads,),
         keep_dims=(0,),
@@ -183,8 +189,11 @@ def _project_attention_values(source: NestedTensor, values: Tensor, num_heads: i
         values,
         shape,
         _attention_outer_size(source, num_heads, head_dim),
+        permutation=(1, 0, 2) if sequence_packed else None,
         packed_sizes=packed_sizes,
         element_shapes=element_shapes,
+        force_explicit_ragged_dims=(1,) if sequence_packed else None,
+        preserve_ragged_offsets=sequence_packed,
     )
 
 
@@ -193,7 +202,7 @@ def _nested_sequence_valid_mask(source: NestedTensor) -> Tensor:
         return torch.empty((0, 0), dtype=torch.bool, device=source.device)
     with torch._C.DisableTorchFunctionSubclass():
         outer = torch.Tensor.size(source)
-    lengths = source._ragged_level_sizes(0).to(device=source.device, dtype=torch.long)
+    lengths = source._physical_shape[:, 0].to(device=source.device, dtype=torch.long)
     max_len = outer[1 if source.batch_first else 0]
     positions = torch.arange(max_len, device=source.device, dtype=torch.long)
     return positions.unsqueeze(0) < lengths.unsqueeze(1)
@@ -576,8 +585,11 @@ def _mha_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
     key_padding_mask = args[14] if len(args) > 14 else kwargs.get("key_padding_mask")
     need_weights = bool(args[15] if len(args) > 15 else kwargs.get("need_weights", True))
     attn_mask = args[16] if len(args) > 16 else kwargs.get("attn_mask")
-    static_k = args[20] if len(args) > 20 else kwargs.get("static_k")
-    static_v = args[21] if len(args) > 21 else kwargs.get("static_v")
+    static_k = args[21] if len(args) > 21 else kwargs.get("static_k")
+    static_v = args[22] if len(args) > 22 else kwargs.get("static_v")
+    is_causal = bool(args[24] if len(args) > 24 else kwargs.get("is_causal", False))
+    if is_causal and key_padding_mask is None and not need_weights:
+        attn_mask = None
 
     if not isinstance(query, NestedTensor):
         return True
@@ -602,6 +614,7 @@ def _mha_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
         or query.concat.dim() != 2
         or key.concat.dim() != 2
         or value.concat.dim() != 2
+        or not all(_sequence_packed_attention_input(tensor) for tensor in (query, key, value))
         or not query.concat.is_cuda
         or not key.concat.is_cuda
         or not value.concat.is_cuda
@@ -1130,7 +1143,7 @@ if _flex_attention_available:
     compile_guard=_mha_compile_safe_inputs,
 )
 def multi_head_attention_forward(
-    query: NestedTensor,
+    query: NestedTensor | Tensor,
     key: NestedTensor | Tensor,
     value: NestedTensor | Tensor,
     embed_dim_to_check: int,
@@ -1161,7 +1174,7 @@ def multi_head_attention_forward(
     See also [torch.nn.functional.multi_head_attention_forward][].
 
     Args:
-        query: The query NestedTensor.
+        query: The query NestedTensor or a rank-three dense batch.
         key: The key NestedTensor or Tensor.
         value: The value NestedTensor or Tensor.
         embed_dim_to_check: Total dimension of the model.
@@ -1188,7 +1201,7 @@ def multi_head_attention_forward(
         is_causal: Whether to apply causal masking.
 
     Returns:
-        tuple[NestedTensor, Tensor]: The attention output and attention weights.
+        tuple[NestedTensor | Tensor, Tensor | None]: The attention output and attention weights.
 
     Examples:
         >>> import torch
@@ -1219,31 +1232,44 @@ def multi_head_attention_forward(
     """
     from .nested_tensor import NestedTensor
 
+    dense_query = not isinstance(query, NestedTensor)
+    if dense_query:
+        if not isinstance(key, NestedTensor) or not isinstance(value, NestedTensor):
+            raise TypeError("dense query requires NestedTensor key and value")
+        if query.dim() != 3:
+            raise ValueError("dense query must be a rank-three batched tensor")
+        batch_first = key.batch_first
+        batch_query = query if batch_first else query.transpose(0, 1)
+        batch, length, width = batch_query.shape
+        if batch == 0:
+            raise NotImplementedError("dense-query attention with an empty batch is not supported")
+        if batch != len(key):
+            raise ValueError("query and key batch lengths must match")
+        offsets = torch.arange(batch + 1, dtype=torch.long) * length
+        sizes = torch.stack(
+            (torch.full((batch,), length, dtype=torch.long), torch.full((batch,), width, dtype=torch.long)), dim=1
+        )
+        query = NestedTensor.from_packed(
+            batch_query.reshape(-1, width),
+            offsets,
+            sizes,
+            ragged_dims=(0,),
+            batch_first=batch_first,
+            outer_size=query.shape,
+            validate=False,
+            materialize_python_metadata=False,
+            mark_dynamic=False,
+        )
+
     cls = type(query)
-    if not isinstance(query, NestedTensor):
-        raise TypeError("query must be a NestedTensor")
 
-    # nn.MultiheadAttention transposes batch_first inputs to (T, B, E) before
-    # calling this function.  Normalize back so the packed fast path (which
-    # requires batch_first=True) is always reachable.  The transpose is a
-    # zero-copy metadata toggle so this is safe even under torch.compile.
-    # The output is transposed back to preserve the caller's batch_first convention.
-    _was_seq_first = not query.batch_first
-    if _was_seq_first:
-        query = query.transpose(0, 1)
-        if (isinstance(key, NestedTensor) and not key.batch_first) or (
-            isinstance(key, Tensor) and not isinstance(key, NestedTensor) and key.dim() >= 2
-        ):
-            key = key.transpose(0, 1)
-        if (isinstance(value, NestedTensor) and not value.batch_first) or (
-            isinstance(value, Tensor) and not isinstance(value, NestedTensor) and value.dim() >= 2
-        ):
-            value = value.transpose(0, 1)
+    def finish(output, weights):
+        if dense_query:
+            output = output.concat.reshape(batch, length, out_proj_weight.shape[0])
+            if not batch_first:
+                output = output.transpose(0, 1)
+        return output, weights
 
-    if not isinstance(key, NestedTensor) and key.shape == query.shape:
-        key = query.nested_like(key, strict=False)
-    if not isinstance(value, NestedTensor) and value.shape == query.shape:
-        value = query.nested_like(value, strict=False)
     if isinstance(key, NestedTensor):
         if len(query) != len(key):
             raise ValueError(
@@ -1266,7 +1292,7 @@ def multi_head_attention_forward(
                 f"query.batch_first={query.batch_first}, value.batch_first={value.batch_first}. "
                 "Use the same batch_first setting for query, key, and value."
             )
-    if isinstance(key, NestedTensor) and isinstance(value, NestedTensor):
+    if isinstance(key, NestedTensor) and isinstance(value, NestedTensor) and key is not value:
         type(key)._meta_tensor_equal(
             key._physical_shape[:, 0],
             value._physical_shape[:, 0],
@@ -1275,14 +1301,14 @@ def multi_head_attention_forward(
         )
     if len(query) == 0:
         empty = cls([], **query._meta(include_dtype=True))
-        return empty, (torch.empty(0, dtype=query.dtype, device=query.device) if need_weights else None)
+        return finish(empty, torch.empty(0, dtype=query.dtype, device=query.device) if need_weights else None)
 
     if (
         isinstance(key, NestedTensor)
         and isinstance(value, NestedTensor)
         and not need_weights
         and key_padding_mask is None
-        and attn_mask is None
+        and (attn_mask is None or is_causal)
         and bias_k is None
         and bias_v is None
         and not add_zero_attn
@@ -1294,6 +1320,7 @@ def multi_head_attention_forward(
         and query.concat.dim() == 2
         and key.concat.dim() == 2
         and value.concat.dim() == 2
+        and all(_sequence_packed_attention_input(tensor) for tensor in (query, key, value))
     ):
         head_dim = embed_dim_to_check // num_heads
         if head_dim * num_heads != embed_dim_to_check:
@@ -1301,6 +1328,9 @@ def multi_head_attention_forward(
                 f"embed_dim {embed_dim_to_check} must be divisible by num_heads {num_heads} for MultiheadAttention"
             )
         effective_dropout_p = dropout_p if training else 0.0
+        query_values = query.concat
+        key_values = query_values if key is query else key.concat
+        value_values = query_values if value is query else key_values if value is key else value.concat
 
         if use_separate_proj_weight:
             if q_proj_weight is None or k_proj_weight is None or v_proj_weight is None:
@@ -1312,9 +1342,9 @@ def multi_head_attention_forward(
             else:
                 b_q, b_k, b_v = in_proj_bias.chunk(3)
             q_values, k_values, v_values = _torch_in_projection(
-                query.concat,
-                key.concat,
-                value.concat,
+                query_values,
+                key_values,
+                value_values,
                 q_proj_weight,
                 k_proj_weight,
                 v_proj_weight,
@@ -1326,9 +1356,9 @@ def multi_head_attention_forward(
             if in_proj_weight is None:
                 raise ValueError("in_proj_weight is required when use_separate_proj_weight=False")
             q_values, k_values, v_values = _torch_in_projection_packed(
-                query.concat,
-                key.concat,
-                value.concat,
+                query_values,
+                key_values,
+                value_values,
                 in_proj_weight,
                 in_proj_bias,
             )
@@ -1338,8 +1368,16 @@ def multi_head_attention_forward(
         v_heads = v_values.unflatten(-1, (num_heads, head_dim)).contiguous()
 
         q_attn = _project_attention_values(query, q_heads, num_heads, head_dim)
-        k_attn = _project_attention_values(key, k_heads, num_heads, head_dim)
-        v_attn = _project_attention_values(value, v_heads, num_heads, head_dim)
+        if key is query:
+            k_attn = q_attn._packed_like_unchecked(k_heads)
+        else:
+            k_attn = _project_attention_values(key, k_heads, num_heads, head_dim)
+        if value is query:
+            v_attn = q_attn._packed_like_unchecked(v_heads)
+        elif value is key:
+            v_attn = k_attn._packed_like_unchecked(v_heads)
+        else:
+            v_attn = _project_attention_values(value, v_heads, num_heads, head_dim)
 
         attn_output: NestedTensor = scaled_dot_product_attention(
             q_attn,
@@ -1350,12 +1388,9 @@ def multi_head_attention_forward(
             is_causal=is_causal,
         )
         out_values = F.linear(
-            attn_output.concat.reshape(attn_output.concat.size(0), -1), out_proj_weight, out_proj_bias
+            attn_output.concat.reshape(attn_output.concat.size(0), embed_dim_to_check), out_proj_weight, out_proj_bias
         )
-        result = query._packed_like_unchecked(out_values)
-        if _was_seq_first:
-            result = result.transpose(0, 1)
-        return result, None
+        return finish(query._packed_like_unchecked(out_values), None)
 
     if _is_compiling():
         _compile_unsupported(
@@ -1421,11 +1456,7 @@ def multi_head_attention_forward(
         output = output.transpose(0, 1)  # (T, B, E) → (B, T, E)
 
     # Reconstruct NestedTensor (strips padding via query's structure)
-    nt_output = _nested_from_padded_tensor(query, output)
-    if _was_seq_first:
-        nt_output = nt_output.transpose(0, 1)
-
-    return nt_output, weights
+    return finish(_nested_from_padded_tensor(query, output), weights)
 
 
 @NestedTensorFuncRegistry.implement(
@@ -1545,6 +1576,8 @@ def scaled_dot_product_attention(
         and _is_native_attention_layout(value)
         and attn_mask is None
         and query.device.type == "cuda"
+        and not statically_known_true(math.prod(query.concat.shape[1:]) == 0)
+        and not statically_known_true(math.prod(key.concat.shape[1:]) == 0)
     ):
         if (
             query.dtype in _LOW_PRECISION_CUDA_DTYPES
@@ -1580,7 +1613,13 @@ def scaled_dot_product_attention(
                 is_causal=is_causal,
                 scale=scale,
             )
-        if not enable_gqa and dropout_p == 0.0 and _flex_attention_available:
+        if (
+            not enable_gqa
+            and dropout_p == 0.0
+            and _flex_attention_available
+            and not statically_known_true(query.concat.numel() == 0)
+            and not statically_known_true(key.concat.numel() == 0)
+        ):
             return flex_attention(query, key, value, scale=scale, enable_gqa=enable_gqa, is_causal=is_causal)
 
     if _is_compiling():
