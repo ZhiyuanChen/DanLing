@@ -6366,24 +6366,8 @@ def transpose(input: NestedTensor, dim0: int, dim1: int) -> NestedTensor:
         seq_dim = 1 if input.batch_first else 0
         if other != seq_dim:
             raise ValueError("Cannot transpose the batch dimension with a non-sequence dimension for NestedTensor.")
-        new_shape = list(input._logical_shape)
-        new_shape[0], new_shape[1] = new_shape[1], new_shape[0]
-        return type(input)._from_packed_raw(
-            input.concat,
-            input._offsets,
-            input._physical_shape,
-            batch_first=not input.batch_first,
-            padding_value=input.padding_value,
-            mask_value=input.mask_value,
-            pin_memory=input._pin_memory,
-            outer_size=torch.Size(new_shape),
-            packed_sizes=input._packed_sizes,
-            element_shapes=input._element_shapes,
-            permutation=input._permutation,
-            ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
-            ragged_offsets=input._persistent_ragged_offsets(),
-            validate=False,
-        )
+        with torch._C.DisableTorchFunctionSubclass():
+            return torch.ops.aten.transpose.int(input, dim0, dim1)
     from .aten_functions import _transpose_nested
 
     return _transpose_nested(torch.ops.aten.transpose.int, (input, dim0, dim1), {})
@@ -6455,12 +6439,13 @@ def unsqueeze(input: NestedTensor, dim: int):
     batch_dim = _get_batch_dim(input)
     if dim <= batch_dim and not (dim == 0 and batch_dim == 0):
         raise ValueError("Cannot unsqueeze at or before the batch dimension for NestedTensor.")
-    if _needs_outer_autograd(input):
-        with torch._C.DisableTorchFunctionSubclass():
-            return torch.unsqueeze(input, dim)
-    from .aten_functions import _unsqueeze_nested
+    # Transformed packed values own their derivatives and hidden batch axes.
+    if not _is_compiling() and torch._C._functorch.is_functorch_wrapped_tensor(input.concat):
+        from .aten_functions import _unsqueeze_nested
 
-    return _unsqueeze_nested(torch.ops.aten.unsqueeze.default, (input, dim), {})
+        return _unsqueeze_nested(torch.ops.aten.unsqueeze.default, (input, dim), {})
+    with torch._C.DisableTorchFunctionSubclass():
+        return torch.ops.aten.unsqueeze.default(input, dim)
 
 
 # Softmax

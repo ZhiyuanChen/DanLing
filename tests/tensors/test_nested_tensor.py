@@ -306,6 +306,67 @@ class TestFunctionTransforms:
 
 class TestAutogradViewLifetime:
 
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("dim", [0, -1])
+    def test_inference_views(self, device, backend, dim):
+        torch.compiler.reset()
+        parts = [torch.randn(n, 3, device=device) for n in (2, 4)]
+        run = torch.compile(lambda value: value.unsqueeze(dim), backend=backend, fullgraph=True)
+        with torch.inference_mode():
+            source = NT(parts, ragged_dims=(0,))
+            output = run(source)
+            output.add_(1)
+            assert output.is_inference()
+            torch.testing.assert_close(source.unbind(), [part + 1 for part in parts])
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("layout", ["ragged", "batch-second", "existing-view", "chain", "alias", "detach", "clone"])
+    def test_compiled_views(self, device, backend, layout):
+        torch.compiler.reset()
+        parts = [torch.randn(n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in (2, 4)]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=(0,))
+        if layout == "batch-second":
+            source = source.transpose(0, 1)
+        elif layout == "existing-view":
+            source = source.unsqueeze(-1)
+
+        dim = -1 if layout == "batch-second" else 0
+
+        def transform(value):
+            result = value.unsqueeze(dim)
+            if layout == "chain":
+                return result.unsqueeze(-1)
+            if layout == "alias":
+                return torch.ops.aten.alias.default(result)
+            if layout == "detach":
+                return result.detach()
+            return result.clone() if layout == "clone" else result
+
+        expected = [part * 1 for part in references]
+        expected_values = [part.unsqueeze(-1) for part in expected] if layout == "existing-view" else expected
+        expected_outputs = []
+        for part in expected_values:
+            result = part.unsqueeze(dim)
+            if layout == "chain":
+                result = result.unsqueeze(-1)
+            elif layout == "detach":
+                result = result.detach()
+            elif layout == "clone":
+                result = result.clone()
+            expected_outputs.append(result)
+            result.mul_(2)
+
+        output = torch.compile(transform, backend=backend, fullgraph=True)(source)
+        output.mul_(2)
+        assert not output.batch_first
+        torch.testing.assert_close(output.unbind(1), expected_outputs)
+        torch.testing.assert_close(source.unbind(0 if source.batch_first else 1), expected_values)
+        torch.testing.assert_close(
+            torch.autograd.grad(source.square().sum(), parts),
+            torch.autograd.grad(sum(part.square().sum() for part in expected), references),
+        )
+
     @pytest.mark.parametrize("length", [0, 1])
     def test_compiled_inplace_edges(self, device, length):
         torch.compiler.reset()

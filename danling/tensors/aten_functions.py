@@ -1523,14 +1523,20 @@ def _masked_scatter_handler(func, args, kwargs):
 
 def _mutate_packed_values(source, func, args, kwargs):
     r"""Mutate storage below autograd while keeping its leaf and version checks."""
+    from .nested_tensor import NestedTensor
+
     values = source._packed_values
-    if torch.is_grad_enabled() and values.requires_grad:
-        if values.is_leaf:
+    with torch._C.DisableTorchFunctionSubclass():
+        owner = source._base
+    checked_values = owner._packed_values if isinstance(owner, NestedTensor) else values
+    if torch.is_grad_enabled() and checked_values.requires_grad:
+        base = checked_values._base
+        if checked_values.is_leaf:
             raise RuntimeError("a leaf Variable that requires grad is being used in an in-place operation.")
-        base = values._base
         if (
             base is not None
-            and torch._C._autograd._get_creation_meta(values) == torch._C._autograd.CreationMeta.MULTI_OUTPUT_NODE
+            and torch._C._autograd._get_creation_meta(checked_values)
+            == torch._C._autograd.CreationMeta.MULTI_OUTPUT_NODE
         ):
             raise RuntimeError("a view created by a function that returns multiple views cannot be modified inplace.")
         if base is not None and base.is_leaf and base.requires_grad:
@@ -6784,6 +6790,11 @@ def _native_view_result(source: NestedTensor, result: NestedTensor) -> NestedTen
     return view
 
 
+def _inherited_view_ops(source: NestedTensor) -> tuple[tuple[str, int], ...]:
+    r"""Start native view replay at the current reconstructed graph input."""
+    return () if vars(source).get("_unflattened_autograd", False) else vars(source).get("_view_ops", ())
+
+
 def _dtype_view_compile_safe(args, kwargs):
     source = args[0] if args else kwargs.get("self", kwargs.get("input"))
     dtype = args[1] if len(args) > 1 else kwargs.get("dtype")
@@ -6877,13 +6888,23 @@ def _permute_nested(func, args, kwargs):
     )
 
 
+def _squeeze_dim_compile_safe(args, kwargs):
+    r"""Compile singleton projection only when its element axis is static."""
+    source = args[0] if args else kwargs.get("self", kwargs.get("input"))
+    dim = args[1] if len(args) > 1 else kwargs.get("dim")
+    if source is None or not isinstance(dim, int) or not -source.dim() <= dim < source.dim():
+        return False
+    dim = _normalize_dim(dim, source.dim())
+    return dim != _get_batch_dim(source) and _physical_to_values_dim(source, _translate_dim(source, dim)) is not None
+
+
 @NestedTensorAtenRegistry.implement(aten.squeeze.default)
 def squeeze_default(func, args, kwargs):
     r"""Squeeze logical singletons without removing the packed row axis."""
     return _native_view_result(args[0], _squeeze_nested(args[0]))
 
 
-@NestedTensorAtenRegistry.implement(aten.squeeze.dim)
+@NestedTensorAtenRegistry.implement(aten.squeeze.dim, compile_safe=True, compile_guard=_squeeze_dim_compile_safe)
 def squeeze_dim(func, args, kwargs):
     r"""Return fresh native-view metadata after a logical singleton projection."""
     dim = args[1] if len(args) > 1 else kwargs["dim"]
@@ -6922,7 +6943,7 @@ def _squeeze_nested(source: NestedTensor, dim: int | None = None) -> NestedTenso
 
 
 @NestedTensorFuncRegistry.implement(aten.squeeze.default)
-@NestedTensorFuncRegistry.implement(aten.squeeze.dim)
+@NestedTensorFuncRegistry.implement(aten.squeeze.dim, compile_safe=True, compile_guard=_squeeze_dim_compile_safe)
 def public_squeeze_native(self, dim=None):
     r"""Retain exact sample sizes when native squeeze removes an element axis."""
     return _squeeze_nested(self, dim)
@@ -7261,10 +7282,57 @@ def stack(func, args, kwargs):
     return stack_nested(tensors, dim=dim)
 
 
-@NestedTensorAtenRegistry.implement(aten.transpose.int)
+def _batch_transpose_compile_safe(args, kwargs):
+    r"""Admit native views that only swap the logical batch and sequence axes."""
+    source = args[0] if args else kwargs.get("input", kwargs.get("self"))
+    dim0 = args[1] if len(args) > 1 else kwargs.get("dim0")
+    dim1 = args[2] if len(args) > 2 else kwargs.get("dim1")
+    if source is None or not isinstance(dim0, (int, torch.SymInt)) or not isinstance(dim1, (int, torch.SymInt)):
+        return False
+    rank = source.dim()
+    return rank >= 2 and {_normalize_dim(int(dim0), rank), _normalize_dim(int(dim1), rank)} == {0, 1}
+
+
+@NestedTensorAtenRegistry.implement(aten.transpose.int, compile_safe=True, compile_guard=_batch_transpose_compile_safe)
 def transpose(func, args, kwargs):
     r"""Return fresh wrapper metadata for the native differentiable-view edge."""
-    return _native_view_result(args[0], _transpose_nested(func, args, kwargs))
+    source = args[0]
+    rank = source.dim()
+    if rank >= 2 and {_normalize_dim(args[1], rank), _normalize_dim(args[2], rank)} == {0, 1}:
+        values = source.concat
+        with torch.inference_mode(source.is_inference()):
+            return _transpose_batch_layout(source, values, cpp_values=values.detach())
+    return _native_view_result(source, _transpose_nested(func, args, kwargs))
+
+
+def _transpose_batch_layout(source: NestedTensor, values: Tensor, *, cpp_values: Tensor | None = None) -> NestedTensor:
+    r"""Swap validated batch placement without rebuilding unchanged packed geometry."""
+    logical_shape = list(source._logical_shape)
+    logical_shape[0], logical_shape[1] = logical_shape[1], logical_shape[0]
+    result = type(source)._compiled_packed_constructor(
+        values if cpp_values is None else cpp_values,
+        source._offsets,
+        source._physical_shape,
+        torch.Size(logical_shape),
+        source._permutation,
+        source._ragged_dims,
+        source._ragged_dims_explicit,
+        not source.batch_first,
+        source.padding_value,
+        source.mask_value,
+        source._pin_memory,
+        source._packed_sizes,
+        source._element_shapes,
+        source._persistent_ragged_offsets(),
+        None,
+    )
+    result._packed_values = values
+    source._share_offset_caches(result)
+    result._inherit_tensor_backed_dynamic_dims(source)
+    max_length_binding = vars(source).get("_compile_max_length_binding")
+    if max_length_binding is not None:
+        result._max_length_binding = max_length_binding
+    return result
 
 
 def _transpose_nested(func, args, kwargs):
@@ -7278,24 +7346,7 @@ def _transpose_nested(func, args, kwargs):
         seq_dim = 1 if source.batch_first else 0
         if other != seq_dim:
             raise ValueError("Cannot transpose the batch dimension with a non-sequence dimension for NestedTensor.")
-        new_shape = list(source._logical_shape)
-        new_shape[0], new_shape[1] = new_shape[1], new_shape[0]
-        return type(source)._from_packed_raw(
-            source.concat,
-            source._offsets,
-            source._physical_shape,
-            batch_first=not source.batch_first,
-            padding_value=source.padding_value,
-            mask_value=source.mask_value,
-            pin_memory=source._pin_memory,
-            outer_size=torch.Size(new_shape),
-            packed_sizes=source._packed_sizes,
-            element_shapes=source._element_shapes,
-            permutation=source._permutation,
-            ragged_dims=source._ragged_dims if source._ragged_dims_explicit else None,
-            ragged_offsets=source._persistent_ragged_offsets(),
-            validate=False,
-        )
+        return _transpose_batch_layout(source, source.concat)
 
     elem_dim0 = _translate_dim(source, dim0)
     elem_dim1 = _translate_dim(source, dim1)
@@ -7501,7 +7552,16 @@ def public_expand_tensor(input, size, *, implicit=False):
 @NestedTensorAtenRegistry.implement(aten.unsqueeze.default, compile_safe=True)
 def unsqueeze(func, args, kwargs):
     r"""Return fresh outer metadata for native unsqueeze's view edge."""
-    return _native_view_result(args[0], _unsqueeze_nested(func, args, kwargs))
+    from torch.utils._python_dispatch import return_and_correct_aliasing
+
+    with torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False):
+        result = _unsqueeze_nested(func, args, kwargs)
+    result = _native_view_result(args[0], result)
+    source = args[0]
+    previous = _inherited_view_ops(source)
+    dim = args[1] % (source.dim() + 1)
+    result._view_ops = (*previous, ("unsqueeze", dim))
+    return return_and_correct_aliasing(func, args, kwargs, result)
 
 
 def _unsqueeze_nested(func, args, kwargs):
@@ -8941,6 +9001,16 @@ def is_same_size(func, args, kwargs):
     return left.shape == right.shape
 
 
+@NestedTensorAtenRegistry.implement(aten._unsafe_view.default, compile_safe=True)
+def unsafe_view(func, args, kwargs):
+    r"""Preserve packed geometry in AOT's shape-preserving output alias."""
+    source = args[0]
+    shape = args[1] if len(args) > 1 else kwargs["size"]
+    if tuple(shape) != tuple(source._logical_shape):
+        raise NotImplementedError("NestedTensor _unsafe_view requires an unchanged logical shape")
+    return alias(aten.alias.default, (source,), {})
+
+
 def _is_identity_as_strided(source, size, stride, storage_offset):
     return (
         tuple(size) == tuple(source._logical_shape)
@@ -8975,7 +9045,7 @@ def as_strided(func, args, kwargs):
         return alias(aten.alias.default, (source,), {})
     if _is_compiling() or _is_fake_tensor(source._physical_shape):
         _compile_unsupported("NestedTensor as_strided", "logical size, stride and storage offset must be unchanged")
-    return per_element_fallback(func, args, kwargs)
+    raise NotImplementedError("NestedTensor as_strided requires unchanged logical size, stride and storage offset")
 
 
 @NestedTensorAtenRegistry.implement(aten.alias.default, compile_safe=True)
@@ -8987,6 +9057,7 @@ def alias(func, args, kwargs):
     with torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False):
         values = func(source._packed_values, **kwargs)
     result = _native_view_result(source, source._packed_like_unchecked_raw(values))
+    result._view_ops = _inherited_view_ops(source)
     return return_and_correct_aliasing(func, args, kwargs, result)
 
 
@@ -9159,6 +9230,7 @@ def detach(func, args, kwargs):
         # actual numerical detach and the outer Tensor detach dispatch intact,
         # including PyTorch's wrapper version sharing and checkpoint hooks.
         result = source._packed_like_unchecked_raw(values)
+        result._view_ops = _inherited_view_ops(source)
         return return_and_correct_aliasing(func, args, kwargs, result)
     ragged_offsets = source._persistent_ragged_offsets()
     result = type(source)._from_packed_raw(
@@ -9178,6 +9250,7 @@ def detach(func, args, kwargs):
         validate=False,
         logical_strides=source.stride(),
     )
+    result._view_ops = _inherited_view_ops(source)
     return return_and_correct_aliasing(func, args, kwargs, result)
 
 

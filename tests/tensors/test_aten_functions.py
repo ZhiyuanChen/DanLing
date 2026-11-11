@@ -187,7 +187,7 @@ class TestElementwiseOps:
 
     @pytest.mark.parametrize("dim", [0, 1])
     @pytest.mark.parametrize("batch_first", [False, True])
-    @pytest.mark.parametrize("mode", ["eager", "inference"])
+    @pytest.mark.parametrize("mode", ["eager", "inference", "compiled"])
     def test_scalar_unsqueeze(self, device, dim, batch_first, mode):
         torch.compiler.reset()
         parts = [torch.randn((), device=device, dtype=torch.float64, requires_grad=True) for _ in range(2)]
@@ -211,6 +211,57 @@ class TestElementwiseOps:
                 torch.autograd.grad(actual.square().sum(), parts),
                 torch.autograd.grad(expected.square().sum(), references),
             )
+
+    def test_as_strided_repacking(self, device):
+        source = NT([torch.arange(n, device=device) for n in (4, 6)], ragged_dims=(0,))
+        with pytest.raises(NotImplementedError):
+            torch.as_strided(source, (2, 2), source.stride())
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
+    @pytest.mark.parametrize("dim", [0, -1])
+    @pytest.mark.parametrize("shapes", [((), ()), ((2,), (3,))])
+    def test_unsqueeze_mutation(self, device, backend, dim, shapes):
+        torch.compiler.reset()
+        parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+        source = NT(parts).sin()
+        expected = source.concat.detach().clone() + 1
+        loss = source.square().sum()
+
+        def unsqueeze(value):
+            return torch.ops.aten.unsqueeze.default(value, dim)
+
+        operation = unsqueeze if backend is None else torch.compile(unsqueeze, backend=backend, fullgraph=True)
+        view = operation(source)
+        with torch.no_grad():
+            view.add_(1)
+        torch.testing.assert_close(source.concat, expected)
+        with pytest.raises(RuntimeError, match="modified"):
+            loss.backward()
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
+    @pytest.mark.parametrize("operation", [operator.iadd, operator.imul], ids=["add", "mul"])
+    @pytest.mark.parametrize("batch_size", [1, 2])
+    @pytest.mark.parametrize("dim", [0, -1])
+    def test_unsqueeze_inplace(self, device, backend, operation, batch_size, dim):
+        torch.compiler.reset()
+        parts = [
+            torch.tensor(value, device=device, dtype=torch.float64, requires_grad=True)
+            for value in (2.0, 3.0)[:batch_size]
+        ]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts)
+        expected = torch.stack(references)
+
+        def unsqueeze(value):
+            return torch.ops.aten.unsqueeze.default(value, dim)
+
+        run = unsqueeze if backend is None else torch.compile(unsqueeze, backend=backend, fullgraph=True)
+        operation(run(source), 2)
+        operation(expected.unsqueeze(dim), 2)
+        torch.testing.assert_close(source.concat, expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(source.square().sum(), parts), torch.autograd.grad(expected.square().sum(), references)
+        )
 
     @pytest.mark.parametrize("batch_first", [True, False])
     @pytest.mark.parametrize("lengths", [(2, 3), (2, 4), (17, 34)])
@@ -623,6 +674,33 @@ class TestBitwiseAliases:
 
 
 class TestInPlace:
+
+    @pytest.mark.parametrize("creation", ["view", "leaf", "no_grad", "no_grad_leaf"])
+    @pytest.mark.parametrize("unsqueezed", [False, True])
+    def test_leaf_views(self, device, creation, unsqueezed):
+        base = torch.arange(24.0, device=device, dtype=torch.float64)
+        if creation == "view":
+            base.requires_grad_()
+        elif creation == "no_grad":
+            base = base.requires_grad_() + 1
+        if creation.startswith("no_grad"):
+            with torch.no_grad():
+                values = base.view(6, 4)
+        else:
+            values = base.view(6, 4)
+        if creation in ("leaf", "no_grad_leaf"):
+            values.requires_grad_()
+        before = values.detach().clone()
+        reference = values.unsqueeze(-1) if unsqueezed else values
+        with pytest.raises(RuntimeError):
+            reference.add_(1)
+
+        output = NT.from_packed(values, torch.tensor([0, 6]), torch.tensor([[6, 4]]), ragged_dims=(0,))
+        if unsqueezed:
+            output = output.unsqueeze(-1)
+        with pytest.raises(RuntimeError):
+            output.add_(1)
+        torch.testing.assert_close(values, before)
 
     @pytest.mark.parametrize("axis", [0, 1])
     def test_broadcast(self, device, axis):

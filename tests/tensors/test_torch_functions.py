@@ -778,6 +778,55 @@ class TestDimensionTransforms:
         assert_close(output, expected)
         assert_close(actual_grad, expected_grad)
 
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("method", [False, True])
+    def test_transpose_saved_alias(self, device, batch_first, method):
+        class SavedInput(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, value):
+                ctx.save_for_backward(value)
+                return value.concat.sum()
+
+            @staticmethod
+            def backward(ctx, gradient):
+                (value,) = ctx.saved_tensors
+                return torch.ones_like(value) * gradient
+
+        source = NT(
+            [torch.randn(length, 4, device=device, requires_grad=True) for length in (3, 5)],
+            ragged_dims=(0,),
+            batch_first=batch_first,
+        ).sin()
+        loss = SavedInput.apply(source)
+        view = source.transpose(0, 1) if method else torch.transpose(source, 0, 1)
+        view.add_(1)
+        with pytest.raises(RuntimeError, match="modified.*inplace|version"):
+            loss.backward()
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_batch_sequence_transpose_compiled_vjp(self, device, batch_first):
+        def project_and_transpose(source, weight, bias):
+            return F.linear(source, weight, bias).transpose(0, 1)
+
+        compiled = torch.compile(project_and_transpose, backend="aot_eager", fullgraph=True, dynamic=True)
+        for lengths in ((3, 5), (4, 6)):
+            parts = [torch.randn(length, 4, device=device, requires_grad=True) for length in lengths]
+            references = [part.detach().clone().requires_grad_() for part in parts]
+            weight = torch.randn(6, 4, device=device, requires_grad=True)
+            bias = torch.randn(6, device=device, requires_grad=True)
+            reference_weight = weight.detach().clone().requires_grad_()
+            reference_bias = bias.detach().clone().requires_grad_()
+            actual = compiled(NT(parts, ragged_dims=(0,), batch_first=batch_first), weight, bias)
+            expected = project_and_transpose(
+                NT(references, ragged_dims=(0,), batch_first=batch_first), reference_weight, reference_bias
+            )
+            assert actual.batch_first is not batch_first
+            torch.testing.assert_close(actual.concat, expected.concat)
+            torch.testing.assert_close(
+                torch.autograd.grad(actual.concat.square().sum(), (*parts, weight, bias)),
+                torch.autograd.grad(expected.concat.square().sum(), (*references, reference_weight, reference_bias)),
+            )
+
     def test_transpose_swaps_last_two_element_dims(self, device, float_dtype):
         nt = NT(
             [
@@ -851,6 +900,55 @@ class TestDimensionTransforms:
         output = torch.unsqueeze(nt, dim=0)
         assert output.batch_first is False
         assert_close(output.tensor, nt.tensor.unsqueeze(0))
+
+    @pytest.mark.parametrize("transform", ["grad", "jvp", "vmap"])
+    @pytest.mark.parametrize("factory", [False, True])
+    @pytest.mark.parametrize("dim", [0, -1])
+    def test_unsqueeze_transforms(self, device, transform, factory, dim):
+        values = torch.randn(5, 2, device=device, dtype=torch.float64)
+        direction = torch.randn_like(values)
+        source = values if factory else NT(values.split((2, 3)), ragged_dims=(0,))
+        vector = direction if factory else NT(direction.split((2, 3)), ragged_dims=(0,))
+
+        def loss(value):
+            if factory:
+                value = NT(value.split((2, 3)), ragged_dims=(0,))
+            return torch.unsqueeze(value, dim).sin().square().sum()
+
+        def reference(value):
+            return value.sin().square().sum()
+
+        if transform == "grad":
+            actual = torch.func.grad(loss)(source)
+            actual = actual if factory else actual.concat
+            expected = torch.func.grad(reference)(values)
+        elif transform == "jvp":
+            actual = torch.func.jvp(loss, (source,), (vector,))
+            expected = torch.func.jvp(reference, (values,), (direction,))
+        else:
+            actual = torch.vmap(loss, in_dims=-1)(source)
+            expected = torch.vmap(reference, in_dims=-1)(values)
+        torch.testing.assert_close(actual, expected)
+
+    @pytest.mark.parametrize("entry", ["function", "method"])
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("dim", [0, 1])
+    def test_unsqueeze_grad(self, device, entry, backend, dim):
+        torch.compiler.reset()
+        parts = [torch.tensor(value, device=device, dtype=torch.float64, requires_grad=True) for value in (2.0, 3.0)]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+
+        def view(value):
+            return torch.unsqueeze(value, dim) if entry == "function" else value.unsqueeze(dim)
+
+        compiled = torch.compile(view, backend=backend, fullgraph=True)
+        output = compiled(NT(parts))
+        expected = torch.stack(references).unsqueeze(dim)
+        torch.testing.assert_close(output.tensor, expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(output.square().sum(), parts),
+            torch.autograd.grad(expected.square().sum(), references),
+        )
 
     def test_unsqueeze_batch_first_false_respects_batch_dim(self):
         nt = NestedTensor([torch.tensor([1, 2])], batch_first=False)

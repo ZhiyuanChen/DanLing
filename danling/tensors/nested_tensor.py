@@ -381,6 +381,7 @@ class NestedTensor(torch.Tensor):
     _unflattened_autograd: bool
     _wrapper_grad_leaf: bool
     _is_aot_tangent: bool
+    _view_ops: tuple[tuple[str, int], ...]
     _RAGGED_OFFSETS_PREFIX = "_ragged_offsets_"
     _AOT_CACHE_HASH_VERSION = 6
 
@@ -2075,6 +2076,7 @@ class NestedTensor(torch.Tensor):
         return inner_tensors, {
             "requires_grad": self.requires_grad,
             "is_aot_tangent": vars(self).get("_is_aot_tangent", False),
+            "view_ops": vars(self).get("_view_ops", ()),
             "batch_first": getattr(self, "batch_first", True),
             "padding_value": getattr(self, "padding_value", 0.0),
             "mask_value": getattr(self, "mask_value", False),
@@ -2093,6 +2095,7 @@ class NestedTensor(torch.Tensor):
         ctx = dict(ctx)
         wrapper_requires_grad = bool(ctx.pop("requires_grad", values.requires_grad))
         is_aot_tangent = bool(ctx.pop("is_aot_tangent", False))
+        view_ops = ctx.pop("view_ops", ())
 
         offsets = inner_tensors.get("_offsets")
         shape_tensor = inner_tensors.get("_physical_shape")
@@ -2155,7 +2158,7 @@ class NestedTensor(torch.Tensor):
                 result._max_length_binding = max_length_binding
             result._is_aot_tangent = is_aot_tangent
             result._unflattened_autograd = True
-            return result
+            return _replay_view_ops(result, view_ops)
 
         result = torch.Tensor._make_wrapper_subclass(
             cls,
@@ -2202,7 +2205,7 @@ class NestedTensor(torch.Tensor):
         result._is_aot_tangent = is_aot_tangent
         result._unflattened_autograd = True
         result._mark_tensor_backed_dynamic_dims()
-        return result
+        return _replay_view_ops(result, view_ops)
 
     def __coerce_tangent_metadata__(self):
         r"""Classify this wrapper as a tangent through tracing and runtime layout coercion."""
@@ -7011,6 +7014,58 @@ def _make_nested_tensor_from_packed_constructor(nested_tensor_cls: type[NestedTe
 NestedTensor._compiled_packed_constructor = staticmethod(_make_nested_tensor_from_packed)
 
 
+def _replay_view_ops(value: NestedTensor, operations: tuple[tuple[str, int], ...]) -> NestedTensor:
+    r"""Restore native view functions after AOT rebuilds the packed children.
+
+    Sizes and strides alone lose batch ownership on singleton axes. The immutable
+    operation metadata retains it without keeping an input tensor or autograd graph.
+    """
+    if not operations:
+        return value
+    from torch._subclasses.fake_tensor import FakeTensor
+    from torch._subclasses.functional_tensor import FunctionalTensor
+
+    values = value._packed_values
+    # Tracing must retain the supplied ABI children without generating tensor work.
+    if (
+        isinstance(values, (FakeTensor, FunctionalTensor))
+        or getattr(type(value), "_is_transform_proxy", False)
+        or torch._C._functorch.is_functorch_wrapped_tensor(values)
+    ):
+        value._view_ops = operations
+        return value
+    from .aten_functions import _squeeze_nested
+
+    with torch.inference_mode(False), torch.no_grad(), torch._C.DisableTorchFunctionSubclass():
+        base = value._packed_like_unchecked_raw(value._packed_values)
+        strides = list(value.stride())
+        for name, dim in reversed(operations):
+            if name != "unsqueeze":
+                raise RuntimeError(f"Unsupported NestedTensor view replay: {name}")
+            base = _squeeze_nested(base, dim)
+            strides.pop(dim)
+        state = (*base._layout_state()[:-1], tuple(strides))
+        base = NestedTensor._layout_from_state(state, base._packed_values)
+        torch.Tensor.requires_grad.__set__(base, value.requires_grad)
+        with torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False):
+            result = base
+            for _name, dim in operations:
+                result = torch.ops.aten.unsqueeze.default(result, dim)
+    result._packed_values = values
+    result._offsets = value._offsets
+    result._physical_shape = value._physical_shape
+    result._packed_sizes = value._packed_sizes
+    result._element_shapes = value._element_shapes
+    type(result)._install_persistent_ragged_offsets(result, value._persistent_ragged_offsets())
+    result._view_ops = operations
+    result._unflattened_autograd = True
+    result._is_aot_tangent = vars(value).get("_is_aot_tangent", False)
+    binding = vars(value).get("_compile_max_length_binding")
+    if binding is not None:
+        result._max_length_binding = binding
+    return result
+
+
 class _TransformTensor(NestedTensor):
     """Opaque tensor leaf retaining logical batching axes and packed autograd."""
 
@@ -7029,7 +7084,8 @@ class _TransformTensor(NestedTensor):
             and not torch._C._functorch.is_gradtrackingtensor(values)
             and not torch._C._functorch.is_batchedtensor(values)
         ):
-            return _transform_rebuild(result, cls._public_type)
+            public = _transform_rebuild(result, cls._public_type)
+            return _replay_view_ops(public, vars(result).get("_view_ops", ()))
         return result
 
     def _packed_like_unchecked(self, packed_values, *, reuse_wrapper=False):
