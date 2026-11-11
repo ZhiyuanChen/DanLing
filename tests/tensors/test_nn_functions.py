@@ -3458,6 +3458,28 @@ class TestCrossEntropy:
         )
         return logits.movedim(-1, 1), targets
 
+    @pytest.mark.parametrize("reduction", ["mean", "none"])
+    def test_compiled_variable_lengths_and_gradients(self, reduction):
+        def loss(logits, targets):
+            return F.cross_entropy(logits.movedim(-1, 1), targets, reduction=reduction, label_smoothing=0.1)
+
+        compiled = torch.compile(loss, backend="aot_eager", fullgraph=True, dynamic=True)
+        for lengths in ((2, 3), (3, 5)):
+            logits = [torch.randn(length, 5, dtype=torch.float64, requires_grad=True) for length in lengths]
+            targets = [torch.randint(5, (length,)) for length in lengths]
+            output = compiled(NestedTensor(logits, ragged_dims=(0,)), NestedTensor(targets, ragged_dims=(0,)))
+            values = output.concat if isinstance(output, NestedTensor) else output
+
+            reference_logits = [part.detach().clone().requires_grad_() for part in logits]
+            reference = F.cross_entropy(
+                torch.cat(reference_logits), torch.cat(targets), reduction=reduction, label_smoothing=0.1
+            )
+            torch.testing.assert_close(values, reference)
+            gradients = torch.autograd.grad(values.sum(), logits)
+            reference_gradients = torch.autograd.grad(reference.sum(), reference_logits)
+            for gradient, reference_gradient in zip(gradients, reference_gradients):
+                torch.testing.assert_close(gradient, reference_gradient)
+
     @pytest.mark.parametrize("reduction", ["mean", "sum"])
     def test_matches_dense_on_packed_rows(self, device, float_dtype, reduction):
         # Logical input is (B, C, L); its packed rows are (sum(L), C).

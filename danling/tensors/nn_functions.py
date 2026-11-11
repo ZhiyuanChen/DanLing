@@ -1787,7 +1787,25 @@ def _cross_entropy_dense_values(reference: NestedTensor, tensor: Tensor) -> Tens
     return values.permute(permutation)
 
 
-@NestedTensorFuncRegistry.implement(F.cross_entropy)
+def _cross_entropy_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
+    r"""Admit packed nested input and targets without specializing their partitions."""
+    from .nested_tensor import NestedTensor
+
+    input = args[0] if args else kwargs.get("input")
+    target = args[1] if len(args) > 1 else kwargs.get("target")
+    weight = args[2] if len(args) > 2 else kwargs.get("weight")
+    return (
+        isinstance(input, NestedTensor)
+        and isinstance(target, NestedTensor)
+        and input.dim() > 1
+        and target.dim() in (input.dim() - 1, input.dim())
+        and not isinstance(weight, NestedTensor)
+    )
+
+
+@NestedTensorFuncRegistry.implement(
+    F.cross_entropy, compile_safe=True, compile_guard=_cross_entropy_compile_safe_inputs
+)
 def cross_entropy(
     input: NestedTensor | Tensor,
     target: NestedTensor | Tensor,
