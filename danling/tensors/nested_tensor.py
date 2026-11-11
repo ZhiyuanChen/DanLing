@@ -4881,7 +4881,7 @@ class NestedTensor(torch.Tensor):
     # Indexing
     # ------------------------------------------------------------------
 
-    def _batch_select_static_position(self, position: int, tail_index: tuple = ()) -> Tensor | None:
+    def _batch_select_static_position(self, position: int | torch.SymInt, tail_index: tuple = ()) -> Tensor | None:
         r"""Select one ragged position from every batch element without unpacking storage."""
         if self._varying_dims != (0,):
             return None
@@ -4897,10 +4897,19 @@ class NestedTensor(torch.Tensor):
         if self._packed_sizes is not None:
             lengths = self._packed_sizes
         elif _is_compiling() or _is_fake_tensor(self._offsets):
-            _compile_unsupported(
-                "NestedTensor select",
-                "tensor-backed per-element index bounds are not implemented",
+            if self._permutation != tuple(range(self._physical_shape.size(1))):
+                return None
+            lengths_tensor = self._offsets[1:] - self._offsets[:-1]
+            position_tensor = torch.scalar_tensor(position, dtype=lengths_tensor.dtype, device=lengths_tensor.device)
+            local_positions = torch.where(position_tensor < 0, lengths_tensor + position_tensor, position_tensor)
+            torch._assert_async(
+                torch.all((local_positions >= 0) & (local_positions < lengths_tensor)),
+                "index is out of bounds for at least one NestedTensor element",
             )
+            offsets = self.packed_offsets(device=self.concat.device, dtype=torch.long)
+            local_positions = local_positions.to(device=offsets.device, dtype=offsets.dtype)
+            selected = self.concat.index_select(0, offsets[:-1] + local_positions)
+            return selected[(slice(None), *tail_index)] if tail_index else selected
         else:
             lengths = tuple(int(size) for size in (self._offsets[1:] - self._offsets[:-1]).tolist())
 
@@ -5360,7 +5369,11 @@ class NestedTensor(torch.Tensor):
                 if slice_output is not None:
                     return slice_output
                 first_selector = rest[0]
-                if isinstance(first_selector, int):
+                if isinstance(first_selector, (int, torch.SymInt)):
+                    if self.batch_first:
+                        selected = self._batch_select_static_position(first_selector, tuple(rest[1:]))
+                        if selected is not None:
+                            return selected
                     _compile_unsupported(
                         "NestedTensor select",
                         "tensor-backed per-element index bounds are not implemented",

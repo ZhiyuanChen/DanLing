@@ -2793,6 +2793,28 @@ class TestPairedIndex:
 
 class TestIndexing:
 
+    @pytest.mark.parametrize("position", [0, 1, -1, -2])
+    def test_compiled_batch_select_ragged_position(self, device, position):
+        def select(source):
+            return source[:, position, :]
+
+        compiled = torch.compile(select, backend="aot_eager", fullgraph=True, dynamic=True)
+        for lengths in ((3, 5), (4, 6)):
+            parts = [torch.randn(length, 4, device=device, requires_grad=True) for length in lengths]
+            references = [part.detach().clone().requires_grad_() for part in parts]
+            actual = compiled(NT(parts, ragged_dims=(0,)))
+            expected = torch.stack([part[position] for part in references])
+            torch.testing.assert_close(actual, expected)
+            torch.testing.assert_close(
+                torch.autograd.grad(actual.square().sum(), parts),
+                torch.autograd.grad(expected.square().sum(), references),
+            )
+
+        invalid_lengths = (1, 5) if position in (1, -2) else (0, 5)
+        invalid = NT([torch.randn(length, 4, device=device) for length in invalid_lengths], ragged_dims=(0,))
+        with pytest.raises(RuntimeError, match="out of bounds"):
+            compiled(invalid)
+
     @pytest.mark.parametrize(
         "entry,index,ragged,batch_first,patterns",
         [
