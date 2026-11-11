@@ -154,6 +154,40 @@ Operations on NestedTensor are handled by a **three-tier dispatch system**, orde
 
 **Fallback**: Any aten op without an explicit handler falls back to `per_element_fallback`, which unpacks to individual tensors, applies the op element-by-element, and repacks. Under `torch.compile`, DanLing prefers explicit failure over silently entering those eager-only fallbacks.
 
+`F.conv1d` has a packed training path for `(channels, length_i)` elements
+with a static channel axis and `ragged_dims=(1,)`. It supports ordinary,
+grouped and depthwise convolution, stride and dilation, integer padding,
+`"valid"`, and stride-one `"same"` padding. Ordinary spatial convolutions share
+the native tile engine with Conv2d, using height-one tiles and the requested
+stride. Stride-one depthwise convolutions reduce each sample's real output
+taps, preserving nonfinite values and their gradients across sample boundaries.
+They use explicit zero padding and add bias after the dot product. Native
+implicit-padding backends can propagate nonfinite padding products differently.
+Both support `torch.compile(fullgraph=True, dynamic=True)`, with independent
+sample boundaries. For a width-4 depthwise causal convolution with dilation 1:
+
+```python
+output = F.silu(F.conv1d(input, weight, bias, padding=3, groups=channels)[..., :-3])
+```
+
+The relative slice removes three positions from each sample independently.
+Compiling ragged slices with data-dependent output lengths requires
+`torch._dynamo.config.capture_dynamic_output_shape_ops = True`.
+
+`F.conv2d` supports dynamic fullgraph training for `(channels, height_i, width_i)`
+elements with a static channel axis and `ragged_dims=(1, 2)`. It gathers
+per-sample spatial tiles into a bounded buffer and uses native PyTorch convolution,
+including input, weight and bias gradients. Stride, dilation, groups, integer
+padding, `"valid"`, and stride-one `"same"` follow PyTorch semantics. Tensor
+metadata plans the tiles and restores only valid output positions. Pointwise
+convolutions retain their packed linear path. Eager execution uses exact tile
+counts when CPU geometry is concrete. Supported CUDA copies reuse fused packing
+and unpacking kernels for stride and dilation, preserving the coverage of
+actually sampled input coordinates. Tracing and transforms use equivalent Tensor operations
+with the same tile layout and native convolution. Other spatial layouts, spatial
+extents derived entirely from tensor data, and `F.conv3d` remain outside this
+fullgraph contract.
+
 ```text
 torch.some_op(nested_tensor)
     │

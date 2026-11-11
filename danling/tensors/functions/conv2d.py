@@ -25,84 +25,106 @@ from typing import TYPE_CHECKING
 import torch
 from torch import Tensor
 from torch.nn import functional as F
+from torch.utils._python_dispatch import _get_current_dispatch_mode
 
-from ..ops import _check_execution_guard, _ExecutionGuardKind, _per_element_unsupported
-from ._convolution import (
-    _autocast_convolution_tensors,
-    _can_use_spatial_tile_convolution,
-    _conv_output_size,
-    _has_cuda_tensors,
-    _has_static_input_channels,
-    _resolve_element_shapes,
-    _spatial_tile_area_occupancy,
-    _spatial_tile_max_batch,
-    _spatial_tile_triton_block_size,
-    _valid_conv_bias,
-)
+from ..ops import _check_execution_guard, _ExecutionGuardKind, _is_compiling, _per_element_unsupported
+from ._convolution import _has_static_input_channels
 
 if TYPE_CHECKING:
     from ..nested_tensor import NestedTensor
 
-try:
-    import triton
-    import triton.language as tl
-except Exception:  # pragma: no cover - optional dependency/runtime
-    triton = None
-    tl = None
 
-
-# ---------------------------------------------------------------------------
-# NestedTensor conv2d dispatch
-# ---------------------------------------------------------------------------
+def _has_size_hint(value: int | torch.SymInt) -> bool:
+    return not isinstance(value, torch.SymInt) or value.node.hint is not None
 
 
 def conv2d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1, *, _fn=None):
-    r"""Use packed pointwise or spatial tile conv2d, otherwise fall back to per-element conv."""
+    r"""Convolve packed spatial tiles with each sample's independent boundary."""
     if len(input) != 0:
         channel_dim = _packed_pointwise_conv2d_channel_dim(input, weight, stride, padding, dilation, groups)
         if channel_dim is not None:
             return _packed_pointwise_conv2d(input, weight, bias, channel_dim)
-        output = _spatial_tile_conv2d(input, weight, bias, stride, padding, dilation, groups)
-        if output is not None:
-            return output
+        if _can_use_packed_conv2d(input, weight, bias, stride, padding, dilation, groups):
+            return _packed_spatial_conv2d(input, weight, bias, stride, padding, dilation, groups)
     return _per_element_conv2d(input, weight, bias, stride, padding, dilation, groups, _fn=_fn)
 
 
-# ---------------------------------------------------------------------------
-# Dispatch helpers
-# ---------------------------------------------------------------------------
-
-
 def _conv2d_pair(value) -> tuple[int, int] | None:
-    r"""Normalize integer spatial arguments without coercing invalid values."""
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value, value
+    if isinstance(value, (int, torch.SymInt)) and not isinstance(value, bool):
+        return int(value), int(value)
     if (
         isinstance(value, (tuple, list))
         and len(value) == 2
-        and all(isinstance(item, int) and not isinstance(item, bool) for item in value)
+        and all(isinstance(item, (int, torch.SymInt)) and not isinstance(item, bool) for item in value)
     ):
-        return value[0], value[1]
+        return int(value[0]), int(value[1])
     return None
+
+
+def _conv2d_parameters(weight, stride, padding, dilation):
+    stride = _conv2d_pair(stride)
+    dilation = _conv2d_pair(dilation)
+    if stride is None or dilation is None or any(value <= 0 for value in (*stride, *dilation)):
+        return None
+    if isinstance(padding, str):
+        if padding == "valid":
+            padding_before = padding_after = (0, 0)
+        elif padding == "same" and stride == (1, 1):
+            total = tuple(dilation[axis] * (int(weight.shape[axis + 2]) - 1) for axis in range(2))
+            padding_before = tuple(value // 2 for value in total)
+            padding_after = tuple(value - before for value, before in zip(total, padding_before))
+        else:
+            return None
+    else:
+        pair = _conv2d_pair(padding)
+        if pair is None or any(value < 0 for value in pair):
+            return None
+        padding_before = padding_after = pair
+    return stride, padding_before, padding_after, dilation
+
+
+def _can_use_packed_conv2d(input, weight, bias, stride, padding, dilation, groups) -> bool:
+    r"""Whether static channels and two packed spatial axes define this convolution."""
+    if (
+        not isinstance(weight, Tensor)
+        or weight.dim() != 4
+        or not isinstance(groups, (int, torch.SymInt))
+        or isinstance(groups, bool)
+        or groups <= 0
+        or weight.shape[0] <= 0
+        or weight.shape[0] % groups != 0
+        or any(size <= 0 for size in weight.shape[1:])
+        or input._physical_shape.size(0) == 0
+        or input._physical_shape.size(1) != 3
+        or input._ragged_dims != (1, 2)
+        or input._permutation != (1, 2, 0)
+    ):
+        return False
+    values = input._packed_values
+    if values.dim() != 2 or values.device != weight.device:
+        return False
+    if not _has_static_input_channels(input, int(weight.shape[1]) * int(groups), rank=2):
+        return False
+    if bias is not None and (
+        not isinstance(bias, Tensor)
+        or bias.dim() != 1
+        or bias.shape[0] != weight.shape[0]
+        or bias.device != values.device
+    ):
+        return False
+    if _is_compiling() and not all(_has_size_hint(extent) for extent in input._max_physical_dims()[1:]):
+        return False
+    return _conv2d_parameters(weight, stride, padding, dilation) is not None
 
 
 def _packed_pointwise_conv2d_channel_dim(input: NestedTensor, weight, stride, padding, dilation, groups) -> int | None:
     r"""Return packed channel dim when ``conv2d`` can run as one packed linear op."""
-    if groups != 1 or not isinstance(weight, Tensor) or weight.dim() != 4:
+    if isinstance(groups, bool) or groups != 1 or not isinstance(weight, Tensor) or weight.dim() != 4:
         return None
     if tuple(int(size) for size in weight.shape[2:]) != (1, 1):
         return None
-    if (stride != 1 and stride != (1, 1)) or (dilation != 1 and dilation != (1, 1)):
-        return None
-    if isinstance(padding, str):
-        padding_pair = (0, 0) if padding in {"same", "valid"} else None
-    elif isinstance(padding, int):
-        padding_pair = (int(padding), int(padding))
-    elif isinstance(padding, tuple) and len(padding) == 2:
-        padding_pair = (int(padding[0]), int(padding[1]))
-    else:
-        padding_pair = None
-    if padding_pair != (0, 0):
+    parameters = _conv2d_parameters(weight, stride, padding, dilation)
+    if parameters != ((1, 1), (0, 0), (0, 0), (1, 1)):
         return None
     in_channels = int(weight.shape[1])
     if not _has_static_input_channels(input, in_channels, rank=2):
@@ -169,2093 +191,287 @@ def _per_element_conv2d(input: NestedTensor, *args, _fn=None, **kwargs) -> Neste
     return cls(results, **input._meta())
 
 
-# ---------------------------------------------------------------------------
-# Spatial tile CuDNN implementation
-# ---------------------------------------------------------------------------
-
-
-def _conv2d_output_meta(
-    input: NestedTensor,
-    out_channels: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride: tuple[int, int],
-    padding: tuple[int, int],
-    dilation: tuple[int, int],
-) -> tuple[tuple[tuple[int, ...], ...], tuple[int, ...], Tensor] | None:
-    output_shapes = []
-    output_packed_sizes = []
-    for shape in _resolve_element_shapes(input):
-        if len(shape) != 3:
-            return None
-        _, in_h, in_w = shape
-        out_h = _conv_output_size(in_h, kernel_h, stride[0], padding[0], dilation[0])
-        out_w = _conv_output_size(in_w, kernel_w, stride[1], padding[1], dilation[1])
-        if out_h <= 0 or out_w <= 0:
-            return None
-        out_hw = out_h * out_w
-        output_shapes.append((out_channels, out_h, out_w))
-        output_packed_sizes.append(out_hw)
-    if not output_shapes:
-        return None
-
-    output_shape_tensor = torch.tensor(output_shapes, dtype=torch.long)
-    return tuple(output_shapes), tuple(output_packed_sizes), output_shape_tensor
-
-
-def _conv2d_spatial_tiles(
-    output_shapes: tuple[tuple[int, ...], ...],
-    tile_shape: tuple[int, int],
-) -> list[tuple[int, int, int, int, int]]:
-    tile_h, tile_w = tile_shape
-    tiles = []
-    for batch, shape in enumerate(output_shapes):
-        _, out_h, out_w = shape
-        for out_y in range(0, out_h, tile_h):
-            valid_h = min(tile_h, out_h - out_y)
-            for out_x in range(0, out_w, tile_w):
-                valid_w = min(tile_w, out_w - out_x)
-                tiles.append((batch, out_y, out_x, valid_h, valid_w))
-    return tiles
-
-
-def _auto_spatial_tile2d_config(output_shapes: tuple[tuple[int, ...], ...]) -> tuple[int, int]:
-    # Late backbone stages can be much smaller than 64x64. Keep the normal
-    # tile bound, but do not compute rows/columns beyond every sample's output.
-    return min(64, max(shape[1] for shape in output_shapes)), min(64, max(shape[2] for shape in output_shapes))
-
-
-def _auto_spatial_weight_tile2d_batch(_tile_shape: tuple[int, int], _area_occupancy: float) -> int:
-    return 128
-
-
-def _cap_spatial_tile2d_batch_for_channels(
-    max_tiles_per_batch: int | None,
-    *,
-    in_channels: int,
-    out_channels: int,
-    input_tile_shape: tuple[int, int],
-    output_tile_shape: tuple[int, int],
-) -> int:
-    target_elements = 128 * 1024 * 1024
-    input_elements = int(in_channels) * int(input_tile_shape[0]) * int(input_tile_shape[1])
-    output_elements = int(out_channels) * int(output_tile_shape[0]) * int(output_tile_shape[1])
-    elements_per_tile = max(input_elements, output_elements, 1)
-    channel_cap = max(1, target_elements // elements_per_tile)
-    if max_tiles_per_batch is None:
-        return channel_cap
-    return max(1, min(int(max_tiles_per_batch), channel_cap))
-
-
-def _resolve_spatial_tile2d_config(
-    output_shapes: tuple[tuple[int, ...], ...],
-    tile_size: int | tuple[int, int] | str,
-    max_tiles_per_batch: int | str | None,
-) -> tuple[tuple[int, int], int | None] | None:
-    if isinstance(tile_size, str):
-        if tile_size != "auto":
-            return None
-        tile_shape = _auto_spatial_tile2d_config(output_shapes)
-    else:
-        if isinstance(tile_size, int):
-            parsed_tile_shape = (int(tile_size), int(tile_size))
-        elif isinstance(tile_size, tuple) and len(tile_size) == 2:
-            parsed_tile_shape = (int(tile_size[0]), int(tile_size[1]))
-        else:
-            return None
-        if parsed_tile_shape[0] <= 0 or parsed_tile_shape[1] <= 0:
-            return None
-        tile_shape = parsed_tile_shape
-
-    if isinstance(max_tiles_per_batch, str):
-        if max_tiles_per_batch != "auto":
-            return None
-        return tile_shape, None
-    if max_tiles_per_batch is None:
-        return tile_shape, None
-    return tile_shape, max(int(max_tiles_per_batch), 1)
-
-
-def _resolve_spatial_weight_tile2d_batch(
-    input_shapes: tuple[tuple[int, ...], ...],
-    tile_shape: tuple[int, int],
-    weight_max_tiles_per_batch: int | str | None,
-    default_chunk_size: int,
-) -> int | None:
-    if isinstance(weight_max_tiles_per_batch, str):
-        if weight_max_tiles_per_batch == "same":
-            return default_chunk_size
-        if weight_max_tiles_per_batch != "auto":
-            return None
-        auto_batch = _auto_spatial_weight_tile2d_batch(tile_shape, _spatial_tile_area_occupancy(input_shapes))
-        return min(default_chunk_size, auto_batch)
-    if weight_max_tiles_per_batch is None:
-        return max(default_chunk_size, 1)
-    return max(int(weight_max_tiles_per_batch), 1)
-
-
-def _new_spatial_tile2d_tensor(
-    reference: Tensor,
-    shape: tuple[int, int, int, int],
-    *,
-    channels_last: bool,
-) -> Tensor:
-    if channels_last and reference.is_cuda:
-        return torch.empty(
-            shape,
-            device=reference.device,
-            dtype=reference.dtype,
-            memory_format=torch.channels_last,
-        )
-    return reference.new_empty(shape)
-
-
-if triton is not None:
-
-    # Tile geometry follows the current batch, not the model's fixed structure.
-    # Keep its extents, counts, offsets and dependent strides out of the JIT key,
-    # including Triton's implicit scalar-value/alignment specialization. Channel
-    # counts and launch blocks remain static; channels-last kernels also retain
-    # their shape-independent channel/pixel strides for contiguous vector loads.
-    @triton.jit(
-        do_not_specialize=[
-            "tile_offset",
-            "total",
-            "tile_stride_n",
-            "tile_stride_c",
-            "tile_stride_h",
-            "tile_stride_w",
-            "input_tile_h",
-            "input_tile_w",
-        ]
-    )
-    def _spatial_tile_pack_input_kernel(
-        input_ptr,
-        tile_ptr,
-        tile_meta_ptr,
-        input_offsets_ptr,
-        shape_meta_ptr,
-        tile_offset,
-        total,
-        tile_stride_n,
-        tile_stride_c,
-        tile_stride_h,
-        tile_stride_w,
-        in_channels: tl.constexpr,
-        input_tile_h,
-        input_tile_w,
-        stride_h: tl.constexpr,
-        stride_w: tl.constexpr,
-        padding_h: tl.constexpr,
-        padding_w: tl.constexpr,
-        block_size: tl.constexpr,
-    ):
-        offsets = tl.program_id(0) * block_size + tl.arange(0, block_size)
-        mask = offsets < total
-        channel = offsets % in_channels
-        tmp = offsets // in_channels
-        tile_x = tmp % input_tile_w
-        tmp = tmp // input_tile_w
-        tile_y = tmp % input_tile_h
-        tile_local = tmp // input_tile_h
-        tile = tile_offset + tile_local
-
-        batch = tl.load(tile_meta_ptr + tile * 5, mask=mask, other=0)
-        out_y = tl.load(tile_meta_ptr + tile * 5 + 1, mask=mask, other=0)
-        out_x = tl.load(tile_meta_ptr + tile * 5 + 2, mask=mask, other=0)
-        in_h = tl.load(shape_meta_ptr + batch * 4, mask=mask, other=0)
-        in_w = tl.load(shape_meta_ptr + batch * 4 + 1, mask=mask, other=0)
-        in_base = tl.load(input_offsets_ptr + batch, mask=mask, other=0)
-
-        input_y = out_y * stride_h - padding_h + tile_y
-        input_x = out_x * stride_w - padding_w + tile_x
-        valid = mask & (input_y >= 0) & (input_y < in_h) & (input_x >= 0) & (input_x < in_w)
-        input_pos = in_base + input_y * in_w + input_x
-        values = tl.load(input_ptr + input_pos * in_channels + channel, mask=valid, other=0.0)
-        tl.store(
-            tile_ptr
-            + tile_local * tile_stride_n
-            + channel * tile_stride_c
-            + tile_y * tile_stride_h
-            + tile_x * tile_stride_w,
-            values,
-            mask=mask,
-        )
-
-    @triton.jit(
-        do_not_specialize=[
-            "tile_offset",
-            "tile_count",
-            "tile_stride_n",
-            "tile_stride_h",
-            "input_tile_h",
-            "input_tile_w",
-        ]
-    )
-    def _spatial_tile_pack_input_channels_last_kernel(
-        input_ptr,
-        tile_ptr,
-        tile_meta_ptr,
-        input_offsets_ptr,
-        shape_meta_ptr,
-        tile_offset,
-        tile_count,
-        tile_stride_n,
-        tile_stride_c: tl.constexpr,
-        tile_stride_h,
-        tile_stride_w: tl.constexpr,
-        in_channels: tl.constexpr,
-        input_tile_h,
-        input_tile_w,
-        stride_h: tl.constexpr,
-        stride_w: tl.constexpr,
-        padding_h: tl.constexpr,
-        padding_w: tl.constexpr,
-        block_hw: tl.constexpr,
-        block_c: tl.constexpr,
-    ):
-        tile_local = tl.program_id(0)
-        spatial = tl.program_id(1) * block_hw + tl.arange(0, block_hw)
-        channel = tl.program_id(2) * block_c + tl.arange(0, block_c)
-        tile = tile_offset + tile_local
-
-        batch = tl.load(tile_meta_ptr + tile * 5)
-        out_y = tl.load(tile_meta_ptr + tile * 5 + 1)
-        out_x = tl.load(tile_meta_ptr + tile * 5 + 2)
-        in_h = tl.load(shape_meta_ptr + batch * 4)
-        in_w = tl.load(shape_meta_ptr + batch * 4 + 1)
-        in_base = tl.load(input_offsets_ptr + batch)
-
-        tile_y = spatial // input_tile_w
-        tile_x = spatial - tile_y * input_tile_w
-        input_y = out_y * stride_h - padding_h + tile_y
-        input_x = out_x * stride_w - padding_w + tile_x
-        spatial_mask = spatial < input_tile_h * input_tile_w
-        channel_mask = channel < in_channels
-        valid = spatial_mask & (input_y >= 0) & (input_y < in_h) & (input_x >= 0) & (input_x < in_w)
-        input_pos = in_base + input_y * in_w + input_x
-        values = tl.load(
-            input_ptr + input_pos[:, None] * in_channels + channel[None, :],
-            mask=valid[:, None] & channel_mask[None, :],
-            other=0.0,
-        )
-        tl.store(
-            tile_ptr
-            + tile_local * tile_stride_n
-            + channel[None, :] * tile_stride_c
-            + tile_y[:, None] * tile_stride_h
-            + tile_x[:, None] * tile_stride_w,
-            values,
-            mask=spatial_mask[:, None] & channel_mask[None, :] & (tile_local < tile_count),
-        )
-
-    @triton.jit(
-        do_not_specialize=[
-            "tile_offset",
-            "tile_stride_n",
-            "tile_stride_c",
-            "tile_stride_h",
-            "tile_stride_w",
-            "input_tile_h",
-            "input_tile_w",
-        ]
-    )
-    def _spatial_tile_pack_input_local_kernel(
-        input_ptr,
-        tile_ptr,
-        tile_meta_ptr,
-        input_offsets_ptr,
-        shape_meta_ptr,
-        tile_offset,
-        tile_stride_n,
-        tile_stride_c,
-        tile_stride_h,
-        tile_stride_w,
-        in_channels: tl.constexpr,
-        input_tile_h,
-        input_tile_w,
-        stride_h: tl.constexpr,
-        stride_w: tl.constexpr,
-        padding_h: tl.constexpr,
-        padding_w: tl.constexpr,
-        block_size: tl.constexpr,
-    ):
-        tile_local = tl.program_id(0)
-        offsets = tl.program_id(1) * block_size + tl.arange(0, block_size)
-        mask = offsets < input_tile_h * input_tile_w * in_channels
-        channel = offsets % in_channels
-        pixel = offsets // in_channels
-        tile_y = pixel // input_tile_w
-        tile_x = pixel - tile_y * input_tile_w
-        tile = tile_offset + tile_local
-
-        batch = tl.load(tile_meta_ptr + tile * 5)
-        out_y = tl.load(tile_meta_ptr + tile * 5 + 1)
-        out_x = tl.load(tile_meta_ptr + tile * 5 + 2)
-        in_h = tl.load(shape_meta_ptr + batch * 4)
-        in_w = tl.load(shape_meta_ptr + batch * 4 + 1)
-        in_base = tl.load(input_offsets_ptr + batch)
-
-        input_y = out_y * stride_h - padding_h + tile_y
-        input_x = out_x * stride_w - padding_w + tile_x
-        valid = mask & (input_y >= 0) & (input_y < in_h) & (input_x >= 0) & (input_x < in_w)
-        input_pos = in_base + input_y * in_w + input_x
-        values = tl.load(input_ptr + input_pos * in_channels + channel, mask=valid, other=0.0)
-        tl.store(
-            tile_ptr
-            + tile_local * tile_stride_n
-            + channel * tile_stride_c
-            + tile_y * tile_stride_h
-            + tile_x * tile_stride_w,
-            values,
-            mask=mask,
-        )
-
-    @triton.jit(
-        do_not_specialize=[
-            "tile_offset",
-            "total",
-            "output_stride_n",
-            "output_stride_c",
-            "tile_stride_n",
-            "tile_stride_c",
-            "tile_stride_h",
-            "tile_stride_w",
-            "tile_h",
-            "tile_w",
-        ]
-    )
-    def _spatial_tile_pack_output_kernel(
-        output_ptr,
-        tile_ptr,
-        tile_meta_ptr,
-        output_offsets_ptr,
-        shape_meta_ptr,
-        tile_offset,
-        total,
-        output_stride_n,
-        output_stride_c,
-        tile_stride_n,
-        tile_stride_c,
-        tile_stride_h,
-        tile_stride_w,
-        out_channels: tl.constexpr,
-        tile_h,
-        tile_w,
-        block_size: tl.constexpr,
-    ):
-        offsets = tl.program_id(0) * block_size + tl.arange(0, block_size)
-        mask = offsets < total
-        channel = offsets % out_channels
-        tmp = offsets // out_channels
-        local_x = tmp % tile_w
-        tmp = tmp // tile_w
-        local_y = tmp % tile_h
-        tile_local = tmp // tile_h
-        tile = tile_offset + tile_local
-
-        batch = tl.load(tile_meta_ptr + tile * 5, mask=mask, other=0)
-        out_y = tl.load(tile_meta_ptr + tile * 5 + 1, mask=mask, other=0)
-        out_x = tl.load(tile_meta_ptr + tile * 5 + 2, mask=mask, other=0)
-        valid_h = tl.load(tile_meta_ptr + tile * 5 + 3, mask=mask, other=0)
-        valid_w = tl.load(tile_meta_ptr + tile * 5 + 4, mask=mask, other=0)
-        out_w = tl.load(shape_meta_ptr + batch * 4 + 3, mask=mask, other=0)
-        out_base = tl.load(output_offsets_ptr + batch, mask=mask, other=0)
-
-        valid = mask & (local_y < valid_h) & (local_x < valid_w)
-        output_pos = out_base + (out_y + local_y) * out_w + out_x + local_x
-        values = tl.load(output_ptr + output_pos * output_stride_n + channel * output_stride_c, mask=valid, other=0.0)
-        tl.store(
-            tile_ptr
-            + tile_local * tile_stride_n
-            + channel * tile_stride_c
-            + local_y * tile_stride_h
-            + local_x * tile_stride_w,
-            values,
-            mask=mask,
-        )
-
-    @triton.jit(
-        do_not_specialize=[
-            "tile_offset",
-            "tile_count",
-            "output_stride_n",
-            "output_stride_c",
-            "tile_stride_n",
-            "tile_stride_h",
-            "tile_h",
-            "tile_w",
-        ]
-    )
-    def _spatial_tile_pack_output_channels_last_kernel(
-        output_ptr,
-        tile_ptr,
-        tile_meta_ptr,
-        output_offsets_ptr,
-        shape_meta_ptr,
-        tile_offset,
-        tile_count,
-        output_stride_n,
-        output_stride_c,
-        tile_stride_n,
-        tile_stride_c: tl.constexpr,
-        tile_stride_h,
-        tile_stride_w: tl.constexpr,
-        out_channels: tl.constexpr,
-        tile_h,
-        tile_w,
-        block_hw: tl.constexpr,
-        block_c: tl.constexpr,
-    ):
-        tile_local = tl.program_id(0)
-        spatial = tl.program_id(1) * block_hw + tl.arange(0, block_hw)
-        channel = tl.program_id(2) * block_c + tl.arange(0, block_c)
-        tile = tile_offset + tile_local
-
-        batch = tl.load(tile_meta_ptr + tile * 5)
-        out_y = tl.load(tile_meta_ptr + tile * 5 + 1)
-        out_x = tl.load(tile_meta_ptr + tile * 5 + 2)
-        valid_h = tl.load(tile_meta_ptr + tile * 5 + 3)
-        valid_w = tl.load(tile_meta_ptr + tile * 5 + 4)
-        out_w = tl.load(shape_meta_ptr + batch * 4 + 3)
-        out_base = tl.load(output_offsets_ptr + batch)
-
-        local_y = spatial // tile_w
-        local_x = spatial - local_y * tile_w
-        spatial_mask = spatial < tile_h * tile_w
-        channel_mask = channel < out_channels
-        valid = spatial_mask & (local_y < valid_h) & (local_x < valid_w)
-        output_pos = out_base + (out_y + local_y) * out_w + out_x + local_x
-        values = tl.load(
-            output_ptr + output_pos[:, None] * output_stride_n + channel[None, :] * output_stride_c,
-            mask=valid[:, None] & channel_mask[None, :],
-            other=0.0,
-        )
-        tl.store(
-            tile_ptr
-            + tile_local * tile_stride_n
-            + channel[None, :] * tile_stride_c
-            + local_y[:, None] * tile_stride_h
-            + local_x[:, None] * tile_stride_w,
-            values,
-            mask=spatial_mask[:, None] & channel_mask[None, :] & (tile_local < tile_count),
-        )
-
-    @triton.jit(
-        do_not_specialize=[
-            "tile_offset",
-            "output_stride_n",
-            "output_stride_c",
-            "tile_stride_n",
-            "tile_stride_c",
-            "tile_stride_h",
-            "tile_stride_w",
-            "tile_h",
-            "tile_w",
-        ]
-    )
-    def _spatial_tile_pack_output_local_kernel(
-        output_ptr,
-        tile_ptr,
-        tile_meta_ptr,
-        output_offsets_ptr,
-        shape_meta_ptr,
-        tile_offset,
-        output_stride_n,
-        output_stride_c,
-        tile_stride_n,
-        tile_stride_c,
-        tile_stride_h,
-        tile_stride_w,
-        out_channels: tl.constexpr,
-        tile_h,
-        tile_w,
-        block_size: tl.constexpr,
-    ):
-        tile_local = tl.program_id(0)
-        offsets = tl.program_id(1) * block_size + tl.arange(0, block_size)
-        mask = offsets < tile_h * tile_w * out_channels
-        channel = offsets % out_channels
-        pixel = offsets // out_channels
-        local_y = pixel // tile_w
-        local_x = pixel - local_y * tile_w
-        tile = tile_offset + tile_local
-
-        batch = tl.load(tile_meta_ptr + tile * 5)
-        out_y = tl.load(tile_meta_ptr + tile * 5 + 1)
-        out_x = tl.load(tile_meta_ptr + tile * 5 + 2)
-        valid_h = tl.load(tile_meta_ptr + tile * 5 + 3)
-        valid_w = tl.load(tile_meta_ptr + tile * 5 + 4)
-        out_w = tl.load(shape_meta_ptr + batch * 4 + 3)
-        out_base = tl.load(output_offsets_ptr + batch)
-
-        valid = mask & (local_y < valid_h) & (local_x < valid_w)
-        output_pos = out_base + (out_y + local_y) * out_w + out_x + local_x
-        values = tl.load(output_ptr + output_pos * output_stride_n + channel * output_stride_c, mask=valid, other=0.0)
-        tl.store(
-            tile_ptr
-            + tile_local * tile_stride_n
-            + channel * tile_stride_c
-            + local_y * tile_stride_h
-            + local_x * tile_stride_w,
-            values,
-            mask=mask,
-        )
-
-    @triton.jit(
-        do_not_specialize=[
-            "tile_offset",
-            "total",
-            "tile_stride_n",
-            "tile_stride_c",
-            "tile_stride_h",
-            "tile_stride_w",
-            "tile_h",
-            "tile_w",
-        ]
-    )
-    def _spatial_tile_scatter_output_kernel(
-        tile_ptr,
-        bias_ptr,
-        output_ptr,
-        tile_meta_ptr,
-        output_offsets_ptr,
-        shape_meta_ptr,
-        tile_offset,
-        total,
-        tile_stride_n,
-        tile_stride_c,
-        tile_stride_h,
-        tile_stride_w,
-        out_channels: tl.constexpr,
-        tile_h,
-        tile_w,
-        has_bias: tl.constexpr,
-        block_size: tl.constexpr,
-    ):
-        offsets = tl.program_id(0) * block_size + tl.arange(0, block_size)
-        mask = offsets < total
-        channel = offsets % out_channels
-        tmp = offsets // out_channels
-        local_x = tmp % tile_w
-        tmp = tmp // tile_w
-        local_y = tmp % tile_h
-        tile_local = tmp // tile_h
-        tile = tile_offset + tile_local
-
-        batch = tl.load(tile_meta_ptr + tile * 5, mask=mask, other=0)
-        out_y = tl.load(tile_meta_ptr + tile * 5 + 1, mask=mask, other=0)
-        out_x = tl.load(tile_meta_ptr + tile * 5 + 2, mask=mask, other=0)
-        valid_h = tl.load(tile_meta_ptr + tile * 5 + 3, mask=mask, other=0)
-        valid_w = tl.load(tile_meta_ptr + tile * 5 + 4, mask=mask, other=0)
-        out_w = tl.load(shape_meta_ptr + batch * 4 + 3, mask=mask, other=0)
-        out_base = tl.load(output_offsets_ptr + batch, mask=mask, other=0)
-
-        valid = mask & (local_y < valid_h) & (local_x < valid_w)
-        values = tl.load(
-            tile_ptr
-            + tile_local * tile_stride_n
-            + channel * tile_stride_c
-            + local_y * tile_stride_h
-            + local_x * tile_stride_w,
-            mask=valid,
-            other=0.0,
-        )
-        if has_bias:
-            values += tl.load(bias_ptr + channel, mask=valid, other=0.0)
-        output_pos = out_base + (out_y + local_y) * out_w + out_x + local_x
-        tl.store(output_ptr + output_pos * out_channels + channel, values, mask=valid)
-
-    @triton.jit(do_not_specialize=["tile_offset", "tile_count", "tile_stride_n", "tile_stride_h", "tile_h", "tile_w"])
-    def _spatial_tile_scatter_output_channels_last_kernel(
-        tile_ptr,
-        bias_ptr,
-        output_ptr,
-        tile_meta_ptr,
-        output_offsets_ptr,
-        shape_meta_ptr,
-        tile_offset,
-        tile_count,
-        tile_stride_n,
-        tile_stride_c: tl.constexpr,
-        tile_stride_h,
-        tile_stride_w: tl.constexpr,
-        out_channels: tl.constexpr,
-        tile_h,
-        tile_w,
-        has_bias: tl.constexpr,
-        block_hw: tl.constexpr,
-        block_c: tl.constexpr,
-    ):
-        tile_local = tl.program_id(0)
-        spatial = tl.program_id(1) * block_hw + tl.arange(0, block_hw)
-        channel = tl.program_id(2) * block_c + tl.arange(0, block_c)
-        tile = tile_offset + tile_local
-
-        batch = tl.load(tile_meta_ptr + tile * 5)
-        out_y = tl.load(tile_meta_ptr + tile * 5 + 1)
-        out_x = tl.load(tile_meta_ptr + tile * 5 + 2)
-        valid_h = tl.load(tile_meta_ptr + tile * 5 + 3)
-        valid_w = tl.load(tile_meta_ptr + tile * 5 + 4)
-        out_w = tl.load(shape_meta_ptr + batch * 4 + 3)
-        out_base = tl.load(output_offsets_ptr + batch)
-
-        local_y = spatial // tile_w
-        local_x = spatial - local_y * tile_w
-        spatial_mask = spatial < tile_h * tile_w
-        channel_mask = channel < out_channels
-        valid = spatial_mask & (local_y < valid_h) & (local_x < valid_w) & (tile_local < tile_count)
-        values = tl.load(
-            tile_ptr
-            + tile_local * tile_stride_n
-            + channel[None, :] * tile_stride_c
-            + local_y[:, None] * tile_stride_h
-            + local_x[:, None] * tile_stride_w,
-            mask=valid[:, None] & channel_mask[None, :],
-            other=0.0,
-        )
-        if has_bias:
-            values += tl.load(bias_ptr + channel, mask=channel_mask, other=0.0)[None, :]
-        output_pos = out_base + (out_y + local_y) * out_w + out_x + local_x
-        tl.store(
-            output_ptr + output_pos[:, None] * out_channels + channel[None, :],
-            values,
-            mask=valid[:, None] & channel_mask[None, :],
-        )
-
-    @triton.jit(
-        do_not_specialize=[
-            "tile_offset",
-            "tile_stride_n",
-            "tile_stride_c",
-            "tile_stride_h",
-            "tile_stride_w",
-            "tile_h",
-            "tile_w",
-        ]
-    )
-    def _spatial_tile_scatter_output_local_kernel(
-        tile_ptr,
-        bias_ptr,
-        output_ptr,
-        tile_meta_ptr,
-        output_offsets_ptr,
-        shape_meta_ptr,
-        tile_offset,
-        tile_stride_n,
-        tile_stride_c,
-        tile_stride_h,
-        tile_stride_w,
-        out_channels: tl.constexpr,
-        tile_h,
-        tile_w,
-        has_bias: tl.constexpr,
-        block_size: tl.constexpr,
-    ):
-        tile_local = tl.program_id(0)
-        offsets = tl.program_id(1) * block_size + tl.arange(0, block_size)
-        mask = offsets < tile_h * tile_w * out_channels
-        channel = offsets % out_channels
-        pixel = offsets // out_channels
-        local_y = pixel // tile_w
-        local_x = pixel - local_y * tile_w
-        tile = tile_offset + tile_local
-
-        batch = tl.load(tile_meta_ptr + tile * 5)
-        out_y = tl.load(tile_meta_ptr + tile * 5 + 1)
-        out_x = tl.load(tile_meta_ptr + tile * 5 + 2)
-        valid_h = tl.load(tile_meta_ptr + tile * 5 + 3)
-        valid_w = tl.load(tile_meta_ptr + tile * 5 + 4)
-        out_w = tl.load(shape_meta_ptr + batch * 4 + 3)
-        out_base = tl.load(output_offsets_ptr + batch)
-
-        valid = mask & (local_y < valid_h) & (local_x < valid_w)
-        values = tl.load(
-            tile_ptr
-            + tile_local * tile_stride_n
-            + channel * tile_stride_c
-            + local_y * tile_stride_h
-            + local_x * tile_stride_w,
-            mask=valid,
-            other=0.0,
-        )
-        if has_bias:
-            values += tl.load(bias_ptr + channel, mask=valid, other=0.0)
-        output_pos = out_base + (out_y + local_y) * out_w + out_x + local_x
-        tl.store(output_ptr + output_pos * out_channels + channel, values, mask=valid)
-
-    @triton.jit(
-        do_not_specialize=[
-            "tile_offset",
-            "total",
-            "tile_stride_n",
-            "tile_stride_c",
-            "tile_stride_h",
-            "tile_stride_w",
-            "input_tile_h",
-            "input_tile_w",
-        ]
-    )
-    def _spatial_tile_scatter_input_kernel(
-        tile_ptr,
-        input_ptr,
-        tile_meta_ptr,
-        input_offsets_ptr,
-        shape_meta_ptr,
-        tile_offset,
-        total,
-        tile_stride_n,
-        tile_stride_c,
-        tile_stride_h,
-        tile_stride_w,
-        in_channels: tl.constexpr,
-        input_tile_h,
-        input_tile_w,
-        stride_h: tl.constexpr,
-        stride_w: tl.constexpr,
-        padding_h: tl.constexpr,
-        padding_w: tl.constexpr,
-        accumulate: tl.constexpr,
-        block_size: tl.constexpr,
-    ):
-        offsets = tl.program_id(0) * block_size + tl.arange(0, block_size)
-        mask = offsets < total
-        channel = offsets % in_channels
-        tmp = offsets // in_channels
-        tile_x = tmp % input_tile_w
-        tmp = tmp // input_tile_w
-        tile_y = tmp % input_tile_h
-        tile_local = tmp // input_tile_h
-        tile = tile_offset + tile_local
-
-        batch = tl.load(tile_meta_ptr + tile * 5, mask=mask, other=0)
-        out_y = tl.load(tile_meta_ptr + tile * 5 + 1, mask=mask, other=0)
-        out_x = tl.load(tile_meta_ptr + tile * 5 + 2, mask=mask, other=0)
-        in_h = tl.load(shape_meta_ptr + batch * 4, mask=mask, other=0)
-        in_w = tl.load(shape_meta_ptr + batch * 4 + 1, mask=mask, other=0)
-        in_base = tl.load(input_offsets_ptr + batch, mask=mask, other=0)
-
-        input_y = out_y * stride_h - padding_h + tile_y
-        input_x = out_x * stride_w - padding_w + tile_x
-        valid = mask & (input_y >= 0) & (input_y < in_h) & (input_x >= 0) & (input_x < in_w)
-        values = tl.load(
-            tile_ptr
-            + tile_local * tile_stride_n
-            + channel * tile_stride_c
-            + tile_y * tile_stride_h
-            + tile_x * tile_stride_w,
-            mask=valid,
-            other=0.0,
-        )
-        input_pos = in_base + input_y * in_w + input_x
-        target = input_ptr + input_pos * in_channels + channel
-        if accumulate:
-            tl.atomic_add(target, values, sem="relaxed", mask=valid)
-        else:
-            tl.store(target, values, mask=valid)
-
-    @triton.jit(
-        do_not_specialize=[
-            "tile_offset",
-            "tile_count",
-            "tile_stride_n",
-            "tile_stride_h",
-            "input_tile_h",
-            "input_tile_w",
-        ]
-    )
-    def _spatial_tile_scatter_input_channels_last_kernel(
-        tile_ptr,
-        input_ptr,
-        tile_meta_ptr,
-        input_offsets_ptr,
-        shape_meta_ptr,
-        tile_offset,
-        tile_count,
-        tile_stride_n,
-        tile_stride_c: tl.constexpr,
-        tile_stride_h,
-        tile_stride_w: tl.constexpr,
-        in_channels: tl.constexpr,
-        input_tile_h,
-        input_tile_w,
-        stride_h: tl.constexpr,
-        stride_w: tl.constexpr,
-        padding_h: tl.constexpr,
-        padding_w: tl.constexpr,
-        accumulate: tl.constexpr,
-        block_hw: tl.constexpr,
-        block_c: tl.constexpr,
-    ):
-        tile_local = tl.program_id(0)
-        spatial = tl.program_id(1) * block_hw + tl.arange(0, block_hw)
-        channel = tl.program_id(2) * block_c + tl.arange(0, block_c)
-        tile = tile_offset + tile_local
-
-        batch = tl.load(tile_meta_ptr + tile * 5)
-        out_y = tl.load(tile_meta_ptr + tile * 5 + 1)
-        out_x = tl.load(tile_meta_ptr + tile * 5 + 2)
-        in_h = tl.load(shape_meta_ptr + batch * 4)
-        in_w = tl.load(shape_meta_ptr + batch * 4 + 1)
-        in_base = tl.load(input_offsets_ptr + batch)
-
-        tile_y = spatial // input_tile_w
-        tile_x = spatial - tile_y * input_tile_w
-        input_y = out_y * stride_h - padding_h + tile_y
-        input_x = out_x * stride_w - padding_w + tile_x
-        spatial_mask = spatial < input_tile_h * input_tile_w
-        channel_mask = channel < in_channels
-        valid = (
-            spatial_mask
-            & (input_y >= 0)
-            & (input_y < in_h)
-            & (input_x >= 0)
-            & (input_x < in_w)
-            & (tile_local < tile_count)
-        )
-        values = tl.load(
-            tile_ptr
-            + tile_local * tile_stride_n
-            + channel[None, :] * tile_stride_c
-            + tile_y[:, None] * tile_stride_h
-            + tile_x[:, None] * tile_stride_w,
-            mask=valid[:, None] & channel_mask[None, :],
-            other=0.0,
-        )
-        input_pos = in_base + input_y * in_w + input_x
-        target = input_ptr + input_pos[:, None] * in_channels + channel[None, :]
-        write_mask = valid[:, None] & channel_mask[None, :]
-        if accumulate:
-            tl.atomic_add(target, values, sem="relaxed", mask=write_mask)
-        else:
-            tl.store(target, values, mask=write_mask)
-
-    @triton.jit(
-        do_not_specialize=[
-            "tile_offset",
-            "tile_stride_n",
-            "tile_stride_c",
-            "tile_stride_h",
-            "tile_stride_w",
-            "input_tile_h",
-            "input_tile_w",
-        ]
-    )
-    def _spatial_tile_scatter_input_local_kernel(
-        tile_ptr,
-        input_ptr,
-        tile_meta_ptr,
-        input_offsets_ptr,
-        shape_meta_ptr,
-        tile_offset,
-        tile_stride_n,
-        tile_stride_c,
-        tile_stride_h,
-        tile_stride_w,
-        in_channels: tl.constexpr,
-        input_tile_h,
-        input_tile_w,
-        stride_h: tl.constexpr,
-        stride_w: tl.constexpr,
-        padding_h: tl.constexpr,
-        padding_w: tl.constexpr,
-        accumulate: tl.constexpr,
-        block_size: tl.constexpr,
-    ):
-        tile_local = tl.program_id(0)
-        offsets = tl.program_id(1) * block_size + tl.arange(0, block_size)
-        mask = offsets < input_tile_h * input_tile_w * in_channels
-        channel = offsets % in_channels
-        pixel = offsets // in_channels
-        tile_y = pixel // input_tile_w
-        tile_x = pixel - tile_y * input_tile_w
-        tile = tile_offset + tile_local
-
-        batch = tl.load(tile_meta_ptr + tile * 5)
-        out_y = tl.load(tile_meta_ptr + tile * 5 + 1)
-        out_x = tl.load(tile_meta_ptr + tile * 5 + 2)
-        in_h = tl.load(shape_meta_ptr + batch * 4)
-        in_w = tl.load(shape_meta_ptr + batch * 4 + 1)
-        in_base = tl.load(input_offsets_ptr + batch)
-
-        input_y = out_y * stride_h - padding_h + tile_y
-        input_x = out_x * stride_w - padding_w + tile_x
-        valid = mask & (input_y >= 0) & (input_y < in_h) & (input_x >= 0) & (input_x < in_w)
-        values = tl.load(
-            tile_ptr
-            + tile_local * tile_stride_n
-            + channel * tile_stride_c
-            + tile_y * tile_stride_h
-            + tile_x * tile_stride_w,
-            mask=valid,
-            other=0.0,
-        )
-        input_pos = in_base + input_y * in_w + input_x
-        target = input_ptr + input_pos * in_channels + channel
-        if accumulate:
-            tl.atomic_add(target, values, sem="relaxed", mask=valid)
-        else:
-            tl.store(target, values, mask=valid)
-
-else:
-    _spatial_tile_pack_input_kernel = None
-    _spatial_tile_pack_output_kernel = None
-    _spatial_tile_scatter_output_kernel = None
-    _spatial_tile_scatter_input_kernel = None
-    _spatial_tile_pack_input_channels_last_kernel = None
-    _spatial_tile_pack_output_channels_last_kernel = None
-    _spatial_tile_scatter_output_channels_last_kernel = None
-    _spatial_tile_scatter_input_channels_last_kernel = None
-    _spatial_tile_pack_input_local_kernel = None
-    _spatial_tile_pack_output_local_kernel = None
-    _spatial_tile_scatter_output_local_kernel = None
-    _spatial_tile_scatter_input_local_kernel = None
-
-
-def _spatial_tile2d_channels_last_blocks(channels: int) -> tuple[int, int]:
-    block_c = min(max(16, 1 << (int(channels) - 1).bit_length()), 64)
-    return 128, block_c
-
-
-def _spatial_tile2d_use_local_copy_kernel() -> bool:
-    return False
-
-
-def _spatial_tile2d_copy_geometry(
-    batch: int,
-    out_y: int,
-    out_x: int,
-    input_shapes: tuple[tuple[int, ...], ...],
-    input_tile_shape: tuple[int, int],
-    stride: tuple[int, int],
-    padding: tuple[int, int],
-) -> tuple[int, int, int, int, int, int, int, int]:
-    _, in_h, in_w = input_shapes[batch]
-    input_tile_h, input_tile_w = input_tile_shape
-    raw_y0 = out_y * stride[0] - padding[0]
-    raw_x0 = out_x * stride[1] - padding[1]
-    raw_y1 = raw_y0 + input_tile_h
-    raw_x1 = raw_x0 + input_tile_w
-    src_y0 = max(raw_y0, 0)
-    src_x0 = max(raw_x0, 0)
-    src_y1 = min(raw_y1, in_h)
-    src_x1 = min(raw_x1, in_w)
-    dst_y0 = src_y0 - raw_y0
-    dst_x0 = src_x0 - raw_x0
-    copy_h = max(src_y1 - src_y0, 0)
-    copy_w = max(src_x1 - src_x0, 0)
-    return src_y0, src_x0, dst_y0, dst_x0, copy_h, copy_w, in_h, in_w
-
-
-def _make_spatial_tile2d_input(
-    input_values: Tensor,
-    input_shapes: tuple[tuple[int, ...], ...],
-    input_starts: tuple[int, ...],
-    chunk: list[tuple[int, int, int, int, int]] | tuple[tuple[int, int, int, int, int], ...],
-    *,
-    in_channels: int,
-    input_tile_shape: tuple[int, int],
-    stride: tuple[int, int],
-    padding: tuple[int, int],
-    channels_last: bool,
-    tile_offset: int = 0,
-    input_offsets_device: Tensor | None = None,
-    shape_meta: Tensor | None = None,
-    tile_meta: Tensor | None = None,
-) -> Tensor:
-    input_tile_h, input_tile_w = input_tile_shape
-    tile_input = _new_spatial_tile2d_tensor(
-        input_values,
-        (len(chunk), in_channels, input_tile_h, input_tile_w),
-        channels_last=channels_last,
-    )
-
-    if triton is not None and _has_cuda_tensors(input_offsets_device, shape_meta, tile_meta):
-        if (
-            channels_last
-            and _spatial_tile2d_use_local_copy_kernel()
-            and tile_input.stride(1) == 1
-            and _spatial_tile_pack_input_local_kernel is not None
-        ):
-            block_size = _spatial_tile_triton_block_size()
-            grid: tuple[int, ...] = (len(chunk), triton.cdiv(input_tile_h * input_tile_w * in_channels, block_size))
-            _spatial_tile_pack_input_local_kernel[grid](
-                input_values,
-                tile_input,
-                tile_meta,
-                input_offsets_device,
-                shape_meta,
-                int(tile_offset),
-                tile_input.stride(0),
-                tile_input.stride(1),
-                tile_input.stride(2),
-                tile_input.stride(3),
-                in_channels,
-                input_tile_h,
-                input_tile_w,
-                stride[0],
-                stride[1],
-                padding[0],
-                padding[1],
-                block_size,
-            )
-            return tile_input
-
-        if channels_last and tile_input.stride(1) == 1 and _spatial_tile_pack_input_channels_last_kernel is not None:
-            block_hw, block_c = _spatial_tile2d_channels_last_blocks(in_channels)
-            grid = (
-                len(chunk),
-                triton.cdiv(input_tile_h * input_tile_w, block_hw),
-                triton.cdiv(in_channels, block_c),
-            )
-            _spatial_tile_pack_input_channels_last_kernel[grid](
-                input_values,
-                tile_input,
-                tile_meta,
-                input_offsets_device,
-                shape_meta,
-                int(tile_offset),
-                len(chunk),
-                tile_input.stride(0),
-                tile_input.stride(1),
-                tile_input.stride(2),
-                tile_input.stride(3),
-                in_channels,
-                input_tile_h,
-                input_tile_w,
-                stride[0],
-                stride[1],
-                padding[0],
-                padding[1],
-                block_hw,
-                block_c,
-            )
-            return tile_input
-
-        block_size = _spatial_tile_triton_block_size()
-        total = len(chunk) * input_tile_h * input_tile_w * in_channels
-        grid = (triton.cdiv(total, block_size),)
-        _spatial_tile_pack_input_kernel[grid](
-            input_values,
-            tile_input,
-            tile_meta,
-            input_offsets_device,
-            shape_meta,
-            int(tile_offset),
-            total,
-            tile_input.stride(0),
-            tile_input.stride(1),
-            tile_input.stride(2),
-            tile_input.stride(3),
-            in_channels,
-            input_tile_h,
-            input_tile_w,
-            stride[0],
-            stride[1],
-            padding[0],
-            padding[1],
-            block_size,
-        )
-        return tile_input
-
-    tile_input.zero_()
-
-    for tile_index, (batch, out_y, out_x, _, _) in enumerate(chunk):
-        src_y0, src_x0, dst_y0, dst_x0, copy_h, copy_w, in_h, in_w = _spatial_tile2d_copy_geometry(
-            batch,
-            out_y,
-            out_x,
-            input_shapes,
-            input_tile_shape,
-            stride,
-            padding,
-        )
-        if copy_h == 0 or copy_w == 0:
-            continue
-        input_start = input_starts[batch]
-        element = input_values[input_start : input_start + in_h * in_w].reshape(in_h, in_w, in_channels)
-        tile_input[
-            tile_index,
-            :,
-            dst_y0 : dst_y0 + copy_h,
-            dst_x0 : dst_x0 + copy_w,
-        ] = element[
-            src_y0 : src_y0 + copy_h, src_x0 : src_x0 + copy_w
-        ].permute(2, 0, 1)
-
-    return tile_input
-
-
-def _make_spatial_tile2d_grad_output(
-    grad_output_values: Tensor,
-    output_shapes: tuple[tuple[int, ...], ...],
-    output_starts: tuple[int, ...],
-    chunk: list[tuple[int, int, int, int, int]] | tuple[tuple[int, int, int, int, int], ...],
-    *,
-    out_channels: int,
-    tile_shape: tuple[int, int],
-    channels_last: bool,
-    tile_offset: int = 0,
-    output_offsets_device: Tensor | None = None,
-    shape_meta: Tensor | None = None,
-    tile_meta: Tensor | None = None,
-) -> Tensor:
-    tile_h, tile_w = tile_shape
-    tile_grad_output = _new_spatial_tile2d_tensor(
-        grad_output_values,
-        (len(chunk), out_channels, tile_h, tile_w),
-        channels_last=channels_last,
-    )
-
-    if triton is not None and _has_cuda_tensors(output_offsets_device, shape_meta, tile_meta):
-        if (
-            channels_last
-            and _spatial_tile2d_use_local_copy_kernel()
-            and tile_grad_output.stride(1) == 1
-            and _spatial_tile_pack_output_local_kernel is not None
-        ):
-            block_size = _spatial_tile_triton_block_size()
-            grid: tuple[int, ...] = (len(chunk), triton.cdiv(tile_h * tile_w * out_channels, block_size))
-            _spatial_tile_pack_output_local_kernel[grid](
-                grad_output_values,
-                tile_grad_output,
-                tile_meta,
-                output_offsets_device,
-                shape_meta,
-                int(tile_offset),
-                grad_output_values.stride(0),
-                grad_output_values.stride(1),
-                tile_grad_output.stride(0),
-                tile_grad_output.stride(1),
-                tile_grad_output.stride(2),
-                tile_grad_output.stride(3),
-                out_channels,
-                tile_h,
-                tile_w,
-                block_size,
-            )
-            return tile_grad_output
-
-        if (
-            channels_last
-            and tile_grad_output.stride(1) == 1
-            and _spatial_tile_pack_output_channels_last_kernel is not None
-        ):
-            block_hw, block_c = _spatial_tile2d_channels_last_blocks(out_channels)
-            grid = (
-                len(chunk),
-                triton.cdiv(tile_h * tile_w, block_hw),
-                triton.cdiv(out_channels, block_c),
-            )
-            _spatial_tile_pack_output_channels_last_kernel[grid](
-                grad_output_values,
-                tile_grad_output,
-                tile_meta,
-                output_offsets_device,
-                shape_meta,
-                int(tile_offset),
-                len(chunk),
-                grad_output_values.stride(0),
-                grad_output_values.stride(1),
-                tile_grad_output.stride(0),
-                tile_grad_output.stride(1),
-                tile_grad_output.stride(2),
-                tile_grad_output.stride(3),
-                out_channels,
-                tile_h,
-                tile_w,
-                block_hw,
-                block_c,
-            )
-            return tile_grad_output
-
-        block_size = _spatial_tile_triton_block_size()
-        total = len(chunk) * tile_h * tile_w * out_channels
-        grid = (triton.cdiv(total, block_size),)
-        _spatial_tile_pack_output_kernel[grid](
-            grad_output_values,
-            tile_grad_output,
-            tile_meta,
-            output_offsets_device,
-            shape_meta,
-            int(tile_offset),
-            total,
-            grad_output_values.stride(0),
-            grad_output_values.stride(1),
-            tile_grad_output.stride(0),
-            tile_grad_output.stride(1),
-            tile_grad_output.stride(2),
-            tile_grad_output.stride(3),
-            out_channels,
-            tile_h,
-            tile_w,
-            block_size,
-        )
-        return tile_grad_output
-
-    tile_grad_output.zero_()
-
-    for tile_index, (batch, out_y, out_x, valid_h, valid_w) in enumerate(chunk):
-        _, out_h, out_w = output_shapes[batch]
-        output_start = output_starts[batch]
-        element = grad_output_values[output_start : output_start + out_h * out_w].reshape(
-            out_h,
-            out_w,
-            out_channels,
-        )
-        tile_grad_output[tile_index, :, :valid_h, :valid_w] = element[
-            out_y : out_y + valid_h,
-            out_x : out_x + valid_w,
-        ].permute(2, 0, 1)
-
-    return tile_grad_output
-
-
-def _scatter_spatial_tile2d_grad_input(
-    grad_input_values: Tensor,
-    tile_grad_input: Tensor,
-    input_shapes: tuple[tuple[int, ...], ...],
-    input_starts: tuple[int, ...],
-    chunk: list[tuple[int, int, int, int, int]] | tuple[tuple[int, int, int, int, int], ...],
-    *,
-    in_channels: int,
-    input_tile_shape: tuple[int, int],
-    stride: tuple[int, int],
-    padding: tuple[int, int],
-    tile_offset: int = 0,
-    input_offsets_device: Tensor | None = None,
-    shape_meta: Tensor | None = None,
-    tile_meta: Tensor | None = None,
-    channels_last: bool = False,
-    accumulate: bool = True,
-) -> None:
-    r"""Scatter a chunk; disable accumulation only for globally disjoint input tiles."""
-    if triton is not None and _has_cuda_tensors(input_offsets_device, shape_meta, tile_meta):
-        input_tile_h, input_tile_w = input_tile_shape
-        if (
-            channels_last
-            and _spatial_tile2d_use_local_copy_kernel()
-            and tile_grad_input.stride(1) == 1
-            and _spatial_tile_scatter_input_local_kernel is not None
-        ):
-            block_size = _spatial_tile_triton_block_size()
-            grid: tuple[int, ...] = (len(chunk), triton.cdiv(input_tile_h * input_tile_w * in_channels, block_size))
-            _spatial_tile_scatter_input_local_kernel[grid](
-                tile_grad_input,
-                grad_input_values,
-                tile_meta,
-                input_offsets_device,
-                shape_meta,
-                int(tile_offset),
-                tile_grad_input.stride(0),
-                tile_grad_input.stride(1),
-                tile_grad_input.stride(2),
-                tile_grad_input.stride(3),
-                in_channels,
-                input_tile_h,
-                input_tile_w,
-                stride[0],
-                stride[1],
-                padding[0],
-                padding[1],
-                accumulate,
-                block_size,
-            )
-            return
-
-        if (
-            channels_last
-            and tile_grad_input.stride(1) == 1
-            and _spatial_tile_scatter_input_channels_last_kernel is not None
-        ):
-            block_hw, block_c = _spatial_tile2d_channels_last_blocks(in_channels)
-            grid = (
-                len(chunk),
-                triton.cdiv(input_tile_h * input_tile_w, block_hw),
-                triton.cdiv(in_channels, block_c),
-            )
-            _spatial_tile_scatter_input_channels_last_kernel[grid](
-                tile_grad_input,
-                grad_input_values,
-                tile_meta,
-                input_offsets_device,
-                shape_meta,
-                int(tile_offset),
-                len(chunk),
-                tile_grad_input.stride(0),
-                tile_grad_input.stride(1),
-                tile_grad_input.stride(2),
-                tile_grad_input.stride(3),
-                in_channels,
-                input_tile_h,
-                input_tile_w,
-                stride[0],
-                stride[1],
-                padding[0],
-                padding[1],
-                accumulate,
-                block_hw,
-                block_c,
-            )
-            return
-
-        block_size = _spatial_tile_triton_block_size()
-        total = len(chunk) * input_tile_h * input_tile_w * in_channels
-        grid = (triton.cdiv(total, block_size),)
-        _spatial_tile_scatter_input_kernel[grid](
-            tile_grad_input,
-            grad_input_values,
-            tile_meta,
-            input_offsets_device,
-            shape_meta,
-            int(tile_offset),
-            total,
-            tile_grad_input.stride(0),
-            tile_grad_input.stride(1),
-            tile_grad_input.stride(2),
-            tile_grad_input.stride(3),
-            in_channels,
-            input_tile_h,
-            input_tile_w,
-            stride[0],
-            stride[1],
-            padding[0],
-            padding[1],
-            accumulate,
-            block_size,
-        )
-        return
-
-    for tile_index, (batch, out_y, out_x, _, _) in enumerate(chunk):
-        src_y0, src_x0, dst_y0, dst_x0, copy_h, copy_w, in_h, in_w = _spatial_tile2d_copy_geometry(
-            batch,
-            out_y,
-            out_x,
-            input_shapes,
-            input_tile_shape,
-            stride,
-            padding,
-        )
-        if copy_h == 0 or copy_w == 0:
-            continue
-        input_start = input_starts[batch]
-        element_grad = grad_input_values[input_start : input_start + in_h * in_w].reshape(in_h, in_w, in_channels)
-        target = element_grad[src_y0 : src_y0 + copy_h, src_x0 : src_x0 + copy_w]
-        contribution = tile_grad_input[
-            tile_index,
-            :,
-            dst_y0 : dst_y0 + copy_h,
-            dst_x0 : dst_x0 + copy_w,
-        ].permute(1, 2, 0)
-        if accumulate:
-            target.add_(contribution)
-        else:
-            target.copy_(contribution)
-
-
-def _scatter_spatial_tile2d_output(
-    output_values: Tensor,
-    tile_output: Tensor,
-    bias: Tensor | None,
-    output_shapes: tuple[tuple[int, ...], ...],
-    output_starts: tuple[int, ...],
-    chunk: list[tuple[int, int, int, int, int]] | tuple[tuple[int, int, int, int, int], ...],
-    *,
-    out_channels: int,
-    tile_offset: int = 0,
-    output_offsets_device: Tensor | None = None,
-    shape_meta: Tensor | None = None,
-    tile_meta: Tensor | None = None,
-    channels_last: bool = False,
-) -> None:
-    if triton is not None and _has_cuda_tensors(output_offsets_device, shape_meta, tile_meta):
-        tile_h = int(tile_output.shape[2])
-        tile_w = int(tile_output.shape[3])
-        if (
-            _spatial_tile2d_use_local_copy_kernel()
-            and tile_output.stride(1) == 1
-            and _spatial_tile_scatter_output_local_kernel is not None
-        ):
-            block_size = _spatial_tile_triton_block_size()
-            grid: tuple[int, ...] = (len(chunk), triton.cdiv(tile_h * tile_w * out_channels, block_size))
-            _spatial_tile_scatter_output_local_kernel[grid](
-                tile_output,
-                bias if bias is not None else output_values,
-                output_values,
-                tile_meta,
-                output_offsets_device,
-                shape_meta,
-                int(tile_offset),
-                tile_output.stride(0),
-                tile_output.stride(1),
-                tile_output.stride(2),
-                tile_output.stride(3),
-                out_channels,
-                tile_h,
-                tile_w,
-                bias is not None,
-                block_size,
-            )
-            return
-
-        if (
-            channels_last
-            and tile_output.stride(1) == 1
-            and _spatial_tile_scatter_output_channels_last_kernel is not None
-        ):
-            block_hw, block_c = _spatial_tile2d_channels_last_blocks(out_channels)
-            grid = (
-                len(chunk),
-                triton.cdiv(tile_h * tile_w, block_hw),
-                triton.cdiv(out_channels, block_c),
-            )
-            _spatial_tile_scatter_output_channels_last_kernel[grid](
-                tile_output,
-                bias if bias is not None else output_values,
-                output_values,
-                tile_meta,
-                output_offsets_device,
-                shape_meta,
-                int(tile_offset),
-                len(chunk),
-                tile_output.stride(0),
-                tile_output.stride(1),
-                tile_output.stride(2),
-                tile_output.stride(3),
-                out_channels,
-                tile_h,
-                tile_w,
-                bias is not None,
-                block_hw,
-                block_c,
-            )
-            return
-
-        block_size = _spatial_tile_triton_block_size()
-        total = len(chunk) * tile_h * tile_w * out_channels
-        grid = (triton.cdiv(total, block_size),)
-        _spatial_tile_scatter_output_kernel[grid](
-            tile_output,
-            bias if bias is not None else output_values,
-            output_values,
-            tile_meta,
-            output_offsets_device,
-            shape_meta,
-            int(tile_offset),
-            total,
-            tile_output.stride(0),
-            tile_output.stride(1),
-            tile_output.stride(2),
-            tile_output.stride(3),
-            out_channels,
-            tile_h,
-            tile_w,
-            bias is not None,
-            block_size,
-        )
-        return
-
-    for tile_index, (batch, out_y, out_x, valid_h, valid_w) in enumerate(chunk):
-        _, out_h, out_w = output_shapes[batch]
-        output_start = output_starts[batch]
-        element_output = output_values[output_start : output_start + out_h * out_w].reshape(
-            out_h,
-            out_w,
-            out_channels,
-        )
-        element_output[out_y : out_y + valid_h, out_x : out_x + valid_w] = tile_output[
-            tile_index,
-            :,
-            :valid_h,
-            :valid_w,
-        ].permute(1, 2, 0)
-        if bias is not None:
-            element_output[out_y : out_y + valid_h, out_x : out_x + valid_w] += bias
-
-
-def _spatial_tile_conv2d_forward_values(
-    input_values: Tensor,
-    weight: Tensor,
-    bias: Tensor | None,
-    *,
-    output_size: int,
-    input_shapes: tuple[tuple[int, ...], ...],
-    output_shapes: tuple[tuple[int, ...], ...],
-    input_starts: tuple[int, ...],
-    output_starts: tuple[int, ...],
-    tiles: tuple[tuple[int, int, int, int, int], ...],
-    stride: tuple[int, int],
-    padding: tuple[int, int],
-    dilation: tuple[int, int],
-    tile_shape: tuple[int, int],
-    input_tile_shape: tuple[int, int],
-    max_tiles_per_batch: int,
-    channels_last: bool,
-    input_offsets_device: Tensor | None = None,
-    output_offsets_device: Tensor | None = None,
-    shape_meta: Tensor | None = None,
-    tile_meta: Tensor | None = None,
-) -> Tensor:
+def _packed_spatial_conv2d(input, weight, bias, stride, padding, dilation, groups, *, tile_size=(64, 64)):
+    r"""Convolve bounded native tiles with a capacity derived from packed input sizes."""
+    from ..aten_functions import _is_fake_tensor, _packed_with_shape
+    from ..nested_tensor import _layout_scalar
+
+    stride, before, after, dilation = _conv2d_parameters(weight, stride, padding, dilation)
+    groups = int(groups)
+    kernel_h, kernel_w = int(weight.shape[2]), int(weight.shape[3])
     out_channels = int(weight.shape[0])
-    in_channels = int(weight.shape[1])
-    output_values = input_values.new_empty((output_size, out_channels))
-    chunk_size = _spatial_tile_max_batch(max_tiles_per_batch, len(tiles))
-
-    for chunk_start in range(0, len(tiles), chunk_size):
-        chunk = tiles[chunk_start : chunk_start + chunk_size]
-        tile_input = _make_spatial_tile2d_input(
-            input_values,
-            input_shapes,
-            input_starts,
-            chunk,
-            in_channels=in_channels,
-            input_tile_shape=input_tile_shape,
-            stride=stride,
-            padding=padding,
-            channels_last=channels_last,
-            tile_offset=chunk_start,
-            input_offsets_device=input_offsets_device,
-            shape_meta=shape_meta,
-            tile_meta=tile_meta,
-        )
-        tile_output = F.conv2d(
-            tile_input,
-            weight,
-            None,
-            stride=stride,
-            padding=0,
-            dilation=dilation,
-            groups=1,
-        )
-        _scatter_spatial_tile2d_output(
-            output_values,
-            tile_output,
-            bias,
-            output_shapes,
-            output_starts,
-            chunk,
-            out_channels=out_channels,
-            tile_offset=chunk_start,
-            output_offsets_device=output_offsets_device,
-            shape_meta=shape_meta,
-            tile_meta=tile_meta,
-            channels_last=channels_last,
-        )
-
-    return output_values
-
-
-def _spatial_tile_conv2d_input_grad(
-    input_size: tuple[int, int, int, int],
-    weight: Tensor,
-    grad_output: Tensor,
-    *,
-    stride: tuple[int, int],
-    dilation: tuple[int, int],
-    channels_last: bool,
-) -> Tensor:
-    if channels_last and grad_output.is_cuda:
-        input_meta = torch.empty(
-            input_size,
-            device=grad_output.device,
-            dtype=grad_output.dtype,
-            memory_format=torch.channels_last,
-        )
+    shape = input._physical_shape
+    rank_one = shape.shape[1] == 2
+    if rank_one:
+        spatial = torch.cat((torch.ones_like(shape[:, :1]), shape[:, 1:]), dim=1)
     else:
-        input_meta = grad_output.new_empty(input_size)
-    return torch.ops.aten.convolution_backward(
-        grad_output,
-        input_meta,
-        weight,
-        None,
-        stride,
-        (0, 0),
-        dilation,
-        False,
-        [0],
-        1,
-        (True, False, False),
-    )[0]
-
-
-def _spatial_tile_conv2d_weight_grad(
-    input: Tensor,
-    weight: Tensor,
-    grad_output: Tensor,
-    *,
-    stride: tuple[int, int],
-    dilation: tuple[int, int],
-) -> Tensor:
-    weight_meta = torch.empty_strided(
-        tuple(int(size) for size in weight.shape),
-        tuple(int(stride) for stride in weight.stride()),
-        device=grad_output.device,
-        dtype=grad_output.dtype,
+        spatial = shape[:, 1:]
+    torch._assert_async(torch.all(spatial > 0), "conv2d input spatial dimensions must be positive")
+    preserves_spatial = stride == (1, 1) and all(
+        before[axis] + after[axis] == dilation[axis] * (int(weight.shape[axis + 2]) - 1) for axis in range(2)
     )
-    return torch.ops.aten.convolution_backward(
-        grad_output,
-        input,
-        weight_meta,
-        None,
-        stride,
-        (0, 0),
-        dilation,
-        False,
-        [0],
-        1,
-        (False, True, False),
-    )[1]
-
-
-class _SpatialTileConv2dCudnnFunction(torch.autograd.Function):
-    @staticmethod
-    def forward(
-        ctx,
-        input_values: Tensor,
-        weight: Tensor,
-        bias: Tensor | None,
-        input_offsets_device: Tensor,
-        output_offsets_device: Tensor,
-        shape_meta: Tensor,
-        tile_meta: Tensor,
-        output_size: int,
-        input_shapes: tuple[tuple[int, ...], ...],
-        output_shapes: tuple[tuple[int, ...], ...],
-        input_starts: tuple[int, ...],
-        output_starts: tuple[int, ...],
-        tiles: tuple[tuple[int, int, int, int, int], ...],
-        stride: tuple[int, int],
-        padding: tuple[int, int],
-        dilation: tuple[int, int],
-        tile_shape: tuple[int, int],
-        input_tile_shape: tuple[int, int],
-        max_tiles_per_batch: int,
-        weight_max_tiles_per_batch: int,
-        channels_last: bool,
-    ) -> Tensor:
-        weight = weight.contiguous()
-        output_values = _spatial_tile_conv2d_forward_values(
-            input_values,
-            weight,
-            bias,
-            output_size=output_size,
-            input_shapes=input_shapes,
-            output_shapes=output_shapes,
-            input_starts=input_starts,
-            output_starts=output_starts,
-            tiles=tiles,
-            stride=stride,
-            padding=padding,
-            dilation=dilation,
-            tile_shape=tile_shape,
-            input_tile_shape=input_tile_shape,
-            max_tiles_per_batch=max_tiles_per_batch,
-            channels_last=channels_last,
-            input_offsets_device=input_offsets_device,
-            output_offsets_device=output_offsets_device,
-            shape_meta=shape_meta,
-            tile_meta=tile_meta,
+    if preserves_spatial:
+        output_spatial = spatial
+        output_shape, packed_sizes, element_shapes = input._shape_meta_from_components(replace_dims={0: out_channels})
+        if rank_one and element_shapes is not None:
+            element_shapes = tuple((channels, 1, length) for channels, length in element_shapes)
+    else:
+        shrink = spatial.new_tensor(
+            [before[axis] + after[axis] - dilation[axis] * (int(weight.shape[axis + 2]) - 1) - 1 for axis in range(2)]
         )
-        ctx.save_for_backward(
-            input_values,
-            weight,
-            input_offsets_device,
-            output_offsets_device,
-            shape_meta,
-            tile_meta,
+        output_spatial = torch.div(spatial + shrink, spatial.new_tensor(stride), rounding_mode="floor") + 1
+        torch._assert_async(torch.all(output_spatial > 0), "conv2d output spatial dimensions must be positive")
+        output_shape = torch.cat(
+            (torch.full_like(shape[:, :1], out_channels), output_spatial[:, 1:] if rank_one else output_spatial), dim=1
         )
-        ctx.has_bias = bias is not None
-        ctx.input_shapes = input_shapes
-        ctx.output_shapes = output_shapes
-        ctx.input_starts = input_starts
-        ctx.output_starts = output_starts
-        ctx.tiles = tiles
-        ctx.stride = stride
-        ctx.padding = padding
-        ctx.dilation = dilation
-        ctx.tile_shape = tile_shape
-        ctx.input_tile_shape = input_tile_shape
-        ctx.max_tiles_per_batch = max_tiles_per_batch
-        ctx.weight_max_tiles_per_batch = weight_max_tiles_per_batch
-        ctx.channels_last = channels_last
-        return output_values
-
-    @staticmethod
-    def backward(ctx, grad_output_values: Tensor):
-        input_values, weight, input_offsets_device, output_offsets_device, shape_meta, tile_meta = ctx.saved_tensors[:6]
-        input_shapes = ctx.input_shapes
-        output_shapes = ctx.output_shapes
-        input_starts = ctx.input_starts
-        output_starts = ctx.output_starts
-        tiles = ctx.tiles
-        stride = ctx.stride
-        padding = ctx.padding
-        dilation = ctx.dilation
-        tile_shape = ctx.tile_shape
-        input_tile_shape = ctx.input_tile_shape
-        max_tiles_per_batch = ctx.max_tiles_per_batch
-        weight_max_tiles_per_batch = ctx.weight_max_tiles_per_batch
-        channels_last = ctx.channels_last
-        in_channels = int(weight.shape[1])
-        out_channels = int(weight.shape[0])
-
-        grad_input = torch.zeros_like(input_values) if ctx.needs_input_grad[0] else None
-        grad_weight = torch.zeros_like(weight) if ctx.needs_input_grad[1] else None
-        grad_bias = grad_output_values.sum(dim=0) if ctx.has_bias and ctx.needs_input_grad[2] else None
-        chunk_size = _spatial_tile_max_batch(max_tiles_per_batch, len(tiles))
-        # Output metadata admits only positive spatial extents, so every image
-        # contributes at least one tile. Equality proves exactly one per image,
-        # and their packed input segments are disjoint. Keep zero initialization
-        # for input positions not covered by that tile's receptive field.
-        accumulate_input_grad = len(tiles) != len(input_shapes)
-
-        if grad_input is not None and (grad_weight is None or weight_max_tiles_per_batch != chunk_size):
-            for chunk_start in range(0, len(tiles), chunk_size):
-                chunk = tiles[chunk_start : chunk_start + chunk_size]
-                tile_grad_output = _make_spatial_tile2d_grad_output(
-                    grad_output_values,
-                    output_shapes,
-                    output_starts,
-                    chunk,
-                    out_channels=out_channels,
-                    tile_shape=tile_shape,
-                    channels_last=channels_last,
-                    tile_offset=chunk_start,
-                    output_offsets_device=output_offsets_device,
-                    shape_meta=shape_meta,
-                    tile_meta=tile_meta,
-                )
-                tile_grad_input = _spatial_tile_conv2d_input_grad(
-                    (len(chunk), in_channels, input_tile_shape[0], input_tile_shape[1]),
-                    weight,
-                    tile_grad_output,
-                    stride=stride,
-                    dilation=dilation,
-                    channels_last=channels_last,
-                )
-                _scatter_spatial_tile2d_grad_input(
-                    grad_input,
-                    tile_grad_input,
-                    input_shapes,
-                    input_starts,
-                    chunk,
-                    in_channels=in_channels,
-                    input_tile_shape=input_tile_shape,
-                    stride=stride,
-                    padding=padding,
-                    tile_offset=chunk_start,
-                    input_offsets_device=input_offsets_device,
-                    shape_meta=shape_meta,
-                    tile_meta=tile_meta,
-                    channels_last=channels_last,
-                    accumulate=accumulate_input_grad,
-                )
-
-        if grad_weight is not None and (grad_input is None or weight_max_tiles_per_batch != chunk_size):
-            weight_chunk_size = _spatial_tile_max_batch(weight_max_tiles_per_batch, len(tiles))
-            for chunk_start in range(0, len(tiles), weight_chunk_size):
-                chunk = tiles[chunk_start : chunk_start + weight_chunk_size]
-                tile_grad_output = _make_spatial_tile2d_grad_output(
-                    grad_output_values,
-                    output_shapes,
-                    output_starts,
-                    chunk,
-                    out_channels=out_channels,
-                    tile_shape=tile_shape,
-                    channels_last=channels_last,
-                    tile_offset=chunk_start,
-                    output_offsets_device=output_offsets_device,
-                    shape_meta=shape_meta,
-                    tile_meta=tile_meta,
-                )
-                tile_input = _make_spatial_tile2d_input(
-                    input_values,
-                    input_shapes,
-                    input_starts,
-                    chunk,
-                    in_channels=in_channels,
-                    input_tile_shape=input_tile_shape,
-                    stride=stride,
-                    padding=padding,
-                    channels_last=channels_last,
-                    tile_offset=chunk_start,
-                    input_offsets_device=input_offsets_device,
-                    shape_meta=shape_meta,
-                    tile_meta=tile_meta,
-                )
-                grad_weight += _spatial_tile_conv2d_weight_grad(
-                    tile_input,
-                    weight,
-                    tile_grad_output,
-                    stride=stride,
-                    dilation=dilation,
-                )
-
-        if grad_input is not None and grad_weight is not None and weight_max_tiles_per_batch == chunk_size:
-            for chunk_start in range(0, len(tiles), chunk_size):
-                chunk = tiles[chunk_start : chunk_start + chunk_size]
-                tile_grad_output = _make_spatial_tile2d_grad_output(
-                    grad_output_values,
-                    output_shapes,
-                    output_starts,
-                    chunk,
-                    out_channels=out_channels,
-                    tile_shape=tile_shape,
-                    channels_last=channels_last,
-                    tile_offset=chunk_start,
-                    output_offsets_device=output_offsets_device,
-                    shape_meta=shape_meta,
-                    tile_meta=tile_meta,
-                )
-                tile_grad_input = _spatial_tile_conv2d_input_grad(
-                    (len(chunk), in_channels, input_tile_shape[0], input_tile_shape[1]),
-                    weight,
-                    tile_grad_output,
-                    stride=stride,
-                    dilation=dilation,
-                    channels_last=channels_last,
-                )
-                _scatter_spatial_tile2d_grad_input(
-                    grad_input,
-                    tile_grad_input,
-                    input_shapes,
-                    input_starts,
-                    chunk,
-                    in_channels=in_channels,
-                    input_tile_shape=input_tile_shape,
-                    stride=stride,
-                    padding=padding,
-                    tile_offset=chunk_start,
-                    input_offsets_device=input_offsets_device,
-                    shape_meta=shape_meta,
-                    tile_meta=tile_meta,
-                    channels_last=channels_last,
-                    accumulate=accumulate_input_grad,
-                )
-                tile_input = _make_spatial_tile2d_input(
-                    input_values,
-                    input_shapes,
-                    input_starts,
-                    chunk,
-                    in_channels=in_channels,
-                    input_tile_shape=input_tile_shape,
-                    stride=stride,
-                    padding=padding,
-                    channels_last=channels_last,
-                    tile_offset=chunk_start,
-                    input_offsets_device=input_offsets_device,
-                    shape_meta=shape_meta,
-                    tile_meta=tile_meta,
-                )
-                grad_weight += _spatial_tile_conv2d_weight_grad(
-                    tile_input,
-                    weight,
-                    tile_grad_output,
-                    stride=stride,
-                    dilation=dilation,
-                )
-
-        return (
-            grad_input,
-            grad_weight,
-            grad_bias,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+        element_shapes = None
+        packed_sizes = None
+    values = input.concat
+    if not preserves_spatial and not _is_compiling() and input._element_shapes is not None:
+        # Standalone FakeTensor retains concrete layout schema but cannot read tensor data.
+        element_shapes = tuple(
+            (
+                out_channels,
+                *(
+                    (
+                        extent[axis + 1]
+                        + before[axis]
+                        + after[axis]
+                        - dilation[axis] * (int(weight.shape[axis + 2]) - 1)
+                        - 1
+                    )
+                    // stride[axis]
+                    + 1
+                    for axis in range(2)
+                ),
+            )
+            for extent in (
+                tuple((channels, 1, length) for channels, length in input._element_shapes)
+                if rank_one
+                else input._element_shapes
+            )
         )
+        packed_sizes = tuple(extent[1] * extent[2] for extent in element_shapes)
+    if preserves_spatial:
+        output_offsets = input._offsets
+        total_output = values.shape[0]
+        ragged_offsets = input._persistent_ragged_offsets()
+    else:
+        output_counts = output_spatial.prod(1)
+        output_offsets = torch.cat((output_counts.new_zeros(1), output_counts.cumsum(0)))
+        total_output = sum(packed_sizes) if packed_sizes is not None else _layout_scalar(output_offsets[-1])
+        torch._check(total_output >= 1)
+        if rank_one:
+            ragged_offsets = (output_offsets,)
+        else:
+            heights = output_spatial[:, 0]
+            input_ragged_offsets = input._persistent_ragged_offsets()
+            preserves_height = stride[0] == 1 and before[0] + after[0] == dilation[0] * (kernel_h - 1)
+            if preserves_height and input_ragged_offsets is not None:
+                row_offsets = input_ragged_offsets[0]
+                row_split_count = input_ragged_offsets[1].numel()
+            else:
+                row_offsets = torch.cat((heights.new_zeros(1), heights.cumsum(0)))
+                # Bind the returned row-split length itself, rather than an internal size plus one.
+                row_split_count = (
+                    sum(extent[1] for extent in element_shapes) + 1
+                    if element_shapes is not None
+                    else _layout_scalar(row_offsets[-1] + 1)
+                )
+            torch._check(row_split_count >= 2)
+            widths = torch.repeat_interleave(output_spatial[:, 1], heights, output_size=row_split_count - 1)
+            pixel_offsets = torch.cat((widths.new_zeros(1), widths.cumsum(0)))
+            ragged_offsets = (row_offsets, pixel_offsets)
 
-
-def _spatial_tile_conv2d(
-    input: NestedTensor,
-    weight: Tensor,
-    bias: Tensor | None = None,
-    stride=1,
-    padding=0,
-    dilation=1,
-    groups: int = 1,
-    *,
-    tile_size: int | tuple[int, int] | str = "auto",
-    max_tiles_per_batch: int | str | None = "auto",
-    weight_max_tiles_per_batch: int | str | None = "same",
-    channels_last: bool = True,
-) -> NestedTensor | None:
-    r"""
-    Run ragged ``conv2d`` by batching fixed-size spatial tiles through PyTorch/cuDNN.
-
-    Each tile covers a fixed output-space window plus the input halo required by the
-    convolution. cuDNN still sees a regular dense batch, while padding waste is bounded
-    by tile size instead of the largest image in the NestedTensor batch.
-    """
-    if triton is None or not _can_use_spatial_tile_convolution(input, weight, groups, rank=2, input_channel_dim=1):
-        return None
-    stride_pair = _conv2d_pair(stride)
-    padding_pair = _conv2d_pair(padding)
-    dilation_pair = _conv2d_pair(dilation)
-    if stride_pair is None or padding_pair is None or dilation_pair is None:
-        return None
-    if any(value <= 0 for value in (*stride_pair, *dilation_pair)):
-        return None
-    if padding_pair[0] < 0 or padding_pair[1] < 0:
-        return None
-
-    out_channels = int(weight.shape[0])
-    in_channels = int(weight.shape[1])
-    kernel_h = int(weight.shape[2])
-    kernel_w = int(weight.shape[3])
-    if not _valid_conv_bias(bias, out_channels=out_channels, device=input.concat.device, dtype=input.concat.dtype):
-        return None
-    output_meta = _conv2d_output_meta(
-        input,
-        out_channels,
-        kernel_h,
-        kernel_w,
-        stride_pair,
-        padding_pair,
-        dilation_pair,
+    max_spatial = input._max_physical_dims()
+    if rank_one:
+        max_spatial = (max_spatial[0], 1, max_spatial[1])
+    max_output = tuple(
+        (max_spatial[axis + 1] + before[axis] + after[axis] - dilation[axis] * (int(weight.shape[axis + 2]) - 1) - 1)
+        // stride[axis]
+        + 1
+        for axis in range(2)
     )
-    if output_meta is None:
-        return None
-    output_shapes, output_packed_sizes, output_shape_tensor = output_meta
-    output_offsets = type(input)._offsets_from_sizes(output_packed_sizes, dtype=torch.long)
-    total_out = int(output_offsets[-1].item())
-    if total_out == 0:
-        output_values = input.concat.new_empty((total_out, out_channels))
-        return type(input)._from_packed_raw(
-            output_values,
+    torch._check(max_output[0] >= 1)
+    torch._check(max_output[1] >= 1)
+    tile_h, tile_w = min(tile_size[0], max_output[0]), min(tile_size[1], max_output[1])
+    batch_size = shape.shape[0]
+    effective_h = dilation[0] * (kernel_h - 1)
+    effective_w = dilation[1] * (kernel_w - 1)
+    extra_h = max(before[0] + after[0] - effective_h + stride[0] - 1, 0)
+    extra_w = max(before[1] + after[1] - effective_w + stride[1] - 1, 0)
+    tile_shape = spatial.new_tensor((tile_h, tile_w))
+    tile_grid = torch.div(output_spatial + tile_shape - 1, tile_shape, rounding_mode="floor")
+    tile_counts = tile_grid.prod(1)
+    tile_offsets = torch.cat((tile_counts.new_zeros(1), tile_counts.cumsum(0)))
+    grid_bound = batch_size * ((max_output[0] + tile_h - 1) // tile_h) * ((max_output[1] + tile_w - 1) // tile_w)
+    if element_shapes is not None:
+        capacity = sum(
+            ((height + tile_h - 1) // tile_h) * ((width + tile_w - 1) // tile_w) for _, height, width in element_shapes
+        )
+    elif (
+        not _is_compiling()
+        and _get_current_dispatch_mode() is None
+        and not torch._C._are_functorch_transforms_active()
+        and not _is_fake_tensor(tile_offsets)
+    ):
+        # Real CPU metadata gives the exact tile count without synchronizing CUDA.
+        capacity = _layout_scalar(tile_offsets[-1])
+    elif _has_size_hint(values.shape[0]):
+        area_numerator = (
+            values.shape[0]
+            + extra_h * batch_size * max_spatial[2]
+            + extra_w * batch_size * max_spatial[1]
+            + batch_size * extra_h * extra_w
+        )
+        area_bound = (area_numerator + stride[0] * stride[1] - 1) // (stride[0] * stride[1])
+        # The integer tile count is bounded by sum((h+t_h-1)*(w+t_w-1))/(t_h*t_w).
+        capacity = (
+            area_bound
+            + (tile_w - 1) * batch_size * max_output[0]
+            + (tile_h - 1) * batch_size * max_output[1]
+            + batch_size * (tile_h - 1) * (tile_w - 1)
+        ) // (tile_h * tile_w)
+        capacity = min(capacity, grid_bound)
+    else:
+        # A prior ragged operation can make the exact packed count data-dependent.
+        # Its logical spatial maxima still provide a backed bound for the same tiles.
+        capacity = grid_bound
+    from . import _conv2d_copy
+
+    input_h = (tile_h - 1) * stride[0] + effective_h + 1
+    input_w = (tile_w - 1) * stride[1] + effective_w + 1
+    use_copy = _conv2d_copy.available(
+        values, stride, dilation, capacity, input_h, input_w, tile_h, tile_w, out_channels
+    )
+    if use_copy:
+        copy_in_offsets, copy_out_offsets, copy_shapes, copy_tiles = _conv2d_copy.make_metadata(
+            spatial,
+            output_spatial,
+            input._offsets,
             output_offsets,
-            output_shape_tensor,
-            permutation=input._permutation,
-            ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
-            batch_first=input.batch_first,
-            padding_value=input.padding_value,
-            mask_value=input.mask_value,
-            pin_memory=input._pin_memory,
-            packed_sizes=output_packed_sizes,
-            element_shapes=output_shapes,
+            tile_grid,
+            tile_offsets,
+            capacity,
+            tile_h,
+            tile_w,
+            values.device,
         )
-
-    input_shapes = _resolve_element_shapes(input)
-    resolved_tile_config = _resolve_spatial_tile2d_config(output_shapes, tile_size, max_tiles_per_batch)
-    if resolved_tile_config is None:
-        return None
-    tile_shape, resolved_max_tiles = resolved_tile_config
-    input_starts = tuple(int(offset) for offset in input._offsets[:-1].tolist())
-    output_starts = tuple(int(offset) for offset in output_offsets[:-1].tolist())
-    device = input.concat.device
-    shape_meta = torch.tensor(
-        [
-            (int(input_shape[1]), int(input_shape[2]), int(output_shape[1]), int(output_shape[2]))
-            for input_shape, output_shape in zip(input_shapes, output_shapes)
-        ],
-        device=device,
-        dtype=torch.int32,
-    )
-    input_offsets_device = input._offsets.to(device=device, non_blocking=True)
-    output_offsets_device = output_offsets.to(device=device, non_blocking=True)
-    tile_h, tile_w = tile_shape
-    input_tile_h = (tile_h - 1) * stride_pair[0] + dilation_pair[0] * (kernel_h - 1) + 1
-    input_tile_w = (tile_w - 1) * stride_pair[1] + dilation_pair[1] * (kernel_w - 1) + 1
-    if input_tile_h <= 0 or input_tile_w <= 0:
-        return None
-    input_tile_shape = (input_tile_h, input_tile_w)
-    resolved_max_tiles = _cap_spatial_tile2d_batch_for_channels(
-        resolved_max_tiles,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        input_tile_shape=input_tile_shape,
-        output_tile_shape=tile_shape,
-    )
-
-    tiles = tuple(_conv2d_spatial_tiles(output_shapes, tile_shape))
-    tile_meta = torch.tensor(tiles, device=device, dtype=torch.int32)
-    chunk_size = _spatial_tile_max_batch(resolved_max_tiles, len(tiles))
-    resolved_weight_max_tiles = _resolve_spatial_weight_tile2d_batch(
-        tuple(input_shapes),
-        tile_shape,
-        weight_max_tiles_per_batch,
-        chunk_size,
-    )
-    if resolved_weight_max_tiles is None:
-        return None
-    use_channels_last = bool(channels_last and input.concat.is_cuda)
-    input_values, weight, bias = _autocast_convolution_tensors(input.concat, weight, bias)
-    requires_grad = torch.is_grad_enabled() and (
-        input_values.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
-    )
-
-    if requires_grad:
-        output_values = _SpatialTileConv2dCudnnFunction.apply(
-            input_values,
-            weight,
-            bias,
-            input_offsets_device,
-            output_offsets_device,
-            shape_meta,
-            tile_meta,
-            total_out,
-            tuple(input_shapes),
-            output_shapes,
-            input_starts,
-            output_starts,
-            tiles,
-            stride_pair,
-            padding_pair,
-            dilation_pair,
-            tile_shape,
-            input_tile_shape,
-            chunk_size,
-            resolved_weight_max_tiles,
-            use_channels_last,
+        tiles = _conv2d_copy.pack(
+            values,
+            copy_in_offsets,
+            copy_shapes,
+            copy_tiles,
+            input_h,
+            input_w,
+            before,
+            stride,
+            (kernel_h, kernel_w),
+            dilation,
         )
     else:
-        output_values = _spatial_tile_conv2d_forward_values(
-            input_values,
-            weight,
-            bias,
-            output_size=total_out,
-            input_shapes=tuple(input_shapes),
-            output_shapes=output_shapes,
-            input_starts=input_starts,
-            output_starts=output_starts,
-            tiles=tiles,
-            stride=stride_pair,
-            padding=padding_pair,
-            dilation=dilation_pair,
-            tile_shape=tile_shape,
-            input_tile_shape=input_tile_shape,
-            max_tiles_per_batch=chunk_size,
-            channels_last=use_channels_last,
-            input_offsets_device=input_offsets_device,
-            output_offsets_device=output_offsets_device,
-            shape_meta=shape_meta,
-            tile_meta=tile_meta,
+        device = values.device
+        input_spatial_device = input.element_sizes(device=device)[:, 1:]
+        if rank_one:
+            input_spatial_device = torch.cat((torch.ones_like(input_spatial_device), input_spatial_device), dim=1)
+        tile_offsets_device = tile_offsets.to(device=device)
+        tile_grid_device = tile_grid.to(device=device)
+        tile_ids = torch.arange(capacity, device=device)
+        raw_owner = torch.bucketize(tile_ids, tile_offsets_device[1:], right=True)
+        real_tile = raw_owner < batch_size
+        tile_owner = raw_owner.clamp(max=batch_size - 1)
+        local_tile = tile_ids - tile_offsets_device.index_select(0, tile_owner)
+        tile_columns = tile_grid_device[:, 1].index_select(0, tile_owner)
+        tile_y = torch.div(local_tile, tile_columns, rounding_mode="floor") * tile_h
+        tile_x = local_tile.remainder(tile_columns) * tile_w
+        input_h = (tile_h - 1) * stride[0] + effective_h + 1
+        input_w = (tile_w - 1) * stride[1] + effective_w + 1
+        y = tile_y[:, None, None] * stride[0] + torch.arange(input_h, device=device)[None, :, None] - before[0]
+        x = tile_x[:, None, None] * stride[1] + torch.arange(input_w, device=device)[None, None, :] - before[1]
+        spatial_device = input_spatial_device.index_select(0, tile_owner)
+        valid = (
+            real_tile[:, None, None]
+            & (y >= 0)
+            & (y < spatial_device[:, 0, None, None])
+            & (x >= 0)
+            & (x < spatial_device[:, 1, None, None])
         )
+        if stride != (1, 1) or dilation != (1, 1):
+            # Unused activation coordinates must not enter zero-weighted extra output windows.
+            output_for_tile = output_spatial.to(device=device).index_select(0, tile_owner)
+            candidates_y = (
+                y[:, :, 0, None] + before[0] - torch.arange(kernel_h, device=device)[None, None, :] * dilation[0]
+            )
+            candidates_x = (
+                x[:, 0, :, None] + before[1] - torch.arange(kernel_w, device=device)[None, None, :] * dilation[1]
+            )
+            covered_y = (
+                (candidates_y >= 0)
+                & (candidates_y.remainder(stride[0]) == 0)
+                & (torch.div(candidates_y, stride[0], rounding_mode="floor") < output_for_tile[:, 0, None, None])
+            ).any(-1)
+            covered_x = (
+                (candidates_x >= 0)
+                & (candidates_x.remainder(stride[1]) == 0)
+                & (torch.div(candidates_x, stride[1], rounding_mode="floor") < output_for_tile[:, 1, None, None])
+            ).any(-1)
+            valid = valid & covered_y[:, :, None] & covered_x[:, None, :]
+        input_offsets = input.packed_offsets(device=device)
+        indices = input_offsets.index_select(0, tile_owner)[:, None, None] + y * spatial_device[:, 1, None, None] + x
+        flat_valid = valid.reshape(-1)
+        distributed = torch.arange(indices.numel(), device=device).remainder(values.shape[0])
+        gather_indices = torch.where(flat_valid, indices.reshape(-1), distributed)
+        tiles = values.index_select(0, gather_indices)
+        tiles = torch.where(flat_valid[:, None], tiles, 0)
+        tiles = tiles.reshape(capacity, input_h, input_w, values.shape[1]).permute(0, 3, 1, 2)
+        if not values.is_cuda:
+            tiles = tiles.contiguous()
+    convolved = F.conv2d(tiles, weight, bias, stride=stride, dilation=dilation, groups=groups)
+    if use_copy:
+        output_values = _conv2d_copy.unpack(convolved, copy_out_offsets, copy_shapes, copy_tiles, total_output)
+    else:
+        convolved = convolved.permute(0, 2, 3, 1).reshape(-1, out_channels)
 
-    return type(input)._from_packed_raw(
+        if preserves_spatial:
+            output_offsets_device = input_offsets
+            output_spatial_device = input_spatial_device
+            owner = input.packed_batch_indices(device=device)
+        else:
+            output_offsets_device = output_offsets.to(device=device)
+            output_spatial_device = output_spatial.to(device=device)
+            owner = torch.repeat_interleave(
+                torch.arange(batch_size, device=device), output_counts.to(device=device), output_size=total_output
+            )
+        local_output = torch.arange(total_output, device=device) - output_offsets_device.index_select(0, owner)
+        output_width = output_spatial_device[:, 1].index_select(0, owner)
+        output_y = torch.div(local_output, output_width, rounding_mode="floor")
+        output_x = local_output.remainder(output_width)
+        output_tile = (
+            tile_offsets_device.index_select(0, owner)
+            + torch.div(output_y, tile_h, rounding_mode="floor") * tile_grid_device[:, 1].index_select(0, owner)
+            + torch.div(output_x, tile_w, rounding_mode="floor")
+        )
+        row = (output_tile * tile_h + output_y.remainder(tile_h)) * tile_w + output_x.remainder(tile_w)
+        output_values = convolved.index_select(0, row)
+    if rank_one:
+        if element_shapes is not None:
+            element_shapes = tuple((channels, width) for channels, _, width in element_shapes)
+        logical_shape = input._logical_shape_from_components(replace_dims={0: out_channels, 1: max_output[1]})
+        permutation, ragged_dims = (1, 0), (1,)
+    else:
+        logical_shape = input._logical_shape_from_components(
+            replace_dims={0: out_channels, 1: max_output[0], 2: max_output[1]}
+        )
+        permutation, ragged_dims = (1, 2, 0), (1, 2)
+    return _packed_with_shape(
+        input,
         output_values,
-        output_offsets,
-        output_shape_tensor,
-        permutation=input._permutation,
-        ragged_dims=input._ragged_dims if input._ragged_dims_explicit else None,
-        batch_first=input.batch_first,
-        padding_value=input.padding_value,
-        mask_value=input.mask_value,
-        pin_memory=input._pin_memory,
-        packed_sizes=output_packed_sizes,
-        element_shapes=output_shapes,
+        output_shape,
+        logical_shape,
+        offsets=output_offsets,
+        packed_sizes=packed_sizes,
+        element_shapes=element_shapes,
+        permutation=permutation,
+        force_explicit_ragged_dims=ragged_dims,
+        ragged_offsets=ragged_offsets,
     )
