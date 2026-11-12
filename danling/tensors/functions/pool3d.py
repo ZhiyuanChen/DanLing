@@ -501,7 +501,7 @@ if triton is not None:
             other=0.0,
         )
         grad_input_ptrs = grad_input_ptr + (input_base + indices) * channels + offsets_c[None, :]
-        tl.atomic_add(grad_input_ptrs, grad, sem="relaxed", mask=mask)
+        tl.atomic_add(grad_input_ptrs, grad, sem="relaxed", mask=mask & (indices >= 0))
 
 else:  # pragma: no cover - optional dependency/runtime
     _avg_pool3d_forward_kernel = None

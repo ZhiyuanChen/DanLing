@@ -60,6 +60,7 @@ from .functions.conv_transpose1d import conv_transpose1d as _conv_transpose1d_ha
 from .functions.conv_transpose2d import conv_transpose2d as _conv_transpose2d_handler
 from .functions.pool1d import avg_pool1d as _avg_pool1d_handler
 from .functions.pool1d import max_pool1d as _max_pool1d_handler
+from .functions.pool2d import _can_compile_max_pool2d
 from .functions.pool2d import avg_pool2d as _avg_pool2d_handler
 from .functions.pool2d import max_pool2d as _max_pool2d_handler
 from .functions.pool3d import avg_pool3d as _avg_pool3d_handler
@@ -699,6 +700,21 @@ def _make_conv_compile_guard(rank: int) -> Callable[[tuple, dict[str, object]], 
         return _has_static_input_channels(input, int(weight.shape[1]), rank)
 
     return _conv_compile_safe_inputs
+
+
+def _max_pool2d_compile_guard(args: tuple, kwargs: dict[str, object]) -> bool:
+    def argument(position, name, default):
+        return args[position] if len(args) > position else kwargs.get(name, default)
+
+    return _can_compile_max_pool2d(
+        argument(0, "input", None),
+        argument(1, "kernel_size", None),
+        argument(2, "stride", None),
+        argument(3, "padding", 0),
+        argument(4, "dilation", 1),
+        argument(5, "ceil_mode", False),
+        argument(6, "return_indices", False),
+    )
 
 
 def _as_flex_packed_dense(nt: NestedTensor) -> Tensor:
@@ -3607,6 +3623,10 @@ for _op, _rank in ((F.conv1d, 1), (F.conv2d, 2)):
     if _op in NestedTensorFuncRegistry:
         NestedTensorFuncRegistry.set_compile_safe(_op, True)
         NestedTensorFuncRegistry.set_compile_guard(_op, _make_conv_compile_guard(_rank))
+
+if F.max_pool2d in NestedTensorFuncRegistry:
+    NestedTensorFuncRegistry.set_compile_safe(F.max_pool2d, True)
+    NestedTensorFuncRegistry.set_compile_guard(F.max_pool2d, _max_pool2d_compile_guard)
 
 for _op in NN_NOOP_DROPOUT_OPS:
     if _op in NestedTensorFuncRegistry:

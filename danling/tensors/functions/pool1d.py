@@ -380,7 +380,7 @@ if triton is not None:
             other=0.0,
         )
         grad_input_ptrs = grad_input_ptr + (input_base + indices) * channels + offsets_c[None, :]
-        tl.atomic_add(grad_input_ptrs, grad, sem="relaxed", mask=mask)
+        tl.atomic_add(grad_input_ptrs, grad, sem="relaxed", mask=mask & (indices >= 0))
 
     @triton.jit
     def _max_pool1d_backward_kernel(
@@ -434,7 +434,7 @@ if triton is not None:
             other=0.0,
         )
         grad_input_ptrs = grad_input_ptr + (input_base + max_indices) * channels + offsets_c[None, :]
-        grad_mask = (out_x[:, None] < out_length) & (offsets_c[None, :] < channels)
+        grad_mask = (out_x[:, None] < out_length) & (offsets_c[None, :] < channels) & (max_indices >= 0)
         tl.atomic_add(grad_input_ptrs, grad, sem="relaxed", mask=grad_mask)
 
 else:  # pragma: no cover - optional dependency/runtime

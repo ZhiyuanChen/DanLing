@@ -26,7 +26,7 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
-from ..ops import _static_channels_match
+from ..ops import _compile_unsupported, _is_compiling, _static_channels_match
 from ._pooling import (
     _from_pool_values,
     _per_element,
@@ -92,6 +92,12 @@ def max_pool2d(
     _fn=None,
 ):
     fn = F.max_pool2d if _fn is None else _fn
+    if input._physical_shape.size(1) == 3:
+        torch._assert_async(torch.all(input._physical_shape > 0), "max_pool2d input dimensions must be positive")
+    if _is_compiling():
+        if not _can_compile_max_pool2d(input, kernel_size, stride, padding, dilation, ceil_mode, return_indices):
+            _compile_unsupported("max_pool2d", "unsupported layout or pooling parameters")
+        return _compiled_max_pool2d(input, kernel_size, stride, padding, dilation)
     if not return_indices:
         output = _packed_max_pool2d(input, kernel_size, stride, padding, dilation, ceil_mode)
         if output is not None:
@@ -490,7 +496,7 @@ if triton is not None:
             other=0.0,
         )
         grad_input_ptrs = grad_input_ptr + (input_base + max_indices) * channels + offsets_c[None, :]
-        grad_mask = (out_flat[:, None] < out_hw) & (offsets_c[None, :] < channels)
+        grad_mask = (out_flat[:, None] < out_hw) & (offsets_c[None, :] < channels) & (max_indices >= 0)
         tl.atomic_add(grad_input_ptrs, grad, sem="relaxed", mask=grad_mask)
 
     @triton.jit
@@ -532,7 +538,7 @@ if triton is not None:
             other=0.0,
         )
         grad_input_ptrs = grad_input_ptr + (input_base + indices) * channels + offsets_c[None, :]
-        tl.atomic_add(grad_input_ptrs, grad, sem="relaxed", mask=mask)
+        tl.atomic_add(grad_input_ptrs, grad, sem="relaxed", mask=mask & (indices >= 0))
 
 else:  # pragma: no cover - optional dependency/runtime
     _avg_pool2d_forward_kernel = None
@@ -639,6 +645,76 @@ class _PackedAvgPool2dFunction(torch.autograd.Function):
         return (grad_input, *([None] * 17))
 
 
+def _launch_max_pool2d_forward(
+    values,
+    output,
+    indices,
+    input_offsets,
+    output_offsets,
+    shapes,
+    tile_offsets,
+    tile_to_batch,
+    tile_count,
+    kernel,
+    stride,
+    padding,
+    dilation,
+    save_indices,
+):
+    channels = values.shape[1]
+    block_l, block_c = _pool_block_size()
+    _max_pool2d_forward_kernel[(tile_count, triton.cdiv(channels, block_c))](
+        values,
+        output,
+        indices,
+        input_offsets,
+        output_offsets,
+        shapes,
+        tile_offsets,
+        tile_to_batch,
+        shapes.shape[0],
+        channels,
+        values.stride(0),
+        values.stride(1),
+        *kernel,
+        *stride,
+        *padding,
+        *dilation,
+        save_indices,
+        block_l,
+        block_c,
+    )
+
+
+def _launch_max_pool2d_backward_indices(
+    gradient,
+    result,
+    indices,
+    input_offsets,
+    output_offsets,
+    shapes,
+    tile_offsets,
+    tile_to_batch,
+    tile_count,
+):
+    channels = gradient.shape[1]
+    block_l, block_c = _pool_block_size()
+    _max_pool2d_backward_indices_kernel[(tile_count, triton.cdiv(channels, block_c))](
+        gradient,
+        result,
+        indices,
+        input_offsets,
+        output_offsets,
+        shapes,
+        tile_offsets,
+        tile_to_batch,
+        shapes.shape[0],
+        channels,
+        block_l,
+        block_c,
+    )
+
+
 class _PackedMaxPool2dFunction(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -670,9 +746,7 @@ class _PackedMaxPool2dFunction(torch.autograd.Function):
             if save_indices
             else output
         )
-        block_l, block_c = _pool_block_size()
-        grid = (tile_count, triton.cdiv(channels, block_c))
-        _max_pool2d_forward_kernel[grid](
+        _launch_max_pool2d_forward(
             input_values,
             output,
             indices,
@@ -681,21 +755,12 @@ class _PackedMaxPool2dFunction(torch.autograd.Function):
             shape_meta,
             tile_offsets,
             tile_to_batch,
-            batch_count,
-            channels,
-            input_values.stride(0),
-            input_values.stride(1),
-            kernel_h,
-            kernel_w,
-            stride_h,
-            stride_w,
-            padding_h,
-            padding_w,
-            dilation_h,
-            dilation_w,
+            tile_count,
+            (kernel_h, kernel_w),
+            (stride_h, stride_w),
+            (padding_h, padding_w),
+            (dilation_h, dilation_w),
             save_indices,
-            block_l,
-            block_c,
         )
         if save_indices:
             ctx.save_for_backward(indices, input_offsets, output_offsets, shape_meta, tile_offsets, tile_to_batch)
@@ -724,7 +789,7 @@ class _PackedMaxPool2dFunction(torch.autograd.Function):
         if ctx.use_indices:
             indices, input_offsets, output_offsets, shape_meta, tile_offsets, tile_to_batch = ctx.saved_tensors
             grad_input = grad_output.new_zeros(ctx.input_shape)
-            _max_pool2d_backward_indices_kernel[grid](
+            _launch_max_pool2d_backward_indices(
                 grad_output,
                 grad_input,
                 indices,
@@ -733,10 +798,7 @@ class _PackedMaxPool2dFunction(torch.autograd.Function):
                 shape_meta,
                 tile_offsets,
                 tile_to_batch,
-                ctx.batch_count,
-                ctx.channels,
-                block_l,
-                block_c,
+                ctx.tile_count,
             )
             return (grad_input, *([None] * 17))
 
@@ -769,6 +831,292 @@ class _PackedMaxPool2dFunction(torch.autograd.Function):
             block_c,
         )
         return (grad_input, *([None] * 17))
+
+
+@torch.library.custom_op("danling::_max_pool2d_packed_forward", mutates_args=())
+def _compiled_max_pool2d_forward(
+    values: Tensor,
+    input_offsets: Tensor,
+    output_offsets: Tensor,
+    shapes: Tensor,
+    tile_offsets: Tensor,
+    tile_to_batch: Tensor,
+    tile_count: int,
+    output_size: int,
+    kernel_h: int,
+    kernel_w: int,
+    stride_h: int,
+    stride_w: int,
+    padding_h: int,
+    padding_w: int,
+    dilation_h: int,
+    dilation_w: int,
+    save_indices: bool,
+    wide_indices: bool,
+) -> tuple[Tensor, Tensor]:
+    channels = values.shape[1]
+    output = values.new_empty((output_size, channels))
+    indices = torch.empty(
+        (output_size, channels) if save_indices else (0,),
+        device=values.device,
+        dtype=torch.int64 if wide_indices else torch.int32,
+    )
+    _launch_max_pool2d_forward(
+        values,
+        output,
+        indices,
+        input_offsets,
+        output_offsets,
+        shapes,
+        tile_offsets,
+        tile_to_batch,
+        tile_count,
+        (kernel_h, kernel_w),
+        (stride_h, stride_w),
+        (padding_h, padding_w),
+        (dilation_h, dilation_w),
+        save_indices,
+    )
+    return output, indices
+
+
+@_compiled_max_pool2d_forward.register_fake
+def _compiled_max_pool2d_forward_fake(
+    values,
+    input_offsets,
+    output_offsets,
+    shapes,
+    tile_offsets,
+    tile_to_batch,
+    tile_count,
+    output_size,
+    kernel_h,
+    kernel_w,
+    stride_h,
+    stride_w,
+    padding_h,
+    padding_w,
+    dilation_h,
+    dilation_w,
+    save_indices,
+    wide_indices,
+):
+    output = values.new_empty((output_size, values.shape[1]))
+    indices = values.new_empty(
+        (output_size, values.shape[1]) if save_indices else (0,),
+        dtype=torch.int64 if wide_indices else torch.int32,
+    )
+    return output, indices
+
+
+@torch.library.custom_op("danling::_max_pool2d_packed_backward", mutates_args=())
+def _compiled_max_pool2d_backward(
+    gradient: Tensor,
+    indices: Tensor,
+    input_offsets: Tensor,
+    output_offsets: Tensor,
+    shapes: Tensor,
+    tile_offsets: Tensor,
+    tile_to_batch: Tensor,
+    tile_count: int,
+    input_size: int,
+) -> Tensor:
+    channels = gradient.shape[1]
+    result = gradient.new_zeros((input_size, channels))
+    _launch_max_pool2d_backward_indices(
+        gradient.contiguous(),
+        result,
+        indices,
+        input_offsets,
+        output_offsets,
+        shapes,
+        tile_offsets,
+        tile_to_batch,
+        tile_count,
+    )
+    return result
+
+
+@_compiled_max_pool2d_backward.register_fake
+def _compiled_max_pool2d_backward_fake(
+    gradient, indices, input_offsets, output_offsets, shapes, tile_offsets, tile_to_batch, tile_count, input_size
+):
+    return gradient.new_empty((input_size, gradient.shape[1]))
+
+
+class _CompiledMaxPool2dFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx,
+        values,
+        input_offsets,
+        output_offsets,
+        shapes,
+        tile_offsets,
+        tile_to_batch,
+        tile_count,
+        output_size,
+        kernel_h,
+        kernel_w,
+        stride_h,
+        stride_w,
+        padding_h,
+        padding_w,
+        dilation_h,
+        dilation_w,
+        wide_indices,
+        save_indices,
+    ):
+        output, indices = _compiled_max_pool2d_forward(
+            values,
+            input_offsets,
+            output_offsets,
+            shapes,
+            tile_offsets,
+            tile_to_batch,
+            tile_count,
+            output_size,
+            kernel_h,
+            kernel_w,
+            stride_h,
+            stride_w,
+            padding_h,
+            padding_w,
+            dilation_h,
+            dilation_w,
+            save_indices,
+            wide_indices,
+        )
+        ctx.save_for_backward(indices, input_offsets, output_offsets, shapes, tile_offsets, tile_to_batch)
+        ctx.input_size, ctx.tile_count = values.shape[0], tile_count
+        return output
+
+    @staticmethod
+    def backward(ctx, gradient):
+        indices, input_offsets, output_offsets, shapes, tile_offsets, tile_to_batch = ctx.saved_tensors
+        result = _compiled_max_pool2d_backward(
+            gradient,
+            indices,
+            input_offsets,
+            output_offsets,
+            shapes,
+            tile_offsets,
+            tile_to_batch,
+            ctx.tile_count,
+            ctx.input_size,
+        )
+        return (result, *([None] * 17))
+
+
+def _pool2d_pair(value):
+    def static_integer(item):
+        return (
+            isinstance(item, (int, torch.SymInt))
+            and not isinstance(item, bool)
+            and (not isinstance(item, torch.SymInt) or item.node.hint is not None)
+        )
+
+    if static_integer(value):
+        return int(value), int(value)
+    if isinstance(value, (tuple, list)) and len(value) == 2 and all(static_integer(item) for item in value):
+        return tuple(int(item) for item in value)
+    return None
+
+
+def _can_compile_max_pool2d(input, kernel_size, stride, padding, dilation, ceil_mode, return_indices):
+    from ..nested_tensor import NestedTensor
+
+    if not isinstance(input, NestedTensor) or ceil_mode or return_indices or triton is None:
+        return False
+    values = input._packed_values
+    if (
+        not values.is_cuda
+        or values.dtype not in (torch.float16, torch.bfloat16, torch.float32)
+        or values.dim() != 2
+        or input._physical_shape.size(0) == 0
+        or input._physical_shape.size(1) != 3
+        or input._ragged_dims != (1, 2)
+        or input._permutation != (1, 2, 0)
+    ):
+        return False
+    kernel = _pool2d_pair(kernel_size)
+    stride_pair = kernel if stride is None else _pool2d_pair(stride)
+    padding_pair, dilation_pair = _pool2d_pair(padding), _pool2d_pair(dilation)
+    if kernel is None or stride_pair is None or padding_pair is None or dilation_pair is None:
+        return False
+    return all(value > 0 for value in (*kernel, *stride_pair, *dilation_pair)) and all(
+        0 <= padding_pair[i] <= kernel[i] // 2 for i in range(2)
+    )
+
+
+def _compiled_max_pool2d(input, kernel_size, stride, padding, dilation):
+    from ..aten_functions import _packed_with_shape
+    from ..nested_tensor import _layout_scalar
+    from .conv2d import _has_size_hint
+
+    kernel = _pool2d_pair(kernel_size)
+    stride = kernel if stride is None else _pool2d_pair(stride)
+    padding, dilation = _pool2d_pair(padding), _pool2d_pair(dilation)
+    shape = input._physical_shape
+    spatial = shape[:, 1:]
+    shrink = spatial.new_tensor([2 * padding[i] - dilation[i] * (kernel[i] - 1) - 1 for i in range(2)])
+    output_spatial = torch.div(spatial + shrink, spatial.new_tensor(stride), rounding_mode="floor") + 1
+    torch._assert_async(torch.all(output_spatial > 0), "max_pool2d output dimensions must be positive")
+    counts = output_spatial.prod(1)
+    output_offsets = torch.cat((counts.new_zeros(1), counts.cumsum(0)))
+    total = _layout_scalar(output_offsets[-1])
+    batch_size = shape.shape[0]
+    torch._check(total >= batch_size)
+    heights = output_spatial[:, 0]
+    row_offsets = torch.cat((heights.new_zeros(1), heights.cumsum(0)))
+    row_count = _layout_scalar(row_offsets[-1] + 1)
+    torch._check(row_count >= batch_size + 1)
+    widths = torch.repeat_interleave(output_spatial[:, 1], heights, output_size=row_count - 1)
+    pixel_offsets = torch.cat((widths.new_zeros(1), widths.cumsum(0)))
+    block_l, _ = _pool_block_size()
+    tile_counts = torch.div(counts + block_l - 1, block_l, rounding_mode="floor")
+    tile_offsets = torch.cat((tile_counts.new_zeros(1), tile_counts.cumsum(0)))
+    # This bound adds at most B-1 tiles and depends only on the returned packed extent.
+    tile_count = (total + (block_l - 1) * batch_size) // block_l
+    values = input.concat
+    device = values.device
+    tile_to_batch = torch.bucketize(
+        torch.arange(tile_count, device=device), tile_offsets[1:].to(device), right=True
+    ).clamp(max=batch_size - 1)
+    shapes = torch.cat((spatial, output_spatial), dim=1).to(device)
+    maximum = input._max_physical_dims()
+    wide_indices = not (_has_size_hint(maximum[1]) and _has_size_hint(maximum[2]) and maximum[1] * maximum[2] < 2**31)
+    output_values = _CompiledMaxPool2dFunction.apply(
+        values,
+        input._offsets.to(device),
+        output_offsets.to(device),
+        shapes,
+        tile_offsets.to(device),
+        tile_to_batch,
+        tile_count,
+        total,
+        *kernel,
+        *stride,
+        *padding,
+        *dilation,
+        wide_indices,
+        torch.is_grad_enabled() and values.requires_grad,
+    )
+    output_shape = torch.cat((shape[:, :1], output_spatial), dim=1)
+    max_output = tuple(
+        (maximum[i + 1] + 2 * padding[i] - dilation[i] * (kernel[i] - 1) - 1) // stride[i] + 1 for i in range(2)
+    )
+    logical_shape = input._logical_shape_from_components(replace_dims={1: max_output[0], 2: max_output[1]})
+    return _packed_with_shape(
+        input,
+        output_values,
+        output_shape,
+        logical_shape,
+        offsets=output_offsets,
+        permutation=(1, 2, 0),
+        force_explicit_ragged_dims=(1, 2),
+        ragged_offsets=(row_offsets, pixel_offsets),
+    )
 
 
 def _packed_avg_pool2d(

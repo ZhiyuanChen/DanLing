@@ -22,6 +22,7 @@ from copy import deepcopy
 import pytest
 import torch
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 
 from danling.tensors import NestedTensor as NT
 
@@ -43,6 +44,53 @@ class TestPooling:
             torch.randn(3, 7, 9, device=device, requires_grad=True),
         ]
         check_pool(inputs, F.max_pool2d, kernel_size=3, stride=2, padding=1, dilation=2)
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
+    @pytest.mark.parametrize("axis", [0, 1, 2])
+    def test_empty_input(self, device, backend, axis):
+        if backend is not None and device.type != "cuda":
+            pytest.skip("compiled packed max pool requires CUDA")
+        shapes = [[1, 3, 3], [1, 5, 4]]
+        shapes[0][axis] = 0
+        if axis == 0:
+            shapes[1][axis] = 0
+        parts = [torch.empty(shape, device=device) for shape in shapes]
+
+        def pool(input):
+            return F.max_pool2d(input, 2, stride=1, padding=1)
+
+        with pytest.raises(RuntimeError):
+            pool(parts[0])
+        operation = pool if backend is None else torch.compile(pool, backend=backend, fullgraph=True, dynamic=True)
+        with pytest.raises(RuntimeError):
+            operation(NT(parts, ragged_dims=(1, 2)))
+
+    @pytest.mark.parametrize("value", [float("-inf"), float("nan")])
+    @pytest.mark.parametrize("compiled", [False, True])
+    def test_maximum_empty_window_gradient(self, device, value, compiled):
+        if device.type != "cuda":
+            pytest.skip("packed max pool kernels require CUDA")
+        first = torch.arange(16, device=device, dtype=torch.float32).reshape(1, 4, 4).requires_grad_()
+        empty_window = torch.ones(1, 2, 2, device=device, requires_grad=True)
+        nonfinite = torch.full((1, 3, 3), value, device=device, requires_grad=True)
+        reference = first.detach().clone().requires_grad_()
+        kwargs = {"kernel_size": 2, "stride": 1, "padding": 1, "dilation": 3}
+
+        def operation(input):
+            return F.max_pool2d(input, **kwargs)
+
+        if compiled:
+            operation = torch.compile(operation, fullgraph=True, dynamic=True)
+        output = operation(NT([first, empty_window, nonfinite], ragged_dims=(1, 2)))
+        parts = output.unbind()
+        torch.testing.assert_close(parts[0], F.max_pool2d(reference, **kwargs))
+        assert torch.isneginf(parts[1]).all()
+        torch.testing.assert_close(parts[2], torch.full_like(parts[2], value), equal_nan=True)
+        actual = torch.autograd.grad(output.concat, (first, empty_window, nonfinite), torch.ones_like(output.concat))
+        expected_first = torch.autograd.grad(F.max_pool2d(reference, **kwargs).sum(), reference)[0]
+        expected_nonfinite = torch.zeros_like(nonfinite)
+        expected_nonfinite[0, ::2, ::2] = 1
+        torch.testing.assert_close(actual, (expected_first, torch.zeros_like(empty_window), expected_nonfinite))
 
     def test_divisor(self, device):
         input = NT([torch.randn(3, 11, 13, device=device), torch.randn(3, 7, 9, device=device)])
@@ -129,23 +177,70 @@ class TestPooling:
         expected_gradients = torch.autograd.grad(expected_loss, (*references, *reference_model.parameters()))
         torch.testing.assert_close(gradients, expected_gradients)
 
-    def test_compile_limit(self, device):
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"kernel_size": 3, "stride": 2, "padding": 1},
+            {"kernel_size": (3, 2), "stride": (1, 2), "padding": (1, 0), "dilation": (2, 1)},
+        ],
+    )
+    def test_compiled_dynamic(self, device, backend, kwargs, batch_first):
+        if device.type != "cuda":
+            pytest.skip("compiled packed max pool requires CUDA")
         torch.compiler.reset()
-        compiled = torch.compile(
-            lambda template, values: F.max_pool2d(template.packed_like(values), 2),
-            backend="aot_eager",
-            fullgraph=True,
-            dynamic=True,
-        )
-        try:
-            template = NT(
-                [torch.randn(3, 8, 10, device=device), torch.randn(3, 6, 4, device=device)], ragged_dims=(1, 2)
-            )
-            values = template.concat.detach().requires_grad_()
-            with pytest.raises(Exception, match="compile-safe path not implemented"):
-                compiled(template, values)
-        finally:
-            torch.compiler.reset()
+
+        def operation(input):
+            return F.max_pool2d(input, **kwargs)
+
+        compiled = torch.compile(operation, backend=backend, fullgraph=True, dynamic=True)
+        for sizes in (((3, 9, 11), (3, 7, 13)), ((3, 12, 15), (3, 11, 9)), ((3, 5, 7), (3, 44, 43))):
+            parts = [torch.randn(shape, device=device, requires_grad=True) for shape in sizes]
+            references = [part.detach().clone().requires_grad_() for part in parts]
+            actual = compiled(NT(parts, ragged_dims=(1, 2), batch_first=batch_first))
+            expected = [operation(part) for part in references]
+            result = actual.unbind(0 if batch_first else 1)
+            torch.testing.assert_close(result, expected)
+            probes = [torch.randn_like(part) for part in expected]
+            actual_gradients = torch.autograd.grad(result, parts, grad_outputs=probes)
+            expected_gradients = torch.autograd.grad(expected, references, grad_outputs=probes)
+            torch.testing.assert_close(actual_gradients, expected_gradients)
+
+    def test_compiled_checkpoint(self, device):
+        if device.type != "cuda":
+            pytest.skip("compiled packed max pool requires CUDA")
+
+        def pooled(input):
+            return F.max_pool2d(input, 3, 2, 1)
+
+        def nested_checkpoint(input):
+            return checkpoint(lambda value: checkpoint(pooled, value, use_reentrant=False), input, use_reentrant=False)
+
+        compiled = torch.compile(nested_checkpoint, fullgraph=True, dynamic=True)
+        for sizes in (((3, 9, 11), (3, 7, 13)), ((3, 12, 15), (3, 11, 9))):
+            parts = [torch.randn(shape, device=device, requires_grad=True) for shape in sizes]
+            references = [part.detach().clone().requires_grad_() for part in parts]
+            actual = compiled(NT(parts, ragged_dims=(1, 2)))
+            expected = [pooled(part) for part in references]
+            torch.testing.assert_close(actual.unbind(), expected)
+            probes = [torch.randn_like(part) for part in expected]
+            actual_gradients = torch.autograd.grad(actual.unbind(), parts, grad_outputs=probes)
+            expected_gradients = torch.autograd.grad(expected, references, grad_outputs=probes)
+            torch.testing.assert_close(actual_gradients, expected_gradients)
+
+    @pytest.mark.parametrize("context", [torch.no_grad, torch.inference_mode])
+    def test_compiled_inference(self, device, context):
+        if device.type != "cuda":
+            pytest.skip("compiled packed max pool requires CUDA")
+        parts = [torch.randn(3, h, w, device=device, requires_grad=True) for h, w in ((9, 11), (7, 13))]
+        source = NT(parts, ragged_dims=(1, 2))
+        compiled = torch.compile(lambda input: F.max_pool2d(input, 3, 2, 1), fullgraph=True, dynamic=True)
+        with context():
+            actual = compiled(source)
+            expected = [F.max_pool2d(part, 3, 2, 1) for part in parts]
+        assert not actual.requires_grad
+        torch.testing.assert_close(actual.unbind(), expected)
 
     @pytest.mark.parametrize("value", [float("-inf"), float("nan")])
     def test_nonfinite(self, device, value):
