@@ -6823,13 +6823,23 @@ def flatten(func, args, kwargs):
                     shape[:start_adj] + (math.prod(shape[start_adj : end_adj + 1]),) + shape[end_adj + 1 :]
                     for shape in source._element_shapes
                 )
+            max_length_binding = None
             if out_element_shapes:
                 physical_dims = tuple(
                     max(shape[dim] for shape in out_element_shapes) for dim in range(len(out_element_shapes[0]))
                 )
                 out_logical = source._logical_shape_from_physical_dims(physical_dims)
             elif _is_fake_tensor(source._physical_shape) or _is_compiling():
-                return per_element_fallback(func, (source, start_adj, end_adj), kwargs)
+                if not _is_compiling() or not len(source) or len(flattened_dims) != len(source._varying_dims):
+                    return per_element_fallback(func, (source, start_adj, end_adj), kwargs)
+                from .nested_tensor import _layout_scalar
+
+                maximum = _layout_scalar(merged.max())
+                torch._check_is_size(maximum)
+                max_length_binding = merged.new_zeros(()).expand(maximum)
+                physical_dims = list(source._max_physical_dims())
+                physical_dims[start_adj : end_adj + 1] = [maximum]
+                out_logical = source._logical_shape_from_physical_dims(physical_dims)
             elif len(source):
                 out_logical = type(source)._logical_shape_from_physical_shape(
                     out_shape, source._offsets, source.batch_first
@@ -6838,7 +6848,7 @@ def flatten(func, args, kwargs):
                 physical_dims = list(source._max_physical_dims())
                 physical_dims[start_adj : end_adj + 1] = [math.prod(physical_dims[start_adj : end_adj + 1])]
                 out_logical = source._logical_shape_from_physical_dims(physical_dims)
-            return _packed_with_shape(
+            result = _packed_with_shape(
                 source,
                 source.concat,
                 out_shape,
@@ -6847,6 +6857,9 @@ def flatten(func, args, kwargs):
                 packed_sizes=source._packed_sizes,
                 element_shapes=out_element_shapes,
             )
+            if max_length_binding is not None:
+                result._max_length_binding = max_length_binding
+            return result
     if any(dim not in source._static_dims for dim in flattened_dims):
         if len(source) and source._ragged_dims_explicit:
             collapsed_rank = end_adj - start_adj

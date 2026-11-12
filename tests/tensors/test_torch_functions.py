@@ -1556,6 +1556,30 @@ class TestFlattenUnflatten:
         expected_gradients = torch.autograd.grad(sum(value.square().sum() for value in expected), parts)
         torch.testing.assert_close(gradients, expected_gradients)
 
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("ragged_rank", [2, 3])
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    def test_dynamic_flatten(self, device, batch_first, ragged_rank, backend):
+        torch.compiler.reset()
+        compiled = torch.compile(lambda value: value.flatten(2), backend=backend, fullgraph=True, dynamic=True)
+        shapes = [((2, 5), (4, 3)), ((4, 5), (1, 2))]
+        for spatial_shapes in shapes:
+            parts = [
+                torch.randn(3, *spatial, *((2,) if ragged_rank == 3 else ()), device=device, requires_grad=True)
+                for spatial in spatial_shapes
+            ]
+            source = NT(parts, batch_first=batch_first, ragged_dims=tuple(range(1, ragged_rank + 1)))
+            output = compiled(source)
+            expected = [part.flatten(1) for part in parts]
+            expected_shape = (2, 3, max(part.shape[-1] for part in expected))
+            if not batch_first:
+                expected_shape = (expected_shape[1], expected_shape[0], expected_shape[2])
+            assert tuple(output.shape) == expected_shape
+            torch.testing.assert_close(output.unbind(0 if batch_first else 1), tuple(expected))
+            gradients = torch.autograd.grad(output.concat.square().sum(), parts)
+            expected_gradients = torch.autograd.grad(sum(part.square().sum() for part in expected), parts)
+            torch.testing.assert_close(gradients, expected_gradients)
+
     def test_flatten_static_dims_after_multi_ragged_prefix(self):
         nt = NT(
             [
@@ -8249,6 +8273,58 @@ class TestUnbind:
 
 
 class TestCat:
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("dense", [True, False])
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    def test_dynamic_cat(self, device, batch_first, dense, backend):
+        torch.compiler.reset()
+        dim = 1 if batch_first else 0
+        compiled = torch.compile(lambda a, b: torch.cat((a, b), dim), backend=backend, fullgraph=True, dynamic=True)
+        for lengths, right_lengths in (((2, 4), (1, 1)), ((3, 5), (1, 1)), ((0, 0), (0, 0))):
+            parts = [torch.randn(length, 3, device=device, requires_grad=True) for length in lengths]
+            right = [torch.randn(length, 3, device=device, requires_grad=True) for length in right_lengths]
+            source = NT(parts, ragged_dims=(0,), batch_first=batch_first)
+            if dense:
+                other = torch.stack(right, dim=0 if batch_first else 1).detach().requires_grad_()
+                operands = (*parts, other)
+                reference = [
+                    torch.cat((part, other.select(0 if batch_first else 1, i))) for i, part in enumerate(parts)
+                ]
+            else:
+                other = NT(right, ragged_dims=(0,), batch_first=batch_first)
+                operands = (*parts, *right)
+                reference = [torch.cat((left, value)) for left, value in zip(parts, right)]
+            output = compiled(source, other)
+            torch.testing.assert_close(output.unbind(0 if batch_first else 1), tuple(reference))
+            gradients = torch.autograd.grad(output.concat.square().sum(), operands)
+            expected = torch.autograd.grad(sum(value.square().sum() for value in reference), operands)
+            torch.testing.assert_close(gradients, expected)
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="spatial NestedTensor conv2d requires CUDA")
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    def test_spatial_cat(self, backend):
+        torch.compiler.reset()
+
+        def model(images, cls, weight):
+            tokens = F.conv2d(images, weight, stride=2).flatten(2).transpose(1, 2)
+            return torch.cat((cls.expand(2, -1, -1), tokens), dim=1)
+
+        compiled = torch.compile(model, backend=backend, fullgraph=True, dynamic=True)
+        for shapes in [((4, 10), (8, 6)), ((8, 10), (2, 4))]:
+            parts = [torch.randn(3, *shape, device="cuda", requires_grad=True) for shape in shapes]
+            cls = torch.randn(1, 1, 3, device="cuda", requires_grad=True)
+            weight = torch.randn(3, 3, 2, 2, device="cuda", requires_grad=True)
+            output = compiled(NT(parts, ragged_dims=(1, 2)), cls, weight)
+            reference = [
+                torch.cat((cls[0], F.conv2d(part.unsqueeze(0), weight, stride=2).squeeze(0).flatten(1).T))
+                for part in parts
+            ]
+            torch.testing.assert_close(output.unbind(), tuple(reference), rtol=1e-4, atol=1e-4)
+            operands = (*parts, cls, weight)
+            gradients = torch.autograd.grad(output.concat.square().sum(), operands)
+            expected = torch.autograd.grad(sum(value.square().sum() for value in reference), operands)
+            torch.testing.assert_close(gradients, expected, rtol=1e-4, atol=1e-4)
 
     @_split_case_params(
         _split_cases_named(
