@@ -1240,6 +1240,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#categorical-sampling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Categorical sampling
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1587,6 +1598,25 @@ The core feature is the <a class="autorefs autorefs-internal" title="&lt;code cl
 <span class="c1"># Access individual items</span>
 <span class="n">first_item</span> <span class="o">=</span> <span class="n">nested</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>  <span class="c1"># Returns the first tensor</span>
 </code></pre></div></td></tr></table></div>
+<h3 id="categorical-sampling">Categorical sampling<a class="headerlink" href="#categorical-sampling" title="Permanent link">&para;</a></h3>
+<p>Use <code>danling.distributions.Categorical</code> for NestedTensor parameters. It extends
+the PyTorch interface, keeps parameter validation enabled, and samples only real
+probability rows with native <code>torch.multinomial</code>. The result retains the current
+ragged layout and uses zero padding for integer category indices. Dense inputs
+use PyTorch&rsquo;s existing sampling implementation. Torch itself is unchanged.</p>
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1</span>
+<span class="normal">2</span>
+<span class="normal">3</span>
+<span class="normal">4</span>
+<span class="normal">5</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">danling</span><span class="w"> </span><span class="kn">import</span> <span class="n">Categorical</span>
+
+<span class="n">distribution</span> <span class="o">=</span> <span class="n">Categorical</span><span class="p">(</span><span class="n">logits</span><span class="o">=</span><span class="n">nested_logits</span><span class="p">)</span>
+<span class="n">samples</span> <span class="o">=</span> <span class="n">distribution</span><span class="o">.</span><span class="n">sample</span><span class="p">()</span>
+<span class="n">log_prob</span> <span class="o">=</span> <span class="n">distribution</span><span class="o">.</span><span class="n">log_prob</span><span class="p">(</span><span class="n">samples</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+<p>NestedTensor sampling supports no sample prefix, or one sample axis before a
+batch-leading input. More sample axes require a layout with its batch axis
+beyond the currently supported positions zero and one.</p>
 <h2 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h2>
 <p>NestedTensor uses a <strong>packed representation</strong> that stores all variable-length elements concatenated into a single contiguous tensor, tracked by offset metadata:</p>
 <ul>
@@ -1608,6 +1638,8 @@ grouped and depthwise convolution, stride and dilation, integer padding,
 the native tile engine with Conv2d, using height-one tiles and the requested
 stride. Stride-one depthwise convolutions reduce each sample&rsquo;s real output
 taps, preserving nonfinite values and their gradients across sample boundaries.
+They use explicit zero padding and add bias after the dot product. Native
+implicit-padding backends can propagate nonfinite padding products differently.
 Both support <code>torch.compile(fullgraph=True, dynamic=True)</code>, with independent
 sample boundaries. For a width-4 depthwise causal convolution with dilation 1:</p>
 <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="n">output</span> <span class="o">=</span> <span class="n">F</span><span class="o">.</span><span class="n">silu</span><span class="p">(</span><span class="n">F</span><span class="o">.</span><span class="n">conv1d</span><span class="p">(</span><span class="nb">input</span><span class="p">,</span> <span class="n">weight</span><span class="p">,</span> <span class="n">bias</span><span class="p">,</span> <span class="n">padding</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span> <span class="n">groups</span><span class="o">=</span><span class="n">channels</span><span class="p">)[</span><span class="o">...</span><span class="p">,</span> <span class="p">:</span><span class="o">-</span><span class="mi">3</span><span class="p">])</span>
@@ -1959,20 +1991,115 @@ The canonical CPU integer tensor is returned without a copy; optional <code>devi
 and <code>dtype</code> conversions are cached on the <code>NestedTensor</code> instance. An explicit
 accelerator index is required for device caching; index-less device requests
 retain PyTorch&rsquo;s current-device semantics and are converted on every call.</p>
-<p><code>shape</code> and <code>size()</code> expose the logical padded maxima. In eager execution, a
-captured shape also retains each sample&rsquo;s extents for subsequent NestedTensor
-reshapes. Pickle and checkpoint serialization store a plain <code>torch.Size</code> of
-integer maxima, loadable with ordinary <code>torch.load</code> without importing DanLing.
-Save the NestedTensor or its <code>element_sizes()</code> separately to retain the ragged
-geometry.</p>
+<p><code>shape</code> and <code>size()</code> return a standard <code>torch.Size</code> of logical padded maxima;
+<code>size(dim)</code> returns the corresponding integer. Shapes, tuples, lists and single
+dimensions can be saved and loaded with ordinary <code>torch.save</code> / <code>torch.load</code>
+without importing DanLing. These values describe padded extents. Use
+<code>element_sizes()</code> for each sample&rsquo;s extents and <code>reshape_as(reference)</code> when
+restoring a ragged layout from flattened values.</p>
+<p>Native <code>view(size=...)</code> and <code>reshape(shape=...)</code> signatures support fullgraph
+compilation. Dtype reinterpretation preserves native storage aliases in eager
+execution. Its compiled path requires equal element sizes and the same
+real/complex kind; unsupported conversions raise a compilation error.
+PyTorch 2.13 and 2.15 cannot reliably replay element-size-changing output views
+of traceable wrappers, although the corresponding dense operations work.
+The standalone check below reproduces that limitation without importing DanLing.</p>
+<details>
+<summary>Standalone PyTorch wrapper reproducer</summary>
+
+<div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 1</span>
+<span class="normal"> 2</span>
+<span class="normal"> 3</span>
+<span class="normal"> 4</span>
+<span class="normal"> 5</span>
+<span class="normal"> 6</span>
+<span class="normal"> 7</span>
+<span class="normal"> 8</span>
+<span class="normal"> 9</span>
+<span class="normal">10</span>
+<span class="normal">11</span>
+<span class="normal">12</span>
+<span class="normal">13</span>
+<span class="normal">14</span>
+<span class="normal">15</span>
+<span class="normal">16</span>
+<span class="normal">17</span>
+<span class="normal">18</span>
+<span class="normal">19</span>
+<span class="normal">20</span>
+<span class="normal">21</span>
+<span class="normal">22</span>
+<span class="normal">23</span>
+<span class="normal">24</span>
+<span class="normal">25</span>
+<span class="normal">26</span>
+<span class="normal">27</span>
+<span class="normal">28</span>
+<span class="normal">29</span>
+<span class="normal">30</span>
+<span class="normal">31</span>
+<span class="normal">32</span>
+<span class="normal">33</span>
+<span class="normal">34</span>
+<span class="normal">35</span>
+<span class="normal">36</span>
+<span class="normal">37</span>
+<span class="normal">38</span>
+<span class="normal">39</span>
+<span class="normal">40</span>
+<span class="normal">41</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch.utils._python_dispatch</span><span class="w"> </span><span class="kn">import</span> <span class="n">return_and_correct_aliasing</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch.utils._pytree</span><span class="w"> </span><span class="kn">import</span> <span class="n">tree_map_only</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">Wrapper</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">):</span>
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__new__</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">values</span><span class="p">,</span> <span class="n">size</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stride</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="o">.</span><span class="n">_make_wrapper_subclass</span><span class="p">(</span>
+            <span class="bp">cls</span><span class="p">,</span> <span class="n">values</span><span class="o">.</span><span class="n">shape</span> <span class="k">if</span> <span class="n">size</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">size</span><span class="p">,</span>
+            <span class="n">strides</span><span class="o">=</span><span class="n">values</span><span class="o">.</span><span class="n">stride</span><span class="p">()</span> <span class="k">if</span> <span class="n">stride</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">stride</span><span class="p">,</span>
+            <span class="n">dtype</span><span class="o">=</span><span class="n">values</span><span class="o">.</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">values</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
+            <span class="n">requires_grad</span><span class="o">=</span><span class="n">values</span><span class="o">.</span><span class="n">requires_grad</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">result</span><span class="o">.</span><span class="n">values</span> <span class="o">=</span> <span class="n">values</span>
+        <span class="k">return</span> <span class="n">result</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">__tensor_flatten__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="p">[</span><span class="s2">"values"</span><span class="p">],</span> <span class="kc">None</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">__tensor_unflatten__</span><span class="p">(</span><span class="n">inner</span><span class="p">,</span> <span class="n">metadata</span><span class="p">,</span> <span class="n">size</span><span class="p">,</span> <span class="n">stride</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">Wrapper</span><span class="p">(</span><span class="n">inner</span><span class="p">[</span><span class="s2">"values"</span><span class="p">],</span> <span class="n">size</span><span class="p">,</span> <span class="n">stride</span><span class="p">)</span>
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">__torch_dispatch__</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">func</span><span class="p">,</span> <span class="n">types</span><span class="p">,</span> <span class="n">args</span><span class="o">=</span><span class="p">(),</span> <span class="n">kwargs</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+        <span class="n">kwargs</span> <span class="o">=</span> <span class="p">{}</span> <span class="k">if</span> <span class="n">kwargs</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">kwargs</span>
+        <span class="n">unwrap</span> <span class="o">=</span> <span class="k">lambda</span> <span class="n">value</span><span class="p">:</span> <span class="n">value</span><span class="o">.</span><span class="n">values</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="n">func</span><span class="p">(</span>
+            <span class="o">*</span><span class="n">tree_map_only</span><span class="p">(</span><span class="n">Wrapper</span><span class="p">,</span> <span class="n">unwrap</span><span class="p">,</span> <span class="n">args</span><span class="p">),</span>
+            <span class="o">**</span><span class="n">tree_map_only</span><span class="p">(</span><span class="n">Wrapper</span><span class="p">,</span> <span class="n">unwrap</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">),</span>
+        <span class="p">)</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="n">tree_map_only</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">Wrapper</span><span class="p">,</span> <span class="n">result</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">return_and_correct_aliasing</span><span class="p">(</span><span class="n">func</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">,</span> <span class="n">result</span><span class="p">)</span>
+
+
+<span class="n">source</span> <span class="o">=</span> <span class="n">Wrapper</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span><span class="o">.</span><span class="n">requires_grad_</span><span class="p">()</span><span class="o">.</span><span class="n">sin</span><span class="p">()</span>
+<span class="n">operation</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span>
+    <span class="k">lambda</span> <span class="n">value</span><span class="p">:</span> <span class="n">value</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">float64</span><span class="p">),</span> <span class="n">backend</span><span class="o">=</span><span class="s2">"aot_eager"</span><span class="p">,</span> <span class="n">fullgraph</span><span class="o">=</span><span class="kc">True</span>
+<span class="p">)</span>
+<span class="k">assert</span> <span class="n">operation</span><span class="p">(</span><span class="n">source</span><span class="p">)</span><span class="o">.</span><span class="n">shape</span> <span class="o">==</span> <span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>  <span class="c1"># PyTorch 2.13/2.15 return (2, 1).</span>
+</code></pre></div></td></tr></table></div>
+
+</details>
+
 <p><code>element_sizes()</code> returns the exact logical shape of every batch element as a
 CPU <code>torch.int64</code> tensor with shape <code>(batch_size, element_rank)</code>. Columns remain
 in logical element-dimension order regardless of <code>batch_first</code> or
 <code>packed_dim_order</code>, so zero-volume shapes such as <code>(0, 3)</code> and <code>(0, 7)</code> remain
-distinguishable even when their packed offsets coincide. The method returns the
-canonical tensor-backed metadata without a copy. It intentionally has no
-device or dtype conversion arguments; consumers that need another placement or
-integer width can apply <code>.to(...)</code> explicitly.</p>
+distinguishable even when their packed offsets coincide. By default, the method
+returns the canonical tensor-backed metadata without a copy. Optional <code>device</code>
+and <code>dtype</code> arguments return converted metadata, cached under the same device
+and layout rules as <code>packed_offsets()</code>.</p>
 <p><code>torch.repeat_interleave(input, repeats, dim=batch_dim)</code> and
 <code>input.repeat_interleave(repeats, dim=batch_dim)</code> accept a non-negative integer
 <code>repeats</code> and duplicate complete logical batch elements in their original
