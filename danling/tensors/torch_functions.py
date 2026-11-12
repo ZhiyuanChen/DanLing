@@ -523,6 +523,8 @@ def cat(tensors: tuple[Tensor | NestedTensor, ...], dim: int = 0):
             return False
         if tensor.dim() == 1 and tensor.shape[0] == 0:
             return True
+        if dim != batch_dim:
+            return False
         if tensor.dim() != ref.dim() or tensor.shape[dim] != 0:
             return False
         return all(axis == dim or tensor.shape[axis] == ref.shape[axis] for axis in range(ref.dim()))
@@ -701,15 +703,15 @@ def _cat_packed_non_batch(tensors, first: NestedTensor, dim_adj: int):
     new_offsets = tensors[0]._offsets.clone()
     for tensor in tensors[1:]:
         new_offsets = new_offsets + tensor._offsets
-    # The row count is the sum of the operands' buffers, which is a shape, not a value.
-    total = builtins.sum(int(tensor.concat.shape[0]) for tensor in tensors)
+    packed_values = torch.cat([tensor.concat for tensor in tensors], dim=0)
+    total = packed_values.shape[0]
     destinations = []
     prefix = torch.zeros_like(first._offsets[:-1], device=device, dtype=torch.long)
     new_offsets_dev = new_offsets.to(device=device, dtype=torch.long)
     for tensor in tensors:
         offsets = tensor._offsets.to(device=device, dtype=torch.long)
         lengths = offsets[1:] - offsets[:-1]
-        rows = int(tensor.concat.shape[0])
+        rows = tensor.concat.shape[0]
         batch_index = torch.repeat_interleave(
             torch.arange(len(tensor), device=device, dtype=torch.long), lengths, output_size=rows
         )
@@ -720,7 +722,7 @@ def _cat_packed_non_batch(tensors, first: NestedTensor, dim_adj: int):
     source = torch.empty((total,), device=device, dtype=torch.long).scatter_(
         0, destination, torch.arange(total, device=device, dtype=torch.long)
     )
-    values = torch.cat([tensor.concat for tensor in tensors], dim=0).index_select(0, source)
+    values = packed_values.index_select(0, source)
 
     physical_shape = first._physical_shape.clone()
     physical_shape[:, dim_adj] = builtins.sum(tensor._physical_shape[:, dim_adj] for tensor in tensors)
