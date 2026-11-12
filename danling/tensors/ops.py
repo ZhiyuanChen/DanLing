@@ -279,6 +279,28 @@ def _as_tensor_like(value, ref: Tensor) -> Tensor:
     return torch.as_tensor(value, device=ref.device, dtype=torch.result_type(ref, value))
 
 
+def _broadcast_layout_reference(tensors: Sequence[Tensor]) -> NestedTensor | None:
+    r"""Choose one owner placement for per-element broadcast results.
+
+    Matching placements retain the existing first-operand convention. When
+    placements differ, the highest physical rank supplies the result layout;
+    ties retain the first NestedTensor. This depends on axis descriptors, not
+    dimension extents, and also covers per-owner scalars.
+    """
+    from .nested_tensor import NestedTensor
+
+    nested = tuple(tensor for tensor in tensors if isinstance(tensor, NestedTensor))
+    if not nested:
+        return None
+    reference = nested[0]
+    if all(tensor.batch_first == reference.batch_first for tensor in nested[1:]):
+        return reference
+    for tensor in nested[1:]:
+        if tensor._physical_shape.size(1) > reference._physical_shape.size(1):
+            reference = tensor
+    return reference
+
+
 def _ensure_nested_input(input, other, cls):
     r"""Ensure at least one argument is a NestedTensor, converting if needed."""
     if isinstance(input, cls):
@@ -1481,7 +1503,8 @@ def _needs_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor) -> bool:
 
 def _binary_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor, op, extra_args, extra_kwargs):
     r"""Broadcast both packed inputs over the union of their ragged coordinates."""
-    from .aten_functions import _ragged_reduction_size_binding, _tensor_backed_ragged_offsets
+    from .aten_functions import _tensor_backed_ragged_offsets
+    from .nested_tensor import _layout_scalar
 
     lhs_ragged, rhs_ragged = set(lhs._ragged_dims), set(rhs._ragged_dims)
     lhs_is_full = _has_retained_ragged_singleton_source(lhs, rhs)
@@ -1524,7 +1547,8 @@ def _binary_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor, op, ext
             packed_sizes = tuple(math.prod(shape[dim] for dim in ragged_dims) for shape in element_shapes)
             levels = type(lhs)._hierarchical_level_sizes_from_element_shapes(element_shapes, ragged_dims)
             known_ragged_offsets = tuple(offsets.new_tensor((0, *accumulate(widths))) for widths in levels)
-    rows = sum(packed_sizes) if packed_sizes is not None else _ragged_reduction_size_binding(counts).shape[0]
+    rows = sum(packed_sizes) if packed_sizes is not None else _layout_scalar(counts.sum())
+    torch._check(rows >= 0)
     static_dims = tuple(dim for dim in range(rank) if dim not in ragged_dims)
 
     device = lhs.concat.device

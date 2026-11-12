@@ -947,19 +947,21 @@ def _broadcast_same_structure_tensors_packed(tensors):
 def _broadcast_nested_tensors_packed(tensors):
     r"""Broadcast same-batch NestedTensor operands directly in packed layout."""
     from .nested_tensor import NestedTensor
+    from .ops import _broadcast_layout_reference
 
     if not tensors or not all(isinstance(t, NestedTensor) for t in tensors):
         return None
 
-    ref = tensors[0]
-    if len(ref) == 0:
-        return None
-    if any(t.batch_first != ref.batch_first or t.device != ref.device for t in tensors):
+    ref = _broadcast_layout_reference(tensors)
+    empty = len(ref) == 0
+    if not empty and any(t.device != ref.device for t in tensors):
         return None
 
     source_shapes = []
     for tensor in tensors:
-        if tensor._element_shapes is None:
+        if empty:
+            source_shapes.append(())
+        elif tensor._element_shapes is None:
             from .aten_functions import _is_fake_tensor
 
             if _is_compiling() or _is_fake_tensor(tensor._physical_shape):
@@ -978,16 +980,23 @@ def _broadcast_nested_tensors_packed(tensors):
         except RuntimeError:
             return None
     output_shapes = tuple(output_shapes)
-    output_rank = len(output_shapes[0])
-    if output_rank == 0:
+    if empty:
+        output_extents = tuple(torch.broadcast_shapes(*(tensor._max_physical_dims() for tensor in tensors)))
+        output_rank = len(output_extents)
+        inferred_output_varying = ()
+    else:
+        output_rank = len(output_shapes[0])
+        output_extents = tuple(builtins.max(shape[dim] for shape in output_shapes) for dim in range(output_rank))
+        inferred_output_varying, _ = type(ref)._pack_layout_from_element_shapes(output_shapes)
+    if output_rank == 0 and not empty:
         return None
 
-    inferred_output_varying, _ = type(ref)._pack_layout_from_element_shapes(output_shapes)
     declared_orders = []
     for tensor, shapes in zip(tensors, source_shapes):
-        if not tensor._ragged_dims_explicit:
+        if not tensor._ragged_dims_explicit and not empty:
             continue
-        align = output_rank - len(shapes[0])
+        source_rank = tensor._physical_shape.size(1) if empty else len(shapes[0])
+        align = output_rank - source_rank
         if align < 0:
             return None
         mapped = tuple(align + int(dim) for dim in tensor._ragged_dims)
@@ -997,10 +1006,14 @@ def _broadcast_nested_tensors_packed(tensors):
 
     output_ragged_dims = None
     if declared_orders:
-        reference_shape = output_shapes[0]
-        topology_dims = {
-            dim for dim in range(output_rank) if any(shape[dim] != reference_shape[dim] for shape in output_shapes[1:])
-        }
+        topology_dims = set()
+        if not empty:
+            reference_shape = output_shapes[0]
+            topology_dims.update(
+                dim
+                for dim in range(output_rank)
+                if any(shape[dim] != reference_shape[dim] for shape in output_shapes[1:])
+            )
         topology_dims.update(dim for order in declared_orders for dim in order)
         successors = {dim: set() for dim in topology_dims}
         indegree = dict.fromkeys(topology_dims, 0)
@@ -1018,6 +1031,8 @@ def _broadcast_nested_tensors_packed(tensors):
                 None,
             )
             if candidate is None:
+                if empty:
+                    raise ValueError("torch.broadcast_tensors requires compatible ragged axis orders")
                 return None
             remaining.remove(candidate)
             ordered.append(candidate)
@@ -1031,10 +1046,29 @@ def _broadcast_nested_tensors_packed(tensors):
     output_permutation = output_varying + output_static
     packed_sizes = tuple(type(ref)._packed_size_from_shape(shape, output_varying) for shape in output_shapes)
     output_offsets = type(ref)._offsets_from_sizes(packed_sizes, dtype=ref._offsets.dtype)
-    output_shape = ref._physical_shape.new_tensor(output_shapes)
-    output_logical_shape = ref._logical_shape_from_physical_dims(
-        tuple(builtins.max(shape[dim] for shape in output_shapes) for dim in range(output_rank))
-    )
+    output_shape = ref._physical_shape.new_tensor(output_shapes).reshape(len(ref), output_rank)
+    output_logical_shape = ref._logical_shape_from_physical_dims(output_extents)
+
+    if empty:
+        values_shape = (0, *(output_extents[dim] for dim in output_static))
+        return tuple(
+            type(tensor).from_packed(
+                tensor.concat.reshape(values_shape),
+                output_offsets,
+                output_shape,
+                permutation=output_permutation,
+                ragged_dims=output_ragged_dims,
+                batch_first=ref.batch_first,
+                padding_value=tensor.padding_value,
+                mask_value=tensor.mask_value,
+                pin_memory=tensor._pin_memory,
+                outer_size=output_logical_shape,
+                packed_sizes=(),
+                element_shapes=(),
+                validate=False,
+            )
+            for tensor in tensors
+        )
 
     output_offsets_device = output_offsets.to(device=ref.device, dtype=torch.long)
     flat_idx = torch.arange(int(output_offsets[-1]), device=ref.device, dtype=torch.long)
@@ -1132,7 +1166,7 @@ def _broadcast_nested_tensors_packed(tensors):
                 output_shape,
                 permutation=output_permutation,
                 ragged_dims=output_ragged_dims,
-                batch_first=tensor.batch_first,
+                batch_first=ref.batch_first,
                 padding_value=tensor.padding_value,
                 mask_value=tensor.mask_value,
                 pin_memory=tensor._pin_memory,
@@ -1162,6 +1196,10 @@ def broadcast_tensors(*tensors):
     operations, including one scalar or static-tail slab per sample. This path
     also supports tensor-backed layouts without per-element Python shapes and
     fullgraph compilation; constructing a new ragged topology remains eager.
+    All results share one owner placement. When input placements differ, the
+    highest physical rank supplies that layout, with ties resolved by the
+    first NestedTensor; the sample owners still pair independently of their
+    displayed logical axis.
 
     Examples:
         >>> import torch
@@ -1174,8 +1212,9 @@ def broadcast_tensors(*tensors):
         True
     """
     from .nested_tensor import NestedTensor
+    from .ops import _broadcast_layout_reference
 
-    ref = next((t for t in tensors if isinstance(t, NestedTensor)), None)
+    ref = _broadcast_layout_reference(tensors)
     if ref is None:
         return torch.broadcast_tensors(*tensors)
     n = len(ref)
@@ -1185,6 +1224,9 @@ def broadcast_tensors(*tensors):
                 "torch.broadcast_tensors requires all NestedTensor operands to share the batch "
                 f"length, but got {len(t)} and {n}."
             )
+
+    if n == 0 and all(isinstance(tensor, NestedTensor) for tensor in tensors):
+        return _broadcast_nested_tensors_packed(tensors)
 
     packed = _broadcast_same_structure_tensors_packed(tensors)
     if packed is None:
@@ -1212,7 +1254,8 @@ def broadcast_tensors(*tensors):
     outputs = []
     for output_index, tensor in enumerate(tensors):
         meta_source = tensor if isinstance(tensor, NestedTensor) else ref
-        outputs.append(type(meta_source)([per_element[i][output_index] for i in range(n)], **meta_source._meta()))
+        metadata = dict(meta_source._meta(), batch_first=ref.batch_first)
+        outputs.append(type(meta_source)([per_element[i][output_index] for i in range(n)], **metadata))
     return tuple(outputs)
 
 

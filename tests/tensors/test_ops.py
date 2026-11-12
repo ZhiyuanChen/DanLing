@@ -333,6 +333,100 @@ class TestAmbiguousOperands:
 
 class TestBroadcastTensors:
 
+    @pytest.mark.parametrize("prefix", [False, True])
+    @pytest.mark.parametrize("extents", [(2, 1), (0, 1), (1, 0)])
+    def test_empty_owner_layout(self, device, prefix, extents):
+        left_shape = (*((2,) if prefix else ()), extents[0], 1)
+        right_shape = (extents[1], 3)
+        left = torch.randn(left_shape, device=device, dtype=torch.float64, requires_grad=True)
+        right = torch.randn(right_shape, device=device, dtype=torch.float64, requires_grad=True)
+        first = NestedTensor([left], ragged_dims=(int(prefix),), batch_first=not prefix)[:0]
+        second = NestedTensor([right], ragged_dims=(0,))[:0]
+        output = torch.broadcast_tensors(first, second)
+        physical_shape = torch.broadcast_shapes(left_shape, right_shape)
+        expected_shape = (*physical_shape[: int(prefix)], 0, *physical_shape[int(prefix) :])
+        for tensor in output:
+            assert tensor.shape == expected_shape
+            assert tensor.batch_first is (not prefix)
+            assert tensor.ragged_dims == (int(prefix),)
+            assert tensor.element_sizes().shape == (0, len(physical_shape))
+            assert tensor.unbind(int(prefix)) == ()
+        gradients = torch.autograd.grad(sum(tensor.transpose(0, 1).sum() for tensor in output), (left, right))
+        torch.testing.assert_close(gradients, (torch.zeros_like(left), torch.zeros_like(right)))
+
+    @pytest.mark.parametrize("prefix", [False, True])
+    @pytest.mark.parametrize("reverse", [False, True])
+    def test_common_owner_layout(self, device, prefix, reverse):
+        left = [
+            torch.randn(*((3,) if prefix else ()), 4, length, 1, device=device, dtype=torch.float64, requires_grad=True)
+            for length in (2, 4)
+        ]
+        right = [torch.randn(4, length, 3, device=device, dtype=torch.float64, requires_grad=True) for length in (2, 4)]
+        references = [part.detach().clone().requires_grad_() for part in (*left, *right)]
+        operands = (
+            NestedTensor(left, ragged_dims=(1, 2) if prefix else (0, 1), batch_first=not prefix),
+            NestedTensor(right, ragged_dims=(1,)),
+        )
+        pairs = zip(references[:2], references[2:])
+        expected = tuple(
+            zip(*(torch.broadcast_tensors(b, a) if reverse else torch.broadcast_tensors(a, b) for a, b in pairs))
+        )
+        output = torch.broadcast_tensors(*(reversed(operands) if reverse else operands))
+        logical_shape = (*((3,) if prefix else ()), 2, 4, 4, 3)
+        actual = []
+        for tensor, parts in zip(output, expected):
+            assert tensor.shape == logical_shape
+            assert tensor.batch_first is (not prefix)
+            values = tensor.unbind(int(prefix))
+            torch.testing.assert_close(values, parts)
+            actual.append(values)
+        weights = tuple(tuple(torch.randn_like(part) for part in parts) for parts in expected)
+        actual_loss = sum(
+            (part * weight).sum() for values, probes in zip(actual, weights) for part, weight in zip(values, probes)
+        )
+        expected_loss = sum(
+            (part * weight).sum() for values, probes in zip(expected, weights) for part, weight in zip(values, probes)
+        )
+        torch.testing.assert_close(
+            torch.autograd.grad(actual_loss, (*left, *right)), torch.autograd.grad(expected_loss, references)
+        )
+
+    @pytest.mark.parametrize("scalar", [False, True])
+    @pytest.mark.parametrize("reverse", [False, True])
+    def test_mixed_owner_layout(self, device, scalar, reverse):
+        left = [
+            torch.randn(() if scalar else (3, length, 1), device=device, dtype=torch.float64, requires_grad=True)
+            for length in (2, 4)
+        ]
+        right = [torch.randn(3, length, 2, device=device, dtype=torch.float64, requires_grad=True) for length in (2, 4)]
+        operands = (
+            NestedTensor(left, ragged_dims=() if scalar else (1,)),
+            NestedTensor(right, ragged_dims=(1,), batch_first=False),
+        )
+        output = torch.broadcast_tensors(*(reversed(operands) if reverse else operands))
+        expected = tuple(
+            zip(
+                *(
+                    torch.broadcast_tensors(b, a) if reverse else torch.broadcast_tensors(a, b)
+                    for a, b in zip(left, right)
+                )
+            )
+        )
+        batch_first = not (scalar or reverse)
+        actual = []
+        for tensor, parts in zip(output, expected):
+            assert tensor.batch_first is batch_first
+            assert tensor.shape == ((2, 3, 4, 2) if batch_first else (3, 2, 4, 2))
+            values = tensor.unbind(0 if batch_first else 1)
+            torch.testing.assert_close(values, parts)
+            actual.append(values)
+        actual_loss = sum(part.square().sum() for values in actual for part in values)
+        expected_loss = sum(part.square().sum() for values in expected for part in values)
+        torch.testing.assert_close(
+            torch.autograd.grad(actual_loss, (*left, *right), retain_graph=True),
+            torch.autograd.grad(expected_loss, (*left, *right)),
+        )
+
     def test_per_sample_operand(self):
         elements = [torch.ones(3, 5), torch.ones(4, 5)]
         operand = torch.arange(10.0).reshape(2, 5)
