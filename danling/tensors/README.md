@@ -154,6 +154,20 @@ Operations on NestedTensor are handled by a **three-tier dispatch system**, orde
 
 **Fallback**: Any aten op without an explicit handler falls back to `per_element_fallback`, which unpacks to individual tensors, applies the op element-by-element, and repacks. Under `torch.compile`, DanLing prefers explicit failure over silently entering those eager-only fallbacks.
 
+`torch.diff` and `Tensor.diff` support eager and dynamic fullgraph execution along
+per-element and batch axes, including single- and multi-ragged layouts, higher orders,
+boolean differences, and dense or nested `prepend`/`append` operands. Each
+sample uses its own valid extent; supplied dense boundary padding is ignored.
+Zero-order differences return an independent copy, following native PyTorch.
+Batch differences broadcast adjacent samples and validate every difference order.
+`out=` writes into a NestedTensor or a padded dense Tensor. Eager execution can
+resize the destination; compiled dense outputs must already have the result's
+shape. Positive-order `out=` follows native PyTorch's autograd restriction,
+while zero-order copies remain differentiable and require an exact dtype match.
+Compiled NestedTensor outputs passed through `out=` are explicitly rejected:
+Inductor's wrapper mutation path does not update packed child version counters,
+which would let backward silently use modified values through existing aliases.
+
 `F.conv1d` has a packed training path for `(channels, length_i)` elements
 with a static channel axis and `ragged_dims=(1,)`. It supports ordinary,
 grouped and depthwise convolution, stride and dilation, integer padding,

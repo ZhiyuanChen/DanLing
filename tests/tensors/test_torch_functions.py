@@ -33,6 +33,466 @@ from tests.tensors.utils import assert_close, low_precision_cuda_tolerances, nes
 NT = NestedTensor
 
 
+class TestDiff:
+    @pytest.mark.parametrize("order", [0, 1, 2, 6])
+    @pytest.mark.parametrize("boundaries", [False, True])
+    def test_ragged_values_and_gradients(self, order, boundaries):
+        parts = [torch.randn(length, dtype=torch.float64, requires_grad=True) for length in (3, 5)]
+        refs = [part.detach().clone().requires_grad_() for part in parts]
+        before = torch.randn(2, 1, dtype=torch.float64, requires_grad=True) if boundaries else None
+        after = torch.randn(2, 1, dtype=torch.float64, requires_grad=True) if boundaries else None
+        ref_before = before.detach().clone().requires_grad_() if boundaries else None
+        ref_after = after.detach().clone().requires_grad_() if boundaries else None
+        result = torch.diff(NT(parts, ragged_dims=(0,)), n=order, prepend=before, append=after)
+        expected = [
+            torch.diff(
+                part,
+                n=order,
+                prepend=ref_before[i] if boundaries else None,
+                append=ref_after[i] if boundaries else None,
+            )
+            for i, part in enumerate(refs)
+        ]
+        torch.testing.assert_close(result.unbind(), expected)
+        variables = (*parts, before, after) if boundaries and order else tuple(parts)
+        references = (*refs, ref_before, ref_after) if boundaries and order else tuple(refs)
+        actual_grad = torch.autograd.grad(sum(part.square().sum() for part in result.unbind()), variables)
+        expected_grad = torch.autograd.grad(sum(part.square().sum() for part in expected), references)
+        torch.testing.assert_close(actual_grad, expected_grad)
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    def test_boolean_and_static_axis_compilation(self, device, backend):
+        torch.compiler.reset()
+        parts = [
+            torch.tensor([[True, False, True], [False, False, True]], device=device),
+            torch.tensor([[True, True, False]], device=device),
+        ]
+        source = NT(parts, ragged_dims=(0,))
+        run = torch.compile(lambda value: value.diff(dim=-1), backend=backend, dynamic=True, fullgraph=True)
+        torch.testing.assert_close(run(source).unbind(), [part.diff(dim=-1) for part in parts])
+
+    def test_nonleading_batch_and_argument_errors(self):
+        parts = [torch.randn(length, 3, dtype=torch.float64, requires_grad=True) for length in (3, 5)]
+        source = NT(parts, ragged_dims=(0,), batch_first=False)
+        result = torch.diff(input=source, dim=0)
+        expected = [part.diff(dim=0) for part in parts]
+        torch.testing.assert_close(result.unbind(dim=1), expected)
+        actual_grad = torch.autograd.grad(sum(x.square().sum() for x in result.unbind(dim=1)), parts, retain_graph=True)
+        expected_grad = torch.autograd.grad(sum(x.square().sum() for x in expected), parts)
+        torch.testing.assert_close(actual_grad, expected_grad)
+        unchanged = torch.diff(input=source, n=0, dim=100)
+        torch.testing.assert_close(unchanged.unbind(dim=1), parts)
+        with torch.no_grad():
+            unchanged.add_(1)
+        torch.testing.assert_close(source.unbind(dim=1), parts)
+        for boundary in ("prepend", "append"):
+            invalid = {boundary: torch.tensor(0.0, dtype=source.dtype)}
+            with pytest.raises(IndexError):
+                torch.diff(input=source, n=0, dim=100, **invalid)
+            with pytest.raises(RuntimeError):
+                torch.diff(input=source, n=0, dim=0, **invalid)
+        with pytest.raises(IndexError):
+            torch.diff(input=source, dim=-4)
+        with pytest.raises(RuntimeError, match="order must be non-negative"):
+            torch.diff(input=source, n=-1)
+        torch.testing.assert_close(torch.diff(input=source, dim=0, out=None).unbind(dim=1), expected)
+        with pytest.raises(RuntimeError, match="automatic differentiation"):
+            torch.diff(input=source, dim=0, out=NT([torch.empty_like(part) for part in expected], batch_first=False))
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("order", [1, 6])
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    def test_static_axis_gradients(self, device, batch_first, order, backend):
+        torch.compiler.reset()
+        parts = [torch.randn(length, 4, device=device, dtype=torch.float64, requires_grad=True) for length in (3, 5)]
+        source = NT(parts, ragged_dims=(0,), batch_first=batch_first)
+        run = torch.compile(
+            lambda value: torch.diff(input=value, dim=-1, n=order), backend=backend, dynamic=True, fullgraph=True
+        )
+        output = run(source).unbind(dim=0 if batch_first else 1)
+        expected = [part.diff(dim=-1, n=order) for part in parts]
+        torch.testing.assert_close(output, expected)
+        actual_grad = torch.autograd.grad(sum(x.square().sum() for x in output), parts, retain_graph=True)
+        expected_grad = torch.autograd.grad(sum(x.square().sum() for x in expected), parts)
+        torch.testing.assert_close(actual_grad, expected_grad)
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "sequence",
+            "batch-second",
+            "permuted",
+            "dense-boundaries",
+            "nt-boundaries",
+            "empty-features",
+            "varying-features",
+        ],
+    )
+    def test_dynamic_ragged(self, device, backend, case):
+        torch.compiler.reset()
+        multi = case in {"permuted", "dense-boundaries", "nt-boundaries"}
+        batch_first = case != "batch-second"
+        ragged = (1, 0) if case == "permuted" else (0, 1) if multi else (0,)
+        physical_dim = 1 if case in {"permuted", "varying-features"} else 0
+        dim = physical_dim + 1 if batch_first else 0
+        order = 6 if case == "batch-second" else 2
+        has_boundaries = case in {
+            "batch-second",
+            "dense-boundaries",
+            "nt-boundaries",
+            "empty-features",
+            "varying-features",
+        }
+
+        def difference(value, before, after):
+            return torch.diff(value, n=order, dim=dim, prepend=before, append=after)
+
+        run = torch.compile(difference, backend=backend, dynamic=True, fullgraph=True)
+        for lengths in ((3, 5), (0, 2)):
+            columns = (0, 0) if case == "empty-features" else (2, 4) if multi else (3, 3)
+            parts = [
+                torch.randn(n, c, device=device, dtype=torch.float64, requires_grad=True)
+                for n, c in zip(lengths, columns)
+            ]
+            references = [value.detach().clone().requires_grad_() for value in parts]
+            before = after = None
+            ref_before = ref_after = None
+            if case == "varying-features":
+                bp = [
+                    torch.randn(n, p, device=device, dtype=torch.float64, requires_grad=True)
+                    for n, p in zip(lengths, (1, 2))
+                ]
+                ref_before = [value.detach().clone().requires_grad_() for value in bp]
+                before = NT(bp)
+                after = torch.randn(2, max(lengths), 1, device=device, dtype=torch.float64, requires_grad=True)
+                ra = after.detach().clone().requires_grad_()
+                ref_after = [ra[i, :n] for i, n in enumerate(lengths)]
+                variables, reference_variables = (*parts, *bp, after), (*references, *ref_before, ra)
+            elif case == "nt-boundaries":
+                bp = [
+                    torch.randn(n, c, device=device, dtype=torch.float64, requires_grad=True)
+                    for n, c in zip((1, 2), columns)
+                ]
+                ap = [torch.randn(1, c, device=device, dtype=torch.float64, requires_grad=True) for c in columns]
+                ref_before = [value.detach().clone().requires_grad_() for value in bp]
+                ref_after = [value.detach().clone().requires_grad_() for value in ap]
+                before, after = NT(bp, ragged_dims=(1, 0)), NT(ap)
+                variables = (*parts, *bp, *ap)
+                reference_variables = (*references, *ref_before, *ref_after)
+            elif has_boundaries:
+                shape = (2, 1, max(columns)) if batch_first else (1, 2, max(columns))
+                before = torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True)
+                after = torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True)
+                rb = before.detach().clone().requires_grad_()
+                ra = after.detach().clone().requires_grad_()
+                ref_before = [rb[i, :, :c] if batch_first else rb[:, i, :c] for i, c in enumerate(columns)]
+                ref_after = [ra[i, :, :c] if batch_first else ra[:, i, :c] for i, c in enumerate(columns)]
+                variables, reference_variables = (*parts, before, after), (*references, rb, ra)
+            else:
+                variables, reference_variables = tuple(parts), tuple(references)
+            output = run(NT(parts, ragged_dims=ragged, batch_first=batch_first), before, after)
+            expected = [
+                torch.diff(
+                    value,
+                    n=order,
+                    dim=physical_dim,
+                    prepend=ref_before[i] if ref_before is not None else None,
+                    append=ref_after[i] if ref_after is not None else None,
+                )
+                for i, value in enumerate(references)
+            ]
+            torch.testing.assert_close(output.unbind(0 if batch_first else 1), expected)
+            torch.testing.assert_close(
+                torch.autograd.grad(output.concat.square().sum(), variables),
+                torch.autograd.grad(sum(value.square().sum() for value in expected), reference_variables),
+            )
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("dtype", [torch.bool, torch.uint8, torch.float64, torch.complex64])
+    def test_ragged_dtypes(self, device, backend, dtype):
+        torch.compiler.reset()
+        differentiable = dtype.is_floating_point or dtype.is_complex
+        parts = [
+            (
+                torch.randn(n, 3, device=device, dtype=dtype, requires_grad=True)
+                if differentiable
+                else (torch.arange(n * 3, device=device).reshape(n, 3).square() * 37).to(dtype)
+            )
+            for n in (1, 4)
+        ]
+        if dtype == torch.float64:
+            with torch.no_grad():
+                parts[0].fill_(float("nan"))
+        refs = [value.detach().clone().requires_grad_(differentiable) for value in parts]
+        run = torch.compile(lambda value: value.diff(n=2, dim=1), backend=backend, dynamic=True, fullgraph=True)
+        output = run(NT(parts, ragged_dims=(0,)))
+        expected = [value.diff(n=2, dim=0) for value in refs]
+        torch.testing.assert_close(output.unbind(), expected)
+        if differentiable:
+            torch.testing.assert_close(
+                torch.autograd.grad(output.concat.abs().square().sum(), parts),
+                torch.autograd.grad(sum(value.abs().square().sum() for value in expected), refs),
+            )
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
+    @pytest.mark.parametrize(
+        "case", ["sequence", "multi", "batch-second", "uniform", "boundaries", "mixed", "zero-features", "empty"]
+    )
+    def test_batch(self, device, backend, case):
+        torch.compiler.reset()
+        batch_first = case != "batch-second"
+        order = 2 if case in {"multi", "boundaries", "mixed", "empty"} else 1
+        axis = 0 if batch_first else 1
+
+        def difference(value, before, after):
+            return value.diff(n=order, dim=axis, prepend=before, append=after)
+
+        run = (
+            difference if backend is None else torch.compile(difference, backend=backend, dynamic=True, fullgraph=True)
+        )
+        for lengths in ((2, 1, 3), (0, 1, 0, 1)):
+            if case == "multi":
+                shapes = [(2, 1, 3), (1, 3, 3), (2, 1, 3)] if len(lengths) == 3 else [(3, 1, 3), (1, 2, 3)] * 2
+                ragged = (1, 0)
+            else:
+                if case in {"boundaries", "mixed"}:
+                    lengths = (1, 3, 1) if len(lengths) == 3 else (1, 2, 1, 2)
+                elif case == "uniform":
+                    lengths = (3,) * len(lengths)
+                elif case == "empty":
+                    lengths = (3,)
+                shapes = [(n, 0 if case == "zero-features" else 3) for n in lengths]
+                ragged = () if case == "uniform" else (0,)
+            dtype = torch.bfloat16 if case == "mixed" else torch.float64
+            parts = [torch.randn(shape, device=device, dtype=dtype, requires_grad=True) for shape in shapes]
+            refs = [part.detach().clone().requires_grad_() for part in parts]
+            source = NT(parts, ragged_dims=ragged, batch_first=batch_first)
+            variables, references = list(parts), list(refs)
+            before = after = None
+            expected = refs
+            if case in {"boundaries", "mixed"}:
+                prefix = torch.randn(max(lengths), 3, device=device, dtype=torch.float64, requires_grad=True)
+                suffix = torch.randn(
+                    1,
+                    max(lengths),
+                    3,
+                    device=device,
+                    dtype=torch.float32 if case == "mixed" else torch.float64,
+                    requires_grad=True,
+                )
+                rb, ra = (value.detach().clone().requires_grad_() for value in (prefix, suffix))
+                before, after = NT([prefix], ragged_dims=(0,)), suffix
+                variables.extend((prefix, suffix))
+                references.extend((rb, ra))
+                expected = [value.to(torch.float64) for value in [rb, *refs, ra[0]]]
+            if case == "empty":
+                source, expected = source[:0], []
+            for _ in range(order):
+                expected = [right - left for left, right in zip(expected, expected[1:])]
+            output = run(source, before, after)
+            torch.testing.assert_close(output.unbind(axis), expected)
+            loss = (
+                sum(value.square().sum() for value in expected) if expected else sum(value[:0].sum() for value in refs)
+            )
+            actual_grad = torch.autograd.grad(output.concat.square().sum(), variables)
+            expected_grad = torch.autograd.grad(loss, references)
+            for actual, expected in zip(actual_grad, expected_grad):
+                options = {"rtol": 0, "atol": 0} if actual.dtype == torch.bfloat16 else {}
+                torch.testing.assert_close(actual, expected, **options)
+
+    @pytest.mark.parametrize("order", [1, 2, 4])
+    def test_batch_errors(self, device, order):
+        source = NT([torch.ones(n, device=device) for n in (2, 3)], ragged_dims=(0,))
+        with pytest.raises(RuntimeError, match="broadcastable"):
+            source.diff(n=order, dim=0)
+
+    def test_positions(self, device):
+        torch.compiler.reset()
+        parts = [torch.arange(n, device=device) for n in (3, 5)]
+        before = torch.full((2, 1), -1, device=device, dtype=torch.long)
+        run = torch.compile(
+            lambda value, prefix: torch.diff(value, dim=-1, prepend=prefix),
+            backend="inductor",
+            dynamic=True,
+            fullgraph=True,
+        )
+        output = run(NT(parts, ragged_dims=(0,)), before)
+        torch.testing.assert_close(output.unbind(), [torch.ones_like(value) for value in parts])
+
+    @pytest.mark.parametrize(
+        "layout", ["nested", "empty", "resize", "dense", "dense-empty", "dense-resize", "strided", "self", "rank"]
+    )
+    def test_out(self, device, layout):
+        parts = [torch.randn(n, 4, device=device, dtype=torch.float64) for n in (3, 5)]
+        source = NT(parts, ragged_dims=(0,))
+        expected = NT([part.diff(dim=-1) for part in parts], ragged_dims=(0,))
+        if layout == "self":
+            out = source
+        elif layout == "rank":
+            out = NT([torch.zeros(1, 2, n, device=device, dtype=source.dtype) for n in (3, 5)], ragged_dims=(2,))
+        elif layout in {"nested", "empty", "resize"}:
+            lengths = (3, 5) if layout == "nested" else (0, 0) if layout == "empty" else (1, 2)
+            out = NT([torch.zeros(n, 3, device=device, dtype=source.dtype) for n in lengths], ragged_dims=(0,))
+        elif layout == "dense-empty":
+            out = torch.empty(0, device=device, dtype=source.dtype)
+        elif layout == "dense-resize":
+            out = torch.empty(1, device=device, dtype=source.dtype)
+        elif layout == "strided":
+            out = torch.empty(3, 5, 2, device=device, dtype=source.dtype).permute(2, 1, 0)
+        else:
+            out = torch.empty(2, 5, 3, device=device, dtype=source.dtype)
+        nested = isinstance(out, NT)
+        alias = out.concat.detach().view(-1) if nested else out.detach()
+        strides = out.stride() if not nested and layout == "strided" else None
+        assert torch.diff(source, dim=-1, out=out) is out
+        if nested:
+            torch.testing.assert_close(out.unbind(), expected.unbind())
+            retained = min(alias.numel(), out.concat.numel())
+            torch.testing.assert_close(alias[:retained], out.concat.reshape(-1)[:retained])
+            if layout == "rank":
+                torch.compiler.reset()
+                run = torch.compile(lambda value: value + 1, backend="aot_eager", dynamic=True, fullgraph=True)
+                torch.testing.assert_close(run(out).unbind(), [part + 1 for part in expected.unbind()])
+        else:
+            torch.testing.assert_close(out, expected.tensor)
+            if strides is not None:
+                assert out.stride() == strides
+                torch.testing.assert_close(alias, expected.tensor)
+
+    @pytest.mark.parametrize(
+        "order,dtype,accepted", [(1, torch.float32, True), (1, torch.int64, False), (0, torch.float32, False)]
+    )
+    def test_out_dtype(self, device, order, dtype, accepted):
+        parts = [torch.randn(n, 4, device=device, dtype=torch.float64) for n in (3, 5)]
+        source = NT(parts, ragged_dims=(0,))
+        out = NT([torch.empty(n, 4 - order, device=device, dtype=dtype) for n in (3, 5)], ragged_dims=(0,))
+        if not accepted:
+            with pytest.raises(RuntimeError):
+                torch.diff(source, n=order, dim=-1, out=out)
+            return
+        assert torch.diff(source, n=order, dim=-1, out=out) is out
+        torch.testing.assert_close(out.unbind(), [part.diff(n=order, dim=-1).to(dtype) for part in parts])
+
+    @pytest.mark.parametrize("case", ["input", "boundary", "out", "no_grad", "no_grad_resize", "n0", "n0_resize"])
+    def test_out_grad(self, device, case):
+        order = 0 if case.startswith("n0") else 1
+        parts = [
+            torch.randn(
+                n,
+                4,
+                device=device,
+                dtype=torch.float64,
+                requires_grad=case in {"input", "no_grad", "no_grad_resize", "n0", "n0_resize"},
+            )
+            for n in (3, 5)
+        ]
+        source = NT(parts, ragged_dims=(0,))
+        before = (
+            torch.randn(2, 1, 4, device=device, dtype=source.dtype, requires_grad=True) if case == "boundary" else None
+        )
+        expected = [
+            part.detach().diff(n=order, dim=0, prepend=before[i].detach() if before is not None else None)
+            for i, part in enumerate(parts)
+        ]
+        out_parts = [
+            torch.randn_like(part, requires_grad=case in {"out", "no_grad", "no_grad_resize", "n0", "n0_resize"})
+            for part in (parts if case == "no_grad_resize" else expected[::-1] if case == "n0_resize" else expected)
+        ]
+        out = NT(out_parts, ragged_dims=(0,)).sin()
+        if case == "n0_resize":
+            previous = [part.detach().clone() for part in out.unbind()]
+            with pytest.raises(RuntimeError, match="resize"):
+                torch.diff(source, n=order, dim=1, out=out)
+            torch.testing.assert_close(out.unbind(), previous)
+            return
+        if case in {"input", "boundary", "out"}:
+            with pytest.raises(RuntimeError):
+                torch.diff(source, n=order, dim=1, prepend=before, out=out)
+            return
+        with torch.set_grad_enabled(not case.startswith("no_grad")):
+            assert torch.diff(source, n=order, dim=1, out=out) is out
+        torch.testing.assert_close(out.unbind(), expected)
+        if order == 0:
+            actual = torch.autograd.grad(out.concat.sum(), (*parts, *out_parts))
+            torch.testing.assert_close(
+                actual,
+                (*[torch.ones_like(part) for part in parts], *[torch.zeros_like(part) for part in out_parts]),
+            )
+
+    @pytest.mark.parametrize("order", [0, 1])
+    @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
+    def test_out_saved(self, device, order, backend):
+        torch.compiler.reset()
+        parts = [torch.randn(n, 4, device=device, dtype=torch.float64) for n in (3, 5)]
+        if backend is None:
+            leaves = [torch.randn(n, 4 - order, device=device, dtype=torch.float64, requires_grad=True) for n in (3, 5)]
+            out = NT(leaves, ragged_dims=(0,)).sin()
+            values = out.concat
+        else:
+            leaf = torch.randn(2, 5, 4 - order, device=device, dtype=torch.float64, requires_grad=True)
+            leaves = [leaf]
+            out = leaf.sin()
+            values = out
+        saved = values.square().sum()
+        alias = values.detach().requires_grad_()
+        alias_loss = alias.square().sum()
+
+        def difference(value, target):
+            return torch.diff(value, n=order, dim=-1, out=target)
+
+        run = (
+            difference if backend is None else torch.compile(difference, backend=backend, dynamic=True, fullgraph=True)
+        )
+        with torch.no_grad():
+            assert run(NT(parts, ragged_dims=(0,)), out) is out
+        with pytest.raises(RuntimeError, match="modified"):
+            torch.autograd.grad(saved, leaves)
+        with pytest.raises(RuntimeError, match="modified"):
+            torch.autograd.grad(alias_loss, alias)
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("dense", [False, True])
+    @pytest.mark.parametrize("axis,order", [(-1, 0), (-1, 1), (1, 1), (0, 1)])
+    def test_out_compile(self, device, backend, dense, axis, order):
+        torch.compiler.reset()
+        run = torch.compile(
+            lambda value, out: torch.diff(value, n=order, dim=axis, out=out),
+            backend=backend,
+            dynamic=True,
+            fullgraph=True,
+        )
+        for lengths in ((1, 5), (1, 4)):
+            parts = [
+                torch.randn(n, 4, device=device, dtype=torch.float64, requires_grad=dense and order == 0)
+                for n in lengths
+            ]
+            expected = NT(
+                (
+                    [parts[1] - parts[0]]
+                    if axis == 0
+                    else [part.diff(n=order, dim=0 if axis == 1 else axis) for part in parts]
+                ),
+                ragged_dims=(0,),
+            )
+            out = (
+                torch.empty_like(expected.tensor)
+                if dense
+                else NT([torch.empty_like(part) for part in expected.unbind()], ragged_dims=(0,))
+            )
+            if not dense:
+                with pytest.raises(torch._dynamo.exc.Unsupported, match="packed alias"):
+                    run(NT(parts, ragged_dims=(0,)), out)
+                continue
+            assert run(NT(parts, ragged_dims=(0,)), out) is out
+            torch.testing.assert_close(out, expected.tensor)
+            if order == 0:
+                torch.testing.assert_close(
+                    torch.autograd.grad(out.square().sum(), parts),
+                    torch.autograd.grad(sum(part.square().sum() for part in parts), parts),
+                )
+
+
 _BOOLEAN_REDUCTION_CASES = [
     pytest.param(((2, 3), (4, 3)), (0,), 1, 0, "any", False, id="leading-ragged-any"),
     pytest.param(((2, 3), (4, 3)), (0,), 2, 1, "all", False, id="single-static-all"),
