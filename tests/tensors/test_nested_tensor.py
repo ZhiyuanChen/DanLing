@@ -3781,6 +3781,35 @@ class TestStatePreservation:
 
 class TestTensorMaskProperties:
 
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    def test_returned_padding(self, device, backend):
+        torch.compiler.reset()
+        run = torch.compile(lambda value: value.sin(), backend=backend, fullgraph=True, dynamic=True)
+        for lengths in ((3, 5), (0, 4), (1, 0), (0, 0), ()):
+            values = torch.randn(sum(lengths), 3, device=device, dtype=torch.float64, requires_grad=True)
+            references = values.detach().clone().requires_grad_()
+            source = NT(values.split(lengths or (0,)), ragged_dims=(0,), padding_value=-3)
+            if not lengths:
+                source = source[:0]
+            width = max(lengths, default=0)
+            expected = (
+                torch.stack(
+                    [
+                        F.pad(part.sin(), (0, 0, 0, width - length), value=-3)
+                        for part, length in zip(references.split(lengths), lengths)
+                    ]
+                )
+                if lengths
+                else references.reshape(0, 0, 3)
+            )
+            actual = run(source).tensor
+            assert_close(actual, expected)
+            tangent = torch.randn_like(actual)
+            assert_close(
+                torch.autograd.grad(actual, values, tangent)[0],
+                torch.autograd.grad(expected, references, tangent)[0],
+            )
+
     def test_tensor_mask_does_not_squeeze_last_dim(self):
         nt = NestedTensor([torch.tensor([1]), torch.tensor([2])])
         tensor, mask = nt.tensor_mask

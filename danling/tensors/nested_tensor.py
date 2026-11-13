@@ -561,7 +561,7 @@ class NestedTensor(torch.Tensor):
         # per-element Python shape caches stay off it in eager exactly as under compile.
         # They still validate this construction from user tensors below.
         # Standalone FakeTensor execution keeps them: fake values leave no other source of sizes.
-        keep_python_metadata = ragged_offsets is None or _is_fake_tensor(values)
+        keep_python_metadata = not resolved_ragged_dims or ragged_offsets is None or _is_fake_tensor(values)
         needs_bridge = _needs_packed_bridge(values)
         cls._validate_packed_metadata(
             values,
@@ -769,7 +769,7 @@ class NestedTensor(torch.Tensor):
         ragged_dims: tuple[int, ...] | None,
     ) -> bool:
         r"""Return whether tensor metadata fully encodes an explicit packed-prefix layout."""
-        if not ragged_dims or permutation is None:
+        if ragged_dims is None or permutation is None:
             return False
         ragged_rank = len(ragged_dims)
         return tuple(permutation[:ragged_rank]) == tuple(ragged_dims)
@@ -819,6 +819,10 @@ class NestedTensor(torch.Tensor):
             return None
         assert ragged_dims is not None
         ragged_rank = len(ragged_dims)
+        if ragged_rank == 0:
+            if ragged_offsets:
+                raise ValueError("Uniform layouts do not have ragged offsets")
+            return ()
         if ragged_rank == 1:
             if ragged_offsets is not None:
                 if len(ragged_offsets) != 1:
@@ -1386,6 +1390,8 @@ class NestedTensor(torch.Tensor):
         deltas = offsets[1:] - offsets[:-1]
         if bool((deltas < 0).any()):
             raise ValueError("offsets must be monotonically non-decreasing")
+        if not normalized_ragged_dims and bool((deltas != 1).any()):
+            raise ValueError("Uniform packed layouts require one row per batch element")
         if packed_sizes is not None:
             delta_sizes = tuple(int(size) for size in deltas.tolist())
             normalized_packed_sizes = tuple(int(size) for size in packed_sizes)
@@ -1398,7 +1404,7 @@ class NestedTensor(torch.Tensor):
                 f"offsets[-1] must equal packed values length, got offsets[-1]={int(offsets[-1].item())} "
                 f"and values.shape[0]={int(values.shape[0])}"
             )
-        if ragged_offsets is not None:
+        if ragged_offsets is not None and normalized_ragged_dims:
             expected_ragged_offsets = cls._build_explicit_ragged_offsets(
                 shape_tensor,
                 normalized_ragged_dims,
@@ -1874,7 +1880,7 @@ class NestedTensor(torch.Tensor):
         stored_element_shapes: tuple[tuple[int, ...], ...] | None = element_shapes
         if resolved_ragged_offsets is not None:
             # Standalone FakeTensor execution keeps them: fake values leave no other source of sizes.
-            if not compiling and not _is_fake_tensor(values):
+            if resolved_ragged_dims and not compiling and not _is_fake_tensor(values):
                 stored_packed_sizes = None
                 stored_element_shapes = None
         elif compiling and physical_rank > 0 and (packed_sizes is None or element_shapes is None):
@@ -3334,28 +3340,18 @@ class NestedTensor(torch.Tensor):
         _check_execution_guard(_ExecutionGuardKind.PADDED_MATERIALIZATION, "NestedTensor._materialize_batch_leading")
         logical_shape = self._logical_shape
         batch_size = len(self)
-        if batch_size == 0:
-            if self.batch_first:
-                return torch.empty(logical_shape, dtype=self.concat.dtype, device=self.device)
-            if len(logical_shape) <= 1:
-                return torch.empty((0,), dtype=self.concat.dtype, device=self.device)
-            non_batch = list(logical_shape)
-            non_batch.pop(1)
-            return torch.empty((0, *non_batch), dtype=self.concat.dtype, device=self.device)
-
         if self._physical_shape.size(1) == 0:
             return self.concat.reshape((batch_size,))
 
         tensor_shape = list(logical_shape)
         tensor_shape.pop(0 if self.batch_first else 1)
         batch_leading = self.concat.new_full((batch_size, *tensor_shape), fill_value)
-        if self.concat.size(0) > 0:
-            # Advanced indices leave static dimensions in physical axis order;
-            # packed storage may retain a different order after a permutation.
-            static_order = tuple(sorted(self._static_dims))
-            values_order = (0, *(1 + self._static_dims.index(dim) for dim in static_order))
-            values = self.concat.permute(values_order)
-            batch_leading[self._packed_dense_index(device=batch_leading.device)] = values
+        # Empty index assignments preserve the same value and gradient contract
+        # without a Python guard on a data-derived packed extent.
+        static_order = tuple(sorted(self._static_dims))
+        values_order = (0, *(1 + self._static_dims.index(dim) for dim in static_order))
+        values = self.concat.permute(values_order)
+        batch_leading[self._packed_dense_index(device=batch_leading.device)] = values
         return batch_leading
 
     def _original_shapes(self) -> tuple[torch.Size, ...]:
