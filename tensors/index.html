@@ -1631,6 +1631,19 @@ beyond the currently supported positions zero and one.</p>
 <p><strong>Level 2 — Torch function dispatch</strong> (<code>torch_functions.py</code>): Intercepts <code>torch.*</code> calls via <code>__torch_function__</code>. Handles ops that need dimension translation (e.g., <code>torch.flatten</code>, <code>torch.softmax</code> with non-default dim), multi-operand dispatch (e.g., <code>torch.einsum</code>), per-element matrix ops (e.g., <code>torch.det</code>, <code>torch.linalg.svd</code>), and fused attention (<code>torch._native_multi_head_attention</code>, <code>torch._transformer_encoder_layer_fwd</code>).</p>
 <p><strong>Level 3 — NN function dispatch</strong> (<code>nn_functions.py</code>): Also via <code>__torch_function__</code>, handles <code>torch.nn.functional.*</code> ops including convolutions, pooling, normalization, attention, embedding, activations (F.relu, F.gelu, F.silu, &hellip;), and loss functions. Transformer-hot ops use packed fast paths; supported inplace activations update the packed values and invalidate materialized views, subject to ordinary autograd leaf/view restrictions.</p>
 <p><strong>Fallback</strong>: Any aten op without an explicit handler falls back to <code>per_element_fallback</code>, which unpacks to individual tensors, applies the op element-by-element, and repacks. Under <code>torch.compile</code>, DanLing prefers explicit failure over silently entering those eager-only fallbacks.</p>
+<p><code>torch.diff</code> and <code>Tensor.diff</code> support eager and dynamic fullgraph execution along
+per-element and batch axes, including single- and multi-ragged layouts, higher orders,
+boolean differences, and dense or nested <code>prepend</code>/<code>append</code> operands. Each
+sample uses its own valid extent; supplied dense boundary padding is ignored.
+Zero-order differences return an independent copy, following native PyTorch.
+Batch differences broadcast adjacent samples and validate every difference order.
+<code>out=</code> writes into a NestedTensor or a padded dense Tensor. Eager execution can
+resize the destination; compiled dense outputs must already have the result&rsquo;s
+shape. Positive-order <code>out=</code> follows native PyTorch&rsquo;s autograd restriction,
+while zero-order copies remain differentiable and require an exact dtype match.
+Compiled NestedTensor outputs passed through <code>out=</code> are explicitly rejected:
+Inductor&rsquo;s wrapper mutation path does not update packed child version counters,
+which would let backward silently use modified values through existing aliases.</p>
 <p><code>F.conv1d</code> has a packed training path for <code>(channels, length_i)</code> elements
 with a static channel axis and <code>ragged_dims=(1,)</code>. It supports ordinary,
 grouped and depthwise convolution, stride and dilation, integer padding,
