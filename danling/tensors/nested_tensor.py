@@ -2501,6 +2501,53 @@ class NestedTensor(torch.Tensor):
         ):
             _PackedLikeAutograd.apply(self._packed_values, _PackedStructureReference(self, reuse_wrapper=True))
 
+    def _resize_output_like(self, result: Self, *, allow_autograd_resize: bool) -> None:
+        r"""Prepare an output's geometry without replacing its storage or copying values.
+
+        The caller validates the public operation's dtype, device, and autograd
+        contract, then finishes through native ``copy_`` so both wrapper and
+        packed aliases observe its version update.
+        """
+        if _is_compiling():
+            _compile_unsupported("NestedTensor out resize", "changing output metadata is eager-only")
+
+        values = self._packed_values
+        packed_shape = result._packed_values.shape
+        logical_shape = result._logical_shape
+        resize_values = values.shape != packed_shape
+        with torch._C.DisableTorchFunctionSubclass():
+            resize_outer = torch.Tensor.size(self) != logical_shape
+            requires_grad = self.requires_grad or values.requires_grad
+        if requires_grad and (not allow_autograd_resize or torch.is_grad_enabled()):
+            raise RuntimeError("cannot resize variables that require grad")
+
+        with torch.no_grad(), torch._C._AutoDispatchBelowAutograd():
+            if resize_values:
+                values.resize_(packed_shape)
+            if resize_outer:
+                with torch._C.DisableTorchFunctionSubclass(), torch._C._DisableTorchDispatch():
+                    torch.Tensor.resize_(self, logical_shape)
+        self._offsets = result._offsets
+        self._physical_shape = result._physical_shape
+        self._logical_shape = logical_shape
+        self._permutation = result._permutation
+        self._ragged_dims = result._ragged_dims
+        self._ragged_dims_explicit = result._ragged_dims_explicit
+        self._batch_first = result.batch_first
+        self._element_shapes = result._element_shapes
+        self._packed_sizes = result._packed_sizes
+        type(self)._install_persistent_ragged_offsets(self, result._persistent_ragged_offsets())
+        self._invalidate_transient_caches()
+        self._view_ops = ()
+        self.__dict__.pop("_compile_max_length_binding", None)
+        binding = vars(result).get("_compile_max_length_binding")
+        if binding is not None:
+            self._max_length_binding = binding
+        with torch._C.DisableTorchFunctionSubclass():
+            self._logical_strides = torch.Tensor.stride(self)
+        self._dynamo_weak_dynamic_indices = set()
+        self._inherit_tensor_backed_dynamic_dims(result)
+
     @property
     def _hierarchical_offsets(self) -> tuple[Tensor, ...]:
         persistent = self._persistent_ragged_offsets()

@@ -43,6 +43,8 @@ from __future__ import annotations
 import builtins
 import contextlib
 import math
+import operator
+import warnings
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
@@ -468,6 +470,528 @@ def _reject_batch_cat_that_ragged_a_shared_static_dim(operands: Sequence) -> Non
                 f"{element_dim} ragged when no operand varies it, but the operands hold it at "
                 f"{sorted(extents)}; got shapes {[tuple(operand.shape) for operand in operands]}."
             )
+
+
+@NestedTensorFuncRegistry.implement(torch.diff, compile_safe=True)
+@NestedTensorFuncRegistry.implement(torch.Tensor.diff, compile_safe=True)
+def diff(
+    input: NestedTensor,
+    n: int = 1,
+    dim: int = -1,
+    prepend: Tensor | None = None,
+    append: Tensor | None = None,
+    *,
+    out: Tensor | None = None,
+):
+    r"""Compute differences using each sample's own extent on the selected axis."""
+    n = operator.index(n)
+    dim = operator.index(dim)
+    if n < 0:
+        raise RuntimeError(f"order must be non-negative but got {n}")
+    if out is not None:
+        if not isinstance(out, Tensor):
+            raise TypeError("diff out must be a Tensor")
+        if _is_compiling():
+            from .nested_tensor import NestedTensor
+
+            if isinstance(out, NestedTensor):
+                _compile_unsupported("diff(out=NestedTensor)", "compiled writes do not preserve packed alias versions")
+        if (
+            n
+            and torch.is_grad_enabled()
+            and any(isinstance(value, Tensor) and value.requires_grad for value in (input, prepend, append, out))
+        ):
+            raise RuntimeError("diff(): functions with out=... arguments don't support automatic differentiation")
+    scope: contextlib.AbstractContextManager[None] = contextlib.nullcontext()
+    if out is not None and _is_compiling():
+        from torch._subclasses.fake_tensor import FakeTensor
+        from torch.utils._python_dispatch import _detect_infra_mode
+
+        if (
+            isinstance(out, FakeTensor)
+            and _detect_infra_mode(torch._C._TorchDispatchModeKey.PROXY) is None
+            and out.fake_mode.shape_env is not None
+        ):
+            # Fake propagation of the public out= call returns only the dense
+            # destination. Temporary packed extents do not cross that boundary;
+            # AOT traces and binds them inside the implementation separately.
+            scope = out.fake_mode.shape_env.ignore_fresh_unbacked_symbols()
+    with scope:
+        result = _diff_result(input, n, dim, prepend, append)
+        return result if out is None else _diff_write_out(out, result, n)
+
+
+def _diff_write_out(out: Tensor, result: NestedTensor, n: int) -> Tensor:
+    from .nested_tensor import NestedTensor
+
+    if out.device != result.device:
+        raise RuntimeError("diff input and out must be on the same device")
+    if (not n and out.dtype != result.dtype) or (n and not torch.can_cast(result.dtype, out.dtype)):
+        raise RuntimeError(f"diff result type {result.dtype} can't be cast to output type {out.dtype}")
+    if isinstance(out, NestedTensor):
+        if not out._has_same_layout(result):
+            if out._packed_values.numel():
+                warnings.warn(
+                    "An output with one or more elements was resized by torch.diff", UserWarning, stacklevel=3
+                )
+            out._resize_output_like(result, allow_autograd_resize=bool(n))
+        for actual, expected in zip(out._packed_values.shape, result._packed_values.shape):
+            torch._check(actual == expected)
+        out.copy_(result)
+        return out
+    values = result.tensor
+    if _is_compiling():
+        if out.dim() != values.dim():
+            _compile_unsupported("diff(out=Tensor)", "compiled outputs require matching shapes")
+        for actual, expected in zip(out.shape, values.shape):
+            torch._check(actual == expected, lambda: "diff out must match the result shape during compilation")
+    elif out.shape != values.shape:
+        if out.numel():
+            warnings.warn("An output with one or more elements was resized by torch.diff", UserWarning, stacklevel=3)
+        if n:
+            with torch._C._AutoDispatchBelowAutograd():
+                out.resize_(values.shape)
+        else:
+            out.resize_(values.shape)
+    return out.copy_(values)
+
+
+def _diff_result(input: NestedTensor, n: int, dim: int, prepend: Tensor | None, append: Tensor | None):
+    boundaries = tuple(value for value in (prepend, append) if value is not None)
+    if n == 0 and not boundaries:
+        return input.clone()
+    if not -input.dim() <= dim < input.dim():
+        raise IndexError(
+            f"Dimension out of range (expected to be in range of [{-input.dim()}, {input.dim() - 1}], but got {dim})"
+        )
+    dim = _normalize_dim(dim, input.dim())
+    for boundary in boundaries:
+        _validate_diff_boundary(input, boundary, dim)
+    if n == 0:
+        return input.clone()
+    if dim != _get_batch_dim(input):
+        from .nested_tensor import NestedTensor
+
+        dim_adj = _translate_dim(input, dim)
+        values_dim = _physical_to_values_dim(input, dim_adj)
+        if values_dim is not None:
+            from .aten_functions import _packed_with_static_tail_from_values
+
+            if any(isinstance(value, NestedTensor) and dim_adj in value._ragged_dims for value in boundaries):
+                source = _diff_promote_axis(input, dim_adj)
+                return _diff_packed_ragged(source, n, dim_adj, prepend, append)
+            parts = tuple(part for part in (prepend, input, append) if part is not None)
+            source = torch.cat(parts, dim=dim) if boundaries else input
+            return _packed_with_static_tail_from_values(source, torch.diff(source.concat, n=n, dim=values_dim))
+        return _diff_packed_ragged(input, n, _translate_dim(input, dim), prepend, append)
+    return _diff_batch(input, n, prepend, append)
+
+
+def _diff_batch_source(input: NestedTensor, prepend: Tensor | None, append: Tensor | None):
+    from .nested_tensor import NestedTensor
+
+    reference = input
+    for boundary in (prepend, append):
+        if isinstance(boundary, NestedTensor):
+            for axis in boundary._ragged_dims:
+                if axis not in reference._ragged_dims:
+                    reference = _diff_promote_axis(reference, axis)
+    operands = tuple(value for value in (prepend, reference, append) if value is not None)
+    tail = tuple(reference.concat.shape[1:])
+    pieces, shapes = [], []
+    first = 0
+    for operand in operands:
+        if isinstance(operand, NestedTensor):
+            shape = operand._physical_shape
+            if math.prod(tail) == 0:
+                values = operand.concat.reshape(-1)
+            elif operand._ragged_dims == reference._ragged_dims:
+                order = (0, *(1 + operand._static_dims.index(axis) for axis in reference._static_dims))
+                values = operand.concat.permute(order)
+            else:
+                values = _diff_operand_rows(reference, operand, 0)[0]
+        else:
+            batch_dim = _get_batch_dim(reference)
+            batch = operand.shape[batch_dim]
+            element = tuple(size for axis, size in enumerate(operand.shape) if axis != batch_dim)
+            shape = reference._physical_shape.new_empty((batch, len(element)))
+            for axis, size in enumerate(element):
+                shape[:, axis] = size
+            values = operand.movedim(batch_dim, 0).permute(0, *(1 + axis for axis in reference._permutation))
+            values = values.reshape(batch * math.prod(element[axis] for axis in reference._ragged_dims), *tail)
+            if math.prod(tail) == 0:
+                values = values.reshape(-1)
+        if isinstance(operand, NestedTensor) and operand._ragged_dims == reference._ragged_dims:
+            offsets = operand._offsets
+        else:
+            counts = shape[:, list(reference._ragged_dims)].prod(dim=1)
+            offsets = F.pad(counts.cumsum(0), (1, 0)).to(dtype=input._offsets.dtype)
+        pieces.append((values, shape, offsets, first))
+        shapes.append(shape)
+        first = first + shape.shape[0]
+    dtype = reference.dtype
+    if len(pieces) > 1:
+        # Preserve native cat promotion, including autocast, without joining
+        # the numerical payloads. Cast once before broadcast-gradient sums.
+        dtype = torch.cat([values.new_empty((0, *values.shape[1:])) for values, _, _, _ in pieces]).dtype
+    pieces = [(values.to(dtype=dtype), shape, offsets, first) for values, shape, offsets, first in pieces]
+    return reference, pieces, shapes[0] if len(shapes) == 1 else torch.cat(shapes, dim=0)
+
+
+def _diff_batch(input: NestedTensor, n: int, prepend: Tensor | None, append: Tensor | None) -> NestedTensor:
+    from .aten_functions import _packed_with_shape, _tensor_backed_ragged_offsets
+    from .nested_tensor import _layout_scalar
+
+    reference, pieces, shape = _diff_batch_source(input, prepend, append)
+    batch_size = shape.shape[0]
+    output_batch = torch.sym_max(batch_size - n, 0)
+    output_shape = shape
+    for _ in range(n):
+        left, right = output_shape[:-1], output_shape[1:]
+        compatible = (left == right) | (left == 1) | (right == 1)
+        torch._assert_async(torch.all(compatible), "diff along the batch axis requires broadcastable adjacent samples")
+        output_shape = torch.where(left == 1, right, left)
+    ragged = reference._ragged_dims
+    counts = output_shape[:, list(ragged)].prod(dim=1)
+    offsets = F.pad(counts.cumsum(0), (1, 0)).to(dtype=input._offsets.dtype)
+    total = _layout_scalar(counts.sum()) if ragged else output_batch
+    torch._check(total >= 0)
+    tail = tuple(reference.concat.shape[1:])
+    if math.prod(tail) == 0:
+        flat = torch.cat([values.reshape(-1) for values, _, _, _ in pieces])
+        result_values = torch.diff(flat, n=n).reshape(total, *tail)
+    else:
+        device = reference.device
+        output_rows = F.pad(counts, (0, 1))
+        owner = torch.repeat_interleave(
+            torch.arange(output_batch + 1, device=device), output_rows.to(device), output_size=total
+        )
+        local = torch.arange(total, device=device) - offsets.to(device).index_select(0, owner)
+        coordinates = _diff_coordinates(F.pad(output_shape, (0, 0, 0, 1), value=1), ragged, owner, local)
+        prepared = []
+        for values, sizes, starts, first in pieces:
+            padded = torch.cat((values, values.new_zeros((1, *tail))), dim=0)
+            prepared.append(
+                (
+                    padded,
+                    values.shape[0],
+                    F.pad(sizes, (0, 0, 0, 1), value=1).to(device),
+                    starts.to(device),
+                    first,
+                    sizes.shape[0],
+                )
+            )
+        terms = []
+        for step in range(n + 1):
+            sample = owner + step
+            term = None
+            for values, rows, sizes, starts, first, batch in prepared:
+                belongs = (sample >= first) & (sample < first + batch)
+                within = torch.where(belongs, sample - first, batch)
+                sample_shape = sizes.index_select(0, within)
+                row = torch.zeros_like(owner)
+                count = torch.ones_like(owner)
+                for axis in ragged:
+                    width = sample_shape[:, axis]
+                    coordinate = torch.minimum(coordinates[axis], (width - 1).clamp_min(0))
+                    row = row * width + coordinate
+                    count = count * width
+                row = starts.index_select(0, within) + row
+                row = torch.where(belongs & (count != 0), row, rows)
+                values_at_rows = values.index_select(0, row)
+                term = (
+                    values_at_rows
+                    if term is None
+                    else torch.where(belongs.reshape(-1, *([1] * len(tail))), values_at_rows, term)
+                )
+            assert term is not None
+            terms.append(term)
+        result_values = torch.diff(torch.stack(terms), n=n, dim=0).squeeze(0)
+    physical_dims = list(reference._max_physical_dims())
+    if ragged:
+        maxima = F.pad(output_shape, (0, 0, 0, 1)).amax(dim=0)
+        empty = output_shape.new_ones((output_batch,)).sum() == 0
+        for axis in ragged:
+            maximum = torch.where(empty, maxima.new_full((), physical_dims[axis]), maxima[axis])
+            physical_dims[axis] = _layout_scalar(maximum)
+            torch._check(physical_dims[axis] >= 0)
+    logical = list(physical_dims)
+    logical.insert(0 if reference.batch_first or not logical else 1, output_batch)
+    splits = _tensor_backed_ragged_offsets(output_shape, ragged, dtype=offsets.dtype) if ragged else ()
+    result = _packed_with_shape(
+        reference,
+        result_values,
+        output_shape,
+        logical,
+        offsets=offsets,
+        permutation=reference._permutation,
+        force_explicit_ragged_dims=ragged,
+        ragged_offsets=splits,
+    )
+    if physical_dims:
+        result._max_length_binding = offsets.new_empty(()).expand(*physical_dims)
+    return result
+
+
+def _diff_promote_axis(input: NestedTensor, dim_adj: int) -> NestedTensor:
+    from .aten_functions import _packed_with_shape
+
+    values = input.concat
+    axis = 1 + input._static_dims.index(dim_adj)
+    order = (0, axis, *(1 + i for i, dim in enumerate(input._static_dims) if dim != dim_adj))
+    size = values.shape[axis]
+    packed = values.permute(order).flatten(0, 1)
+    ragged = (*input._ragged_dims, dim_adj)
+    static = tuple(dim for dim in input._static_dims if dim != dim_adj)
+    previous = input._persistent_ragged_offsets() or ((input._offsets,) if input._ragged_dims else ())
+    last = torch.arange(values.shape[0] + 1, dtype=input._offsets.dtype, device=input._offsets.device) * size
+    return _packed_with_shape(
+        input,
+        packed,
+        input._physical_shape,
+        input._logical_shape,
+        offsets=input._offsets * size,
+        permutation=ragged + static,
+        force_explicit_ragged_dims=ragged,
+        ragged_offsets=(*previous, last),
+    )
+
+
+def _validate_diff_boundary(input: NestedTensor, boundary: Tensor, dim: int) -> None:
+    from .nested_tensor import NestedTensor
+
+    if not isinstance(boundary, Tensor):
+        raise TypeError("diff prepend and append must be Tensors")
+    if boundary.dim() != input.dim():
+        raise RuntimeError("diff expects prepend and append to have the same number of dimensions as input")
+    if isinstance(boundary, NestedTensor) and boundary.batch_first != input.batch_first:
+        raise RuntimeError("diff boundaries require matching batch layouts")
+    if dim == _get_batch_dim(input):
+        if any(boundary.shape[axis] != input.shape[axis] for axis in range(input.dim()) if axis != dim):
+            raise RuntimeError("diff expects matching sizes except in the difference dimension")
+        return
+    if isinstance(boundary, NestedTensor):
+        if len(boundary) != len(input):
+            raise RuntimeError("diff expects matching batch sizes")
+        keep = [axis for axis in range(input._physical_shape.size(1)) if axis != _translate_dim(input, dim)]
+        if not type(input)._meta_tensor_equal(
+            input._physical_shape[:, keep],
+            boundary._physical_shape[:, keep],
+            "diff expects matching sizes except in the difference dimension",
+            runtime_assert=_is_compiling(),
+        ):
+            raise RuntimeError("diff expects matching sizes except in the difference dimension")
+    elif any(boundary.shape[axis] != input.shape[axis] for axis in range(input.dim()) if axis != dim):
+        raise RuntimeError("diff expects matching sizes except in the difference dimension")
+
+
+def _diff_operand_rows(
+    input: NestedTensor, operand: Tensor, dim_adj: int
+) -> tuple[Tensor, Tensor, Tensor, dict[int, Tensor], Tensor | None]:
+    from .nested_tensor import NestedTensor
+
+    device = input.device
+    ragged = input._ragged_dims
+    tail = tuple(input.concat.shape[1:])
+    if isinstance(operand, NestedTensor):
+        shape = operand._physical_shape
+        if operand._ragged_dims == ragged:
+            order = (0, *(1 + operand._static_dims.index(axis) for axis in input._static_dims))
+            values = operand.concat.permute(order)
+            batch, local = operand._packed_batch_local_indices(device=device)
+        else:
+            # A boundary may declare a different packed schema. Normalize its
+            # scalar order, then restore the reference's static feature blocks.
+            flat = operand.concat.reshape(-1)
+            counts = shape.prod(dim=1)
+            offsets = F.pad(counts.cumsum(0), (1, 0)).to(device)
+            scalar_batch = torch.repeat_interleave(
+                torch.arange(len(operand), device=device), counts.to(device), output_size=flat.numel()
+            )
+            scalar_local = torch.arange(flat.numel(), device=device) - offsets.index_select(0, scalar_batch)
+            coordinates = _diff_coordinates(shape, operand._permutation, scalar_batch, scalar_local)
+            positions = _diff_positions(shape, input._permutation, scalar_batch, coordinates)
+            positions = positions + offsets.index_select(0, scalar_batch)
+            values = torch.empty_like(flat).index_copy(0, positions, flat).reshape(-1, *tail)
+            static_count = math.prod(tail)
+            batch = scalar_batch.reshape(values.shape[0], static_count)[:, 0]
+            row_offsets = torch.div(offsets, static_count, rounding_mode="floor")
+            local = torch.arange(values.shape[0], device=device) - row_offsets.index_select(0, batch)
+        coordinates = _diff_coordinates(shape, ragged, batch, local)
+        valid = None
+    else:
+        element_shape = tuple(size for axis, size in enumerate(operand.shape) if axis != _get_batch_dim(input))
+        count = math.prod(element_shape[axis] for axis in ragged)
+        values = operand.movedim(_get_batch_dim(input), 0).permute(0, *(1 + axis for axis in input._permutation))
+        values = values.reshape(len(input) * count, *tail)
+        rows = torch.arange(values.shape[0], device=device)
+        batch = torch.div(rows, torch.sym_max(count, 1), rounding_mode="floor")
+        local = rows - batch * count
+        coordinates = {}
+        for axis in reversed(ragged):
+            width = torch.sym_max(element_shape[axis], 1)
+            coordinates[axis] = local.remainder(width)
+            local = torch.div(local, width, rounding_mode="floor")
+        shape = input._physical_shape.clone()
+        shape[:, dim_adj] = element_shape[dim_adj]
+        valid = None
+        if len(ragged) > 1:
+            sizes = shape.to(device).index_select(0, batch)
+            valid = torch.ones_like(batch, dtype=torch.bool)
+            for axis in ragged:
+                valid = valid & (coordinates[axis] < sizes[:, axis])
+    return values, shape, batch, coordinates, valid
+
+
+def _diff_joined_rows(
+    input: NestedTensor, dim_adj: int, prepend: Tensor | None, append: Tensor | None
+) -> tuple[Tensor, Tensor, Tensor]:
+    r"""Interleave real operand rows, keeping supplied dense padding at the end."""
+    from .nested_tensor import NestedTensor
+
+    operands = tuple(value for value in (prepend, input, append) if value is not None)
+    tail = tuple(input.concat.shape[1:])
+    if math.prod(tail) == 0:
+        lengths = [
+            (
+                value._physical_shape[:, dim_adj]
+                if isinstance(value, NestedTensor)
+                else input._physical_shape.new_full(
+                    (len(input),), value.shape[_logical_dim_for_element_dim(input, dim_adj)]
+                )
+            )
+            for value in operands
+        ]
+        shape = input._physical_shape.clone()
+        shape[:, dim_adj] = builtins.sum(lengths)
+        counts = shape[:, list(input._ragged_dims)].prod(dim=1)
+        offsets = F.pad(counts.cumsum(0), (1, 0)).to(dtype=input._offsets.dtype)
+        values = torch.cat(
+            [value.concat.reshape(-1) if isinstance(value, NestedTensor) else value.reshape(-1) for value in operands]
+        )
+        return values.reshape(0, *tail), shape, offsets
+
+    rows = [_diff_operand_rows(input, value, dim_adj) for value in operands]
+    shape = input._physical_shape.clone()
+    shape[:, dim_adj] = builtins.sum(item[1][:, dim_adj] for item in rows)
+    counts = shape[:, list(input._ragged_dims)].prod(dim=1)
+    offsets = F.pad(counts.cumsum(0), (1, 0)).to(dtype=input._offsets.dtype)
+    offsets_device = offsets.to(input.device)
+    prefix = torch.zeros_like(counts, device=input.device)
+    destinations = []
+    for _values, operand_shape, batch, coordinates, _valid in rows:
+        coordinates[dim_adj] = coordinates[dim_adj] + prefix.index_select(0, batch)
+        positions = _diff_positions(shape, input._ragged_dims, batch, coordinates)
+        destinations.append(offsets_device.index_select(0, batch) + positions)
+        prefix = prefix + operand_shape[:, dim_adj].to(input.device)
+    merged = torch.cat([item[0] for item in rows], dim=0)
+    destination = torch.cat(destinations)
+    if any(item[4] is not None for item in rows):
+        valid = torch.cat([torch.ones_like(item[2], dtype=torch.bool) if item[4] is None else item[4] for item in rows])
+        invalid_rank = (~valid).to(torch.long).cumsum(0) - 1
+        destination = torch.where(valid, destination, offsets_device[-1] + invalid_rank)
+    joined = torch.empty_like(merged).index_copy(0, destination, merged)
+    return joined, shape, offsets
+
+
+def _diff_packed_ragged(
+    input: NestedTensor, n: int, dim_adj: int, prepend: Tensor | None = None, append: Tensor | None = None
+) -> NestedTensor:
+    r"""Select each segment's valid windows after one native packed difference."""
+    from .aten_functions import _packed_with_shape, _tensor_backed_ragged_offsets
+    from .nested_tensor import _layout_scalar
+
+    boundaries = prepend is not None or append is not None
+    if boundaries:
+        values, shape, source_offsets = _diff_joined_rows(input, dim_adj, prepend, append)
+    else:
+        values, shape, source_offsets = input.concat, input._physical_shape, input._offsets
+    lengths = shape[:, dim_adj]
+    physical_shape = shape.clone()
+    physical_shape[:, dim_adj] = (lengths - n).clamp_min(0)
+    ragged = input._ragged_dims
+    counts = physical_shape[:, list(ragged)].prod(dim=1)
+    offsets = F.pad(counts.cumsum(0), (1, 0)).to(dtype=input._offsets.dtype)
+    device = values.device
+    empty_features = math.prod(values.shape[1:]) == 0
+    source_offsets = source_offsets.to(device=device, dtype=torch.long)
+    order = tuple(dim for dim in ragged if dim != dim_adj) + (dim_adj,)
+    if dim_adj != ragged[-1] and len(input) and not empty_features:
+        indices = torch.arange(values.shape[0], device=device)
+        if boundaries:
+            batch = torch.searchsorted(source_offsets[1:], indices, right=True).clamp_max(len(input) - 1)
+            local = indices - source_offsets.index_select(0, batch)
+        else:
+            batch, local = input._packed_batch_local_indices(device=device)
+        coordinates = _diff_coordinates(shape, ragged, batch, local)
+        positions = _diff_positions(shape, order, batch, coordinates)
+        positions = positions + source_offsets.index_select(0, batch)
+        positions = torch.where(indices < source_offsets[-1], positions, indices)
+        values = torch.empty_like(values).index_copy(0, positions, values)
+    # Discard cross-segment windows. Native diff's linear backward does not
+    # read their input values, including NaNs in unused dense boundary padding.
+    output_values = torch.diff(values, n=n, dim=0)
+    if len(input):
+        total = _layout_scalar(counts.sum())
+        torch._check(total >= 0)
+        if empty_features:
+            output_values = output_values.reshape(total, *values.shape[1:])
+        else:
+            torch._check(total <= values.shape[0])
+            batch = torch.repeat_interleave(
+                torch.arange(len(input), device=device), counts.to(device=device), output_size=total
+            )
+            local = torch.arange(total, device=device) - offsets.to(device=device).index_select(0, batch)
+            coordinates = _diff_coordinates(physical_shape, ragged, batch, local)
+            rows = _diff_positions(shape, order, batch, coordinates)
+            rows = rows + source_offsets.index_select(0, batch)
+            # Keep the gather source nonempty when every segment is shorter than n.
+            output_values = torch.cat((output_values, output_values.new_zeros((1, *output_values.shape[1:]))), dim=0)
+            output_values = output_values.index_select(0, rows)
+    physical_dims = list(input._max_physical_dims())
+    if boundaries and len(input):
+        maximum = _layout_scalar(physical_shape[:, dim_adj].max())
+        torch._check(maximum >= 0)
+        physical_dims[dim_adj] = maximum
+    else:
+        added = 0
+        for boundary in (prepend, append):
+            if boundary is not None:
+                added += boundary.shape[_logical_dim_for_element_dim(input, dim_adj)]
+        physical_dims[dim_adj] = torch.sym_max(physical_dims[dim_adj] + added - n, 0)
+    splits = (
+        (offsets,) if len(ragged) == 1 else _tensor_backed_ragged_offsets(physical_shape, ragged, dtype=offsets.dtype)
+    )
+    output = _packed_with_shape(
+        input,
+        output_values,
+        physical_shape,
+        input._logical_shape_from_physical_dims(physical_dims),
+        offsets=offsets,
+        permutation=input._permutation,
+        force_explicit_ragged_dims=input._ragged_dims,
+        ragged_offsets=splits,
+    )
+    output._max_length_binding = offsets.new_empty(()).expand(*physical_dims)
+    return output
+
+
+def _diff_coordinates(shape: Tensor, order: tuple[int, ...], batch: Tensor, local: Tensor) -> dict[int, Tensor]:
+    sizes = shape.to(device=local.device, dtype=torch.long).index_select(0, batch)
+    coordinates = {}
+    for dim in reversed(order):
+        width = sizes[:, dim].clamp_min(1)
+        coordinates[dim] = local.remainder(width)
+        local = torch.div(local, width, rounding_mode="floor")
+    return coordinates
+
+
+def _diff_positions(shape: Tensor, order: tuple[int, ...], batch: Tensor, coordinates: dict[int, Tensor]) -> Tensor:
+    sizes = shape.to(device=batch.device, dtype=torch.long).index_select(0, batch)
+    positions = torch.zeros_like(batch)
+    for dim in order:
+        positions = positions * sizes[:, dim] + coordinates[dim]
+    return positions
 
 
 @NestedTensorFuncRegistry.implement(torch.cat)
