@@ -1511,7 +1511,7 @@ The core feature is the <a class="autorefs autorefs-internal" title="&lt;code cl
 <span class="c1"># Access properties</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">tensor</span><span class="p">)</span>  <span class="c1"># Padded tensor: [[1, 2, 3], [4, 5, 0]]</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">mask</span><span class="p">)</span>    <span class="c1"># Mask: [[True, True, True], [True, True, False]]</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">concat</span><span class="p">)</span>  <span class="c1"># Concatenated: [1, 2, 3, 4, 5]</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="o">.</span><span class="n">values</span><span class="p">())</span>  <span class="c1"># Concatenated: [1, 2, 3, 4, 5]</span>
 
 <span class="c1"># Index operations</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">nested</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>      <span class="c1"># First tensor: [1, 2, 3]</span>
@@ -1849,7 +1849,7 @@ per_element_fallback  (unpack → apply per element → repack)
 <span class="nd">@NestedTensorFuncRegistry</span><span class="o">.</span><span class="n">implement</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">my_custom_op</span><span class="p">)</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">my_custom_op</span><span class="p">(</span><span class="nb">input</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
     <span class="c1"># Shape-preserving elementwise ops can reuse the reference structure.</span>
-    <span class="n">values</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">my_custom_op</span><span class="p">(</span><span class="nb">input</span><span class="o">.</span><span class="n">concat</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+    <span class="n">values</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">my_custom_op</span><span class="p">(</span><span class="nb">input</span><span class="o">.</span><span class="n">values</span><span class="p">(),</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
     <span class="k">return</span> <span class="nb">input</span><span class="o">.</span><span class="n">packed_like</span><span class="p">(</span><span class="n">values</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
 <p>For ops that are purely elementwise on the packed data, register at the aten level instead:</p>
@@ -1866,7 +1866,7 @@ per_element_fallback  (unpack → apply per element → repack)
 <span class="nd">@NestedTensorAtenRegistry</span><span class="o">.</span><span class="n">implement</span><span class="p">(</span><span class="n">aten</span><span class="o">.</span><span class="n">my_op</span><span class="o">.</span><span class="n">default</span><span class="p">,</span> <span class="n">compile_safe</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">_my_handler</span><span class="p">(</span><span class="n">func</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">):</span>
     <span class="n">source</span> <span class="o">=</span> <span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
-    <span class="n">values</span> <span class="o">=</span> <span class="n">func</span><span class="p">(</span><span class="n">source</span><span class="o">.</span><span class="n">concat</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">[</span><span class="mi">1</span><span class="p">:],</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+    <span class="n">values</span> <span class="o">=</span> <span class="n">func</span><span class="p">(</span><span class="n">source</span><span class="o">.</span><span class="n">values</span><span class="p">(),</span> <span class="o">*</span><span class="n">args</span><span class="p">[</span><span class="mi">1</span><span class="p">:],</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">source</span><span class="o">.</span><span class="n">packed_like</span><span class="p">(</span><span class="n">values</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
 <p><code>packed_like</code> requires the packed output shape to remain unchanged. Operations
@@ -1990,12 +1990,25 @@ for ordinary dense tensors as well. Direct-kernel distance derivatives retain
 the native kernel&rsquo;s differentiation support.</p>
 <p>The result can remain a <code>NestedTensor</code> throughout a compiled model or cross a
 compiled/eager training boundary as a wrapper-only output. DanLing preserves
-the outer wrapper&rsquo;s AOTAutograd edge and projects it back to <code>result.concat</code>
+the outer wrapper&rsquo;s AOTAutograd edge and projects it back to <code>result.values()</code>
 without padding or copying, so both wrapper outputs and direct packed outputs
 remain differentiable.
 They intentionally do not expose the general private packed constructor.</p>
+<p>The compiler reads the packed storage and layout directly. Reading this
+representation does not create a differentiation operation; the public
+<code>values()</code> method preserves the wrapper&rsquo;s numerical gradient edge. Use this
+explicit operation in compiled code. The legacy <code>concat</code> property remains an
+eager convenience; Dynamo does not trace computed Tensor properties on
+traceable wrappers unless they are representation fields. Native
+views retain both their storage aliases and each sample&rsquo;s actual source and
+target geometry, including when the ragged topology changes. Leaf and saved
+tensor mutation checks follow native PyTorch rules.</p>
+<p>An in-place view mutation inside an Inductor-compiled call can fail in
+PyTorch&rsquo;s tensor-subclass mutation bookkeeping. The same saved-stride error
+is reproducible without DanLing using an ordinary traceable wrapper subclass.
+AOT eager and mutation after a compiled call are separate execution paths.</p>
 <p><code>packed_offsets()</code> returns the boundaries of complete logical batch elements
-in the flattened leading dimension of <code>concat</code>. It is the public operator
+in the flattened leading dimension of <code>values()</code>. It is the public operator
 metadata interface for segmented kernels: for <code>(N_i, N_i, C)</code> elements it
 returns cumulative <code>N_i * N_i</code> cell counts, whereas
 <code>ragged_level_offsets(level)</code> returns row splits within the ragged hierarchy.

@@ -829,6 +829,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#danling.tensors.pn_tensor.PNTensor.values" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;values
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#danling.tensors.pn_tensor.PNTensor.new_empty" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1389,6 +1400,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#danling.tensors.pn_tensor.PNTensor.values" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;values
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#danling.tensors.pn_tensor.PNTensor.new_empty" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1561,10 +1583,10 @@ DataLoader after importing <a class="autorefs autorefs-internal" title="Tensor A
 and batched <code>NestedTensor</code> objects in PyTorch workflows. It&rsquo;s designed specifically to work
 with PyTorch&rsquo;s DataLoader collation mechanism, allowing datasets to return variable-length
 tensors that can be combined into a <code>NestedTensor</code> when batched.</p>
-<p>The class provides three properties that mirror those of NestedTensor:
+<p>The class mirrors these NestedTensor interfaces:
 - <code>.tensor</code>: The tensor itself (self)
 - <code>.mask</code>: A tensor of ones with the same shape as self
-- <code>.concat</code>: The tensor itself (self)</p>
+- <code>.values()</code>: The tensor itself (self)</p>
 <p>Other attributes and methods are inherited from <code>torch.Tensor</code>.</p>
 
 
@@ -1742,7 +1764,11 @@ tensors that can be combined into a <code>NestedTensor</code> when batched.</p>
 <span class="normal">167</span>
 <span class="normal">168</span>
 <span class="normal">169</span>
-<span class="normal">170</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">PNTensor</span><span class="p">(</span><span class="n">Tensor</span><span class="p">):</span>
+<span class="normal">170</span>
+<span class="normal">171</span>
+<span class="normal">172</span>
+<span class="normal">173</span>
+<span class="normal">174</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">PNTensor</span><span class="p">(</span><span class="n">Tensor</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">    A tensor wrapper that can be collated into NestedTensor with PyTorch DataLoader.</span>
 
@@ -1751,10 +1777,10 @@ tensors that can be combined into a <code>NestedTensor</code> when batched.</p>
 <span class="sd">    with PyTorch's DataLoader collation mechanism, allowing datasets to return variable-length</span>
 <span class="sd">    tensors that can be combined into a `NestedTensor` when batched.</span>
 
-<span class="sd">    The class provides three properties that mirror those of NestedTensor:</span>
+<span class="sd">    The class mirrors these NestedTensor interfaces:</span>
 <span class="sd">    - `.tensor`: The tensor itself (self)</span>
 <span class="sd">    - `.mask`: A tensor of ones with the same shape as self</span>
-<span class="sd">    - `.concat`: The tensor itself (self)</span>
+<span class="sd">    - `.values()`: The tensor itself (self)</span>
 
 <span class="sd">    Other attributes and methods are inherited from `torch.Tensor`.</span>
 
@@ -1831,8 +1857,7 @@ tensors that can be combined into a <code>NestedTensor</code> when batched.</p>
 
         <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">ones</span><span class="p">((),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">device</span><span class="p">)</span><span class="o">.</span><span class="n">expand_as</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
 
-    <span class="nd">@property</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">concat</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tensor</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">values</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tensor</span><span class="p">:</span>
 <span class="w">        </span><span class="sa">r</span><span class="sd">"""</span>
 <span class="sd">        Identical to `self`.</span>
 
@@ -1841,11 +1866,16 @@ tensors that can be combined into a <code>NestedTensor</code> when batched.</p>
 
 <span class="sd">        Examples:</span>
 <span class="sd">            &gt;&gt;&gt; pn_tensor = PNTensor([1, 2, 3])</span>
-<span class="sd">            &gt;&gt;&gt; bool((pn_tensor == pn_tensor.concat).all())</span>
+<span class="sd">            &gt;&gt;&gt; bool((pn_tensor == pn_tensor.values()).all())</span>
 <span class="sd">            True</span>
 <span class="sd">        """</span>
 
         <span class="k">return</span> <span class="bp">self</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">concat</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tensor</span><span class="p">:</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">"""Return the dense values through the legacy eager property."""</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">values</span><span class="p">()</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">new_empty</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
 <span class="w">        </span><span class="sa">r</span><span class="sd">"""Return a new empty PNTensor with the same type."""</span>
@@ -2002,6 +2032,28 @@ tensors that can be combined into a <code>NestedTensor</code> when batched.</p>
 
     <div class="doc doc-contents ">
 
+        <p>Return the dense values through the legacy eager property.</p>
+
+    </div>
+
+</div>
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="danling.tensors.pn_tensor.PNTensor.values" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">values</span>
+
+
+<a href="#danling.tensors.pn_tensor.PNTensor.values" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><span class="filename">Python</span><pre><span></span><code><span class="nf">values</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-external" title="&lt;code&gt;torch.Tensor&lt;/code&gt;" href="https://pytorch.org/docs/stable/tensors.html#torch.Tensor">Tensor</a></span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
         <p>Identical to <code>self</code>.</p>
 
 
@@ -2032,16 +2084,45 @@ tensors that can be combined into a <code>NestedTensor</code> when batched.</p>
     <div class="language-pycon highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python Console Session</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1</span>
 <span class="normal">2</span>
 <span class="normal">3</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="gp">&gt;&gt;&gt; </span><span class="n">pn_tensor</span> <span class="o">=</span> <span class="n">PNTensor</span><span class="p">([</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">])</span>
-<span class="gp">&gt;&gt;&gt; </span><span class="nb">bool</span><span class="p">((</span><span class="n">pn_tensor</span> <span class="o">==</span> <span class="n">pn_tensor</span><span class="o">.</span><span class="n">concat</span><span class="p">)</span><span class="o">.</span><span class="n">all</span><span class="p">())</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="nb">bool</span><span class="p">((</span><span class="n">pn_tensor</span> <span class="o">==</span> <span class="n">pn_tensor</span><span class="o">.</span><span class="n">values</span><span class="p">())</span><span class="o">.</span><span class="n">all</span><span class="p">())</span>
 <span class="go">True</span>
 </code></pre></div></td></tr></table></div>
 
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>danling/tensors/pn_tensor.py</code></summary>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">152</span>
+<span class="normal">153</span>
+<span class="normal">154</span>
+<span class="normal">155</span>
+<span class="normal">156</span>
+<span class="normal">157</span>
+<span class="normal">158</span>
+<span class="normal">159</span>
+<span class="normal">160</span>
+<span class="normal">161</span>
+<span class="normal">162</span>
+<span class="normal">163</span>
+<span class="normal">164</span>
+<span class="normal">165</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">values</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tensor</span><span class="p">:</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">"""</span>
+<span class="sd">    Identical to `self`.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        (torch.Tensor):</span>
+
+<span class="sd">    Examples:</span>
+<span class="sd">        &gt;&gt;&gt; pn_tensor = PNTensor([1, 2, 3])</span>
+<span class="sd">        &gt;&gt;&gt; bool((pn_tensor == pn_tensor.values()).all())</span>
+<span class="sd">        True</span>
+<span class="sd">    """</span>
+
+    <span class="k">return</span> <span class="bp">self</span>
+</code></pre></div></td></tr></table></div>
+            </details>
     </div>
 
 </div>
-
-
-
 
 <div class="doc doc-object doc-function">
 
@@ -2061,9 +2142,9 @@ tensors that can be combined into a <code>NestedTensor</code> when batched.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/pn_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">168</span>
-<span class="normal">169</span>
-<span class="normal">170</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">new_empty</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">172</span>
+<span class="normal">173</span>
+<span class="normal">174</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">new_empty</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Return a new empty PNTensor with the same type."""</span>
     <span class="k">return</span> <span class="n">PNTensor</span><span class="p">(</span><span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="n">new_empty</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">))</span>
 </code></pre></div></td></tr></table></div>
