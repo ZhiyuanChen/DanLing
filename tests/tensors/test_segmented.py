@@ -159,7 +159,359 @@ class TestSegmentedScan:
         assert indices.shape == (0, 3)
 
 
+def _cumprod_transform(scan, transform):
+    def loss(values, offsets):
+        return scan(values, offsets).real.sum()
+
+    gradient = torch.func.grad(loss)
+
+    def tangent(values, offsets):
+        return torch.func.jvp(lambda data: scan(data, offsets), (values,), (torch.ones_like(values),))[1]
+
+    if transform == "grad":
+        return gradient
+    if transform == "jvp":
+        return tangent
+    if transform == "grad_grad":
+        return torch.func.grad(lambda values, offsets: gradient(values, offsets).real.sum())
+    if transform == "grad_jvp":
+        return torch.func.grad(lambda values, offsets: tangent(values, offsets).real.sum())
+    parent = gradient if transform == "jvp_grad" else tangent
+    return lambda values, offsets: torch.func.jvp(
+        lambda data: parent(data, offsets), (values,), (torch.ones_like(values),)
+    )[1]
+
+
+def _assert_cumprod_transform_close(actual, expected):
+    if actual.is_complex():
+        actual = torch.view_as_real(actual.resolve_conj())
+        expected = torch.view_as_real(expected.resolve_conj())
+    torch.testing.assert_close(actual, expected, equal_nan=True)
+
+
 class TestSegmentedCumprodComplex:
+
+    def test_nested_vmap_jvp(self, device):
+        values = torch.arange(3.0, device=device).expand(2, 2, 3).clone()
+        offsets = torch.tensor([0, 1, 3])
+
+        def native(data):
+            return torch.cat([part.cumprod(0) for part in data.split((1, 2))])
+
+        def tangent(scan, data):
+            return torch.func.jvp(scan, (data,), (torch.ones_like(data),))[1]
+
+        actual = torch.vmap(torch.vmap(lambda data: tangent(lambda value: segmented_cumprod(value, offsets), data)))(
+            values
+        )
+        expected = torch.vmap(torch.vmap(lambda data: tangent(native, data)))(values)
+        torch.testing.assert_close(actual, expected)
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("gradient", [False, True])
+    def test_compiled_native_forward(self, device, backend, gradient):
+        values = torch.arange(3.0, device=device, dtype=torch.float64)
+        offsets = torch.tensor([0, 1, 3])
+
+        def native(data, partition):
+            del partition
+            return torch.cat([part.cumprod(0) for part in data.split((1, 2))])
+
+        actual_run = (
+            torch.func.grad(lambda data, partition: segmented_cumprod(data, partition).sum())
+            if gradient
+            else segmented_cumprod
+        )
+        expected_run = torch.func.grad(lambda data, partition: native(data, partition).sum()) if gradient else native
+        actual_run = torch.compile(actual_run, backend=backend, fullgraph=True)
+        native_run = torch.compile(expected_run, backend=backend, fullgraph=True)
+        forward_ad = torch.autograd.forward_ad
+        with forward_ad.dual_level():
+            dual = forward_ad.make_dual(values, torch.ones_like(values))
+            try:
+                native_run(dual, offsets)
+            except torch._dynamo.exc.Unsupported as error:
+                if "Attempted to wrap a dual tensor input" not in str(error):
+                    raise
+                pytest.skip("torch.compile rejects native forward-AD dual inputs")
+            # Input support is separate from the derivative oracle: older Inductor
+            # accepts duals but drops native tangents, so compare with eager AD.
+            actual = forward_ad.unpack_dual(actual_run(dual, offsets))
+            expected = forward_ad.unpack_dual(expected_run(dual, offsets))
+            torch.testing.assert_close(actual.primal, expected.primal)
+            assert actual.tangent is not None and expected.tangent is not None
+            torch.testing.assert_close(actual.tangent, expected.tangent)
+
+    @pytest.mark.parametrize("lengths", [(1, 1, 1), (0, 0, 0), (1, 2)])
+    def test_native_forward_over_reverse(self, device, lengths):
+        values = torch.arange(sum(lengths), device=device, dtype=torch.float64)
+        source = NestedTensor(values.split(lengths))
+        forward_ad = torch.autograd.forward_ad
+        with forward_ad.dual_level():
+            dense_dual = forward_ad.make_dual(values, torch.ones_like(values))
+            expected = torch.func.grad(lambda data: torch.cat([part.cumprod(0) for part in data.split(lengths)]).sum())(
+                dense_dual
+            )
+            dual = forward_ad.make_dual(source, torch.ones_like(source))
+            actual = torch.func.grad(lambda data: data.cumprod(1).sum())(dual)
+            for result, native in ((actual, expected), (actual * float("inf"), expected * float("inf"))):
+                primal, tangent = forward_ad.unpack_dual(result)
+                expected_primal, expected_tangent = forward_ad.unpack_dual(native)
+                torch.testing.assert_close(primal.values(), expected_primal, equal_nan=True)
+                assert (tangent is None) == (expected_tangent is None)
+                if tangent is not None:
+                    torch.testing.assert_close(tangent.values(), expected_tangent, equal_nan=True)
+
+    @pytest.mark.parametrize("forward_api", ["func", "native"])
+    @pytest.mark.parametrize("create_graph", [False, True])
+    def test_forward_reverse_context(self, device, forward_api, create_graph):
+        values = torch.tensor([0.0, 2.0, 3.0], device=device, dtype=torch.float64, requires_grad=True)
+        reference = values.detach().clone().requires_grad_()
+        if forward_api == "func":
+            offsets = torch.tensor([0, 3])
+            actual = torch.func.jvp(
+                lambda data: segmented_cumprod(data, offsets), (values,), (torch.ones_like(values),)
+            )
+            expected = torch.func.jvp(lambda data: data.cumprod(0), (reference,), (torch.ones_like(reference),))
+        else:
+            forward_ad = torch.autograd.forward_ad
+            source = NestedTensor([values], ragged_dims=(0,))
+            with forward_ad.dual_level():
+                dual = forward_ad.make_dual(source, torch.ones_like(source))
+                primal, tangent = forward_ad.unpack_dual(dual.cumprod(1))
+            actual = (primal.values(), tangent.values())
+            with forward_ad.dual_level():
+                dual = forward_ad.make_dual(reference, torch.ones_like(reference))
+                expected = forward_ad.unpack_dual(dual.cumprod(0))
+        for result, native in zip(actual, expected):
+            _assert_cumprod_transform_close(result, native)
+        _assert_cumprod_transform_close(
+            torch.autograd.grad(actual[1].sum(), values, create_graph=create_graph)[0],
+            torch.autograd.grad(expected[1].sum(), reference, create_graph=create_graph)[0],
+        )
+
+    @pytest.mark.parametrize("event", ["replayed_prefix", "new_backward"])
+    def test_anomaly_context(self, device, event):
+        results, targets = [], []
+        for nested in (False, True):
+            values = torch.tensor(
+                [1.0, 2.0, 3.0] if event == "replayed_prefix" else [0.0, 2.0, 3.0],
+                device=device,
+                dtype=torch.float64,
+                requires_grad=event == "new_backward",
+            )
+            direction = torch.full_like(
+                values, float("nan") if event == "replayed_prefix" else 1.0, requires_grad=event == "replayed_prefix"
+            )
+            offsets = torch.tensor([0, 3])
+
+            def scan(data, offsets=offsets, nested=nested):
+                return segmented_cumprod(data, offsets) if nested else data.cumprod(0)
+
+            def tangent(data, scan=scan, direction=direction):
+                return torch.func.jvp(scan, (data,), (direction,))[1]
+
+            with torch.autograd.set_detect_anomaly(False):
+                result = (
+                    torch.func.grad(lambda data: tangent(data).sum())(values)
+                    if event == "replayed_prefix"
+                    else tangent(values)
+                )
+            results.append(result)
+            targets.append(direction if event == "replayed_prefix" else values)
+        with torch.autograd.set_detect_anomaly(True):
+            if event == "replayed_prefix":
+                torch.testing.assert_close(
+                    torch.autograd.grad(results[0].sum(), targets[0]), torch.autograd.grad(results[1].sum(), targets[1])
+                )
+            else:
+                for result, target in zip(results, targets):
+                    with pytest.raises(RuntimeError, match="returned nan"):
+                        torch.autograd.grad(result.sum(), target)
+
+    @pytest.mark.parametrize(
+        "transform,case,batch_size,values_dim,offsets_dim",
+        [
+            ("grad", "finite", 2, None, 0),
+            ("jvp", "zeros", 2, 0, 0),
+            ("grad_grad", "complex", 2, -1, -1),
+            ("grad_jvp", "nonfinite", 2, None, 0),
+            ("jvp_grad", "nonfinite", 2, 0, 0),
+            ("jvp_jvp", "complex", 2, -1, -1),
+            ("grad", "empty", 2, None, 0),
+            ("jvp_grad", "zeros", 0, 0, 0),
+            ("grad_jvp", "complex", 0, None, 0),
+            ("jvp_jvp", "finite", 0, -1, -1),
+        ],
+    )
+    def test_mapped_offsets(self, device, transform, case, batch_size, values_dim, offsets_dim):
+        dtype = torch.complex128 if case == "complex" else torch.float64
+        base = torch.arange(1.0, 6.0, device=device, dtype=torch.float64).to(dtype).unsqueeze(-1).expand(-1, 2).clone()
+        if case == "zeros":
+            base[[0, 3]] = 0
+        elif case == "nonfinite":
+            base[1, 0] = float("nan")
+            base[-1, 1] = float("inf")
+        elif case == "complex":
+            base = base + 0.3j
+        elif case == "empty":
+            base = base[:0]
+        batch = torch.stack((base, base * 2))[:batch_size]
+        lengths = ((0, 0, 0),) * 2 if case == "empty" else ((2, 0, 3), (3, 0, 2))
+        splits = torch.tensor([[0, sizes[0], sizes[0], sum(sizes)] for sizes in lengths])[:batch_size]
+        values = base if values_dim is None else batch.movedim(0, values_dim)
+        offsets = splits.movedim(0, offsets_dim)
+        actual = torch.vmap(_cumprod_transform(segmented_cumprod, transform), in_dims=(values_dim, offsets_dim))(
+            values, offsets
+        )
+        references = []
+        for index in range(batch_size):
+
+            def native(data, _offsets, sizes=lengths[index]):
+                return torch.cat([part.cumprod(0) for part in data.split(sizes)])
+
+            references.append(_cumprod_transform(native, transform)(base if values_dim is None else batch[index], None))
+        expected = torch.stack(references) if references else base.new_empty((0, *base.shape))
+        _assert_cumprod_transform_close(actual, expected)
+        if batch_size and case == "finite" and transform == "grad" and values_dim is None:
+            assert not torch.equal(expected[0], expected[1])
+
+    @pytest.mark.parametrize(
+        "backend,transform,dtype",
+        [
+            ("aot_eager", "grad", torch.float64),
+            ("inductor", "jvp_grad", torch.float64),
+            ("aot_eager", "jvp", torch.complex128),
+            ("inductor", "grad_jvp", torch.complex128),
+        ],
+    )
+    def test_mapped_offsets_compile(self, device, backend, transform, dtype):
+        torch.compiler.reset()
+        operation = torch.vmap(_cumprod_transform(segmented_cumprod, transform))
+        run = torch.compile(operation, backend=backend, fullgraph=True)
+        base = torch.tensor([1.0, 0.0, 3.0, 4.0, 5.0], device=device, dtype=dtype)
+        if dtype.is_complex:
+            base = base + 0.3j
+        values = base.expand(2, 2, -1).clone().transpose(1, 2)
+        for nonfinite in (False,) if dtype.is_complex else (False, True):
+            offsets = torch.tensor([[0, 2, 2, 5], [0, 3, 3, 5]])
+            if nonfinite:
+                values[0, 1] = float("nan")
+                values[1, -1] = -float("inf")
+                offsets = offsets.flip(0)
+            actual = run(values, offsets)
+            expected = []
+            for index, sizes in enumerate(((3, 0, 2), (2, 0, 3)) if nonfinite else ((2, 0, 3), (3, 0, 2))):
+
+                def native(data, _offsets, sizes=sizes):
+                    return torch.cat([part.cumprod(0) for part in data.split(sizes)])
+
+                expected.append(_cumprod_transform(native, transform)(values[index], None))
+            _assert_cumprod_transform_close(actual, torch.stack(expected))
+
+    @pytest.mark.parametrize(
+        "transform,mutated", [("grad", "values"), ("jvp", "offsets"), ("jvp", "direction"), ("grad_jvp", "direction")]
+    )
+    def test_mapped_offsets_versions(self, device, transform, mutated):
+        values = torch.randn(2, 5, 2, device=device, dtype=torch.float64, requires_grad=mutated != "direction")
+        offsets = torch.tensor([[0, 2, 2, 5], [0, 3, 3, 5]])
+        direction = torch.ones_like(values, requires_grad=mutated == "direction")
+        if transform == "grad_jvp":
+            values = (
+                torch.tensor(
+                    [[1.0, 2.0, 1e-308, 1e-308, 1e308], [1e-308, 1e-308, 1e308, 1.0, 2.0]],
+                    device=device,
+                    dtype=torch.float64,
+                )
+                .unsqueeze(-1)
+                .expand(-1, -1, 2)
+                .clone()
+            )
+            direction = torch.full_like(values, 1e-308, requires_grad=True)
+
+        def directional(scan, data, vector):
+            def tangent(data):
+                return torch.func.jvp(scan, (data,), (vector,))[1]
+
+            return torch.func.grad(lambda data: tangent(data).sum())(data) if transform == "grad_jvp" else tangent(data)
+
+        if transform != "grad":
+
+            def tangent(data, splits, vector):
+                return directional(lambda data: segmented_cumprod(data, splits), data, vector)
+
+            derivative = torch.vmap(tangent)(values, offsets, direction)
+        else:
+            derivative = torch.vmap(_cumprod_transform(segmented_cumprod, transform))(values, offsets)
+        if mutated == "direction":
+            native = []
+            for data, vector, sizes in zip(values, direction, ((2, 0, 3), (3, 0, 2))):
+
+                def scan(data, sizes=sizes):
+                    return torch.cat([part.cumprod(0) for part in data.split(sizes)])
+
+                native.append(directional(scan, data, vector))
+            expected = torch.stack(native)
+        with torch.no_grad():
+            {"values": values, "offsets": offsets, "direction": direction}[mutated].add_(1)
+        if mutated == "direction":
+            deterministic = torch.are_deterministic_algorithms_enabled()
+            warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+            fill = torch.utils.deterministic.fill_uninitialized_memory
+            try:
+                torch.use_deterministic_algorithms(True)
+                torch.utils.deterministic.fill_uninitialized_memory = True
+                with torch.autograd.set_detect_anomaly(True):
+                    probe = torch.ones_like(derivative)
+                    if transform == "grad_jvp":
+                        probe.zero_()
+                        probe[0, 2] = probe[1, 0] = 1
+                    torch.testing.assert_close(
+                        torch.autograd.grad(derivative, direction, probe),
+                        torch.autograd.grad(expected, direction, probe),
+                    )
+            finally:
+                torch.use_deterministic_algorithms(deterministic, warn_only=warn_only)
+                torch.utils.deterministic.fill_uninitialized_memory = fill
+            return
+        with pytest.raises(RuntimeError, match="modified by an inplace operation"):
+            torch.autograd.grad(derivative.sum(), values)
+
+    @pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
+    @pytest.mark.parametrize("values_dim,offsets_dim,out_dim", [(0, 0, 0), (-1, -1, -1), (None, 0, 0)])
+    def test_empty_mapped_offsets(self, device, dtype, values_dim, offsets_dim, out_dim):
+        base = torch.randn((5, 2) if values_dim is None else (0, 5, 2), device=device, dtype=dtype)
+        values = (base if values_dim is None else base.movedim(0, values_dim)).requires_grad_()
+        offsets = torch.tensor([0, 2, 5]).expand(0, -1).movedim(0, offsets_dim)
+
+        def actual(data):
+            return torch.vmap(segmented_cumprod, in_dims=(values_dim, offsets_dim), out_dims=out_dim)(data, offsets)
+
+        def native(data):
+            def scan(value, _offsets):
+                return torch.cat([part.cumprod(0) for part in value.split((2, 3))])
+
+            return torch.vmap(scan, in_dims=(values_dim, offsets_dim), out_dims=out_dim)(data, offsets)
+
+        torch.testing.assert_close(actual(values), native(values))
+        torch.testing.assert_close(
+            torch.autograd.grad(actual(values).real.sum(), values),
+            torch.autograd.grad(native(values).real.sum(), values),
+        )
+        torch.testing.assert_close(
+            torch.func.jvp(actual, (values,), (torch.ones_like(values),)),
+            torch.func.jvp(native, (values,), (torch.ones_like(values),)),
+        )
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    def test_empty_mapped_offsets_compiled(self, device, backend):
+        torch.compiler.reset()
+        values = torch.empty(0, 5, 2, device=device, dtype=torch.float64, requires_grad=True)
+        offsets = torch.tensor([0, 2, 5]).expand(0, -1)
+        run = torch.compile(torch.vmap(segmented_cumprod), backend=backend, fullgraph=True)
+        output = run(values, offsets)
+        assert output.shape == values.shape
+        torch.testing.assert_close(torch.autograd.grad(output.sum(), values)[0], torch.zeros_like(values))
 
     @pytest.mark.parametrize("case", ["zeros", "complex", "empty"])
     def test_transforms(self, device, case):
