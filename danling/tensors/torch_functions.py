@@ -58,6 +58,8 @@ from .aten_functions import (
     _batch_dim_compile_safe,
     _dtype_view_compile_safe,
     _index_select_compile_safe,
+    _squeeze_dim_compile_safe,
+    _uses_packed_view_autograd,
 )
 from .ops import (
     TORCH_BINARY_ELEMENTWISE_OPS,
@@ -728,8 +730,8 @@ def _diff_batch(input: NestedTensor, n: int, prepend: Tensor | None, append: Ten
         force_explicit_ragged_dims=ragged,
         ragged_offsets=splits,
     )
-    if physical_dims:
-        result._max_length_binding = offsets.new_empty(()).expand(*physical_dims)
+    if physical_dims and "_compile_ragged_extents" not in vars(result):
+        result._ragged_extents = result._new_ragged_extents()
     return result
 
 
@@ -972,7 +974,8 @@ def _diff_packed_ragged(
         force_explicit_ragged_dims=input._ragged_dims,
         ragged_offsets=splits,
     )
-    output._max_length_binding = offsets.new_empty(()).expand(*physical_dims)
+    if "_compile_ragged_extents" not in vars(output):
+        output._ragged_extents = output._new_ragged_extents()
     return output
 
 
@@ -1255,9 +1258,9 @@ def _cat_packed_non_batch(tensors, first: NestedTensor, dim_adj: int):
         canonical = output
         order = tuple(first._permutation.index(dim) for dim in range(len(first._permutation)))
         output = cast(NestedTensor, _packed_metadata_permute(canonical, order))
-        binding = vars(canonical).get("_compile_max_length_binding")
+        binding = vars(canonical).get("_compile_ragged_extents")
         if binding is not None:
-            output._max_length_binding = binding
+            output._ragged_extents = binding
     return output
 
 
@@ -1816,8 +1819,11 @@ def narrow(input: NestedTensor, dim: int, start, length: int):
         >>> [tuple(part.shape) for part in torch.narrow(nt, 2, 0, 1)]
         [(3, 1), (5, 1)]
     """
-    from .aten_functions import narrow_nested
+    from .aten_functions import _static_subset_compile_safe, narrow_nested
 
+    if _static_subset_compile_safe((input, dim), {}) and not _uses_packed_view_autograd(input):
+        with torch._C.DisableTorchFunctionSubclass():
+            return torch.narrow(input, dim, start, length)
     return narrow_nested(input, dim, start, length)
 
 
@@ -2518,7 +2524,7 @@ def gather(input: NestedTensor, dim: int, index, *, sparse_grad: bool = False):
         >>> torch.equal(out, ref)
         True
     """
-    # Run the packed handler HERE (func level), where ``input.concat`` still carry autograd, rather
+    # Run the packed handler HERE (func level), where ``input.values()`` still carry autograd, rather
     # than delegating to the aten op on the NestedTensor -- that re-enters ``__torch_dispatch__``,
     # where autograd has already detached ``concat``, so the result would drop grad. Mirrors the
     # same treatment in ``log_softmax``/``softmax``. One-dimensional packed values go the same way:
@@ -2842,7 +2848,7 @@ def index_select(input: NestedTensor, dim: int, index: Tensor):
         >>> torch.equal(out, ref)
         True
     """
-    # Run the packed handler here, where ``input.concat`` still carry autograd, rather than
+    # Run the packed handler here, where ``input.values()`` still carry autograd, rather than
     # re-dispatching the aten op on the NestedTensor. The handler resolves the packed axis for
     # every dimension, so there is nothing left for this level to decide.
     from .aten_functions import index_select as _aten_index_select
@@ -2965,7 +2971,7 @@ def masked_scatter(input: NestedTensor, mask, source):
         # Dense Tensor mask or source stay on the fallback path: eager semantics replay them
         # independently for each element rather than consuming one packed stream.
         #
-        # Run the packed handler HERE (func level), where ``input.concat`` still carry autograd,
+        # Run the packed handler HERE (func level), where ``input.values()`` still carry autograd,
         # rather than delegating to the aten op on the NestedTensor -- that re-enters
         # ``__torch_dispatch__``, where autograd has already detached ``concat``, so the result
         # would drop grad. Mirrors the same treatment in ``gather``.
@@ -5447,7 +5453,7 @@ def sum(input: NestedTensor, dim: int | Sequence[int] | None = None, keepdim: bo
     r"""Compute sums via aten fastpaths for global and single-dim reductions."""
     if dim is None:
         return _reduce_none(input, torch.sum, dtype=dtype, keepdim=keepdim)
-    # Call the aten handler at func level (like ``mean``), where ``input.concat`` still carry autograd;
+    # Call the aten handler at func level (like ``mean``), where ``input.values()`` still carry autograd;
     # delegating to ``torch.ops.aten.sum`` on the NestedTensor re-enters ``__torch_dispatch__``, where
     # autograd has detached ``concat``, so the result would drop grad (breaking a training loss's reduction).
     sum_dim = NestedTensorAtenRegistry[torch.ops.aten.sum.dim_IntList]
@@ -5575,9 +5581,9 @@ def flatten(input: NestedTensor, start_dim: int = 0, end_dim: int = -1):
     if start > end:
         raise ValueError(f"start_dim must be <= end_dim, got ({start_dim}, {end_dim})")
 
-    from .aten_functions import flatten as _aten_flatten
+    from .aten_functions import _shape_view
 
-    return _aten_flatten(torch.ops.aten.flatten.using_ints, (input, start, end), {})
+    return _shape_view(input, "flatten", (start, end))
 
 
 @NestedTensorFuncRegistry.implement(torch.flip)
@@ -5692,9 +5698,12 @@ def permute(input: NestedTensor, dims: Sequence[int]) -> NestedTensor:
     if normalized_dims.index(batch_dim) > 1:
         raise ValueError("NestedTensor's logical batch dimension must stay at position zero or one.")
 
-    from .aten_functions import _permute_nested
+    if _uses_packed_view_autograd(input):
+        from .aten_functions import _permute_nested
 
-    return _permute_nested(torch.ops.aten.permute.default, (input, list(normalized_dims)), {})
+        return _permute_nested(torch.ops.aten.permute.default, (input, list(normalized_dims)), {})
+    with torch._C.DisableTorchFunctionSubclass():
+        return torch.ops.aten.permute.default(input, list(normalized_dims))
 
 
 def _offsets_from_packed_lengths(lengths: Tensor) -> Tensor:
@@ -5910,9 +5919,9 @@ def reshape(input: NestedTensor, shape: Sequence[int]) -> NestedTensor:
         >>> torch.equal(out, ref)
         True
     """
-    from .aten_functions import view_like as _aten_view_like
+    from .aten_functions import _shape_view
 
-    return _aten_view_like(torch.ops.aten.reshape.default, (input, list(shape)), {})
+    return _shape_view(input, "reshape", (tuple(shape),))
 
 
 @NestedTensorFuncRegistry.implement(torch.ops.aten.reshape.default, compile_safe=True)
@@ -5936,9 +5945,9 @@ def _reshape_method(input, *shape, **kwargs):
 @NestedTensorFuncRegistry.implement(torch.ops.aten.view.default, compile_safe=True)
 def _view_native(self, size):
     r"""Dispatch the native view signature to the shared packed implementation."""
-    from .aten_functions import view_like
+    from .aten_functions import _shape_view
 
-    return view_like(torch.ops.aten.view.default, (self, size), {})
+    return _shape_view(self, "view", (tuple(size),))
 
 
 @NestedTensorFuncRegistry.implement(torch.Tensor.view, compile_safe=True, compile_guard=_dtype_view_compile_safe)
@@ -6061,11 +6070,34 @@ def _view_dtype(input: NestedTensor, dtype: torch.dtype) -> NestedTensor:
 
 @NestedTensorFuncRegistry.implement(torch.Tensor.reshape_as, compile_safe=True)
 def reshape_as(input, other):
+    from .aten_functions import _is_packed_identity
+
     r"""Reshape each sample to its reference shape without padded extents."""
     from .nested_tensor import NestedTensor
 
+    if isinstance(input, NestedTensor) and isinstance(other, NestedTensor):
+        torch._check(
+            input._physical_shape.shape[0] == other._physical_shape.shape[0],
+            lambda: "reshape_as requires matching batch sizes",
+        )
     if isinstance(input, NestedTensor) and not isinstance(other, NestedTensor):
         return reshape(input, other.shape)
+    if isinstance(input, NestedTensor) and isinstance(other, NestedTensor) and _is_packed_identity(other):
+        from .aten_functions import _native_shape_result
+
+        lengths = input._physical_shape.prod(1)
+        torch._assert_async(
+            torch.all(lengths == other._physical_shape.prod(1)),
+            "reshape_as requires the same number of elements in each sample",
+        )
+        flat = input.values().reshape(-1) if _is_packed_identity(input) else _packed_flatten_elements(input)[0]
+        values = flat.reshape(other._packed_values.shape)
+        result = other.packed_like(values)
+        result.padding_value = input.padding_value
+        result.mask_value = input.mask_value
+        if torch._C._is_alias_of(input._packed_values, result._packed_values):
+            return _native_shape_result(input, result)
+        return result
     if isinstance(input, NestedTensor):
         flat, lengths = _packed_flatten_elements(input)
     else:
@@ -6102,12 +6134,36 @@ def _reshape_as_native(self, other):
     return reshape_as(self, other)
 
 
-@NestedTensorFuncRegistry.implement(torch.Tensor.view_as)
+@NestedTensorFuncRegistry.implement(torch.Tensor.view_as, compile_safe=True)
 def view_as(input, other):
+    from .aten_functions import _is_packed_identity
+
     r"""View each sample with the reference shape while preserving storage aliases."""
-    from .aten_functions import _packed_view_shapes, view_like
+    from .aten_functions import _packed_view_shapes, _shape_view
     from .nested_tensor import NestedTensor
 
+    if isinstance(input, NestedTensor) and isinstance(other, NestedTensor):
+        torch._check(
+            input._physical_shape.shape[0] == other._physical_shape.shape[0],
+            lambda: "view_as requires matching batch sizes",
+        )
+    if (
+        isinstance(input, NestedTensor)
+        and isinstance(other, NestedTensor)
+        and _is_packed_identity(other)
+        and _is_packed_identity(input)
+    ):
+        from .aten_functions import _native_shape_result, _uses_packed_view_autograd
+
+        torch._assert_async(
+            torch.all(input._physical_shape.prod(1) == other._physical_shape.prod(1)),
+            "view_as requires the same number of elements in each sample",
+        )
+        values = input.values().view(other._packed_values.shape)
+        result = other.packed_like(values)
+        result.padding_value = input.padding_value
+        result.mask_value = input.mask_value
+        return result if _uses_packed_view_autograd(input) else _native_shape_result(input, result)
     if not isinstance(input, NestedTensor):
         batch_dim = _get_batch_dim(other)
         if input.dim() <= batch_dim or input.shape[batch_dim] != len(other):
@@ -6125,17 +6181,20 @@ def view_as(input, other):
             validate=False,
         )
     if not isinstance(other, NestedTensor):
-        return view_like(torch.ops.aten.view.default, (input, tuple(other.shape)), {})
-    return _packed_view_shapes(
+        return _shape_view(input, "view", (tuple(other.shape),))
+    result = _packed_view_shapes(
         input,
         tuple(tuple(shape) for shape in other._original_shapes()),
         ragged_dims=other.ragged_dims,
         batch_first=other.batch_first,
         empty_shape=other._max_physical_dims(),
     )
+    from .aten_functions import _native_shape_result, _uses_packed_view_autograd
+
+    return result if _uses_packed_view_autograd(input) else _native_shape_result(input, result)
 
 
-@NestedTensorFuncRegistry.implement(torch.ops.aten.view_as.default)
+@NestedTensorFuncRegistry.implement(torch.ops.aten.view_as.default, compile_safe=True)
 def _view_as_native(self, other):
     r"""Accept the native operator's self keyword before its composite view lowering."""
     return view_as(self, other)
@@ -6304,9 +6363,9 @@ def rot90(input: NestedTensor, k: int = 1, dims: Sequence[int] = (0, 1)) -> Nest
     return _packed_rot90(input, k, dims)
 
 
-@NestedTensorFuncRegistry.implement(torch.squeeze)
-@NestedTensorFuncRegistry.implement(torch.Tensor.squeeze)
-def squeeze(input: NestedTensor, dim: int | None = None):
+@NestedTensorFuncRegistry.implement(torch.squeeze, compile_safe=True, compile_guard=_squeeze_dim_compile_safe)
+@NestedTensorFuncRegistry.implement(torch.Tensor.squeeze, compile_safe=True, compile_guard=_squeeze_dim_compile_safe)
+def squeeze(input: NestedTensor, dim=None):
     r"""
     Returns a tensor with all specified dimensions of `input` of size `1` removed.
     See also [torch.squeeze][].
@@ -6327,9 +6386,9 @@ def squeeze(input: NestedTensor, dim: int | None = None):
         >>> torch.equal(out, ref)
         True
     """
-    from .aten_functions import _squeeze_nested
+    from .aten_functions import public_squeeze_native
 
-    return _squeeze_nested(input, dim)
+    return public_squeeze_native(input, dim)
 
 
 @NestedTensorFuncRegistry.implement(torch.swapaxes, compile_safe=True)
@@ -6550,9 +6609,9 @@ def expand_as(input, other):
     if not _is_compiling() and target._same_row_splits(result):
         target._share_offset_caches(result)
     result = result._packed_like_unchecked(result._packed_values, reuse_wrapper=True)
-    binding = vars(target).get("_compile_max_length_binding")
+    binding = vars(target).get("_compile_ragged_extents")
     if binding is not None:
-        result._max_length_binding = binding
+        result._ragged_extents = binding
     return result
 
 
@@ -6889,16 +6948,17 @@ def transpose(input: NestedTensor, dim0: int, dim1: int) -> NestedTensor:
         raise IndexError(f"Dimension out of range for NestedTensor with {ndims} dims: ({dim0}, {dim1})")
 
     batch_dim = _get_batch_dim(input)
-    if dim0 == batch_dim or dim1 == batch_dim:
+    if dim0 != dim1 and (dim0 == batch_dim or dim1 == batch_dim):
         other = dim1 if dim0 == batch_dim else dim0
         seq_dim = 1 if input.batch_first else 0
         if other != seq_dim:
             raise ValueError("Cannot transpose the batch dimension with a non-sequence dimension for NestedTensor.")
-        with torch._C.DisableTorchFunctionSubclass():
-            return torch.ops.aten.transpose.int(input, dim0, dim1)
-    from .aten_functions import _transpose_nested
+    if _uses_packed_view_autograd(input):
+        from .aten_functions import _transpose_nested
 
-    return _transpose_nested(torch.ops.aten.transpose.int, (input, dim0, dim1), {})
+        return _transpose_nested(torch.ops.aten.transpose.int, (input, dim0, dim1), {})
+    with torch._C.DisableTorchFunctionSubclass():
+        return torch.ops.aten.transpose.int(input, dim0, dim1)
 
 
 @NestedTensorFuncRegistry.implement(torch.unflatten)
@@ -6925,9 +6985,9 @@ def unflatten(input: NestedTensor, dim: int, sizes):
         True
     """
     dim = _normalize_dim(dim, input.dim())
-    from .aten_functions import unflatten as _aten_unflatten
+    from .aten_functions import _shape_view
 
-    return _aten_unflatten(torch.ops.aten.unflatten.int, (input, dim, sizes), {})
+    return _shape_view(input, "unflatten", (dim, sizes))
 
 
 @NestedTensorFuncRegistry.implement(torch.ops.aten.unflatten.int, compile_safe=True)
@@ -6968,7 +7028,7 @@ def unsqueeze(input: NestedTensor, dim: int):
     if dim <= batch_dim and not (dim == 0 and batch_dim == 0):
         raise ValueError("Cannot unsqueeze at or before the batch dimension for NestedTensor.")
     # Transformed packed values own their derivatives and hidden batch axes.
-    if not _is_compiling() and torch._C._functorch.is_functorch_wrapped_tensor(input.values()):
+    if _uses_packed_view_autograd(input):
         from .aten_functions import _unsqueeze_nested
 
         return _unsqueeze_nested(torch.ops.aten.unsqueeze.default, (input, dim), {})
@@ -7004,7 +7064,7 @@ def log_softmax(input: NestedTensor, dim: int, dtype: torch.dtype | None = None)
     from .aten_functions import _softmax_handler
 
     source = input if dtype is None else input._packed_like_unchecked(input.values().to(dtype=dtype))
-    # Run the packed handler HERE (func level), where ``source.concat`` still carry autograd, rather than
+    # Run the packed handler HERE (func level), where ``source.values()`` still carry autograd, rather than
     # delegating to the aten op on the NestedTensor -- that re-enters ``__torch_dispatch__``, where autograd
     # has already detached ``concat``, so the result would drop grad (breaking a training loss's log_softmax).
     return _softmax_handler(torch.ops.aten._log_softmax.default, (source, dim, False), {})
@@ -7573,8 +7633,9 @@ def _inplace_binary_torch_handler(self, other, *args, _fn=None, **kwargs):
         result = _transform_delegate(_fn, (self, other, *args), kwargs)
         if result is not NotImplemented:
             return result
-    with torch._C.DisableTorchFunctionSubclass():
-        return _fn(self, other, *args, **kwargs)
+    from .nested_tensor import _native_view_inplace
+
+    return _native_view_inplace(self, _fn, (other, *args), kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -7790,3 +7851,14 @@ for _alias_method, _alias_func in (
             compile_safe=NestedTensorFuncRegistry.is_compile_safe(_alias_func),
             compile_guard=NestedTensorFuncRegistry.get_compile_guard(_alias_func),
         )
+
+
+@NestedTensorFuncRegistry.implement(torch.Tensor.tanh_, compile_safe=True)
+def _native_tanh_inplace(input):
+    from .nested_tensor import _native_view_inplace, _transform_delegate
+
+    if not _is_compiling():
+        result = _transform_delegate(torch.Tensor.tanh_, (input,), {})
+        if result is not NotImplemented:
+            return result
+    return _native_view_inplace(input, torch.Tensor.tanh_, (), {})

@@ -82,6 +82,44 @@ class TestClone:
 
 class TestElementwiseOps:
 
+    @pytest.mark.parametrize("name", ["add", "mul"])
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("reverse", [False, True])
+    @pytest.mark.parametrize("backend", [None, "aot_eager"])
+    def test_primitive_dense(self, device, name, batch_first, reverse, backend):
+        torch.compiler.reset()
+        operation = getattr(torch.ops.prims, name).default
+        parts = [torch.randn(*shape, device=device, dtype=torch.float64) for shape in ((2, 4), (3, 2))]
+        source = NT(parts, ragged_dims=(0, 1), batch_first=batch_first)
+        dense = torch.randn(source.shape, device=device, dtype=torch.float64)
+
+        def apply(left, right):
+            return operation(right, left) if reverse else operation(left, right)
+
+        run = apply if backend is None else torch.compile(apply, backend=backend, fullgraph=True)
+        result = run(source, dense)
+        expected = []
+        for index, part in enumerate(parts):
+            other = dense.select(0 if batch_first else 1, index)[: part.shape[0], : part.shape[1]]
+            expected.append(operation(other, part) if reverse else operation(part, other))
+        torch.testing.assert_close(result.unbind(0 if batch_first else 1), expected)
+
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_multiply_jvp(self, device, batch_first):
+        values = torch.randn(14, device=device, dtype=torch.float64)
+        direction = torch.randn_like(values)
+
+        def operation(value):
+            parts = [value[:8].reshape(2, 4), value[8:].reshape(3, 2)]
+            result = NT(parts, ragged_dims=(0, 1), batch_first=batch_first).sin()
+            result.mul_(2)
+            return result.square().sum()
+
+        torch.testing.assert_close(
+            torch.func.jvp(operation, (values,), (direction,)),
+            torch.func.jvp(lambda value: (value.sin() * 2).square().sum(), (values,), (direction,)),
+        )
+
     @pytest.mark.parametrize("backend", [None, "aot_eager"])
     @pytest.mark.parametrize("derived", [False, True])
     @pytest.mark.parametrize(
@@ -155,6 +193,33 @@ class TestElementwiseOps:
         with pytest.raises(type(error.value)):
             operation(source, [1], 0, True)
 
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize(
+        "operation,reference",
+        [
+            (lambda x: torch.ops.aten.permute.default(self=x, dims=[0, 1, 3, 2]), lambda x: x.permute(0, 2, 1)),
+            (lambda x: torch.ops.aten.transpose.int(self=x, dim0=2, dim1=3), lambda x: x.transpose(1, 2)),
+        ],
+        ids=["permute", "transpose"],
+    )
+    def test_permutation_alias(self, device, backend, operation, reference):
+        torch.compiler.reset()
+        parts = [torch.randn(n, 2, 3, device=device, dtype=torch.float64, requires_grad=True) for n in (2, 4)]
+        refs = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=(0,)).sin()
+        expected_source = [part.sin() for part in refs]
+        expected = [reference(part) for part in expected_source]
+        result = torch.compile(operation, backend=backend, fullgraph=True, dynamic=True)(source)
+        result.mul_(2)
+        for part in expected:
+            part.mul_(2)
+        torch.testing.assert_close(result.unbind(), expected)
+        torch.testing.assert_close(source.unbind(), expected_source)
+        torch.testing.assert_close(
+            torch.autograd.grad(source.square().sum(), parts),
+            torch.autograd.grad(sum(part.square().sum() for part in expected_source), refs),
+        )
+
     @pytest.mark.parametrize("inference", [False, True])
     @pytest.mark.parametrize(
         "operation,reference",
@@ -218,9 +283,10 @@ class TestElementwiseOps:
             torch.as_strided(source, (2, 2), source.stride())
 
     @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
+    @pytest.mark.parametrize("squeezed", [False, True])
     @pytest.mark.parametrize("dim", [0, -1])
     @pytest.mark.parametrize("shapes", [((), ()), ((2,), (3,))])
-    def test_unsqueeze_mutation(self, device, backend, dim, shapes):
+    def test_unsqueeze_mutation(self, device, backend, squeezed, dim, shapes):
         torch.compiler.reset()
         parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
         source = NT(parts).sin()
@@ -228,7 +294,8 @@ class TestElementwiseOps:
         loss = source.square().sum()
 
         def unsqueeze(value):
-            return torch.ops.aten.unsqueeze.default(value, dim)
+            view = torch.ops.aten.unsqueeze.default(value, dim)
+            return torch.ops.aten.squeeze.dim(view, dim) if squeezed else view
 
         operation = unsqueeze if backend is None else torch.compile(unsqueeze, backend=backend, fullgraph=True)
         view = operation(source)
@@ -261,6 +328,55 @@ class TestElementwiseOps:
         torch.testing.assert_close(source.values(), expected)
         torch.testing.assert_close(
             torch.autograd.grad(source.square().sum(), parts), torch.autograd.grad(expected.square().sum(), references)
+        )
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
+    @pytest.mark.parametrize("batch_size", [1, 2])
+    @pytest.mark.parametrize("case", ["inverse", "dim", "default", "dims", "noop", "empty", "mixed"])
+    def test_squeeze_inplace(self, device, backend, batch_size, case):
+        torch.compiler.reset()
+        parts = [
+            torch.randn(1, 3, 1, device=device, dtype=torch.float64, requires_grad=True) for _ in range(batch_size)
+        ]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=()).sin()
+        expected_parts = [part.sin() for part in references]
+
+        def operation(value):
+            if case == "inverse":
+                return torch.ops.aten.squeeze.dim(torch.ops.aten.unsqueeze.default(value, -1), -1)
+            if case == "default":
+                return torch.ops.aten.squeeze.default(value)
+            if case == "dim":
+                return torch.ops.aten.squeeze.dim(value, -1)
+            dims = {"dims": (1, 3), "noop": (2,), "empty": (), "mixed": (1, 2)}[case]
+            return torch.ops.aten.squeeze.dims(value, dims)
+
+        def reference(value):
+            if case == "inverse":
+                return value.unsqueeze(-1).squeeze(-1)
+            if case == "default":
+                return value.squeeze()
+            if case == "dim":
+                return value.squeeze(-1)
+            dims = {"dims": (0, 2), "noop": (1,), "empty": (), "mixed": (0, 1)}[case]
+            return value.squeeze(dims)
+
+        run = operation if backend is None else torch.compile(operation, backend=backend, fullgraph=True)
+        view = run(source)
+        expected = [reference(part) for part in expected_parts]
+        view.mul_(2)
+        for part in expected:
+            part.mul_(2)
+        torch.testing.assert_close(view.unbind(), expected)
+        torch.testing.assert_close(source.unbind(), expected_parts)
+        torch.testing.assert_close(
+            torch.autograd.grad(source.square().sum(), parts, retain_graph=True),
+            torch.autograd.grad(sum(part.square().sum() for part in expected_parts), references, retain_graph=True),
+        )
+        torch.testing.assert_close(
+            torch.autograd.grad(view.square().sum(), parts),
+            torch.autograd.grad(sum(part.square().sum() for part in expected), references),
         )
 
     @pytest.mark.parametrize("batch_first", [True, False])
@@ -675,9 +791,22 @@ class TestBitwiseAliases:
 
 class TestInPlace:
 
+    def test_custom_projection(self, device):
+        parts = [torch.randn(n, 3, device=device, requires_grad=True) for n in (2, 4)]
+        source = NT(parts, ragged_dims=(0,)).sin()
+        projection = source.values()
+        before = projection.detach().clone()
+        with pytest.raises(RuntimeError, match="custom Function"):
+            projection.mul_(2)
+        alias = source.packed_like(projection)
+        with pytest.raises(RuntimeError, match="custom Function"):
+            alias.mul_(2)
+        torch.testing.assert_close(source.values(), before)
+
     @pytest.mark.parametrize("creation", ["view", "leaf", "no_grad", "no_grad_leaf"])
     @pytest.mark.parametrize("unsqueezed", [False, True])
-    def test_leaf_views(self, device, creation, unsqueezed):
+    @pytest.mark.parametrize("squeezed", [False, True])
+    def test_leaf_views(self, device, creation, unsqueezed, squeezed):
         base = torch.arange(24.0, device=device, dtype=torch.float64)
         if creation == "view":
             base.requires_grad_()
@@ -692,12 +821,16 @@ class TestInPlace:
             values.requires_grad_()
         before = values.detach().clone()
         reference = values.unsqueeze(-1) if unsqueezed else values
+        if squeezed:
+            reference = reference.squeeze(-1)
         with pytest.raises(RuntimeError):
             reference.add_(1)
 
         output = NT.from_packed(values, torch.tensor([0, 6]), torch.tensor([[6, 4]]), ragged_dims=(0,))
         if unsqueezed:
             output = output.unsqueeze(-1)
+        if squeezed:
+            output = output.squeeze(-1)
         with pytest.raises(RuntimeError):
             output.add_(1)
         torch.testing.assert_close(values, before)
@@ -746,6 +879,72 @@ class TestInPlace:
 
 
 class TestIndexingOps:
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
+    @pytest.mark.parametrize("before_owner", [False, True])
+    @pytest.mark.parametrize("operation", ["select", "slice"])
+    def test_static_subset(self, device, backend, before_owner, operation):
+        torch.compiler.reset()
+        lengths = (2,) if before_owner else (2, 4)
+        parts = [
+            torch.randn((3, n, 2) if before_owner else (n, 3), device=device, dtype=torch.float64, requires_grad=True)
+            for n in lengths
+        ]
+        refs = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=(1,) if before_owner else (0,), batch_first=not before_owner) * 1
+        expected_source = [part * 1 for part in refs]
+        dim = 0 if before_owner else -1
+
+        def subset(value):
+            if operation == "select":
+                return torch.ops.aten.select.int(self=value, dim=dim, index=1)
+            return torch.ops.aten.slice.Tensor(self=value, dim=dim, start=1, end=2)
+
+        run = subset if backend is None else torch.compile(subset, backend=backend, fullgraph=True, dynamic=True)
+        result = run(source)
+        expected = [
+            part.select(dim, 1) if operation == "select" else part.narrow(dim, 1, 1) for part in expected_source
+        ]
+        output_batch = 1 if before_owner and operation == "slice" else 0
+        torch.testing.assert_close(result.unbind(output_batch), expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(result.square().sum(), parts, retain_graph=True),
+            torch.autograd.grad(sum(part.square().sum() for part in expected), refs, retain_graph=True),
+        )
+        saved = source.values().square().sum()
+        result.mul_(2)
+        for part in expected:
+            part.mul_(2)
+        torch.testing.assert_close(source.unbind(1 if before_owner else 0), expected_source)
+        torch.testing.assert_close(
+            torch.autograd.grad(source.square().sum(), parts, retain_graph=True),
+            torch.autograd.grad(sum(part.square().sum() for part in expected_source), refs),
+        )
+        with pytest.raises(RuntimeError, match="modified.*inplace|version"):
+            torch.autograd.grad(saved, parts)
+
+    @pytest.mark.parametrize("axis", [0, 1, -1])
+    def test_narrow_copy(self, device, axis):
+        parts = [torch.randn(n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in (4, 6)]
+        refs = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=(0,)) * 1
+        expected_source = [part * 1 for part in refs]
+        saved = source.values().square().sum()
+        result = torch.ops.aten.narrow_copy.default(source, axis, 1, 1)
+        expected = (
+            [expected_source[1].clone()]
+            if axis == 0
+            else [torch.ops.aten.narrow_copy.default(part, 0 if axis == 1 else -1, 1, 1) for part in expected_source]
+        )
+        result.mul_(2)
+        for part in expected:
+            part.mul_(2)
+        torch.testing.assert_close(result.unbind(), expected)
+        torch.testing.assert_close(source.unbind(), expected_source)
+        torch.testing.assert_close(
+            torch.autograd.grad(saved, parts),
+            torch.autograd.grad(sum(part.square().sum() for part in expected_source), refs),
+        )
 
     @pytest.mark.parametrize("name", ["gather", "scatter"])
     @pytest.mark.parametrize("index_dtype", [torch.int32, torch.int64, torch.float32])

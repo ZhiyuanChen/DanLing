@@ -23,7 +23,7 @@ Core [NestedTensor][] class: packed variable-length tensor with
 
 This module defines the storage contract (``concat``, ``_offsets``,
 ``_physical_shape``, ``_permutation``), construction, metadata management,
-materialization (``.tensor``, ``.mask``, ``.concat``), serialization,
+materialization (``.tensor``, ``.mask``, ``.values()``), serialization,
 and dispatch entry points.
 """
 
@@ -34,14 +34,26 @@ import hashlib
 import inspect
 import math
 import operator
+import weakref
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Iterable, SupportsFloat, TypeVar, cast, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    ClassVar,
+    Iterable,
+    SupportsFloat,
+    SupportsIndex,
+    TypeVar,
+    cast,
+    overload,
+)
 
 import torch
 from torch import Tensor
 from torch.utils._python_dispatch import _get_current_dispatch_mode
 
-from .aten_functions import _is_fake_tensor, per_element_fallback
+from .aten_functions import _find_nested, _is_fake_tensor, per_element_fallback
 from .ops import (
     NestedTensorAtenRegistry,
     NestedTensorFuncRegistry,
@@ -81,12 +93,39 @@ _PackedConstructor = Callable[
         tuple[tuple[int, ...], ...] | None,
         tuple[Tensor, ...] | None,
         tuple[int, ...] | None,
+        int,
     ],
     "NestedTensor",
 ]
 
 _INT64_MAX = torch.iinfo(torch.int64).max
 _INT64_SQUARE_ROOT_MAX = math.isqrt(_INT64_MAX)
+
+
+def _admit_layout_tensors(tensors):
+    """Keep canonical CPU geometry versioned without changing ordinary aliases."""
+    admitted = {}
+
+    def admit(tensor):
+        if tensor is None:
+            return None
+        if isinstance(tensor, tuple):
+            return tuple(admit(value) for value in tensor)
+        if not tensor.is_inference():
+            return tensor
+        key = id(tensor)
+        if key not in admitted:
+            with torch.inference_mode(False):
+                admitted[key] = tensor.clone()
+        return admitted[key]
+
+    return tuple(admit(tensor) for tensor in tensors)
+
+
+def _admit_layout_children(children):
+    names = [name for name in children if name not in ("_packed_values", "_flatten_sentinel")]
+    values = _admit_layout_tensors(tuple(children[name] for name in names))
+    return {**children, **dict(zip(names, values))}
 
 
 def _transform_metadata(tensor: Tensor) -> Tensor:
@@ -137,6 +176,9 @@ def _needs_packed_bridge(values: Tensor) -> bool:
         return False
     if torch.is_grad_enabled() and values.requires_grad:
         return True
+    # Forward tangents need the same wrapper bridge without reverse gradients.
+    if torch.autograd.forward_ad._current_level >= 0:
+        return True
     if not _is_compiling() and torch._C._functorch.is_gradtrackingtensor(values):
         interpreter = torch._C._functorch.peek_interpreter_stack()
         return interpreter is not None and interpreter.key() == torch._C._functorch.TransformType.Grad
@@ -181,17 +223,22 @@ def _metadata_tensors_equal_fake(lhs: Tensor, rhs: Tensor) -> Tensor:
 
 
 @torch.library.custom_op("danling::_packed_slice_size_bindings", mutates_args=())
-def _packed_slice_size_bindings(lengths: Tensor) -> tuple[Tensor, Tensor]:
-    r"""Bind a slice's packed extent and actual logical maximum from CPU metadata."""
-    total = int(lengths.sum().item())
+def _packed_slice_size_bindings(lengths: Tensor, total: int | None = None) -> tuple[Tensor, Tensor]:
+    r"""Bind the total and maximum, validating a caller's exact total when supplied."""
+    actual_total = int(lengths.sum().item())
+    if total is not None and total != actual_total:
+        raise RuntimeError("packed layout lengths must sum to the supplied total")
     maximum = int(lengths.max().item()) if lengths.numel() else 0
-    return lengths.new_empty((total, 0)), lengths.new_empty((maximum, 0))
+    return lengths.new_empty((actual_total, 0)), lengths.new_empty((maximum, 0))
 
 
 @_packed_slice_size_bindings.register_fake
-def _packed_slice_size_bindings_fake(lengths: Tensor) -> tuple[Tensor, Tensor]:
+def _packed_slice_size_bindings_fake(lengths: Tensor, total: int | None = None) -> tuple[Tensor, Tensor]:
     ctx = torch.library.get_ctx()
-    total = ctx.new_dynamic_size(min=0)
+    if total is None:
+        total = ctx.new_dynamic_size(min=0)
+    else:
+        torch._check(total >= 0)
     maximum = ctx.new_dynamic_size(min=0)
     return lengths.new_empty((total, 0)), lengths.new_empty((maximum, 0))
 
@@ -285,7 +332,7 @@ class NestedTensor(torch.Tensor):
     The class provides three main views of the data:
     - `.tensor`: A padded tensor with zeros (or other value) in place of missing elements
     - `.mask`: A boolean mask indicating which elements are real vs padding
-    - `.concat`: The packed tensor containing all elements concatenated without padding
+    - `.values()`: The packed tensor containing all elements concatenated without padding
 
     When indexing a `NestedTensor`, the behavior depends on the index type:
     1. Integer index (`nt[0]`): Returns a single tensor without padding
@@ -315,7 +362,7 @@ class NestedTensor(torch.Tensor):
         >>> nested_tensor.mask  # Mask showing real vs padding values
         tensor([[ True,  True,  True],
                 [ True,  True, False]])
-        >>> nested_tensor.concat  # Concatenated version (no padding)
+        >>> nested_tensor.values()  # Concatenated version (no padding)
         tensor([1, 2, 3, 4, 5])
 
         Indexing:
@@ -358,7 +405,7 @@ class NestedTensor(torch.Tensor):
     _permutation: tuple[int, ...]
     _physical_shape: Tensor
     _flatten_sentinel: Tensor = torch.empty(0)
-    _compile_max_length_binding: Tensor
+    _compile_ragged_extents: Tensor
     _logical_shape: torch.Size
     _ragged_dims: tuple[int, ...]
     _ragged_dims_explicit: bool
@@ -381,9 +428,10 @@ class NestedTensor(torch.Tensor):
     _unflattened_autograd: bool
     _wrapper_grad_leaf: bool
     _is_aot_tangent: bool
-    _view_ops: tuple[tuple[str, int], ...]
+    _view_ops: tuple[tuple[str, tuple], ...]
+    _VIEW_BINDING_PREFIX = "_view_binding_"
     _RAGGED_OFFSETS_PREFIX = "_ragged_offsets_"
-    _AOT_CACHE_HASH_VERSION = 6
+    _AOT_CACHE_HASH_VERSION = 12
 
     # Construction & Initialization
 
@@ -592,6 +640,7 @@ class NestedTensor(torch.Tensor):
             element_shapes if keep_python_metadata else None,
             ragged_offsets,
             None,
+            0,
         )
         if _is_compiling():
             return result._packed_like_unchecked(values, reuse_wrapper=True)
@@ -1532,11 +1581,14 @@ class NestedTensor(torch.Tensor):
             splits,
             None if tensor_backed_compile else self._packed_sizes,
             None if tensor_backed_compile else self._element_shapes,
+            getattr(self, "_compile_ragged_extents", None),
             logical_strides,
         )
 
     @staticmethod
-    def _layout_from_state(state: tuple, like: Tensor, packed_shape: torch.Size | None = None) -> NestedTensor:
+    def _layout_from_state(
+        state: tuple, like: Tensor, packed_shape: torch.Size | None = None, *, logical_offset=0
+    ) -> NestedTensor:
         r"""Wrap fresh values in saved geometry, or create a metadata-only reference of the requested shape."""
         (
             cls,
@@ -1551,6 +1603,7 @@ class NestedTensor(torch.Tensor):
             splits,
             packed_sizes,
             element_shapes,
+            ragged_extents,
             logical_strides,
         ) = state
         if (
@@ -1565,7 +1618,7 @@ class NestedTensor(torch.Tensor):
             )
         ):
             rank = shape_tensor.size(1) - max(like.dim() - 1, 0)
-            return cls._compiled_packed_constructor(
+            result = cls._compiled_packed_constructor(
                 like,
                 offsets,
                 shape_tensor,
@@ -1581,8 +1634,12 @@ class NestedTensor(torch.Tensor):
                 element_shapes,
                 splits,
                 logical_strides,
+                logical_offset,
             )
-        return cls._from_packed_raw(
+            if ragged_extents is not None:
+                result._ragged_extents = ragged_extents
+            return result
+        result = cls._from_packed_raw(
             like if packed_shape is None else like.new_empty(()).expand(packed_shape),
             offsets,
             shape_tensor,
@@ -1598,7 +1655,11 @@ class NestedTensor(torch.Tensor):
             validate=False,
             mark_dynamic=False,
             logical_strides=logical_strides,
+            logical_offset=logical_offset,
         )
+        if ragged_extents is not None:
+            result._ragged_extents = ragged_extents
+        return result
 
     def _mark_tensor_backed_dynamic_dims(self, *, mark_values: bool = True) -> None:
         r"""Mark packed and logical ragged extents dynamic without guarded user state.
@@ -1753,6 +1814,9 @@ class NestedTensor(torch.Tensor):
     ) -> Self:
         r"""Construct a NestedTensor sharing packed storage and its autograd history.
 
+        Inference-mode metadata is normalized to versioned CPU tensors; use
+        :meth:`packed_offsets` and :meth:`element_sizes` to mutate the canonical layout.
+
         ``mark_dynamic`` hints Dynamo that the ragged extents may vary. Public factories and
         eager operator results need it; operator intermediates already inside a compiled
         region pass ``False`` (see :meth:`_mark_tensor_backed_dynamic_dims`).
@@ -1779,7 +1843,7 @@ class NestedTensor(torch.Tensor):
             mark_values_dynamic=mark_values_dynamic,
         )
         if needs_bridge:
-            result = _PackedLikeAutograd.apply(values, _PackedStructureReference(result))
+            result = result._packed_like_unchecked(values)
         if mark_dynamic:
             result._mark_tensor_backed_dynamic_dims(mark_values=mark_values_dynamic)
         return result
@@ -1806,6 +1870,7 @@ class NestedTensor(torch.Tensor):
         mark_dynamic: bool = True,
         mark_values_dynamic: bool = True,
         logical_strides: tuple[int, ...] | None = None,
+        logical_offset: int = 0,
     ) -> Self:
         r"""Build complete geometry without attaching a packed autograd edge."""
         # offsets and shape_tensor MUST live on CPU to avoid implicit CUDA syncs
@@ -1842,6 +1907,21 @@ class NestedTensor(torch.Tensor):
             element_shapes = tuple(cls._trim_shape(shape) for shape in shape_tensor.tolist())
 
         physical_rank = int(shape_tensor.size(1))
+        batch_dim = 0 if batch_first or len(logical_shape) == 1 else 1
+        batch_size = logical_shape[batch_dim]
+        # Declared extents keep metadata dimensions consistently literal or symbolic
+        # across AOT's fake and joint passes, without replacing canonical aliases.
+        if (
+            offsets.dim() == 1
+            and isinstance(offsets.shape[0], torch.SymInt)
+            and not isinstance(batch_size, torch.SymInt)
+        ):
+            offsets = offsets.view(batch_size + 1)
+        if shape_tensor.dim() == 2 and any(
+            isinstance(actual, torch.SymInt) and not isinstance(expected, torch.SymInt)
+            for actual, expected in zip(shape_tensor.shape, (batch_size, physical_rank))
+        ):
+            shape_tensor = shape_tensor.view(batch_size, physical_rank)
         if permutation is None:
             if ragged_dims is None:
                 resolved_permutation = cls._permutation_from_physical_shape(shape_tensor, element_shapes)
@@ -1947,6 +2027,7 @@ class NestedTensor(torch.Tensor):
             stored_element_shapes,
             resolved_ragged_offsets,
             logical_strides,
+            logical_offset,
         )
         if mark_dynamic:
             result._mark_tensor_backed_dynamic_dims(mark_values=mark_values_dynamic)
@@ -2025,31 +2106,42 @@ class NestedTensor(torch.Tensor):
         )
         return hashlib.blake2b(repr(payload).encode("utf-8"), digest_size=16).hexdigest()
 
-    @property
-    def _max_length_binding(self) -> Tensor:
-        r"""Bind the data-derived logical maximum with one tensor dimension."""
-        binding = vars(self).get("_compile_max_length_binding")
-        if binding is not None:
-            return binding
-        max_length = cast(int, self._physical_shape[:, 0].max().item()) if self._physical_shape.size(0) else 0
-        return self._offsets.new_empty(()).expand(max_length)
+    def _new_ragged_extents(self) -> Tensor:
+        r"""Bind every current ragged-axis maximum in one zero-storage child."""
+        physical = self._max_physical_dims()
+        return self._offsets.new_empty((0, *(physical[axis] for axis in self._ragged_dims)))
 
-    @_max_length_binding.setter
-    def _max_length_binding(self, binding: Tensor) -> None:
-        self._compile_max_length_binding = binding
+    @property
+    def _ragged_extents(self) -> Tensor:
+        r"""Return the optional child for the current ordered ragged-axis maxima."""
+        return self._compile_ragged_extents
+
+    @_ragged_extents.setter
+    def _ragged_extents(self, binding: Tensor) -> None:
+        (binding,) = _admit_layout_tensors((binding,))
+        torch._check(binding.dim() == len(self._ragged_dims) + 1)
+        torch._check(binding.shape[0] == 0)
+        physical = self._max_physical_dims()
+        for index, axis in enumerate(self._ragged_dims, start=1):
+            torch._check(binding.shape[index] == physical[axis])
+        self._compile_ragged_extents = binding
 
     def __tensor_flatten__(self):
+        encoded_view_ops = _ensure_view_serialized(self)
         # During tracing, wrapper instances can be inspected while being built.
         # Only expose tensor attrs that already exist so Dynamo/FakeTensor can
         # inspect partially constructed wrapper subclasses safely.
         instance_attrs = vars(self)
         inner_tensors = [name for name in ("_offsets", "_physical_shape") if name in instance_attrs]
-        if "_compile_max_length_binding" in instance_attrs:
-            inner_tensors.append("_max_length_binding")
-        # One packed child owns both the public projection and its tangent.
-        # Exposing the raw storage again would introduce a second autograd edge.
+        if "_compile_ragged_extents" in instance_attrs:
+            inner_tensors.append("_ragged_extents")
+        view_bindings = self._view_bindings()
+        inner_tensors.extend(f"{self._VIEW_BINDING_PREFIX}{index}" for index in range(len(view_bindings)))
+        # One numerical child participates in the formal subclass protocol.
+        # Projection into the public wrapper is an eager autograd operation,
+        # not part of tensor flattening.
         if "_packed_values" in instance_attrs:
-            inner_tensors.append("concat")
+            inner_tensors.append("_packed_values")
         if not inner_tensors:
             inner_tensors = ["_flatten_sentinel"]
         permutation = getattr(self, "_permutation", ())
@@ -2082,7 +2174,11 @@ class NestedTensor(torch.Tensor):
         return inner_tensors, {
             "requires_grad": self.requires_grad,
             "is_aot_tangent": vars(self).get("_is_aot_tangent", False),
-            "view_ops": vars(self).get("_view_ops", ()),
+            "view_ops": encoded_view_ops,
+            "view_binding_count": len(view_bindings),
+            "view_offset_binding": vars(self).get("_view_offset_binding"),
+            "view_output_geometry": vars(self).get("_view_output_geometry"),
+            "has_ragged_extents": "_compile_ragged_extents" in instance_attrs,
             "batch_first": getattr(self, "batch_first", True),
             "padding_value": getattr(self, "padding_value", 0.0),
             "mask_value": getattr(self, "mask_value", False),
@@ -2095,13 +2191,44 @@ class NestedTensor(torch.Tensor):
 
     @classmethod
     def __tensor_unflatten__(cls, inner_tensors, ctx, outer_size, outer_stride):
-        values = inner_tensors.get("concat", inner_tensors.get("_flatten_sentinel"))
+        inner_tensors = _admit_layout_children(inner_tensors)
+        values = inner_tensors.get("_packed_values", inner_tensors.get("_flatten_sentinel"))
         if values is None:
-            raise RuntimeError("NestedTensor requires concat during tensor unflatten.")
+            raise RuntimeError("NestedTensor requires packed values during tensor unflatten.")
+        from torch._subclasses.fake_tensor import FakeTensor
+        from torch._subclasses.functional_tensor import FunctionalTensor
+
+        native_rebuild = bool(ctx.get("view_ops")) and not (
+            isinstance(values, (FakeTensor, FunctionalTensor))
+            or torch._C._functorch.is_functorch_wrapped_tensor(values)
+        )
+        metadata_values = values.detach() if native_rebuild else values
         ctx = dict(ctx)
         wrapper_requires_grad = bool(ctx.pop("requires_grad", values.requires_grad))
         is_aot_tangent = bool(ctx.pop("is_aot_tangent", False))
-        view_ops = ctx.pop("view_ops", ())
+        encoded_view_ops = ctx.pop("view_ops", ())
+        view_binding_count = ctx.pop("view_binding_count", 0)
+        view_bindings = tuple(
+            inner_tensors[f"{cls._VIEW_BINDING_PREFIX}{index}"] for index in range(view_binding_count)
+        )
+        view_offset_binding = ctx.pop("view_offset_binding", None)
+        view_output_geometry = ctx.pop("view_output_geometry", None)
+        view_ops = _decode_view_records(encoded_view_ops, view_bindings)
+        if view_output_geometry is None:
+            view_current_geometry = None
+        else:
+            size_refs, stride_refs, offset_ref = view_output_geometry
+            view_current_geometry = (
+                tuple(_view_binding_value(view_bindings, ref) for ref in size_refs),
+                tuple(_view_binding_value(view_bindings, ref) for ref in stride_refs),
+                _view_binding_value(view_bindings, offset_ref),
+            )
+        has_ragged_extents = ctx.pop("has_ragged_extents", False)
+        if has_ragged_extents != ("_ragged_extents" in inner_tensors):
+            raise RuntimeError("NestedTensor ragged-extent child must match its tensor metadata schema")
+        logical_offset = (
+            _view_binding_value(view_bindings, view_offset_binding) if view_offset_binding is not None else 0
+        )
 
         offsets = inner_tensors.get("_offsets")
         shape_tensor = inner_tensors.get("_physical_shape")
@@ -2119,7 +2246,7 @@ class NestedTensor(torch.Tensor):
                 outer[batch_dim] == shape_tensor.shape[0],
                 lambda: "NestedTensor outer batch axis must match its element shapes",
             )
-            max_length_binding = inner_tensors.get("_max_length_binding")
+            max_length_binding = inner_tensors.get("_ragged_extents")
             preserve_tensor_metadata = (
                 cls._is_tensor_backed_layout(ctx.get("permutation"), ctx.get("ragged_dims"))
                 and ctx.get("packed_sizes") is None
@@ -2147,29 +2274,58 @@ class NestedTensor(torch.Tensor):
                 ragged_offsets = tuple(inner_tensors[name] for name in cls._ragged_offset_names(ragged_rank))
             else:
                 ragged_offsets = None
-            result = cls._from_packed_raw(
-                values,
-                offsets,
-                shape_tensor,
-                outer_size=outer,
-                validate=False,
-                materialize_python_metadata=not preserve_tensor_metadata,
-                ragged_offsets=ragged_offsets,
-                logical_strides=strides,
-                **ctx,
-            )
-            if torch.Tensor.requires_grad.__get__(result) != wrapper_requires_grad:
+            if native_rebuild:
+                state = (
+                    cls,
+                    offsets,
+                    shape_tensor,
+                    ctx["permutation"],
+                    ctx["ragged_dims"],
+                    torch.Size(outer),
+                    ctx["batch_first"],
+                    ctx["padding_value"],
+                    ctx["mask_value"],
+                    ragged_offsets,
+                    ctx["packed_sizes"],
+                    ctx["element_shapes"],
+                    inner_tensors.get("_ragged_extents"),
+                    strides,
+                )
+                result = NestedTensor._layout_from_state(state, metadata_values, logical_offset=logical_offset)
+                result._pin_memory = ctx["pin_memory"]
+            else:
+                result = cls._from_packed_raw(
+                    metadata_values,
+                    offsets,
+                    shape_tensor,
+                    outer_size=outer,
+                    validate=False,
+                    materialize_python_metadata=not preserve_tensor_metadata,
+                    ragged_offsets=ragged_offsets,
+                    logical_strides=strides,
+                    logical_offset=logical_offset,
+                    **ctx,
+                )
+            result._packed_values = values
+            if not native_rebuild and torch.Tensor.requires_grad.__get__(result) != wrapper_requires_grad:
                 torch.Tensor.requires_grad.__set__(result, wrapper_requires_grad)
             if max_length_binding is not None:
-                result._max_length_binding = max_length_binding
+                result._ragged_extents = max_length_binding
             result._is_aot_tangent = is_aot_tangent
             result._unflattened_autograd = True
-            return _replay_view_ops(result, view_ops)
+            result._set_view_bindings(view_bindings)
+            result._view_offset_binding = view_offset_binding
+            result._view_output_geometry = view_output_geometry
+            result._view_ops = view_ops
+            result._view_current_geometry = view_current_geometry
+            result._view_encoding = view_ops, view_current_geometry, encoded_view_ops
+            return _replay_view_ops(result, view_ops, wrapper_requires_grad)
 
         result = torch.Tensor._make_wrapper_subclass(
             cls,
             torch.Size(outer_size),
             strides=outer_stride,
+            storage_offset=logical_offset if outer_stride is not None else None,
             dtype=values.dtype,
             device=values.device,
             requires_grad=wrapper_requires_grad,
@@ -2180,7 +2336,6 @@ class NestedTensor(torch.Tensor):
         if shape_tensor is not None:
             result._physical_shape = shape_tensor
         result._logical_shape = torch.Size(outer_size)
-        result._logical_strides = tuple(outer_stride)
         result._set_runtime_config(
             batch_first=ctx["batch_first"],
             padding_value=ctx["padding_value"],
@@ -2204,19 +2359,106 @@ class NestedTensor(torch.Tensor):
         if ragged_rank == 1 and ctx.get("packed_sizes") is None and ctx.get("element_shapes") is None:
             ragged_offsets = (offsets,) if offsets is not None else ()
         cls._install_persistent_ragged_offsets(result, ragged_offsets or None)
-        max_length_binding = inner_tensors.get("_max_length_binding")
+        max_length_binding = inner_tensors.get("_ragged_extents")
         if max_length_binding is not None:
-            result._max_length_binding = max_length_binding
+            result._ragged_extents = max_length_binding
         result._invalidate_transient_caches()
         result._is_aot_tangent = is_aot_tangent
         result._unflattened_autograd = True
         result._mark_tensor_backed_dynamic_dims()
-        return _replay_view_ops(result, view_ops)
+        result._set_view_bindings(view_bindings)
+        result._view_offset_binding = view_offset_binding
+        result._view_output_geometry = view_output_geometry
+        result._view_ops = view_ops
+        result._view_current_geometry = view_current_geometry
+        result._view_encoding = view_ops, view_current_geometry, encoded_view_ops
+        return _replay_view_ops(result, view_ops, wrapper_requires_grad)
+
+    @property
+    def grad_fn(self):
+        return _native_view_grad_fn(self)
+
+    @property
+    def is_leaf(self):
+        _native_view_grad_fn(self)
+        with torch._C.DisableTorchFunctionSubclass():
+            return torch.Tensor.is_leaf.__get__(self)
+
+    def _view_bindings(self) -> tuple[Tensor, ...]:
+        count = vars(self).get("_view_binding_count", 0)
+        return tuple(getattr(self, f"{self._VIEW_BINDING_PREFIX}{index}") for index in range(count))
+
+    def _set_view_bindings(self, bindings: tuple[Tensor, ...]) -> None:
+        for index in range(vars(self).get("_view_binding_count", 0)):
+            delattr(self, f"{self._VIEW_BINDING_PREFIX}{index}")
+        self._view_binding_count = len(bindings)
+        for index, binding in enumerate(bindings):
+            setattr(self, f"{self._VIEW_BINDING_PREFIX}{index}", binding)
+
+    def _view_func(self, new_base):
+        operations = vars(self).get("_view_ops", ())
+        if not operations:
+            return torch.Tensor._view_func(self, new_base)
+        return _apply_native_view_ops(new_base, operations)
+
+    def _view_func_unsafe(self, new_base, symint_visitor_fn=None, tensor_visitor_fn=None):
+        r"""Rebuild a fake native view from its exact mapped layout descriptor."""
+        _ensure_view_serialized(self)
+        geometry = vars(self).get("_view_output_geometry")
+        if (
+            geometry is None
+            or tensor_visitor_fn is None
+            or not isinstance(new_base, NestedTensor)
+            or not _is_fake_tensor(new_base._packed_values)
+        ):
+            return torch.Tensor._view_func_unsafe(self, new_base, symint_visitor_fn, tensor_visitor_fn)
+        from torch.utils._python_dispatch import TorchDispatchMode, return_and_correct_aliasing
+
+        names, metadata = self.__tensor_flatten__()
+        children = {name: tensor_visitor_fn(getattr(self, name)) for name in names}
+        bindings = tuple(children[f"{self._VIEW_BINDING_PREFIX}{index}"] for index in range(len(self._view_bindings())))
+        sizes, strides, offset = geometry
+        sizes = tuple(_view_binding_value(bindings, reference) for reference in sizes)
+        strides = tuple(_view_binding_value(bindings, reference) for reference in strides)
+        offset = _view_binding_value(bindings, offset)
+        metadata = {**metadata, "requires_grad": False}
+        values = children["_packed_values"]
+        result = type(self).__tensor_unflatten__(
+            {**children, "_packed_values": values.detach()}, metadata, sizes, strides
+        )
+        result._packed_values = values
+
+        class MetadataViewMode(TorchDispatchMode):
+            def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+                kwargs = {} if kwargs is None else kwargs
+                if func is torch.ops.aten.as_strided.default and args[0] is new_base:
+                    return return_and_correct_aliasing(func, args, kwargs, result)
+                return func(*args, **kwargs)
+
+        # This one metadata operation establishes the native outer view edge.
+        # Its packed child is the visitor's exact output, not a numerical replay.
+        with (
+            MetadataViewMode(),
+            torch._C.DisableTorchFunctionSubclass(),
+            torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False),
+        ):
+            return torch.ops.aten.as_strided.default(new_base, sizes, strides, offset)
 
     def __coerce_tangent_metadata__(self):
         r"""Classify this wrapper as a tangent through tracing and runtime layout coercion."""
-        self._is_aot_tangent = True
-        return self
+        result = self
+        if (
+            vars(self).get("_view_ops")
+            or self._view_bindings()
+            or vars(self).get("_view_output_geometry") is not None
+            or vars(self).get("_view_offset_binding") is not None
+        ):
+            # A cotangent has this layout, independently of the forward view's
+            # ancestry. The packed bridge preserves higher-order derivative edges;
+            # the fresh placeholder also gives it its own zero logical offset.
+            result = self._packed_like_unchecked(self.values())
+        result._is_aot_tangent = True
+        return result
 
     def __coerce_same_metadata_as_tangent__(self, expected_meta, expected_type=None):
         r"""Apply the tangent classification expected by AOT's compiled backward."""
@@ -2243,11 +2485,29 @@ class NestedTensor(torch.Tensor):
                     validate=False,
                     mark_dynamic=False,
                 )
+                binding = vars(self).get("_compile_ragged_extents")
+                if binding is not None:
+                    result._ragged_extents = binding
                 result._is_aot_tangent = bool(expected_meta.get("is_aot_tangent", False))
-                return result
+                return result._coerce_tangent_binding(expected_meta)
             return None
-        self._is_aot_tangent = bool(expected_meta.get("is_aot_tangent", False))
-        return self
+        result = self.__coerce_tangent_metadata__()
+        result._is_aot_tangent = bool(expected_meta.get("is_aot_tangent", False))
+        return result._coerce_tangent_binding(expected_meta)
+
+    def _coerce_tangent_binding(self, expected_meta):
+        r"""Normalize the optional geometry child on a fresh cotangent wrapper."""
+        expected = bool(expected_meta.get("has_ragged_extents", False))
+        binding = vars(self).get("_compile_ragged_extents")
+        if expected == (binding is not None):
+            return self
+        result = self._packed_like_unchecked(self.values())
+        result._is_aot_tangent = vars(self).get("_is_aot_tangent", False)
+        if expected:
+            result._ragged_extents = result._new_ragged_extents()
+        else:
+            vars(result).pop("_compile_ragged_extents", None)
+        return result
 
     # ------------------------------------------------------------------
     # Dispatch
@@ -2321,12 +2581,27 @@ class NestedTensor(torch.Tensor):
         if kwargs is None:
             kwargs = {}
 
+        rebase_result = _native_rebase_dispatch(func, args, kwargs)
+        if rebase_result is not NotImplemented:
+            return rebase_result
+
         if func in NestedTensorAtenRegistry:
             if _is_compiling() and not NestedTensorAtenRegistry.is_compile_safe(func, args, kwargs):
                 name = getattr(func, "name", None)
                 if callable(name):
                     name = name()
                 _compile_unsupported(name or repr(func), "aten handler is marked eager-only")
+            source = _find_nested(args, *kwargs.values())
+            if isinstance(source, NestedTensor):
+                _native_view_grad_fn(source)
+            values = getattr(source, "_packed_values", None)
+            if _is_fake_tensor(values):
+                from torch._subclasses.fake_tensor import maybe_get_fake_mode
+
+                fake_mode = maybe_get_fake_mode(values)
+                if fake_mode is not None:
+                    with fake_mode:
+                        return NestedTensorAtenRegistry[func](func, args, kwargs)
             return NestedTensorAtenRegistry[func](func, args, kwargs)
 
         if _is_compiling():
@@ -2492,8 +2767,10 @@ class NestedTensor(torch.Tensor):
         )
         with torch.no_grad(), torch._C.DisableTorchFunctionSubclass(), torch._C._DisableTorchDispatch():
             torch.Tensor.set_(self, layout)
-        self._logical_strides = layout.stride()
         self._invalidate_transient_caches()
+        # Preserve this existing wrapper's autograd metadata and version
+        # history. Only a fresh alias of the repacked child may be detached.
+        self._packed_values = _share_repacked_version_counter(self, self._packed_values)
         if (
             torch.is_grad_enabled()
             and self._packed_values.requires_grad
@@ -2538,13 +2815,11 @@ class NestedTensor(torch.Tensor):
         self._packed_sizes = result._packed_sizes
         type(self)._install_persistent_ragged_offsets(self, result._persistent_ragged_offsets())
         self._invalidate_transient_caches()
-        self._view_ops = ()
-        self.__dict__.pop("_compile_max_length_binding", None)
-        binding = vars(result).get("_compile_max_length_binding")
+        _set_view_records(self, ())
+        self.__dict__.pop("_compile_ragged_extents", None)
+        binding = vars(result).get("_compile_ragged_extents")
         if binding is not None:
-            self._max_length_binding = binding
-        with torch._C.DisableTorchFunctionSubclass():
-            self._logical_strides = torch.Tensor.stride(self)
+            self._ragged_extents = binding
         self._dynamo_weak_dynamic_indices = set()
         self._inherit_tensor_backed_dynamic_dims(result)
 
@@ -3092,7 +3367,7 @@ class NestedTensor(torch.Tensor):
         suffix: Sequence[int] = (),
     ) -> tuple[Tensor, tuple[int, ...] | None, tuple[tuple[int, ...], ...] | None]:
         r"""Build metadata after dropping trailing per-element dims and optionally appending a dense suffix."""
-        keep_dims = tuple(range(max(self._physical_shape.size(1) - int(count), 0)))
+        keep_dims = tuple(range(max(len(self._permutation) - int(count), 0)))
         return self._shape_meta_from_components(keep_dims=keep_dims, suffix=suffix)
 
     def _replace_trailing_physical_dims_meta(
@@ -3103,7 +3378,7 @@ class NestedTensor(torch.Tensor):
         trailing_sizes = tuple(int(size) for size in trailing_sizes)
         if not trailing_sizes:
             return self._shape_meta_from_components()
-        ndim = self._physical_shape.size(1)
+        ndim = len(self._permutation)
         if len(trailing_sizes) > ndim:
             raise ValueError(f"Cannot replace {len(trailing_sizes)} trailing dims for per-element rank {ndim}")
         start = ndim - len(trailing_sizes)
@@ -3114,7 +3389,7 @@ class NestedTensor(torch.Tensor):
     def _permutation_after_dropping_trailing_dims(self, count: int) -> tuple[int, ...]:
         r"""Return the canonical permutation after dropping trailing physical dims."""
         count = int(count)
-        new_rank = max(self._physical_shape.size(1) - count, 0)
+        new_rank = max(len(self._permutation) - count, 0)
         if not self._permutation:
             return tuple(range(new_rank))
         return tuple(int(dim) for dim in self._permutation if dim < new_rank)
@@ -3123,7 +3398,7 @@ class NestedTensor(torch.Tensor):
         r"""Return the canonical permutation after replacing trailing physical dims with a new suffix."""
         removed_count = int(removed_count)
         added_count = int(added_count)
-        retained_rank = max(self._physical_shape.size(1) - removed_count, 0)
+        retained_rank = max(len(self._permutation) - removed_count, 0)
         retained = self._permutation_after_dropping_trailing_dims(removed_count)
         appended = tuple(range(retained_rank, retained_rank + added_count))
         return retained + appended
@@ -3414,8 +3689,8 @@ class NestedTensor(torch.Tensor):
         raise RuntimeError("NestedTensor shape metadata is unavailable for this instance.")
 
     def values(self) -> Tensor:
-        r"""Return packed values through the existing differentiable projection."""
-        return self.concat
+        r"""Return differentiable packed values without padded entries."""
+        return _read_packed_values(self)
 
     @property
     def concat(self) -> Tensor:
@@ -3426,102 +3701,29 @@ class NestedTensor(torch.Tensor):
 
         Examples:
             >>> nested_tensor = NestedTensor([torch.randn(9, 8), torch.randn(11, 8)])
-            >>> nested_tensor.concat.shape
+            >>> nested_tensor.values().shape
             torch.Size([20, 8])
             >>> nested_tensor = NestedTensor([torch.randn(9, 9, 8), torch.randn(11, 11, 8)])
-            >>> nested_tensor.concat.shape
+            >>> nested_tensor.values().shape
             torch.Size([202, 8])
             >>> nested_tensor = NestedTensor([torch.randn(9, 9, 8, 6), torch.randn(11, 11, 8, 6)])
-            >>> nested_tensor.concat.shape
+            >>> nested_tensor.values().shape
             torch.Size([202, 8, 6])
             >>> nested_tensor = NestedTensor([torch.randn(9, 9, 8, 7), torch.randn(11, 11, 8, 6)])
-            >>> nested_tensor.concat.shape
+            >>> nested_tensor.values().shape
             torch.Size([1293, 8])
             >>> nested_tensor = NestedTensor([torch.randn(1, 9, 9, 5), torch.randn(1, 11, 11, 5)])
-            >>> nested_tensor.concat.shape
+            >>> nested_tensor.values().shape
             torch.Size([202, 1, 5])
         """
-        leaf = getattr(self, "_transform_leaf", None)
-        if leaf is not None:
-            from torch._subclasses.fake_tensor import FakeTensor
-            from torch._subclasses.functional_tensor import FunctionalTensor
-            from torch.utils._python_dispatch import _detect_infra_mode
-
-            values = self._packed_values
-            if isinstance(values, FunctionalTensor):
-                if _detect_infra_mode(torch._C._TorchDispatchModeKey.FUNCTIONAL) is None:
-                    return values
-            elif (
-                isinstance(values, FakeTensor)
-                or torch._C._get_dispatch_mode(torch._C._TorchDispatchModeKey.FAKE) is not None
-            ):
-                return values
-            return _project_packed_values(leaf)
-        values = self._packed_values
-        if not torch.is_grad_enabled():
-            return values
-        # Attribute reads on the wrapper itself would each re-enter ``__torch_function__``.
-        with torch._C.DisableTorchFunctionSubclass():
-            grad_fn = self.grad_fn
-            wrapper_requires_grad = torch.Tensor.requires_grad.__get__(self)
-            wrapper_version = self._cache_version(self)
-        if getattr(self, "_unflattened_autograd", False) or getattr(self, "_wrapper_grad_leaf", False):
-            needs_projection = wrapper_requires_grad
-        else:
-            # Saved-tensor hooks can restore this wrapper's autograd edge while
-            # leaving its packed child detached. Ownership must remain the same
-            # on the original forward and checkpoint recomputation.
-            needs_projection = grad_fn is not None
-        if not needs_projection:
-            return values
-        from torch._subclasses.functional_tensor import FunctionalTensor
-        from torch.utils._python_dispatch import _detect_infra_mode
-
-        # Both wrapper-owned autograd paths are also inspected as metadata by
-        # FakeTensor conversion and AOT's functional-tensor unwrapping. Those
-        # reads must expose the child without recording any tensor operation.
-        if isinstance(values, FunctionalTensor):
-            if _detect_infra_mode(torch._C._TorchDispatchModeKey.FUNCTIONAL) is None:
-                return values
-        elif _is_fake_tensor(values) or torch._C._get_dispatch_mode(torch._C._TorchDispatchModeKey.FAKE) is not None:
-            return values
-        # Dynamo's alias guards require a stable child object. A nonleaf
-        # projection can be cached because its backward saves a detached layout,
-        # not this owner. Leaf projections would retain their owner through
-        # AccumulateGrad, and functional tracing must build its own graph.
-        # Saved-tensor hooks must observe each projection on both the original
-        # forward and recomputation, so never reuse a graph across their scope.
-        # Real projections must stay stable during Dynamo's alias checks;
-        # only conversions and materialized views use the eager-context gate.
-        metadata_token = self._shape_cache_token() if grad_fn is not None else None
-        cacheable = (
-            metadata_token is not None
-            and not values.is_inference()
-            and not isinstance(values, FunctionalTensor)
-            and (_is_compiling() or not torch._C._are_functorch_transforms_active())
-            and torch._C._autograd._top_saved_tensors_default_hooks(True) is None
-        )
-        # Eager factory results must keep the wrapper edge visible to
-        # autograd.grad, retain_grad, and hooks just like compiled outputs.
-        token = (
-            (id(values), wrapper_version, self._cache_version(values), *metadata_token)
-            if metadata_token is not None
-            else ()
-        )
-        cached = vars(self).get("_cached_packed_projection") if cacheable else None
-        if cached is not None and cached[0] == token:
-            return cached[1]
-        projected = _project_packed_values(self)
-        if cacheable:
-            self._cached_packed_projection = (token, projected)
-        return projected
+        return _read_packed_values(self)
 
     @concat.setter
     def concat(self, values: Tensor) -> None:
         # AOT's memory-format coercion updates the single packed tangent read
         # by backward, while ordinary user assignment remains prohibited.
         if not vars(self).get("_is_aot_tangent", False):
-            raise AttributeError("NestedTensor.concat is read-only")
+            raise AttributeError("NestedTensor.values() is read-only")
         if (
             not isinstance(values, Tensor)
             or isinstance(values, NestedTensor)
@@ -3531,7 +3733,7 @@ class NestedTensor(torch.Tensor):
             or values.requires_grad
             or values.grad_fn is not None
         ):
-            raise AttributeError("Invalid AOT tangent projection for NestedTensor.concat")
+            raise AttributeError("Invalid AOT tangent projection for NestedTensor.values()")
         self._packed_values = values
         self._cached_packed_projection = None
 
@@ -3561,7 +3763,7 @@ class NestedTensor(torch.Tensor):
 
         Returns:
             A tuple containing:
-            - concat_tensor: The concatenated tensor (same as .concat property)
+            - concat_tensor: The concatenated tensor (same as .values() property)
             - shapes: Tuple of original tensor shapes carrying ``ragged_dims`` and
               ``packed_dim_order`` for lossless reconstruction. Converting it to a
               plain tuple discards the packed layout and requests canonical reconstruction.
@@ -3992,12 +4194,12 @@ class NestedTensor(torch.Tensor):
         if batch_leading.dim() != len(logical_shape) + 1:
             return None
 
-        dense_sizes = tuple(int(batch_leading.size(dim + 1)) for dim in range(batch_leading.dim() - 1))
-        if any(dense_sizes[dim] < int(size) for dim, size in enumerate(logical_shape)):
+        dense_sizes = tuple(batch_leading.size(dim + 1) for dim in range(batch_leading.dim() - 1))
+        if any(dense_sizes[dim] < size for dim, size in enumerate(logical_shape)):
             return None
 
         if logical_shape:
-            batch_leading = batch_leading[(slice(None), *[slice(0, int(size)) for size in logical_shape])]
+            batch_leading = batch_leading[(slice(None), *[slice(0, size) for size in logical_shape])]
 
         if batch_leading.dim() <= 1:
             return batch_leading.contiguous()
@@ -4048,9 +4250,13 @@ class NestedTensor(torch.Tensor):
                 self._element_shapes,
                 self._persistent_ragged_offsets(),
                 self.stride(),
+                0,
             )
             self._share_offset_caches(result)
             result._inherit_tensor_backed_dynamic_dims(self)
+            binding = vars(self).get("_compile_ragged_extents")
+            if binding is not None:
+                result._ragged_extents = binding
             return result
         result = type(self)._from_packed_raw(
             packed_values,
@@ -4075,10 +4281,21 @@ class NestedTensor(torch.Tensor):
             and result._physical_shape is self._physical_shape
         ):
             result._cached_hierarchical_offsets = self._cached_hierarchical_offsets
+        binding = vars(self).get("_compile_ragged_extents")
+        if binding is not None:
+            result._ragged_extents = binding
         return result
 
+    @torch.compiler.allow_in_graph
     def _packed_like_unchecked(self, packed_values: Tensor, *, reuse_wrapper: bool = False) -> Self:
         r"""Rebuild from compatible packed values, preserving compiled autograd edges."""
+        # torch.func already owns the numerical child; rebuilding its geometry
+        # must not introduce a second wrapper-owned derivative edge.
+        if torch._C._are_functorch_transforms_active() and (
+            torch._C._functorch.is_gradtrackingtensor(packed_values)
+            or torch._C._functorch.is_batchedtensor(packed_values)
+        ):
+            return self._packed_like_unchecked_raw(packed_values)
         # A layout-changing handler has just constructed a private wrapper with
         # these exact values. Attach its autograd edge in place rather than
         # constructing another identical wrapper. Callers must never request
@@ -4119,13 +4336,13 @@ class NestedTensor(torch.Tensor):
 
         Raises:
             TypeError: If ``packed_values`` is not a dense ``Tensor``.
-            ValueError: If its shape differs from ``self.concat.shape``.
+            ValueError: If its shape differs from ``self.values().shape``.
 
         Examples:
             >>> reference = NestedTensor([torch.randn(2, 3), torch.randn(4, 3)])
-            >>> values = torch.ones_like(reference.concat)
+            >>> values = torch.ones_like(reference.values())
             >>> output = reference.packed_like(values)
-            >>> output.concat is values
+            >>> output.values() is values
             True
             >>> output.shape == reference.shape
             True
@@ -4171,8 +4388,13 @@ class NestedTensor(torch.Tensor):
             and result._physical_shape is self._physical_shape
         ):
             result._cached_hierarchical_offsets = self._cached_hierarchical_offsets
-        if _needs_packed_bridge(packed_values):
-            return _PackedLikeAutograd.apply(packed_values, _PackedStructureReference(result, mark_dynamic=True))
+        binding = vars(self).get("_compile_ragged_extents")
+        if binding is not None:
+            result._ragged_extents = binding
+        if _is_compiling() or _needs_packed_bridge(packed_values):
+            result = result._packed_like_unchecked(packed_values)
+            if not _is_compiling():
+                result._mark_tensor_backed_dynamic_dims()
         return result
 
     def packed_with_static_tail(self, packed_values: Tensor) -> Self:
@@ -4189,7 +4411,7 @@ class NestedTensor(torch.Tensor):
 
         Args:
             packed_values: Dense packed storage whose leading dimension equals
-                ``self.concat.shape[0]``.  Remaining dimensions become the new
+                ``self.values().shape[0]``.  Remaining dimensions become the new
                 static tail.
 
         Returns:
@@ -4210,7 +4432,7 @@ class NestedTensor(torch.Tensor):
             >>> output = atoms.packed_with_static_tail(values)
             >>> [tuple(element.shape) for element in output]
             [(2, 3), (4, 3)]
-            >>> output.concat is values
+            >>> output.values() is values
             True
         """
         if (
@@ -4384,7 +4606,7 @@ class NestedTensor(torch.Tensor):
             >>> output = reference.packed_with_lengths(values, lengths)
             >>> [tuple(element.shape) for element in output]
             [(2, 7), (3, 7)]
-            >>> output.concat is values
+            >>> output.values() is values
             True
         """
         if (
@@ -4475,8 +4697,8 @@ class NestedTensor(torch.Tensor):
             validate=False,
             materialize_python_metadata=False,
         )
-        if symbolic_lengths:
-            result._max_length_binding = result._offsets.new_empty(()).expand(max_length)
+        # New lengths own new maxima in both real and symbolic output schemas.
+        result._ragged_extents = result._new_ragged_extents()
         if torch.is_grad_enabled() and packed_values.requires_grad:
             return _PackedLikeAutograd.apply(packed_values, _PackedStructureReference(result))
         return result
@@ -4517,7 +4739,7 @@ class NestedTensor(torch.Tensor):
             >>> output = reference.packed_with_square_lengths(values, lengths)
             >>> [tuple(element.shape) for element in output]
             [(2, 2, 4), (3, 3, 4)]
-            >>> output.concat is values
+            >>> output.values() is values
             True
         """
         if (
@@ -4632,7 +4854,7 @@ class NestedTensor(torch.Tensor):
             mark_values_dynamic=False,
         )
         if symbolic_lengths:
-            result._max_length_binding = result._offsets.new_empty(()).expand(max_length)
+            result._ragged_extents = result._new_ragged_extents()
         if torch.is_grad_enabled() and packed_values.requires_grad:
             return _PackedLikeAutograd.apply(packed_values, _PackedStructureReference(result))
         return result
@@ -4668,7 +4890,7 @@ class NestedTensor(torch.Tensor):
             >>> output = reference.packed_with_rectangular_lengths(values, rows, columns)
             >>> [tuple(element.shape) for element in output]
             [(2, 4, 5), (3, 1, 5)]
-            >>> output.concat is values
+            >>> output.values() is values
             True
         """
         if (
@@ -4776,10 +4998,8 @@ class NestedTensor(torch.Tensor):
             validate=False,
             materialize_python_metadata=False,
         )
-        # The generic fallback binds only physical dim 0. Rectangular outputs
-        # carry two independent data-derived maxima, so expose a zero-stride
-        # two-dimensional child for both eager and Fake/compiled rebuilds.
-        result._max_length_binding = result._offsets.new_empty(()).expand(max_rows, max_columns)
+        # Both independent data-derived maxima belong to the current layout.
+        result._ragged_extents = result._new_ragged_extents()
         if torch.is_grad_enabled() and packed_values.requires_grad:
             return _PackedLikeAutograd.apply(packed_values, _PackedStructureReference(result))
         return result
@@ -5021,8 +5241,6 @@ class NestedTensor(torch.Tensor):
 
     def _packed_physical_slice(self, rest: tuple) -> Self | None:
         r"""Slice packed physical dims when the batch dim is untouched."""
-        if not self.batch_first:
-            return None
         physical_rank = int(self._physical_shape.size(1))
         if len(rest) > physical_rank:
             return None
@@ -5031,6 +5249,23 @@ class NestedTensor(torch.Tensor):
             return None
         if any(selector.step is not None and selector.step <= 0 for selector in index):
             raise ValueError("step must be greater than zero")
+
+        if all(index[dim] == slice(None) for dim in self._varying_dims):
+            result = self
+            for physical_dim, selector in enumerate(index):
+                if selector != slice(None):
+                    batch_dim = 0 if result.batch_first or result.dim() == 1 else 1
+                    logical_dim = physical_dim + (physical_dim >= batch_dim)
+                    result = torch.ops.aten.slice.Tensor(
+                        result,
+                        logical_dim,
+                        selector.start,
+                        selector.stop,
+                        1 if selector.step is None else selector.step,
+                    )
+            return result
+        if not self.batch_first:
+            return None
 
         static_dims = self._static_dims
         static_lookup = {dim: axis for axis, dim in enumerate(static_dims)}
@@ -5071,7 +5306,7 @@ class NestedTensor(torch.Tensor):
         packed_sizes = self._packed_sizes
         offsets = self._offsets
         values = self.values()[tuple(value_index)]
-        max_length_binding = vars(self).get("_compile_max_length_binding")
+        max_length_binding = vars(self).get("_compile_ragged_extents")
         new_sizes = None
         if ragged_selector is not None:
             ragged_dim, selector = ragged_selector
@@ -5138,39 +5373,41 @@ class NestedTensor(torch.Tensor):
             mark_dynamic=not _is_compiling(),
         )
         if max_length_binding is not None:
-            result._max_length_binding = max_length_binding
+            result._ragged_extents = max_length_binding if ragged_selector is None else result._new_ragged_extents()
         return result._packed_like_unchecked(values, reuse_wrapper=True)
 
     def _packed_static_integer_index(self, rest: tuple) -> Self | None:
-        r"""Consume one static element axis directly on packed values."""
+        r"""Apply static basic selections through their native view owners."""
         physical_rank = int(self._physical_shape.size(1))
         if len(rest) > physical_rank:
             return None
         selectors = tuple(rest) + (slice(None),) * (physical_rank - len(rest))
-        integer_dims = [dim for dim, selector in enumerate(selectors) if type(selector) is int]
-        if len(integer_dims) != 1:
+        if not any(type(selector) is int for selector in selectors):
             return None
-        physical_dim = integer_dims[0]
+        if any(type(selector) is not int and not isinstance(selector, slice) for selector in selectors):
+            return None
+        if any(selector != slice(None) and dim not in self._static_dims for dim, selector in enumerate(selectors)):
+            return None
         if any(
-            not (
-                type(selector) is int
-                or (
-                    isinstance(selector, slice)
-                    and selector.start is None
-                    and selector.stop is None
-                    and selector.step is None
-                )
-            )
-            for selector in selectors
+            isinstance(selector, slice) and selector.step is not None and selector.step <= 0 for selector in selectors
         ):
-            return None
-        values_dim = _physical_to_values_dim(self, physical_dim)
-        if values_dim is None:
-            return None
-        from .aten_functions import _packed_without_dim
-
-        values = self.values().select(values_dim, int(selectors[physical_dim]))
-        return cast(Self, _packed_without_dim(self, physical_dim, values))
+            raise ValueError("step must be greater than zero")
+        result = self
+        removed = 0
+        for physical_dim, selector in enumerate(selectors):
+            if selector == slice(None):
+                continue
+            current_dim = physical_dim - removed
+            batch_dim = 0 if result.batch_first or result.dim() == 1 else 1
+            logical_dim = current_dim + (current_dim >= batch_dim)
+            if type(selector) is int:
+                result = torch.select(result, logical_dim, selector)
+                removed += 1
+            else:
+                result = torch.ops.aten.slice.Tensor(
+                    result, logical_dim, selector.start, selector.stop, 1 if selector.step is None else selector.step
+                )
+        return cast(Self, result)
 
     def _packed_newaxis_index(self, rest: tuple) -> Self | None:
         r"""Insert basic ``None`` axes without unpacking an untouched batch."""
@@ -5204,7 +5441,7 @@ class NestedTensor(torch.Tensor):
         outer_size = list(self._logical_shape)
         batch_dim = type(self)._batch_dim_from_logical_shape(self._logical_shape, self.batch_first)
         outer_size[batch_dim] = 0
-        return type(self).from_packed(
+        result = type(self).from_packed(
             self.values().narrow(0, 0, 0),
             self._offsets.new_zeros((1,)),
             self._physical_shape[:0],
@@ -5219,6 +5456,10 @@ class NestedTensor(torch.Tensor):
             element_shapes=(),
             validate=False,
         )
+        binding = vars(self).get("_compile_ragged_extents")
+        if binding is not None:
+            result._ragged_extents = binding
+        return result
 
     def _empty_batch_basic_index(self, rest: tuple) -> Self | None:
         r"""Project a source-derived empty batch through basic element indexing.
@@ -5743,7 +5984,6 @@ class NestedTensor(torch.Tensor):
                 running *= max(size, 1)
             with torch.no_grad(), torch._C.DisableTorchFunctionSubclass(), torch._C._DisableTorchDispatch():
                 torch.Tensor.as_strided_(self, self._logical_shape, stride)
-            self._logical_strides = tuple(stride)
         self._batch_first = new_value
         if hasattr(self, "_cached_tensor_view"):
             self._invalidate_transient_caches()
@@ -5916,12 +6156,23 @@ class NestedTensor(torch.Tensor):
         type(self)._install_persistent_ragged_offsets(self, ragged_offsets)
         # Serialized state intentionally excludes transient caches.
         self._invalidate_transient_caches()
-        self._wrapper_grad_leaf = state.get("_wrapper_grad_leaf", False)
+        # A legacy native rebuild also restores a fresh leaf: its original
+        # autograd owner is not part of the checkpoint.
+        self._wrapper_grad_leaf = self.requires_grad
         self._mark_tensor_backed_dynamic_dims()
         self._validate_metadata()
+        _share_packed_version_counter(self, self._packed_values)
 
     def __reduce__(self):
         return (self.__class__._from_state, (self.__getstate__(),))
+
+    def __reduce_ex__(self, _protocol: SupportsIndex):
+        r"""Rebuild a canonical outer wrapper while retaining the packed child's layout.
+
+        The numerical child's strides and storage offset survive serialization;
+        the old wrapper's view base and virtual storage do not.
+        """
+        return self.__reduce__()
 
     @classmethod
     def _from_state(cls, state: dict) -> Self:
@@ -5943,7 +6194,9 @@ class NestedTensor(torch.Tensor):
             element_shapes=state["_element_shapes"],
             ragged_offsets=serialized_ragged_offsets,
         )
-        result._wrapper_grad_leaf = state.get("_wrapper_grad_leaf", False)
+        # Serialization drops the original graph: the restored wrapper owns
+        # its fresh leaf instead of the serialized view's former base.
+        result._wrapper_grad_leaf = result.requires_grad
         return result
 
     def __copy__(self):
@@ -6265,11 +6518,9 @@ class NestedTensor(torch.Tensor):
     def stride(self, dim: int) -> int: ...
 
     def stride(self, dim: int | None = None) -> tuple[int, ...] | int:
-        r"""Retain symbolic logical strides supplied by the wrapper protocol."""
-        strides = vars(self).get("_logical_strides")
-        if strides is None:
-            with torch._C.DisableTorchFunctionSubclass():
-                strides = torch.Tensor.stride(self)
+        r"""Return the native wrapper's logical strides."""
+        with torch._C.DisableTorchFunctionSubclass():
+            strides = torch.Tensor.stride(self)
         if dim is not None:
             if not -len(strides) <= dim < len(strides):
                 raise IndexError(
@@ -6432,7 +6683,13 @@ class NestedTensor(torch.Tensor):
 
         return cast(Self, _view_method(self, *shape, **kwargs))
 
-    def _view_shapes(self, shape) -> list[tuple[int, ...]]:  # type: ignore[valid-type]
+    def _view_shapes(
+        self,
+        shape,
+        *,
+        include_batch=None,
+        substitute_ragged=True,
+    ) -> list[tuple[int, ...]]:  # type: ignore[valid-type]
         r"""
         Compute per-element view shapes, adjusting ragged dimensions.
 
@@ -6454,8 +6711,9 @@ class NestedTensor(torch.Tensor):
         batch_size = len(self)
 
         # Step 1: Determine if batch dim is in the target shape
-        include_batch = False
-        if len(shape) > batch_dim:
+        detect_batch = include_batch is None
+        include_batch = bool(include_batch)
+        if detect_batch and len(shape) > batch_dim:
             if shape[batch_dim] == batch_size and len(shape) != self.dim():
                 include_batch = True
             elif shape[batch_dim] in (-1, batch_size) and len(shape) == self.dim():
@@ -6495,11 +6753,11 @@ class NestedTensor(torch.Tensor):
         for element_shape in element_shapes:
             adjusted = list(target)
             available = list(range(len(max_sizes)))
-            for i in range(min(len(adjusted), len(max_sizes))):
+            for i in range(len(adjusted) if substitute_ragged else 0):
                 if adjusted[i] == -1:
                     continue
                 # Direct match: same position in max_sizes
-                if adjusted[i] == max_sizes[i]:
+                if i < len(max_sizes) and adjusted[i] == max_sizes[i]:
                     adjusted[i] = element_shape[i]
                     if i in available:
                         available.remove(i)
@@ -6631,12 +6889,12 @@ class _PackedLikeAutograd(torch.autograd.Function):
     @staticmethod
     def forward(packed_values: Tensor, structure: _PackedStructureReference) -> NestedTensor:
         reference = structure.value
-        max_length_binding = getattr(reference, "_compile_max_length_binding", None)
+        max_length_binding = getattr(reference, "_compile_ragged_extents", None)
         result = reference if structure.reuse_wrapper else reference._packed_like_unchecked_raw(packed_values)
         if structure.logical_input:
             object.__setattr__(result, "_logical_input", True)
         if max_length_binding is not None:
-            result._max_length_binding = max_length_binding
+            result._ragged_extents = max_length_binding
         if structure.mark_dynamic:
             result._mark_tensor_backed_dynamic_dims()
         return result
@@ -6743,12 +7001,16 @@ class _PackedLikeAutograd(torch.autograd.Function):
             reference_shapes = state[2]
             reference_offsets = state[1]
             message = "NestedTensor tangent topology must match the output"
-            if (
-                not packed_tangent
-                or not NestedTensor._meta_tensor_equal(tangent_shapes, reference_shapes, message, runtime_assert=True)
-                or not NestedTensor._meta_tensor_equal(
-                    tangent_layout._offsets, reference_offsets, message, runtime_assert=True
-                )
+            if not NestedTensor._meta_tensor_equal(tangent_shapes, reference_shapes, message, runtime_assert=True):
+                raise RuntimeError(message)
+            if not packed_tangent:
+                from .ops import _expand_nested_as_values
+
+                reference = NestedTensor._layout_from_state(state, values_grad, ctx.packed_shape)
+                values_grad = _expand_nested_as_values(reference, grad_output)
+                return values_grad, None
+            if not NestedTensor._meta_tensor_equal(
+                tangent_layout._offsets, reference_offsets, message, runtime_assert=True
             ):
                 raise RuntimeError(message)
         else:
@@ -6758,7 +7020,7 @@ class _PackedLikeAutograd(torch.autograd.Function):
             if grad_static != reference_static:
                 packed_order = (0, *(1 + grad_static.index(dim) for dim in reference_static))
                 values_grad = values_grad.permute(packed_order)
-        elif values_grad.shape != ctx.packed_shape:
+        else:
             reference = NestedTensor._layout_from_state(state, values_grad, ctx.packed_shape)
             packed_grad = reference._dense_to_packed_values(values_grad)
             if packed_grad is None:
@@ -6785,27 +7047,16 @@ class _PackedValuesAutograd(torch.autograd.Function):
     @staticmethod
     def setup_context(ctx, inputs, output):
         (input,) = inputs
-        layout = (
-            _transform_base(input) if not _is_compiling() and torch._C._are_functorch_transforms_active() else input
-        )
-        if not _is_compiling() and torch._C._are_functorch_transforms_active():
+        layout = _transform_base(input) if torch._C._are_functorch_transforms_active() else input
+        if torch._C._are_functorch_transforms_active():
             layout = _transform_projection_layout(input, output, layout)
         ctx.layout_state = layout._layout_state()
         ctx.logical_input = getattr(layout, "_logical_input", False)
         ctx.layout = None
-        if (
-            ctx.logical_input
-            or type(layout) is not NestedTensor
-            or type(output) is not Tensor
-            or _is_fake_tensor(layout._offsets)
-            or _is_fake_tensor(layout._physical_shape)
-            or _is_compiling()
-            or _get_current_dispatch_mode() is not None
-            or torch._C._are_functorch_transforms_active()
-        ):
-            # Transform and sparse logical gradients retain their generic
-            # metadata-only reference, never the source or its activation.
-            values = torch.empty((), device="meta", dtype=output.dtype).expand(output.shape)
+        if ctx.logical_input:
+            # Logical dense and sparse inputs need a coordinate reference.
+            # Packed projections rebuild directly from their complete layout state.
+            values = output.new_empty((), device="meta").expand(output.shape)
             ctx.layout = layout._packed_like_unchecked_raw(values)
 
     @staticmethod
@@ -6865,7 +7116,102 @@ cast(Any, _PackedValuesAutograd.forward).__signature__ = inspect.signature(_Pack
 @torch.compiler.allow_in_graph
 def _project_packed_values(input: NestedTensor) -> Tensor:
     r"""Give Dynamo an explicit source for the wrapper-to-packed projection."""
-    return _PackedValuesAutograd.apply(input)
+    leaf = getattr(input, "_transform_leaf", None)
+    source = input if leaf is None else leaf
+    if not _is_compiling() and torch._C._are_functorch_transforms_active() and isinstance(source, NestedTensor):
+        from torch._subclasses.functional_tensor import FunctionalTensor
+
+        wrapped = torch._C._functorch.is_functorch_wrapped_tensor
+        values = source._packed_values
+        if not (wrapped(source) or wrapped(values) or _is_fake_tensor(values) or isinstance(values, FunctionalTensor)):
+            from torch._functorch.autograd_function import enable_single_level_autograd_function
+            from torch._functorch.pyfunctorch import temporarily_clear_interpreter_stack
+
+            # A captured owner has no active transform dimension. Project it
+            # before func.Function's no-grad PyTree conversion can detach its
+            # existing autograd edge, using the same native storage alias.
+            with (
+                temporarily_clear_interpreter_stack(),
+                torch._C._DisableFuncTorch(),
+                enable_single_level_autograd_function(),
+            ):
+                return _PackedValuesAutograd.apply(source)
+    return _PackedValuesAutograd.apply(source)
+
+
+@torch.compiler.allow_in_graph
+def _read_packed_values(self: NestedTensor) -> Tensor:
+    leaf = getattr(self, "_transform_leaf", None)
+    if leaf is not None:
+        return _project_packed_values(leaf)
+    values = self._packed_values
+    native_forward = (
+        torch.autograd.forward_ad._current_level >= 0
+        and torch.autograd.forward_ad._is_fwd_grad_enabled()
+        and not torch._C._are_functorch_transforms_active()
+    )
+    if not torch.is_grad_enabled() and not native_forward:
+        return values
+    # Attribute reads on the wrapper itself would each re-enter ``__torch_function__``.
+    with torch._C.DisableTorchFunctionSubclass():
+        grad_fn = _native_view_grad_fn(self)
+        wrapper_requires_grad = torch.Tensor.requires_grad.__get__(self)
+        wrapper_version = self._cache_version(self)
+    if getattr(self, "_unflattened_autograd", False) or getattr(self, "_wrapper_grad_leaf", False):
+        needs_projection = wrapper_requires_grad
+    else:
+        # Saved-tensor hooks can restore this wrapper's autograd edge while
+        # leaving its packed child detached. Ownership must remain the same
+        # on the original forward and checkpoint recomputation.
+        needs_projection = grad_fn is not None
+    if not (needs_projection or native_forward):
+        return values
+    from torch._subclasses.functional_tensor import FunctionalTensor
+
+    # Dynamo's alias guards require a stable child object. A nonleaf
+    # projection can be cached because its backward saves a detached layout,
+    # not this owner. Leaf projections would retain their owner through
+    # AccumulateGrad, and functional tracing must build its own graph.
+    # Saved-tensor hooks must observe each projection on both the original
+    # forward and recomputation, so never reuse a graph across their scope.
+    # Real projections must stay stable during Dynamo's alias checks;
+    # only conversions and materialized views use the eager-context gate.
+    metadata_token = self._shape_cache_token() if grad_fn is not None else None
+    cacheable = (
+        metadata_token is not None
+        and not values.is_inference()
+        and not native_forward
+        and not _is_fake_tensor(values)
+        and not isinstance(values, FunctionalTensor)
+        and (_is_compiling() or not torch._C._are_functorch_transforms_active())
+        and torch._C._autograd._top_saved_tensors_default_hooks(True) is None
+    )
+    # Eager factory results must keep the wrapper edge visible to
+    # autograd.grad, retain_grad, and hooks just like compiled outputs.
+    token = (
+        (id(values), wrapper_version, self._cache_version(values), *metadata_token)
+        if metadata_token is not None
+        else ()
+    )
+    cached = vars(self).get("_cached_packed_projection") if cacheable else None
+    if cached is not None and cached[0] == token:
+        return cached[1]
+    projected = _project_packed_values(self)
+    if cacheable:
+        self._cached_packed_projection = (token, projected)
+    return projected
+
+
+_values_eager = NestedTensor.values
+
+
+@torch.compiler.substitute_in_graph(_values_eager)
+def _traceable_values(self: NestedTensor) -> Tensor:
+    r"""Trace packed projection as an operation instead of tensor metadata."""
+    return _read_packed_values(self)
+
+
+NestedTensor.values = _traceable_values  # type: ignore[method-assign]
 
 
 _cdist_eager = NestedTensor.cdist
@@ -6964,6 +7310,96 @@ def _literal_wrapper_dimension(value: int | torch.SymInt) -> int | torch.SymInt:
     return value
 
 
+class _PackedVersionCounterMode(torch.utils._python_dispatch.TorchDispatchMode):
+    r"""Let native detach attach its input counter to a fresh result."""
+
+    def __init__(self, source: Tensor, result: Tensor):
+        super().__init__()
+        self.source = source
+        self.result = result
+
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        if func is torch.ops.aten.detach.default and args[0] is self.source:
+            return self.result
+        return func(*args, **(kwargs or {}))
+
+
+def _can_share_packed_version_counter(wrapper: NestedTensor, values: Tensor) -> bool:
+    return (
+        not _is_compiling()
+        and type(values) is Tensor
+        and not values.is_inference()
+        and not wrapper.is_inference()
+        and not torch._is_functional_tensor(values)
+        and not torch._C._are_functorch_transforms_active()
+    )
+
+
+def _attach_packed_version_counter(source: Tensor, result: Tensor) -> Tensor:
+    r"""Attach a native counter to a fresh result, clearing only that result's metadata."""
+    with (
+        torch._C.DisableTorchFunctionSubclass(),
+        torch._C._AutoDispatchBelowAutograd(),
+        torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False),
+        _PackedVersionCounterMode(source, result),
+    ):
+        return torch.ops.aten.detach.default(source)
+
+
+def _share_packed_version_counter(wrapper: NestedTensor, values: Tensor) -> NestedTensor:
+    r"""Attach packed mutation tracking to a newly allocated outer wrapper.
+
+    Native saved variables can hold the outer wrapper while a public packed
+    alias writes its child. Detach's non-differentiable-view kernel shares the
+    input counter without installing ``_base`` or retaining its autograd graph.
+    The output must be fresh: detach clears its existing autograd metadata.
+    """
+    if not _can_share_packed_version_counter(wrapper, values):
+        return wrapper
+    with torch._C.DisableTorchFunctionSubclass():
+        requires_grad = torch.Tensor.requires_grad.__get__(wrapper)
+    result = _attach_packed_version_counter(values, wrapper)
+    with torch._C.DisableTorchFunctionSubclass():
+        # Detach clears this flag; preserve the constructor/owner's contract,
+        # including a differentiable factory called in no_grad.
+        torch.Tensor.requires_grad.__set__(result, requires_grad)
+    result._packed_version_counter_child = weakref.ref(values)
+    return result
+
+
+class _RepackedValuesAutograd(torch.autograd.Function):
+    r"""Connect a fresh packed alias to its values without touching its existing owner."""
+
+    @staticmethod
+    def forward(values: Tensor, structure: _PackedStructureReference) -> Tensor:
+        return _attach_packed_version_counter(structure.value, values.detach())
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        pass
+
+    @staticmethod
+    def backward(ctx, gradient):
+        return gradient, None
+
+    @staticmethod
+    def jvp(ctx, values_tangent, structure_tangent):
+        return values_tangent
+
+
+def _share_repacked_version_counter(wrapper: NestedTensor, values: Tensor) -> Tensor:
+    if not _can_share_packed_version_counter(wrapper, values):
+        return values
+    # Same-sized assignment can retain the original packed tensor, including
+    # its leaf/view restrictions. Its counter already belongs to this owner.
+    shared_child = getattr(wrapper, "_packed_version_counter_child", None)
+    if shared_child is not None and shared_child() is values:
+        return values
+    result = _RepackedValuesAutograd.apply(values, _PackedStructureReference(wrapper))
+    wrapper._packed_version_counter_child = weakref.ref(result)
+    return result
+
+
 def _make_nested_tensor_from_packed_impl(
     nested_tensor_cls: type[NestedTensor],
     values: Tensor,
@@ -6981,10 +7417,14 @@ def _make_nested_tensor_from_packed_impl(
     element_shapes: tuple[tuple[int, ...], ...] | None,
     ragged_offsets: tuple[Tensor, ...] | None,
     logical_strides: tuple[int, ...] | None = None,
+    logical_offset: int = 0,
 ) -> NestedTensor:
+    offsets, shape_tensor, ragged_offsets = _admit_layout_tensors((offsets, shape_tensor, ragged_offsets))
     logical_shape = torch.Size(_literal_wrapper_dimension(size) for size in logical_shape)
     if logical_strides is not None:
         logical_strides = tuple(_literal_wrapper_dimension(stride) for stride in logical_strides)
+    else:
+        torch._check(logical_offset == 0, lambda: "setting storage offset without stride is not supported")
     if not getattr(nested_tensor_cls, "_is_transform_proxy", False):
         from torch._subclasses.functional_tensor import FunctionalTensor
 
@@ -6994,30 +7434,31 @@ def _make_nested_tensor_from_packed_impl(
         nested_tensor_cls,
         logical_shape,
         strides=logical_strides,
+        storage_offset=_literal_wrapper_dimension(logical_offset) if logical_strides is not None else None,
         dtype=values.dtype,
         device=values.device,
         requires_grad=values.requires_grad,
     )
-    result._packed_values = values
-    result._offsets = offsets
-    result._permutation = tuple(int(dim) for dim in permutation)
-    result._ragged_dims = tuple(int(dim) for dim in ragged_dims)
-    result._ragged_dims_explicit = ragged_dims_explicit
-    result._physical_shape = shape_tensor
-    result._logical_shape = logical_shape
-    if logical_strides is not None:
-        result._logical_strides = logical_strides
-    result._set_runtime_config(
-        batch_first=batch_first,
-        padding_value=padding_value,
-        mask_value=mask_value,
+    vars(result).update(
+        {
+            "_packed_values": values,
+            "_offsets": offsets,
+            "_permutation": tuple(int(dim) for dim in permutation),
+            "_ragged_dims": tuple(int(dim) for dim in ragged_dims),
+            "_ragged_dims_explicit": ragged_dims_explicit,
+            "_physical_shape": shape_tensor,
+            "_logical_shape": logical_shape,
+            "_batch_first": type(result)._coerce_batch_first(batch_first),
+            "_padding_value": type(result)._coerce_padding_value(padding_value),
+            "_mask_value": type(result)._coerce_mask_value(mask_value),
+            "_pin_memory": pin_memory,
+            "_packed_sizes": packed_sizes,
+            "_element_shapes": element_shapes,
+        }
     )
-    result._pin_memory = pin_memory
-    result._packed_sizes = packed_sizes
-    result._element_shapes = element_shapes
     nested_tensor_cls._install_persistent_ragged_offsets(result, ragged_offsets)
     result._invalidate_transient_caches()
-    return result
+    return _share_packed_version_counter(result, values)
 
 
 def _make_nested_tensor_from_packed(
@@ -7036,6 +7477,7 @@ def _make_nested_tensor_from_packed(
     element_shapes: tuple[tuple[int, ...], ...] | None,
     ragged_offsets: tuple[Tensor, ...] | None,
     logical_strides: tuple[int, ...] | None = None,
+    logical_offset: int = 0,
 ) -> NestedTensor:
     r"""Construct the base wrapper through a stable module-level graph target."""
     return _make_nested_tensor_from_packed_impl(
@@ -7055,6 +7497,7 @@ def _make_nested_tensor_from_packed(
         element_shapes,
         ragged_offsets,
         logical_strides,
+        logical_offset,
     )
 
 
@@ -7076,56 +7519,833 @@ def _make_nested_tensor_from_packed_constructor(nested_tensor_cls: type[NestedTe
 NestedTensor._compiled_packed_constructor = staticmethod(_make_nested_tensor_from_packed)
 
 
-def _replay_view_ops(value: NestedTensor, operations: tuple[tuple[str, int], ...]) -> NestedTensor:
-    r"""Restore native view functions after AOT rebuilds the packed children.
+def _restore_subset_view(value, physical_dim, packed_rank, batch_first, permutation, metadata, *, selected):
+    r"""Restore the native base of a static subset from shared storage and geometry."""
+    rank = len(permutation) + 1
+    logical_shape = metadata[:rank]
+    logical_strides = metadata[rank : 2 * rank]
+    packed_shape = metadata[2 * rank : 2 * rank + packed_rank]
+    packed_strides = metadata[2 * rank + packed_rank : 2 * rank + 2 * packed_rank]
+    logical_offset, displacement = metadata[-2:]
+    values = value._packed_values.as_strided(
+        packed_shape, packed_strides, value._packed_values.storage_offset() - displacement
+    )
+    logical_dim = physical_dim + int(batch_first or physical_dim > 0)
+    extent = logical_shape[logical_dim]
+    shape = value._physical_shape
+    if selected:
+        column = shape.new_full((len(value), 1), extent)
+        shape = torch.cat((shape[:, :physical_dim], column, shape[:, physical_dim:]), 1)
+    else:
+        shape = shape.clone()
+        shape[:, physical_dim] = extent
+    element_shapes = value._element_shapes
+    if element_shapes is not None:
+        element_shapes = tuple(
+            part[:physical_dim] + (extent,) + part[physical_dim + (not selected) :] for part in element_shapes
+        )
+    return type(value)._from_packed_raw(
+        values,
+        value._offsets,
+        shape,
+        permutation=permutation,
+        ragged_dims=permutation[: value._ragged_rank],
+        batch_first=batch_first,
+        padding_value=value.padding_value,
+        mask_value=value.mask_value,
+        pin_memory=value._pin_memory,
+        outer_size=logical_shape,
+        packed_sizes=value._packed_sizes,
+        element_shapes=element_shapes,
+        ragged_offsets=value._persistent_ragged_offsets(),
+        logical_strides=logical_strides,
+        logical_offset=logical_offset,
+        validate=False,
+        mark_dynamic=False,
+    )
 
-    Sizes and strides alone lose batch ownership on singleton axes. The immutable
-    operation metadata retains it without keeping an input tensor or autograd graph.
-    """
+
+def _view_binding_value(bindings, reference):
+    r"""Read a symbolic view parameter from its zero-storage geometry tensor."""
+    if reference == -1:
+        return -1
+    index, axis = reference
+    return bindings[index].shape[axis]
+
+
+def _encode_view_records(operations, current_geometry, like):
+    r"""Serialize one immutable view program into formal metadata children."""
+    bindings = []
+    pending = []
+
+    def flush():
+        if pending:
+            shape = (0, *pending)
+            if _is_fake_tensor(like):
+                carrier = like.new_empty_strided(shape, (0,) * len(shape), dtype=torch.uint8)
+            else:
+                from torch.utils._python_dispatch import _disable_current_modes
+
+                with _disable_current_modes():
+                    carrier = like.new_empty_strided(shape, (0,) * len(shape), dtype=torch.uint8)
+            bindings.append(carrier)
+            pending.clear()
+
+    def scalars(values):
+        references = []
+        for value in values:
+            value = _literal_wrapper_dimension(value)
+            if value == -1:
+                references.append(-1)
+                continue
+            if len(pending) == 63:
+                flush()
+            references.append((len(bindings), len(pending) + 1))
+            pending.append(value)
+        return tuple(references)
+
+    def tensor(value):
+        for index, existing in enumerate(bindings):
+            if existing is value:
+                return index
+        flush()
+        bindings.append(value)
+        return len(bindings) - 1
+
+    def layout(value):
+        bf, permutation, ragged, offsets, shape, splits, extents, rank, packed_rank, geometry = value
+        # Metadata tensors are registered before dimensions so adjacent geometry
+        # groups can share their zero-storage carrier.
+        offsets, shape = tensor(offsets), tensor(shape)
+        splits = None if splits is None else tuple(tensor(item) for item in splits)
+        extents = None if extents is None else tensor(extents)
+        return bf, permutation, ragged, offsets, shape, splits, extents, rank, packed_rank, scalars(geometry)
+
+    encoded = []
+    for name, parameters, before, after in operations:
+        before, after = layout(before), layout(after)
+        if name == "view":
+            parameters = after[-1][: after[-3]]
+        elif name in ("select", "slice"):
+            parameters = (parameters[0], *scalars(parameters[1:]))
+        encoded.append((name, parameters, before, after))
+    if encoded:
+        output = encoded[-1][3]
+        rank, geometry = output[-3], output[-1]
+        output_geometry = geometry[:rank], geometry[rank : 2 * rank], geometry[-2]
+    elif current_geometry is not None:
+        sizes, strides, offset = current_geometry
+        geometry = scalars((*sizes, *strides, offset))
+        rank = len(sizes)
+        output_geometry = geometry[:rank], geometry[rank : 2 * rank], geometry[-1]
+    else:
+        output_geometry = None
+    flush()
+    offset = None if output_geometry is None else output_geometry[-1]
+    return tuple(encoded), tuple(bindings), output_geometry, offset
+
+
+def _decode_view_records(operations, bindings):
+    r"""Recover the same canonical layouts from their formal tensor children."""
+    shapes = tuple(tensor.shape for tensor in bindings)
+
+    def scalar(reference):
+        return -1 if reference == -1 else shapes[reference[0]][reference[1]]
+
+    def layout(value):
+        bf, permutation, ragged, offsets, shape, splits, extents, rank, packed_rank, geometry = value
+        return _ViewLayout(
+            (
+                bf,
+                permutation,
+                ragged,
+                bindings[offsets],
+                bindings[shape],
+                None if splits is None else tuple(bindings[index] for index in splits),
+                None if extents is None else bindings[extents],
+                rank,
+                packed_rank,
+                tuple(scalar(ref) for ref in geometry),
+            )
+        )
+
+    decoded = []
+    for name, parameters, before, after in operations:
+        if name == "view":
+            parameters = tuple(scalar(ref) for ref in parameters)
+        elif name in ("select", "slice"):
+            parameters = (parameters[0], *(scalar(ref) for ref in parameters[1:]))
+        decoded.append((name, parameters, layout(before), layout(after)))
+    return tuple(decoded)
+
+
+def _ensure_view_serialized(value):
+    r"""Materialize metadata only at the formal tensor serialization boundary."""
+    operations = vars(value).get("_view_ops", ())
+    geometry = vars(value).get("_view_current_geometry")
+    for _, _, before, after in operations:
+        before.check()
+        after.check()
+    cached = vars(value).get("_view_encoding")
+    if cached is not None and cached[0] is operations and cached[1] is geometry:
+        return cached[2]
+    encoded, bindings, output_geometry, offset = _encode_view_records(
+        operations,
+        geometry,
+        vars(value).get("_offsets"),
+    )
+    value._set_view_bindings(bindings)
+    value._view_output_geometry = output_geometry
+    value._view_offset_binding = offset
+    value._view_encoding = operations, geometry, encoded
+    return encoded
+
+
+def _set_view_records(value, operations, current_geometry=None):
+    value._view_ops = operations
+    value._view_current_geometry = current_geometry
+    vars(value).pop("_view_encoding", None)
+    value._set_view_bindings(())
+    value._view_output_geometry = None
+    value._view_offset_binding = None
+
+
+class _ExactNativeViewMode(torch.utils._python_dispatch.TorchDispatchMode):
+    def __init__(self, function, source, source_layout, descriptor, operations, output=None):
+        super().__init__()
+        self.function = function
+        self.source = source
+        self.source_layout = source_layout
+        self.descriptor = descriptor
+        self.operations = operations
+        self.output = output
+
+    def __torch_dispatch__(self, function, types, args=(), kwargs=None):
+        from torch.utils._python_dispatch import return_and_correct_aliasing
+
+        kwargs = {} if kwargs is None else kwargs
+        if function is self.function and args and isinstance(args[0], NestedTensor):
+            source = args[0]
+            output = self.output if source is self.source else None
+            if source is not self.source:
+                if function is not torch.ops.aten.view.default:
+                    return function(*args, **kwargs)
+                from .aten_functions import _native_alias_result, _packed_view_shapes
+
+                descriptor = self.descriptor
+                descriptor.check()
+                rank = descriptor[-3]
+                sizes = descriptor[-1][:rank]
+                batch_dim = 0 if descriptor[0] or rank <= 1 else 1
+                physical_max = tuple(size for axis, size in enumerate(sizes) if axis != batch_dim)
+                shapes = tuple(tuple(row) for row in descriptor[4].tolist())
+                with torch.no_grad():
+                    output = _packed_view_shapes(
+                        source,
+                        shapes,
+                        batch_first=descriptor[0],
+                        empty_shape=physical_max,
+                    )
+                return _native_alias_result(function, args, kwargs, output, view_ops=(("view", ()),))
+            if output is None:
+                output = _exact_layout(
+                    source,
+                    source._packed_values,
+                    self.descriptor,
+                    source_layout=self.source_layout,
+                )
+                _set_view_records(output, self.operations)
+            elif output.is_inference() != source.is_inference():
+                from .aten_functions import _native_view_result
+
+                output = _native_view_result(
+                    source,
+                    output,
+                    logical_strides=output.stride(),
+                    logical_offset=output.storage_offset(),
+                )
+                _set_view_records(output, self.operations)
+            return return_and_correct_aliasing(function, args, kwargs, output)
+        return function(*args, **kwargs)
+
+
+def _exact_layout(reference, storage, descriptor, *, source_layout=None, logical_offset=None, inference=None):
+    r"""Materialize one exact layout without inferring its sample topology."""
+    descriptor.check()
+    bf, permutation, ragged, offsets, shape, splits, extents, rank, packed_rank, geometry = descriptor
+    sizes, strides = geometry[:rank], geometry[rank : 2 * rank]
+    data_sizes = geometry[2 * rank : 2 * rank + packed_rank]
+    data_strides = geometry[2 * rank + packed_rank : 2 * rank + 2 * packed_rank]
+    recorded_logical, data_offset = geometry[-2:]
+    if source_layout is not None:
+        source_layout.check()
+        with torch._C.DisableTorchFunctionSubclass():
+            actual_logical = torch.Tensor.storage_offset(reference)
+        data_offset += storage.storage_offset() - source_layout[-1][-1]
+        if logical_offset is None:
+            logical_offset = actual_logical + recorded_logical - source_layout[-1][-2]
+    elif logical_offset is None:
+        logical_offset = recorded_logical
+    with torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False):
+        data = storage.as_strided(data_sizes, data_strides, data_offset)
+    state = (
+        NestedTensor,
+        offsets,
+        shape,
+        permutation,
+        ragged,
+        torch.Size(sizes),
+        bf,
+        reference.padding_value,
+        reference.mask_value,
+        splits,
+        None,
+        None,
+        extents,
+        strides,
+    )
+
+    def construct():
+        return NestedTensor._layout_from_state(state, data.detach(), logical_offset=logical_offset)
+
+    inference = reference.is_inference() if inference is None else inference
+    if inference == torch.is_inference_mode_enabled():
+        result = construct()
+    else:
+        with torch.inference_mode(inference):
+            result = construct()
+    result._packed_values = data
+    return result
+
+
+def _apply_native_view_ops(base, operations):
+    r"""Run the original native view owners using their exact recorded layouts."""
+    prefix_count, full_operations = _merge_native_prefix(base, operations)
+    current = base
+    for position, (name, arguments, before, after) in enumerate(full_operations[prefix_count:]):
+        before.check()
+        after.check()
+        source = current
+        if name == "permute":
+            function, parameters = torch.ops.aten.permute.default, (arguments,)
+        elif name == "view":
+            function, parameters = torch.ops.aten.view.default, (arguments,)
+        elif name == "unsqueeze":
+            function, parameters = torch.ops.aten.unsqueeze.default, arguments
+        elif name == "squeeze":
+            function, parameters = torch.ops.aten.squeeze.dims, (arguments,)
+        elif name == "select":
+            function, parameters = torch.ops.aten.select.int, arguments
+        elif name == "slice":
+            function, parameters = torch.ops.aten.slice.Tensor, arguments
+        else:
+            raise RuntimeError(f"Unsupported exact native view: {name}")
+        prefix = full_operations[: prefix_count + position + 1]
+        with (
+            _ExactNativeViewMode(function, source, before, after, prefix),
+            torch._C.DisableTorchFunctionSubclass(),
+            torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False),
+        ):
+            current = function(source, *parameters)
+        _copy_view_fields(current, prefix)
+        current._unflattened_autograd = True
+    _native_view_grad_fn(current)
+    return current
+
+
+def _replay_view_ops(value, operations, requires_grad=None):
+    r"""Seed a real ABI view; the alias epilogue replays on its actual source."""
     if not operations:
         return value
     from torch._subclasses.fake_tensor import FakeTensor
     from torch._subclasses.functional_tensor import FunctionalTensor
 
-    values = value._packed_values
-    # Tracing must retain the supplied ABI children without generating tensor work.
+    data = value._packed_values
+    value._view_ops = operations
     if (
-        isinstance(values, (FakeTensor, FunctionalTensor))
+        isinstance(data, (FakeTensor, FunctionalTensor))
         or getattr(type(value), "_is_transform_proxy", False)
-        or torch._C._functorch.is_functorch_wrapped_tensor(values)
+        or torch._C._functorch.is_functorch_wrapped_tensor(data)
     ):
-        value._view_ops = operations
         return value
-    from .aten_functions import _squeeze_nested
-
+    for _, _, before, after in operations:
+        before.check()
+        after.check()
     with torch.inference_mode(False), torch.no_grad(), torch._C.DisableTorchFunctionSubclass():
-        base = value._packed_like_unchecked_raw(value._packed_values)
-        strides = list(value.stride())
-        for name, dim in reversed(operations):
-            if name != "unsqueeze":
-                raise RuntimeError(f"Unsupported NestedTensor view replay: {name}")
-            base = _squeeze_nested(base, dim)
-            strides.pop(dim)
-        state = (*base._layout_state()[:-1], tuple(strides))
-        base = NestedTensor._layout_from_state(state, base._packed_values)
-        torch.Tensor.requires_grad.__set__(base, value.requires_grad)
-        with torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False):
-            result = base
-            for _name, dim in operations:
-                result = torch.ops.aten.unsqueeze.default(result, dim)
-    result._packed_values = values
-    result._offsets = value._offsets
-    result._physical_shape = value._physical_shape
-    result._packed_sizes = value._packed_sizes
-    result._element_shapes = value._element_shapes
-    type(result)._install_persistent_ragged_offsets(result, value._persistent_ragged_offsets())
-    result._view_ops = operations
+        base = _exact_layout(value, data, operations[0][2], inference=False)
+        torch.Tensor.requires_grad.__set__(base, value.requires_grad if requires_grad is None else requires_grad)
+        with (
+            _ExactNativeViewMode(
+                torch.ops.aten.as_strided.default,
+                base,
+                operations[0][2],
+                operations[-1][3],
+                operations,
+                value,
+            ),
+            torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False),
+        ):
+            result = torch.ops.aten.as_strided.default(base, value.shape, value.stride(), value.storage_offset())
+    result._packed_values = data
     result._unflattened_autograd = True
-    result._is_aot_tangent = vars(value).get("_is_aot_tangent", False)
-    binding = vars(value).get("_compile_max_length_binding")
-    if binding is not None:
-        result._max_length_binding = binding
     return result
+
+
+_NATIVE_VIEW_CONTEXT = "danling_native_view_layout"
+
+
+class _ViewLayout:
+    __slots__ = ("_fields", "_metadata_versions")
+
+    def __init__(self, fields):
+        object.__setattr__(self, "_fields", tuple(fields))
+        tensors = (self._fields[3], self._fields[4], *(self._fields[5] or ()), self._fields[6])
+        guards = []
+        for tensor in tensors:
+            if tensor is None or any(current is tensor for current, _ in guards):
+                continue
+            if tensor.device.type != "cpu" or tensor.is_inference():
+                raise RuntimeError("NestedTensor view geometry must use versioned CPU metadata")
+            guards.append((tensor, tensor._version))
+        object.__setattr__(self, "_metadata_versions", tuple(guards))
+
+    def __setattr__(self, name, value):
+        raise AttributeError("NestedTensor view layout descriptors are immutable")
+
+    def __len__(self):
+        return len(self._fields)
+
+    def __iter__(self):
+        return iter(self._fields)
+
+    def __getitem__(self, index):
+        return self._fields[index]
+
+    def check(self):
+        if any(tensor._version != version for tensor, version in self._metadata_versions):
+            raise RuntimeError("NestedTensor view layout metadata was modified in-place after the view was created")
+
+
+_NATIVE_REBASE_CONTEXT = "danling_native_rebase_layout"
+
+
+def _view_context(value, before, after):
+    return before, after, type(value), value.dtype, value.padding_value, value.mask_value
+
+
+def _view_geometry(context, target=False):
+    descriptor = context[1 if target else 0]
+    descriptor.check()
+    rank, packed_rank = descriptor[-3:-1]
+    geometry = descriptor[-1]
+    return (
+        descriptor,
+        geometry[:rank],
+        geometry[rank : 2 * rank],
+        geometry[2 * rank : 2 * rank + packed_rank],
+        geometry[2 * rank + packed_rank : 2 * rank + 2 * packed_rank],
+        geometry[-2],
+        geometry[-1],
+    )
+
+
+def _view_reference(context, target=False, like=None):
+    _, _, cls, dtype, padding, mask = context
+    descriptor, sizes, strides, packed_sizes, _, _, _ = _view_geometry(context, target)
+    bf, permutation, ragged, offsets, shape, splits, extents, *_ = descriptor
+    state = (
+        cls,
+        offsets,
+        shape,
+        permutation,
+        ragged,
+        torch.Size(sizes),
+        bf,
+        padding,
+        mask,
+        splits,
+        None,
+        None,
+        extents,
+        strides,
+    )
+    data = (
+        torch.empty((), device="meta", dtype=dtype).expand(packed_sizes)
+        if like is None
+        else like.detach().as_strided(packed_sizes, (0,) * len(packed_sizes), like.storage_offset())
+    )
+    return NestedTensor._layout_from_state(state, data)
+
+
+def _view_needs_flat_cotangent(context):
+    return any(layout[1] != tuple(range(len(layout[1]))) for layout in context[:2])
+
+
+def _flat_view_cotangent(context, target, values, *, attach_autograd):
+    from .aten_functions import _shape_ragged_offsets
+
+    descriptor, sizes, _, packed_sizes, _, _, _ = _view_geometry(context, target)
+    bf, permutation, declared, offsets, shape, splits, extents, rank, packed_rank, _ = descriptor
+    ragged = permutation[: rank - packed_rank] if declared is None else declared
+    prefix = max(ragged, default=-1) + 1
+    canonical_ragged = tuple(range(prefix))
+    static = permutation[len(ragged) :]
+    static_sizes = dict(zip(static, packed_sizes[1:]))
+    tail = tuple(static_sizes[axis] for axis in range(prefix, len(permutation)))
+    promoted = tuple(axis for axis in canonical_ragged if axis not in ragged)
+    rows = packed_sizes[0] * math.prod(static_sizes[axis] for axis in promoted)
+    values = values.reshape(rows, *tail)
+    parents = []
+    for level in canonical_ragged:
+        retained = tuple(axis for axis in ragged if axis < level)
+        count = len(retained)
+        if set(ragged[:count]) == set(retained) and (count == 0 or splits is not None):
+            base = shape.shape[0] if count == 0 else splits[count].shape[0] - 1
+            parents.append(base * math.prod(static_sizes[axis] for axis in range(level) if axis not in ragged))
+        else:
+            binding, _ = _packed_slice_size_bindings(shape[:, :level].prod(1))
+            parents.append(binding.shape[0])
+    if tuple(ragged) == canonical_ragged and splits is not None:
+        canonical_splits = splits
+    else:
+        canonical_splits = _shape_ragged_offsets(shape, canonical_ragged, parent_sizes=tuple(parents))
+    if set(ragged) != set(canonical_ragged):
+        counts = shape[:, :prefix].prod(1)
+        offsets = NestedTensor._offsets_from_sizes(counts, dtype=offsets.dtype)
+    state = (
+        context[2],
+        offsets,
+        shape,
+        tuple(range(len(permutation))),
+        canonical_ragged,
+        torch.Size(sizes),
+        bf,
+        context[4],
+        context[5],
+        canonical_splits,
+        None,
+        None,
+        extents if tuple(ragged) == canonical_ragged else None,
+        None,
+    )
+    result = NestedTensor._layout_from_state(state, values.detach())
+    result._packed_values = values
+    if extents is not None and tuple(ragged) != canonical_ragged:
+        result._ragged_extents = result._new_ragged_extents()
+    return result._packed_like_unchecked(values, reuse_wrapper=True) if attach_autograd else result
+
+
+def _normalize_view_cotangent(grad, context):
+    if grad is None:
+        return None
+    descriptor, _, _, packed_sizes, _, _, _ = _view_geometry(context, True)
+    bf, permutation, declared, _, shape, *_ = descriptor
+    ragged = tuple(permutation[: descriptor[-3] - descriptor[-2]]) if declared is None else declared
+    reference = None
+    if isinstance(grad, NestedTensor):
+        if not NestedTensor._meta_tensor_equal(
+            grad._physical_shape, shape, "view cotangent geometry must match the forward output", runtime_assert=True
+        ):
+            raise RuntimeError("view cotangent geometry must match the forward output")
+        same_schema = grad.batch_first == bf and grad._permutation == permutation and grad._ragged_dims == ragged
+        if same_schema:
+            values = grad.values()
+        else:
+            from .ops import _expand_nested_as_values
+
+            reference = _view_reference(context, True, grad._packed_values)
+            values = _expand_nested_as_values(reference, grad)
+    else:
+        reference = _view_reference(context, True, grad)
+        values = reference._dense_to_packed_values(grad)
+        if values is None:
+            raise RuntimeError("cannot align a dense view cotangent with the forward geometry")
+        same_schema = False
+    if _view_needs_flat_cotangent(context):
+        from .torch_functions import _packed_flatten_elements
+
+        if not isinstance(grad, NestedTensor):
+            grad = reference.packed_like(values)
+        flat = (
+            grad.values().reshape(-1)
+            if grad._permutation == tuple(range(len(grad._permutation)))
+            else _packed_flatten_elements(grad)[0]
+        )
+        return _flat_view_cotangent(context, True, flat.contiguous(), attach_autograd=True)
+    if tuple(values.shape) != tuple(packed_sizes):
+        values = values.reshape(packed_sizes)
+        same_schema = False
+    if not values.is_contiguous():
+        values = values.contiguous()
+        same_schema = False
+    if same_schema:
+        with torch._C.DisableTorchFunctionSubclass():
+            contiguous = torch.Tensor.is_contiguous(grad)
+        if contiguous:
+            return grad
+        return grad.packed_like(values)
+    if reference is None:
+        reference = _view_reference(context, True, grad._packed_values if isinstance(grad, NestedTensor) else grad)
+    return reference.packed_like(values)
+
+
+def _native_view_pullback(grad, context, func, args, kwargs):
+    from .aten_functions import _native_alias_result
+
+    if _view_needs_flat_cotangent(context):
+        result = _flat_view_cotangent(context, False, grad._packed_values.view(-1), attach_autograd=False)
+        return _native_alias_result(func, args, kwargs, result, view_ops=(("view", ()),), native_ready=True)
+    descriptor, sizes, strides, source_sizes, _, _, _ = _view_geometry(context, False)
+    bf, permutation, ragged, offsets, shape, splits, extents, *_ = descriptor
+    with torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False):
+        data = grad._packed_values.reshape(source_sizes)
+    state = (
+        context[2],
+        offsets,
+        shape,
+        permutation,
+        ragged,
+        torch.Size(sizes),
+        bf,
+        context[4],
+        context[5],
+        splits,
+        None,
+        None,
+        extents,
+        strides,
+    )
+    result = NestedTensor._layout_from_state(state, data.detach())
+    result._packed_values = data
+    return _native_alias_result(func, args, kwargs, result, view_ops=(("view", ()),), native_ready=True)
+
+
+_NATIVE_VIEW_NODES = {
+    "view": (torch._C._functions.ViewBackward0,),
+    "permute": (torch._C._functions.PermuteBackward0,),
+    "unsqueeze": (torch._C._functions.UnsqueezeBackward0,),
+    "squeeze": tuple(
+        getattr(torch._C._functions, name)
+        for name in ("SqueezeBackward0", "SqueezeBackward1", "SqueezeBackward2")
+        if hasattr(torch._C._functions, name)
+    ),
+    "select": (torch._C._functions.SelectBackward0,),
+    "slice": (torch._C._functions.SliceBackward0,),
+}
+
+
+def _bind_native_view_nodes(value, node=None):
+    operations = vars(value).get("_view_ops", ())
+    if not operations:
+        return
+    if node is None:
+        with torch._C.DisableTorchFunctionSubclass():
+            node = torch.Tensor.grad_fn.__get__(value)
+    for name, _arguments, before, after in reversed(operations):
+        while isinstance(node, torch._C._functions.AliasBackward0):
+            node = node.next_functions[0][0]
+        if not isinstance(node, _NATIVE_VIEW_NODES[name]):
+            break
+        if name == "view" and _NATIVE_VIEW_CONTEXT not in node.metadata:
+            context = _view_context(value, before, after)
+            node.metadata[_NATIVE_VIEW_CONTEXT] = context
+            node.register_prehook(
+                lambda gradients, context=context: (_normalize_view_cotangent(gradients[0], context),)
+            )
+        node = node.next_functions[0][0]
+
+
+class _NativeReplayMode(torch.utils._python_dispatch.TorchDispatchMode):
+    def __init__(self, operations):
+        super().__init__()
+        self.operations = operations
+        self.positions = {}
+
+    def __torch_dispatch__(self, operator, types, args=(), kwargs=None):
+        from torch.utils._python_dispatch import return_and_correct_aliasing
+
+        kwargs = {} if kwargs is None else kwargs
+        if args and isinstance(args[0], NestedTensor):
+            source = args[0]
+            position = self.positions.get(id(source), (source, 0))[1]
+            if position < len(self.operations):
+                name, parameters, before, after = self.operations[position]
+                before.check()
+                after.check()
+                mapping = {
+                    "view": (torch.ops.aten.view.default, torch.ops.aten._reshape_alias.default),
+                    "permute": (torch.ops.aten.permute.default,),
+                    "unsqueeze": (torch.ops.aten.unsqueeze.default,),
+                    "squeeze": (
+                        torch.ops.aten.squeeze.dim,
+                        torch.ops.aten.squeeze.dims,
+                        torch.ops.aten.squeeze.default,
+                    ),
+                    "select": (torch.ops.aten.select.int,),
+                    "slice": (torch.ops.aten.slice.Tensor,),
+                }
+                if operator in mapping[name]:
+                    output = _exact_layout(source, source._packed_values, after, source_layout=before)
+                    _copy_view_fields(output, self.operations[: position + 1])
+                    self.positions[id(output)] = output, position + 1
+                    return return_and_correct_aliasing(operator, args, kwargs, output)
+        return operator(*args, **kwargs)
+
+
+def _native_view_grad_fn(value, operation=None):
+    operations = vars(value).get("_view_ops", ())
+    if not operations:
+        with torch._C.DisableTorchFunctionSubclass():
+            if operation is not None:
+                function, args, kwargs = operation
+                return function(value, *args, **kwargs)
+            node = torch.Tensor.grad_fn.__get__(value)
+        _bind_native_rebase(value, node)
+        return node
+    with torch._C.DisableTorchFunctionSubclass():
+        base = torch.Tensor._base.__get__(value)
+    if isinstance(base, NestedTensor):
+        _bind_native_rebase(base)
+
+    with _NativeReplayMode(operations), torch._C.DisableTorchFunctionSubclass():
+        if operation is not None:
+            function, args, kwargs = operation
+            result = function(value, *args, **kwargs)
+            _native_view_grad_fn(result)
+            return result
+        node = torch.Tensor.grad_fn.__get__(value)
+    _bind_native_view_nodes(value, node)
+    _bind_native_rebase(value, node)
+    return node
+
+
+def _bind_native_rebase(value, node=None):
+    pending = vars(value).get("_pending_native_rebase")
+    if pending is None:
+        return
+    if node is None:
+        with torch._C.DisableTorchFunctionSubclass():
+            node = torch.Tensor.grad_fn.__get__(value)
+    if type(node).__name__ == "CopySlices":
+        if _NATIVE_REBASE_CONTEXT not in node.metadata:
+            node.metadata[_NATIVE_REBASE_CONTEXT] = pending
+            operations, cls, dtype, padding, mask = pending
+            context = operations[0][2], operations[0][2], cls, dtype, padding, mask
+            node.register_prehook(
+                lambda gradients, context=context: (_normalize_view_cotangent(gradients[0], context),)
+            )
+        vars(value).pop("_pending_native_rebase", None)
+
+
+def _record_native_rebase(view, operands=()):
+    _bind_native_rebase(view)
+    if not torch.is_grad_enabled() or not (
+        view.requires_grad or any(isinstance(value, torch.Tensor) and value.requires_grad for value in operands)
+    ):
+        return
+    operations = vars(view).get("_view_ops", ())
+    if not operations:
+        return
+    with torch._C.DisableTorchFunctionSubclass():
+        base = torch.Tensor._base.__get__(view)
+    if isinstance(base, NestedTensor):
+        _bind_native_rebase(base)
+        base._pending_native_rebase = operations, type(view), view.dtype, view.padding_value, view.mask_value
+
+
+def _copy_view_fields(value, operations):
+    _set_view_records(value, operations)
+
+
+def _native_rebase_dispatch(func, args, kwargs):
+    node = torch._C._current_autograd_node()
+    if type(node).__name__ != "CopySlices" or _NATIVE_REBASE_CONTEXT not in node.metadata:
+        return NotImplemented
+    operations, cls, dtype, padding, mask = node.metadata[_NATIVE_REBASE_CONTEXT]
+    root = operations[0][2]
+    root.check()
+    context = root, root, cls, dtype, padding, mask
+    if func is torch.ops.aten.copy_.default:
+        dest, source = args[:2]
+        if isinstance(source, NestedTensor) and not dest._has_same_layout(source):
+            from .aten_functions import _mutate_packed_values
+            from .ops import _expand_nested_as_values
+
+            values = _expand_nested_as_values(dest, source)
+            return _mutate_packed_values(dest, func, (values, *args[2:]), kwargs)
+        return NestedTensorAtenRegistry[func](func, args, kwargs)
+    if func is torch.ops.aten.new_empty_strided.default:
+        source = args[0]
+        _, sizes, _, packed_sizes, packed_strides, _, _ = _view_geometry(context)
+        data = source._packed_values.new_empty_strided(packed_sizes, packed_strides)
+        bf, permutation, ragged, offsets, shape, splits, extents, *_ = root
+        state = (
+            cls,
+            offsets,
+            shape,
+            permutation,
+            ragged,
+            torch.Size(sizes),
+            bf,
+            padding,
+            mask,
+            splits,
+            None,
+            None,
+            extents,
+            tuple(args[2]),
+        )
+        result = NestedTensor._layout_from_state(state, data)
+        result._native_rebase_program = operations
+        return result
+    source = args[0] if args else None
+    if not isinstance(source, NestedTensor) or "_native_rebase_program" not in vars(source):
+        return NotImplemented
+    position = len(vars(source).get("_view_ops", ()))
+    if func in (torch.ops.aten.alias.default, torch.ops.aten.detach.default):
+        result = NestedTensorAtenRegistry[func](func, args, kwargs)
+        result._native_rebase_program = operations
+        return result
+    if position >= len(operations):
+        return NotImplemented
+    name, parameters, before, after = operations[position]
+    before.check()
+    after.check()
+    mapping = {
+        "view": (torch.ops.aten.view.default, torch.ops.aten._reshape_alias.default),
+        "permute": (torch.ops.aten.permute.default,),
+        "unsqueeze": (torch.ops.aten.unsqueeze.default,),
+        "squeeze": (torch.ops.aten.squeeze.dim, torch.ops.aten.squeeze.dims, torch.ops.aten.squeeze.default),
+        "select": (torch.ops.aten.select.int,),
+        "slice": (torch.ops.aten.slice.Tensor,),
+    }
+    if func not in mapping[name]:
+        return NotImplemented
+    from torch.utils._python_dispatch import return_and_correct_aliasing
+
+    result = _exact_layout(source, source._packed_values, after, source_layout=before)
+    _copy_view_fields(result, operations[: position + 1])
+    result._native_rebase_program = operations
+    return return_and_correct_aliasing(func, args, kwargs, result)
+
+
+@torch.compiler.allow_in_graph
+def _native_view_inplace(value, function, args, kwargs):
+    return _native_view_grad_fn(value, (function, args, kwargs))
+
+
+def _merge_native_prefix(source, operations):
+    prefix = vars(source).get("_view_ops", ())
+    if not prefix:
+        return 0, operations
+    from torch._subclasses.fake_tensor import FakeTensor
+    from torch._subclasses.functional_tensor import FunctionalTensor
+
+    if isinstance(
+        source._packed_values, (FakeTensor, FunctionalTensor)
+    ) or torch._C._functorch.is_functorch_wrapped_tensor(source._packed_values):
+        return 0, operations
+    return len(prefix), (*prefix, *operations)
 
 
 class _TransformTensor(NestedTensor):
@@ -7136,6 +8356,14 @@ class _TransformTensor(NestedTensor):
 
     @classmethod
     def __tensor_unflatten__(cls, inner_tensors, metadata, outer_size, outer_stride):
+        from torch._subclasses.fake_tensor import FakeTensor
+        from torch._subclasses.functional_tensor import FunctionalTensor
+
+        data = inner_tensors.get("_packed_values", inner_tensors.get("_flatten_sentinel"))
+        if not isinstance(data, (FakeTensor, FunctionalTensor)) and not torch._C._functorch.is_functorch_wrapped_tensor(
+            data
+        ):
+            return cls._public_type.__tensor_unflatten__(inner_tensors, metadata, outer_size, outer_stride)
         result = super().__tensor_unflatten__(inner_tensors, metadata, outer_size, outer_stride)
         from torch._subclasses.fake_tensor import FakeTensor
         from torch._subclasses.functional_tensor import FunctionalTensor
@@ -7151,8 +8379,9 @@ class _TransformTensor(NestedTensor):
         return result
 
     def _packed_like_unchecked(self, packed_values, *, reuse_wrapper=False):
-        if torch._C._functorch.is_gradtrackingtensor(packed_values) or torch._C._functorch.is_batchedtensor(
-            packed_values
+        if not _is_compiling() and (
+            torch._C._functorch.is_gradtrackingtensor(packed_values)
+            or torch._C._functorch.is_batchedtensor(packed_values)
         ):
             return _PackedLikeAutograd.apply(packed_values, _PackedStructureReference(self))
         return super()._packed_like_unchecked(packed_values, reuse_wrapper=reuse_wrapper)
@@ -7161,6 +8390,8 @@ class _TransformTensor(NestedTensor):
 def _transform_rebuild(value, cls, packed_values=None):
     if packed_values is None:
         packed_values = value._packed_values
+    with torch._C.DisableTorchFunctionSubclass():
+        logical_offset = torch.Tensor.storage_offset(value)
     result = cls._from_packed_raw(
         packed_values,
         value._offsets,
@@ -7178,6 +8409,7 @@ def _transform_rebuild(value, cls, packed_values=None):
         mark_dynamic=False,
         # AOT counts symbolic-constant strides as separate ABI inputs.
         logical_strides=value.stride(),
+        logical_offset=logical_offset,
     )
     with torch._C.DisableTorchFunctionSubclass():
         if value.requires_grad and not result.requires_grad:
@@ -7185,6 +8417,17 @@ def _transform_rebuild(value, cls, packed_values=None):
     for name in ("_unflattened_autograd", "_is_aot_tangent", "_wrapper_grad_leaf"):
         if vars(value).get(name, False):
             object.__setattr__(result, name, True)
+    result._view_ops = vars(value).get("_view_ops", ())
+    result._view_current_geometry = vars(value).get("_view_current_geometry")
+    result._set_view_bindings(value._view_bindings())
+    result._view_offset_binding = vars(value).get("_view_offset_binding")
+    result._view_output_geometry = vars(value).get("_view_output_geometry")
+    encoding = vars(value).get("_view_encoding")
+    if encoding is not None:
+        result._view_encoding = encoding
+    binding = vars(value).get("_compile_ragged_extents")
+    if binding is not None:
+        result._ragged_extents = binding
     return result
 
 

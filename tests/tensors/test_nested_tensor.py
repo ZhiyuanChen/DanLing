@@ -20,7 +20,11 @@
 import copy
 import gc
 import io
+import os
 import pickle
+import subprocess
+import sys
+import textwrap
 import weakref
 
 import pytest
@@ -38,6 +42,152 @@ TORCH_VERSION = Version(torch.__version__.split("+")[0])
 
 
 class TestFunctionTransforms:
+    @pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
+    @pytest.mark.parametrize("factory", ["sequence", "packed", "like"])
+    def test_compiled_factory_jvp(self, device, backend, factory):
+        torch.compiler.reset()
+        try:
+            values = torch.randn(5, 4, device=device, dtype=torch.float64, requires_grad=True)
+            direction = torch.randn_like(values)
+            layout = NT((values[:2].detach(), values[2:].detach()), ragged_dims=(0,))
+
+            def operation(value, tangent):
+                def construct(data):
+                    if factory == "sequence":
+                        output = NT((data[:2], data[2:]), ragged_dims=(0,))
+                    elif factory == "packed":
+                        output = NT.from_packed(
+                            data,
+                            torch.tensor([0, 2, 5]),
+                            torch.tensor([[2, 4], [3, 4]]),
+                            ragged_dims=(0,),
+                            outer_size=(2, 3, 4),
+                            validate=False,
+                        )
+                    else:
+                        output = layout.packed_like(data)
+                    return output.values().sin()
+
+                return torch.func.jvp(construct, (value,), (tangent,))
+
+            expected = torch.func.jvp(lambda data: torch.cat((data[:2], data[2:])).sin(), (values,), (direction,))
+            actual = torch.compile(operation, backend=backend, fullgraph=True)(values, direction)
+            torch.testing.assert_close(actual, expected)
+            torch.testing.assert_close(
+                torch.autograd.grad(sum(result.square().sum() for result in actual), values),
+                torch.autograd.grad(sum(result.square().sum() for result in expected), values),
+            )
+        finally:
+            torch.compiler.reset()
+
+    @pytest.mark.parametrize("wrapper_leaf", [False, True])
+    @pytest.mark.parametrize(
+        "transform,backend",
+        [
+            ("grad", None),
+            ("jvp", None),
+            ("vmap_jvp", None),
+            ("jvp", "eager"),
+            ("jvp", "aot_eager"),
+            ("jvp", "inductor"),
+        ],
+    )
+    def test_captured_projection(self, device, wrapper_leaf, transform, backend):
+        parts = [
+            torch.randn(rows, 2, device=device, dtype=torch.float64, requires_grad=not wrapper_leaf) for rows in (2, 3)
+        ]
+        references = [part.detach().clone().requires_grad_(part.requires_grad) for part in parts]
+        captured = NT(parts)
+        reference = torch.cat(references).requires_grad_()
+        if wrapper_leaf:
+            captured.requires_grad_()
+        shape = (2, 5, 2) if transform == "vmap_jvp" else (5, 2)
+        value = torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True)
+        reference_value = value.detach().clone().requires_grad_()
+
+        def run(operation, argument):
+            if transform == "grad":
+                return (torch.func.grad(lambda data: operation(data).sum())(argument),)
+
+            def jvp(data):
+                return torch.func.jvp(operation, (data,), (torch.ones_like(data),))
+
+            return torch.vmap(jvp)(argument) if transform == "vmap_jvp" else jvp(argument)
+
+        def operation(argument):
+            return run(lambda data: (captured.values() + data).sin(), argument)
+
+        if backend is not None:
+            torch.compiler.reset()
+            operation = torch.compile(operation, backend=backend, fullgraph=True)
+        actual = operation(value)
+        expected = run(lambda data: (reference + data).sin(), reference_value)
+        torch.testing.assert_close(actual, expected)
+        actual_inputs = (captured, *(() if wrapper_leaf else parts), value)
+        expected_inputs = (reference, *(() if wrapper_leaf else references), reference_value)
+        gradients = torch.autograd.grad(sum(result.square().sum() for result in actual), actual_inputs)
+        expected_gradients = torch.autograd.grad(sum(result.square().sum() for result in expected), expected_inputs)
+        torch.testing.assert_close(gradients[0].values(), expected_gradients[0])
+        torch.testing.assert_close(gradients[1:], expected_gradients[1:])
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    @pytest.mark.parametrize("requires_grad", [False, True])
+    @pytest.mark.parametrize("name", ["sin", "mul"])
+    @pytest.mark.parametrize("native", [False, True])
+    def test_forward_projection(self, device, enabled, requires_grad, name, native):
+        values = torch.randn(14, device=device, dtype=torch.float64, requires_grad=requires_grad)
+        reference = values.detach().clone().requires_grad_(requires_grad)
+        direction = torch.randn_like(values, requires_grad=True)
+        reference_direction = direction.detach().clone().requires_grad_()
+        with torch.set_grad_enabled(enabled), torch.autograd.forward_ad.dual_level():
+            dual = torch.autograd.forward_ad.make_dual(values, direction)
+            reference_dual = torch.autograd.forward_ad.make_dual(reference, reference_direction)
+            source = NT([dual[:8].view(2, 4), dual[8:].view(3, 2)], ragged_dims=(0, 1))
+            if name == "sin":
+                output = torch.ops.aten.sin.default(source) if native else source.sin()
+                expected = reference_dual.sin()
+            else:
+                output = torch.ops.aten.mul.Scalar(source, 2) if native else source * 2
+                expected = reference_dual * 2
+            actual = torch.autograd.forward_ad.unpack_dual(output.values())
+            expected = torch.autograd.forward_ad.unpack_dual(expected)
+            torch.testing.assert_close(actual, expected)
+        if enabled:
+            inputs = (values, direction) if requires_grad else (direction,)
+            reference_inputs = (reference, reference_direction) if requires_grad else (reference_direction,)
+            torch.testing.assert_close(
+                torch.autograd.grad(actual.tangent.sum(), inputs, materialize_grads=True),
+                torch.autograd.grad(expected.tangent.sum(), reference_inputs, materialize_grads=True),
+            )
+
+    @pytest.mark.parametrize("requires_grad", [False, True])
+    @pytest.mark.parametrize("operation", [None, "mul_", "tanh_"])
+    def test_inplace_forward_ad(self, device, requires_grad, operation):
+        values = torch.randn(24, device=device, dtype=torch.float64, requires_grad=requires_grad)
+        reference = values.detach().clone().requires_grad_(requires_grad)
+        direction = torch.randn_like(values)
+        with torch.autograd.forward_ad.dual_level():
+            dual = torch.autograd.forward_ad.make_dual(values, direction)
+            expected_dual = torch.autograd.forward_ad.make_dual(reference, direction)
+            output = NT([dual[:12].view(2, 6), dual[12:].view(3, 4)], ragged_dims=(0, 1)).sin()
+            expected = [part.sin() for part in (expected_dual[:12].view(2, 6), expected_dual[12:].view(3, 4))]
+            if operation is not None:
+                arguments = (2,) if operation == "mul_" else ()
+                getattr(output, operation)(*arguments)
+                for part in expected:
+                    getattr(part, operation)(*arguments)
+            primal, tangent = torch.autograd.forward_ad.unpack_dual(output)
+            unpacked = [torch.autograd.forward_ad.unpack_dual(part) for part in expected]
+            torch.testing.assert_close(primal.unbind(), [part.primal for part in unpacked])
+            torch.testing.assert_close(tangent.unbind(), [part.tangent for part in unpacked])
+            actual_loss = torch.autograd.forward_ad.unpack_dual(output.square().sum())
+            expected_loss = torch.autograd.forward_ad.unpack_dual(sum(part.square().sum() for part in expected))
+            torch.testing.assert_close(actual_loss, expected_loss)
+        if requires_grad:
+            torch.testing.assert_close(
+                torch.autograd.grad(actual_loss.tangent, values),
+                torch.autograd.grad(expected_loss.tangent, reference),
+            )
 
     @pytest.mark.parametrize("lengths", [(1, 2), (2, 4)])
     @pytest.mark.parametrize("batch_first", [False, True])
@@ -306,6 +456,108 @@ class TestFunctionTransforms:
 
 class TestAutogradViewLifetime:
 
+    @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
+    @pytest.mark.parametrize("loss", ["parent", "view", "previous"])
+    @pytest.mark.parametrize("operation", ["mul_", "tanh_"])
+    def test_topology_mutation(self, device, backend, loss, operation):
+        torch.compiler.reset()
+
+        def reshape(value):
+            return value.view(len(value), 2, -1)
+
+        run = reshape if backend is None else torch.compile(reshape, backend=backend, dynamic=True, fullgraph=True)
+        for shapes in (((2, 4), (3, 2)), ((2, 6), (4, 2))):
+            parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+            references = [part.detach().clone().requires_grad_() for part in parts]
+            source = NT(parts, ragged_dims=(0, 1)).sin()
+            expected_source = [part.sin() for part in references]
+            previous = source.sum()
+            expected_previous = sum(part.sum() for part in expected_source)
+            output = run(source)
+            expected = [part.view(2, -1) for part in expected_source]
+            arguments = (2,) if operation == "mul_" else ()
+            getattr(output, operation)(*arguments)
+            for part in expected:
+                getattr(part, operation)(*arguments)
+            torch.testing.assert_close(source.unbind(), expected_source)
+            torch.testing.assert_close(output.unbind(), expected)
+            if loss == "previous":
+                actual_loss, expected_loss = previous, expected_previous
+            else:
+                actual_loss = (source if loss == "parent" else output).square().sum()
+                expected_loss = sum(part.square().sum() for part in (expected_source if loss == "parent" else expected))
+            torch.testing.assert_close(
+                torch.autograd.grad(actual_loss, parts), torch.autograd.grad(expected_loss, references)
+            )
+
+    @pytest.mark.parametrize("transposed", [False, True])
+    def test_topology_covector(self, device, transposed):
+        parts = [
+            torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in ((2, 6), (3, 4))
+        ]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        output = NT(parts, ragged_dims=(0, 1)).sin().view(2, -1, 2, 2)
+        expected = [part.sin().view(-1, 2, 2) for part in references]
+        probes = [torch.randn_like(part, requires_grad=True) for part in expected]
+        reference_probes = [part.detach().clone().requires_grad_() for part in probes]
+        cotangent = NT(probes, ragged_dims=(0,))
+        expected_probes = reference_probes
+        if transposed:
+            cotangent = cotangent.transpose(-1, -2)
+            expected_probes = [part.transpose(-1, -2) for part in reference_probes]
+        actual_grad = torch.autograd.grad(output, parts, cotangent, create_graph=True)
+        expected_grad = torch.autograd.grad(expected, references, expected_probes, create_graph=True)
+        torch.testing.assert_close(actual_grad, expected_grad)
+        torch.testing.assert_close(
+            torch.autograd.grad(sum(part.sum() for part in actual_grad), probes, retain_graph=True),
+            torch.autograd.grad(sum(part.sum() for part in expected_grad), reference_probes, retain_graph=True),
+        )
+        torch.testing.assert_close(
+            torch.autograd.grad(sum(part.sum() for part in actual_grad), parts),
+            torch.autograd.grad(sum(part.sum() for part in expected_grad), references),
+        )
+
+    @pytest.mark.parametrize("method", ["view_as", "reshape_as"])
+    def test_reference_topology(self, device, method):
+        shapes, target_shapes = ((2, 6), (3, 4)), ((3, 4), (2, 6))
+        parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=(0, 1)).sin()
+        template = NT(
+            [torch.empty(shape, device=device, dtype=torch.float64) for shape in target_shapes], ragged_dims=(0, 1)
+        )
+        assert source.shape == template.shape
+        output = getattr(source, method)(template)
+        expected_source = [part.sin() for part in references]
+        expected = [part.view(shape) for part, shape in zip(expected_source, target_shapes)]
+        output.tanh_()
+        for part in expected:
+            part.tanh_()
+        torch.testing.assert_close(output.unbind(), expected)
+        torch.testing.assert_close(source.unbind(), expected_source)
+        torch.testing.assert_close(
+            torch.autograd.grad(source.square().sum(), parts),
+            torch.autograd.grad(sum(part.square().sum() for part in expected_source), references),
+        )
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
+    def test_view_covector_packing(self, device, backend):
+        torch.compiler.reset()
+        shapes = ((2, 4), (3, 2))
+        template = NT([torch.zeros(shape, device=device, dtype=torch.float64) for shape in shapes])
+        scalar = torch.randn((), device=device, dtype=torch.float64, requires_grad=True)
+        source = template.packed_like(scalar.expand(14))
+
+        def reshape(value):
+            return value.view(2, 2, -1)
+
+        run = reshape if backend is None else torch.compile(reshape, backend=backend, fullgraph=True, dynamic=True)
+        output = run(source)
+        weights = torch.arange(1, 15, device=device, dtype=torch.float64).split((8, 6))
+        cotangent = NT([weight.view(2, -1) for weight in weights], ragged_dims=(1,))
+        (gradient,) = torch.autograd.grad(output, source, cotangent)
+        torch.testing.assert_close(gradient.unbind(), [weight.view(shape) for weight, shape in zip(weights, shapes)])
+
     @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
     @pytest.mark.parametrize("dim", [0, -1])
     def test_inference_views(self, device, backend, dim):
@@ -320,7 +572,22 @@ class TestAutogradViewLifetime:
             torch.testing.assert_close(source.unbind(), [part + 1 for part in parts])
 
     @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
-    @pytest.mark.parametrize("layout", ["ragged", "batch-second", "existing-view", "chain", "alias", "detach", "clone"])
+    @pytest.mark.parametrize(
+        "layout",
+        [
+            "ragged",
+            "batch-second",
+            "existing-view",
+            "chain",
+            "alias",
+            "detach",
+            "clone",
+            "squeeze",
+            "noop",
+            "empty-dims",
+            "mixed-dims",
+        ],
+    )
     def test_compiled_views(self, device, backend, layout):
         torch.compiler.reset()
         parts = [torch.randn(n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in (2, 4)]
@@ -341,6 +608,14 @@ class TestAutogradViewLifetime:
                 return torch.ops.aten.alias.default(result)
             if layout == "detach":
                 return result.detach()
+            if layout == "squeeze":
+                return result.unsqueeze(-1).squeeze(-1)
+            if layout == "noop":
+                return result.squeeze(-1)
+            if layout == "empty-dims":
+                return result.squeeze(())
+            if layout == "mixed-dims":
+                return result.unsqueeze(-1).squeeze((-1, -2))
             return result.clone() if layout == "clone" else result
 
         expected = [part * 1 for part in references]
@@ -367,6 +642,44 @@ class TestAutogradViewLifetime:
             torch.autograd.grad(sum(part.square().sum() for part in expected), references),
         )
 
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_compiled_view_chain(self, device, backend, existing):
+        torch.compiler.reset()
+        flatten = torch.compile(lambda value: value.flatten(-2), backend=backend, fullgraph=True, dynamic=True)
+        restore = torch.compile(
+            lambda value, h, d: value.unflatten(-1, (h, d)).transpose(-1, -2),
+            backend=backend,
+            fullgraph=True,
+            dynamic=True,
+        )
+        for lengths, h, d in (((2, 4), 2, 3), ((3, 7), 3, 2)):
+            parts = [torch.randn(n, h, d, device=device, dtype=torch.float64, requires_grad=True) for n in lengths]
+            references = [part.detach().clone().requires_grad_() for part in parts]
+            parent = NT(parts, ragged_dims=(0,)).sin()
+            expected_parent = [part.sin() for part in references]
+            source = parent.unsqueeze(0) if existing else parent
+            output = restore(flatten(source), h, d)
+            expected = [(part.unsqueeze(0) if existing else part).transpose(-1, -2) for part in expected_parent]
+            saved = parent.values().square().sum()
+            output.mul_(2)
+            for part in expected:
+                part.mul_(2)
+            assert_close(parent.unbind(), expected_parent)
+            assert_close(output.unbind(0 if output.batch_first else 1), expected)
+            with pytest.raises(RuntimeError, match="modified"):
+                torch.autograd.grad(saved, parts, retain_graph=True)
+            assert_close(
+                torch.autograd.grad(parent.square().sum(), parts, retain_graph=True),
+                torch.autograd.grad(
+                    sum(part.square().sum() for part in expected_parent), references, retain_graph=True
+                ),
+            )
+            assert_close(
+                torch.autograd.grad(output.square().sum(), parts),
+                torch.autograd.grad(sum(part.square().sum() for part in expected), references),
+            )
+
     @pytest.mark.parametrize("length", [0, 1])
     def test_compiled_inplace_edges(self, device, length):
         torch.compiler.reset()
@@ -382,6 +695,23 @@ class TestAutogradViewLifetime:
             torch.autograd.grad(output.values().sum(), (*parts, *others)),
             tuple(part.cos() for part in parts) + tuple(-part.sin() for part in others),
         )
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    def test_sliced_view_gradients(self, device, backend):
+        torch.compiler.reset()
+        run = torch.compile(lambda value: value[:, 1:].transpose(0, 1), backend=backend, fullgraph=True, dynamic=True)
+        for lengths in ((4, 6), (0, 1)):
+            parts = [torch.randn(n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in lengths]
+            references = [part.detach().clone().requires_grad_() for part in parts]
+            output = run(NT(parts, ragged_dims=(0,)))
+            expected = [part[1:] for part in references]
+            covectors = [torch.randn_like(part) for part in expected]
+            tangent = NT(covectors, ragged_dims=(0,), batch_first=False)
+            assert_close(output.unbind(1), expected)
+            assert_close(
+                torch.autograd.grad(output, parts, grad_outputs=tangent),
+                torch.autograd.grad(expected, references, grad_outputs=covectors),
+            )
 
     def test_saved_hooks(self, device):
         parts = [
@@ -1515,7 +1845,8 @@ class TestPackedLike:
         names, metadata = nested.__tensor_flatten__()
         children = {name: getattr(nested, name) for name in names}
         replacement = torch.full_like(nested.values(), 7)
-        children["concat"] = replacement
+        name = next(name for name, child in children.items() if child is nested.values())
+        children[name] = replacement
         strides = tuple(stride * 2 for stride in nested.stride())
 
         rebuilt = NT.__tensor_unflatten__(children, metadata, nested.shape, strides)
@@ -2456,6 +2787,61 @@ class TestCopySemantics:
         assert restored.packed_dim_order == nested.packed_dim_order
         assert_close(restored, nested)
 
+    @pytest.mark.parametrize("serializer", ["pickle", "torch"])
+    @pytest.mark.parametrize("operation", ["slice", "select"])
+    @pytest.mark.parametrize("requires_grad", [False, True])
+    @pytest.mark.parametrize("batch_first", [False, True])
+    def test_offset_view_roundtrip(self, device, serializer, operation, requires_grad, batch_first):
+        parts = [torch.randn(n, 4, device=device, dtype=torch.float64, requires_grad=requires_grad) for n in (2, 3)]
+        source = NestedTensor(parts, ragged_dims=(0,), batch_first=batch_first, padding_value=-3, mask_value=True)
+        view = source[:, :, 1::2] if operation == "slice" else source.select(-1, 1)
+        assert view.storage_offset() > 0
+        before = view.values().detach().clone()
+
+        if serializer == "pickle":
+            restored = pickle.loads(pickle.dumps(view))
+        else:
+            buffer = io.BytesIO()
+            torch.save(view, buffer)
+            buffer.seek(0)
+            restored = torch.load(buffer, weights_only=False)
+
+        assert type(restored) is NestedTensor
+        assert restored.shape == view.shape
+        assert restored.device == view.device
+        assert restored.batch_first is batch_first
+        assert restored.padding_value == -3
+        assert restored.mask_value is True
+        assert restored.ragged_dims == view.ragged_dims
+        assert restored.packed_dim_order == view.packed_dim_order
+        assert restored.requires_grad is requires_grad
+        # The loaded object has a fresh canonical outer, not the original view's
+        # base, while its actual numerical storage retains the packed view layout.
+        assert restored.storage_offset() == 0
+        assert restored.stride() == torch.empty(restored.shape, device="meta").stride()
+        torch.testing.assert_close(restored.element_sizes(), view.element_sizes())
+        torch.testing.assert_close(restored.values(), before)
+        torch.testing.assert_close(restored.tensor, view.tensor)
+        assert restored.values().stride() == view.values().stride()
+        assert restored.values().storage_offset() == view.values().storage_offset()
+
+        if requires_grad:
+            assert restored.is_leaf
+            restored.square().sum().backward()
+            torch.testing.assert_close(restored.grad.values(), 2 * before)
+            assert all(part.grad is None for part in parts)
+
+        with torch.no_grad():
+            restored.values().add_(1)
+        torch.testing.assert_close(view.values(), before)
+
+    @pytest.mark.parametrize("protocol", range(pickle.HIGHEST_PROTOCOL + 1))
+    def test_offset_view_pickle_protocol(self, protocol):
+        view = NestedTensor([torch.arange(n * 4).reshape(n, 4) for n in (2, 3)], ragged_dims=(0,))[:, :, 1::2]
+        restored = pickle.loads(pickle.dumps(view, protocol=protocol))
+        torch.testing.assert_close(restored.values(), view.values())
+        torch.testing.assert_close(restored.element_sizes(), view.element_sizes())
+
 
 # From Factory Methods
 # ---------------------------------------------------------------------------
@@ -2792,6 +3178,79 @@ class TestPairedIndex:
 
 
 class TestIndexing:
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("before_owner", [False, True])
+    @pytest.mark.parametrize("selection", ["integer", "slice", "compound"])
+    def test_static_views(self, device, backend, before_owner, selection):
+        torch.compiler.reset()
+        lengths = (2,) if before_owner else (2, 4)
+        parts = [
+            torch.randn(
+                (3, n, 2) if before_owner else (n, 3, 2), device=device, dtype=torch.float64, requires_grad=True
+            )
+            for n in lengths
+        ]
+        refs = [part.detach().clone().requires_grad_() for part in parts]
+        source = NT(parts, ragged_dims=(1,) if before_owner else (0,), batch_first=not before_owner) * 1
+        expected_source = [part * 1 for part in refs]
+
+        def subset(value):
+            if selection == "integer":
+                return value[:, 1, ...] if before_owner else value[..., 1]
+            if selection == "slice":
+                return value[:, 1:2, ...] if before_owner else value[..., 1:2]
+            return value[:, 1:2, :, 1] if before_owner else value[:, :, 1:2, 1]
+
+        expected = []
+        for part in expected_source:
+            if selection == "integer":
+                expected.append(part[1] if before_owner else part[..., 1])
+            elif selection == "slice":
+                expected.append(part[1:2] if before_owner else part[..., 1:2])
+            else:
+                expected.append(part[1:2, :, 1] if before_owner else part[:, 1:2, 1])
+        result = torch.compile(subset, backend=backend, fullgraph=True, dynamic=True)(source)
+        batch_dim = 1 if before_owner and selection != "integer" else 0
+        torch.testing.assert_close(result.unbind(batch_dim), expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(result.square().sum(), parts, retain_graph=True),
+            torch.autograd.grad(sum(part.square().sum() for part in expected), refs, retain_graph=True),
+        )
+        saved = source.values().square().sum()
+        result.mul_(2)
+        for part in expected:
+            part.mul_(2)
+        torch.testing.assert_close(source.unbind(1 if before_owner else 0), expected_source)
+        torch.testing.assert_close(
+            torch.autograd.grad(source.square().sum(), parts, retain_graph=True),
+            torch.autograd.grad(sum(part.square().sum() for part in expected_source), refs),
+        )
+        with pytest.raises(RuntimeError, match="modified.*inplace|version"):
+            torch.autograd.grad(saved, parts)
+
+    @pytest.mark.parametrize("transform", ["grad", "jvp", "vmap"])
+    @pytest.mark.parametrize("integer", [False, True])
+    def test_static_transforms(self, device, transform, integer):
+        values = torch.randn(6, 2, 3, device=device, dtype=torch.float64)
+        direction = torch.randn_like(values)
+        source = NT(values.split((2, 4)), ragged_dims=(0,))
+        vector = NT(direction.split((2, 4)), ragged_dims=(0,))
+
+        def loss(value):
+            selected = value[..., 1] if integer else value[..., 1:2]
+            return selected.sin().square().sum()
+
+        if transform == "grad":
+            actual = torch.func.grad(loss)(source).values()
+            expected = torch.func.grad(loss)(values)
+        elif transform == "jvp":
+            actual = torch.func.jvp(loss, (source,), (vector,))
+            expected = torch.func.jvp(loss, (values,), (direction,))
+        else:
+            actual = torch.vmap(loss, in_dims=-1)(source)
+            expected = torch.vmap(loss, in_dims=-1)(values)
+        torch.testing.assert_close(actual, expected)
 
     @pytest.mark.parametrize("position", [0, 1, -1, -2])
     def test_compiled_batch_select_ragged_position(self, device, position):
@@ -3257,6 +3716,7 @@ class TestMutationCoherence:
             offsets = torch.tensor([0, 2, 5])
             sizes = torch.tensor([[2], [3]])
             source = NT.from_packed(values, offsets, sizes, ragged_dims=(0,), outer_size=(2, 3), mark_dynamic=False)
+            offsets, sizes = source.packed_offsets(), source.element_sizes()
             _ = source.tensor_mask, source.tolist(), source.element_sizes(dtype=torch.int32)
 
             offsets.copy_(torch.tensor([0, 3, 5]))
@@ -3361,6 +3821,214 @@ class TestMutationCoherence:
         assert destination.packed_dim_order != source.packed_dim_order
         with pytest.raises(NotImplementedError, match="matching packed layout"):
             destination.copy_(source)
+
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize("explicit_leaf", [False, True])
+    @pytest.mark.parametrize("assignment", ["integer", "slice"])
+    @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
+    def test_no_grad_replacement_preserves_autograd_metadata(self, device, native, explicit_leaf, assignment, backend):
+        parts = [torch.randn(n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in (2, 4)]
+        source = NT(parts, ragged_dims=(0,))
+        if backend is not None:
+            source = torch.compile(lambda value: value * 2, backend=backend, fullgraph=True)(source)
+        else:
+            source = source * 2
+        if explicit_leaf:
+            source = source.detach().requires_grad_()
+        source.retain_grad()
+        observed = []
+        handle = source.register_hook(lambda gradient: observed.append(gradient.values().detach().clone()))
+        source.square().sum().backward(retain_graph=True)
+        previous_inputs = None if explicit_leaf else [part.grad.clone() for part in parts]
+        previous_node = source.grad_fn
+        previous_gradient = source.grad
+        accumulated = previous_gradient.values().clone()
+        replacement = torch.randn_like(parts[0])
+        expected = torch.cat([replacement, 2 * parts[1].detach()]).cos()
+        with torch.no_grad():
+            if assignment == "integer":
+                source[0] = replacement
+            else:
+                source[:1] = NT([replacement], ragged_dims=(0,))
+        assert source.grad_fn is previous_node
+        assert source.grad is previous_gradient
+        output = torch.ops.aten.sin.default(source) if native else source.sin()
+        output.sum().backward()
+        if explicit_leaf:
+            torch.testing.assert_close(source.grad.values() - accumulated, expected)
+        else:
+            actual = torch.cat([part.grad - previous for part, previous in zip(parts, previous_inputs)])
+            torch.testing.assert_close(actual, 2 * expected)
+        torch.testing.assert_close(source.grad.values(), accumulated + expected)
+        assert len(observed) == 2
+        torch.testing.assert_close(observed[-1], expected)
+        handle.remove()
+
+    def test_no_grad_replacement_preserves_external_leaf_protection(self, device):
+        values = torch.randn(6, 3, device=device, dtype=torch.float64, requires_grad=True)
+        source = NT.from_packed(values, torch.tensor([0, 2, 6]), torch.tensor([[2, 3], [4, 3]]), ragged_dims=(0,))
+        with torch.no_grad():
+            source[0] = torch.zeros_like(values[:2])
+        with pytest.raises(RuntimeError, match="leaf"):
+            source.add_(1)
+
+    @staticmethod
+    def _packed_alias_source(device):
+        leaf = torch.linspace(0.2, 1.2, 18, device=device, dtype=torch.float64, requires_grad=True)
+        return leaf, NestedTensor([leaf[:6].reshape(2, 3), leaf[6:].reshape(4, 3)], ragged_dims=(0,))
+
+    @staticmethod
+    def _packed_alias_loss(value, operation, native):
+        if operation == "square":
+            output = torch.ops.aten.square.default(value) if native else value.square()
+        elif operation == "sin":
+            output = torch.ops.aten.sin.default(value) if native else value.sin()
+        else:
+            output = torch.ops.aten.mul.Tensor(value, value) if native else value * value
+        return output.sum()
+
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize("operation", ["square", "sin", "multiply"])
+    @pytest.mark.parametrize("read", ["values", "concat"])
+    @pytest.mark.parametrize("alias_kind", ["direct", "detached", "sliced", "preexisting"])
+    def test_packed_alias_write_invalidates_saved_values(self, device, native, operation, read, alias_kind):
+        leaf, source = self._packed_alias_source(device)
+
+        def packed():
+            return source.values() if read == "values" else source.concat
+
+        alias = packed() if alias_kind == "preexisting" else None
+        loss = self._packed_alias_loss(source, operation, native)
+        with torch.no_grad():
+            alias = packed() if alias is None else alias
+            if alias_kind in ("detached", "preexisting"):
+                alias = alias.detach()
+            elif alias_kind == "sliced":
+                alias = alias[::2]
+            before = alias.clone()
+            alias.add_(1)
+            torch.testing.assert_close(alias, before + 1)
+
+        with pytest.raises(RuntimeError, match="modified|version"):
+            torch.autograd.grad(loss, leaf)
+
+    @pytest.mark.parametrize("read", ["values", "concat"])
+    @pytest.mark.parametrize("operation", ["add", "exp"])
+    def test_packed_write_does_not_reject_losses_without_saved_values(self, device, read, operation):
+        leaf, source = self._packed_alias_source(device)
+        # Addition saves no numerical input; exp saves its independent output.
+        if operation == "add":
+            loss = torch.ops.aten.add.Scalar(source, 2).sum()
+            expected = torch.ones_like(leaf)
+        else:
+            loss = torch.ops.aten.exp.default(source).sum()
+            expected = leaf.detach().exp()
+        with torch.no_grad():
+            alias = source.values() if read == "values" else source.concat
+            alias.detach().add_(1)
+        torch.testing.assert_close(torch.autograd.grad(loss, leaf)[0], expected)
+
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize("save_before_repack", [False, True])
+    def test_repacked_alias_write_invalidates_saved_values(self, device, native, save_before_repack):
+        leaf, source = self._packed_alias_source(device)
+        loss = self._packed_alias_loss(source, "square", native) if save_before_repack else None
+        source[0] = leaf[:9].reshape(3, 3)
+        if not save_before_repack:
+            loss = self._packed_alias_loss(source, "square", native)
+            with torch.no_grad():
+                source.values().detach().add_(1)
+        with pytest.raises(RuntimeError, match="modified|version"):
+            torch.autograd.grad(loss, leaf)
+
+    @pytest.mark.parametrize("native", [False, True])
+    def test_repacking_preserves_fresh_loss_gradients(self, device, native):
+        leaf, source = self._packed_alias_source(device)
+        source[0] = leaf[:9].reshape(3, 3)
+        source[0] = leaf[:6].reshape(2, 3)
+        source[0] = leaf[:9].reshape(3, 3)
+        loss = self._packed_alias_loss(source, "square", native)
+        expected = 2 * leaf.detach()
+        expected[6:9] *= 2
+        gradient = torch.autograd.grad(loss, leaf, create_graph=True)[0]
+        torch.testing.assert_close(gradient, expected)
+        expected_second = torch.full_like(leaf, 2)
+        expected_second[6:9] *= 2
+        torch.testing.assert_close(torch.autograd.grad(gradient.sum(), leaf)[0], expected_second)
+
+    def test_rrelu_preserves_native_saved_noise_version(self, device):
+        leaf, source = self._packed_alias_source(device)
+        reference = leaf.detach().clone().reshape(6, 3).requires_grad_()
+        source, expected = (source - 0.7).sin(), (reference - 0.7).sin()
+        noise, expected_noise = torch.empty_like(source), torch.empty_like(expected)
+        noise_version, expected_version = noise._version, expected_noise._version
+        operation = torch.ops.aten.rrelu_with_noise_.default
+        torch.manual_seed(1234)
+        assert operation(source, noise, 0.125, 1 / 3, True) is source
+        torch.manual_seed(1234)
+        operation(expected, expected_noise, 0.125, 1 / 3, True)
+        assert noise._version - noise_version == expected_noise._version - expected_version
+        torch.testing.assert_close(source.values(), expected)
+        torch.testing.assert_close(noise.values(), expected_noise)
+        torch.testing.assert_close(
+            torch.autograd.grad(source.square().sum(), leaf)[0].reshape(6, 3),
+            torch.autograd.grad(expected.square().sum(), reference)[0],
+        )
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize("read", ["values", "concat"])
+    def test_compiled_output_packed_write_invalidates_saved_values(self, device, backend, native, read):
+        torch.compiler.reset()
+        leaf, source = self._packed_alias_source(device)
+        output = torch.compile(torch.sin, backend=backend, fullgraph=True)(source)
+        loss = self._packed_alias_loss(output, "square", native)
+        with torch.no_grad():
+            alias = output.values() if read == "values" else output.concat
+            alias.detach().mul_(2)
+        with pytest.raises(RuntimeError, match="modified|version"):
+            torch.autograd.grad(loss, leaf)
+
+    @pytest.mark.parametrize("creation_no_grad", [False, True])
+    def test_counter_sharing_preserves_factory_leaf_ownership(self, device, creation_no_grad):
+        values = torch.randn(6, 3, device=device, dtype=torch.float64, requires_grad=True)
+        with torch.set_grad_enabled(not creation_no_grad):
+            source = NestedTensor.from_packed(
+                values, torch.tensor([0, 2, 6]), torch.tensor([[2, 3], [4, 3]]), ragged_dims=(0,)
+            )
+        assert source.requires_grad
+        assert source._packed_values is values
+        with pytest.raises(RuntimeError, match="leaf"):
+            source.add_(1)
+
+    def test_counter_sharing_preserves_inference_factory(self, device):
+        values = torch.randn(6, 3, device=device)
+        with torch.inference_mode():
+            source = NestedTensor.from_packed(
+                values, torch.tensor([0, 2, 6]), torch.tensor([[2, 3], [4, 3]]), ragged_dims=(0,)
+            )
+            assert source.is_inference()
+            source.add_(1)
+            torch.testing.assert_close(source.values(), values)
+
+    @pytest.mark.parametrize("native", [False, True])
+    def test_legacy_native_rebuild_preserves_owner_and_counter(self, device, native):
+        _, source = self._packed_alias_source(device)
+        assert not getattr(source, "_wrapper_grad_leaf", False)
+        # Old checkpoints used Tensor's native wrapper rebuild followed by
+        # __setstate__, bypassing the new packed constructor and __reduce_ex__.
+        with torch._C.DisableTorchFunctionSubclass():
+            rebuild, arguments = torch.Tensor.__reduce_ex__(source, 4)
+        restored = rebuild(*pickle.loads(pickle.dumps(arguments)))
+        assert restored.is_leaf and restored.requires_grad
+        assert restored._wrapper_grad_leaf
+        gradient = torch.autograd.grad(self._packed_alias_loss(restored, "square", native), restored)[0]
+        torch.testing.assert_close(gradient.values(), 2 * restored.values())
+        loss = self._packed_alias_loss(restored, "sin", native)
+        with torch.no_grad():
+            restored.values().detach().add_(1)
+        with pytest.raises(RuntimeError, match="modified|version"):
+            torch.autograd.grad(loss, restored)
 
 
 class TestReductions:
@@ -3642,20 +4310,42 @@ class TestShapeManipulation:
         reference = nested_tensor.reshape(-1, 3)
         assert_close(output, reference)
 
-    def test_irregular_view(self):
-        parts = [torch.randn(shape, dtype=torch.float64, requires_grad=True) for shape in ((2, 4), (3, 2))]
+    @pytest.mark.parametrize("layout", ["view", "unsqueeze", "permute"])
+    def test_irregular_view(self, device, layout):
+        parts = [
+            torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in ((2, 4), (3, 2))
+        ]
+        references = [part.detach().clone().requires_grad_() for part in parts]
         nested_tensor = NestedTensor(parts)
+        expected_source = [part * 1 for part in references]
         viewed = nested_tensor.view(len(nested_tensor), 2, -1)
-
-        for actual, element in zip(viewed, parts):
-            assert_close(actual, element.view(2, -1))
+        expected = [part.view(2, -1) for part in expected_source]
+        assert_close(viewed.unbind(), expected)
+        linear_loss = viewed.sum()
+        saved_loss = viewed.values().square().sum()
+        alias = (
+            viewed.unsqueeze(-1)
+            if layout == "unsqueeze"
+            else viewed.permute(0, 2, 1) if layout == "permute" else viewed
+        )
+        alias.mul_(2)
+        for part in expected:
+            part.mul_(2)
+        assert_close(nested_tensor.unbind(), expected_source)
+        assert_close(
+            torch.autograd.grad(linear_loss, parts, retain_graph=True), [torch.ones_like(part) for part in parts]
+        )
         gradients = torch.autograd.grad(viewed.square().sum(), parts)
-        assert_close(gradients, [2 * part for part in parts])
+        assert_close(gradients, torch.autograd.grad(sum(part.square().sum() for part in expected), references))
+        with pytest.raises(RuntimeError, match="modified.*inplace|version"):
+            torch.autograd.grad(saved_loss, parts)
         with torch.no_grad():
             viewed.add_(1)
-            assert_close(nested_tensor.unbind(), [part + 1 for part in parts])
+            for part in expected:
+                part.add_(1)
+            assert_close(nested_tensor.unbind(), expected_source)
             nested_tensor.mul_(2)
-            assert_close(viewed.unbind(), [(part + 1).view(2, -1) * 2 for part in parts])
+            assert_close(viewed.unbind(), [part * 2 for part in expected])
 
     def test_method_chaining(self):
         nested_tensor = NestedTensor([torch.randn(2, 3, 4), torch.randn(2, 3, 4)])
@@ -3960,6 +4650,62 @@ class TestFromPacked:
         output = compiled(values, torch.tensor([0, 2, 6]), torch.tensor([[2, 3], [4, 3]]))
         assert_close(output.values(), values.sin())
         assert_close(torch.autograd.grad(output.square().sum(), values)[0], 2 * values.sin() * values.cos())
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    def test_from_packed_graph_break_compile(self, device, backend):
+        # Each case must enter Dynamo cold; otherwise a previous graph-break trace
+        # can also make a later fullgraph=True invocation appear to succeed.
+        torch.compiler.reset()
+        try:
+
+            def construct(values, offsets, sizes):
+                return NestedTensor.from_packed(
+                    values, offsets, sizes, ragged_dims=(0,), outer_size=(2, 4, 3), validate=False
+                ).sin()
+
+            values = torch.randn(6, 3, dtype=torch.float64, device=device, requires_grad=True)
+            compiled = torch.compile(construct, backend=backend, fullgraph=False, dynamic=True)
+            output = compiled(values, torch.tensor([0, 2, 6]), torch.tensor([[2, 3], [4, 3]]))
+            torch.testing.assert_close(output.values(), values.sin())
+            gradient = torch.autograd.grad(output.square().sum(), values)[0]
+            torch.testing.assert_close(gradient, 2 * values.sin() * values.cos())
+        finally:
+            torch.compiler.reset()
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("fullgraph", [False, True])
+    def test_from_packed_cold_process(self, backend, fullgraph, tmp_path):
+        code = textwrap.dedent(f"""
+            import torch
+            from danling import NestedTensor
+
+            torch.compiler.reset()
+            def construct(values, offsets, sizes):
+                return NestedTensor.from_packed(
+                    values, offsets, sizes, ragged_dims=(0,), outer_size=(2, 4, 3), validate=False
+                ).sin()
+
+            values = torch.randn(6, 3, dtype=torch.float64, requires_grad=True)
+            run = torch.compile(construct, backend={backend!r}, fullgraph={fullgraph!r}, dynamic=True)
+            try:
+                output = run(values, torch.tensor([0, 2, 6]), torch.tensor([[2, 3], [4, 3]]))
+            except torch._dynamo.exc.Unsupported as error:
+                if {fullgraph!r} and "custom jvp" in str(error).lower():
+                    raise SystemExit(78)
+                raise
+            torch.testing.assert_close(output.values(), values.sin())
+            torch.testing.assert_close(
+                torch.autograd.grad(output.square().sum(), values)[0], 2 * values.sin() * values.cos()
+            )
+            """)
+        env = os.environ.copy()
+        env["TORCHINDUCTOR_CACHE_DIR"] = str(tmp_path / "inductor")
+        env["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "0"
+        env["TORCHINDUCTOR_AUTOGRAD_CACHE"] = "0"
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=120)
+        if result.returncode == 78:
+            pytest.xfail("PyTorch cannot trace a custom autograd.Function.jvp in a cold fullgraph factory")
+        assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
 
 
 def _metadata_pair(lengths: tuple[int, ...], channels: int = 2) -> NestedTensor:
