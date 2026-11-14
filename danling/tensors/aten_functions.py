@@ -10322,6 +10322,10 @@ def has_same_storage_numel(func, args, kwargs):
 def clone(func, args, kwargs):
     r"""Clone all internal tensors of a NestedTensor."""
     source = args[0]
+    if source._is_pytree_placeholder:
+        from .nested_tensor import _transform_placeholder
+
+        return _transform_placeholder(source._transform_leaf, type(source))
     ragged_offsets = source._persistent_ragged_offsets()
     result = type(source)._from_packed_raw(
         source.values().clone(),

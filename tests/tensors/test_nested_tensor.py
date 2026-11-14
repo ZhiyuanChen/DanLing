@@ -44,6 +44,133 @@ TORCH_VERSION = Version(torch.__version__.split("+")[0])
 
 class TestFunctionTransforms:
     @pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
+    @pytest.mark.parametrize("mode", ["batch", "static_jvp"])
+    def test_compiled_vmap_shape(self, device, backend, mode):
+        torch.compiler.reset()
+        try:
+            values = torch.randn(2, 3, 4, device=device, dtype=torch.float64)
+            source = NT(tuple(values), ragged_dims=(0,))
+
+            def construct(value):
+                return (
+                    torch.ones(tuple(value.shape), device=device, dtype=torch.float64),
+                    torch.ones(value.dim(), device=device, dtype=torch.float64),
+                )
+
+            if mode == "static_jvp":
+
+                def apply(value):
+                    return torch.func.jvp(construct, (value,), (torch.ones_like(value),))
+
+                operation = torch.vmap(apply, in_dims=2)
+            else:
+                operation = torch.vmap(construct)
+            expected = operation(values)
+            actual = torch.compile(operation, backend=backend, fullgraph=True)(source)
+            torch.testing.assert_close(actual, expected)
+        finally:
+            torch.compiler.reset()
+
+    @pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
+    @pytest.mark.parametrize("ragged_dims", [(0, 1), (1, 0)])
+    @pytest.mark.parametrize("projected", [False, True])
+    def test_compiled_input_jvp(self, device, backend, ragged_dims, projected):
+        torch.compiler.reset()
+        try:
+            # Avoid PyTorch 2.13 CPU Inductor's integer remainder vector-tail defect.
+            values = torch.randn(5, 4, device=device, dtype=torch.float64, requires_grad=True)
+            direction = torch.randn_like(values, requires_grad=True)
+            reference = values.detach().clone().requires_grad_()
+            reference_direction = direction.detach().clone().requires_grad_()
+            source = NT(values.split((2, 3)), ragged_dims=(0, 1))
+            vector = NT(direction.split((2, 3)), ragged_dims=ragged_dims)
+
+            def operation(value, tangent):
+                def compute(data):
+                    return data.values().sin() if projected else data.sin()
+
+                return torch.func.jvp(compute, (value,), (tangent,))
+
+            actual = torch.compile(operation, backend=backend, fullgraph=True)(source, vector)
+            expected = torch.func.jvp(
+                lambda data: data.flatten().sin() if projected else data.sin(), (reference,), (reference_direction,)
+            )
+            outputs = []
+            for result, target in zip(actual, expected):
+                if projected:
+                    torch.testing.assert_close(result, target)
+                    outputs.append(result)
+                else:
+                    assert isinstance(result, NT)
+                    assert result.ragged_dims == source.ragged_dims
+                    parts = tuple(result)
+                    torch.testing.assert_close(parts, target.split((2, 3)))
+                    outputs.extend(parts)
+            torch.testing.assert_close(
+                torch.autograd.grad(sum(part.square().sum() for part in outputs), (values, direction)),
+                torch.autograd.grad(
+                    sum(result.square().sum() for result in expected), (reference, reference_direction)
+                ),
+            )
+        finally:
+            torch.compiler.reset()
+
+    @pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
+    @pytest.mark.parametrize("lengths", [(2, 3), (0, 0)])
+    def test_compiled_vmap_jvp(self, device, backend, lengths):
+        torch.compiler.reset()
+        try:
+            values = torch.randn(2, sum(lengths), 3, device=device, dtype=torch.float64, requires_grad=True)
+            direction = torch.randn_like(values, requires_grad=True)
+            reference = values.detach().clone().requires_grad_()
+            reference_direction = direction.detach().clone().requires_grad_()
+
+            def construct(data):
+                return NT(data.split(lengths), ragged_dims=(0,)).sin()
+
+            def operation(value, tangent):
+                return torch.vmap(lambda data, vector: torch.func.jvp(construct, (data,), (vector,)))(value, tangent)
+
+            actual = torch.compile(operation, backend=backend, fullgraph=True)(values, direction)
+            expected = torch.vmap(lambda data, vector: torch.func.jvp(torch.sin, (data,), (vector,)))(
+                reference, reference_direction
+            )
+            outputs = []
+            reference_outputs = list(expected)
+            for result, target in zip(actual, expected):
+                assert isinstance(result, NT)
+                parts = tuple(result)
+                torch.testing.assert_close(parts, target.split(lengths, dim=1))
+                outputs.extend(parts)
+                vector = NT(
+                    [torch.ones_like(part) for part in parts],
+                    ragged_dims=result.ragged_dims,
+                    batch_first=result.batch_first,
+                )
+                continued = torch.func.jvp(torch.sin, (result,), (vector,))
+                continued_reference = torch.func.jvp(torch.sin, (target,), (torch.ones_like(target),))
+                for output, expected_output in zip(continued, continued_reference):
+                    parts = tuple(output)
+                    torch.testing.assert_close(parts, expected_output.split(lengths, dim=1))
+                    outputs.extend(parts)
+                reference_outputs.extend(continued_reference)
+            torch.testing.assert_close(
+                torch.autograd.grad(sum(part.square().sum() for part in outputs), (values, direction)),
+                torch.autograd.grad(
+                    sum(result.square().sum() for result in reference_outputs), (reference, reference_direction)
+                ),
+            )
+        finally:
+            torch.compiler.reset()
+
+    def test_jvp_geometry(self, device):
+        source = NT([torch.ones(rows, 3, device=device) for rows in (2, 3)], ragged_dims=(0,))
+        direction = NT([torch.ones(rows, 3, device=device) for rows in (3, 2)], ragged_dims=(0,))
+        assert not torch.ops.aten.is_same_size.default(source, direction)
+        with pytest.raises(RuntimeError, match="forward tangent topology must match"):
+            torch.func.jvp(torch.sin, (source,), (direction,))
+
+    @pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
     @pytest.mark.parametrize("factory", ["sequence", "packed", "like"])
     @pytest.mark.parametrize("projected", [False, True])
     def test_compiled_factory_jvp(self, device, backend, factory, projected):
