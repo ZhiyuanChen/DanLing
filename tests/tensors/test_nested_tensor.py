@@ -44,7 +44,8 @@ TORCH_VERSION = Version(torch.__version__.split("+")[0])
 class TestFunctionTransforms:
     @pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
     @pytest.mark.parametrize("factory", ["sequence", "packed", "like"])
-    def test_compiled_factory_jvp(self, device, backend, factory):
+    @pytest.mark.parametrize("projected", [False, True])
+    def test_compiled_factory_jvp(self, device, backend, factory, projected):
         torch.compiler.reset()
         try:
             values = torch.randn(5, 4, device=device, dtype=torch.float64, requires_grad=True)
@@ -66,12 +67,17 @@ class TestFunctionTransforms:
                         )
                     else:
                         output = layout.packed_like(data)
-                    return output.values().sin()
+                    return output.values().sin() if projected else output.sin()
 
                 return torch.func.jvp(construct, (value,), (tangent,))
 
             expected = torch.func.jvp(lambda data: torch.cat((data[:2], data[2:])).sin(), (values,), (direction,))
             actual = torch.compile(operation, backend=backend, fullgraph=True)(values, direction)
+            if not projected:
+                for result in actual:
+                    torch.testing.assert_close(result.element_sizes(), layout.element_sizes())
+                    assert result.ragged_dims == layout.ragged_dims
+                actual = tuple(result.values() for result in actual)
             torch.testing.assert_close(actual, expected)
             torch.testing.assert_close(
                 torch.autograd.grad(sum(result.square().sum() for result in actual), values),

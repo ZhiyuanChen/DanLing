@@ -10145,14 +10145,16 @@ def topk(func, args, kwargs):
 # ---------------------------------------------------------------------------
 
 
-@NestedTensorAtenRegistry.implement(aten.is_same_size.default)
+@NestedTensorAtenRegistry.implement(aten.is_same_size.default, compile_safe=True)
 def is_same_size(func, args, kwargs):
     r"""Compare the complete element geometry rather than a list of booleans."""
     from .nested_tensor import NestedTensor
 
     left, right = args
     if isinstance(left, NestedTensor) and isinstance(right, NestedTensor):
-        return left.shape == right.shape and torch.equal(left._physical_shape, right._physical_shape)
+        return left.shape == right.shape and (
+            left._physical_shape is right._physical_shape or torch.equal(left._physical_shape, right._physical_shape)
+        )
     return left.shape == right.shape
 
 
@@ -10219,7 +10221,7 @@ def size(func, args, kwargs):
     return list(args[0]._logical_shape)
 
 
-@NestedTensorAtenRegistry.implement(aten._has_same_storage_numel.default)
+@NestedTensorAtenRegistry.implement(aten._has_same_storage_numel.default, compile_safe=True)
 def has_same_storage_numel(func, args, kwargs):
     r"""Compare numerical storage, excluding the logical wrapper's placeholder."""
     from .nested_tensor import NestedTensor

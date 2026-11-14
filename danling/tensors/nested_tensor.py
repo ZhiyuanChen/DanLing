@@ -128,11 +128,11 @@ def _admit_layout_children(children):
     return {**children, **dict(zip(names, values))}
 
 
+@torch.compiler.allow_in_graph
 def _transform_metadata(tensor: Tensor) -> Tensor:
     r"""Keep integer topology independent of a reverse-mode transform's lifetime."""
-    if not _is_compiling():
-        while torch._C._functorch.is_gradtrackingtensor(tensor):
-            tensor = torch._C._functorch.get_unwrapped(tensor)
+    while torch._C._functorch.is_gradtrackingtensor(tensor):
+        tensor = torch._C._functorch.get_unwrapped(tensor)
     return tensor
 
 
@@ -8442,20 +8442,22 @@ def _transform_autograd_bridge(value, cls, *, project=True):
         return _PackedLikeAutograd.apply(values, _PackedStructureReference(reference))
 
 
-def _transform_flatten(value):
+@torch.compiler.allow_in_graph
+def _transform_flatten_leaf(value):
     """Expose one logical tensor leaf without moving layout into static TreeSpec context."""
     attrs = vars(value)
     if "_transform_leaf" in attrs:
-        return [attrs["_transform_leaf"]], type(value)
+        return attrs["_transform_leaf"]
     values = value._packed_values
     from torch._subclasses.fake_tensor import FakeTensor
     from torch._subclasses.functional_tensor import FunctionalTensor
 
+    transform_cls = type(value) if isinstance(value, _TransformTensor) else _TRANSFORM_TYPES[type(value)]
     if isinstance(values, (FunctionalTensor, FakeTensor)):
-        return [_transform_rebuild(value, _TRANSFORM_TYPES[type(value)])], type(value)
+        return _transform_rebuild(value, transform_cls)
     transformed = torch._C._functorch.is_gradtrackingtensor(values) or torch._C._functorch.is_batchedtensor(values)
     if transformed:
-        reference = _transform_rebuild(value, _TRANSFORM_TYPES[type(value)], values.detach())
+        reference = _transform_rebuild(value, transform_cls, values.detach())
         leaf = _PackedLikeAutograd.apply(values, _PackedStructureReference(reference))
     else:
         with torch._C.DisableTorchFunctionSubclass():
@@ -8464,11 +8466,16 @@ def _transform_flatten(value):
                 if attrs.get("_unflattened_autograd", False) or attrs.get("_wrapper_grad_leaf", False)
                 else value.grad_fn is not None
             )
-        leaf = _transform_autograd_bridge(value, _TRANSFORM_TYPES[type(value)], project=owned)
-    return [leaf], type(value)
+        leaf = _transform_autograd_bridge(value, transform_cls, project=owned)
+    return leaf
 
 
-def _transform_unflatten(leaves, cls):
+def _transform_flatten(value):
+    # Only the public class belongs to the static PyTree context.
+    return [_transform_flatten_leaf(value)], type(value)
+
+
+def _transform_unflatten_impl(leaves, cls):
     """Restore the public wrapper around the exact leaf selected by the transform."""
     (leaf,) = leaves
     if not isinstance(leaf, torch.Tensor):
@@ -8526,6 +8533,22 @@ def _transform_unflatten(leaves, cls):
         )
     object.__setattr__(result, "_transform_leaf", leaf)
     return result
+
+
+def _transform_unflatten(leaves, cls):
+    (leaf,) = leaves
+    if isinstance(leaf, Tensor):
+        return _TRANSFORM_UNFLATTEN[cls](leaf)
+    return _transform_unflatten_impl(leaves, cls)
+
+
+def _make_transform_unflatten(cls):
+    # Capture the class instead of passing TensorMeta through FX as an argument.
+    @torch.compiler.allow_in_graph
+    def unflatten(leaf):
+        return _transform_unflatten_impl([leaf], cls)
+
+    return unflatten
 
 
 def _transform_opaque(value):
@@ -8625,6 +8648,7 @@ def _transform_projection_layout(leaf, output, raw):
 
 
 _TRANSFORM_TYPES = {NestedTensor: _TransformTensor}
+_TRANSFORM_UNFLATTEN: dict[type[NestedTensor], Callable[[Tensor], NestedTensor]] = {}
 
 
 def _register_transform_type(cls):
@@ -8636,6 +8660,7 @@ def _register_transform_type(cls):
             (_TransformTensor, cls),
             {"_public_type": cls, "__module__": __name__},
         )
+    _TRANSFORM_UNFLATTEN[cls] = _make_transform_unflatten(cls)
     register_pytree_node(cls, _transform_flatten, _transform_unflatten)
 
 
