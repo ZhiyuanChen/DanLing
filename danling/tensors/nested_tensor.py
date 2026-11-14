@@ -461,6 +461,7 @@ class NestedTensor(torch.Tensor):
     _offsets: Tensor
     _permutation: tuple[int, ...]
     _physical_shape: Tensor
+    _is_pytree_placeholder = False
     _flatten_sentinel: Tensor = torch.empty(0)
     _compile_ragged_extents: Tensor
     _logical_shape: torch.Size
@@ -2213,6 +2214,8 @@ class NestedTensor(torch.Tensor):
         self._packed_shape_binding = binding
 
     def __tensor_flatten__(self):
+        if self._is_pytree_placeholder:
+            return ["_flatten_sentinel"], {"transform_placeholder": self._transform_leaf}
         encoded_view_ops = _ensure_view_serialized(self)
         # During tracing, wrapper instances can be inspected while being built.
         # Only expose tensor attrs that already exist so Dynamo/FakeTensor can
@@ -2279,6 +2282,15 @@ class NestedTensor(torch.Tensor):
 
     @classmethod
     def __tensor_unflatten__(cls, inner_tensors, ctx, outer_size, outer_stride):
+        if "transform_placeholder" in ctx:
+            sentinel = inner_tensors["_flatten_sentinel"]
+            result = torch.Tensor._make_wrapper_subclass(
+                cls, outer_size, strides=outer_stride, dtype=sentinel.dtype, device=sentinel.device
+            )
+            object.__setattr__(result, "_is_pytree_placeholder", True)
+            object.__setattr__(result, "_transform_leaf", ctx["transform_placeholder"])
+            object.__setattr__(result, "_flatten_sentinel", sentinel)
+            return result
         inner_tensors = _admit_layout_children(inner_tensors)
         values = inner_tensors.get("_packed_values", inner_tensors.get("_flatten_sentinel"))
         if values is None:
@@ -2628,16 +2640,32 @@ class NestedTensor(torch.Tensor):
             return self.stride(dim)
 
         if func is torch._VF._make_dual and all(isinstance(arg, cls) for arg in args[:2]):
-            from .ops import _broadcast_nested_to_values
+            from .ops import _broadcast_nested_to_values, _can_broadcast_nested_to
 
             primal, tangent = args[:2]
-            if not torch.ops.aten.is_same_size.default(primal, tangent):
-                raise RuntimeError("NestedTensor forward tangent topology must match the primal")
-            tangent_values = _broadcast_nested_to_values(primal, tangent)
-            if tangent_values is None:
-                raise RuntimeError("NestedTensor could not align the forward tangent's packed layout")
-            values = func(primal.values(), tangent_values, **kwargs)
-            return primal._packed_like_unchecked(values)
+            message = "NestedTensor forward tangent topology must match the primal"
+            if (
+                primal.batch_first != tangent.batch_first
+                or primal.shape != tangent.shape
+                or not cls._meta_tensor_equal(
+                    primal._physical_shape, tangent._physical_shape, message, runtime_assert=True
+                )
+            ):
+                raise RuntimeError(message)
+            primal_values = primal.values()
+            tangent_values = tangent.values()
+            if primal._ragged_dims != tangent._ragged_dims or primal._permutation != tangent._permutation:
+                if tangent_values.numel() == 0:
+                    if not _can_broadcast_nested_to(primal, tangent):
+                        raise RuntimeError("NestedTensor could not align the forward tangent's packed layout")
+                    tangent_values = tangent_values.reshape(primal_values.shape)
+                else:
+                    tangent_values = _broadcast_nested_to_values(primal, tangent)
+                    if tangent_values is None:
+                        raise RuntimeError("NestedTensor could not align the forward tangent's packed layout")
+            values = func(primal_values, tangent_values, **kwargs)
+            # A native packed dual must become the logical leaf's dual as well.
+            return _PackedLikeAutograd.apply(values, _PackedStructureReference(primal))
         if func is torch._VF._unpack_dual and isinstance(args[0], cls):
             source = args[0]
             primal, tangent = func(source.values(), **kwargs)
@@ -2647,6 +2675,17 @@ class NestedTensor(torch.Tensor):
                     source._packed_like_unchecked(tangent) if tangent is not None else None,
                 )
             )
+
+        if _is_compiling():
+            transform_source = _find_nested(args, *kwargs.values())
+            if (
+                isinstance(transform_source, NestedTensor)
+                and not isinstance(transform_source, _TransformTensor)
+                and getattr(transform_source, "_transform_leaf", None) is not None
+            ):
+                result = _transform_delegate(func, args, kwargs)
+                if result is not NotImplemented:
+                    return result
 
         handler = NestedTensorFuncRegistry.get(func)
         if handler is not None:
@@ -8579,12 +8618,18 @@ def _transform_flatten_leaf(value):
     attrs = vars(value)
     if "_transform_leaf" in attrs:
         return attrs["_transform_leaf"]
+    if torch._C._functorch.is_gradtrackingtensor(value) or torch._C._functorch.is_batchedtensor(value):
+        return value
     values = value._packed_values
     from torch._subclasses.fake_tensor import FakeTensor
     from torch._subclasses.functional_tensor import FunctionalTensor
 
     transform_cls = type(value) if isinstance(value, _TransformTensor) else _TRANSFORM_TYPES[type(value)]
-    if isinstance(values, (FunctionalTensor, FakeTensor)):
+    # Functional tracing differentiates the owner. Fake propagation only needs
+    # geometry and must not introduce an aliasing autograd output.
+    if isinstance(values, FunctionalTensor):
+        return _transform_autograd_bridge(value, transform_cls)
+    if isinstance(values, FakeTensor):
         return _transform_rebuild(value, transform_cls)
     transformed = torch._C._functorch.is_gradtrackingtensor(values) or torch._C._functorch.is_batchedtensor(values)
     if transformed:
@@ -8603,28 +8648,39 @@ def _transform_flatten_leaf(value):
 
 def _transform_flatten(value):
     # Only the public class belongs to the static PyTree context.
+    if value._is_pytree_placeholder:
+        return [value._transform_leaf], type(value)
     return [_transform_flatten_leaf(value)], type(value)
 
 
-def _transform_unflatten_impl(leaves, cls):
+def _transform_unflatten_impl(leaves, cls, *, preserve_leaf=False):
     """Restore the public wrapper around the exact leaf selected by the transform."""
     (leaf,) = leaves
     if not isinstance(leaf, torch.Tensor):
-        result = torch.Tensor._make_wrapper_subclass(cls, (0,), device="meta")
-        object.__setattr__(result, "_transform_leaf", leaf)
-        return result
+        return _transform_placeholder(leaf, cls)
     raw = _transform_base(leaf)
     from torch._subclasses.fake_tensor import FakeTensor
     from torch._subclasses.functional_tensor import FunctionalTensor
 
-    # AOT differentiates this leaf itself. Rebuilding it would create a different target.
-    if (
-        _is_compiling()
-        and not torch._C._functorch.is_gradtrackingtensor(leaf)
-        and not torch._C._functorch.is_batchedtensor(leaf)
-        and isinstance(raw._packed_values, (FunctionalTensor, FakeTensor))
+    # A hidden NT batch axis leaves a native sample tensor. With the batch
+    # axis visible, preserve its owner and expose the visible NT geometry.
+    if preserve_leaf and (
+        isinstance(raw._packed_values, (FunctionalTensor, FakeTensor))
+        or torch._C._functorch.is_gradtrackingtensor(leaf)
+        or torch._C._functorch.is_batchedtensor(leaf)
     ):
-        return leaf
+        if torch._C._functorch.is_gradtrackingtensor(leaf):
+            with torch._C._DisableTorchDispatch():
+                result = leaf.as_subclass(cls)
+            layout = _transform_unflatten_impl([leaf], cls) if _transform_batch_dims(leaf) else raw
+            for name, value in vars(layout).items():
+                object.__setattr__(result, name, value)
+            object.__setattr__(result, "_transform_leaf", leaf)
+            return result
+        if not torch._C._functorch.is_batchedtensor(leaf) or (
+            (0 if raw.batch_first else 1) in _transform_batch_dims(leaf)
+        ):
+            return leaf
     if (
         not torch._C._functorch.is_gradtrackingtensor(leaf)
         and not torch._C._functorch.is_batchedtensor(leaf)
@@ -8662,13 +8718,24 @@ def _transform_unflatten_impl(leaves, cls):
             validate=False,
             mark_dynamic=False,
         )
+    raw._inherit_tangent_metadata(result)
     object.__setattr__(result, "_transform_leaf", leaf)
+    return result
+
+
+def _transform_placeholder(leaf, cls):
+    # PyTree can rebuild the logical node with dimension integers or other
+    # Python leaves. Its empty meta child supports structural fake conversion.
+    result = torch.Tensor._make_wrapper_subclass(cls, (0,), device="meta")
+    object.__setattr__(result, "_is_pytree_placeholder", True)
+    object.__setattr__(result, "_transform_leaf", leaf)
+    object.__setattr__(result, "_flatten_sentinel", torch.empty(0, device="meta"))
     return result
 
 
 def _transform_unflatten(leaves, cls):
     (leaf,) = leaves
-    if isinstance(leaf, Tensor):
+    if _is_compiling():
         return _TRANSFORM_UNFLATTEN[cls](leaf)
     return _transform_unflatten_impl(leaves, cls)
 
@@ -8677,7 +8744,7 @@ def _make_transform_unflatten(cls):
     # Capture the class instead of passing TensorMeta through FX as an argument.
     @torch.compiler.allow_in_graph
     def unflatten(leaf):
-        return _transform_unflatten_impl([leaf], cls)
+        return _transform_unflatten_impl([leaf], cls, preserve_leaf=True)
 
     return unflatten
 
@@ -8711,6 +8778,15 @@ def _map_transform_args(fn, value):
     return tree_map(fn, value, is_leaf=lambda item: isinstance(item, Tensor))
 
 
+def _transform_is_contiguous(input, *, memory_format=torch.contiguous_format):
+    from torch._prims_common import is_contiguous_for_memory_format
+
+    if memory_format is torch.preserve_format:
+        memory_format = torch.contiguous_format
+    return is_contiguous_for_memory_format(input, memory_format=memory_format)
+
+
+@torch.compiler.allow_in_graph
 def _transform_delegate(func, args, kwargs, only_opaque=False):
     """Keep native autograd, metadata queries, and hidden-batch operations on their owner."""
     if not torch._C._are_functorch_transforms_active():
@@ -8736,7 +8812,10 @@ def _transform_delegate(func, args, kwargs, only_opaque=False):
     if not original:
         return NotImplemented
     with torch._C.DisableTorchFunctionSubclass():
-        result = func(*converted_args, **converted_kwargs)
+        if func is torch.Tensor.is_contiguous:
+            result = _transform_is_contiguous(*converted_args, **converted_kwargs)
+        else:
+            result = func(*converted_args, **converted_kwargs)
 
     def restore(value):
         if id(value) in original:
