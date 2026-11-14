@@ -2245,6 +2245,75 @@ class TestMultiHeadAttentionForward:
             torch.testing.assert_close(actual_grads, expected_grads, atol=5e-2, rtol=2e-2)
 
 
+class TestTransformer:
+
+    @pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
+    @pytest.mark.parametrize("training", [True, False], ids=["train", "infer"])
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=["float32", "bfloat16"])
+    def test_compile(self, device, backend, training, dtype):
+        if device.type != "cuda":
+            pytest.skip("Compiled packed attention requires CUDA")
+        if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+            pytest.skip("BF16 attention requires a supported GPU")
+
+        model = (
+            nn.Transformer(
+                d_model=32,
+                nhead=2,
+                num_encoder_layers=1,
+                num_decoder_layers=1,
+                dim_feedforward=64,
+                dropout=0.0,
+                batch_first=True,
+            )
+            .to(device=device, dtype=dtype)
+            .train(training)
+        )
+        reference = deepcopy(model)
+        value_tolerance = (2e-2, 2e-2) if dtype == torch.bfloat16 else (1e-4, 1e-4)
+        grad_tolerance = (5e-2, 2e-2) if dtype == torch.bfloat16 else (1e-4, 1e-4)
+        torch.compiler.reset()
+        compiled = torch.compile(model, backend=backend, fullgraph=True, dynamic=True)
+        # Match the compiler's BF16 fusion and accumulation order in the dense reference.
+        compiled_reference = torch.compile(reference, backend=backend, fullgraph=True, dynamic=True)
+        try:
+            lengths = (((3, 5), (2, 4)), ((4, 7), (3, 6)))
+            if dtype == torch.float32:
+                lengths = (((129, 257), (128, 259)), ((257, 129), (259, 128)))
+            for source_lengths, target_lengths in lengths:
+                parts = tuple(
+                    [torch.randn(length, 32, device=device, dtype=dtype, requires_grad=training) for length in lengths]
+                    for lengths in (source_lengths, target_lengths)
+                )
+                references = tuple([part.detach().clone().requires_grad_(training) for part in side] for side in parts)
+                nested = tuple(NT(side) for side in parts)
+                with torch.inference_mode(not training):
+                    actual = compiled(*nested)
+                    expected = [
+                        compiled_reference(src.unsqueeze(0), tgt.unsqueeze(0)).squeeze(0)
+                        for src, tgt in zip(*references)
+                    ]
+                torch.testing.assert_close(
+                    tuple(actual), tuple(expected), atol=value_tolerance[0], rtol=value_tolerance[1]
+                )
+                if training:
+                    probes = [torch.randn_like(part) for part in expected]
+                    torch.testing.assert_close(
+                        torch.autograd.grad(
+                            (actual.values().float() * torch.cat(probes).float()).sum(),
+                            (*parts[0], *parts[1], *model.parameters()),
+                        ),
+                        torch.autograd.grad(
+                            sum((part.float() * probe.float()).sum() for part, probe in zip(expected, probes)),
+                            (*references[0], *references[1], *reference.parameters()),
+                        ),
+                        atol=grad_tolerance[0],
+                        rtol=grad_tolerance[1],
+                    )
+        finally:
+            torch.compiler.reset()
+
+
 class TestBatchNorm:
 
     @pytest.mark.parametrize(
@@ -2786,6 +2855,70 @@ class TestRegressionLosses:
 
 @pytest.mark.skipif(not hasattr(F, "scaled_dot_product_attention"), reason="scaled_dot_product_attention not available")
 class TestScaledDotProductAttention:
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("causal", [False, True])
+    def test_scale_compile(self, device, backend, causal):
+        if device.type != "cuda":
+            pytest.skip("Compiled packed attention requires CUDA")
+
+        def attention(query, key, value, scale):
+            def split_heads(tensor):
+                return tensor.view(*tensor.shape[:-1], -1, 16).transpose(-3, -2)
+
+            q, k, v = (split_heads(tensor) for tensor in (query, key, value))
+            output = F.scaled_dot_product_attention(q, k, v, scale=scale, is_causal=causal)
+            joined = output.transpose(-3, -2).contiguous().reshape(*query.shape[:-1], -1)
+            return F.scaled_dot_product_attention(split_heads(joined + query), k, v, scale=scale, is_causal=causal)
+
+        torch.compiler.reset()
+        run = torch.compile(attention, backend=backend, fullgraph=True, dynamic=True)
+        try:
+            for lengths, scale in (((129, 257), 0.25), ((257, 129), -0.375)):
+                parts = [
+                    [torch.randn(n, 32, device=device, requires_grad=True) for n in sizes]
+                    for sizes in (lengths, lengths[::-1], lengths[::-1])
+                ]
+                references = [[part.detach().clone().requires_grad_() for part in side] for side in parts]
+                output = run(*(NT(side, ragged_dims=(0,)) for side in parts), scale).unbind()
+                expected = [attention(q, k, v, scale) for q, k, v in zip(*references)]
+                torch.testing.assert_close(output, expected, atol=1e-4, rtol=1e-4)
+                probes = [torch.randn_like(part) for part in expected]
+                torch.testing.assert_close(
+                    torch.autograd.grad(output, tuple(part for side in parts for part in side), probes),
+                    torch.autograd.grad(expected, tuple(part for side in references for part in side), probes),
+                    atol=1e-4,
+                    rtol=1e-4,
+                )
+        finally:
+            torch.compiler.reset()
+
+    @pytest.mark.skipif(flex_attention is None, reason="FlexAttention not available")
+    def test_compiled_partitions(self, device):
+        if device.type != "cuda":
+            pytest.skip("Compiled packed attention requires CUDA")
+        torch.compiler.reset()
+        compiled = torch.compile(F.scaled_dot_product_attention, backend="inductor", fullgraph=True, dynamic=True)
+        try:
+            for query_lengths in ((128, 129), (129, 128)):
+                key_lengths = query_lengths[::-1]
+                parts = [
+                    [torch.randn(2, length, 16, device=device, requires_grad=True) for length in lengths]
+                    for lengths in (query_lengths, key_lengths, key_lengths)
+                ]
+                references = [[part.detach().clone().requires_grad_() for part in side] for side in parts]
+                output = compiled(*(NT(side, ragged_dims=(1,)) for side in parts)).unbind()
+                expected = [F.scaled_dot_product_attention(q, k, v) for q, k, v in zip(*references)]
+                torch.testing.assert_close(output, expected, atol=1e-4, rtol=1e-4)
+                probes = [torch.randn_like(part) for part in expected]
+                torch.testing.assert_close(
+                    torch.autograd.grad(output, tuple(part for side in parts for part in side), probes),
+                    torch.autograd.grad(expected, tuple(part for side in references for part in side), probes),
+                    atol=1e-4,
+                    rtol=1e-4,
+                )
+        finally:
+            torch.compiler.reset()
 
     @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
     def test_dynamic_dropout(self, device, backend):

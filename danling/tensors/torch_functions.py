@@ -102,21 +102,52 @@ if TYPE_CHECKING:
 # Attention
 
 
-@NestedTensorFuncRegistry.implement(torch._native_multi_head_attention)
+def _native_mha_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
+    r"""Apply the packed attention contract to Torch's fused inference signature."""
+    from .nn_functions import _mha_compile_safe_inputs
+
+    def argument(index, name, default=None):
+        return args[index] if len(args) > index else kwargs.get(name, default)
+
+    if argument(9, "mask") is not None:
+        return False
+    inputs = tuple(
+        argument(index, name) for index, name in enumerate(("query", "key", "value", "embed_dim", "num_head"))
+    )
+    return _mha_compile_safe_inputs(inputs, {"training": False, "need_weights": argument(10, "need_weights", True)})
+
+
+def _encoder_layer_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
+    r"""Admit fused encoder inference when its attention remains on packed storage."""
+    from .nn_functions import _mha_compile_safe_inputs
+
+    def argument(index, name, default=None):
+        return args[index] if len(args) > index else kwargs.get(name, default)
+
+    if argument(18, "mask") is not None:
+        return False
+    src = argument(0, "src")
+    inputs = (src, src, src, argument(1, "embed_dim"), argument(2, "num_heads"))
+    return _mha_compile_safe_inputs(inputs, {"training": False, "need_weights": False})
+
+
+@NestedTensorFuncRegistry.implement(
+    torch._native_multi_head_attention, compile_safe=True, compile_guard=_native_mha_compile_safe_inputs
+)
 def _native_multi_head_attention(
     query: NestedTensor,
     key: NestedTensor | Tensor,
     value: NestedTensor | Tensor,
     embed_dim: int,
-    num_heads: int,
-    in_proj_weight: Tensor,
-    in_proj_bias: Tensor,
-    out_proj_weight: Tensor,
-    out_proj_bias: Tensor,
-    merged_mask: Tensor | None = None,
-    need_weights: bool = False,
-    average_attn_weights: bool = False,
-    mask_type: int = 0,
+    num_head: int,
+    qkv_weight: Tensor,
+    qkv_bias: Tensor,
+    proj_weight: Tensor,
+    proj_bias: Tensor,
+    mask: Tensor | None = None,
+    need_weights: bool = True,
+    average_attn_weights: bool = True,
+    mask_type: int | None = None,
 ):
     r"""
     Dispatch handler for ``torch._native_multi_head_attention``.
@@ -130,15 +161,15 @@ def _native_multi_head_attention(
         key,
         value,
         embed_dim,
-        num_heads,
-        in_proj_weight,
-        in_proj_bias,
+        num_head,
+        qkv_weight,
+        qkv_bias,
         None,  # bias_k
         None,  # bias_v
         False,  # add_zero_attn
         0.0,  # dropout_p
-        out_proj_weight,
-        out_proj_bias,
+        proj_weight,
+        proj_bias,
         training=False,
         key_padding_mask=None,
         need_weights=need_weights,
@@ -147,28 +178,30 @@ def _native_multi_head_attention(
     )
 
 
-@NestedTensorFuncRegistry.implement(torch._transformer_encoder_layer_fwd)
+@NestedTensorFuncRegistry.implement(
+    torch._transformer_encoder_layer_fwd, compile_safe=True, compile_guard=_encoder_layer_compile_safe_inputs
+)
 def _transformer_encoder_layer_fwd(
     src: NestedTensor,
     embed_dim: int,
     num_heads: int,
-    in_proj_weight: Tensor,
-    in_proj_bias: Tensor,
-    out_proj_weight: Tensor,
-    out_proj_bias: Tensor,
+    qkv_weight: Tensor,
+    qkv_bias: Tensor,
+    proj_weight: Tensor,
+    proj_bias: Tensor,
     use_gelu: bool,
     norm_first: bool,
     eps: float,
-    norm1_weight: Tensor,
-    norm1_bias: Tensor,
-    norm2_weight: Tensor,
-    norm2_bias: Tensor,
-    linear1_weight: Tensor,
-    linear1_bias: Tensor,
-    linear2_weight: Tensor,
-    linear2_bias: Tensor,
-    merged_mask: Tensor | None = None,
-    mask_type: int = 0,
+    norm_weight_1: Tensor,
+    norm_bias_1: Tensor,
+    norm_weight_2: Tensor,
+    norm_bias_2: Tensor,
+    ffn_weight_1: Tensor,
+    ffn_bias_1: Tensor,
+    ffn_weight_2: Tensor,
+    ffn_bias_2: Tensor,
+    mask: Tensor | None = None,
+    mask_type: int | None = None,
 ):
     r"""
     Dispatch handler for ``torch._transformer_encoder_layer_fwd``.
@@ -186,14 +219,14 @@ def _transformer_encoder_layer_fwd(
             x,
             embed_dim,
             num_heads,
-            in_proj_weight,
-            in_proj_bias,
+            qkv_weight,
+            qkv_bias,
             None,  # bias_k
             None,  # bias_v
             False,  # add_zero_attn
             0.0,  # dropout_p
-            out_proj_weight,
-            out_proj_bias,
+            proj_weight,
+            proj_bias,
             training=False,
             key_padding_mask=None,
             need_weights=False,
@@ -201,15 +234,15 @@ def _transformer_encoder_layer_fwd(
         return attn
 
     def _ff_block(x):
-        return F.linear(activation(F.linear(x, linear1_weight, linear1_bias)), linear2_weight, linear2_bias)
+        return F.linear(activation(F.linear(x, ffn_weight_1, ffn_bias_1)), ffn_weight_2, ffn_bias_2)
 
     x: Tensor = src
     if norm_first:
-        x = x + _sa_block(F.layer_norm(x, (embed_dim,), norm1_weight, norm1_bias, eps))
-        x = x + _ff_block(F.layer_norm(x, (embed_dim,), norm2_weight, norm2_bias, eps))
+        x = x + _sa_block(F.layer_norm(x, (embed_dim,), norm_weight_1, norm_bias_1, eps))
+        x = x + _ff_block(F.layer_norm(x, (embed_dim,), norm_weight_2, norm_bias_2, eps))
     else:
-        x = F.layer_norm(x + _sa_block(x), (embed_dim,), norm1_weight, norm1_bias, eps)
-        x = F.layer_norm(x + _ff_block(x), (embed_dim,), norm2_weight, norm2_bias, eps)
+        x = F.layer_norm(x + _sa_block(x), (embed_dim,), norm_weight_1, norm_bias_1, eps)
+        x = F.layer_norm(x + _ff_block(x), (embed_dim,), norm_weight_2, norm_bias_2, eps)
     return x
 
 

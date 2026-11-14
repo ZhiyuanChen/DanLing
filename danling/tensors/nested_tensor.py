@@ -489,7 +489,7 @@ class NestedTensor(torch.Tensor):
     _view_ops: tuple[tuple[str, tuple], ...]
     _VIEW_BINDING_PREFIX = "_view_binding_"
     _RAGGED_OFFSETS_PREFIX = "_ragged_offsets_"
-    _AOT_CACHE_HASH_VERSION = 12
+    _AOT_CACHE_HASH_VERSION = 13
 
     # Construction & Initialization
 
@@ -3449,7 +3449,8 @@ class NestedTensor(torch.Tensor):
     def _logical_shape_from_physical_dims(self, physical_dims: Sequence[int]) -> torch.Size:
         r"""Build a logical outer shape from non-batch physical-dimension sizes."""
         physical_dims = tuple(physical_dims)
-        batch_size = len(self)
+        batch_dim = type(self)._batch_dim_from_logical_shape(self._logical_shape, self.batch_first)
+        batch_size = self._logical_shape[batch_dim]
         if self.batch_first:
             return torch.Size((batch_size, *physical_dims))
         if not physical_dims:
