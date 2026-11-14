@@ -483,8 +483,20 @@ without padding or copying, so both wrapper outputs and direct packed outputs
 remain differentiable.
 They intentionally do not expose the general private packed constructor.
 
-`values()` returns packed entries without padding through the same differentiable
-projection as the legacy `concat` property, which remains available.
+The compiler reads the packed storage and layout directly. Reading this
+representation does not create a differentiation operation; the public
+`values()` method preserves the wrapper's numerical gradient edge. Use this
+explicit operation in compiled code. The legacy `concat` property remains an
+eager convenience; Dynamo does not trace computed Tensor properties on
+traceable wrappers unless they are representation fields. Native
+views retain both their storage aliases and each sample's actual source and
+target geometry, including when the ragged topology changes. Leaf and saved
+tensor mutation checks follow native PyTorch rules.
+
+An in-place view mutation inside an Inductor-compiled call can fail in
+PyTorch's tensor-subclass mutation bookkeeping. The same saved-stride error
+is reproducible without DanLing using an ordinary traceable wrapper subclass.
+AOT eager and mutation after a compiled call are separate execution paths.
 
 `packed_offsets()` returns the boundaries of complete logical batch elements
 in the flattened leading dimension of `values()`. It is the public operator

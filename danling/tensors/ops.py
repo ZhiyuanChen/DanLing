@@ -489,7 +489,7 @@ def _dense_reading_batch_first(nt: NestedTensor, reading: _DenseReading, other: 
 
 
 def _dense_alignment_to_values(nt: NestedTensor, other: Tensor, reading: _DenseReading) -> Tensor | None:
-    r"""Rewrite an aligned dense operand into the packed axis order of ``nt.concat``."""
+    r"""Rewrite an aligned dense operand into the packed axis order of ``nt.values()``."""
     view = _dense_reading_batch_first(nt, reading, other)
     view = view.permute((0, *(1 + dim for dim in nt._permutation)))
     ragged_rank = len(nt._ragged_dims)
@@ -917,7 +917,7 @@ def _broadcast_nested_to_values(
     *,
     allow_target_static_broadcast: bool = False,
 ) -> Tensor | None:
-    r"""Align ``source`` with ``target.concat`` without padding or storage mapping."""
+    r"""Align ``source`` with ``target.values()`` without padding or storage mapping."""
     if not _can_broadcast_nested_to(
         target,
         source,
@@ -1084,7 +1084,7 @@ def _can_broadcast_lower_rank_nested_to(target: NestedTensor, source: NestedTens
 
 
 def _broadcast_lower_rank_nested_to_values(target: NestedTensor, source: NestedTensor) -> Tensor | None:
-    r"""Rewrite ``source.concat`` into ``target``'s packed tail without unpacking either."""
+    r"""Rewrite ``source.values()`` into ``target``'s packed tail without unpacking either."""
     if not _can_broadcast_lower_rank_nested_to(target, source):
         return None
     if not _has_same_ragged_structure(target, source):
@@ -1291,9 +1291,9 @@ def _restore_complementary_square_prefix(result: NestedTensor, prefix_rank: int)
     tensor_dims = (*range(2, 2 + prefix_rank), 0, 1, *range(2 + prefix_rank, rank))
     rebuilt = _packed_metadata_permute(result, tensor_dims)
     assert rebuilt is not None
-    max_length_binding = vars(result).get("_compile_max_length_binding")
+    max_length_binding = vars(result).get("_compile_ragged_extents")
     if max_length_binding is not None:
-        rebuilt._max_length_binding = max_length_binding
+        rebuilt._ragged_extents = max_length_binding
     return rebuilt
 
 
