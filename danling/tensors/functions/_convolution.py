@@ -45,13 +45,166 @@ def _per_element(input: NestedTensor, fn: Callable, *args, **kwargs) -> NestedTe
 
 def _autocast_convolution_tensors(values: Tensor, weight: Tensor, bias: Tensor | None):
     r"""Cast before the custom tile autograd boundary, retaining native AMP VJPs."""
-    if values.is_cuda and torch.is_autocast_enabled("cuda") and values.dtype != torch.float64:
-        dtype = torch.get_autocast_dtype("cuda")
-        values = values.to(dtype=dtype)
-        weight = weight.to(dtype=dtype)
-        if bias is not None:
+    if not values.is_meta and torch.is_autocast_enabled(values.device.type):
+        dtype = torch.get_autocast_dtype(values.device.type)
+        eligible = (torch.float16, torch.bfloat16, torch.float32)
+        values = values.to(dtype=dtype) if values.dtype in eligible else values
+        weight = weight.to(dtype=dtype) if weight.dtype in eligible else weight
+        if bias is not None and bias.dtype in eligible:
             bias = bias.to(dtype=dtype)
     return values, weight, bias
+
+
+def _tile_convolution_backward_impl(
+    gradient, tiles, weight, output_shapes, stride_h, stride_w, dilation_h, dilation_w, groups, input_grad, weight_grad
+):
+    r"""Differentiate only real output rectangles, batching equal boundary extents."""
+    stride, dilation = (stride_h, stride_w), (dilation_h, dilation_w)
+
+    def backward(grad, inputs):
+        dx, dw, _ = torch.ops.aten.convolution_backward.default(
+            grad,
+            inputs,
+            weight,
+            None,
+            stride,
+            (0, 0),
+            dilation,
+            False,
+            (0, 0),
+            groups,
+            (input_grad, weight_grad, False),
+        )
+        return dx, dw
+
+    shapes = output_shapes.tolist()
+    height, width = gradient.shape[-2:]
+    if all(shape == [height, width] for shape in shapes):
+        dx, dw = backward(gradient, tiles)
+        return (
+            dx.contiguous() if input_grad else tiles.new_empty((0,)),
+            dw.contiguous() if weight_grad else weight.new_empty((0,)),
+        )
+
+    # Shape planning reads canonical CPU metadata, never CUDA tensor data.
+    # Full tiles remain one native batch. Boundary tiles with the same true
+    # output extent form another batch whose input ends at its last real tap.
+    batches = {}
+    for index, (out_h, out_w) in enumerate(shapes):
+        if out_h and out_w:
+            batches.setdefault((out_h, out_w), []).append(index)
+    dx = tiles.new_zeros(tiles.shape) if input_grad else tiles.new_empty((0,))
+    dw = weight.new_zeros(weight.shape) if weight_grad else weight.new_empty((0,))
+    input_indices, input_gradients = [], []
+    # Transfer one combined index plan rather than one CPU-to-device tensor
+    # per boundary shape. The grouped native backward calls only take views.
+    all_indices = torch.tensor(
+        [index for indices in batches.values() for index in indices], dtype=torch.long, device=tiles.device
+    )
+    index_offset = 0
+    for (out_h, out_w), indices in batches.items():
+        index = all_indices.narrow(0, index_offset, len(indices))
+        index_offset += len(indices)
+        in_h = (out_h - 1) * stride_h + dilation_h * (weight.shape[2] - 1) + 1
+        in_w = (out_w - 1) * stride_w + dilation_w * (weight.shape[3] - 1) + 1
+        inputs = tiles.index_select(0, index)[:, :, :in_h, :in_w]
+        grad = gradient.index_select(0, index)[:, :, :out_h, :out_w].contiguous()
+        batch_dx, batch_dw = backward(grad, inputs)
+        if input_grad:
+            batch_dx = F.pad(batch_dx, (0, tiles.shape[3] - in_w, 0, tiles.shape[2] - in_h))
+            input_indices.append(index)
+            input_gradients.append(batch_dx)
+        if weight_grad:
+            dw = dw + batch_dw
+    if input_indices:
+        dx = dx.index_copy(0, torch.cat(input_indices), torch.cat(input_gradients))
+    return dx, dw
+
+
+@torch.library.custom_op("danling::_tile_convolution_backward", mutates_args=())
+def _tile_convolution_backward(
+    gradient: Tensor,
+    tiles: Tensor,
+    weight: Tensor,
+    output_shapes: Tensor,
+    stride_h: int,
+    stride_w: int,
+    dilation_h: int,
+    dilation_w: int,
+    groups: int,
+    input_grad: bool,
+    weight_grad: bool,
+) -> tuple[Tensor, Tensor]:
+    return _tile_convolution_backward_impl(
+        gradient,
+        tiles,
+        weight,
+        output_shapes,
+        stride_h,
+        stride_w,
+        dilation_h,
+        dilation_w,
+        groups,
+        input_grad,
+        weight_grad,
+    )
+
+
+@_tile_convolution_backward.register_fake
+def _tile_convolution_backward_fake(
+    gradient, tiles, weight, output_shapes, stride_h, stride_w, dilation_h, dilation_w, groups, input_grad, weight_grad
+):
+    return (
+        tiles.new_empty(tiles.shape if input_grad else (0,)),
+        weight.new_empty(weight.shape if weight_grad else (0,)),
+    )
+
+
+class _TileConvolution(torch.autograd.Function):
+    @staticmethod
+    def forward(tiles, weight, bias, output_shapes, stride, dilation, groups):
+        return F.conv2d(tiles, weight, bias, stride=stride, dilation=dilation, groups=groups)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        tiles, weight, bias, output_shapes, ctx.stride, ctx.dilation, ctx.groups = inputs
+        ctx.save_for_backward(tiles, weight, output_shapes)
+        ctx.has_bias = bias is not None
+
+    @staticmethod
+    def backward(ctx, gradient):
+        tiles, weight, output_shapes = ctx.saved_tensors
+        input_grad, weight_grad, bias_grad = ctx.needs_input_grad[:3]
+        dx = dw = None
+        if input_grad or weight_grad:
+            # Higher-order eager derivatives keep native differentiable ops;
+            # ordinary/compiled VJPs use the opaque CPU-metadata scheduler.
+            backward = _tile_convolution_backward_impl if torch.is_grad_enabled() else _tile_convolution_backward
+            dx, dw = backward(
+                gradient,
+                tiles,
+                weight,
+                output_shapes,
+                *ctx.stride,
+                *ctx.dilation,
+                ctx.groups,
+                input_grad,
+                weight_grad,
+            )
+        db = gradient.sum((0, 2, 3)) if ctx.has_bias and bias_grad else None
+        return dx if input_grad else None, dw if weight_grad else None, db, None, None, None, None
+
+
+def _tile_convolution(tiles, weight, bias, output_shapes, stride, dilation, groups, *, native_autograd=False):
+    r"""Keep native convolution forward and omit nonexistent windows from its VJP."""
+    if (
+        native_autograd
+        or not torch.is_grad_enabled()
+        or not (tiles.requires_grad or weight.requires_grad or bias is not None and bias.requires_grad)
+    ):
+        return F.conv2d(tiles, weight, bias, stride=stride, dilation=dilation, groups=groups)
+    tiles, weight, bias = _autocast_convolution_tensors(tiles, weight, bias)
+    return _TileConvolution.apply(tiles, weight, bias, output_shapes, stride, dilation, groups)
 
 
 def _has_static_input_channels(input: NestedTensor, channels: int, rank: int) -> bool:
