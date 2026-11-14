@@ -137,7 +137,7 @@ def _packed_depthwise_conv1d(input: NestedTensor, weight: Tensor, bias: Tensor |
     padding_pair = _conv1d_padding(padding, weight.shape[2], 1, dilation)
     assert padding_pair is not None
     left, right = padding_pair
-    values = input.concat
+    values = input.values()
     channels = values.shape[1]
     out_channels = weight.shape[0]
     batch_size = len(input)
@@ -235,14 +235,14 @@ def _packed_pointwise_conv1d_channel_dim(input: NestedTensor, weight, stride, pa
     if not _has_static_input_channels(input, in_channels, rank=1):
         return None
 
-    suffix_rank = input.concat.dim() - 1
+    suffix_rank = input.values().dim() - 1
     if suffix_rank <= 0:
         return None
     static_dims = tuple(int(dim) for dim in input._permutation[-suffix_rank:])
     if 0 not in static_dims:
         return None
     channel_dim = 1 + static_dims.index(0)
-    if int(input.concat.shape[channel_dim]) != in_channels:
+    if int(input.values().shape[channel_dim]) != in_channels:
         return None
     return channel_dim
 
@@ -256,7 +256,7 @@ def _packed_pointwise_conv1d(
 ) -> NestedTensor:
     r"""Run 1x1 conv1d over all packed valid positions with one dense linear op."""
     out_channels = int(weight.shape[0])
-    values = input.concat
+    values = input.values()
     offsets = input._offsets
     packed_sizes = input._packed_sizes
     element_shapes: tuple[tuple[int, ...], ...] | None = None

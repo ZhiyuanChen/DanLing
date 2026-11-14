@@ -83,8 +83,8 @@ class TestBasePreprocess:
         input_nested = NestedTensor([torch.tensor([0.1, 0.2]), torch.tensor([0.3, 0.4, 0.5])])
         target_nested = NestedTensor([torch.tensor([0, 1]), torch.tensor([1, 0, 1])])
         processed_input, processed_target = base_preprocess(input_nested, target_nested)
-        assert torch.allclose(processed_input, input_nested.concat)
-        assert torch.allclose(processed_target, target_nested.concat)
+        assert torch.allclose(processed_input, input_nested.values())
+        assert torch.allclose(processed_target, target_nested.values())
 
     def test_rejects_mismatched_dense_and_nested_inputs(self):
         input_nested = NestedTensor([torch.tensor([0.1, 0.2]), torch.tensor([0.3, 0.4, 0.5])])
@@ -107,14 +107,14 @@ class TestBasePreprocess:
         expected_result = torch.cat([input_batch_tensor[0, :2], input_batch_tensor[1, :3]])
         processed_input, processed_target = base_preprocess(input_batch_tensor, target_nested)
         assert torch.allclose(processed_input, expected_result)
-        assert torch.allclose(processed_target, target_nested.concat)
+        assert torch.allclose(processed_target, target_nested.values())
 
     def test_flattens_dense_and_nested_batches_equivalently(self):
         input_nested = NestedTensor([torch.tensor([0.1, 0.2]), torch.tensor([0.3, 0.4, 0.5])])
         target_nested = NestedTensor([torch.tensor([0, 1]), torch.tensor([1, 0, 1])])
 
         nested_input, nested_target = base_preprocess(input_nested, target_nested)
-        dense_input, dense_target = base_preprocess(input_nested.concat, target_nested.concat)
+        dense_input, dense_target = base_preprocess(input_nested.values(), target_nested.values())
 
         assert torch.allclose(nested_input, dense_input)
         assert torch.allclose(nested_target, dense_target)
@@ -126,7 +126,7 @@ class TestRegressionPreprocess:
         target_nested = NestedTensor([torch.tensor([[1.0, 1.1], [1.2, 1.3]]), torch.tensor([[1.4, 1.5]])])
 
         nested_input, nested_target = preprocess_regression(input_nested, target_nested, num_outputs=2)
-        dense_input, dense_target = preprocess_regression(input_nested.concat, target_nested.concat, num_outputs=2)
+        dense_input, dense_target = preprocess_regression(input_nested.values(), target_nested.values(), num_outputs=2)
 
         assert torch.allclose(nested_input, dense_input)
         assert torch.allclose(nested_target, dense_target)

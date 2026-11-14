@@ -107,20 +107,20 @@ def max_pool3d(
 
 
 def _can_use_packed_pool3d(input: NestedTensor) -> bool:
-    if len(input) == 0 or triton is None or not input.concat.is_cuda:
+    if len(input) == 0 or triton is None or not input.values().is_cuda:
         return False
-    if input.concat.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+    if input.values().dtype not in (torch.float16, torch.bfloat16, torch.float32):
         return False
     if input._physical_shape.size(1) != 4:
         return False
     if input._element_shapes is not None and any(len(shape) != 4 for shape in input._element_shapes):
         return False
-    if tuple(int(dim) for dim in input._permutation) != (1, 2, 3, 0) or input.concat.dim() != 2:
+    if tuple(int(dim) for dim in input._permutation) != (1, 2, 3, 0) or input.values().dim() != 2:
         return False
 
     # Read the channel count from the packed values (a static dim) rather than the
     # metadata tensor, whose entries are data-dependent under tracing.
-    return _static_channels_match(input._physical_shape, int(input.concat.shape[1]))
+    return _static_channels_match(input._physical_shape, int(input.values().shape[1]))
 
 
 def _pool3d_output_meta(
@@ -164,7 +164,7 @@ def _make_pool3d_metadata(
     output_offsets: Tensor,
     tile_counts: tuple[int, ...],
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    device = input.concat.device
+    device = input.values().device
     input_shapes = _resolve_element_shapes(input)
     shape_meta = torch.tensor(
         [
@@ -750,7 +750,7 @@ def _packed_avg_pool3d(
     output_shapes, output_packed_sizes, output_shape_tensor = output_meta
     output_offsets = type(input)._offsets_from_sizes(output_packed_sizes, dtype=torch.long)
     total_out = int(output_offsets[-1].item())
-    channels = int(input.concat.shape[1])
+    channels = int(input.values().shape[1])
     tile_counts = _pool3d_tile_counts(output_shapes, _pool_block_size()[0])
     input_offsets, output_offsets_device, shape_meta, tile_offsets, tile_to_batch = _make_pool3d_metadata(
         input,
@@ -759,7 +759,7 @@ def _packed_avg_pool3d(
         tile_counts,
     )
     output_values = _PackedAvgPool3dFunction.apply(
-        input.concat,
+        input.values(),
         input_offsets,
         output_offsets_device,
         shape_meta,
@@ -820,7 +820,7 @@ def _packed_max_pool3d(
     output_shapes, output_packed_sizes, output_shape_tensor = output_meta
     output_offsets = type(input)._offsets_from_sizes(output_packed_sizes, dtype=torch.long)
     total_out = int(output_offsets[-1].item())
-    channels = int(input.concat.shape[1])
+    channels = int(input.values().shape[1])
     tile_counts = _pool3d_tile_counts(output_shapes, _pool_block_size()[0])
     input_offsets, output_offsets_device, shape_meta, tile_offsets, tile_to_batch = _make_pool3d_metadata(
         input,
@@ -829,7 +829,7 @@ def _packed_max_pool3d(
         tile_counts,
     )
     output_values = _PackedMaxPool3dFunction.apply(
-        input.concat,
+        input.values(),
         input_offsets,
         output_offsets_device,
         shape_meta,

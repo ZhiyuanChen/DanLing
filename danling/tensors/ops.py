@@ -824,7 +824,7 @@ def _broadcast_condition_matches(condition, *operands: NestedTensor) -> bool:
 
     if statically_known_true(condition):
         return True
-    if _is_compiling() or any(_is_fake_tensor(operand.concat) for operand in operands):
+    if _is_compiling() or any(_is_fake_tensor(operand.values()) for operand in operands):
         torch._check(condition, lambda: "Empty NestedTensor operands have incompatible retained extents")
         return True
     return False
@@ -935,7 +935,7 @@ def _broadcast_nested_to_values(
     ):
         return None
 
-    device = source.concat.device
+    device = source.values().device
     batch_indices = target.packed_batch_indices(device=device)
     _, target_local = target._packed_batch_local_indices(device=device, dtype=torch.long)
     target_coords = target._packed_varying_coords(
@@ -953,7 +953,7 @@ def _broadcast_nested_to_values(
         source_local = source_local * radix + coordinate
     source_offsets = source.packed_offsets(device=device, dtype=source_local.dtype)
     source_indices = source_offsets[batch_indices] + source_local
-    values = source.concat.index_select(0, source_indices)
+    values = source.values().index_select(0, source_indices)
 
     source_static = source._static_dims
     omitted_axes = sorted((1 + source_static.index(dim) for dim in omitted_ragged), reverse=True)
@@ -980,7 +980,7 @@ def _expand_nested_as_values(target: NestedTensor, source: NestedTensor) -> Tens
         and source._permutation == target._permutation
         and source._same_row_splits(target)
     ):
-        return source.concat.expand(target.concat.shape)
+        return source.values().expand(target.values().shape)
 
     source_shape = torch.nn.functional.pad(source._physical_shape, (shift, 0), value=1)
     torch._assert_async(
@@ -997,10 +997,10 @@ def _expand_nested_as_values(target: NestedTensor, source: NestedTensor) -> Tens
     # A source ragged axis can become a static target axis. Enumerate only
     # those extra coordinates, then restore the target's packed static tail.
     extra_dims = tuple(dim for dim in target._static_dims if dim in source_ragged)
-    extra_sizes = tuple(target.concat.shape[1 + target._static_dims.index(dim)] for dim in extra_dims)
+    extra_sizes = tuple(target.values().shape[1 + target._static_dims.index(dim)] for dim in extra_dims)
     factor = math.prod(extra_sizes)
-    rows = target.concat.shape[0] * factor
-    device = source.concat.device
+    rows = target.values().shape[0] * factor
+    device = source.values().device
     batch, local = target._packed_batch_local_indices(device=device, dtype=torch.long)
     target_coords = target._packed_varying_coords(batch, local, device=device, dtype=torch.long)
     coordinates = {dim: coord.repeat_interleave(factor) for dim, coord in zip(target._ragged_dims, target_coords)}
@@ -1025,16 +1025,16 @@ def _expand_nested_as_values(target: NestedTensor, source: NestedTensor) -> Tens
         else:
             indices.append(slice(None))
             surviving_static.append(dim)
-    values = source.concat[tuple(indices)]
+    values = source.values()[tuple(indices)]
     remaining_static = tuple(dim for dim in target._static_dims if dim not in extra_dims)
     present_static = tuple(dim for dim in remaining_static if dim in surviving_static)
     values = values.permute((0, *(1 + surviving_static.index(dim) for dim in present_static)))
     aligned_tail = tuple(
         values.shape[1 + present_static.index(dim)] if dim in present_static else 1 for dim in remaining_static
     )
-    target_tail = tuple(target.concat.shape[1 + target._static_dims.index(dim)] for dim in remaining_static)
+    target_tail = tuple(target.values().shape[1 + target._static_dims.index(dim)] for dim in remaining_static)
     values = values.reshape(rows, *aligned_tail).expand(rows, *target_tail)
-    values = values.reshape(target.concat.shape[0], *extra_sizes, *target_tail)
+    values = values.reshape(target.values().shape[0], *extra_sizes, *target_tail)
     tail_order = (*extra_dims, *remaining_static)
     return values.permute((0, *(1 + tail_order.index(dim) for dim in target._static_dims)))
 
@@ -1107,10 +1107,10 @@ def _broadcast_lower_rank_nested_to_values(target: NestedTensor, source: NestedT
         if origin in source_static:
             axis = 1 + source_static.index(origin)
             axes.append(axis)
-            tail.append(int(source.concat.shape[axis]))
+            tail.append(int(source.values().shape[axis]))
         else:
             tail.append(1)
-    values = source.concat.permute((0, *axes))
+    values = source.values().permute((0, *axes))
     return values.reshape(values.shape[0], *tail)
 
 
@@ -1262,10 +1262,10 @@ def _complementary_singleton_square_operands(
     column_order = (row_dim + 1, *range(row_dim + 1), *range(row_dim + 2, rank))
     if row._permutation != row_order or column._permutation != column_order:
         return None
-    if row.concat.dim() != rank or column.concat.dim() != rank:
+    if row.values().dim() != rank or column.values().dim() != rank:
         return None
     singleton_axis = row_dim + 1
-    if row.concat.shape[singleton_axis] != 1 or column.concat.shape[singleton_axis] != 1:
+    if row.values().shape[singleton_axis] != 1 or column.values().shape[singleton_axis] != 1:
         return None
 
     row_sizes = row._packed_sizes
@@ -1318,31 +1318,31 @@ def _binary_complementary_singleton_square(
 
     from .aten_functions import _is_fake_tensor
 
-    fake = _is_fake_tensor(row.concat) or _is_fake_tensor(column.concat)
+    fake = _is_fake_tensor(row.values()) or _is_fake_tensor(column.values())
     symbolic_fake = any(
         getattr(getattr(values, "fake_mode", None), "shape_env", None) is not None
-        for values in (row.concat, column.concat)
+        for values in (row.values(), column.values())
     )
     retained_sizes = row._packed_sizes
     graph_mode = _is_compiling() or symbolic_fake or (fake and retained_sizes is None)
     if fake and not graph_mode and retained_sizes is not None:
         lengths_tuple = tuple(int(length) for length in retained_sizes)
         total = sum(length * length for length in lengths_tuple)
-        row_index = row.concat.new_empty((total,), dtype=torch.long)
-        column_index = column.concat.new_empty((total,), dtype=torch.long)
+        row_index = row.values().new_empty((total,), dtype=torch.long)
+        column_index = column.values().new_empty((total,), dtype=torch.long)
     else:
         if not _has_same_ragged_structure(row, column):
             return None
         offsets = row.packed_offsets(dtype=torch.long)
         lengths = offsets[1:] - offsets[:-1]
-        row_index, column_index = _complementary_square_indices(lengths, row.concat.device, row.concat.shape[0])
-        row_index = row_index.to(device=row.concat.device)
-        column_index = column_index.to(device=column.concat.device)
+        row_index, column_index = _complementary_square_indices(lengths, row.values().device, row.values().shape[0])
+        row_index = row_index.to(device=row.values().device)
+        column_index = column_index.to(device=column.values().device)
 
     prefix_rank = row._ragged_dims[0]
     singleton_axis = prefix_rank + 1
-    row_values = row.concat.select(singleton_axis, 0)[row_index]
-    column_values = column.concat.select(singleton_axis, 0)[column_index]
+    row_values = row.values().select(singleton_axis, 0)[row_index]
+    column_values = column.values().select(singleton_axis, 0)[column_index]
     lhs_values, rhs_values = (row_values, column_values) if lhs is row else (column_values, row_values)
     result_values = op(lhs_values, rhs_values, *extra_args, **extra_kwargs)
 
@@ -1380,14 +1380,14 @@ def _binary_complementary_singleton_rectangular(lhs, rhs, op, extra_args, extra_
     row, column = operands
     row_offsets, column_offsets = row.packed_offsets(), column.packed_offsets()
     rows, columns = row_offsets.diff(), column_offsets.diff()
-    device = row.concat.device
-    fake = _is_fake_tensor(row.concat) or _is_fake_tensor(column.concat)
+    device = row.values().device
+    fake = _is_fake_tensor(row.values()) or _is_fake_tensor(column.values())
     if (
         fake
         and not _is_compiling()
         and not any(
             getattr(getattr(values, "fake_mode", None), "shape_env", None) is not None
-            for values in (row.concat, column.concat)
+            for values in (row.values(), column.values())
         )
     ):
         # Standalone FakeTensor without a shape environment cannot represent
@@ -1395,10 +1395,10 @@ def _binary_complementary_singleton_rectangular(lhs, rhs, op, extra_args, extra_
         return None
     if _is_compiling() or fake:
         row_index, column_index = _complementary_rectangular_indices(
-            rows, columns, device, row.concat.shape[0], column.concat.shape[0]
+            rows, columns, device, row.values().shape[0], column.values().shape[0]
         )
         row_index = row_index.to(device=device)
-        column_index = column_index.to(device=column.concat.device)
+        column_index = column_index.to(device=column.values().device)
     else:
         counts = rows * columns
         total = int(counts.sum().item())
@@ -1410,8 +1410,8 @@ def _binary_complementary_singleton_rectangular(lhs, rhs, op, extra_args, extra_
         row_index = row_offsets.to(device=device)[batch] + torch.div(local, width, rounding_mode="floor")
         column_index = column_offsets.to(device=device)[batch] + local.remainder(width)
     prefix_rank = row._ragged_dims[0]
-    row_values = row.concat.select(prefix_rank + 1, 0)[row_index]
-    column_values = column.concat.select(prefix_rank + 1, 0)[column_index]
+    row_values = row.values().select(prefix_rank + 1, 0)[row_index]
+    column_values = column.values().select(prefix_rank + 1, 0)[column_index]
     left, right = (row_values, column_values) if lhs is row else (column_values, row_values)
     values = op(left, right, *extra_args, **extra_kwargs)
     result = row.packed_with_rectangular_lengths(values, rows, columns)
@@ -1423,7 +1423,7 @@ def _single_element_logical_view(input: NestedTensor) -> Tensor:
     r"""View one packed element in logical dimension order without storage mapping."""
     element_shape = tuple(int(size) for size in input._physical_shape[0].tolist())
     packed_shape = tuple(element_shape[dim] for dim in input._permutation)
-    packed_view = input.concat.reshape(packed_shape)
+    packed_view = input.values().reshape(packed_shape)
     inverse_permutation = tuple(input._permutation.index(dim) for dim in range(len(input._permutation)))
     return packed_view.permute(inverse_permutation)
 
@@ -1442,7 +1442,7 @@ def _binary_single_element_nested_broadcast(
 
     if len(target) != 1 or len(source) != 1 or _is_compiling():
         return None
-    if _is_fake_tensor(target.concat) or _is_fake_tensor(source.concat):
+    if _is_fake_tensor(target.values()) or _is_fake_tensor(source.values()):
         return None
     if not _can_broadcast_nested_to(target, source, allow_target_static_broadcast=True):
         return None
@@ -1465,7 +1465,7 @@ def _binary_single_element_nested_broadcast(
     )
     packed_order = result.permute(target._permutation)
     packed_result = packed_order.flatten(0, target._ragged_rank - 1)
-    if packed_result.shape[1:] == target.concat.shape[1:]:
+    if packed_result.shape[1:] == target.values().shape[1:]:
         return target._packed_like_unchecked(packed_result)
 
     from .aten_functions import _packed_with_static_tail_from_values
@@ -1496,7 +1496,7 @@ def _needs_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor) -> bool:
         return False
     # Independent partitions may match now and broadcast differently on the
     # next invocation. Their equality is not a valid compile-time assumption.
-    if _is_compiling() or _is_fake_tensor(lhs.concat) or _is_fake_tensor(rhs.concat):
+    if _is_compiling() or _is_fake_tensor(lhs.values()) or _is_fake_tensor(rhs.values()):
         return True
     return not lhs._has_same_structure(rhs)
 
@@ -1536,7 +1536,7 @@ def _binary_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor, op, ext
     if not _is_compiling() and lhs._element_shapes is not None and rhs._element_shapes is not None:
         from torch._subclasses.fake_tensor import maybe_get_fake_mode
 
-        fake_mode = maybe_get_fake_mode(lhs.concat) or maybe_get_fake_mode(rhs.concat)
+        fake_mode = maybe_get_fake_mode(lhs.values()) or maybe_get_fake_mode(rhs.values())
         if fake_mode is not None and fake_mode.shape_env is None:
             # Standalone FakeTensor has no dynamic size allocator. Its retained
             # concrete shapes still describe the complete broadcast geometry.
@@ -1551,7 +1551,7 @@ def _binary_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor, op, ext
     torch._check(rows >= 0)
     static_dims = tuple(dim for dim in range(rank) if dim not in ragged_dims)
 
-    device = lhs.concat.device
+    device = lhs.values().device
     counts_device = counts.to(device=device)
     batch = torch.repeat_interleave(torch.arange(len(lhs), device=device), counts_device, output_size=rows)
     local = torch.arange(rows, device=device) - offsets.to(device=device)[batch]
@@ -1582,7 +1582,7 @@ def _binary_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor, op, ext
         # A source's static axis can become a ragged output axis even when it
         # is not singleton. Index it together with the packed row, rather than
         # selecting zero or flattening across sample boundaries.
-        values = source.concat[tuple(indices)]
+        values = source.values()[tuple(indices)]
         order = (0, *(1 + surviving_static.index(dim) for dim in static_dims))
         return values.permute(order)
 
@@ -1676,7 +1676,7 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
         return op(lhs, rhs, *extra_args, **extra_kwargs)
 
     if len(input) == 0 and not isinstance(other, cls):
-        input_values = input.concat
+        input_values = input.values()
         new_values = (
             op(other, input_values, *extra_args, **extra_kwargs)
             if reverse
@@ -1691,9 +1691,9 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
         # before the operation (notably for fp16/bf16). Keep actual 0-D tensor
         # operands unchanged too, including device and autograd behavior.
         new_values = (
-            op(other, input.concat, *extra_args, **extra_kwargs)
+            op(other, input.values(), *extra_args, **extra_kwargs)
             if reverse
-            else op(input.concat, other, *extra_args, **extra_kwargs)
+            else op(input.values(), other, *extra_args, **extra_kwargs)
         )
         return input._packed_like_unchecked(new_values)
 
@@ -1704,7 +1704,7 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
     if not isinstance(other, cls):
         resolved = _resolve_dense_for_values(input, other)
         if resolved is not None:
-            input_values = input.concat
+            input_values = input.values()
             lhs, rhs = (resolved, input_values) if reverse else (input_values, resolved)
             return _rebuild(op(lhs, rhs, *extra_args, **extra_kwargs), input_values)
 
@@ -1731,7 +1731,7 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
                 continue
             aligned = _broadcast_nested_to_values(target, source, allow_target_static_broadcast=True)
             if aligned is not None:
-                target_values = target.concat
+                target_values = target.values()
                 lhs, rhs = (target_values, aligned) if target_is_input else (aligned, target_values)
                 if reverse:
                     lhs, rhs = rhs, lhs
@@ -1739,7 +1739,7 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
         if input._has_same_structure(other):
             if not _empty_same_structure_broadcast_matches(input, other):
                 raise ValueError("Empty NestedTensor operands have incompatible retained logical extents")
-            input_values, other_values = input.concat, other.concat
+            input_values, other_values = input.values(), other.values()
             lhs_v, rhs_v = (other_values, input_values) if reverse else (input_values, other_values)
             new_values = op(lhs_v, rhs_v, *extra_args, **extra_kwargs)
             # Fast path (the common elementwise case): the op preserved the static tail, so the ragged
@@ -1800,25 +1800,25 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
 
         aligned_other = _broadcast_nested_to_values(input, other, allow_target_static_broadcast=True)
         if aligned_other is not None:
-            input_values = input.concat
+            input_values = input.values()
             new_values = op(input_values, aligned_other, *extra_args, **extra_kwargs)
             return _rebuild_from(input, new_values, input_values)
 
         aligned_input = _broadcast_nested_to_values(other, input, allow_target_static_broadcast=True)
         if aligned_input is not None:
-            other_values = other.concat
+            other_values = other.values()
             new_values = op(aligned_input, other_values, *extra_args, **extra_kwargs)
             return _rebuild_from(other, new_values, other_values)
 
         aligned_other = _broadcast_lower_rank_nested_to_values(input, other)
         if aligned_other is not None:
-            input_values = input.concat
+            input_values = input.values()
             lhs, rhs = (aligned_other, input_values) if reverse else (input_values, aligned_other)
             return _rebuild(op(lhs, rhs, *extra_args, **extra_kwargs), input_values)
 
         aligned_input = _broadcast_lower_rank_nested_to_values(other, input)
         if aligned_input is not None:
-            other_values = other.concat
+            other_values = other.values()
             lhs, rhs = (other_values, aligned_input) if reverse else (aligned_input, other_values)
             new_values = op(lhs, rhs, *extra_args, **extra_kwargs)
             if new_values.shape[1:] == other_values.shape[1:]:
@@ -1871,7 +1871,7 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
         )
     raise NotImplementedError(
         "NestedTensor binary op with non-scalar Tensor operand that is neither shape-aligned nor "
-        f"broadcast-compatible with packed values: values shape {input.concat.shape}, tensor shape {other.shape}"
+        f"broadcast-compatible with packed values: values shape {input.values().shape}, tensor shape {other.shape}"
     )
 
 
@@ -1993,7 +1993,7 @@ def _concat_apply_same_shape(input: NestedTensor, op: Callable[[Tensor], Tensor]
 
     if len(input) == 0:
         return type(input)([], **input._meta(include_dtype=True))
-    return input._packed_like_unchecked(op(input.concat))
+    return input._packed_like_unchecked(op(input.values()))
 
 
 def _static_dim_mask_from_element_shapes(
@@ -2461,7 +2461,7 @@ def _reduce_none(input: NestedTensor, op, *, dtype: torch.dtype | None = None, k
     r"""Reduce all elements to a scalar (no dim specified)."""
     if dtype is not None:
         op_kwargs["dtype"] = dtype
-    result = op(input.concat.reshape(-1), **op_kwargs)
+    result = op(input.values().reshape(-1), **op_kwargs)
     if keepdim:
         return result.reshape((1,) * input.dim())
     return result
@@ -2471,7 +2471,7 @@ def _reduce_none_pair(input: NestedTensor, op, *, dtype: torch.dtype | None = No
     r"""Reduce all elements to a scalar pair (e.g. var_mean, no dim specified)."""
     if dtype is not None:
         op_kwargs["dtype"] = dtype
-    a, b = op(input.concat.reshape(-1), **op_kwargs)
+    a, b = op(input.values().reshape(-1), **op_kwargs)
     if keepdim:
         shape = (1,) * input.dim()
         return a.reshape(shape), b.reshape(shape)
@@ -2578,7 +2578,7 @@ def _packed_normalize_axes(input: NestedTensor, normalized_shape: tuple[int, ...
         values_dim = _physical_to_values_dim(input, physical_dim)
         if values_dim is None:
             return None
-        if int(input.concat.shape[values_dim]) != int(normalized_shape[offset]):
+        if int(input.values().shape[values_dim]) != int(normalized_shape[offset]):
             return None
         axes.append(values_dim)
     return tuple(axes)
@@ -2594,7 +2594,7 @@ def _packed_normalize(input: NestedTensor, normalized_shape: tuple[int, ...], ru
     axes = _packed_normalize_axes(input, normalized_shape)
     if axes is None:
         return None
-    values = input.concat
+    values = input.values()
     target = tuple(range(values.dim() - len(axes), values.dim()))
     if axes == target:
         return input._packed_like_unchecked(run(values))
@@ -2703,7 +2703,7 @@ def _map_storage_pair(input: NestedTensor, op, *args, **kwargs):
     cls = type(input)
     if len(input) == 0:
         try:
-            first_probe, second_probe = op(input.concat, *args, **kwargs)
+            first_probe, second_probe = op(input.values(), *args, **kwargs)
             first_dtype = first_probe.dtype if isinstance(first_probe, Tensor) else input.dtype
             second_dtype = second_probe.dtype if isinstance(second_probe, Tensor) else input.dtype
         except (TypeError, RuntimeError, ValueError):

@@ -130,14 +130,14 @@ def _packed_pointwise_conv2d_channel_dim(input: NestedTensor, weight, stride, pa
     if not _has_static_input_channels(input, in_channels, rank=2):
         return None
 
-    suffix_rank = input.concat.dim() - 1
+    suffix_rank = input.values().dim() - 1
     if suffix_rank <= 0:
         return None
     static_dims = tuple(int(dim) for dim in input._permutation[-suffix_rank:])
     if 0 not in static_dims:
         return None
     channel_dim = 1 + static_dims.index(0)
-    if int(input.concat.shape[channel_dim]) != in_channels:
+    if int(input.values().shape[channel_dim]) != in_channels:
         return None
     return channel_dim
 
@@ -150,7 +150,7 @@ def _packed_pointwise_conv2d(
 ) -> NestedTensor:
     r"""Run 1x1 conv2d over all packed valid pixels with one dense linear op."""
     out_channels = int(weight.shape[0])
-    values = input.concat
+    values = input.values()
     moved = channel_dim != values.dim() - 1
     if moved:
         values = values.movedim(channel_dim, -1)
@@ -226,7 +226,7 @@ def _packed_spatial_conv2d(input, weight, bias, stride, padding, dilation, group
         )
         element_shapes = None
         packed_sizes = None
-    values = input.concat
+    values = input.values()
     if not preserves_spatial and not _is_compiling() and input._element_shapes is not None:
         # Standalone FakeTensor retains concrete layout schema but cannot read tensor data.
         element_shapes = tuple(

@@ -99,7 +99,7 @@ def _uniform_element_shape(input: NestedTensor) -> tuple[int, ...] | None:
             return None
         shape = tuple(int(size) for size in rows[0].tolist())
     expected = (len(input) * shape[0], *shape[1:]) if shape else (len(input),)
-    if tuple(int(size) for size in input.concat.shape) != expected:
+    if tuple(int(size) for size in input.values().shape) != expected:
         return None
     return shape
 
@@ -108,7 +108,7 @@ def _uniform_dense_values(input: NestedTensor) -> torch.Tensor | None:
     shape = _uniform_element_shape(input)
     if shape is None:
         return None
-    return input.concat.reshape(len(input), *shape)
+    return input.values().reshape(len(input), *shape)
 
 
 def _uniform_shape_tensor(input: NestedTensor, element_shape: tuple[int, ...]) -> torch.Tensor:
@@ -143,7 +143,7 @@ def _per_element(input: NestedTensor, fn, *args, **kwargs) -> NestedTensor:
 
 
 def _packed_channel_dim_for_physical_dim(input: NestedTensor, physical_dim: int) -> int | None:
-    suffix_rank = input.concat.dim() - 1
+    suffix_rank = input.values().dim() - 1
     if suffix_rank <= 0:
         return None
     static_dims = tuple(int(dim) for dim in input._permutation[-suffix_rank:])
@@ -183,7 +183,7 @@ def _channel_shuffle_packed(input: NestedTensor, groups: int) -> NestedTensor | 
     channel_dim = _packed_channel_dim_for_physical_dim(input, 0)
     if channel_dim is None:
         return _channel_shuffle_ragged(input, groups)
-    values = input.concat
+    values = input.values()
     moved = channel_dim != 1
     if moved:
         values = values.movedim(channel_dim, 1)
@@ -219,7 +219,7 @@ def _channel_shuffle_ragged(input: NestedTensor, groups: int) -> NestedTensor:
     torch._assert_async(
         torch.all(channels.remainder(groups) == 0), "channel_shuffle channels must be divisible by groups"
     )
-    values = input.concat
+    values = input.values()
     batch, local = input._packed_batch_local_indices(device=values.device)
     coordinates = input._packed_varying_coords(batch, local, device=values.device)
     shapes = input._physical_shape.to(device=values.device)
@@ -242,15 +242,15 @@ def _channel_shuffle_ragged(input: NestedTensor, groups: int) -> NestedTensor:
 
 
 def _can_use_packed_pixel2d(input: NestedTensor, channels: int) -> bool:
-    if triton is None or len(input) == 0 or not input.concat.is_cuda:
+    if triton is None or len(input) == 0 or not input.values().is_cuda:
         return False
     if input._physical_shape.size(1) != 3:
         return False
     if input._element_shapes is not None and any(len(shape) != 3 for shape in input._element_shapes):
         return False
-    if tuple(int(dim) for dim in input._permutation) != (1, 2, 0) or input.concat.dim() != 2:
+    if tuple(int(dim) for dim in input._permutation) != (1, 2, 0) or input.values().dim() != 2:
         return False
-    if int(input.concat.shape[1]) != channels:
+    if int(input.values().shape[1]) != channels:
         return False
     return _static_channels_match(input._physical_shape, channels)
 
@@ -502,9 +502,9 @@ class _PackedPixelShuffleFunction(torch.autograd.Function):
 def _packed_pixel2d(input: NestedTensor, factor: int, *, shuffle: bool) -> NestedTensor | None:
     if factor <= 0:
         return None
-    if input.concat.dim() < 2:
+    if input.values().dim() < 2:
         return None
-    in_channels = int(input.concat.shape[1])
+    in_channels = int(input.values().shape[1])
     if shuffle and in_channels % (factor * factor) != 0:
         return None
     if not _can_use_packed_pixel2d(input, in_channels):
@@ -516,7 +516,7 @@ def _packed_pixel2d(input: NestedTensor, factor: int, *, shuffle: bool) -> Neste
     output_shapes, output_packed_sizes, output_shape_tensor = meta
     input_shapes = _resolve_element_shapes(input)
     out_channels = int(output_shapes[0][0])
-    device = input.concat.device
+    device = input.values().device
     input_offsets = input._offsets.to(device=device, non_blocking=True)
     output_offsets = type(input)._offsets_from_sizes(output_packed_sizes, dtype=torch.long)
     output_offsets_device = output_offsets.to(device=device, non_blocking=True)
@@ -524,7 +524,7 @@ def _packed_pixel2d(input: NestedTensor, factor: int, *, shuffle: bool) -> Neste
     inverse_shape_meta = _pixel_shape_meta(output_shapes, input_shapes, device=device)
     block_l, block_c = _pixel_block_size()
     output_values = _PackedPixelShuffleFunction.apply(
-        input.concat,
+        input.values(),
         input_offsets,
         output_offsets_device,
         shape_meta,
@@ -533,7 +533,7 @@ def _packed_pixel2d(input: NestedTensor, factor: int, *, shuffle: bool) -> Neste
         shuffle,
         in_channels,
         out_channels,
-        int(input.concat.shape[0]),
+        int(input.values().shape[0]),
         int(output_offsets[-1]),
         len(output_shapes),
         max(height * width for _, height, width in input_shapes),

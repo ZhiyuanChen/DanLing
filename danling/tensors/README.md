@@ -42,7 +42,7 @@ nested = NestedTensor(tensor1, tensor2)
 # Access properties
 print(nested.tensor)  # Padded tensor: [[1, 2, 3], [4, 5, 0]]
 print(nested.mask)    # Mask: [[True, True, True], [True, True, False]]
-print(nested.concat)  # Concatenated: [1, 2, 3, 4, 5]
+print(nested.values())  # Concatenated: [1, 2, 3, 4, 5]
 
 # Index operations
 print(nested[0])      # First tensor: [1, 2, 3]
@@ -324,7 +324,7 @@ from danling.tensors.ops import NestedTensorFuncRegistry
 @NestedTensorFuncRegistry.implement(torch.my_custom_op)
 def my_custom_op(input, *args, **kwargs):
     # Shape-preserving elementwise ops can reuse the reference structure.
-    values = torch.my_custom_op(input.concat, *args, **kwargs)
+    values = torch.my_custom_op(input.values(), *args, **kwargs)
     return input.packed_like(values)
 ```
 
@@ -337,7 +337,7 @@ aten = torch.ops.aten
 @NestedTensorAtenRegistry.implement(aten.my_op.default, compile_safe=True)
 def _my_handler(func, args, kwargs):
     source = args[0]
-    values = func(source.concat, *args[1:], **kwargs)
+    values = func(source.values(), *args[1:], **kwargs)
     return source.packed_like(values)
 ```
 
@@ -478,13 +478,16 @@ the native kernel's differentiation support.
 
 The result can remain a `NestedTensor` throughout a compiled model or cross a
 compiled/eager training boundary as a wrapper-only output. DanLing preserves
-the outer wrapper's AOTAutograd edge and projects it back to `result.concat`
+the outer wrapper's AOTAutograd edge and projects it back to `result.values()`
 without padding or copying, so both wrapper outputs and direct packed outputs
 remain differentiable.
 They intentionally do not expose the general private packed constructor.
 
+`values()` returns packed entries without padding through the same differentiable
+projection as the legacy `concat` property, which remains available.
+
 `packed_offsets()` returns the boundaries of complete logical batch elements
-in the flattened leading dimension of `concat`. It is the public operator
+in the flattened leading dimension of `values()`. It is the public operator
 metadata interface for segmented kernels: for `(N_i, N_i, C)` elements it
 returns cumulative `N_i * N_i` cell counts, whereas
 `ragged_level_offsets(level)` returns row splits within the ragged hierarchy.

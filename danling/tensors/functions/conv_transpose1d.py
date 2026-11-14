@@ -1291,7 +1291,7 @@ def _spatial_tile_conv_transpose1d(
     kernel_size = (int(weight.shape[2]),)
     if kernel_size[0] <= 0:
         return None
-    if not _valid_conv_bias(bias, out_channels=out_channels, device=input.concat.device, dtype=input.concat.dtype):
+    if not _valid_conv_bias(bias, out_channels=out_channels, device=input.values().device, dtype=input.values().dtype):
         return None
 
     output_meta = _conv_transpose1d_output_meta(
@@ -1309,7 +1309,7 @@ def _spatial_tile_conv_transpose1d(
     output_offsets = type(input)._offsets_from_sizes(output_packed_sizes, dtype=torch.long)
     total_out = int(output_offsets[-1].item())
     if total_out == 0:
-        output_values = input.concat.new_empty((total_out, out_channels))
+        output_values = input.values().new_empty((total_out, out_channels))
         return type(input)._from_packed_raw(
             output_values,
             output_offsets,
@@ -1380,7 +1380,7 @@ def _spatial_tile_conv_transpose1d(
     if resolved_weight_max_tiles is None:
         return None
 
-    device = input.concat.device
+    device = input.values().device
     tile_geometry_rows = _conv_transpose1d_tile_geometry_rows(
         input_shapes,
         tiles,
@@ -1393,7 +1393,7 @@ def _spatial_tile_conv_transpose1d(
     tile_geometry_meta = torch.tensor(tile_geometry_rows, device=device, dtype=torch.int64)
     input_offsets_device = input._offsets.to(device=device, non_blocking=True)
     output_offsets_device = output_offsets.to(device=device, non_blocking=True)
-    input_values, weight, bias = _autocast_convolution_tensors(input.concat, weight, bias)
+    input_values, weight, bias = _autocast_convolution_tensors(input.values(), weight, bias)
     requires_grad = torch.is_grad_enabled() and (
         input_values.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
     )

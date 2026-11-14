@@ -72,12 +72,12 @@ class TestClone:
             torch.testing.assert_close(output.element_sizes(), source.element_sizes())
             torch.testing.assert_close(output.unbind(0 if batch_first else 1), expected)
             torch.testing.assert_close(
-                torch.autograd.grad(output.concat.square().sum(), parts), [2 * part for part in parts]
+                torch.autograd.grad(output.values().square().sum(), parts), [2 * part for part in parts]
             )
-            before = source.concat.detach().clone()
+            before = source.values().detach().clone()
             with torch.no_grad():
                 output.add_(1)
-            torch.testing.assert_close(source.concat, before)
+            torch.testing.assert_close(source.values(), before)
 
 
 class TestElementwiseOps:
@@ -120,7 +120,7 @@ class TestElementwiseOps:
         torch.testing.assert_close(output.tensor, torch.empty(expected_shape, device=device, dtype=source.dtype))
         assert output.numel() == 0
         if derived:
-            gradient = torch.autograd.grad(output.concat.sum(), leaf)[0]
+            gradient = torch.autograd.grad(output.values().sum(), leaf)[0]
             torch.testing.assert_close(gradient, torch.zeros_like(leaf))
 
     @pytest.mark.parametrize("ragged", [False, True])
@@ -142,7 +142,7 @@ class TestElementwiseOps:
             assert result.shape == (0, *((5,) if ragged else ()), *reference.shape[1:])
             assert result.ragged_dims == source.ragged_dims
             assert result.dtype == reference.dtype
-            torch.testing.assert_close(result.concat, reference)
+            torch.testing.assert_close(result.values(), reference)
 
     def test_empty_native_error(self, device):
         values = torch.empty(0, 4, device=device, dtype=torch.int64)
@@ -224,7 +224,7 @@ class TestElementwiseOps:
         torch.compiler.reset()
         parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
         source = NT(parts).sin()
-        expected = source.concat.detach().clone() + 1
+        expected = source.values().detach().clone() + 1
         loss = source.square().sum()
 
         def unsqueeze(value):
@@ -234,7 +234,7 @@ class TestElementwiseOps:
         view = operation(source)
         with torch.no_grad():
             view.add_(1)
-        torch.testing.assert_close(source.concat, expected)
+        torch.testing.assert_close(source.values(), expected)
         with pytest.raises(RuntimeError, match="modified"):
             loss.backward()
 
@@ -258,7 +258,7 @@ class TestElementwiseOps:
         run = unsqueeze if backend is None else torch.compile(unsqueeze, backend=backend, fullgraph=True)
         operation(run(source), 2)
         operation(expected.unsqueeze(dim), 2)
-        torch.testing.assert_close(source.concat, expected)
+        torch.testing.assert_close(source.values(), expected)
         torch.testing.assert_close(
             torch.autograd.grad(source.square().sum(), parts), torch.autograd.grad(expected.square().sum(), references)
         )
@@ -290,7 +290,7 @@ class TestElementwiseOps:
         references = [part.detach().clone().requires_grad_() for part in parts]
         source = NT(parts, ragged_dims=(0,))
         if strided:
-            source = source.packed_with_static_tail(source.concat[:, 1::2])
+            source = source.packed_with_static_tail(source.values()[:, 1::2])
             elements = [part[:, 1::2] for part in references]
         else:
             elements = references
@@ -302,19 +302,19 @@ class TestElementwiseOps:
         torch.testing.assert_close(output.unbind(), expected)
         torch.testing.assert_close(reshaped.unbind(), expected)
         torch.testing.assert_close(collapsed.unbind(), tuple(elements))
-        actual = torch.autograd.grad(output.concat.sin().sum(), parts, create_graph=True)
+        actual = torch.autograd.grad(output.values().sin().sum(), parts, create_graph=True)
         reference = torch.autograd.grad(sum(part.sin().sum() for part in expected), references, create_graph=True)
         torch.testing.assert_close(actual, reference)
         torch.testing.assert_close(
             torch.autograd.grad(sum(part.sum() for part in actual), parts),
             torch.autograd.grad(sum(part.sum() for part in reference), references),
         )
-        before = source.concat.detach().clone()
+        before = source.values().detach().clone()
         with torch.no_grad():
-            output.concat.add_(1)
-            torch.testing.assert_close(source.concat, before + 1)
-            source.concat.mul_(2)
-            torch.testing.assert_close(output.concat, (2 * (before + 1)).view(-1, 2, 3))
+            output.values().add_(1)
+            torch.testing.assert_close(source.values(), before + 1)
+            source.values().mul_(2)
+            torch.testing.assert_close(output.values(), (2 * (before + 1)).view(-1, 2, 3))
 
     def test_batch_view(self, device):
         parts = [torch.randn(length, 3, device=device, dtype=torch.float64, requires_grad=True) for length in (2, 5)]
@@ -343,7 +343,7 @@ class TestElementwiseOps:
         assert output.ragged_dims == (1,)
         for actual, reference in zip(output, leaves):
             assert_close(actual, reference.expand(width, -1))
-        gradients = torch.autograd.grad(output.concat.sum(), leaves)
+        gradients = torch.autograd.grad(output.values().sum(), leaves)
         for actual, reference in zip(gradients, leaves):
             assert_close(actual, torch.full_like(reference, width))
         direction = NT([torch.randn_like(leaf) for leaf in leaves], ragged_dims=(1,))
@@ -355,7 +355,7 @@ class TestElementwiseOps:
                 for actual, reference in zip(tangent, direction):
                     assert_close(actual, reference.expand(width, -1))
         with torch.no_grad():
-            source.concat.add_(1)
+            source.values().add_(1)
             for actual, reference in zip(output, source):
                 assert_close(actual, reference.expand(width, -1))
 
@@ -387,11 +387,11 @@ class TestElementwiseOps:
     @pytest.mark.parametrize("pin_memory", [False, True])
     def test_zeros_like_follows_requested_pinning(self, pin_memory):
         source = NT([torch.randn(2, 3), torch.randn(4, 3)], pin_memory=True)
-        expected = torch.zeros_like(source.concat, pin_memory=pin_memory)
+        expected = torch.zeros_like(source.values(), pin_memory=pin_memory)
 
         output = torch.zeros_like(source, pin_memory=pin_memory)
 
-        assert output.concat.is_pinned() is expected.is_pinned()
+        assert output.values().is_pinned() is expected.is_pinned()
 
     def test_creation_like_rejects_sparse_result(self):
         source = NT([torch.randn(2, 3), torch.randn(4, 3)])
@@ -420,7 +420,7 @@ class TestElementwiseOps:
         leaves = [torch.randn(shape, dtype=torch.float64, device=device, requires_grad=True) for _ in range(2)]
         source = NT(leaves, ragged_dims=(), batch_first=False)
         reference = torch.stack(leaves, dim=1)
-        dense = torch.randn_like(source.concat if packed else reference, requires_grad=True)
+        dense = torch.randn_like(source.values() if packed else reference, requires_grad=True)
 
         output = source * dense
         expected = reference * (dense.movedim(0, 1) if packed else dense)
@@ -579,7 +579,7 @@ class TestBatchFlatten:
             torch.testing.assert_close(torch.autograd.grad(actual.square().sum(), parts), [2 * part for part in parts])
         with fake.FakeTensorMode() as mode:
             actual = fold(mode.from_tensor(source))
-        assert isinstance(actual, NT) and fake.is_fake(actual.concat)
+        assert isinstance(actual, NT) and fake.is_fake(actual.values())
         assert actual.shape == source.shape
 
 
@@ -766,7 +766,7 @@ class TestIndexingOps:
         expected = [operation(part, 2, idx, *rest) for part, idx in zip(parts, indices)]
         torch.testing.assert_close(output.unbind(), expected)
         torch.testing.assert_close(
-            torch.autograd.grad(output.concat.square().sum(), parts),
+            torch.autograd.grad(output.values().square().sum(), parts),
             torch.autograd.grad(sum(part.square().sum() for part in expected), parts),
         )
 
@@ -1420,7 +1420,7 @@ class TestLinearAlgebraOps:
                 ]
                 torch.testing.assert_close(output.unbind(), expected)
                 torch.testing.assert_close(
-                    torch.autograd.grad(output.concat.square().sum(), (*parts, weight)),
+                    torch.autograd.grad(output.values().square().sum(), (*parts, weight)),
                     torch.autograd.grad(sum(part.square().sum() for part in expected), references),
                 )
 
@@ -1464,7 +1464,7 @@ class TestLinearAlgebraOps:
         if dtype == torch.int64:
             return
         inputs = (*parts, dense)
-        gradients = torch.autograd.grad(output.concat.abs().square().sum(), inputs, create_graph=True)
+        gradients = torch.autograd.grad(output.values().abs().square().sum(), inputs, create_graph=True)
         references = torch.autograd.grad(sum(part.abs().square().sum() for part in expected), inputs, create_graph=True)
         torch.testing.assert_close(gradients, references)
         torch.testing.assert_close(
@@ -1682,8 +1682,8 @@ class TestReductionOps:
         generator = torch.Generator(device=device).manual_seed(23)
         reference_generator = torch.Generator(device=device).manual_seed(23)
         actual = torch.ops.aten.multinomial.default(source, 2, True, generator=generator)
-        expected = torch.multinomial(source.concat, 2, True, generator=reference_generator)
-        torch.testing.assert_close(actual.concat, expected)
+        expected = torch.multinomial(source.values(), 2, True, generator=reference_generator)
+        torch.testing.assert_close(actual.values(), expected)
         assert tuple(part.shape for part in actual.unbind(0)) == ((2, 2), (3, 2))
         torch.testing.assert_close(generator.get_state(), reference_generator.get_state())
 
@@ -1696,7 +1696,7 @@ class TestReductionOps:
         output = distribution.log_prob(labels)
         expected = [reference.log_prob(label) for reference, label in zip(references, labels)]
         torch.testing.assert_close(output.unbind(0), tuple(expected))
-        gradients = torch.autograd.grad(output.concat.sum(), parts, retain_graph=True)
+        gradients = torch.autograd.grad(output.values().sum(), parts, retain_graph=True)
         reference_gradients = torch.autograd.grad(sum(value.sum() for value in expected), parts)
         torch.testing.assert_close(gradients, reference_gradients)
         invalid = [torch.full_like(part, torch.nan) for part in parts]
@@ -1751,7 +1751,7 @@ class TestReductionOps:
 
         output = operation(nested, dim=axis + 1, keepdim=True, dtype=result_dtype)
         references = [operation(element, dim=axis, keepdim=True, dtype=result_dtype) for element in elements]
-        gradients = torch.autograd.grad(output.concat.sum(), elements)
+        gradients = torch.autograd.grad(output.values().sum(), elements)
 
         assert output.dtype == (result_dtype or input_dtype)
         for actual, expected in zip(output, references):
@@ -1804,7 +1804,7 @@ class TestReductionOps:
             ]
         )
         # Global reduction
-        assert_close(aten_op.default(nt), torch_op(nt.concat))
+        assert_close(aten_op.default(nt), torch_op(nt.values()))
 
         # Static dim
         vals_last, idxs_last = aten_op.dim(nt, 2, False)
@@ -1861,7 +1861,7 @@ class TestReductionOps:
         assert_close(kth_idxs, kth_ref[1])
 
         median_global = torch.ops.aten.median.default(nt)
-        assert_close(median_global, torch.median(nt.concat))
+        assert_close(median_global, torch.median(nt.values()))
 
         median_vals, median_idxs = torch.ops.aten.median.dim(nt, 2, True)
         median_ref = tuple(
@@ -1882,7 +1882,7 @@ class TestReductionOps:
             ]
         )
         nanmedian_global = torch.ops.aten.nanmedian.default(nan_nt)
-        assert_close(nanmedian_global, torch.nanmedian(nan_nt.concat), equal_nan=True)
+        assert_close(nanmedian_global, torch.nanmedian(nan_nt.values()), equal_nan=True)
 
         nanmedian_vals, nanmedian_idxs = torch.ops.aten.nanmedian.dim(nan_nt, 2, False)
         nanmedian_ref = tuple(

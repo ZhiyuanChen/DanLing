@@ -132,7 +132,7 @@ def _concat_tensors(*values: NestedTensor | Tensor) -> tuple[Tensor, ...]:
         >>> from danling.tensors.nn_functions import _concat_tensors
         >>> nt = NestedTensor(torch.tensor([[1.0, 2.0]]), torch.tensor([[3.0, 4.0]]))
         >>> a, b = _concat_tensors(nt, nt)
-        >>> torch.equal(a, nt.concat) and torch.equal(b, nt.concat)
+        >>> torch.equal(a, nt.values()) and torch.equal(b, nt.values())
         True
     """
     from .nested_tensor import NestedTensor
@@ -149,7 +149,7 @@ def _concat_tensors(*values: NestedTensor | Tensor) -> tuple[Tensor, ...]:
     result = []
     for v in values:
         if isinstance(v, NestedTensor):
-            result.append(v.concat)
+            result.append(v.values())
         elif v.dim() < ref.dim():
             # Per-sample tensor (e.g. labels [B]) — pass through unchanged
             result.append(v)
@@ -377,7 +377,7 @@ def _activation_handler(input: NestedTensor, *args, _fn=None, inplace=False, **k
     if inplace:
         with torch._C.DisableTorchFunctionSubclass():
             return _fn(input, *args, inplace=True, **kwargs)
-    new_values = _fn(input.concat, *args, **kwargs)
+    new_values = _fn(input.values(), *args, **kwargs)
     return input._packed_like_unchecked(new_values)
 
 
@@ -386,14 +386,14 @@ def prelu(input: NestedTensor, weight: Tensor) -> NestedTensor:
     from .ops import _physical_to_values_dim
 
     if weight.numel() == 1:
-        return input._packed_like_unchecked(F.prelu(input.concat, weight))
+        return input._packed_like_unchecked(F.prelu(input.values(), weight))
     channel_dim = _physical_to_values_dim(input, 0)
     if channel_dim is None:
         if len(input) == 0:
-            return input._packed_like_unchecked(input.concat)
+            return input._packed_like_unchecked(input.values())
         if weight.dim() != 1:
             raise RuntimeError("prelu: weight must have one dimension")
-        values = input.concat
+        values = input.values()
         F.prelu(values[:0], weight[:1])
         torch._assert_async(
             torch.all(input._physical_shape[:, 0] == weight.numel()),
@@ -404,7 +404,7 @@ def prelu(input: NestedTensor, weight: Tensor) -> NestedTensor:
         channels = coordinates[input._varying_dims.index(0)]
         slopes = weight.index_select(0, channels)
         return input._packed_like_unchecked(F.prelu(values.unsqueeze(0), slopes).squeeze(0))
-    values = input.concat.movedim(channel_dim, 1)
+    values = input.values().movedim(channel_dim, 1)
     output = F.prelu(values, weight).movedim(1, channel_dim)
     return input._packed_like_unchecked(output)
 
@@ -545,13 +545,13 @@ def _sdpa_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
         _is_native_attention_layout(query)
         and _is_native_attention_layout(key)
         and _is_native_attention_layout(value)
-        and query.concat.is_cuda
+        and query.values().is_cuda
     ):
         return False
     if (
         query.dtype in _LOW_PRECISION_CUDA_DTYPES
         and torch.backends.cuda.flash_sdp_enabled()
-        and max(query.concat.size(-1), value.concat.size(-1)) <= 256
+        and max(query.values().size(-1), value.values().size(-1)) <= 256
         and _sdpa_causal_alignment_is_safe(query, key, is_causal)
     ):
         return True
@@ -614,13 +614,13 @@ def _mha_compile_safe_inputs(args: tuple, kwargs: dict[str, object]) -> bool:
         or query._physical_shape.size(1) != 2
         or key._physical_shape.size(1) != 2
         or value._physical_shape.size(1) != 2
-        or query.concat.dim() != 2
-        or key.concat.dim() != 2
-        or value.concat.dim() != 2
+        or query.values().dim() != 2
+        or key.values().dim() != 2
+        or value.values().dim() != 2
         or not all(_sequence_packed_attention_input(tensor) for tensor in (query, key, value))
-        or not query.concat.is_cuda
-        or not key.concat.is_cuda
-        or not value.concat.is_cuda
+        or not query.values().is_cuda
+        or not key.values().is_cuda
+        or not value.values().is_cuda
     ):
         return False
     head_dim = embed_dim_to_check // num_heads
@@ -723,7 +723,7 @@ def _as_flex_packed_dense(nt: NestedTensor) -> Tensor:
         raise RuntimeError("FlexAttention is unavailable in this PyTorch build.")
     if not _is_native_attention_layout(nt):
         raise ValueError("DanLing FlexAttention expects elements shaped like (heads, seq, dim).")
-    return nt.concat.contiguous().movedim(1, 0).unsqueeze(0)
+    return nt.values().contiguous().movedim(1, 0).unsqueeze(0)
 
 
 def _restore_flex_dense_tensor(output: Tensor, query: NestedTensor) -> NestedTensor:
@@ -1294,7 +1294,7 @@ def multi_head_attention_forward(
 
     def finish(output, weights):
         if dense_query:
-            output = output.concat.reshape(batch, length, out_proj_weight.shape[0])
+            output = output.values().reshape(batch, length, out_proj_weight.shape[0])
             if not batch_first:
                 output = output.transpose(0, 1)
         return output, weights
@@ -1346,9 +1346,9 @@ def multi_head_attention_forward(
         and query._physical_shape.size(1) == 2
         and key._physical_shape.size(1) == 2
         and value._physical_shape.size(1) == 2
-        and query.concat.dim() == 2
-        and key.concat.dim() == 2
-        and value.concat.dim() == 2
+        and query.values().dim() == 2
+        and key.values().dim() == 2
+        and value.values().dim() == 2
         and all(_sequence_packed_attention_input(tensor) for tensor in (query, key, value))
     ):
         head_dim = embed_dim_to_check // num_heads
@@ -1357,9 +1357,9 @@ def multi_head_attention_forward(
                 f"embed_dim {embed_dim_to_check} must be divisible by num_heads {num_heads} for MultiheadAttention"
             )
         effective_dropout_p = dropout_p if training else 0.0
-        query_values = query.concat
-        key_values = query_values if key is query else key.concat
-        value_values = query_values if value is query else key_values if value is key else value.concat
+        query_values = query.values()
+        key_values = query_values if key is query else key.values()
+        value_values = query_values if value is query else key_values if value is key else value.values()
 
         if use_separate_proj_weight:
             if q_proj_weight is None or k_proj_weight is None or v_proj_weight is None:
@@ -1417,7 +1417,9 @@ def multi_head_attention_forward(
             is_causal=is_causal,
         )
         out_values = F.linear(
-            attn_output.concat.reshape(attn_output.concat.size(0), embed_dim_to_check), out_proj_weight, out_proj_bias
+            attn_output.values().reshape(attn_output.values().size(0), embed_dim_to_check),
+            out_proj_weight,
+            out_proj_bias,
         )
         return finish(query._packed_like_unchecked(out_values), None)
 
@@ -1605,8 +1607,8 @@ def scaled_dot_product_attention(
         and _is_native_attention_layout(value)
         and attn_mask is None
         and query.device.type == "cuda"
-        and not statically_known_true(math.prod(query.concat.shape[1:]) == 0)
-        and not statically_known_true(math.prod(key.concat.shape[1:]) == 0)
+        and not statically_known_true(math.prod(query.values().shape[1:]) == 0)
+        and not statically_known_true(math.prod(key.values().shape[1:]) == 0)
     ):
         if (
             query.dtype in _LOW_PRECISION_CUDA_DTYPES
@@ -1646,8 +1648,8 @@ def scaled_dot_product_attention(
             not enable_gqa
             and dropout_p == 0.0
             and _flex_attention_available
-            and not statically_known_true(query.concat.numel() == 0)
-            and not statically_known_true(key.concat.numel() == 0)
+            and not statically_known_true(query.values().numel() == 0)
+            and not statically_known_true(key.values().numel() == 0)
         ):
             return flex_attention(query, key, value, scale=scale, enable_gqa=enable_gqa, is_causal=is_causal)
 
@@ -1747,7 +1749,7 @@ def ctc_loss(
         >>> target_lengths = torch.tensor([1, 1])
         >>> out = F.ctc_loss(input, target, input_lengths, target_lengths)
         >>> logits = input.tensor.transpose(0, 1)
-        >>> ref = F.ctc_loss(logits, target.concat, input_lengths, target_lengths)
+        >>> ref = F.ctc_loss(logits, target.values(), input_lengths, target_lengths)
         >>> torch.allclose(out, ref)
         True
     """
@@ -1759,7 +1761,7 @@ def ctc_loss(
             logits = logits.transpose(0, 1)
     else:
         logits = input
-    targets = target.concat if isinstance(target, NestedTensor) else target
+    targets = target.values() if isinstance(target, NestedTensor) else target
     return F.ctc_loss(
         logits,
         targets,
@@ -1865,7 +1867,7 @@ def cross_entropy(
     if isinstance(weight, NestedTensor):
         if weight.dim() != 1:
             raise ValueError("Cross entropy class weights must be one-dimensional")
-        weight = weight.concat
+        weight = weight.values()
     if not isinstance(input, NestedTensor) and not isinstance(target, NestedTensor):
         return F.cross_entropy(input, target, weight, size_average, ignore_index, reduce, reduction, label_smoothing)
 
@@ -1891,21 +1893,21 @@ def cross_entropy(
             raise ValueError("Cross entropy input and target ranks do not match")
         packed_input = _cross_entropy_dense_values(target, input.movedim(1, -1)).movedim(-1, 1)
         output = F.cross_entropy(
-            packed_input, target.concat, weight, size_average, ignore_index, reduce, reduction, label_smoothing
+            packed_input, target.values(), weight, size_average, ignore_index, reduce, reduction, label_smoothing
         )
         return target.packed_like(output) if output.dim() else output
 
     if input.dim() == 1:
-        packed_target = target.concat if isinstance(target, NestedTensor) else target
+        packed_target = target.values() if isinstance(target, NestedTensor) else target
         return F.cross_entropy(
-            input.concat, packed_target, weight, size_average, ignore_index, reduce, reduction, label_smoothing
+            input.values(), packed_target, weight, size_average, ignore_index, reduce, reduction, label_smoothing
         )
 
     class_dim = _translate_non_batch_dim(input, 1, name="class axis")
     values_dim = _physical_to_values_dim(input, class_dim)
     if values_dim is None:
         raise ValueError("Cross entropy requires a static class axis")
-    packed_input = input.concat.movedim(values_dim, 1)
+    packed_input = input.values().movedim(values_dim, 1)
     probabilities = target.dim() == input.dim()
     if probabilities:
         reference = input
@@ -1913,12 +1915,12 @@ def cross_entropy(
         # Zero-class inputs still have a defined ignored-position loss. An empty sum builds
         # the position-only metadata without indexing a class that does not exist.
         positions = (
-            input.concat.select(values_dim, 0) if input.concat.size(values_dim) else input.concat.sum(values_dim)
+            input.values().select(values_dim, 0) if input.values().size(values_dim) else input.values().sum(values_dim)
         )
         reference = _packed_without_dim(input, class_dim, positions)
     if isinstance(target, NestedTensor):
         if reference._has_same_layout(target):
-            packed_target = target.concat
+            packed_target = target.values()
         else:
             if reference.batch_first != target.batch_first or not type(input)._meta_tensor_equal(
                 reference._physical_shape,
@@ -1985,7 +1987,7 @@ def embedding(
     from .aten_functions import _packed_with_shape
 
     out_values = F.embedding(
-        input.concat,
+        input.values(),
         weight,
         padding_idx,
         max_norm,
@@ -2062,7 +2064,7 @@ def embedding_bag(
     """
     if (
         len(input) > 0
-        and input.concat.dim() == 1
+        and input.values().dim() == 1
         and input._physical_shape.size(1) == 1
         and per_sample_weights is None
         and not include_last_offset
@@ -2076,12 +2078,12 @@ def embedding_bag(
             from .aten_functions import _from_uniform_batched_output
 
             num_bags = 1 if offsets is None else int(offsets.numel())
-            packed_offsets = input._offsets[:-1].to(device=input.concat.device)
+            packed_offsets = input._offsets[:-1].to(device=input.values().device)
             if offsets is not None:
-                local_offsets = offsets.detach().to(device=input.concat.device, dtype=torch.long)
+                local_offsets = offsets.detach().to(device=input.values().device, dtype=torch.long)
                 packed_offsets = (packed_offsets.unsqueeze(1) + local_offsets.unsqueeze(0)).reshape(-1)
             out_values = F.embedding_bag(
-                input.concat,
+                input.values(),
                 weight,
                 offsets=packed_offsets,
                 max_norm=max_norm,
@@ -2218,7 +2220,7 @@ def linear(input: NestedTensor, weight: Tensor, bias: Tensor | None = None) -> N
         if is_static_vector:
             from .aten_functions import _from_uniform_batched_output
 
-            new_values = F.linear(input.concat.reshape(len(input), in_features), weight, bias)
+            new_values = F.linear(input.values().reshape(len(input), in_features), weight, bias)
             return _from_uniform_batched_output(input, new_values)
     last_dim = int(input._physical_shape.size(1)) - 1
     if weight.dim() == 2 and last_dim in input._ragged_dims:
@@ -2252,7 +2254,7 @@ def linear(input: NestedTensor, weight: Tensor, bias: Tensor | None = None) -> N
                 force_explicit_ragged_dims=ragged,
             )
             positions = _packed_index_positions(source, reference, None, "linear")
-            values = source.concat.reshape(-1).index_select(0, positions.reshape(-1)).reshape(packed_shape)
+            values = source.values().reshape(-1).index_select(0, positions.reshape(-1)).reshape(packed_shape)
             input = reference._packed_like_unchecked(values)
     if input._static_dims:
         from .aten_functions import _packed_new_last_dim, _packed_with_shape
@@ -2260,7 +2262,7 @@ def linear(input: NestedTensor, weight: Tensor, bias: Tensor | None = None) -> N
         last_dim = int(input._physical_shape.size(1)) - 1
         values_dim = _physical_to_values_dim(input, last_dim)
         if values_dim is not None:
-            packed_values = input.concat
+            packed_values = input.values()
             values = packed_values if values_dim == packed_values.dim() - 1 else packed_values.movedim(values_dim, -1)
             new_values = F.linear(values, weight, bias)
             if values_dim == packed_values.dim() - 1:
@@ -2457,7 +2459,7 @@ def _batch_norm_packed(
     r"""Normalize physical channel zero using only valid packed observations."""
     if input._physical_shape.size(1) < 1:
         raise ValueError("batch_norm requires a channel dimension in every sample")
-    values = input.concat
+    values = input.values()
     channel_dim = _physical_to_values_dim(input, 0)
     if channel_dim is not None:
         channels_first = values.movedim(channel_dim, 0).unsqueeze(0).contiguous()
@@ -2736,7 +2738,7 @@ def local_response_norm(
         raise ValueError("local_response_norm expects channel and spatial dimensions in every sample")
     if size <= 0:
         raise ValueError("local_response_norm size must be positive")
-    values = input.concat
+    values = input.values()
     squared = values.square()
     carrier = squared.float() if values.dtype in (torch.float16, torch.bfloat16) else squared
     channel_dim = _physical_to_values_dim(input, 0)
@@ -2773,11 +2775,11 @@ def normalize(input, p=2.0, dim=1, eps=1e-12, out=None):
     physical_dim = _translate_non_batch_dim(input, dim)
     values_dim = _physical_to_values_dim(input, physical_dim)
     if values_dim is not None:
-        return input._packed_like_unchecked(F.normalize(input.concat, p=p, dim=values_dim, eps=eps))
+        return input._packed_like_unchecked(F.normalize(input.values(), p=p, dim=values_dim, eps=eps))
     from ._nn_segmented import PackedVectorNorm
     from .aten_functions import _packed_ragged_reduction_groups
 
-    values = input.concat
+    values = input.values()
     # Validate the native floating/complex dtype contract without reducing an empty infinity norm.
     torch.linalg.vector_norm(values[:0], ord=2)
     if p < 0 or p in (float("inf"), float("-inf")):
@@ -2796,10 +2798,10 @@ def pdist(input, p=2.0):
     from ._nn_segmented import segmented_pdist
 
     if len(input) == 0 and input._physical_shape.size(1) == 0:
-        return input._packed_like_unchecked(input.concat)
+        return input._packed_like_unchecked(input.values())
     if input._physical_shape.size(1) != 2:
         raise RuntimeError("pdist only supports 2D tensors in every NestedTensor sample")
-    output = segmented_pdist(input.concat, input._offsets, input._physical_shape, list(input._permutation), float(p))
+    output = segmented_pdist(input.values(), input._offsets, input._physical_shape, list(input._permutation), float(p))
     rows = input._physical_shape[:, 0]
     counts = rows * (rows - 1) // 2
     offsets = torch.cat((counts.new_zeros(1), counts.cumsum(0)))
@@ -2878,7 +2880,7 @@ def alpha_dropout(input, p=0.5, training=False, inplace=False):
     if inplace:
         with torch._C.DisableTorchFunctionSubclass():
             return F.alpha_dropout(input, p=p, training=training, inplace=True)
-    return input._packed_like_unchecked(torch.ops.aten.alpha_dropout.default(input.concat, p, training))
+    return input._packed_like_unchecked(torch.ops.aten.alpha_dropout.default(input.values(), p, training))
 
 
 @NestedTensorFuncRegistry.implement(F.bilinear)
@@ -2904,7 +2906,7 @@ def dropout(input, p=0.5, training=True, inplace=False):
     if inplace:
         with torch._C.DisableTorchFunctionSubclass():
             return F.dropout(input, p=p, training=training, inplace=True)
-    return input._packed_like_unchecked(torch.ops.aten.dropout.default(input.concat, p, training))
+    return input._packed_like_unchecked(torch.ops.aten.dropout.default(input.values(), p, training))
 
 
 @NestedTensorFuncRegistry.implement(F.grid_sample)
@@ -2931,7 +2933,7 @@ def one_hot(input, num_classes: int = -1):
     from ._nn_segmented import inferred_one_hot
 
     output_values = (
-        inferred_one_hot(input.concat) if num_classes == -1 else F.one_hot(input.concat, num_classes=num_classes)
+        inferred_one_hot(input.values()) if num_classes == -1 else F.one_hot(input.values(), num_classes=num_classes)
     )
     num_classes = output_values.shape[-1]
     shape_tensor = torch.cat(
@@ -2992,13 +2994,13 @@ def _pad_packed_variable_last_dim(input: NestedTensor, pad: tuple[int, ...], val
     batch_steps = torch.arange(len(input) + 1, dtype=input._offsets.dtype, device=input._offsets.device)
     new_offsets = input._offsets + batch_steps * pad_width
 
-    old_total = input.concat.size(0)
+    old_total = input.values().size(0)
     new_total = old_total + len(input) * pad_width
-    output_values = input.concat.new_full((new_total, *input.concat.shape[1:]), fill_value)
-    batch_indices = input.packed_batch_indices(device=input.concat.device)
-    source_indices = torch.arange(old_total, device=input.concat.device)
+    output_values = input.values().new_full((new_total, *input.values().shape[1:]), fill_value)
+    batch_indices = input.packed_batch_indices(device=input.values().device)
+    source_indices = torch.arange(old_total, device=input.values().device)
     destination_indices = source_indices + batch_indices * pad_width + left
-    output_values.index_copy_(0, destination_indices, input.concat)
+    output_values.index_copy_(0, destination_indices, input.values())
 
     shape_tensor = input._physical_shape.clone()
     shape_tensor[:, target_dim] += pad_width
@@ -3139,7 +3141,7 @@ def gumbel_softmax(logits, tau=1, hard=False, eps=1e-10, dim=-1):
     values_dim = _physical_to_values_dim(logits, dim_adj)
     if values_dim is not None:
         return logits._packed_like_unchecked(
-            F.gumbel_softmax(logits.concat, tau=tau, hard=hard, eps=eps, dim=values_dim)
+            F.gumbel_softmax(logits.values(), tau=tau, hard=hard, eps=eps, dim=values_dim)
         )
     if hard:
         nonempty = torch.all(logits._physical_shape[:, dim_adj] > 0)
@@ -3153,13 +3155,13 @@ def gumbel_softmax(logits, tau=1, hard=False, eps=1e-10, dim=-1):
         import warnings
 
         warnings.warn("`eps` parameter is deprecated and has no effect.", stacklevel=2)
-    noise = -torch.empty_like(logits.concat, memory_format=torch.legacy_contiguous_format).exponential_().log()
-    perturbed = logits._packed_like_unchecked((logits.concat + noise) / tau)
+    noise = -torch.empty_like(logits.values(), memory_format=torch.legacy_contiguous_format).exponential_().log()
+    perturbed = logits._packed_like_unchecked((logits.values() + noise) / tau)
     soft = torch.softmax(perturbed, dim=dim)
     if not hard:
         return soft
     group_idx, group_count = _packed_varying_softmax_group_indices(logits, dim_adj, device=logits.device)
-    values = soft.concat
+    values = soft.values()
     index = group_idx.reshape(-1, *([1] * (values.dim() - 1))).expand_as(values)
     maxima = values.new_full((group_count, *values.shape[1:]), float("-inf"))
     maxima = maxima.scatter_reduce(0, index, values, "amax", include_self=False)
@@ -3212,7 +3214,7 @@ def _fractional_max_pool(input, spatial_rank, kernel_size, output_size, output_r
 
     rank = input._physical_shape.size(1)
     if len(input) == 0 and rank == 0:
-        return input._packed_like_unchecked(input.concat), input._packed_like_unchecked(input.concat.to(torch.long))
+        return input._packed_like_unchecked(input.values()), input._packed_like_unchecked(input.values().to(torch.long))
     if rank not in (spatial_rank + 1, spatial_rank + 2):
         raise ValueError(f"fractional_max_pool{spatial_rank}d expects channel and spatial dimensions")
     kernel = (kernel_size,) * spatial_rank if isinstance(kernel_size, (int, torch.SymInt)) else tuple(kernel_size)
@@ -3246,7 +3248,7 @@ def _fractional_max_pool(input, spatial_rank, kernel_size, output_size, output_r
     output_shape = torch.cat((physical_shape[:, :prefix_rank], spatial_shape), dim=1)
     static_shape = [maximum[dim] for dim in input._static_dims]
     values, indices, _ = segmented_fractional_max_pool(
-        input.concat,
+        input.values(),
         input._offsets,
         physical_shape,
         output_shape,
@@ -3305,11 +3307,11 @@ def _per_element_handler(input, *args, _fn=None, **kwargs):
 def _interpolate_packed_static_spatial(input, *args, _fn=None, **kwargs):
     r"""Packed interpolate for channel-first elements with static spatial dims."""
     rank = int(input._physical_shape.size(1))
-    if rank < 2 or input._varying_dims != (0,) or input.concat.dim() != rank:
+    if rank < 2 or input._varying_dims != (0,) or input.values().dim() != rank:
         return None
 
     with torch._C.DisableTorchFunctionSubclass():
-        output_values = _fn(input.concat.unsqueeze(1), *args, **kwargs).squeeze(1)
+        output_values = _fn(input.values().unsqueeze(1), *args, **kwargs).squeeze(1)
 
     output_spatial = tuple(int(size) for size in output_values.shape[1:])
     if len(output_spatial) != rank - 1:
@@ -3468,7 +3470,7 @@ def _make_loss_handler(n_tensor_args):
                     raise ValueError("Loss operands must have matching batch lengths and batch placement")
                 if elementwise:
                     if reference._has_same_layout(value):
-                        return value.concat
+                        return value.values()
                     values = _broadcast_nested_to_values(reference, value)
                     if values is None:
                         raise ValueError("Loss tensor argument cannot be aligned with the NestedTensor input")
@@ -3479,7 +3481,7 @@ def _make_loss_handler(n_tensor_args):
                     "Loss operands must have matching per-sample positions",
                     runtime_assert=True,
                 )
-                return value.concat
+                return value.values()
             if isinstance(value, Tensor) and value.dim() == reference.dim():
                 values = _resolve_dense_for_values(reference, value)
                 if values is None:
@@ -3502,7 +3504,7 @@ def _make_loss_handler(n_tensor_args):
         )
         if batchmean:
             return output / len(reference)
-        if elementwise and output.dim() and output.shape == reference.concat.shape:
+        if elementwise and output.dim() and output.shape == reference.values().shape:
             return reference._packed_like_unchecked(output)
         return output
 

@@ -69,7 +69,7 @@ class TestChannel:
         references = [part.detach().clone().requires_grad_() for part in parts]
         cotangent = torch.randn(8, 3, 2, device=device).transpose(1, 2)
         actual = F.channel_shuffle(NT(parts), groups=2)
-        gradients = torch.autograd.grad(actual.concat, parts, cotangent)
+        gradients = torch.autograd.grad(actual.values(), parts, cotangent)
         expected = [F.channel_shuffle(part.unsqueeze(0), groups=2).squeeze(0) for part in references]
         reference_gradients = [
             torch.autograd.grad(part, reference, probe.contiguous())[0]

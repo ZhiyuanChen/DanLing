@@ -113,21 +113,21 @@ def max_pool2d(
 
 
 def _can_use_packed_pool2d(input: NestedTensor) -> bool:
-    if len(input) == 0 or triton is None or not input.concat.is_cuda:
+    if len(input) == 0 or triton is None or not input.values().is_cuda:
         return False
     # These kernels accumulate in float32; other dtypes retain native semantics.
-    if input.concat.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+    if input.values().dtype not in (torch.float16, torch.bfloat16, torch.float32):
         return False
     if input._physical_shape.size(1) != 3:
         return False
     if input._element_shapes is not None and any(len(shape) != 3 for shape in input._element_shapes):
         return False
-    if tuple(int(dim) for dim in input._permutation) != (1, 2, 0) or input.concat.dim() != 2:
+    if tuple(int(dim) for dim in input._permutation) != (1, 2, 0) or input.values().dim() != 2:
         return False
 
     # Read the channel count from the packed values (a static dim) rather than the
     # metadata tensor, whose entries are data-dependent under tracing.
-    return _static_channels_match(input._physical_shape, int(input.concat.shape[1]))
+    return _static_channels_match(input._physical_shape, int(input.values().shape[1]))
 
 
 def _pool2d_output_meta(
@@ -168,7 +168,7 @@ def _make_pool2d_metadata(
     output_offsets: Tensor,
     tile_counts: tuple[int, ...],
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    device = input.concat.device
+    device = input.values().device
     input_shapes = _resolve_element_shapes(input)
     shape_meta = torch.tensor(
         [
@@ -1078,7 +1078,7 @@ def _compiled_max_pool2d(input, kernel_size, stride, padding, dilation):
     tile_offsets = torch.cat((tile_counts.new_zeros(1), tile_counts.cumsum(0)))
     # This bound adds at most B-1 tiles and depends only on the returned packed extent.
     tile_count = (total + (block_l - 1) * batch_size) // block_l
-    values = input.concat
+    values = input.values()
     device = values.device
     tile_to_batch = torch.bucketize(
         torch.arange(tile_count, device=device), tile_offsets[1:].to(device), right=True
@@ -1151,7 +1151,7 @@ def _packed_avg_pool2d(
     output_shapes, output_packed_sizes, output_shape_tensor = output_meta
     output_offsets = type(input)._offsets_from_sizes(output_packed_sizes, dtype=torch.long)
     total_out = int(output_offsets[-1].item())
-    channels = int(input.concat.shape[1])
+    channels = int(input.values().shape[1])
     tile_counts = _pool2d_tile_counts(output_shapes, _pool_block_size()[0])
     input_offsets, output_offsets_device, shape_meta, tile_offsets, tile_to_batch = _make_pool2d_metadata(
         input,
@@ -1160,7 +1160,7 @@ def _packed_avg_pool2d(
         tile_counts,
     )
     output_values = _PackedAvgPool2dFunction.apply(
-        input.concat,
+        input.values(),
         input_offsets,
         output_offsets_device,
         shape_meta,
@@ -1213,7 +1213,7 @@ def _packed_max_pool2d(
     output_shapes, output_packed_sizes, output_shape_tensor = output_meta
     output_offsets = type(input)._offsets_from_sizes(output_packed_sizes, dtype=torch.long)
     total_out = int(output_offsets[-1].item())
-    channels = int(input.concat.shape[1])
+    channels = int(input.values().shape[1])
     tile_counts = _pool2d_tile_counts(output_shapes, _pool_block_size()[0])
     input_offsets, output_offsets_device, shape_meta, tile_offsets, tile_to_batch = _make_pool2d_metadata(
         input,
@@ -1222,7 +1222,7 @@ def _packed_max_pool2d(
         tile_counts,
     )
     output_values = _PackedMaxPool2dFunction.apply(
-        input.concat,
+        input.values(),
         input_offsets,
         output_offsets_device,
         shape_meta,

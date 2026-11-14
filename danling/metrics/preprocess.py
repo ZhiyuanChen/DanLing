@@ -142,9 +142,9 @@ def _align_nested_tensors(
         elif isinstance(target, NestedTensor) and not isinstance(input, NestedTensor):
             input = target.nested_like(input, strict=False)
         if isinstance(input, NestedTensor):
-            input = input.concat
+            input = input.values()
         if isinstance(target, NestedTensor):
-            target = target.concat
+            target = target.values()
 
     if not isinstance(input, Tensor) or not isinstance(target, Tensor):
         raise TypeError("base_preprocess expects tensors after alignment")

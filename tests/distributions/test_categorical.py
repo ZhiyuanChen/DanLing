@@ -171,7 +171,7 @@ class TestCategorical:
         assert actual.batch_first is (batch_first and not sample_shape)
         torch.testing.assert_close(actual.unbind(len(sample_shape) + (not batch_first)), expected_parts)
         torch.testing.assert_close(
-            torch.autograd.grad(actual.concat.sum(), parts), torch.autograd.grad(expected.sum(), references)
+            torch.autograd.grad(actual.values().sum(), parts), torch.autograd.grad(expected.sum(), references)
         )
 
     @pytest.mark.parametrize("parameter,invalid", [("logits", float("nan")), ("probs", float("nan")), ("probs", -1.0)])

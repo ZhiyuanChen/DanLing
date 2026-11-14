@@ -74,7 +74,7 @@ class Categorical(TorchCategorical):
         # Flatten real probability rows in logical per-sample order. The original
         # probabilities remain the explicit layout reference throughout sampling.
         if probs.packed_dim_order == tuple(range(sizes.shape[1])):
-            flat = probs.concat.reshape(-1)
+            flat = probs.values().reshape(-1)
         else:
             flat, _ = _packed_flatten_elements(probs)
         draws = torch.multinomial(flat.reshape(-1, categories), sample_shape.numel(), True)
