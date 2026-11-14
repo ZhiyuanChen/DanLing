@@ -26,7 +26,7 @@ out. These primitives do the same work on the packed values directly.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 import torch
 from torch import Tensor
@@ -598,8 +598,11 @@ segmented_cumprod_backward.register_autograd(
 )
 
 
-@torch.library.custom_op("danling::_segmented_cumprod", mutates_args=())
-def _segmented_cumprod(values: Tensor, offsets: Tensor) -> Tensor:
+_cumprod_library = torch.library.Library("danling", "FRAGMENT")
+_cumprod_library.define("_segmented_cumprod(Tensor values, Tensor offsets) -> Tensor")
+
+
+def _segmented_cumprod_kernel(values: Tensor, offsets: Tensor) -> Tensor:
     r"""Run native cumprod independently over packed variable-length segments.
 
     Calling the device's native kernel per segment preserves its accumulation order, including
@@ -620,7 +623,11 @@ def _segmented_cumprod(values: Tensor, offsets: Tensor) -> Tensor:
     return output
 
 
-@_segmented_cumprod.register_fake
+_cumprod_library.impl("_segmented_cumprod", _segmented_cumprod_kernel, "CompositeExplicitAutograd")
+_segmented_cumprod = torch.ops.danling._segmented_cumprod.default
+
+
+@torch.library.register_fake("danling::_segmented_cumprod")
 def _segmented_cumprod_fake(values: Tensor, offsets: Tensor) -> Tensor:
     del offsets
     return torch.empty_like(values)
@@ -644,11 +651,250 @@ def _segmented_cumprod_autograd_backward(ctx, grad_output):
     return segmented_cumprod_backward(grad_output, values, offsets, output), None
 
 
-torch.library.register_autograd(
-    _segmented_cumprod,
-    _segmented_cumprod_autograd_backward,
-    setup_context=_segmented_cumprod_setup_context,
+def _cumprod_derivative_arity(program: str) -> tuple[int, int]:
+    r"""Count primal and derivative operands without inspecting tensor data."""
+    inputs = outputs = 1
+    for step in program.split("/") if program else ():
+        added, _, targets = step[1:].partition(":")
+        inputs += added.count("1")
+        if step[0] in "vVbB":
+            outputs = targets.count("1")
+    return inputs, outputs
+
+
+def _cumprod_reverse_mode():
+    stack = torch._C._functorch.get_interpreter_stack() or ()
+    live = bool(stack)
+    # Preserve both live transform wrappers and the caller's create_graph state.
+    # Upper/lower case distinguishes the two GradMode choices for each API.
+    return ("v" if torch.is_grad_enabled() else "V") if live else ("B" if torch.is_grad_enabled() else "b")
+
+
+def _cumprod_forward_mode():
+    stack = torch._C._functorch.get_interpreter_stack() or ()
+    return "j" if any(interpreter.key() == torch._C._functorch.TransformType.Jvp for interpreter in stack) else "f"
+
+
+def _native_cumprod_derivative(program, offsets, arguments):
+    r"""Replay AD over native scans after the mapped partition is selected."""
+    if not program:
+        lengths = _segment_lengths(offsets, arguments[0].shape[0])
+        parts = [part.cumprod(0) for part in arguments[0].split(lengths)]
+        return (torch.cat(parts) if parts else arguments[0].clone(),)
+    prefix, _, step = program.rpartition("/")
+    count, _ = _cumprod_derivative_arity(prefix)
+    primals, derivatives = arguments[:count], arguments[count:]
+    added, _, targets = step[1:].partition(":")
+    active = [index for index, bit in enumerate(added) if bit == "1"]
+
+    def parent(*args):
+        # This prefix already ran at its original AD event. Rebuilding its
+        # graph must not repeat old diagnostics under a newly enabled anomaly
+        # mode. The new native VJP below runs in the restored caller context.
+        with torch.autograd.set_detect_anomaly(False):
+            return _native_cumprod_derivative(prefix, offsets, args)
+
+    if step[0] in "vVbB":
+        selected = [index for index, bit in enumerate(targets) if bit == "1"]
+        create_graph = step[0] in "vB"
+
+        def with_derivative(*args):
+            operands = list(primals)
+            for index, argument in zip(selected, args):
+                operands[index] = argument
+            outputs = parent(*operands)
+            live = [(outputs[index], grad) for index, grad in zip(active, derivatives) if outputs[index].requires_grad]
+            gradients = torch.autograd.grad(
+                tuple(output for output, _ in live),
+                args,
+                tuple(grad for _, grad in live),
+                create_graph=create_graph,
+                allow_unused=True,
+                materialize_grads=True,
+            )
+            return outputs, gradients
+
+        selected_primals = tuple(primals[index] for index in selected)
+        if step[0] in "vV":
+            # func.grad differentiates with live GradTracking. Ordinary
+            # backward must instead keep its unwrapped native graph.
+            _, _, result = torch.func.vjp(with_derivative, *selected_primals, has_aux=True)
+            return result
+        return with_derivative(*selected_primals)[1]
+
+    def selected_parent(*args):
+        operands = list(primals)
+        for index, argument in zip(active, args):
+            operands[index] = argument
+        return parent(*operands)
+
+    if not active:
+        return tuple(torch.zeros_like(output) for output in parent(*primals))
+    if step[0] == "f":
+        forward_ad = torch.autograd.forward_ad
+        level = forward_ad.dual_level() if forward_ad._current_level < 0 else nullcontext()
+        with level, forward_ad._set_fwd_grad_enabled(True):
+            duals = tuple(
+                forward_ad.make_dual(forward_ad.unpack_dual(primals[index]).primal, tangent)
+                for index, tangent in zip(active, derivatives)
+            )
+            outputs = selected_parent(*duals)
+            return tuple(forward_ad.unpack_dual(output).tangent for output in outputs)
+    return torch.func.jvp(selected_parent, tuple(primals[index] for index in active), derivatives)[1]
+
+
+_cumprod_library.define("_segmented_cumprod_derivative(Tensor[] arguments, Tensor offsets, str program) -> Tensor?[]")
+
+
+def _segmented_cumprod_derivative_kernel(arguments: list[Tensor], offsets: Tensor, program: str) -> list[Tensor | None]:
+    r"""Keep native derivative scheduling opaque to full-graph compilation."""
+    with (
+        _native_autograd(),
+        # AOT's boxed runtime excludes these keys. Local native transforms
+        # need their wrappers and front/back dispatch; the guards restore the
+        # caller's exclusions on exit.
+        torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.FuncTorchGradWrapper, False),
+        torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.FuncTorchDynamicLayerFrontMode, False),
+        torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.FuncTorchDynamicLayerBackMode, False),
+        # Forward-over-reverse native AD can create efficient zero tensors,
+        # which have no storage and require their own dispatch even under AOT.
+        torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ZeroTensor, False),
+    ):
+        # Expanded cotangents can have overlapping storage, which make_dual
+        # cannot use. Materializing the operands does not change their values.
+        ordinary_targets: set[int] = set()
+        for step in program.split("/"):
+            if step[0] in "bB":
+                targets = step.partition(":")[2]
+                ordinary_targets.update(index for index, bit in enumerate(targets) if bit == "1")
+        operands = tuple(
+            argument.detach().clone().requires_grad_(index in ordinary_targets)
+            for index, argument in enumerate(arguments)
+        )
+        return [
+            None if result is None else result.detach().clone(memory_format=torch.contiguous_format)
+            for result in _native_cumprod_derivative(program, offsets, operands)
+        ]
+
+
+_cumprod_library.impl(
+    "_segmented_cumprod_derivative", _segmented_cumprod_derivative_kernel, "CompositeExplicitAutograd"
 )
+_segmented_cumprod_derivative = torch.ops.danling._segmented_cumprod_derivative.default
+
+
+@torch.library.register_fake("danling::_segmented_cumprod_derivative")
+def _segmented_cumprod_derivative_fake(arguments, offsets, program):
+    del offsets
+    outputs = [arguments[0]]
+    for step in program.split("/"):
+        if step[0] in "vVbB":
+            targets = step.partition(":")[2]
+            outputs = [arguments[index] for index, bit in enumerate(targets) if bit == "1"]
+    return [output.new_empty(output.shape) for output in outputs]
+
+
+class _SegmentedCumprodDerivative(torch.autograd.Function):
+    r"""Batch each native AD program before reading its partition metadata."""
+
+    @classmethod
+    def apply(cls, program, offsets, *arguments):
+        # Let Torch lower every functional transform before reading native
+        # dual metadata; unpack_dual has no rule for nested batched wrappers.
+        if torch._C._are_functorch_transforms_active():
+            return super().apply(program, offsets, *arguments)
+        forward_ad = torch.autograd.forward_ad
+        parts = tuple(forward_ad.unpack_dual(argument) for argument in arguments)
+        if not any(tangent is not None for _, tangent in parts):
+            return super().apply(program, offsets, *arguments)
+        primals = tuple(primal for primal, _ in parts)
+        active = "".join("0" if tangent is None else "1" for _, tangent in parts)
+        derivatives = tuple(tangent for _, tangent in parts if tangent is not None)
+        # Function.jvp requires a Tensor tangent for every Tensor output.
+        # Native AD also permits absent tangents for constant derivatives, so
+        # split and rebuild native duals outside that interface. Functorch's
+        # own apply dispatch lowers its wrappers before entering here again.
+        with forward_ad._set_fwd_grad_enabled(False):
+            results = super().apply(program, offsets, *primals)
+            tangents = super().apply(f"{program}/f{active}", offsets, *primals, *derivatives)
+        with forward_ad._set_fwd_grad_enabled(True):
+            return tuple(
+                primal if tangent is None else forward_ad.make_dual(primal, tangent)
+                for primal, tangent in zip(results, tangents)
+            )
+
+    @staticmethod
+    @torch.compiler.allow_in_graph
+    def forward(program, offsets, *arguments):
+        with torch._C._AutoDispatchBelowAutograd():
+            return tuple(_segmented_cumprod_derivative(list(arguments), offsets, program))
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        del output
+        ctx.program, offsets, *arguments = inputs
+        ctx.needs_grad = ctx.needs_input_grad[2:]
+        saved = list(arguments)
+        start = 1
+        for step in ctx.program.split("/"):
+            end = start + step[1:].partition(":")[0].count("1")
+            if any(ctx.needs_grad[start:end]) and not any(ctx.needs_grad[:start] + ctx.needs_grad[end:]):
+                # The requested derivative does not need this direction's
+                # value, so native AD permits its alias to change. Replaying
+                # earlier AD still needs its original IEEE values, however.
+                # Save a detached snapshot without locking the source version.
+                saved[start:end] = [argument.detach().clone() for argument in arguments[start:end]]
+                break
+            start = end
+        ctx.save_for_backward(offsets, *saved)
+        ctx.save_for_forward(offsets, *arguments)
+        ctx.set_materialize_grads(False)
+
+    @staticmethod
+    def backward(ctx, *cotangents):
+        offsets, *arguments = ctx.saved_tensors
+        # Absent derivatives must stay absent: adding explicit zero duals or
+        # cotangents creates 0 * non-finite arithmetic that native AD omits.
+        active = "".join("0" if grad is None else "1" for grad in cotangents)
+        targets = "".join("1" if needed else "0" for needed in ctx.needs_grad)
+        step = f"{_cumprod_reverse_mode()}{active}:{targets}"
+        program = f"{ctx.program}/{step}"
+        derivatives = (grad for grad in cotangents if grad is not None)
+        gradients = _SegmentedCumprodDerivative.apply(program, offsets, *arguments, *derivatives)
+        gradients = iter(gradients)
+        return None, None, *(next(gradients) if needed else None for needed in ctx.needs_grad)
+
+    @staticmethod
+    def jvp(ctx, grad_program, grad_offsets, *tangents):
+        del grad_program, grad_offsets
+        offsets, *arguments = ctx.saved_tensors
+        step = _cumprod_forward_mode() + "".join("0" if tangent is None else "1" for tangent in tangents)
+        program = f"{ctx.program}/{step}"
+        derivatives = (tangent for tangent in tangents if tangent is not None)
+        return _SegmentedCumprodDerivative.apply(program, offsets, *arguments, *derivatives)
+
+    @staticmethod
+    def vmap(info, in_dims, program, offsets, *arguments):
+        _, offsets_dim, *argument_dims = in_dims
+        outputs = _cumprod_derivative_arity(program)[1]
+        if info.batch_size == 0:
+            # There are no partitions. Run the same native AD on zero rows,
+            # retaining its primal/tangent edges without synthetic zero links.
+            operands = [
+                argument.unsqueeze(0).expand(0, *argument.shape) if dim is None else argument.movedim(dim, 0)
+                for argument, dim in zip(arguments, argument_dims)
+            ]
+            result = _SegmentedCumprodDerivative.apply(program, offsets.new_zeros(1), *operands)
+            return result, (0,) * outputs
+        results = []
+        for index in range(info.batch_size):
+            operands = [
+                argument if dim is None else argument.select(dim, index)
+                for argument, dim in zip(arguments, argument_dims)
+            ]
+            partition = offsets if offsets_dim is None else offsets.select(offsets_dim, index)
+            results.append(_SegmentedCumprodDerivative.apply(program, partition, *operands))
+        return tuple(torch.stack(items) for items in zip(*results)), (0,) * outputs
 
 
 class _SegmentedCumprod(torch.autograd.Function):
@@ -663,6 +909,13 @@ class _SegmentedCumprod(torch.autograd.Function):
             # Scanning the leading row axis treats mapped values as independent
             # static channels, so every member keeps the same sample boundaries.
             return _SegmentedCumprod.apply(values.movedim(values_dim, -1), offsets), values.dim() - 1
+        if info.batch_size == 0:
+            # There are no offset partitions to scan. Keep the empty result
+            # connected to values, including when only offsets are mapped.
+            empty = (
+                values.unsqueeze(0).expand(0, *values.shape) if values_dim is None else values.movedim(values_dim, 0)
+            )
+            return empty.clone(), 0
         results = [
             _SegmentedCumprod.apply(
                 values.select(values_dim, index) if values_dim is not None else values,
@@ -673,8 +926,10 @@ class _SegmentedCumprod(torch.autograd.Function):
         return torch.stack(results), 0
 
     @staticmethod
+    @torch.compiler.allow_in_graph
     def forward(values: Tensor, offsets: Tensor) -> Tensor:
-        return _segmented_cumprod(values, offsets)
+        with torch._C._AutoDispatchBelowAutograd():
+            return _segmented_cumprod(values, offsets)
 
     @staticmethod
     def setup_context(ctx, inputs, output) -> None:
@@ -683,6 +938,12 @@ class _SegmentedCumprod(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
+        if grad_output is not None and torch._C._are_functorch_transforms_active():
+            values, offsets, _ = ctx.saved_tensors
+            return (
+                _SegmentedCumprodDerivative.apply(f"{_cumprod_reverse_mode()}1:1", offsets, values, grad_output)[0],
+                None,
+            )
         return _segmented_cumprod_autograd_backward(ctx, grad_output)
 
     @staticmethod
@@ -691,14 +952,17 @@ class _SegmentedCumprod(torch.autograd.Function):
         values, offsets = ctx.saved_tensors
         if grad_values is None:
             return torch.zeros_like(values)
-        lengths = _segment_lengths(offsets, values.shape[0])
-        primals = values.split(lengths)
-        tangents = grad_values.split(lengths)
-        derivatives = [
-            torch.func.jvp(lambda value: value.cumprod(0), (value,), (tangent,))[1]
-            for value, tangent in zip(primals, tangents)
-        ]
-        return torch.cat(derivatives) if derivatives else grad_values.clone()
+        return _SegmentedCumprodDerivative.apply(f"{_cumprod_forward_mode()}1", offsets, values, grad_values)[0]
+
+
+# Compiled graphs call these opaque operators directly, so their runtime
+# Autograd dispatch must retain the same native duals as the public Functions.
+_cumprod_library.impl("_segmented_cumprod", _SegmentedCumprod.apply, "Autograd")
+_cumprod_library.impl(
+    "_segmented_cumprod_derivative",
+    lambda arguments, offsets, program: list(_SegmentedCumprodDerivative.apply(program, offsets, *arguments)),
+    "Autograd",
+)
 
 
 @torch.compiler.allow_in_graph
