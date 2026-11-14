@@ -50,7 +50,123 @@ def _compare_conv2d(device, tolerances, *, kernel_size: int, padding: int, strid
     torch.testing.assert_close(actual_gradients, reference_gradients, atol=atol, rtol=rtol)
 
 
+def _compare_conv2d_boundary(device, *, configuration, operand, nonfinite, grad_enabled, operation=None, shapes=None):
+    channels, outputs, groups, stride, dilation = configuration
+    if shapes is None:
+        shapes = ((3, 5), (17, 19))
+    parts = [torch.ones(channels, *shape, device=device, dtype=torch.float64) for shape in shapes]
+    weight = torch.ones(outputs, channels // groups, 3, 3, device=device, dtype=torch.float64)
+    bias = -torch.ones(outputs, device=device, dtype=torch.float64)
+    if operand == "input":
+        parts[0][0, -1, -1] = nonfinite
+    elif operand == "weight":
+        weight[:, :, 0, 0] = nonfinite
+    parts = [part.requires_grad_(grad_enabled) for part in parts]
+    weight.requires_grad_(grad_enabled)
+    bias.requires_grad_(grad_enabled)
+    references = [part.detach().clone().requires_grad_(grad_enabled) for part in parts]
+    reference_weight = weight.detach().clone().requires_grad_(grad_enabled)
+    reference_bias = bias.detach().clone().requires_grad_(grad_enabled)
+    kwargs = {"stride": stride, "dilation": dilation, "groups": groups}
+    source = NT(parts, ragged_dims=(1, 2))
+    with torch.set_grad_enabled(grad_enabled):
+        actual = (
+            F.conv2d(source, weight, bias, padding=dilation, **kwargs)
+            if operation is None
+            else operation(source, weight, bias)
+        ).unbind()
+        # Padding is part of the packed contract. Only nonexistent tile outputs
+        # are omitted; true padded windows keep their nonfinite arithmetic.
+        expected = [
+            F.conv2d(F.pad(part, (dilation, dilation, dilation, dilation)), reference_weight, reference_bias, **kwargs)
+            for part in references
+        ]
+        torch.testing.assert_close(actual, expected, equal_nan=True)
+        if grad_enabled:
+            probes = [torch.ones_like(part) for part in expected]
+            if operand == "gradient":
+                probes[0][0, 0, 0] = nonfinite
+            torch.testing.assert_close(
+                torch.autograd.grad(actual, (*parts, weight, bias), probes),
+                torch.autograd.grad(expected, (*references, reference_weight, reference_bias), probes),
+                equal_nan=True,
+            )
+
+
 class TestConvolution:
+
+    @pytest.mark.parametrize("configuration", [(2, 3, 1, 1, 1), (4, 6, 2, 1, 1), (2, 4, 2, 2, 2)])
+    @pytest.mark.parametrize("operand", ["input", "weight"])
+    @pytest.mark.parametrize("nonfinite", [float("nan"), float("inf"), -float("inf")])
+    @pytest.mark.parametrize("grad_enabled", [False, True])
+    def test_boundary_nonfinite(self, device, configuration, operand, nonfinite, grad_enabled):
+        _compare_conv2d_boundary(
+            device, configuration=configuration, operand=operand, nonfinite=nonfinite, grad_enabled=grad_enabled
+        )
+
+    @pytest.mark.parametrize("nonfinite", [float("nan"), float("inf"), -float("inf")])
+    def test_boundary_nonfinite_cotangent(self, device, nonfinite):
+        _compare_conv2d_boundary(
+            device, configuration=(4, 6, 2, 2, 2), operand="gradient", nonfinite=nonfinite, grad_enabled=True
+        )
+
+    @pytest.mark.parametrize("operand", ["input", "weight"])
+    def test_boundary_multiple_tiles(self, device, operand):
+        _compare_conv2d_boundary(
+            device,
+            configuration=(2, 3, 1, 1, 1),
+            operand=operand,
+            nonfinite=float("nan"),
+            grad_enabled=True,
+            shapes=((5, 7), (65, 67)),
+        )
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("operand", ["input", "weight"])
+    def test_boundary_dynamic(self, device, backend, operand):
+        torch.compiler.reset()
+
+        def convolve(source, weight, bias):
+            return F.conv2d(source, weight, bias, stride=2, padding=2, dilation=2, groups=2)
+
+        operation = torch.compile(convolve, backend=backend, fullgraph=True, dynamic=True)
+        for shapes in (((3, 5), (17, 19)), ((9, 13), (18, 21))):
+            _compare_conv2d_boundary(
+                device,
+                configuration=(4, 6, 2, 2, 2),
+                operand=operand,
+                nonfinite=float("nan"),
+                grad_enabled=True,
+                operation=operation,
+                shapes=shapes,
+            )
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_boundary_autocast(self, device, dtype):
+        if device.type == "cpu" and dtype == torch.float16:
+            pytest.skip("CPU autocast uses bfloat16")
+        parts = [torch.randn(4, *shape, device=device, requires_grad=True) for shape in ((3, 5), (17, 19))]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        weight = torch.randn(6, 2, 3, 3, device=device, requires_grad=True)
+        bias = torch.randn(6, device=device, requires_grad=True)
+        reference_weight = weight.detach().clone().requires_grad_()
+        reference_bias = bias.detach().clone().requires_grad_()
+        kwargs = {"stride": 2, "dilation": 2, "groups": 2}
+        with torch.autocast(device.type, dtype=dtype):
+            actual = F.conv2d(NT(parts, ragged_dims=(1, 2)), weight, bias, padding=2, **kwargs).unbind()
+            expected = [
+                F.conv2d(F.pad(part, (2, 2, 2, 2)), reference_weight, reference_bias, **kwargs) for part in references
+            ]
+        assert actual[0].dtype == dtype
+        tolerance = 0.04 if dtype == torch.bfloat16 else 0.005
+        torch.testing.assert_close(actual, expected, atol=tolerance, rtol=tolerance)
+        probes = [torch.randn_like(part) for part in expected]
+        torch.testing.assert_close(
+            torch.autograd.grad(actual, (*parts, weight, bias), probes),
+            torch.autograd.grad(expected, (*references, reference_weight, reference_bias), probes),
+            atol=tolerance,
+            rtol=tolerance,
+        )
 
     def test_pointwise(self, device, tolerances):
         _compare_conv2d(device, kernel_size=1, padding=0, tolerances=tolerances)
