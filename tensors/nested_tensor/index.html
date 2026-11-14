@@ -4119,8 +4119,7 @@ Converting it to an ordinary tuple discards <code>ragged_dims</code> and
 
               <details class="mkdocstrings-source">
                 <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-                <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">297</span>
-<span class="normal">298</span>
+                <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">298</span>
 <span class="normal">299</span>
 <span class="normal">300</span>
 <span class="normal">301</span>
@@ -4137,7 +4136,8 @@ Converting it to an ordinary tuple discards <code>ragged_dims</code> and
 <span class="normal">312</span>
 <span class="normal">313</span>
 <span class="normal">314</span>
-<span class="normal">315</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">ConcatenatedShapes</span><span class="p">(</span><span class="nb">tuple</span><span class="p">):</span>
+<span class="normal">315</span>
+<span class="normal">316</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">ConcatenatedShapes</span><span class="p">(</span><span class="nb">tuple</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Element shapes together with their concatenated packed-axis layout.</span>
 
 <span class="sd">    This remains a tuple of ``torch.Size`` objects for existing consumers.</span>
@@ -4415,8 +4415,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
 
               <details class="mkdocstrings-source">
                 <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-                <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 318</span>
-<span class="normal"> 319</span>
+                <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 319</span>
 <span class="normal"> 320</span>
 <span class="normal"> 321</span>
 <span class="normal"> 322</span>
@@ -13343,10 +13342,9 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
         <span class="k">with</span> <span class="n">torch</span><span class="o">.</span><span class="n">no_grad</span><span class="p">(),</span> <span class="n">torch</span><span class="o">.</span><span class="n">_C</span><span class="o">.</span><span class="n">DisableTorchFunctionSubclass</span><span class="p">(),</span> <span class="n">torch</span><span class="o">.</span><span class="n">_C</span><span class="o">.</span><span class="n">_DisableTorchDispatch</span><span class="p">():</span>
             <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="o">.</span><span class="n">set_</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">layout</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_invalidate_transient_caches</span><span class="p">()</span>
-        <span class="c1"># Repacking installs a fresh cat/stack result. Keep the version bump</span>
-        <span class="c1"># from set_ when attaching its counter, so a pre-repack saved wrapper</span>
-        <span class="c1"># cannot accidentally observe its old version again.</span>
-        <span class="n">_share_packed_version_counter</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_packed_values</span><span class="p">,</span> <span class="n">minimum_version</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_cache_version</span><span class="p">(</span><span class="bp">self</span><span class="p">))</span>
+        <span class="c1"># Preserve this existing wrapper's autograd metadata and version</span>
+        <span class="c1"># history. Only a fresh alias of the repacked child may be detached.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_packed_values</span> <span class="o">=</span> <span class="n">_share_repacked_version_counter</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_packed_values</span><span class="p">)</span>
         <span class="k">if</span> <span class="p">(</span>
             <span class="n">torch</span><span class="o">.</span><span class="n">is_grad_enabled</span><span class="p">()</span>
             <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_packed_values</span><span class="o">.</span><span class="n">requires_grad</span>
@@ -18122,8 +18120,7 @@ without an explicit target device, or declared ragged dimensions are invalid.</p
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">443</span>
-<span class="normal">444</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">444</span>
 <span class="normal">445</span>
 <span class="normal">446</span>
 <span class="normal">447</span>
@@ -18328,7 +18325,8 @@ without an explicit target device, or declared ragged dimensions are invalid.</p
 <span class="normal">646</span>
 <span class="normal">647</span>
 <span class="normal">648</span>
-<span class="normal">649</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@staticmethod</span>
+<span class="normal">649</span>
+<span class="normal">650</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@staticmethod</span>
 <span class="k">def</span><span class="w"> </span><span class="fm">__new__</span><span class="p">(</span>
     <span class="bp">cls</span><span class="p">,</span>
     <span class="o">*</span><span class="n">tensors</span><span class="p">:</span> <span class="n">Iterable</span><span class="p">[</span><span class="n">Tensor</span><span class="p">],</span>
@@ -18568,8 +18566,7 @@ region pass <code>False</code> (see :meth:<code>_mark_tensor_backed_dynamic_dims
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1792</span>
-<span class="normal">1793</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1793</span>
 <span class="normal">1794</span>
 <span class="normal">1795</span>
 <span class="normal">1796</span>
@@ -18624,7 +18621,8 @@ region pass <code>False</code> (see :meth:<code>_mark_tensor_backed_dynamic_dims
 <span class="normal">1845</span>
 <span class="normal">1846</span>
 <span class="normal">1847</span>
-<span class="normal">1848</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@classmethod</span>
+<span class="normal">1848</span>
+<span class="normal">1849</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@classmethod</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">from_packed</span><span class="p">(</span>
     <span class="bp">cls</span><span class="p">,</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>
@@ -18705,8 +18703,7 @@ region pass <code>False</code> (see :meth:<code>_mark_tensor_backed_dynamic_dims
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2431</span>
-<span class="normal">2432</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2432</span>
 <span class="normal">2433</span>
 <span class="normal">2434</span>
 <span class="normal">2435</span>
@@ -18719,7 +18716,8 @@ region pass <code>False</code> (see :meth:<code>_mark_tensor_backed_dynamic_dims
 <span class="normal">2442</span>
 <span class="normal">2443</span>
 <span class="normal">2444</span>
-<span class="normal">2445</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">__coerce_tangent_metadata__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="normal">2445</span>
+<span class="normal">2446</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">__coerce_tangent_metadata__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Classify this wrapper as a tangent through tracing and runtime layout coercion."""</span>
     <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span>
     <span class="k">if</span> <span class="p">(</span>
@@ -18758,8 +18756,7 @@ region pass <code>False</code> (see :meth:<code>_mark_tensor_backed_dynamic_dims
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>danling/tensors/nested_tensor.py</code></summary>
-              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2447</span>
-<span class="normal">2448</span>
+              <div class="language-python highlight"><table class="highlighttable"><tr><th colspan="2" class="filename"><span class="filename">Python</span></th></tr><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2448</span>
 <span class="normal">2449</span>
 <span class="normal">2450</span>
 <span class="normal">2451</span>
@@ -18791,7 +18788,8 @@ region pass <code>False</code> (see :meth:<code>_mark_tensor_backed_dynamic_dims
 <span class="normal">2477</span>
 <span class="normal">2478</span>
 <span class="normal">2479</span>
-<span class="normal">2480</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">__coerce_same_metadata_as_tangent__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">expected_meta</span><span class="p">,</span> <span class="n">expected_type</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+<span class="normal">2480</span>
+<span class="normal">2481</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">__coerce_same_metadata_as_tangent__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">expected_meta</span><span class="p">,</span> <span class="n">expected_type</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">"""Apply the tangent classification expected by AOT's compiled backward."""</span>
     <span class="k">if</span> <span class="n">expected_type</span> <span class="ow">is</span> <span class="n">Tensor</span> <span class="ow">and</span> <span class="n">expected_meta</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="c1"># AOT can require a logical strided tangent after input mutation.</span>
