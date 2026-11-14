@@ -292,6 +292,39 @@ class TestFunctionTransforms:
         assert_close(torch.func.jacfwd(loss)(values), values.cos())
         assert_close(torch.func.jacrev(loss)(values), values.cos())
 
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("mask_value", [True, False])
+    @pytest.mark.parametrize(
+        "shapes,ragged_dims,static_dim",
+        [
+            (((2, 3), (4, 3)), (0,), 1),
+            (((3, 2), (3, 4)), (1,), 0),
+            (((2, 3, 2), (4, 2, 2)), (1, 0), 2),
+        ],
+    )
+    def test_static_vmap_preserves_materialization_options(
+        self, device, batch_first, mask_value, shapes, ragged_dims, static_dim
+    ):
+        parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
+        source = NT(parts, ragged_dims=ragged_dims, batch_first=batch_first, padding_value=-7, mask_value=mask_value)
+        batch_dim = 0 if batch_first else 1
+        mapped_dim = static_dim + (static_dim >= batch_dim)
+
+        def materialize(value):
+            assert value.padding_value == source.padding_value
+            assert value.mask_value is mask_value
+            return value.tensor, value.mask
+
+        actual, mask = torch.vmap(materialize, in_dims=mapped_dim)(source)
+        assert_close(actual, source.tensor.movedim(mapped_dim, 0))
+        expected_mask = source.mask
+        if mapped_dim < expected_mask.dim():
+            expected_mask = expected_mask.movedim(mapped_dim, 0)
+        else:
+            expected_mask = expected_mask.unsqueeze(0).expand(shapes[0][static_dim], *expected_mask.shape)
+        assert_close(mask, expected_mask)
+        assert_close(torch.autograd.grad(actual.square().sum(), parts), tuple(2 * part for part in parts))
+
     @pytest.mark.parametrize("shapes,ragged_dims", [(((2, 3), (4, 3)), (0,)), (((2, 3, 2), (4, 2, 2)), (1, 0))])
     def test_packed_like_vmap_values_and_derivatives(self, device, shapes, ragged_dims):
         template = NT(
