@@ -150,6 +150,9 @@ def _per_element_fallback_serial(func, args, kwargs, source):
         elem_kwargs = {k: replace_nested_with_element(v, i) for k, v in kwargs.items()} if kwargs else {}
         results.append(func(*elem_args, **elem_kwargs))
 
+    if all(result is None for result in results):
+        return None
+
     if all(isinstance(r, Tensor) for r in results):
         return NestedTensor(
             results,
