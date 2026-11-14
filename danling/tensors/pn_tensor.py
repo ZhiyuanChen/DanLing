@@ -69,10 +69,10 @@ class PNTensor(Tensor):
     with PyTorch's DataLoader collation mechanism, allowing datasets to return variable-length
     tensors that can be combined into a `NestedTensor` when batched.
 
-    The class provides three properties that mirror those of NestedTensor:
+    The class mirrors these NestedTensor interfaces:
     - `.tensor`: The tensor itself (self)
     - `.mask`: A tensor of ones with the same shape as self
-    - `.concat`: The tensor itself (self)
+    - `.values()`: The tensor itself (self)
 
     Other attributes and methods are inherited from `torch.Tensor`.
 
@@ -149,8 +149,7 @@ class PNTensor(Tensor):
 
         return torch.ones((), dtype=torch.bool, device=self.device).expand_as(self)
 
-    @property
-    def concat(self) -> Tensor:
+    def values(self) -> Tensor:
         r"""
         Identical to `self`.
 
@@ -159,11 +158,16 @@ class PNTensor(Tensor):
 
         Examples:
             >>> pn_tensor = PNTensor([1, 2, 3])
-            >>> bool((pn_tensor == pn_tensor.concat).all())
+            >>> bool((pn_tensor == pn_tensor.values()).all())
             True
         """
 
         return self
+
+    @property
+    def concat(self) -> Tensor:
+        r"""Return the dense values through the legacy eager property."""
+        return self.values()
 
     def new_empty(self, *args, **kwargs):
         r"""Return a new empty PNTensor with the same type."""

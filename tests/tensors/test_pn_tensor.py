@@ -67,7 +67,7 @@ class TestPNTensorProperties:
 
     def test_concat_property_returns_self(self):
         pn = pn_tensor([1, 2, 3])
-        assert_close(pn.concat, pn)
+        assert_close(pn.values(), pn)
 
     def test_mask_property_is_all_true(self):
         pn = pn_tensor([1, 2, 3])

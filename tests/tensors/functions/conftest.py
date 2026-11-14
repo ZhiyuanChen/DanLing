@@ -31,7 +31,7 @@ def check_pool():
             expected, expected_indices = zip(*expected)
             torch.testing.assert_close(indices.unbind(), expected_indices)
         torch.testing.assert_close(actual.unbind(), expected)
-        actual.concat.sum().backward()
+        actual.values().sum().backward()
         sum(value.sum() for value in expected).backward()
         torch.testing.assert_close([value.grad for value in inputs], [value.grad for value in references])
 

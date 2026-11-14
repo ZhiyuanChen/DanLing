@@ -1424,7 +1424,7 @@ class NestedTensor(torch.Tensor):
     def _validate_metadata(self) -> None:
         r"""Validate the current packed storage and metadata."""
         type(self)._validate_packed_metadata(
-            self.concat,
+            self.values(),
             self._offsets,
             self._physical_shape,
             permutation=self._permutation,
@@ -1629,7 +1629,7 @@ class NestedTensor(torch.Tensor):
                 logical_dim = physical_dim + 1 if self.batch_first or physical_dim > 0 else physical_dim
                 maybe_mark_dynamic(self, logical_dim)
             if mark_values:
-                maybe_mark_dynamic(self.concat, 0)
+                maybe_mark_dynamic(self.values(), 0)
             for level_offsets in ragged_offsets:
                 maybe_mark_dynamic(level_offsets, 0)
 
@@ -1952,7 +1952,7 @@ class NestedTensor(torch.Tensor):
             result._mark_tensor_backed_dynamic_dims(mark_values=mark_values_dynamic)
         if validate:
             cls._validate_packed_metadata(
-                result.concat,
+                result.values(),
                 result._offsets,
                 result._physical_shape,
                 permutation=result._permutation,
@@ -2228,7 +2228,7 @@ class NestedTensor(torch.Tensor):
         if expected_type is not None and expected_type is not type(self):
             if getattr(expected_type, "_is_transform_proxy", False) and type(self) is expected_type._public_type:
                 result = expected_type._from_packed_raw(
-                    self.concat,
+                    self.values(),
                     self._offsets,
                     self._physical_shape,
                     permutation=self._permutation,
@@ -2282,11 +2282,11 @@ class NestedTensor(torch.Tensor):
             tangent_values = _broadcast_nested_to_values(primal, tangent)
             if tangent_values is None:
                 raise RuntimeError("NestedTensor could not align the forward tangent's packed layout")
-            values = func(primal.concat, tangent_values, **kwargs)
+            values = func(primal.values(), tangent_values, **kwargs)
             return primal._packed_like_unchecked(values)
         if func is torch._VF._unpack_dual and isinstance(args[0], cls):
             source = args[0]
-            primal, tangent = func(source.concat, **kwargs)
+            primal, tangent = func(source.values(), **kwargs)
             return torch.return_types._unpack_dual(
                 (
                     source._packed_like_unchecked(primal),
@@ -2349,7 +2349,7 @@ class NestedTensor(torch.Tensor):
         if index < 0 or index >= size:
             raise IndexError(f"NestedTensor batch index {index} is out of range for batch size {size}")
         if values is None:
-            values = self.concat
+            values = self.values()
         permutation = self._permutation
         ragged_rank = len(self._ragged_dims)
         if ragged_rank == 0:
@@ -2398,7 +2398,7 @@ class NestedTensor(torch.Tensor):
 
         packed_sizes = self._packed_sizes
         if packed_sizes is None and (_is_compiling() or _is_fake_tensor(self._offsets)):
-            values = self.concat
+            values = self.values()
             return tuple(self._packed_sample(index, values) for index in range(batch_size))
         if packed_sizes is None:
             packed_sizes = tuple(int(size) for size in (self._offsets[1:] - self._offsets[:-1]).tolist())
@@ -2407,7 +2407,7 @@ class NestedTensor(torch.Tensor):
         if element_shapes is None:
             element_shapes = tuple(tuple(int(dim) for dim in shape) for shape in self._original_shapes())
 
-        splits = self.concat.split(packed_sizes, dim=0)
+        splits = self.values().split(packed_sizes, dim=0)
         permutation = self._permutation
         if permutation:
             varying_dims = self._varying_dims
@@ -2871,7 +2871,7 @@ class NestedTensor(torch.Tensor):
         dtype: torch.dtype = torch.long,
     ) -> Tensor:
         target_device = self.device if device is None else device
-        leading = self.concat.size(0) if self.concat.dim() > 0 else self.concat.numel()
+        leading = self.values().size(0) if self.values().dim() > 0 else self.values().numel()
         return torch.arange(leading, device=target_device, dtype=dtype)
 
     def _packed_batch_local_indices(
@@ -3162,18 +3162,18 @@ class NestedTensor(torch.Tensor):
             raise ValueError("Expected at least one NestedTensor to concatenate.")
 
         ref = tensors[0]
-        packed_rank = ref.concat.dim()
-        packed_tail = ref.concat.shape[1:]
+        packed_rank = ref.values().dim()
+        packed_tail = ref.values().shape[1:]
         reference_permutation = ref._permutation
         for tensor in tensors[1:]:
-            if tensor.concat.dim() != packed_rank:
+            if tensor.values().dim() != packed_rank:
                 return None
             if tensor._permutation != reference_permutation:
                 return None
-            if packed_rank > 1 and tensor.concat.shape[1:] != packed_tail:
+            if packed_rank > 1 and tensor.values().shape[1:] != packed_tail:
                 return None
 
-        new_values = torch.cat([tensor.concat for tensor in tensors], dim=0)
+        new_values = torch.cat([tensor.values() for tensor in tensors], dim=0)
 
         # Rebasing each operand's offsets on the running row total is tensor arithmetic; reading
         # that total back with ``.item()`` makes the rebase depend on a value, which is what
@@ -3257,7 +3257,7 @@ class NestedTensor(torch.Tensor):
         detached views. Serving those later would silently cut the graph for every consumer
         that reads elements instead of ``concat``.
         """
-        return torch.is_grad_enabled() and bool(cached) and self.concat.requires_grad and cached[0].grad_fn is None
+        return torch.is_grad_enabled() and bool(cached) and self.values().requires_grad and cached[0].grad_fn is None
 
     def _materialized_view_cache_token(self) -> tuple[int, ...] | None:
         r"""Cache versioned layouts without retaining a graph that saves this wrapper."""
@@ -3282,7 +3282,7 @@ class NestedTensor(torch.Tensor):
         shape_token = self._materialized_view_cache_token()
         cacheable = shape_token is not None
         cached = self._cached_tensor_view if cacheable else None
-        token = (self._cache_version(self.concat), *shape_token) if shape_token is not None else ()
+        token = (self._cache_version(self.values()), *shape_token) if shape_token is not None else ()
         if (
             cached is not None
             and cached[0] is self.batch_first
@@ -3388,16 +3388,16 @@ class NestedTensor(torch.Tensor):
         logical_shape = self._logical_shape
         batch_size = len(self)
         if self._physical_shape.size(1) == 0:
-            return self.concat.reshape((batch_size,))
+            return self.values().reshape((batch_size,))
 
         tensor_shape = list(logical_shape)
         tensor_shape.pop(0 if self.batch_first else 1)
-        batch_leading = self.concat.new_full((batch_size, *tensor_shape), fill_value)
+        batch_leading = self.values().new_full((batch_size, *tensor_shape), fill_value)
         # Empty index assignments preserve the same value and gradient contract
         # without a Python guard on a data-derived packed extent.
         static_order = tuple(sorted(self._static_dims))
         values_order = (0, *(1 + self._static_dims.index(dim) for dim in static_order))
-        values = self.concat.permute(values_order)
+        values = self.values().permute(values_order)
         batch_leading[self._packed_dense_index(device=batch_leading.device)] = values
         return batch_leading
 
@@ -3412,6 +3412,10 @@ class NestedTensor(torch.Tensor):
                 return tuple(torch.Size(row) for row in self._physical_shape.tolist())
             return tuple(torch.Size(type(self)._trim_shape(row)) for row in self._physical_shape.tolist())
         raise RuntimeError("NestedTensor shape metadata is unavailable for this instance.")
+
+    def values(self) -> Tensor:
+        r"""Return packed values through the existing differentiable projection."""
+        return self.concat
 
     @property
     def concat(self) -> Tensor:
@@ -3575,8 +3579,8 @@ class NestedTensor(torch.Tensor):
         """
         batch_size = len(self._offsets) - 1
         if batch_size == 0:
-            return torch.empty(0, dtype=self.concat.dtype, device=self.device), ()
-        return self.concat, ConcatenatedShapes(self._original_shapes(), self._permutation, self._ragged_dims)
+            return torch.empty(0, dtype=self.values().dtype, device=self.device), ()
+        return self.values(), ConcatenatedShapes(self._original_shapes(), self._permutation, self._ragged_dims)
 
     # ------------------------------------------------------------------
     # Container protocol
@@ -4137,10 +4141,10 @@ class NestedTensor(torch.Tensor):
                 f"got {type(packed_values).__name__} with layout "
                 f"{getattr(packed_values, 'layout', None)}"
             )
-        if packed_values.shape != self.concat.shape:
+        if packed_values.shape != self.values().shape:
             raise ValueError(
                 "packed_values must have exactly the same shape as the reference packed storage, "
-                f"got {packed_values.shape} and expected {self.concat.shape}"
+                f"got {packed_values.shape} and expected {self.values().shape}"
             )
         pin_memory = _is_pinned(packed_values)
         result = type(self)._from_packed_raw(
@@ -4245,23 +4249,23 @@ class NestedTensor(torch.Tensor):
         if _is_compiling():
             from torch.fx.experimental.symbolic_shapes import statically_known_true
 
-            if not statically_known_true(packed_values.shape[0] == self.concat.shape[0]):
+            if not statically_known_true(packed_values.shape[0] == self.values().shape[0]):
                 # An opaque CPU comparison preserves the check through AOT and keeps errors on the host.
                 packed_length = torch.scalar_tensor(packed_values.shape[0], dtype=torch.int64, device="cpu")
-                reference_length = torch.scalar_tensor(self.concat.shape[0], dtype=torch.int64, device="cpu")
+                reference_length = torch.scalar_tensor(self.values().shape[0], dtype=torch.int64, device="cpu")
                 torch._assert_async(
                     _metadata_tensors_equal(packed_length, reference_length),
                     "packed_values leading dimension must equal the reference packed length",
                 )
         elif _is_fake_tensor(packed_values):
             torch._check_value(
-                packed_values.shape[0] == self.concat.shape[0],
+                packed_values.shape[0] == self.values().shape[0],
                 lambda: "packed_values leading dimension must equal the reference packed length",
             )
-        elif packed_values.shape[0] != self.concat.shape[0]:
+        elif packed_values.shape[0] != self.values().shape[0]:
             raise ValueError(
                 "packed_values leading dimension must equal the reference packed length, "
-                f"got {packed_values.shape[0]} and expected {self.concat.shape[0]}"
+                f"got {packed_values.shape[0]} and expected {self.values().shape[0]}"
             )
 
         static_tail = tuple(packed_values.shape[1:])
@@ -4935,7 +4939,7 @@ class NestedTensor(torch.Tensor):
                 normalized_position += extent
             if normalized_position < 0 or normalized_position >= extent:
                 raise IndexError(f"index {position} is out of bounds for dimension 0 with size {extent}")
-            return self.concat.narrow(0, 0, 0)[(slice(None), *tail_index)]
+            return self.values().narrow(0, 0, 0)[(slice(None), *tail_index)]
 
         if self._packed_sizes is not None:
             lengths = self._packed_sizes
@@ -4949,9 +4953,9 @@ class NestedTensor(torch.Tensor):
                 torch.all((local_positions >= 0) & (local_positions < lengths_tensor)),
                 "index is out of bounds for at least one NestedTensor element",
             )
-            offsets = self.packed_offsets(device=self.concat.device, dtype=torch.long)
+            offsets = self.packed_offsets(device=self.values().device, dtype=torch.long)
             local_positions = local_positions.to(device=offsets.device, dtype=offsets.dtype)
-            selected = self.concat.index_select(0, offsets[:-1] + local_positions)
+            selected = self.values().index_select(0, offsets[:-1] + local_positions)
             return selected[(slice(None), *tail_index)] if tail_index else selected
         else:
             lengths = tuple(int(size) for size in (self._offsets[1:] - self._offsets[:-1]).tolist())
@@ -4969,10 +4973,10 @@ class NestedTensor(torch.Tensor):
                 if idx < 0 or idx >= int(length):
                     raise IndexError(f"index {position} is out of bounds for at least one NestedTensor element")
                 normalized.append(idx)
-            local = torch.as_tensor(normalized, dtype=torch.long, device=self.concat.device)
+            local = torch.as_tensor(normalized, dtype=torch.long, device=self.values().device)
 
-        offsets = self._offsets[:-1].to(device=self.concat.device, dtype=torch.long)
-        selected = self.concat.index_select(0, offsets + local)
+        offsets = self._offsets[:-1].to(device=self.values().device, dtype=torch.long)
+        selected = self.values().index_select(0, offsets + local)
         if tail_index:
             selected = selected[(slice(None), *tail_index)]
         return selected
@@ -4995,7 +4999,7 @@ class NestedTensor(torch.Tensor):
             for item in (batch, points)
         ) or any(item is not None and not isinstance(item, slice) and type(item) is not int for item in index[2:]):
             return None
-        values = self.concat
+        values = self.values()
         if any(item.device.type != "cpu" and item.device != values.device for item in (batch, points)):
             return None
         batch, points = torch.broadcast_tensors(
@@ -5040,7 +5044,7 @@ class NestedTensor(torch.Tensor):
                     result = torch.ops.aten.slice.Tensor(result, dim, selector.start, selector.stop, selector.step or 1)
             return result
         physical_dims = list(self._max_physical_dims())
-        value_index: list[slice] = [slice(None)] * self.concat.dim()
+        value_index: list[slice] = [slice(None)] * self.values().dim()
         replace_dims: dict[int, int] = {}
         ragged_selector: tuple[int, slice] | None = None
         changed = False
@@ -5066,7 +5070,7 @@ class NestedTensor(torch.Tensor):
 
         packed_sizes = self._packed_sizes
         offsets = self._offsets
-        values = self.concat[tuple(value_index)]
+        values = self.values()[tuple(value_index)]
         max_length_binding = vars(self).get("_compile_max_length_binding")
         new_sizes = None
         if ragged_selector is not None:
@@ -5165,7 +5169,7 @@ class NestedTensor(torch.Tensor):
             return None
         from .aten_functions import _packed_without_dim
 
-        values = self.concat.select(values_dim, int(selectors[physical_dim]))
+        values = self.values().select(values_dim, int(selectors[physical_dim]))
         return cast(Self, _packed_without_dim(self, physical_dim, values))
 
     def _packed_newaxis_index(self, rest: tuple) -> Self | None:
@@ -5201,7 +5205,7 @@ class NestedTensor(torch.Tensor):
         batch_dim = type(self)._batch_dim_from_logical_shape(self._logical_shape, self.batch_first)
         outer_size[batch_dim] = 0
         return type(self).from_packed(
-            self.concat.narrow(0, 0, 0),
+            self.values().narrow(0, 0, 0),
             self._offsets.new_zeros((1,)),
             self._physical_shape[:0],
             permutation=self._permutation,
@@ -5282,7 +5286,7 @@ class NestedTensor(torch.Tensor):
                 static_selectors[dim] = slice(start, stop, step)
 
         values_index = (slice(None), *(static_selectors.get(dim, slice(None)) for dim in self._static_dims))
-        values = self.concat[values_index]
+        values = self.values()[values_index]
         packed_static_dims = [old_to_new[dim] for dim in self._static_dims if dim in old_to_new]
         for dim in inserted_dims:
             values = values.unsqueeze(-1)
@@ -5492,7 +5496,7 @@ class NestedTensor(torch.Tensor):
                 )
             if (
                 index.dtype == torch.bool
-                and self.concat.dim() == 1
+                and self.values().dim() == 1
                 and self._permutation == tuple(range(self._physical_shape.size(1)))
                 and self._has_same_layout(index)
             ):
@@ -5582,7 +5586,7 @@ class NestedTensor(torch.Tensor):
             new_payload = packed_value.reshape((packed_size, *suffix_shape) if suffix_shape else (packed_size,))
             new_size = packed_size
 
-            if self.concat.dim() > 1 and new_payload.shape[1:] != self.concat.shape[1:]:
+            if self.values().dim() > 1 and new_payload.shape[1:] != self.values().shape[1:]:
                 storage_list = list(self._storage)
                 storage_list[idx] = value
                 candidate = self.__class__(storage_list, **self._meta())
@@ -5595,7 +5599,7 @@ class NestedTensor(torch.Tensor):
                 offsets[idx + 1 :] += new_size - old_size  # noqa: E203
                 values = self._packed_values
                 if new_size != old_size:
-                    values = torch.cat([self.concat[:old_start], new_payload, self.concat[old_end:]], dim=0)
+                    values = torch.cat([self.values()[:old_start], new_payload, self.values()[old_end:]], dim=0)
                 candidate = self.__class__._from_packed_raw(
                     values,
                     offsets,
@@ -5832,7 +5836,7 @@ class NestedTensor(torch.Tensor):
         r"""Metadata used for structure-preserving reconstruction."""
         if include_dtype is None:
             # Empty reconstructions cannot infer dtype from storage; include it by default.
-            include_dtype = self.concat.numel() == 0
+            include_dtype = self.values().numel() == 0
         if include_dtype:
             return {
                 "batch_first": self.batch_first,
@@ -5841,7 +5845,7 @@ class NestedTensor(torch.Tensor):
                 "pin_memory": self._pin_memory,
                 "ragged_dims": self._ragged_dims if self._ragged_dims_explicit else None,
                 "_lenient_layout": True,
-                "device": self.concat.device,
+                "device": self.values().device,
                 "dtype": self.dtype,
             }
         return {
@@ -5851,12 +5855,12 @@ class NestedTensor(torch.Tensor):
             "pin_memory": self._pin_memory,
             "ragged_dims": self._ragged_dims if self._ragged_dims_explicit else None,
             "_lenient_layout": True,
-            "device": self.concat.device,
+            "device": self.values().device,
         }
 
     def __getstate__(self) -> dict:
         return {
-            "_packed_values": self.concat,
+            "_packed_values": self.values(),
             "_offsets": self._offsets,
             "_permutation": self._permutation,
             "_ragged_dims": self._ragged_dims if self._ragged_dims_explicit else None,
@@ -5878,7 +5882,7 @@ class NestedTensor(torch.Tensor):
         self._permutation = tuple(int(dim) for dim in state["_permutation"])
         declared_ragged_dims = state["_ragged_dims"]
         self._ragged_dims = type(self)._ragged_dims_from_packed_layout(
-            self.concat,
+            self.values(),
             len(self._permutation),
             self._permutation,
             declared_ragged_dims,
@@ -5891,7 +5895,9 @@ class NestedTensor(torch.Tensor):
             padding_value=state["padding_value"],
             mask_value=state["mask_value"],
         )
-        self._pin_memory = bool(state["_pin_memory"] and self.concat.device.type == "cpu" and self.concat.is_pinned())
+        self._pin_memory = bool(
+            state["_pin_memory"] and self.values().device.type == "cpu" and self.values().is_pinned()
+        )
         self._packed_sizes = state["_packed_sizes"]
         self._element_shapes = state["_element_shapes"]
         serialized_ragged_offsets = state["_ragged_offsets"]
@@ -5943,7 +5949,7 @@ class NestedTensor(torch.Tensor):
     def __copy__(self):
         r"""Shallow copy: share storage while preserving independent leaf ownership."""
         wrapper_leaf = vars(self).get("_wrapper_grad_leaf", False)
-        values = self._packed_values.detach().requires_grad_(self.requires_grad) if wrapper_leaf else self.concat
+        values = self._packed_values.detach().requires_grad_(self.requires_grad) if wrapper_leaf else self.values()
         result = self.__class__._from_packed_raw(
             values,
             self._offsets,
@@ -5969,7 +5975,7 @@ class NestedTensor(torch.Tensor):
         values = (
             self._packed_values.detach().clone().requires_grad_(self.requires_grad)
             if wrapper_leaf
-            else self.concat.clone()
+            else self.values().clone()
         )
         result = self.__class__._from_packed_raw(
             values,
@@ -6093,7 +6099,7 @@ class NestedTensor(torch.Tensor):
             >>> nested_tensor.numel()
             5
         """
-        return self.concat.numel()
+        return self.values().numel()
 
     def permute(self, *dims) -> Self:
         r"""
@@ -6130,7 +6136,7 @@ class NestedTensor(torch.Tensor):
     def pin_memory(self, device: torch.device | str | int | None = None) -> Self:
         r"""Pin the underlying tensor memory for faster host-to-device transfer."""
         return type(self)._from_packed_raw(
-            self.concat.pin_memory(device=device),
+            self.values().pin_memory(device=device),
             self._offsets,
             self._physical_shape,
             permutation=self._permutation,
@@ -6706,15 +6712,15 @@ class _PackedLikeAutograd(torch.autograd.Function):
             if isinstance(grad_output, NestedTensor):
                 from .aten_functions import _uniform_logical_from_values
 
-                layout = NestedTensor._layout_from_state(ctx.layout_state, grad_output.concat, ctx.packed_shape)
-                return _uniform_logical_from_values(layout, grad_output.concat), None
+                layout = NestedTensor._layout_from_state(ctx.layout_state, grad_output.values(), ctx.packed_shape)
+                return _uniform_logical_from_values(layout, grad_output.values()), None
             return grad_output, None
         state = ctx.layout_state
         reference_ragged, reference_static = ctx.axes
         tangent_layout = grad_output if _is_compiling() else _transform_base(grad_output)
         nested_tangent = isinstance(tangent_layout, NestedTensor)
         values_grad = (
-            grad_output.concat
+            grad_output.values()
             if isinstance(grad_output, NestedTensor)
             else _project_packed_values(grad_output) if nested_tangent else grad_output
         )
@@ -6808,7 +6814,7 @@ class _PackedValuesAutograd(torch.autograd.Function):
         if input_tangent is None:
             return None
         return (
-            input_tangent.concat if isinstance(input_tangent, NestedTensor) else _project_packed_values(input_tangent)
+            input_tangent.values() if isinstance(input_tangent, NestedTensor) else _project_packed_values(input_tangent)
         )
 
     @staticmethod

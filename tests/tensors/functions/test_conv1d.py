@@ -72,7 +72,7 @@ class TestDepthwise:
             expected = [convolve(part, weight, bias) for part in parts]
             torch.testing.assert_close(output.unbind(), expected)
             torch.testing.assert_close(
-                torch.autograd.grad(output.concat.sum(), (*parts, weight, bias)),
+                torch.autograd.grad(output.values().sum(), (*parts, weight, bias)),
                 torch.autograd.grad(sum(value.sum() for value in expected), (*parts, weight, bias)),
             )
 
@@ -104,7 +104,7 @@ class TestDepthwise:
             expected = [F.conv1d(F.pad(part, (padding, padding)), reference_weight) for part in references]
             torch.testing.assert_close(output.unbind(), expected, equal_nan=True)
             torch.testing.assert_close(
-                torch.autograd.grad(output.concat.sum(), (*parts, weight)),
+                torch.autograd.grad(output.values().sum(), (*parts, weight)),
                 torch.autograd.grad(sum(value.sum() for value in expected), (*references, reference_weight)),
                 equal_nan=True,
             )
@@ -222,7 +222,7 @@ class TestConvolution:
         expected = [convolve(part, reference_weight) for part in references]
         torch.testing.assert_close(actual.unbind(), expected)
         torch.testing.assert_close(
-            torch.autograd.grad(actual.concat.sum(), (*parts, weight)),
+            torch.autograd.grad(actual.values().sum(), (*parts, weight)),
             torch.autograd.grad(sum(part.sum() for part in expected), (*references, reference_weight)),
         )
 
@@ -306,5 +306,5 @@ class TestConvolution:
         expected_gradients = torch.autograd.grad(sum(part.square().sum() for part in expected), (*parts, weight, bias))
         actual = torch.compile(F.conv1d, backend=backend, fullgraph=True)(NT(parts), weight, bias)
         torch.testing.assert_close(actual.unbind(), expected)
-        actual_gradients = torch.autograd.grad(actual.concat.square().sum(), (*parts, weight, bias))
+        actual_gradients = torch.autograd.grad(actual.values().square().sum(), (*parts, weight, bias))
         torch.testing.assert_close(actual_gradients, expected_gradients)

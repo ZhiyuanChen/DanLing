@@ -54,7 +54,9 @@ class TestPooling:
         torch.testing.assert_close(parts[0], F.max_pool3d(reference, **kwargs))
         assert torch.isneginf(parts[1]).all()
         torch.testing.assert_close(parts[2], torch.full_like(parts[2], value), equal_nan=True)
-        actual = torch.autograd.grad(output.concat, (first, empty_window, nonfinite), torch.ones_like(output.concat))
+        actual = torch.autograd.grad(
+            output.values(), (first, empty_window, nonfinite), torch.ones_like(output.values())
+        )
         expected_first = torch.autograd.grad(F.max_pool3d(reference, **kwargs).sum(), reference)[0]
         expected_nonfinite = torch.zeros_like(nonfinite)
         expected_nonfinite[0, ::2, ::2, ::2] = 1
@@ -84,7 +86,7 @@ class TestPooling:
         expected = [fn(part, 2) for part in references]
         for result, reference in zip(actual, expected):
             torch.testing.assert_close(result, reference, equal_nan=True)
-        actual_grads = torch.autograd.grad(actual.concat.sum(), parts)
+        actual_grads = torch.autograd.grad(actual.values().sum(), parts)
         expected_grads = torch.autograd.grad(sum(part.sum() for part in expected), references)
         for result, reference in zip(actual_grads, expected_grads):
             torch.testing.assert_close(result, reference)
@@ -99,7 +101,7 @@ class TestPooling:
         expected = [fn(part, 3, stride=1, padding=1, count_include_pad=False) for part in parts]
         for result, reference in zip(actual, expected):
             torch.testing.assert_close(result, reference)
-        actual_grads = torch.autograd.grad(actual.concat.square().sum(), parts, retain_graph=True)
+        actual_grads = torch.autograd.grad(actual.values().square().sum(), parts, retain_graph=True)
         expected_grads = torch.autograd.grad(sum(part.square().sum() for part in expected), parts)
         for result, reference in zip(actual_grads, expected_grads):
             torch.testing.assert_close(result, reference)

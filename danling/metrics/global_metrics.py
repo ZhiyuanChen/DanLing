@@ -123,9 +123,9 @@ class GlobalMetrics:
         artifacts = self._artifacts
         input, target = self.preprocess(input, target)
         if isinstance(input, NestedTensor):
-            input = input.concat
+            input = input.values()
         if isinstance(target, NestedTensor):
-            target = target.concat
+            target = target.values()
 
         if input.ndim == 0:
             input = input.reshape(1)

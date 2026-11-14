@@ -96,10 +96,10 @@ class TestActivations:
         torch.manual_seed(1234)
         activation(expected, *args, **kwargs)
 
-        torch.testing.assert_close(output.concat, expected)
+        torch.testing.assert_close(output.values(), expected)
         torch.testing.assert_close(alias.tensor, output.tensor)
         torch.testing.assert_close(
-            torch.autograd.grad(output.concat.square().sum(), parts),
+            torch.autograd.grad(output.values().square().sum(), parts),
             torch.autograd.grad(expected.square().sum(), references),
         )
 
@@ -108,11 +108,11 @@ class TestActivations:
     def test_inplace_detects_saved_packed_mutation(self, activation, detached):
         output = NT([torch.randn(length, 3, requires_grad=True) for length in (2, 4)]).sin()
         if detached:
-            saved = output.detach().concat
+            saved = output.detach().values()
             weight = torch.ones_like(saved, requires_grad=True)
             loss = (saved * weight).sum()
         else:
-            loss = output.concat.square().sum()
+            loss = output.values().square().sum()
         kwargs = {"p": 0.3, "training": True} if activation in (F.dropout, F.alpha_dropout) else {}
         if activation is F.threshold:
             kwargs = {"threshold": 0.0, "value": -0.1}
@@ -123,11 +123,11 @@ class TestActivations:
     @pytest.mark.parametrize("activation", [F.relu, F.dropout, F.alpha_dropout])
     def test_inplace_rejects_wrapper_leaf(self, activation):
         source = NT([torch.randn(length, 3) for length in (2, 4)]).requires_grad_()
-        before = source.concat.detach().clone()
+        before = source.values().detach().clone()
         kwargs = {} if activation is F.relu else {"p": 0.3, "training": True}
         with pytest.raises(RuntimeError, match="leaf Variable"):
             activation(source, inplace=True, **kwargs)
-        torch.testing.assert_close(source.concat, before)
+        torch.testing.assert_close(source.values(), before)
 
     @pytest.mark.parametrize("activation", [F.relu, F.mish, F.rrelu, F.dropout, F.alpha_dropout])
     def test_inplace_fullgraph_gradients(self, activation, device):
@@ -135,10 +135,10 @@ class TestActivations:
         kwargs = {"p": 1.0, "training": True} if activation in (F.dropout, F.alpha_dropout) else {}
 
         def activate(template, values):
-            return activation(template.packed_like(values).sin(), inplace=True, **kwargs).concat
+            return activation(template.packed_like(values).sin(), inplace=True, **kwargs).values()
 
         template = NT([torch.empty(length, 3, device=device) for length in (2, 4)])
-        values = torch.randn_like(template.concat, requires_grad=True)
+        values = torch.randn_like(template.values(), requires_grad=True)
         reference_values = values.detach().clone().requires_grad_()
         compiled = torch.compile(activate, backend="aot_eager", fullgraph=True)
         actual = compiled(template, values)
@@ -400,7 +400,7 @@ class TestClassificationLosses:
         output = F.binary_cross_entropy_with_logits(logits.squeeze(-1), targets.squeeze(-1), reduction="mean")
         reference = F.binary_cross_entropy_with_logits(
             reference_values.squeeze(-1),
-            targets.concat.squeeze(-1),
+            targets.values().squeeze(-1),
             reduction="mean",
         )
 
@@ -811,7 +811,7 @@ class TestDropout:
         torch.testing.assert_close(output.unbind(), expected)
         torch.testing.assert_close(alias.tensor, output.tensor)
         torch.testing.assert_close(
-            torch.autograd.grad(output.concat.square().sum(), parts),
+            torch.autograd.grad(output.values().square().sum(), parts),
             torch.autograd.grad(sum(part.square().sum() for part in expected), references),
         )
 
@@ -894,19 +894,19 @@ class TestEmbeddingOps:
 
         output = F.embedding(indices, weight)
 
-        reference = F.embedding(indices.concat, reference_weight)
+        reference = F.embedding(indices.values(), reference_weight)
         cotangent = torch.randn_like(reference)
-        output_gradient = torch.autograd.grad(output.concat, weight, cotangent)[0]
+        output_gradient = torch.autograd.grad(output.values(), weight, cotangent)[0]
         reference_gradient = torch.autograd.grad(reference, reference_weight, cotangent)[0]
         assert output.ragged_dims == ragged_dims
         assert [element.shape for element in output] == [torch.Size((2, 3, 4)), torch.Size((3, 2, 4))]
-        assert_close(output.concat, reference)
+        assert_close(output.values(), reference)
         assert_close(output_gradient, reference_gradient)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
     def test_embedding_multi_ragged_compiles_with_vjp(self, device):
         compiled = torch.compile(
-            lambda indices, weight: F.embedding(indices, weight).square().concat,
+            lambda indices, weight: F.embedding(indices, weight).square().values(),
             backend="aot_eager",
             fullgraph=True,
             dynamic=True,
@@ -919,7 +919,7 @@ class TestEmbeddingOps:
         weight = torch.randn(13, 4, device=device, requires_grad=True)
         reference_weight = weight.detach().clone().requires_grad_()
         output = compiled(indices, weight)
-        reference = F.embedding(indices.concat, reference_weight).square()
+        reference = F.embedding(indices.values(), reference_weight).square()
         cotangent = torch.randn_like(reference)
         output_gradient = torch.autograd.grad(output, weight, cotangent)[0]
         reference_gradient = torch.autograd.grad(reference, reference_weight, cotangent)[0]
@@ -1186,7 +1186,7 @@ class TestLinear:
             [torch.empty(2, 78, 2, device=device), torch.empty(5, 78, 2, device=device)],
             ragged_dims=(0,),
         )
-        values = torch.randn_like(template.concat, dtype=float_dtype, requires_grad=True)
+        values = torch.randn_like(template.values(), dtype=float_dtype, requires_grad=True)
         weight = torch.randn(8, 78, device=device, dtype=float_dtype, requires_grad=True)
         bias = torch.randn(8, device=device, dtype=float_dtype, requires_grad=True)
         input = template.packed_like(values).movedim(2, 3)
@@ -1196,11 +1196,11 @@ class TestLinear:
 
         leaves = (values, weight, bias)
         cotangent = torch.randn_like(expected)
-        actual_gradients = torch.autograd.grad(output.concat, leaves, cotangent, retain_graph=True)
+        actual_gradients = torch.autograd.grad(output.values(), leaves, cotangent, retain_graph=True)
         expected_gradients = torch.autograd.grad(expected, leaves, cotangent)
         assert output.shape == torch.Size((2, 5, 2, 8))
         assert output.ragged_dims == (0,)
-        assert_close(output.concat, expected)
+        assert_close(output.values(), expected)
         for actual, reference in zip(actual_gradients, expected_gradients, strict=True):
             assert_close(actual, reference)
 
@@ -1208,11 +1208,11 @@ class TestLinear:
     def test_permuted_static_features_compile_with_vjp(self, device):
         def run(template, values, weight, bias):
             input = template.packed_like(values).movedim(2, 3)
-            return F.linear(input, weight, bias).concat
+            return F.linear(input, weight, bias).values()
 
         compiled = torch.compile(run, backend="aot_eager", fullgraph=True, dynamic=True)
         template = NT([torch.empty(2, 78, 2), torch.empty(3, 78, 2)], ragged_dims=(0,))
-        values = torch.randn_like(template.concat, device=device, requires_grad=True)
+        values = torch.randn_like(template.values(), device=device, requires_grad=True)
         weight = torch.randn(8, 78, device=device, requires_grad=True)
         bias = torch.randn(8, device=device, requires_grad=True)
         expected = F.linear(values.movedim(1, 2), weight, bias)
@@ -1475,7 +1475,7 @@ class TestModuleIntegration:
             elements = [torch.randn(length, 3, device=device, requires_grad=True) for length in lengths]
             reference_elements = [element.detach().clone().requires_grad_() for element in elements]
 
-            output = compiled(NT(elements, ragged_dims=(0,))).concat
+            output = compiled(NT(elements, ragged_dims=(0,))).values()
             reference = torch.cat([reference_layer(element) for element in reference_elements])
             assert_close(output, reference)
 
@@ -1636,7 +1636,7 @@ class TestMultiHeadAttentionForward:
                 expected.append(reference(q.unsqueeze(0), k.unsqueeze(0), k.unsqueeze(0), need_weights=False)[0][0])
             torch.testing.assert_close(output.unbind(), expected, atol=0.03, rtol=0.03)
             torch.testing.assert_close(
-                torch.autograd.grad(output.concat.float().square().sum(), (*query, *key, *model.parameters())),
+                torch.autograd.grad(output.values().float().square().sum(), (*query, *key, *model.parameters())),
                 torch.autograd.grad(
                     sum(part.float().square().sum() for part in expected),
                     (*query_ref, *key_ref, *reference.parameters()),
@@ -1702,7 +1702,7 @@ class TestMultiHeadAttentionForward:
         nested_key = NT(key, ragged_dims=(0,))
         actual, weights = model(query_input, nested_key, nested_key, need_weights=need_weights)
         if nested_query:
-            actual = actual.concat.reshape(2, query_length, 8)
+            actual = actual.values().reshape(2, query_length, 8)
         padded_key = torch.nn.utils.rnn.pad_sequence(key_ref, batch_first=True)
         padding = (
             torch.arange(max(key_lengths), device=device)[None, :] >= torch.tensor(key_lengths, device=device)[:, None]
@@ -1776,7 +1776,7 @@ class TestMultiHeadAttentionForward:
         expected = reference(dense_query, dense_key, dense_key, key_padding_mask=padding, need_weights=False)[0]
         expected = expected if batch_first else expected.transpose(0, 1)
         expected_values = torch.cat([expected[i, :length] for i, length in enumerate((3, 5))])
-        torch.testing.assert_close(actual.concat, expected_values, atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(actual.values(), expected_values, atol=1e-5, rtol=1e-5)
         probe = torch.randn_like(expected_values)
         actual_inputs = (*query, *key, *model.parameters()) if cross_attention else (*query, *model.parameters())
         expected_inputs = (
@@ -1785,7 +1785,7 @@ class TestMultiHeadAttentionForward:
             else (*query_ref, *reference.parameters())
         )
         torch.testing.assert_close(
-            torch.autograd.grad((actual.concat * probe).sum(), actual_inputs),
+            torch.autograd.grad((actual.values() * probe).sum(), actual_inputs),
             torch.autograd.grad((expected_values * probe).sum(), expected_inputs),
             atol=1e-5,
             rtol=1e-5,
@@ -1943,10 +1943,10 @@ class TestMultiHeadAttentionForward:
         expected = expected if batch_first else expected.transpose(0, 1)
         expected_values = torch.cat([expected[index, :length] for index, length in enumerate((2, 4))])
         assert weights is None
-        torch.testing.assert_close(output.concat, expected_values, atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(output.values(), expected_values, atol=1e-5, rtol=1e-5)
         probe = torch.randn_like(expected_values)
         torch.testing.assert_close(
-            torch.autograd.grad((output.concat * probe).sum(), (*parts, key, *model.parameters())),
+            torch.autograd.grad((output.values() * probe).sum(), (*parts, key, *model.parameters())),
             torch.autograd.grad((expected_values * probe).sum(), (*references, key_ref, *reference.parameters())),
             atol=1e-5,
             rtol=1e-5,
@@ -2192,10 +2192,10 @@ class TestMultiHeadAttentionForward:
         )[0]
         expected = expected if batch_first else expected.transpose(0, 1)
         expected_values = torch.cat([expected[i, :length] for i, length in enumerate((3, 5))])
-        torch.testing.assert_close(actual.concat, expected_values, atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(actual.values(), expected_values, atol=1e-5, rtol=1e-5)
         probe = torch.randn_like(expected_values)
         torch.testing.assert_close(
-            torch.autograd.grad((actual.concat * probe).sum(), (*parts, *model.parameters())),
+            torch.autograd.grad((actual.values() * probe).sum(), (*parts, *model.parameters())),
             torch.autograd.grad((expected_values * probe).sum(), (*references, *reference.parameters())),
             atol=1e-5,
             rtol=1e-5,
@@ -2232,16 +2232,16 @@ class TestMultiHeadAttentionForward:
             actual = compiled(source, key, mask)
             expected = reference(source_ref, key_ref, key_ref, attn_mask=mask, is_causal=causal, need_weights=False)[0]
             assert actual.batch_first is batch_first
-            torch.testing.assert_close(actual.concat, expected.concat, atol=5e-3, rtol=2e-2)
-            probe = torch.randn_like(expected.concat)
+            torch.testing.assert_close(actual.values(), expected.values(), atol=5e-3, rtol=2e-2)
+            probe = torch.randn_like(expected.values())
             actual_inputs = (*parts, *keys, *model.parameters()) if cross_attention else (*parts, *model.parameters())
             expected_inputs = (
                 (*references, *key_refs, *reference.parameters())
                 if cross_attention
                 else (*references, *reference.parameters())
             )
-            actual_grads = torch.autograd.grad((actual.concat.float() * probe.float()).sum(), actual_inputs)
-            expected_grads = torch.autograd.grad((expected.concat.float() * probe.float()).sum(), expected_inputs)
+            actual_grads = torch.autograd.grad((actual.values().float() * probe.float()).sum(), actual_inputs)
+            expected_grads = torch.autograd.grad((expected.values().float() * probe.float()).sum(), expected_inputs)
             torch.testing.assert_close(actual_grads, expected_grads, atol=5e-2, rtol=2e-2)
 
 
@@ -2435,18 +2435,18 @@ class TestNormalizeFunction:
             ],
             ragged_dims=(0,),
         )
-        values = torch.randn_like(template.concat, requires_grad=True)
+        values = torch.randn_like(template.values(), requires_grad=True)
         input = template.packed_like(values)
         reference = F.normalize(values, p=1.5, dim=-1, eps=0.25)
         output = F.normalize(input, p=1.5, dim=-1, eps=0.25)
 
         cotangent = torch.randn_like(reference)
-        output_gradient = torch.autograd.grad(output.concat, values, cotangent)[0]
+        output_gradient = torch.autograd.grad(output.values(), values, cotangent)[0]
         reference_gradient = torch.autograd.grad(reference, values, cotangent)[0]
         assert output.shape == input.shape
         assert output.ragged_dims == input.ragged_dims
-        assert output.concat.shape == values.shape
-        assert_close(output.concat, reference, atol=1e-6, rtol=1e-6)
+        assert output.values().shape == values.shape
+        assert_close(output.values(), reference, atol=1e-6, rtol=1e-6)
         assert_close(output_gradient, reference_gradient, atol=1e-6, rtol=1e-6)
 
     def test_normalize_static_tail_nonleading_ragged_layout_with_vjp(self, device, float_dtype):
@@ -2457,18 +2457,18 @@ class TestNormalizeFunction:
             ],
             ragged_dims=(1,),
         )
-        values = torch.randn_like(template.concat, requires_grad=True)
+        values = torch.randn_like(template.values(), requires_grad=True)
         input = template.packed_like(values)
         reference = F.normalize(values, dim=-1)
 
         output = F.normalize(input, dim=-1)
 
         cotangent = torch.randn_like(reference)
-        output_gradient = torch.autograd.grad(output.concat, values, cotangent)[0]
+        output_gradient = torch.autograd.grad(output.values(), values, cotangent)[0]
         reference_gradient = torch.autograd.grad(reference, values, cotangent)[0]
         assert output.ragged_dims == (1,)
         assert output.shape == input.shape
-        assert_close(output.concat, reference)
+        assert_close(output.values(), reference)
         assert_close(output_gradient, reference_gradient)
 
     @pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile not available")
@@ -2479,14 +2479,14 @@ class TestNormalizeFunction:
                 p=1.5,
                 dim=-1,
                 eps=0.25,
-            ).concat,
+            ).values(),
             backend="aot_eager",
             fullgraph=True,
             dynamic=True,
         )
 
         template = NT([torch.empty(2, 4), torch.empty(3, 4)], ragged_dims=(0,))
-        values = torch.randn_like(template.concat, device=device, requires_grad=True)
+        values = torch.randn_like(template.values(), device=device, requires_grad=True)
         reference = F.normalize(values, p=1.5, dim=-1, eps=0.25)
         output = compiled(template, values)
         cotangent = torch.randn_like(reference)
@@ -2703,7 +2703,7 @@ class TestRankingLosses:
         negative = nested_rand([(2, 4), (1, 4)], device, float_dtype)
         output = F.triplet_margin_with_distance_loss(anchor, positive, negative, reduction="sum")
         reference = F.triplet_margin_with_distance_loss(
-            anchor.concat, positive.concat, negative.concat, reduction="sum"
+            anchor.values(), positive.values(), negative.values(), reduction="sum"
         )
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
 
@@ -2806,12 +2806,12 @@ class TestScaledDotProductAttention:
             inputs = [NT(group, ragged_dims=(1,)) for group in groups]
             reference_inputs = [NT(group, ragged_dims=(1,)) for group in references]
             torch.manual_seed(321)
-            output = run(*inputs).concat
+            output = run(*inputs).values()
             forward_rng = torch.cuda.get_rng_state(device)
             gradients = torch.autograd.grad(output, tuple(part for group in groups for part in group), output.detach())
             torch.testing.assert_close(torch.cuda.get_rng_state(device), forward_rng)
             torch.manual_seed(321)
-            expected = attention(*reference_inputs).concat
+            expected = attention(*reference_inputs).values()
             expected_rng = torch.cuda.get_rng_state(device)
             expected_gradients = torch.autograd.grad(
                 expected, tuple(part for group in references for part in group), expected.detach()
@@ -3203,7 +3203,7 @@ class TestScaledDotProductAttention:
                     # Consume the returned wrapper in eager code, exercising the
                     # forward/backward graph boundary as well as all Q/K/V inputs.
                     weights = [torch.randn_like(part) for part in expected]
-                    loss = (output.concat.float() * torch.cat(weights).float()).sum()
+                    loss = (output.values().float() * torch.cat(weights).float()).sum()
                     reference_loss = sum(
                         (part.float() * weight.float()).sum() for part, weight in zip(expected, weights)
                     )
@@ -3370,7 +3370,7 @@ class TestSoftmaxFamily:
     def test_gumbel_softmax(self, device, float_dtype):
         nt = nested_rand([(2, 4), (3, 4)], device, float_dtype)
         torch.manual_seed(1016)
-        reference = nt.packed_like(F.gumbel_softmax(nt.concat, dim=-1))
+        reference = nt.packed_like(F.gumbel_softmax(nt.values(), dim=-1))
         torch.manual_seed(1016)
         output = F.gumbel_softmax(nt, dim=-1)
         assert_close(output, reference, atol=1e-6, rtol=1e-6)
@@ -3468,7 +3468,7 @@ class TestCrossEntropy:
             logits = [torch.randn(length, 5, dtype=torch.float64, requires_grad=True) for length in lengths]
             targets = [torch.randint(5, (length,)) for length in lengths]
             output = compiled(NestedTensor(logits, ragged_dims=(0,)), NestedTensor(targets, ragged_dims=(0,)))
-            values = output.concat if isinstance(output, NestedTensor) else output
+            values = output.values() if isinstance(output, NestedTensor) else output
 
             reference_logits = [part.detach().clone().requires_grad_() for part in logits]
             reference = F.cross_entropy(
@@ -3485,7 +3485,7 @@ class TestCrossEntropy:
         # Logical input is (B, C, L); its packed rows are (sum(L), C).
         logits, targets = self._logits_and_targets(device, float_dtype)
         output = F.cross_entropy(logits, targets, reduction=reduction)
-        reference = F.cross_entropy(logits.concat, targets.concat, reduction=reduction)
+        reference = F.cross_entropy(logits.values(), targets.values(), reduction=reduction)
         torch.testing.assert_close(output, reference)
 
     def test_weight_and_ignore_index_match_dense(self, device, float_dtype):
@@ -3496,7 +3496,7 @@ class TestCrossEntropy:
         kwargs = {"weight": weight, "ignore_index": ignore_index}
         torch.testing.assert_close(
             F.cross_entropy(logits, targets, **kwargs),
-            F.cross_entropy(logits.concat, targets.concat, **kwargs),
+            F.cross_entropy(logits.values(), targets.values(), **kwargs),
         )
 
     def test_reduction_none_keeps_multi_ragged_structure(self, device, float_dtype):
@@ -3523,7 +3523,7 @@ class TestCrossEntropy:
             ],
             ragged_dims=targets.ragged_dims,
         )
-        torch.testing.assert_close(output.concat, reference.concat)
+        torch.testing.assert_close(output.values(), reference.values())
 
     def test_preserves_autograd(self, device, float_dtype):
         values = torch.randn(5, 5, device=device, dtype=float_dtype, requires_grad=True)
@@ -3546,7 +3546,7 @@ class TestCrossEntropy:
         )
         torch.testing.assert_close(
             F.cross_entropy(logits, sentinel, ignore_index=999),
-            F.cross_entropy(logits.concat, sentinel.concat, ignore_index=999),
+            F.cross_entropy(logits.values(), sentinel.values(), ignore_index=999),
         )
 
     def test_rejects_out_of_range_label_that_is_not_ignored(self, device, float_dtype, request):
@@ -3593,7 +3593,7 @@ class TestCrossEntropy:
         logits, targets = self._logits_and_targets(device, float_dtype)
         torch.testing.assert_close(
             F.cross_entropy(logits, targets, label_smoothing=0.1),
-            F.cross_entropy(logits.concat, targets.concat, label_smoothing=0.1),
+            F.cross_entropy(logits.values(), targets.values(), label_smoothing=0.1),
         )
 
     @pytest.mark.parametrize("layout", ["sequence", "samples", "pair", "classification"])
@@ -3681,7 +3681,7 @@ class TestCrossEntropy:
         if reduction == "none":
             torch.testing.assert_close(actual.element_sizes(), expected.element_sizes())
             assert actual.ragged_dims == expected.ragged_dims
-            actual_values, expected_values = actual.concat, expected.concat
+            actual_values, expected_values = actual.values(), expected.values()
         else:
             actual_values, expected_values = actual, reference
         reference_leaves = reference_elements + reference_targets if probabilities else reference_elements
@@ -3763,7 +3763,7 @@ class TestCrossEntropy:
         if reduction == "mean":
             reference = reference / sum(lengths)
         if reduction == "none":
-            torch.testing.assert_close(result.concat, torch.cat(reference_parts))
+            torch.testing.assert_close(result.values(), torch.cat(reference_parts))
         else:
             torch.testing.assert_close(result, reference)
         torch.testing.assert_close(gradient, torch.autograd.grad(reference, values)[0])
@@ -3860,9 +3860,9 @@ class TestCrossEntropy:
             output = F.cross_entropy(logits, targets, size_average=size_average, reduce=reduce, label_smoothing=0.1)
         with pytest.warns(UserWarning, match="size_average and reduce"):
             expected = F.cross_entropy(
-                logits.concat, targets.concat, size_average=size_average, reduce=reduce, label_smoothing=0.1
+                logits.values(), targets.values(), size_average=size_average, reduce=reduce, label_smoothing=0.1
             )
-        torch.testing.assert_close(output.concat if isinstance(output, NestedTensor) else output, expected)
+        torch.testing.assert_close(output.values() if isinstance(output, NestedTensor) else output, expected)
 
     def test_target_type_and_probability_ignore_errors_are_preserved(self, device, float_dtype):
         logits, targets = self._logits_and_targets(device, float_dtype)
@@ -3884,7 +3884,7 @@ class TestCrossEntropy:
         gradient = torch.autograd.grad(actual, values)[0]
         reference = F.cross_entropy(values, target_values, reduction=reduction)
         torch.testing.assert_close(
-            output.concat if isinstance(output, NestedTensor) else output, reference, equal_nan=True
+            output.values() if isinstance(output, NestedTensor) else output, reference, equal_nan=True
         )
         torch.testing.assert_close(gradient, torch.autograd.grad(reference.sum(), values)[0])
 
@@ -3912,7 +3912,7 @@ class TestCrossEntropy:
         reference = F.cross_entropy(
             dense_input, dense_target, weight=weights, label_smoothing=smoothing, reduction=reduction
         )
-        torch.testing.assert_close(output.concat if isinstance(output, NestedTensor) else output, reference)
+        torch.testing.assert_close(output.values() if isinstance(output, NestedTensor) else output, reference)
         torch.testing.assert_close(gradient, torch.autograd.grad(reference.sum(), values)[0])
 
     @pytest.mark.parametrize("native", [False, True])
@@ -3972,7 +3972,7 @@ def test_loss_broadcasts_sample_boundaries_and_retains_unreduced_topology():
     expected = [torch.tensor([[0.0], [1.0]]), torch.tensor([[1.0], [0.0]])]
     for actual, reference in zip(output, expected):
         torch.testing.assert_close(actual, reference)
-    grads = torch.autograd.grad(output.concat.mean(), parts)
+    grads = torch.autograd.grad(output.values().mean(), parts)
     torch.testing.assert_close(grads[0], torch.tensor([[0.0], [0.5]]))
     torch.testing.assert_close(grads[1], torch.tensor([[0.5]]))
 
@@ -4071,7 +4071,7 @@ def test_sdpa_preserves_value_feature_width(device, query_width, value_width):
         torch.testing.assert_close(result, reference, atol=0.02, rtol=0.02)
 
     leaves = (*queries, *keys, *values)
-    actual_grads = torch.autograd.grad(actual.concat.square().sum(), leaves)
+    actual_grads = torch.autograd.grad(actual.values().square().sum(), leaves)
     expected_grads = torch.autograd.grad(sum(part.square().sum() for part in expected), leaves)
     for result, reference in zip(actual_grads, expected_grads):
         torch.testing.assert_close(result, reference, atol=0.04, rtol=0.04)
@@ -4124,7 +4124,7 @@ def test_gaussian_nll_fullgraph_preserves_variance_gradients():
     variance = torch.ones(6, 3, requires_grad=True)
     compiled = torch.compile(F.gaussian_nll_loss, backend="aot_eager", fullgraph=True)
     actual = compiled(NT(parts), target, variance, reduction="sum", full=True)
-    expected = F.gaussian_nll_loss(torch.cat(parts), target.concat, variance, reduction="sum", full=True)
+    expected = F.gaussian_nll_loss(torch.cat(parts), target.values(), variance, reduction="sum", full=True)
     torch.testing.assert_close(actual, expected)
     actual_grads = torch.autograd.grad(actual, (*parts, variance))
     expected_grads = torch.autograd.grad(expected, (*parts, variance))
@@ -4139,10 +4139,10 @@ def test_local_response_norm_fullgraph_sample_boundaries(device, backend, ragged
     shapes = ((2, 3, 4), (4, 2, 5)) if ragged_channels else ((3, 2, 4), (3, 4, 2))
     parts = [torch.randn(shape, device=device, dtype=torch.float64, requires_grad=True) for shape in shapes]
     template = NT(parts, padding_value=float("nan"))
-    values = template.concat.detach().requires_grad_()
+    values = template.values().detach().requires_grad_()
     reference_parts = [part.detach().clone().requires_grad_() for part in parts]
     run = torch.compile(
-        lambda source, packed: F.local_response_norm(source.packed_like(packed), 4, alpha=0.2, beta=0.6).concat,
+        lambda source, packed: F.local_response_norm(source.packed_like(packed), 4, alpha=0.2, beta=0.6).values(),
         backend=backend,
         fullgraph=True,
         dynamic=True,
@@ -4152,11 +4152,11 @@ def test_local_response_norm_fullgraph_sample_boundaries(device, backend, ragged
         [F.local_response_norm(part.unsqueeze(0), 4, alpha=0.2, beta=0.6).squeeze(0) for part in reference_parts],
         ragged_dims=template.ragged_dims,
     )
-    assert_close(actual, reference.concat)
+    assert_close(actual, reference.values())
     cotangent = torch.randn_like(actual)
     actual_grad = torch.autograd.grad(actual, values, cotangent)[0]
-    reference_grads = torch.autograd.grad(reference.concat, reference_parts, cotangent)
-    assert_close(actual_grad, NT(reference_grads, ragged_dims=template.ragged_dims).concat)
+    reference_grads = torch.autograd.grad(reference.values(), reference_parts, cotangent)
+    assert_close(actual_grad, NT(reference_grads, ragged_dims=template.ragged_dims).values())
 
 
 @pytest.mark.parametrize("classes", (-1, 5))
@@ -4174,7 +4174,7 @@ def test_one_hot_fullgraph_inferred_classes(device, backend, classes):
     expected = NT([F.one_hot(part, num_classes=5) for part in source], ragged_dims=(0,))
     assert_close(actual, expected)
     if classes == -1:
-        changed = source.packed_like(source.concat.remainder(2))
+        changed = source.packed_like(source.values().remainder(2))
         assert_close(run(changed), NT([F.one_hot(part, num_classes=2) for part in changed], ragged_dims=(0,)))
 
 
@@ -4186,7 +4186,7 @@ def test_gumbel_softmax_fullgraph_packed_noise_and_vjp(device, dim, hard):
         [torch.randn(2, 3, device=device, dtype=torch.float64), torch.randn(4, 3, device=device, dtype=torch.float64)],
         ragged_dims=(0,),
     )
-    values = template.concat.detach().requires_grad_()
+    values = template.values().detach().requires_grad_()
     reference_values = values.detach().clone().requires_grad_()
     torch.manual_seed(918)
     noise = -torch.empty_like(reference_values).exponential_().log()
@@ -4203,7 +4203,7 @@ def test_gumbel_softmax_fullgraph_packed_noise_and_vjp(device, dim, hard):
         ]
     expected = torch.cat(references)
     run = torch.compile(
-        lambda source, packed: F.gumbel_softmax(source.packed_like(packed), tau=0.7, hard=hard, dim=dim).concat,
+        lambda source, packed: F.gumbel_softmax(source.packed_like(packed), tau=0.7, hard=hard, dim=dim).values(),
         backend="aot_eager",
         fullgraph=True,
         dynamic=True,
@@ -4213,7 +4213,8 @@ def test_gumbel_softmax_fullgraph_packed_noise_and_vjp(device, dim, hard):
     assert_close(actual, expected)
     cotangent = torch.randn_like(actual)
     assert_close(
-        torch.autograd.grad(actual, values, cotangent)[0], torch.autograd.grad(expected, reference_values, cotangent)[0]
+        torch.autograd.grad(actual, values, cotangent)[0],
+        torch.autograd.grad(expected, reference_values, cotangent)[0],
     )
 
 
@@ -4226,11 +4227,11 @@ def test_pdist_fullgraph_condensed_values_and_vjp(device, backend, p):
         for rows, columns in ((0, 3), (1, 2), (4, 2), (3, 3))
     ]
     template = NT(parts, ragged_dims=(0, 1))
-    values = template.concat.detach().requires_grad_()
+    values = template.values().detach().requires_grad_()
     reference_parts = [part.detach().clone().requires_grad_() for part in parts]
 
     def run(source, packed):
-        return F.pdist(source.packed_like(packed), p=p).concat
+        return F.pdist(source.packed_like(packed), p=p).values()
 
     if backend is not None:
         run = torch.compile(run, backend=backend, fullgraph=True, dynamic=True)
@@ -4241,7 +4242,7 @@ def test_pdist_fullgraph_condensed_values_and_vjp(device, backend, p):
     assert_close(actual, expected)
     cotangent = torch.randn_like(actual)
     expected_grads = torch.autograd.grad(expected, reference_parts, cotangent)
-    assert_close(torch.autograd.grad(actual, values, cotangent)[0], NT(expected_grads, ragged_dims=(0, 1)).concat)
+    assert_close(torch.autograd.grad(actual, values, cotangent)[0], NT(expected_grads, ragged_dims=(0, 1)).values())
 
 
 @pytest.mark.parametrize("spatial_rank", (2, 3))
@@ -4253,7 +4254,7 @@ def test_fractional_max_pool_fullgraph_indices_randomness_and_vjp(device, backen
     spatial_shapes = ((5, 6), (7, 4)) if spatial_rank == 2 else ((4, 5, 6), (6, 7, 4))
     parts = [torch.randn(2, *shape, device=device, dtype=torch.float64, requires_grad=True) for shape in spatial_shapes]
     template = NT(parts, ragged_dims=tuple(range(1, spatial_rank + 1)))
-    values = template.concat.detach().requires_grad_()
+    values = template.values().detach().requires_grad_()
     reference_parts = [part.detach().clone().requires_grad_() for part in parts]
     samples = torch.full((1, 2, spatial_rank), 0.37, device=device, dtype=torch.float64) if ratio else None
     kwargs = {"output_ratio": (0.5,) * spatial_rank} if ratio else {"output_size": 2}
@@ -4274,11 +4275,11 @@ def test_fractional_max_pool_fullgraph_indices_randomness_and_vjp(device, backen
     actual, actual_indices = run(template, values)
     assert_close(actual, expected)
     assert_close(actual_indices, NT(expected_indices, ragged_dims=template.ragged_dims))
-    cotangent = torch.randn_like(actual.concat)
-    expected_grads = torch.autograd.grad(expected.concat, reference_parts, cotangent)
+    cotangent = torch.randn_like(actual.values())
+    expected_grads = torch.autograd.grad(expected.values(), reference_parts, cotangent)
     assert_close(
-        torch.autograd.grad(actual.concat, values, cotangent)[0],
-        NT(expected_grads, ragged_dims=template.ragged_dims).concat,
+        torch.autograd.grad(actual.values(), values, cotangent)[0],
+        NT(expected_grads, ragged_dims=template.ragged_dims).values(),
     )
 
 
@@ -4291,11 +4292,11 @@ def test_normalize_ragged_fullgraph_values_and_vjp(device, backend, p):
     with torch.no_grad():
         parts[-1][0] = 0
     source = NT(parts, ragged_dims=(0,))
-    packed = source.concat.detach().requires_grad_()
+    packed = source.values().detach().requires_grad_()
     references = [part.detach().clone().requires_grad_() for part in parts]
     expected = torch.cat([F.normalize(part, p=p, dim=0) for part in references])
     run = torch.compile(
-        lambda template, values: F.normalize(template.packed_like(values), p=p, dim=1).concat,
+        lambda template, values: F.normalize(template.packed_like(values), p=p, dim=1).values(),
         backend=backend,
         fullgraph=True,
         dynamic=True,
@@ -4316,7 +4317,7 @@ def test_gumbel_softmax_inductor_ragged_groups(device):
         ],
         ragged_dims=(0, 1),
     )
-    packed = source.concat.detach().requires_grad_()
+    packed = source.values().detach().requires_grad_()
     run = torch.compile(
         lambda template, values: F.gumbel_softmax(template.packed_like(values), hard=True, dim=2),
         backend="inductor",
@@ -4327,7 +4328,7 @@ def test_gumbel_softmax_inductor_ragged_groups(device):
     for part in output:
         assert_close(part.sum(1), torch.ones_like(part.sum(1)))
         assert torch.all((part == 0) | (part == 1))
-    gradient = torch.autograd.grad(output.concat, packed, torch.randn_like(output.concat))[0]
+    gradient = torch.autograd.grad(output.values(), packed, torch.randn_like(output.values()))[0]
     assert torch.isfinite(gradient).all()
     assert gradient.count_nonzero() > 0
 
@@ -4339,7 +4340,7 @@ def test_prelu_fullgraph_declared_ragged_channels(device, nonfinite):
     if nonfinite:
         parts[0][0, 0] = float("inf")
     source = NT(parts, ragged_dims=(0, 1))
-    values = source.concat.detach().requires_grad_()
+    values = source.values().detach().requires_grad_()
     weight = torch.randn(3, device=device, dtype=torch.float64, requires_grad=True)
     if nonfinite:
         with torch.no_grad():
@@ -4349,9 +4350,9 @@ def test_prelu_fullgraph_declared_ragged_channels(device, nonfinite):
     references = NT(
         [F.prelu(part.unsqueeze(0), reference_weight).squeeze(0) for part in source.packed_like(reference_values)],
         ragged_dims=(0, 1),
-    ).concat
+    ).values()
     run = torch.compile(
-        lambda template, packed, slopes: F.prelu(template.packed_like(packed), slopes).concat,
+        lambda template, packed, slopes: F.prelu(template.packed_like(packed), slopes).values(),
         backend="aot_eager",
         fullgraph=True,
         dynamic=True,
@@ -4368,11 +4369,11 @@ def test_prelu_fullgraph_declared_ragged_channels(device, nonfinite):
 def test_softmin_fullgraph_ragged_values_and_vjp(device):
     torch.compiler.reset()
     source = NT([torch.randn(rows, 3, device=device, dtype=torch.float64) for rows in (2, 4)], ragged_dims=(0,))
-    values = source.concat.detach().requires_grad_()
+    values = source.values().detach().requires_grad_()
     reference_values = values.detach().clone().requires_grad_()
     expected = torch.cat([F.softmin(part, dim=0) for part in reference_values.split((2, 4))])
     run = torch.compile(
-        lambda template, packed: F.softmin(template.packed_like(packed), dim=1).concat,
+        lambda template, packed: F.softmin(template.packed_like(packed), dim=1).values(),
         backend="inductor",
         fullgraph=True,
         dynamic=True,
@@ -4381,7 +4382,8 @@ def test_softmin_fullgraph_ragged_values_and_vjp(device):
     assert_close(actual, expected)
     cotangent = torch.randn_like(actual)
     assert_close(
-        torch.autograd.grad(actual, values, cotangent)[0], torch.autograd.grad(expected, reference_values, cotangent)[0]
+        torch.autograd.grad(actual, values, cotangent)[0],
+        torch.autograd.grad(expected, reference_values, cotangent)[0],
     )
 
 
@@ -4394,11 +4396,11 @@ def test_normalize_ragged_zero_coordinate_hessian(device, p, dtype):
         torch.zeros(3, device=device, dtype=dtype),
     ]
     source = NT(parts, ragged_dims=(0,))
-    packed = source.concat.detach().requires_grad_()
+    packed = source.values().detach().requires_grad_()
     reference = packed.detach().clone().requires_grad_()
     cotangent = torch.tensor([1.0, -2.0, 0.5, 3.0, -0.25, 0.25, -1.0, 2.0], device=device, dtype=dtype)
     direction = torch.tensor([2.0, 1.0, -1.0, 0.5, -3.0, 1.0, 0.5, -0.5], device=device, dtype=dtype)
-    actual = F.normalize(source.packed_like(packed), p=p, dim=1).concat
+    actual = F.normalize(source.packed_like(packed), p=p, dim=1).values()
     expected = torch.cat([F.normalize(part, p=p, dim=0) for part in reference.split((3, 2, 3))])
     actual_grad = torch.autograd.grad(actual, packed, cotangent, create_graph=True)[0]
     expected_grad = torch.autograd.grad(expected, reference, cotangent, create_graph=True)[0]
@@ -4430,7 +4432,7 @@ def test_local_response_norm_low_precision_window_accumulation(device, dtype, ra
     shapes = ((3, 2), (4, 3)) if ragged_channels else ((3, 2), (3, 4))
     parts = [torch.full(shape, 180.0, device=device, dtype=dtype) for shape in shapes]
     source = NT(parts, ragged_dims=(0, 1) if ragged_channels else (1,))
-    values = source.concat.detach().requires_grad_()
+    values = source.values().detach().requires_grad_()
     references = [part.detach().clone().requires_grad_() for part in parts]
     expected = NT(
         [F.local_response_norm(part.unsqueeze(0), 3, alpha=0.2, beta=0.6).squeeze(0) for part in references],
@@ -4438,17 +4440,17 @@ def test_local_response_norm_low_precision_window_accumulation(device, dtype, ra
     )
 
     def run(template, packed):
-        return F.local_response_norm(template.packed_like(packed), 3, alpha=0.2, beta=0.6).concat
+        return F.local_response_norm(template.packed_like(packed), 3, alpha=0.2, beta=0.6).values()
 
     if backend is not None:
         run = torch.compile(run, backend=backend, fullgraph=True, dynamic=True)
     actual = run(source, values)
     tolerances = {"rtol": 0.02, "atol": 0.002} if dtype == torch.bfloat16 else {"rtol": 0.002, "atol": 0.0002}
-    assert_close(actual, expected.concat, **tolerances)
+    assert_close(actual, expected.values(), **tolerances)
     cotangent = torch.ones_like(actual)
-    expected_grads = torch.autograd.grad(expected.concat, references, cotangent)
+    expected_grads = torch.autograd.grad(expected.values(), references, cotangent)
     assert_close(
         torch.autograd.grad(actual, values, cotangent)[0],
-        NT(expected_grads, ragged_dims=source.ragged_dims).concat,
+        NT(expected_grads, ragged_dims=source.ragged_dims).values(),
         **tolerances,
     )

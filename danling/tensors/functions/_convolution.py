@@ -61,7 +61,7 @@ def _has_static_input_channels(input: NestedTensor, channels: int, rank: int) ->
         return all(len(shape) == rank + 1 and int(shape[0]) == int(channels) for shape in input._element_shapes)
     if 0 in input._static_dims:
         # A declared static channel axis owns a packed axis; its extent is schema, not data.
-        return int(input.concat.shape[1 + input._static_dims.index(0)]) == int(channels)
+        return int(input.values().shape[1 + input._static_dims.index(0)]) == int(channels)
     return _static_channels_match(input._physical_shape, channels)
 
 
@@ -113,14 +113,14 @@ def _packed_pointwise_conv_transpose_channel_dim(
     if not _has_static_input_channels(input, in_channels, rank):
         return None
 
-    suffix_rank = input.concat.dim() - 1
+    suffix_rank = input.values().dim() - 1
     if suffix_rank <= 0:
         return None
     static_dims = tuple(int(dim) for dim in input._permutation[-suffix_rank:])
     if 0 not in static_dims:
         return None
     channel_dim = 1 + static_dims.index(0)
-    if int(input.concat.shape[channel_dim]) != in_channels:
+    if int(input.values().shape[channel_dim]) != in_channels:
         return None
     return channel_dim
 
@@ -132,7 +132,7 @@ def _packed_pointwise_conv_transpose(
     channel_dim: int,
 ) -> NestedTensor:
     out_channels = int(weight.shape[1])
-    values = input.concat
+    values = input.values()
     moved = channel_dim != values.dim() - 1
     if moved:
         values = values.movedim(channel_dim, -1)
@@ -197,21 +197,21 @@ def _can_use_spatial_tile_convolution(
         return False
     if input_channel_dim < 0 or input_channel_dim >= weight.dim():
         return False
-    if not input.concat.is_cuda:
+    if not input.values().is_cuda:
         return False
-    if weight.device != input.concat.device:
+    if weight.device != input.values().device:
         return False
-    if weight.dtype != input.concat.dtype:
+    if weight.dtype != input.values().dtype:
         return False
     if input._physical_shape.size(1) != rank + 1:
         return False
-    if tuple(int(dim) for dim in input._permutation) != (*range(1, rank + 1), 0) or input.concat.dim() != 2:
+    if tuple(int(dim) for dim in input._permutation) != (*range(1, rank + 1), 0) or input.values().dim() != 2:
         return False
-    if not input.concat.is_contiguous():
+    if not input.values().is_contiguous():
         return False
 
     in_channels = int(weight.shape[input_channel_dim])
-    if int(input.concat.shape[1]) != in_channels:
+    if int(input.values().shape[1]) != in_channels:
         return False
     return _has_static_input_channels(input, in_channels, rank)
 

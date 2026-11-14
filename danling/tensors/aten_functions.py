@@ -208,7 +208,7 @@ def per_element_fallback(func, args, kwargs):
 
         def replace_nested_with_values(obj):
             if isinstance(obj, NestedTensor):
-                return obj.concat
+                return obj.values()
             if isinstance(obj, (list, tuple)):
                 return type(obj)(replace_nested_with_values(x) for x in obj)
             return obj
@@ -217,7 +217,7 @@ def per_element_fallback(func, args, kwargs):
         packed_kwargs = {k: replace_nested_with_values(v) for k, v in kwargs.items()} if kwargs else {}
 
         def rebuild_empty(t: Tensor):
-            if t.shape == source.concat.shape:
+            if t.shape == source.values().shape:
                 return source.packed_like(t)
             if not t.dim() or t.shape[0] != 0:
                 raise NotImplementedError("Empty NestedTensor fallback cannot infer a changed packed row axis")
@@ -291,18 +291,18 @@ def _resolve_other(source, other, func):
 
     if isinstance(other, NestedTensor):
         if source._has_same_structure(other):
-            return other.concat
+            return other.values()
         if len(source) != len(other):
             raise ValueError(
                 "NestedTensor batch length mismatch between source and other: "
                 f"source={len(source)}, other={len(other)}"
             )
         return _expand_nested_as_values(source, other)
-    device = source.concat.device
+    device = source.values().device
     if isinstance(other, Tensor) and other.dim() > 0:
         aligned = _maybe_align_dense_to_nested(source, other)
         if aligned is not None and source._has_same_structure(aligned):
-            values = aligned.concat
+            values = aligned.values()
             return values if values.device == device else values.to(device=device)
         candidate = other if other.device == device else other.to(device=device)
         resolved = _resolve_dense_for_values(source, candidate)
@@ -333,10 +333,10 @@ def _resolve_ternary_other(source, other):
     """
     from .nested_tensor import NestedTensor
 
-    device = source.concat.device
+    device = source.values().device
     if isinstance(other, NestedTensor):
         if source._has_same_structure(other):
-            values = other.concat
+            values = other.values()
             return values if values.device == device else values.to(device=device)
         values = _broadcast_nested_to_values(source, other)
         if values is None:
@@ -349,7 +349,7 @@ def _resolve_ternary_other(source, other):
             return other if other.device == device else other.to(device=device)
         aligned = _maybe_align_dense_to_nested(source, other)
         if aligned is not None and source._has_same_structure(aligned):
-            values = aligned.concat
+            values = aligned.values()
             return values if values.device == device else values.to(device=device)
         # Not ``_resolve_dense_for_values``: its packed-shape rule reads an operand shaped like
         # ``_values`` as elementwise on the packed rows, which for a ternary op would silently
@@ -374,9 +374,9 @@ def _elementwise_binary_handler(func, args, kwargs):
     extra = args[2:]
     if isinstance(lhs, NestedTensor):
         resolved = _resolve_other(lhs, rhs, func)
-        return lhs._packed_like_unchecked(func(lhs.concat, resolved, *extra, **kwargs))
+        return lhs._packed_like_unchecked(func(lhs.values(), resolved, *extra, **kwargs))
     resolved = _resolve_other(rhs, lhs, func)
-    return rhs._packed_like_unchecked(func(resolved, rhs.concat, *extra, **kwargs))
+    return rhs._packed_like_unchecked(func(resolved, rhs.values(), *extra, **kwargs))
 
 
 # ---------------------------------------------------------------------------
@@ -387,7 +387,7 @@ def _elementwise_binary_handler(func, args, kwargs):
 def _elementwise_unary_handler(func, args, kwargs):
     r"""Dispatch handler for elementwise unary ops applied to _values."""
     source = args[0]
-    return source._packed_like_unchecked(func(source.concat, *args[1:], **kwargs))
+    return source._packed_like_unchecked(func(source.values(), *args[1:], **kwargs))
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +411,7 @@ ATEN_GLOBAL_REDUCTION_OPS = [
 def _global_reduction_handler(func, args, kwargs):
     r"""Dispatch handler for global reductions (sum, mean, etc.) over all _values."""
     source = args[0]
-    return func(source.concat, **kwargs)
+    return func(source.values(), **kwargs)
 
 
 def _extract_dim_keepdim(args, kwargs, default_dim):
@@ -469,7 +469,7 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
         return per_element_fallback(func, (source, dim_arg, kd), kwargs)
 
     if len(dims) == 0:
-        return _call(source.concat, none_dim, keepdim)
+        return _call(source.values(), none_dim, keepdim)
 
     for dim in dims:
         if dim < -source.dim() or dim >= source.dim():
@@ -485,7 +485,7 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
             # packed leading axis is precisely their joint coordinate set.
             # This also serves reductions inside a vmap over a static axis.
             values_dims = [0, *(1 + source._static_dims.index(dim) for dim in selected if dim in source._static_dims)]
-            output = _call(source.concat, values_dims, False)
+            output = _call(source.values(), values_dims, False)
             remaining = tuple(dim for dim in source._static_dims if dim not in selected)
             logical_order = tuple(remaining.index(dim) for dim in sorted(remaining))
             if logical_order != tuple(range(len(remaining))):
@@ -585,7 +585,7 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
         if all(dim_i is not None for dim_i in values_dims):
             return _reduce_non_ragged_packed_dims(
                 source,
-                _call(source.concat, [int(dim_i) for dim_i in values_dims], keepdim),
+                _call(source.values(), [int(dim_i) for dim_i in values_dims], keepdim),
                 dims_adj,
                 keepdim,
             )
@@ -615,7 +615,7 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
     if values_dim is not None:
         return _reduce_non_ragged_packed(
             source,
-            _call(source.concat, [values_dim], keepdim),
+            _call(source.values(), [values_dim], keepdim),
             dim_adj,
             keepdim,
         )
@@ -652,7 +652,7 @@ def _dim_reduction_dispatch(func, source, dims, keepdim, kwargs, *, ragged_fill,
         output = _call(padded, [1], keepdim)
         return _restore_segment_batch_dim(source, output, dim_adj, keepdim)
 
-    return _reduce_non_ragged_packed(source, _call(source.concat, [dim_adj], keepdim), dim_adj, keepdim)
+    return _reduce_non_ragged_packed(source, _call(source.values(), [dim_adj], keepdim), dim_adj, keepdim)
 
 
 @NestedTensorAtenRegistry.implement(aten.any.dim, compile_safe=True)
@@ -681,7 +681,7 @@ def arg_extrema_reduction(func, args, kwargs):
     r"""Handle ``argmax/argmin`` for per-element global or dim reductions."""
     source, dims, keepdim = _extract_dim_keepdim(args, kwargs, None)
     largest = func is aten.argmax.default
-    values = source.concat
+    values = source.values()
     if values.dtype == torch.bool or values.dtype.is_complex:
         # Preserve native arg extrema dtype errors instead of inheriting the
         # broader max/min dtype support of the shared index-selection kernel.
@@ -712,14 +712,14 @@ def arg_extrema_reduction(func, args, kwargs):
     if values_dim is None:
         return _packed_max_min_reduction(source, (dim_adj,), keepdim, largest=largest, return_values=False)
 
-    out_values = func(source.concat, values_dim, keepdim, **kwargs)
+    out_values = func(source.values(), values_dim, keepdim, **kwargs)
     return _reduce_non_ragged_packed(source, out_values, dim_adj, keepdim)
 
 
 @NestedTensorAtenRegistry.implement(aten.prod.default, compile_safe=True)
 def prod_global_reduction(func, args, kwargs):
     r"""Reduce all true packed values with native product dtype and gradient semantics."""
-    return func(args[0].concat, **kwargs)
+    return func(args[0].values(), **kwargs)
 
 
 @NestedTensorAtenRegistry.implement(aten.prod.dim_int, compile_safe=True)
@@ -740,7 +740,7 @@ def prod_dim_reduction(func, args, kwargs):
     values_dim = _physical_to_values_dim(source, dim_adj)
     if values_dim is None:
         return _packed_prod_reduction(source, (dim_adj,), keepdim, **kwargs)
-    output = func(source.concat, values_dim, keepdim, **kwargs)
+    output = func(source.values(), values_dim, keepdim, **kwargs)
     return _reduce_non_ragged_packed(source, output, dim_adj, keepdim)
 
 
@@ -758,7 +758,7 @@ def count_nonzero_dim_reduction(func, args, kwargs):
     r"""Handle ``count_nonzero`` dim reductions on packed values for common dim patterns."""
     source, dims, _ = _extract_dim_keepdim(args, kwargs, ())
     if len(dims) == 0:
-        return aten.count_nonzero.default(source.concat, **kwargs)
+        return aten.count_nonzero.default(source.values(), **kwargs)
 
     for dim in dims:
         if dim < -source.dim() or dim >= source.dim():
@@ -773,7 +773,7 @@ def count_nonzero_dim_reduction(func, args, kwargs):
         dims_adj = _translate_dims(source, dims)
         values_dims = tuple(_physical_to_values_dim(source, dim_i) for dim_i in dims_adj)
         if all(dim_i is not None for dim_i in values_dims):
-            out_values = func(source.concat, list(cast(tuple[int, ...], values_dims)), **kwargs)
+            out_values = func(source.values(), list(cast(tuple[int, ...], values_dims)), **kwargs)
             return _reduce_non_ragged_packed_dims(source, out_values, dims_adj, keepdim=False)
         if source._ragged_rank <= 1 and 0 in dims_adj and _is_packed_identity(source):
             padded, _, _, _, _, _ = _packed_to_padded(source, fill_value=0)
@@ -800,7 +800,7 @@ def count_nonzero_dim_reduction(func, args, kwargs):
         output = func(padded, [1 + dim_adj], **kwargs)
         return _restore_segment_batch_dim(source, output, dim_adj, keepdim=False)
 
-    out_values = func(source.concat, [values_dim], **kwargs)
+    out_values = func(source.values(), [values_dim], **kwargs)
     return _reduce_non_ragged_packed(source, out_values, dim_adj, keepdim=False)
 
 
@@ -840,7 +840,7 @@ def _order_stat_pair_reduction(source: NestedTensor, dim: int, keepdim: bool, ap
             indices.append(index)
         return _stack_or_nest(values, source), _stack_or_nest(indices, source)
 
-    values_out, indices_out = apply(source.concat, values_dim, keepdim)
+    values_out, indices_out = apply(source.values(), values_dim, keepdim)
     return (
         _reduce_non_ragged_packed(source, values_out, dim_adj, keepdim),
         _reduce_non_ragged_packed(source, indices_out, dim_adj, keepdim),
@@ -951,7 +951,7 @@ def linalg_vector_norm(func, args, kwargs):
             {"dtype": dtype, **kwargs},
         )
 
-    out_values = func(source.concat, ord_value, [values_dim], keepdim, dtype=dtype, **kwargs)
+    out_values = func(source.values(), ord_value, [values_dim], keepdim, dtype=dtype, **kwargs)
     return _reduce_non_ragged_packed(source, out_values, dim_adj, keepdim)
 
 
@@ -1015,7 +1015,7 @@ def max_min_dim_reduction(func, args, kwargs):
                 return reduced
         return _packed_max_min_reduction(source, (dim_adj,), keepdim, largest=largest)
 
-    values, indices = func(source.concat, values_dim, keepdim, **kwargs)
+    values, indices = func(source.values(), values_dim, keepdim, **kwargs)
     return (
         _reduce_non_ragged_packed(source, values, dim_adj, keepdim),
         _reduce_non_ragged_packed(source, indices, dim_adj, keepdim),
@@ -1029,7 +1029,7 @@ def aminmax_reduction(func, args, kwargs):
     dim = kwargs.pop("dim", None)
     keepdim = kwargs.pop("keepdim", False)
     if dim is None:
-        minimum, maximum = func(source.concat, dim=None, keepdim=False, **kwargs)
+        minimum, maximum = func(source.values(), dim=None, keepdim=False, **kwargs)
         if keepdim:
             shape = (1,) * source.dim()
             minimum, maximum = minimum.reshape(shape), maximum.reshape(shape)
@@ -1047,7 +1047,7 @@ def aminmax_reduction(func, args, kwargs):
     values_dim = _physical_to_values_dim(source, dim_adj)
     if values_dim is None:
         return _packed_aminmax_reduction(source, (dim_adj,), keepdim)
-    minimum, maximum = func(source.concat, dim=values_dim, keepdim=keepdim, **kwargs)
+    minimum, maximum = func(source.values(), dim=values_dim, keepdim=keepdim, **kwargs)
     return (
         _reduce_non_ragged_packed(source, minimum, dim_adj, keepdim),
         _reduce_non_ragged_packed(source, maximum, dim_adj, keepdim),
@@ -1059,7 +1059,7 @@ def var_mean_dim_reduction(func, args, kwargs):
     r"""Handle ``var_mean`` correction reductions via packed fastpaths where valid."""
     source, dims, keepdim = _extract_dim_keepdim(args, kwargs, None)
     if len(dims) == 0:
-        out_var, out_mean = func(source.concat, None, keepdim=keepdim, **kwargs)
+        out_var, out_mean = func(source.values(), None, keepdim=keepdim, **kwargs)
         return out_var, out_mean
 
     for dim in dims:
@@ -1087,7 +1087,7 @@ def var_mean_dim_reduction(func, args, kwargs):
         values_dims = tuple(_physical_to_values_dim(source, dim_i) for dim_i in dims_adj)
         if all(dim_i is not None for dim_i in values_dims):
             out_var, out_mean = func(
-                source.concat,
+                source.values(),
                 list(cast(tuple[int, ...], values_dims)),
                 keepdim=keepdim,
                 **kwargs,
@@ -1120,7 +1120,7 @@ def var_mean_dim_reduction(func, args, kwargs):
         kwargs["keepdim"] = keepdim
         return per_element_fallback(func, (source, [dim_adj]), kwargs)
 
-    out_var, out_mean = func(source.concat, [values_dim], keepdim=keepdim, **kwargs)
+    out_var, out_mean = func(source.values(), [values_dim], keepdim=keepdim, **kwargs)
     return (
         _reduce_non_ragged_packed(source, out_var, dim_adj, keepdim),
         _reduce_non_ragged_packed(source, out_mean, dim_adj, keepdim),
@@ -1183,7 +1183,7 @@ class _GroupedStats(torch.autograd.Function):
 def _packed_stats_reduction(source, dims_adj, keepdim, *, correction=None, std=False):
     r"""Reduce joint static/ragged moments with real variance for complex inputs."""
     dims_adj = _canonical_packed_reduction_dims(source, dims_adj)
-    values = source.concat
+    values = source.values()
     sample = aten.mean.dim(values[:0], [0], False)
     add_values = _numeric_reduction_values(values, sample.dtype, mean=True)
     remaining_ragged, _, offsets, groups, output_size = _packed_reduction_groups(source, dims_adj, device=values.device)
@@ -1229,11 +1229,11 @@ def _per_element_numel(source: NestedTensor) -> Tensor:
 def _per_element_true_counts(mask: NestedTensor) -> Tensor:
     r"""Count ``True`` values per element in packed mask storage."""
     if len(mask) == 0:
-        return torch.empty((0,), dtype=torch.long, device=mask.concat.device)
-    if mask.concat.dim() > 1:
-        row_counts = mask.concat.reshape(mask.concat.shape[0], -1).to(dtype=torch.long).sum(dim=1)
+        return torch.empty((0,), dtype=torch.long, device=mask.values().device)
+    if mask.values().dim() > 1:
+        row_counts = mask.values().reshape(mask.values().shape[0], -1).to(dtype=torch.long).sum(dim=1)
     else:
-        row_counts = mask.concat.to(dtype=torch.long)
+        row_counts = mask.values().to(dtype=torch.long)
     prefix = torch.zeros((row_counts.numel() + 1,), dtype=torch.long, device=row_counts.device)
     prefix[1:] = torch.cumsum(row_counts, dim=0)
     offsets = mask._offsets.to(device=row_counts.device)
@@ -1250,9 +1250,9 @@ def _masked_scatter_supply_suffices(mask: NestedTensor, source: NestedTensor) ->
     """
     if len(mask) != len(source):
         return False
-    if _is_fake_tensor(mask.concat) or _is_fake_tensor(source.concat):
+    if _is_fake_tensor(mask.values()) or _is_fake_tensor(source.values()):
         return True
-    source_numel = _per_element_numel(source).to(device=mask.concat.device)
+    source_numel = _per_element_numel(source).to(device=mask.values().device)
     return bool(torch.all(_per_element_true_counts(mask) <= source_numel))
 
 
@@ -1290,9 +1290,9 @@ def _packed_masked_scatter(input: NestedTensor, mask: NestedTensor, source: Nest
     """
     from .segmented import align_rows
 
-    values = input.concat
-    mask_values = mask.concat.to(device=values.device)
-    source_values = source.concat.to(device=values.device, dtype=values.dtype)
+    values = input.values()
+    mask_values = mask.values().to(device=values.device)
+    source_values = source.values().to(device=values.device, dtype=values.dtype)
     flat_mask = mask_values.reshape(-1)
     flat_source = source_values.reshape(-1)
 
@@ -1349,14 +1349,14 @@ def _packed_masked_fill_supported(source: NestedTensor, mask: NestedTensor) -> b
     r"""Return whether ``mask`` broadcasts directly over ``source``'s packed rows."""
     if not source._has_same_structure(mask):
         return False
-    if source.concat.dim() != mask.concat.dim():
+    if source.values().dim() != mask.values().dim():
         return False
 
     from torch.fx.experimental.symbolic_shapes import statically_known_true
 
     return all(
         statically_known_true(mask_size == 1) or statically_known_true(mask_size == source_size)
-        for source_size, mask_size in zip(source.concat.shape[1:], mask.concat.shape[1:])
+        for source_size, mask_size in zip(source.values().shape[1:], mask.values().shape[1:])
     )
 
 
@@ -1368,7 +1368,7 @@ def _masked_fill_handler(func, args, kwargs):
     if not isinstance(source, NestedTensor) and isinstance(mask, NestedTensor):
         return _plain_filled_by_nested_mask(source, mask, value, func, kwargs)
     if isinstance(mask, NestedTensor) and _packed_masked_fill_supported(source, mask):
-        return source._packed_like_unchecked(func(source.concat, mask.concat, value, **kwargs))
+        return source._packed_like_unchecked(func(source.values(), mask.values(), value, **kwargs))
     aligned = source._maybe_exact_shape_nested_like(mask)
     if aligned is not None:
         mask = aligned
@@ -1382,7 +1382,7 @@ def _masked_fill_handler(func, args, kwargs):
             **source._meta(),
         )
     if not isinstance(mask, Tensor):
-        mask = torch.as_tensor(mask, dtype=torch.bool, device=source.concat.device)
+        mask = torch.as_tensor(mask, dtype=torch.bool, device=source.values().device)
     padded = source.tensor
     filled = func(padded, mask.to(device=padded.device), value, **kwargs)
     return source.nested_like(filled)
@@ -1405,17 +1405,17 @@ def masked_select(func, args, kwargs):
         raise ValueError(
             "NestedTensor batch length mismatch between input and mask: " f"input={len(source)}, mask={len(mask)}"
         )
-    if _is_fake_tensor(source.concat) or _is_fake_tensor(mask.concat):
+    if _is_fake_tensor(source.values()) or _is_fake_tensor(mask.values()):
         raise NotImplementedError(f"NestedTensor: {func} requires concrete mask values")
     if not source._has_same_layout(mask):
         # Broadcasted masks are valid per element, but packed masked_select needs the exact
         # per-element True-counts from the stored mask to rebuild output boundaries.
         raise NotImplementedError(f"NestedTensor: {func} requires exact-shape masks with matching packed layout")
 
-    mask_values = mask.concat
-    if mask_values.device != source.concat.device:
-        mask_values = mask_values.to(device=source.concat.device)
-    out_values = func(source.concat, mask_values, **kwargs)
+    mask_values = mask.values()
+    if mask_values.device != source.values().device:
+        mask_values = mask_values.to(device=source.values().device)
+    out_values = func(source.values(), mask_values, **kwargs)
     counts = _per_element_true_counts(mask).to(device=source._offsets.device, dtype=source._offsets.dtype)
     out_offsets = torch.empty((counts.numel() + 1,), dtype=source._offsets.dtype, device=source._offsets.device)
     out_offsets[0] = 0
@@ -1443,14 +1443,14 @@ def nonzero(func, args, kwargs):
         from .nested_tensor import NestedTensor
 
         return NestedTensor([], device=source.device, dtype=torch.long, **source._meta(include_dtype=False))
-    if _is_fake_tensor(source.concat):
+    if _is_fake_tensor(source.values()):
         raise NotImplementedError(f"NestedTensor: {func} requires concrete values")
-    if source._physical_shape.size(1) > 1 and source.concat.dim() == 1:
+    if source._physical_shape.size(1) > 1 and source.values().dim() == 1:
         # Flattened 1-D packing loses the per-dimension coordinate structure needed by
         # nonzero. Keep those cases on the explicit per-element path instead.
         raise NotImplementedError(f"NestedTensor: {func} requires non-flattened packed storage")
 
-    packed_indices = func(source.concat, **kwargs)
+    packed_indices = func(source.values(), **kwargs)
     input_ndim = source._physical_shape.size(1)
     if input_ndim == 0:
         batch_idx = packed_indices[:, 0]
@@ -1557,7 +1557,7 @@ def copy(func, args, kwargs):
 
     dest, src = args[0], args[1]
     if isinstance(src, NestedTensor) and dest._has_same_layout(src):
-        return _mutate_packed_values(dest, func, (src.concat, *args[2:]), kwargs)
+        return _mutate_packed_values(dest, func, (src.values(), *args[2:]), kwargs)
     raise NotImplementedError(f"NestedTensor: {func} requires matching packed layout")
 
 
@@ -1615,7 +1615,7 @@ def rrelu_with_noise_backward(func, args, kwargs):
     source = sources[0]
     if any(not source._has_same_layout(other) for other in sources[1:]):
         return per_element_fallback(func, args, kwargs)
-    values = tuple(operand.concat if isinstance(operand, NestedTensor) else operand for operand in args[:3])
+    values = tuple(operand.values() if isinstance(operand, NestedTensor) else operand for operand in args[:3])
     return source._packed_like_unchecked(func(*values, *args[3:], **kwargs))
 
 
@@ -1703,17 +1703,17 @@ def gather(func, args, kwargs):
     dim_adj = _translate_dim(source, dim)
 
     if isinstance(index, Tensor):
-        index_values = index.concat if isinstance(index, NestedTensor) else index
+        index_values = index.values() if isinstance(index, NestedTensor) else index
         if index_values.numel() and index_values.dtype != torch.long:
             # Rebasing ragged indices promotes them to the offsets' int64 dtype.
             # Validate the original dtype with native gather first, including
             # whichever integer dtypes this PyTorch version supports. Empty
             # indices deliberately skip native gather's dtype checks.
-            func(source.concat.new_zeros(1), 0, index_values.new_zeros(1, device=source.concat.device))
+            func(source.values().new_zeros(1), 0, index_values.new_zeros(1, device=source.values().device))
 
     if logical_source and sparse_grad:
         positions = _packed_index_positions(source, index, dim_adj, "gather")
-        values = source.concat
+        values = source.values()
         values_dim = _packed_static_dim(source, dim_adj)
         if values_dim is None:
             rows = positions // builtins.max(1, math.prod(values.shape[1:]))
@@ -1729,7 +1729,9 @@ def gather(func, args, kwargs):
                 stride = stride * sizes[:, axis]
             row_index = rows.reshape(-1, *([1] * (values.dim() - 1))).expand(rows.shape[0], *values.shape[1:])
             selected = func(values, 0, row_index, sparse_grad=True, **kwargs)
-            out_values = func(selected, values_dim, index.concat.to(device=values.device), sparse_grad=False, **kwargs)
+            out_values = func(
+                selected, values_dim, index.values().to(device=values.device), sparse_grad=False, **kwargs
+            )
         return _packed_gather_output(source, index, out_values)
 
     if isinstance(index, Tensor) and not isinstance(index, NestedTensor) and index.dim() == source.dim():
@@ -1749,21 +1751,21 @@ def gather(func, args, kwargs):
             )
 
         if _single_ragged_gather_supported(source, index, dim_adj):
-            index_values = index.concat.to(device=source.concat.device)
+            index_values = index.values().to(device=source.values().device)
             packed_index = _segmented_row_index(
                 source,
                 index_values,
                 dim,
                 "gather",
-                row_batch_indices=index.packed_batch_indices(device=source.concat.device),
+                row_batch_indices=index.packed_batch_indices(device=source.values().device),
             )
-            out_values = func(source.concat, 0, packed_index, sparse_grad=sparse_grad, **kwargs)
+            out_values = func(source.values(), 0, packed_index, sparse_grad=sparse_grad, **kwargs)
             return _packed_gather_output(source, index, out_values)
 
         if _multi_ragged_outer_gather_supported(source, index, dim_adj):
-            index_values = index.concat.to(device=source.concat.device)
+            index_values = index.values().to(device=source.values().device)
             packed_index = _segmented_outer_row_index(source, index, index_values, dim, "gather")
-            out_values = func(source.concat, 0, packed_index, sparse_grad=sparse_grad, **kwargs)
+            out_values = func(source.values(), 0, packed_index, sparse_grad=sparse_grad, **kwargs)
             return _packed_gather_output(source, index, out_values)
 
         known_rows = not (_is_compiling() or _is_fake_tensor(source._offsets)) or source._same_row_splits(index)
@@ -1776,21 +1778,21 @@ def gather(func, args, kwargs):
             # write cannot, because the index says which row rather than which stride to take.
             values_dim = _packed_static_dim(source, dim_adj)
             if values_dim is not None:
-                out_values = func(source.concat, values_dim, index.concat, sparse_grad=sparse_grad, **kwargs)
+                out_values = func(source.values(), values_dim, index.values(), sparse_grad=sparse_grad, **kwargs)
                 return _packed_gather_output(source, index, out_values)
-            index_values = index.concat.to(device=source.concat.device)
+            index_values = index.values().to(device=source.values().device)
             if _packed_inner_ragged_dim(source, dim_adj):
                 packed_index = _segmented_row_index(source, index_values, dim, "gather")
-                out_values = func(source.concat, 0, packed_index, sparse_grad=sparse_grad, **kwargs)
+                out_values = func(source.values(), 0, packed_index, sparse_grad=sparse_grad, **kwargs)
                 return _packed_gather_output(source, index, out_values)
             if _packed_outer_ragged_dim(source, dim_adj):
                 packed_index = _segmented_outer_row_index(source, index, index_values, dim, "gather")
-                out_values = func(source.concat, 0, packed_index, sparse_grad=sparse_grad, **kwargs)
+                out_values = func(source.values(), 0, packed_index, sparse_grad=sparse_grad, **kwargs)
                 return _packed_gather_output(source, index, out_values)
 
         positions = _packed_index_positions(source, index, dim_adj, "gather")
-        out_values = func(source.concat.reshape(-1), 0, positions.reshape(-1), sparse_grad=sparse_grad, **kwargs)
-        return _packed_gather_output(source, index, out_values.reshape(index.concat.shape))
+        out_values = func(source.values().reshape(-1), 0, positions.reshape(-1), sparse_grad=sparse_grad, **kwargs)
+        return _packed_gather_output(source, index, out_values.reshape(index.values().shape))
 
     if isinstance(index, Tensor) and _shared_index_gather_supported(source, dim_adj, index):
         return _shared_index_gather(source, dim, dim_adj, index, func, sparse_grad, kwargs)
@@ -1812,7 +1814,7 @@ def _single_ragged_gather_supported(source: NestedTensor, index: NestedTensor, d
         and len(source._ragged_dims) == 1
         and source._ragged_dims == index._ragged_dims
         and source._permutation == index._permutation
-        and source.concat.dim() == index.concat.dim()
+        and source.values().dim() == index.values().dim()
         and _packed_inner_ragged_dim(source, dim_adj)
     )
 
@@ -1830,7 +1832,7 @@ def _multi_ragged_outer_gather_supported(source: NestedTensor, index: NestedTens
         and source._ragged_dims == index._ragged_dims
         and len(source._ragged_dims) == 2
         and source._permutation == index._permutation
-        and source.concat.dim() == index.concat.dim()
+        and source.values().dim() == index.values().dim()
         and _packed_outer_ragged_dim(source, dim_adj)
         and _packed_outer_ragged_dim(index, dim_adj)
     )
@@ -1852,7 +1854,7 @@ def _shared_index_gather_supported(source: NestedTensor, dim_adj: int, index: Te
     rank = int(source._physical_shape.size(1))
     if index.dim() != rank or len(source) == 0:
         return False
-    if _is_fake_tensor(source.concat) or _is_fake_tensor(source._offsets):
+    if _is_fake_tensor(source.values()) or _is_fake_tensor(source._offsets):
         return False
     # Every dim the gather does not read is addressed positionally, so it has to fit the shortest
     # sample: ``gather`` reads the index as given rather than broadcasting it, and a ragged dim
@@ -1875,10 +1877,10 @@ def _shared_index_gather(source: NestedTensor, dim, dim_adj: int, index: Tensor,
     ragged_dim = source._ragged_dims[0]
     batch_size = len(source)
     count = int(index.shape[ragged_dim])
-    offsets = source._offsets.to(device=source.concat.device, dtype=torch.long)
+    offsets = source._offsets.to(device=source.values().device, dtype=torch.long)
     # The index arrives in per-element order; the packed rows enumerate it in permutation order,
     # once per sample.
-    packed_index = index.to(device=source.concat.device).permute(source._permutation)
+    packed_index = index.to(device=source.values().device).permute(source._permutation)
     packed_index = (
         packed_index.unsqueeze(0).expand(batch_size, *packed_index.shape).reshape(-1, *packed_index.shape[1:])
     )
@@ -1890,13 +1892,13 @@ def _shared_index_gather(source: NestedTensor, dim, dim_adj: int, index: Tensor,
         # kernel run on the static axis it was asked for.
         rows = starts + torch.arange(count, device=starts.device).repeat(batch_size)
         out_values = func(
-            source.concat.index_select(0, rows), values_dim, packed_index, sparse_grad=sparse_grad, **kwargs
+            source.values().index_select(0, rows), values_dim, packed_index, sparse_grad=sparse_grad, **kwargs
         )
     else:
         lengths = torch.repeat_interleave(offsets[1:] - offsets[:-1], count, output_size=batch_size * count)
         _check_segment_index_bounds(packed_index, lengths, dim, "gather")
         out_values = func(
-            source.concat, 0, align_rows(starts, packed_index) + packed_index, sparse_grad=sparse_grad, **kwargs
+            source.values(), 0, align_rows(starts, packed_index) + packed_index, sparse_grad=sparse_grad, **kwargs
         )
 
     element_shape = tuple(int(size) for size in index.shape)
@@ -1951,25 +1953,25 @@ def _logical_batched_gather(source: NestedTensor, dim, dim_adj: int, index: Tens
     r"""Read a dense index's logical batch axis without replaying it inside each sample."""
     if len(source._ragged_dims) != 1:
         packed = _pack_uniform_logical_dense(source, index.to(device=source.device))
-        if packed.concat.numel() == 0:
-            values = func(source.concat, 0, packed.concat, sparse_grad=sparse_grad, **kwargs)
+        if packed.values().numel() == 0:
+            values = func(source.values(), 0, packed.values(), sparse_grad=sparse_grad, **kwargs)
         else:
             positions = _packed_index_positions(source, packed, dim_adj, "gather", allow_batch_prefix=True)
             if sparse_grad:
-                tail_size = math.prod(source.concat.shape[1:])
+                tail_size = math.prod(source.values().shape[1:])
                 rows = positions // tail_size
                 values_dim = _packed_static_dim(source, dim_adj)
                 if values_dim is None:
-                    values = func(source.concat, 0, rows, sparse_grad=True, **kwargs)
+                    values = func(source.values(), 0, rows, sparse_grad=True, **kwargs)
                 else:
                     shape = list(rows.shape)
-                    shape[values_dim] = source.concat.shape[values_dim]
+                    shape[values_dim] = source.values().shape[values_dim]
                     rows = rows.select(values_dim, 0).unsqueeze(values_dim).expand(shape)
-                    selected = func(source.concat, 0, rows, sparse_grad=True, **kwargs)
-                    values = func(selected, values_dim, packed.concat, sparse_grad=False, **kwargs)
+                    selected = func(source.values(), 0, rows, sparse_grad=True, **kwargs)
+                    values = func(selected, values_dim, packed.values(), sparse_grad=False, **kwargs)
             else:
-                values = func(source.concat.reshape(-1), 0, positions.reshape(-1), sparse_grad=False, **kwargs)
-                values = values.reshape(packed.concat.shape)
+                values = func(source.values().reshape(-1), 0, positions.reshape(-1), sparse_grad=False, **kwargs)
+                values = values.reshape(packed.values().shape)
         return _uniform_logical_from_values(packed, values)
     ragged_dim = source._ragged_dims[0]
     if not _packed_sole_ragged_dim(source, ragged_dim):
@@ -1977,8 +1979,8 @@ def _logical_batched_gather(source: NestedTensor, dim, dim_adj: int, index: Tens
     batch_dim = _get_batch_dim(source)
     batch_size = int(index.shape[batch_dim])
     element_shape = tuple(int(size) for axis, size in enumerate(index.shape) if axis != batch_dim)
-    packed = _pack_uniform_logical_dense(source, index.to(device=source.concat.device))
-    index_values = packed.concat
+    packed = _pack_uniform_logical_dense(source, index.to(device=source.values().device))
+    index_values = packed.values()
     count = element_shape[ragged_dim]
     values_dim = _packed_static_dim(source, dim_adj)
     if index_values.numel() == 0:
@@ -1986,7 +1988,7 @@ def _logical_batched_gather(source: NestedTensor, dim, dim_adj: int, index: Tens
         # or dtype. Reading packed values directly also avoids selecting rows
         # that do not exist when an unselected empty axis makes the read empty.
         values = func(
-            source.concat, 0 if values_dim is None else values_dim, index_values, sparse_grad=sparse_grad, **kwargs
+            source.values(), 0 if values_dim is None else values_dim, index_values, sparse_grad=sparse_grad, **kwargs
         )
     else:
         if batch_size > len(source):
@@ -1997,13 +1999,13 @@ def _logical_batched_gather(source: NestedTensor, dim, dim_adj: int, index: Tens
                     torch.all(source._physical_shape[:batch_size, axis] >= size),
                     "gather index size exceeds the source size outside the selected dimension",
                 )
-        rows = packed.packed_batch_indices(device=source.concat.device)
+        rows = packed.packed_batch_indices(device=source.values().device)
         if values_dim is None:
             rebased = _segmented_row_index(source, index_values, dim, "gather", row_batch_indices=rows)
-            values = func(source.concat, 0, rebased, sparse_grad=sparse_grad, **kwargs)
+            values = func(source.values(), 0, rebased, sparse_grad=sparse_grad, **kwargs)
         else:
-            starts = source._offsets.to(device=source.concat.device).index_select(0, rows)
-            local = torch.arange(batch_size * count, device=source.concat.device) % count
+            starts = source._offsets.to(device=source.values().device).index_select(0, rows)
+            local = torch.arange(batch_size * count, device=source.values().device) % count
             read_rows = starts + local
             if sparse_grad:
                 # The sparse Jacobian must address the original packed source.
@@ -2011,13 +2013,13 @@ def _logical_batched_gather(source: NestedTensor, dim, dim_adj: int, index: Tens
                 # gradient, which its backward cannot accumulate. Gather rows
                 # sparsely first, then perform the static-axis read with a dense
                 # intermediate gradient.
-                row_indices = read_rows.reshape(-1, *([1] * (source.concat.dim() - 1)))
-                row_indices = row_indices.expand(read_rows.shape[0], *source.concat.shape[1:])
-                selected = func(source.concat, 0, row_indices, sparse_grad=True, **kwargs)
+                row_indices = read_rows.reshape(-1, *([1] * (source.values().dim() - 1)))
+                row_indices = row_indices.expand(read_rows.shape[0], *source.values().shape[1:])
+                selected = func(source.values(), 0, row_indices, sparse_grad=True, **kwargs)
                 values = func(selected, values_dim, index_values, sparse_grad=False, **kwargs)
             else:
                 values = func(
-                    source.concat.index_select(0, read_rows), values_dim, index_values, sparse_grad=False, **kwargs
+                    source.values().index_select(0, read_rows), values_dim, index_values, sparse_grad=False, **kwargs
                 )
     # A full logical dense index specifies a uniform output shape completely;
     # the result has no remaining ragged axis to wrap. Restore its ordinary
@@ -2039,7 +2041,7 @@ def _logical_batched_take_along(source: NestedTensor, dim: int, dim_adj: int, in
         source.batch_first,
     )
     values, offsets, shape, splits, logical_shape, uniform = _logical_batched_take_values(
-        source.concat, geometry, index, dim, dim_adj
+        source.values(), geometry, index, dim, dim_adj
     )
     if uniform:
         return values
@@ -2167,7 +2169,7 @@ def _gather_equivalent_index(source: NestedTensor, index: NestedTensor, dim_adj:
     the one it reads, while ``gather`` reads the index as given. They coincide -- and the packed
     gather paths become available -- once nothing else is left to broadcast.
     """
-    if source.concat.dim() != index.concat.dim():
+    if source.values().dim() != index.values().dim():
         return False
     if _single_ragged_gather_supported(source, index, dim_adj) or _multi_ragged_outer_gather_supported(
         source, index, dim_adj
@@ -2193,7 +2195,7 @@ def _gather_equivalent_index(source: NestedTensor, index: NestedTensor, dim_adj:
         read_axis = 0
     return all(
         axis == read_axis or size == other
-        for axis, (size, other) in enumerate(zip(source.concat.shape, index.concat.shape))
+        for axis, (size, other) in enumerate(zip(source.values().shape, index.values().shape))
     )
 
 
@@ -2248,16 +2250,16 @@ def _index_write_like(source, dim, index, src, apply_fn, op_name: str):
             f"input={len(source)}, source={len(src)}"
         )
 
-    index_values = index.to(device=source.concat.device, dtype=torch.long)
+    index_values = index.to(device=source.values().device, dtype=torch.long)
     values_dim = _physical_to_values_dim(source, dim_adj)
     if isinstance(src, NestedTensor) and values_dim is not None and source._has_same_structure(src):
         # As with scatter, packed writes are only safe on static per-element dims.
         # The source layout must share offsets with the destination so row boundaries
         # remain aligned after concatenation.
-        src_values = src.concat
-        if src_values.device != source.concat.device:
-            src_values = src_values.to(device=source.concat.device)
-        return source._packed_like_unchecked(apply_fn(source.concat, values_dim, index_values, src_values))
+        src_values = src.values()
+        if src_values.device != source.values().device:
+            src_values = src_values.to(device=source.values().device)
+        return source._packed_like_unchecked(apply_fn(source.values(), values_dim, index_values, src_values))
 
     storage = []
     if isinstance(src, NestedTensor):
@@ -2301,7 +2303,7 @@ def _dense_boolean_index_coordinates(source, indices):
         raise IndexError(f"Boolean mask shape {tuple(mask.shape)} does not match tensor shape {tuple(source.shape)}")
     if mask.device.type != "cpu" and mask.device != source.device:
         raise RuntimeError("Boolean mask must be on CPU or on the same device as the indexed tensor")
-    packed = tuple(index.to(device=source.device) for index in mask.concat.nonzero(as_tuple=True))
+    packed = tuple(index.to(device=source.device) for index in mask.values().nonzero(as_tuple=True))
     coordinates = list(mask._packed_dense_index(packed[0], device=source.device))
     for axis, index in zip(mask._static_dims, packed[1:]):
         coordinates[axis + 1] = index
@@ -2362,7 +2364,7 @@ def _packed_index_put_indices(source: NestedTensor, indices):
     if any(not _is_integer_index_tensor(idx) for idx in indices):
         return None
 
-    device = source.concat.device
+    device = source.values().device
     index_tensors = [idx.to(device=device, dtype=torch.long) for idx in indices]
     try:
         broadcasted = torch.broadcast_tensors(*index_tensors)
@@ -2385,7 +2387,7 @@ def _packed_index_put_indices(source: NestedTensor, indices):
     packed_indices.append((first + offsets[:-1].view(*view_shape)).reshape(-1))
 
     for dim, idx in enumerate(broadcasted[1:], start=1):
-        dim_size = source.concat.shape[dim]
+        dim_size = source.values().shape[dim]
         idx = idx.unsqueeze(0).expand(*expand_shape)
         idx = torch.where(idx < 0, idx + dim_size, idx)
         if not torch.logical_and(idx >= 0, idx < dim_size).all():
@@ -2399,13 +2401,13 @@ def _packed_index_put_values(source: NestedTensor, values, broadcast_shape, inde
     r"""Prepare values for the packed ``index_put`` fast path."""
     from .nested_tensor import NestedTensor
 
-    trailing_shape = tuple(source.concat.shape[indexed_dims:])
+    trailing_shape = tuple(source.values().shape[indexed_dims:])
     batch = len(source)
     expanded_items = batch * math.prod(broadcast_shape)
 
     if isinstance(values, Tensor) and not isinstance(values, NestedTensor):
-        if values.device != source.concat.device:
-            values = values.to(device=source.concat.device)
+        if values.device != source.values().device:
+            values = values.to(device=source.values().device)
         expected_shape = tuple(broadcast_shape) + trailing_shape
         if values.dim() == 0:
             return values
@@ -2430,9 +2432,9 @@ def _packed_index_put_values(source: NestedTensor, values, broadcast_shape, inde
     if not NestedTensor._meta_tensor_equal(values._physical_shape, expected_sizes):
         return None
 
-    value_tensor = values.concat
-    if value_tensor.device != source.concat.device:
-        value_tensor = value_tensor.to(device=source.concat.device)
+    value_tensor = values.values()
+    if value_tensor.device != source.values().device:
+        value_tensor = value_tensor.to(device=source.values().device)
     return value_tensor.reshape(expanded_items, *trailing_shape)
 
 
@@ -2460,7 +2462,7 @@ def index_put(func, args, kwargs):
         packed_indices, broadcast_shape = packed
         value_tensor = _packed_index_put_values(source, values, broadcast_shape, len(indices))
         if value_tensor is not None:
-            return source._packed_like_unchecked(func(source.concat, packed_indices, value_tensor, accumulate))
+            return source._packed_like_unchecked(func(source.values(), packed_indices, value_tensor, accumulate))
 
     storage = []
     for i, tensor in enumerate(source._storage):
@@ -2519,7 +2521,7 @@ def index_select(func, args, kwargs):
 
     dim = _normalize_dim(dim, source.dim())
     batch_dim = _get_batch_dim(source)
-    index_device = index.to(device=source.concat.device, dtype=torch.long)
+    index_device = index.to(device=source.values().device, dtype=torch.long)
 
     if dim == batch_dim:
         # Only batch selection needs index values on the CPU to select layout
@@ -2539,20 +2541,20 @@ def index_select(func, args, kwargs):
         if out_lengths.numel() > 0:
             out_offsets[1:] = torch.cumsum(out_lengths, dim=0)
 
-        offsets_dev = source.packed_offsets(device=source.concat.device, dtype=torch.long)
+        offsets_dev = source.packed_offsets(device=source.values().device, dtype=torch.long)
         starts = offsets_dev.index_select(0, index_device)
-        picked_offsets = out_offsets.to(device=source.concat.device, dtype=torch.long)
+        picked_offsets = out_offsets.to(device=source.values().device, dtype=torch.long)
         # The host layout already determines the exact extent; do not fetch a
         # CUDA scalar or recompute its cumulative lengths to allocate indices.
         total = int(out_offsets[-1].item())
-        flat = torch.arange(total, device=source.concat.device, dtype=torch.long)
+        flat = torch.arange(total, device=source.values().device, dtype=torch.long)
         if flat.numel() == 0:
-            out_values = source.concat[:0]
+            out_values = source.values()[:0]
         else:
             batch_idx = torch.searchsorted(picked_offsets[1:], flat, right=True)
             local_idx = flat - picked_offsets.index_select(0, batch_idx)
             gather_idx = starts.index_select(0, batch_idx) + local_idx
-            out_values = source.concat.index_select(0, gather_idx)
+            out_values = source.values().index_select(0, gather_idx)
 
         selected_indices = tuple(int(i) for i in index_cpu.tolist())
         selected_packed_sizes = None
@@ -2584,7 +2586,7 @@ def index_select(func, args, kwargs):
     # metadata disagree and the tensor only fails later, on unpacking.
     values_dim = _packed_static_dim(source, dim_adj)
     if values_dim is not None:
-        out_values = func(source.concat, values_dim, index_device, **kwargs)
+        out_values = func(source.values(), values_dim, index_device, **kwargs)
         return _packed_new_dim_size(source, out_values, dim_adj, index_device.numel())
     if _packed_inner_ragged_dim(source, dim_adj):
         return _packed_segment_index_select(source, dim_adj, index_device)
@@ -2616,7 +2618,7 @@ def _packed_segment_index_select(source: NestedTensor, dim_adj: int, index: Tens
     groups = torch.cat((source._offsets.new_zeros(1), segment_counts.cumsum(0)))
     return _packed_with_shape(
         source,
-        source.concat.index_select(0, rows),
+        source.values().index_select(0, rows),
         new_physical_shape,
         source._logical_shape_from_components(replace_dims={int(dim_adj): count}),
         offsets=groups * count,
@@ -2665,8 +2667,8 @@ def _packed_scatter_src(source: NestedTensor, src):
             return _NO_PACKED_SRC
         if not source._has_same_structure(src):
             return _NO_PACKED_SRC
-        values = src.concat
-        return values if values.device == source.concat.device else values.to(device=source.concat.device)
+        values = src.values()
+        return values if values.device == source.values().device else values.to(device=source.values().device)
     if isinstance(src, Tensor):
         return _NO_PACKED_SRC
     return src
@@ -2675,7 +2677,7 @@ def _packed_scatter_src(source: NestedTensor, src):
 def _inner_segment_offsets(source: NestedTensor) -> Tensor:
     r"""Return the offsets delimiting the innermost ragged level along packed dim 0."""
     offsets = source._offsets if source._ragged_rank <= 1 else source._ragged_level_offsets(-1)
-    return offsets.to(device=source.concat.device, dtype=torch.long)
+    return offsets.to(device=source.values().device, dtype=torch.long)
 
 
 def _check_segment_index_bounds(index_values: Tensor, lengths: Tensor, dim: int, op_name: str) -> None:
@@ -2723,7 +2725,7 @@ def _segmented_row_index(
 
     offsets = _inner_segment_offsets(source)
     if row_batch_indices is None:
-        starts, lengths = segment_row_bounds(offsets, source.concat.shape[0])
+        starts, lengths = segment_row_bounds(offsets, source.values().shape[0])
     else:
         starts = offsets[:-1].index_select(0, row_batch_indices)
         lengths = (offsets[1:] - offsets[:-1]).index_select(0, row_batch_indices)
@@ -2764,7 +2766,7 @@ def _segmented_outer_row_index(
     """
     from .segmented import align_rows
 
-    device = source.concat.device
+    device = source.values().device
     batch_index, local_index = index._packed_batch_local_indices(device=device, dtype=torch.long)
     _, inner_position = index._packed_varying_coords(
         batch_index,
@@ -2839,7 +2841,7 @@ def _packed_index_positions(
         and (not allow_batch_prefix or len(index) > len(source))
     ):
         raise ValueError(f"{name}: NestedTensor batch length mismatch")
-    index_values = index.concat.to(device=source.device)
+    index_values = index.values().to(device=source.device)
     if index_values.dtype not in (torch.int32, torch.int64):
         if not _is_compiling() and not _is_fake_tensor(index_values) and index_values.numel() == 0:
             return index_values.to(dtype=torch.long)
@@ -2876,7 +2878,7 @@ def _packed_index_positions(
     for axis in reversed(source._permutation):
         positions = positions + coordinates[axis] * align_rows(stride, index_values)
         stride = stride * sizes[:, axis]
-    tail_size = math.prod(source.concat.shape[1:])
+    tail_size = math.prod(source.values().shape[1:])
     source_batch = torch.zeros_like(batch) if broadcast and len(source) == 1 else batch
     starts = source._offsets.to(device=source.device).index_select(0, source_batch) * tail_size
     return positions + align_rows(starts, index_values)
@@ -2904,7 +2906,7 @@ def _scatter_like(source, dim, index, src, apply_fn, op_name: str):
             raise RuntimeError(f"{op_name}: input and index must have the same number of dimensions")
         packed_source = _pack_uniform_logical_dense(reference, source)
         result = _scatter_like(packed_source, dim, index, src, apply_fn, op_name)
-        return _uniform_logical_from_values(packed_source, result.concat)
+        return _uniform_logical_from_values(packed_source, result.values())
 
     dim = _normalize_dim(dim, source.dim())
     batch_dim = _get_batch_dim(source)
@@ -2943,23 +2945,23 @@ def _scatter_like(source, dim, index, src, apply_fn, op_name: str):
         and known_rows
         and source._has_same_structure(index)
     ):
-        index_values = index.concat.to(device=source.concat.device)
+        index_values = index.values().to(device=source.values().device)
         # ``dim_adj`` numbers per-element dimensions and the packed axes are the permuted,
         # ragged-collapsed ones, so the two agree only under an identity layout. Map through the
         # layout instead: a static dim keeps its own axis, and the innermost ragged dim becomes
         # packed dim 0 once its indices are rebased onto the sample's starting row.
         values_dim = _packed_static_dim(source, dim_adj)
         if values_dim is not None:
-            return source._packed_like_unchecked(apply_fn(source.concat, values_dim, index_values, src_values))
+            return source._packed_like_unchecked(apply_fn(source.values(), values_dim, index_values, src_values))
         if _packed_inner_ragged_dim(source, dim_adj):
             packed_index = _segmented_row_index(source, index_values, dim, op_name)
-            return source._packed_like_unchecked(apply_fn(source.concat, 0, packed_index, src_values))
+            return source._packed_like_unchecked(apply_fn(source.values(), 0, packed_index, src_values))
 
     if isinstance(index, NestedTensor):
         positions = _packed_index_positions(source, index, dim_adj, op_name, allow_batch_prefix=logical_index)
         if isinstance(src, NestedTensor):
             source_positions = _packed_index_positions(src, index, None, op_name, allow_batch_prefix=logical_index)
-            src_values = src.concat.reshape(-1).gather(0, source_positions.reshape(-1))
+            src_values = src.values().reshape(-1).gather(0, source_positions.reshape(-1))
         elif isinstance(src, Tensor):
             dense_src = src
             if dense_src.dim() == index.dim() - 1:
@@ -2971,11 +2973,11 @@ def _scatter_like(source, dim, index, src, apply_fn, op_name: str):
                 raise RuntimeError(f"{op_name}: source and index must have the same number of dimensions")
             packed_src = _pack_uniform_logical_dense(index, dense_src.to(device=source.device))
             source_positions = _packed_index_positions(packed_src, index, None, op_name, allow_batch_prefix=True)
-            src_values = packed_src.concat.reshape(-1).gather(0, source_positions.reshape(-1))
+            src_values = packed_src.values().reshape(-1).gather(0, source_positions.reshape(-1))
         else:
             src_values = src
-        values = apply_fn(source.concat.reshape(-1), 0, positions.reshape(-1), src_values)
-        return source._packed_like_unchecked(values.reshape(source.concat.shape))
+        values = apply_fn(source.values().reshape(-1), 0, positions.reshape(-1), src_values)
+        return source._packed_like_unchecked(values.reshape(source.values().shape))
 
     # Nothing above claimed a packed axis, so report the per-sample loop rather than letting a
     # warm ``_storage`` cache carry it past the guards unannounced.
@@ -3073,7 +3075,7 @@ def scatter_inplace(func, args, kwargs):
         source, dim, index, src, lambda t, d, i, s: out_func(t, d, i, s, *args[4:], **kwargs), "scatter"
     )
     if isinstance(source, NestedTensor):
-        return _mutate_packed_values(source, aten.copy_.default, (result.concat,), {})
+        return _mutate_packed_values(source, aten.copy_.default, (result.values(),), {})
     return aten.copy_.default(source, result)
 
 
@@ -3138,9 +3140,9 @@ def take(func, args, kwargs):
 
     if not isinstance(index, Tensor) or isinstance(index, NestedTensor):
         raise NotImplementedError(f"NestedTensor: {func} requires a Tensor index")
-    if index.device != source.concat.device:
-        index = index.to(device=source.concat.device)
-    return func(source.concat.reshape(-1), index, **kwargs)
+    if index.device != source.values().device:
+        index = index.to(device=source.values().device)
+    return func(source.values().reshape(-1), index, **kwargs)
 
 
 # Matrix multiply ops — apply to _values, update last dim of _physical_shape
@@ -3447,7 +3449,7 @@ def _packed_batch_slice(source: NestedTensor, start: int, length: int, op_name: 
     element_shapes = source._element_shapes
     sliced_shapes = None if element_shapes is None else element_shapes[start : start + length]  # noqa: E203
     return type(source)._from_packed_raw(
-        source.concat.narrow(0, row_start, row_count),
+        source.values().narrow(0, row_start, row_count),
         offsets,
         physical_shape,
         permutation=source._permutation,
@@ -3472,7 +3474,7 @@ def _packed_static_slice(source: NestedTensor, dim_adj: int, start: int, length:
     shape, packed_sizes, element_shapes = source._shape_meta_from_components(replace_dims=replacement)
     return _packed_with_shape(
         source,
-        source.concat.narrow(values_dim, start, length),
+        source.values().narrow(values_dim, start, length),
         shape,
         source._logical_shape_from_components(replace_dims=replacement),
         permutation=source._permutation,
@@ -3496,7 +3498,7 @@ def _packed_ragged_slice(
     contiguous within each segment, so the gather index is the segment's start plus the
     sample's own offset plus a running position.
     """
-    device = source.concat.device
+    device = source.values().device
     offsets = source._offsets.to(device=device, dtype=torch.long)
     starts = tuple(int(start) for start in starts)
     lengths = tuple(int(length) for length in lengths)
@@ -3523,7 +3525,7 @@ def _packed_ragged_slice(
             for shape, length in zip(element_shapes, lengths)
         )
     return type(source)._from_packed_raw(
-        source.concat.index_select(0, rows),
+        source.values().index_select(0, rows),
         new_offsets,
         physical_shape,
         permutation=source._permutation,
@@ -3548,7 +3550,7 @@ def _packed_uniform_ragged_slice(source: NestedTensor, dim_adj: int, start: int,
     tracing. It does not need to: a span that is the same everywhere leaves every sample with
     exactly ``length`` rows, which makes both the offsets and the new ragged extent constants.
     """
-    device = source.concat.device
+    device = source.values().device
     offsets = source._offsets.to(device=device, dtype=torch.long)
     rows = (offsets[:-1] + start).unsqueeze(1) + torch.arange(length, device=device, dtype=torch.long)
     physical_shape = source._physical_shape.clone()
@@ -3556,7 +3558,7 @@ def _packed_uniform_ragged_slice(source: NestedTensor, dim_adj: int, start: int,
     batch_size = source._offsets.shape[0] - 1
     new_offsets = torch.arange(batch_size + 1, dtype=source._offsets.dtype, device=source._offsets.device) * length
     return type(source)._from_packed_raw(
-        source.concat.index_select(0, rows.reshape(-1)),
+        source.values().index_select(0, rows.reshape(-1)),
         new_offsets,
         physical_shape,
         permutation=source._permutation,
@@ -3587,7 +3589,7 @@ def _packed_multi_ragged_slice(
     narrow_start = cast(int, start)
     narrow_length = cast(int, length)
     if _is_compiling() or any(
-        _is_fake_tensor(tensor) for tensor in (source.concat, source._offsets, source._physical_shape)
+        _is_fake_tensor(tensor) for tensor in (source.values(), source._offsets, source._physical_shape)
     ):
         _compile_unsupported(
             "NestedTensor slice" if selection is not None else "torch.narrow",
@@ -3633,7 +3635,7 @@ def _packed_multi_ragged_slice(
     packed_sizes = tuple(counts)
     new_offsets = _offsets_from_packed_sizes(source, packed_sizes)
     total = sum(counts)
-    values = source.concat
+    values = source.values()
     if total == 0:
         rows = torch.empty((0,), device=values.device, dtype=torch.long)
     else:
@@ -3732,7 +3734,7 @@ def _packed_pair_indices_from_sizes(
 ) -> tuple[Tensor, Tensor, tuple[int, ...]]:
     pair_sizes = tuple(int(size) * int(size) for size in sizes)
     total = sum(pair_sizes)
-    device = source.concat.device
+    device = source.values().device
     sizes_tensor = torch.tensor(sizes, device=device, dtype=torch.long)
     pair_sizes_tensor = torch.tensor(pair_sizes, device=device, dtype=torch.long)
     seq = torch.repeat_interleave(
@@ -3767,8 +3769,8 @@ def _packed_pair_indices_from_offsets(source: NestedTensor) -> tuple[Tensor, Ten
     """
     offsets = source.packed_offsets(dtype=torch.long)
     lengths = offsets[1:] - offsets[:-1]
-    device = source.concat.device
-    query, key = _complementary_square_indices(lengths, device, source.concat.shape[0])
+    device = source.values().device
+    query, key = _complementary_square_indices(lengths, device, source.values().shape[0])
     return query, key, lengths
 
 
@@ -3779,11 +3781,11 @@ def _packed_pair_indices_for_square(source: NestedTensor, square: NestedTensor) 
     the sum of the squared lengths. Reading that count off ``square.concat`` keeps the contraction
     free of a fresh data-dependent size: the count entered the graph when ``square`` was built.
     """
-    device = source.concat.device
+    device = source.values().device
     offsets = source.packed_offsets(device=device, dtype=torch.long)
     lengths = offsets[1:] - offsets[:-1]
     pair_sizes = lengths * lengths
-    total = square.concat.shape[0]
+    total = square.values().shape[0]
     sample = torch.repeat_interleave(
         torch.arange(lengths.numel(), device=device, dtype=torch.long),
         pair_sizes,
@@ -3812,9 +3814,9 @@ def _jagged_outer_matmul_meta(lhs: NestedTensor, rhs: NestedTensor) -> tuple[int
     prefix_rank = rank - 2
     if lhs._varying_dims != (prefix_rank,) or rhs._varying_dims != (rank - 1,):
         return None
-    if lhs.concat.dim() != rank or rhs.concat.dim() != rank:
+    if lhs.values().dim() != rank or rhs.values().dim() != rank:
         return None
-    if tuple(lhs.concat.shape[1:]) != tuple(rhs.concat.shape[1:]):
+    if tuple(lhs.values().shape[1:]) != tuple(rhs.values().shape[1:]):
         return None
     if _is_compiling() and not _packed_contraction_in_element_order(lhs, rhs, prefix_rank, rank):
         return None
@@ -3882,9 +3884,9 @@ def _jagged_contract_matmul_meta(lhs: NestedTensor, rhs: NestedTensor) -> tuple[
         return None
     if lhs._varying_dims != (prefix_rank, prefix_rank + 1) or rhs._varying_dims != (prefix_rank,):
         return None
-    if lhs.concat.dim() != rank - 1 or rhs.concat.dim() != rank:
+    if lhs.values().dim() != rank - 1 or rhs.values().dim() != rank:
         return None
-    if tuple(lhs.concat.shape[1:]) != tuple(rhs.concat.shape[1:-1]):
+    if tuple(lhs.values().shape[1:]) != tuple(rhs.values().shape[1:-1]):
         return None
     if lhs._element_shapes is not None and rhs._element_shapes is not None and rhs._packed_sizes is not None:
         pair_sizes = tuple(int(size) * int(size) for size in rhs._packed_sizes)
@@ -3946,7 +3948,7 @@ def _packed_jagged_outer_matmul(lhs: NestedTensor, rhs: NestedTensor) -> NestedT
     if pair_indices is None:
         return _packed_jagged_outer_matmul_from_offsets(lhs, rhs, prefix_rank)
     query, key, pair_sizes = pair_indices
-    values = (lhs.concat[query] * rhs.concat[key]).sum(-1)
+    values = (lhs.values()[query] * rhs.values()[key]).sum(-1)
     keep_dims = (*range(prefix_rank), prefix_rank, prefix_rank)
     shape, _, element_shapes = lhs._shape_meta_from_components(keep_dims=keep_dims)
     return _packed_with_shape(
@@ -3968,7 +3970,7 @@ def _packed_jagged_outer_matmul_from_offsets(
 ) -> NestedTensor:
     r"""Contract matched packed rows into square elements when only row splits describe the sizes."""
     query, key, lengths = _packed_pair_indices_from_offsets(lhs)
-    values = (lhs.concat[query] * rhs.concat[key]).sum(-1)
+    values = (lhs.values()[query] * rhs.values()[key]).sum(-1)
     result = _restore_complementary_square_prefix(lhs.packed_with_square_lengths(values, lengths), prefix_rank)
     if values.requires_grad:
         return result._packed_like_unchecked(values)
@@ -3984,8 +3986,8 @@ def _packed_jagged_contract_matmul(lhs: NestedTensor, rhs: NestedTensor) -> Nest
         query, key = _packed_pair_indices_for_square(rhs, lhs)
     else:
         query, key, _ = pair_indices
-    values = torch.zeros_like(rhs.concat).index_add(
-        0, query, lhs.concat.unsqueeze(-1) * rhs.concat.index_select(0, key)
+    values = torch.zeros_like(rhs.values()).index_add(
+        0, query, lhs.values().unsqueeze(-1) * rhs.values().index_select(0, key)
     )
     return rhs._packed_like_unchecked(values)
 
@@ -4010,7 +4012,7 @@ def _packed_square_softmax(
     prefix_rank = rank - 2
     if dim_adj != prefix_rank + 1 or source._varying_dims != (prefix_rank, prefix_rank + 1):
         return None
-    if source.concat.dim() != rank - 1:
+    if source.values().dim() != rank - 1:
         return None
     if source._element_shapes is not None and source._packed_sizes is not None:
         sizes = []
@@ -4034,7 +4036,7 @@ def _packed_square_softmax(
             return None
     query, _, _ = _packed_pair_indices_from_sizes(source, sizes_tuple)
     total = sum(sizes_tuple)
-    source_values = source.concat
+    source_values = source.values()
     values = (
         source_values.float()
         if half_to_float or source_values.dtype in (torch.float16, torch.bfloat16)
@@ -4058,7 +4060,7 @@ def _canonical_static_layout(source: NestedTensor) -> NestedTensor:
     static_dims = tuple(sorted(source._static_dims))
     if static_dims == source._static_dims:
         return source
-    values = source.concat.permute(0, *(1 + source._static_dims.index(dim) for dim in static_dims))
+    values = source.values().permute(0, *(1 + source._static_dims.index(dim) for dim in static_dims))
     return _packed_with_shape(
         source,
         values,
@@ -4088,7 +4090,7 @@ def _matmul_is_exact_bmm(lhs, rhs) -> bool:
     if isinstance(lhs, NestedTensor) == isinstance(rhs, NestedTensor):
         return False
     nested, dense = (lhs, rhs) if isinstance(lhs, NestedTensor) else (rhs, lhs)
-    return nested.concat.dim() == 2 and dense.shape[0] == len(nested)
+    return nested.values().dim() == 2 and dense.shape[0] == len(nested)
 
 
 def _matmul_has_packed_path(lhs, rhs) -> bool:
@@ -4102,15 +4104,15 @@ def _matmul_has_packed_path(lhs, rhs) -> bool:
                 (lhs._has_same_structure(rhs) and _has_static_matrix_axes(lhs) and _has_static_matrix_axes(rhs))
                 or (_packed_jagged_matmul_kind(lhs, rhs) is not None)
                 or (
-                    lhs.concat.dim() == rhs.concat.dim() == 4
+                    lhs.values().dim() == rhs.values().dim() == 4
                     and _complementary_singleton_square_operands(lhs, rhs) is not None
                 )
             )
-        return isinstance(rhs, Tensor) and _has_static_last_axis(lhs) and lhs.concat.dim() >= 2 and rhs.dim() <= 2
+        return isinstance(rhs, Tensor) and _has_static_last_axis(lhs) and lhs.values().dim() >= 2 and rhs.dim() <= 2
     if isinstance(rhs, NestedTensor):
         if isinstance(lhs, Tensor) and lhs.dim() <= 2 and _has_static_matrix_axes(rhs):
             return True
-        if not isinstance(lhs, Tensor) or rhs.concat.dim() != 2:
+        if not isinstance(lhs, Tensor) or rhs.values().dim() != 2:
             return False
         if lhs.dim() == 2 and 0 not in rhs._varying_dims:
             return True
@@ -4359,7 +4361,7 @@ def _segment_arg_extrema_ragged_dim(
     if not _has_single_packed_ragged_dim(source, dim_adj):
         return None
     _check_nonempty_extrema_segments(source, aten.argmax.default if largest else aten.argmin.default)
-    values = source.concat
+    values = source.values()
     offsets = source.ragged_level_offsets(0, device=values.device, dtype=torch.long)
     extrema = _segment_extrema_values(source, values, offsets[1:] - offsets[:-1], largest=largest)
     if extrema is None:
@@ -4378,7 +4380,7 @@ def _segment_max_min_ragged_dim(
     if not _has_single_packed_ragged_dim(source, dim_adj):
         return None
     _check_nonempty_extrema_segments(source, aten.max.dim if largest else aten.min.dim)
-    values = source.concat
+    values = source.values()
     offsets = source.ragged_level_offsets(0, device=values.device, dtype=torch.long)
     extrema = _segment_extrema_values(source, values, offsets[1:] - offsets[:-1], largest=largest)
     if extrema is None:
@@ -4395,7 +4397,7 @@ def _segment_max_min_ragged_dim(
 def _segment_count_nonzero_ragged_dim(source: NestedTensor, dim_adj: int) -> Tensor | None:
     if not _has_single_packed_ragged_dim(source, dim_adj):
         return None
-    values = source.concat.ne(0).to(dtype=torch.long)
+    values = source.values().ne(0).to(dtype=torch.long)
     offsets = source.ragged_level_offsets(0, device=values.device, dtype=torch.long)
     output = _segment_sum(source, values, offsets[1:] - offsets[:-1])
     return _restore_segment_batch_dim(source, output, dim_adj, keepdim=False)
@@ -4460,12 +4462,12 @@ def _segment_vector_norm_ragged_dim(
         return None
 
     ord_float = _resolve_vector_norm_ord(ord_value)
-    if ord_float is None or not source.concat.dtype.is_floating_point or source.concat.dtype.is_complex:
+    if ord_float is None or not source.values().dtype.is_floating_point or source.values().dtype.is_complex:
         return None
 
     # Validate requested dtype with the native API before casting packed values.
-    aten.linalg_vector_norm.default(source.concat[:0], ord_value, None, False, dtype=dtype)
-    values = source.concat if dtype is None else source.concat.to(dtype=dtype)
+    aten.linalg_vector_norm.default(source.values()[:0], ord_value, None, False, dtype=dtype)
+    values = source.values() if dtype is None else source.values().to(dtype=dtype)
     groups = source.packed_batch_indices(device=values.device)
     if dim_adj is None and values.dim() > 1:
         width = math.prod(values.shape[1:])
@@ -4503,7 +4505,7 @@ def _packed_boolean_batch_reduction(func, source: NestedTensor, keepdim: bool) -
     if reduction is None:
         return None
     reduce, identity = reduction
-    values = _boolean_values(source.concat)
+    values = _boolean_values(source.values())
     tail_dims = list(range(1, values.dim()))
     rows = aten.any.dims(values, tail_dims, False) if not identity else aten.all.dims(values, tail_dims, False)
     result_dtype = rows.dtype
@@ -4680,7 +4682,7 @@ def _packed_reduction_groups(source: NestedTensor, dims_adj: Sequence[int], *, d
     if not remaining_ragged:
         output_size = len(source)
     elif not selected_ragged:
-        output_size = source.concat.shape[0]
+        output_size = source.values().shape[0]
     elif remaining_ragged == source._varying_dims[: len(remaining_ragged)]:
         output_size = source._ragged_level_offsets(len(remaining_ragged)).numel() - 1
     else:
@@ -4691,7 +4693,7 @@ def _packed_reduction_groups(source: NestedTensor, dims_adj: Sequence[int], *, d
 def _packed_extrema_reduction(func, source: NestedTensor, dims_adj: Sequence[int], keepdim: bool):
     r"""Reduce static and ragged coordinates jointly without padded materialization."""
     dims_adj = _canonical_packed_reduction_dims(source, dims_adj)
-    values = source.concat
+    values = source.values()
     rank = int(source._physical_shape.size(1))
     if rank == 0:
         return func(values.reshape(len(source), 1), [1], False)
@@ -4731,7 +4733,7 @@ def _packed_extrema_reduction(func, source: NestedTensor, dims_adj: Sequence[int
 
 def _wrap_packed_reduction(source, output, dims_adj, keepdim, remaining_ragged, group_offsets):
     r"""Restore logical static axes and retained packed coordinates after a joint reduction."""
-    values = source.concat
+    values = source.values()
     rank = int(source._physical_shape.size(1))
     remaining_static = tuple(dim for dim in range(rank) if dim not in dims_adj and dim not in remaining_ragged)
     if not remaining_ragged:
@@ -4790,7 +4792,7 @@ def _packed_max_min_reduction(
 ):
     r"""Select the first logical extremum in each group and gather its original value."""
     dims_adj = _canonical_packed_reduction_dims(source, dims_adj)
-    values = source.concat
+    values = source.values()
     rank = int(source._physical_shape.size(1))
     if rank == 0:
         output, indices = (aten.max.dim if largest else aten.min.dim)(values.reshape(len(source), 1), 1, False)
@@ -4862,7 +4864,7 @@ def _packed_max_min_reduction(
 def _packed_aminmax_reduction(source: NestedTensor, dims_adj: Sequence[int], keepdim: bool):
     r"""Compute packed extrema pairs with one tie denominator for each extremum."""
     dims_adj = _canonical_packed_reduction_dims(source, dims_adj)
-    values = source.concat
+    values = source.values()
     rank = int(source._physical_shape.size(1))
     if rank == 0:
         return aten.aminmax.default(values.reshape(len(source), 1), dim=1)
@@ -4957,7 +4959,7 @@ def _packed_boolean_ragged_reduction(
     if reduction is None or dim_adj not in source._varying_dims:
         return None
     reduce, identity = reduction
-    values = _boolean_values(source.concat)
+    values = _boolean_values(source.values())
     result_dtype = values.dtype
     values = _boolean_scatter_carrier(values)
     remaining_ragged, physical_group_counts, groups, output_size = _packed_ragged_reduction_groups(
@@ -4997,7 +4999,7 @@ def _packed_mean_reduction(
 ):
     r"""Sum selected static and ragged coordinates with one joint normalization count."""
     dims_adj = _canonical_packed_reduction_dims(source, dims_adj)
-    values = source.concat
+    values = source.values()
     # Native mean determines the output dtype and rejects integer inputs unless an
     # appropriate dtype was supplied. Accumulate half/bfloat16 sums before rounding.
     sample = aten.mean.dim(values[:0], [0], False, dtype=dtype)
@@ -5040,7 +5042,7 @@ class _MaskNaNs(torch.autograd.Function):
 def _packed_additive_reduction(func, source, dims_adj, keepdim, *, dtype=None):
     r"""Reduce native sums or masked sums/counts over actual packed coordinates."""
     dims_adj = _canonical_packed_reduction_dims(source, dims_adj)
-    values = source.concat
+    values = source.values()
     count_nonzero = func is aten.count_nonzero.dim_IntList
     nanmean = func is aten.nanmean.default
     masked = func in (aten.nanmean.default, aten.nansum.default)
@@ -5105,7 +5107,7 @@ class _GroupedLogsumexp(torch.autograd.Function):
 def _packed_logsumexp_reduction(source, dims_adj, keepdim):
     r"""Contract all selected static and ragged axes in one stable reduction."""
     dims_adj = _canonical_packed_reduction_dims(source, dims_adj)
-    values = source.concat
+    values = source.values()
     remaining_ragged, _, offsets, groups, output_size = _packed_reduction_groups(source, dims_adj, device=values.device)
     selected_static = tuple(dim for dim in source._static_dims if dim in dims_adj)
     kept_static = tuple(
@@ -5133,7 +5135,7 @@ def _packed_numeric_ragged_reduction(
     if func not in (aten.sum.dim_IntList, aten.mean.dim, aten.amax.default, aten.amin.default):
         return None
 
-    values = source.concat
+    values = source.values()
     remaining_ragged, physical_group_counts, groups, output_size = _packed_ragged_reduction_groups(
         source,
         dim_adj,
@@ -5191,7 +5193,7 @@ def _segment_reduce_ragged_dim(
     if not _has_segment_reducible_ragged_dim(source, dim_adj):
         return None
 
-    values = source.concat
+    values = source.values()
     batch_size = len(source)
     offsets = source.ragged_level_offsets(0, device=values.device, dtype=torch.long)
     lengths = offsets[1:] - offsets[:-1]
@@ -5319,7 +5321,7 @@ def _packed_prod_reduction(
 ):
     r"""Reduce products over selected packed coordinates, retaining empty-group identity."""
     dims_adj = _canonical_packed_reduction_dims(source, dims_adj)
-    values = source.concat
+    values = source.values()
     sample = aten.prod.default(values[:0], dtype=dtype)
     values = values.to(sample.dtype)
     if source._physical_shape.size(1) == 0:
@@ -5368,7 +5370,7 @@ def _packed_new_ragged_size(
 def _packed_to_padded(source: NestedTensor, *, fill_value) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, int]:
     r"""Convert packed values [sum(L_i), ...] into padded [B, max(L_i), ...] plus gather indices."""
     lengths = source._offsets[1:] - source._offsets[:-1]
-    device = source.concat.device
+    device = source.values().device
     lengths_dev = lengths.to(device=device, dtype=torch.long)
     padded = source._materialize_batch_leading(fill_value)
     batch_idx, local_idx = source._packed_batch_local_indices(device=device)
@@ -5399,7 +5401,7 @@ def _sdpa_pack_native(nt: NestedTensor) -> tuple[Tensor, Tensor, int]:
         # maximum is already part of the logical shape in both batch orders.
         # Preserve its SymInt instead of specializing a tensor-data reduction.
         max_seqlen = nt._logical_shape[-2]
-    return nt.concat.contiguous(), cumulative, max_seqlen
+    return nt.values().contiguous(), cumulative, max_seqlen
 
 
 def _sdpa_restore_native(attention: Tensor, query: NestedTensor) -> NestedTensor:
@@ -5664,12 +5666,12 @@ def _sdpa_via_native_flash(
     )
     q_values, q_cumulative, q_max = _sdpa_pack_native(query)
     if _same_ragged_offsets(query, key):
-        k_values = key.concat.contiguous()
+        k_values = key.values().contiguous()
         k_cumulative = q_cumulative
         k_max = q_max
     else:
         k_values, k_cumulative, k_max = _sdpa_pack_native(key)
-    v_values = value.concat.contiguous()
+    v_values = value.values().contiguous()
     if q_values.shape[-1] != k_values.shape[-1]:
         raise ValueError("SDPA query and key feature widths must match")
     dropout_p = float(dropout_p)
@@ -5786,7 +5788,7 @@ def flash_attention_forward(_func, args, kwargs):
     )
     q_values, q_cumulative, q_max = _sdpa_pack_native(query)
     if _same_ragged_offsets(query, key):
-        k_values = key.concat.contiguous()
+        k_values = key.values().contiguous()
         k_cumulative = q_cumulative
         k_max = q_max
     else:
@@ -5794,7 +5796,7 @@ def flash_attention_forward(_func, args, kwargs):
     output, logsumexp, rng_state, unused, debug_mask = _flash_attention_forward_raw(
         q_values,
         k_values,
-        value.concat.contiguous(),
+        value.values().contiguous(),
         q_cumulative,
         k_cumulative,
         q_max,
@@ -5829,18 +5831,18 @@ def addmm(func, args, kwargs):
     if (
         isinstance(mat1, NestedTensor)
         and not isinstance(mat2, NestedTensor)
-        and mat1.concat.dim() == 2
+        and mat1.values().dim() == 2
         and _has_static_last_axis(mat1)
         and not isinstance(bias, NestedTensor)
     ):
-        new_values = func(bias, mat1.concat, mat2, **kwargs)
+        new_values = func(bias, mat1.values(), mat2, **kwargs)
         return _packed_new_last_dim(mat1, new_values, mat2.shape[1])
     if (
         not isinstance(mat1, NestedTensor)
         and isinstance(mat2, NestedTensor)
         and isinstance(mat1, Tensor)
         and mat1.dim() == 2
-        and mat2.concat.dim() == 2
+        and mat2.values().dim() == 2
     ):
         if 0 not in mat2._varying_dims:
             packed_bias = None
@@ -5853,11 +5855,11 @@ def addmm(func, args, kwargs):
                 elif bias.dim() == 2 and bias.shape[1] == 1 and bias.shape[0] in (1, mat1.shape[0]):
                     packed_bias = bias.transpose(0, 1)
             if packed_bias is not None:
-                new_values = func(packed_bias, mat2.concat, mat1.transpose(0, 1), **kwargs)
+                new_values = func(packed_bias, mat2.values(), mat1.transpose(0, 1), **kwargs)
                 return _packed_new_dim_size(mat2, new_values, 0, int(mat1.shape[0]))
         extents = _uniform_matrix_extents(mat2)
         if extents is not None:
-            rhs_batched = mat2.concat.view(len(mat2), *extents)
+            rhs_batched = mat2.values().view(len(mat2), *extents)
             bias_batched = bias.expand(len(mat2), *bias.shape) if isinstance(bias, Tensor) and bias.dim() >= 1 else bias
             out = torch.baddbmm(
                 bias_batched,
@@ -5877,7 +5879,7 @@ def _bmm_static_extent(operand, dim):
         return operand.shape[dim + 1]
     if dim not in operand._static_dims:
         return None
-    return operand.concat.shape[1 + operand._static_dims.index(dim)]
+    return operand.values().shape[1 + operand._static_dims.index(dim)]
 
 
 def _bmm_dense_batch(operand, rows, columns):
@@ -5890,7 +5892,7 @@ def _bmm_dense_batch(operand, rows, columns):
     torch._assert_async(torch.all(operand._physical_shape[:, 0] == rows), "bmm matrix row sizes must match")
     torch._assert_async(torch.all(operand._physical_shape[:, 1] == columns), "bmm matrix column sizes must match")
     sizes = (rows, columns)
-    values = operand.concat.reshape(len(operand), *(sizes[dim] for dim in operand._permutation))
+    values = operand.values().reshape(len(operand), *(sizes[dim] for dim in operand._permutation))
     inverse = type(operand)._inverse_permutation(operand._permutation)
     return values.permute(0, *(dim + 1 for dim in inverse))
 
@@ -6049,7 +6051,7 @@ def baddbmm(func, args, kwargs):
                 return func(*args, **kwargs)
             result = _bmm_uniform_result(input, result)
         bias = _bmm_bias_values(input, result)
-        values = result.concat
+        values = result.values()
         if alpha != 1:
             values = values * alpha
         if beta == 0:
@@ -6107,13 +6109,13 @@ def bmm(func, args, kwargs):
     if isinstance(lhs, NestedTensor) and lhs._ragged_dims == (0,) and columns is not None:
         matrices = _bmm_dense_batch(rhs, contracted, columns)
         batch = lhs.packed_batch_indices(device=lhs.device)
-        values = _bmm_weighted_rows(lhs.concat, matrices, batch, lhs._offsets)
+        values = _bmm_weighted_rows(lhs.values(), matrices, batch, lhs._offsets)
         return _packed_new_last_dim(lhs, values, columns)
     rows = _bmm_static_extent(lhs, 0)
     if isinstance(rhs, NestedTensor) and rhs._ragged_dims == (1,) and rows is not None:
         matrices = _bmm_dense_batch(lhs, rows, contracted).transpose(1, 2)
         batch = rhs.packed_batch_indices(device=rhs.device)
-        values = _bmm_weighted_rows(rhs.concat, matrices, batch, rhs._offsets)
+        values = _bmm_weighted_rows(rhs.values(), matrices, batch, rhs._offsets)
         return _packed_new_dim_size(rhs, values, 0, rows)
     if rows is not None and columns is not None:
         left = _bmm_dense_batch(lhs, rows, contracted)
@@ -6144,7 +6146,7 @@ def diagonal(func, args, kwargs):
     if values_dim1 is None or values_dim2 is None:
         return _apply_per_element_nested(source, lambda t: func(t, offset, dim1_adj, dim2_adj, **kwargs))
 
-    out_values = func(source.concat, offset, values_dim1, values_dim2, **kwargs)
+    out_values = func(source.values(), offset, values_dim1, values_dim2, **kwargs)
     keep_dims = tuple(dim for dim in range(source._physical_shape.size(1)) if dim not in (dim1_adj, dim2_adj))
     shape, packed_sizes, element_shapes = source._shape_meta_from_components(
         keep_dims=keep_dims, suffix=(out_values.shape[-1],)
@@ -6170,7 +6172,7 @@ def linalg_check_errors(func, args, kwargs):
 
     info = args[0]
     if isinstance(info, NestedTensor):
-        func(info.concat, *args[1:], **kwargs)
+        func(info.values(), *args[1:], **kwargs)
         return None
     return func(*args, **kwargs)
 
@@ -6192,7 +6194,7 @@ def linalg_eigh(func, args, kwargs):
             eigvecs_list.append(eigvecs)
         return cls(eigvals_list, **source._meta()), cls(eigvecs_list, **source._meta())
 
-    eigvals_values, eigvecs_values = func(source.concat, *args[1:], **kwargs)
+    eigvals_values, eigvecs_values = func(source.values(), *args[1:], **kwargs)
     eigvals_shape, eigvals_packed_sizes, eigvals_element_shapes = source._drop_trailing_physical_dims_meta(1)
     return (
         _packed_with_shape(
@@ -6224,7 +6226,7 @@ def linalg_qr(func, args, kwargs):
             r_list.append(r)
         return cls(q_list, **source._meta()), cls(r_list, **source._meta())
 
-    q_values, r_values = func(source.concat, *args[1:], **kwargs)
+    q_values, r_values = func(source.values(), *args[1:], **kwargs)
     q_shape, q_packed_sizes, q_element_shapes = source._replace_trailing_physical_dims_meta(q_values.shape[-2:])
     r_shape, r_packed_sizes, r_element_shapes = source._replace_trailing_physical_dims_meta(r_values.shape[-2:])
     return (
@@ -6277,15 +6279,15 @@ def linalg_solve(func, args, kwargs):
                     f"input={len(mat_a)}, B={len(mat_b)}"
                 )
             if mat_a._has_same_structure(mat_b) and _has_static_matrix_axes(mat_a) and _has_static_matrix_axes(mat_b):
-                return _packed_with_tail_from_values(mat_a, func(mat_a.concat, mat_b.concat, *args[2:], **kwargs))
+                return _packed_with_tail_from_values(mat_a, func(mat_a.values(), mat_b.values(), *args[2:], **kwargs))
             return per_element_fallback(func, args, kwargs)
         if isinstance(mat_b, Tensor) and _has_static_matrix_axes(mat_a):
-            return _packed_with_tail_from_values(mat_a, func(mat_a.concat, mat_b, *args[2:], **kwargs))
+            return _packed_with_tail_from_values(mat_a, func(mat_a.values(), mat_b, *args[2:], **kwargs))
         return per_element_fallback(func, args, kwargs)
 
     if isinstance(mat_b, NestedTensor):
         if isinstance(mat_a, Tensor) and mat_a.dim() == 2 and _has_static_matrix_axes(mat_b):
-            return _packed_with_tail_from_values(mat_b, func(mat_a, mat_b.concat, *args[2:], **kwargs))
+            return _packed_with_tail_from_values(mat_b, func(mat_a, mat_b.values(), *args[2:], **kwargs))
         return per_element_fallback(func, args, kwargs)
 
     return func(*args, **kwargs)
@@ -6309,7 +6311,7 @@ def linalg_solve_ex(func, args, kwargs):
                     f"input={len(mat_a)}, B={len(mat_b)}"
                 )
             if mat_a._has_same_structure(mat_b) and _has_static_matrix_axes(mat_a) and _has_static_matrix_axes(mat_b):
-                result, lu, pivots, info = func(mat_a.concat, mat_b.concat, *args[2:], **kwargs)
+                result, lu, pivots, info = func(mat_a.values(), mat_b.values(), *args[2:], **kwargs)
                 return (
                     _packed_with_tail_from_values(mat_a, result),
                     mat_a._packed_like_unchecked(lu),
@@ -6318,7 +6320,7 @@ def linalg_solve_ex(func, args, kwargs):
                 )
             return per_element_fallback(func, args, kwargs)
         if isinstance(mat_b, Tensor) and _has_static_matrix_axes(mat_a):
-            result, lu, pivots, info = func(mat_a.concat, mat_b, *args[2:], **kwargs)
+            result, lu, pivots, info = func(mat_a.values(), mat_b, *args[2:], **kwargs)
             return (
                 _packed_with_tail_from_values(mat_a, result),
                 mat_a._packed_like_unchecked(lu),
@@ -6352,7 +6354,7 @@ def linalg_svd(func, args, kwargs):
         meta = source._meta()
         return cls(u_list, **meta), cls(s_list, **meta), cls(vh_list, **meta)
 
-    u_values, s_values, vh_values = func(source.concat, *args[1:], **kwargs)
+    u_values, s_values, vh_values = func(source.values(), *args[1:], **kwargs)
     k = int(s_values.shape[-1])
     u_shape, u_packed_sizes, u_element_shapes = source._replace_trailing_physical_dims_meta(u_values.shape[-2:])
     vh_shape, vh_packed_sizes, vh_element_shapes = source._replace_trailing_physical_dims_meta(vh_values.shape[-2:])
@@ -6426,37 +6428,37 @@ def matmul(func, args, kwargs):
             jagged = _packed_jagged_matmul(lhs, rhs)
             if jagged is not None:
                 return jagged
-            if lhs.concat.dim() == rhs.concat.dim() == 4:
+            if lhs.values().dim() == rhs.values().dim() == 4:
                 square = _binary_complementary_singleton_square(lhs, rhs, torch.bmm, (), kwargs)
                 if square is not None:
                     return square
             if lhs._has_same_structure(rhs) and _has_static_matrix_axes(lhs) and _has_static_matrix_axes(rhs):
-                return _packed_with_tail_from_values(lhs, func(lhs.concat, rhs.concat, **kwargs))
+                return _packed_with_tail_from_values(lhs, func(lhs.values(), rhs.values(), **kwargs))
             return per_element_fallback(func, args, kwargs)
-        if isinstance(rhs, Tensor) and _has_static_last_axis(lhs) and lhs.concat.dim() >= 2 and rhs.dim() <= 2:
-            values = func(lhs.concat, rhs, **kwargs)
+        if isinstance(rhs, Tensor) and _has_static_last_axis(lhs) and lhs.values().dim() >= 2 and rhs.dim() <= 2:
+            values = func(lhs.values(), rhs, **kwargs)
             if rhs.dim() == 1:
                 return _packed_without_dim(lhs, lhs._physical_shape.size(1) - 1, values)
             return _packed_with_tail_from_values(lhs, values)
         return per_element_fallback(func, args, kwargs)
 
     if isinstance(rhs, NestedTensor):
-        if isinstance(lhs, Tensor) and lhs.dim() == 2 and rhs.concat.dim() == 2:
+        if isinstance(lhs, Tensor) and lhs.dim() == 2 and rhs.values().dim() == 2:
             if 0 not in rhs._varying_dims:
-                new_values = torch.mm(rhs.concat, lhs.transpose(0, 1))
+                new_values = torch.mm(rhs.values(), lhs.transpose(0, 1))
                 return _packed_new_dim_size(rhs, new_values, 0, int(lhs.shape[0]))
             extents = _uniform_matrix_extents(rhs)
             if extents is not None:
-                rhs_batched = rhs.concat.view(len(rhs), *extents)
+                rhs_batched = rhs.values().view(len(rhs), *extents)
                 return _from_uniform_batched_output(rhs, func(lhs, rhs_batched, **kwargs))
-        if isinstance(lhs, Tensor) and lhs.dim() > 2 and rhs.concat.dim() == 2:
+        if isinstance(lhs, Tensor) and lhs.dim() > 2 and rhs.values().dim() == 2:
             extents = _uniform_matrix_extents(rhs)
             if extents is not None:
-                rhs_batched = rhs.concat.view(len(rhs), *extents)
+                rhs_batched = rhs.values().view(len(rhs), *extents)
                 out = func(lhs.unsqueeze(0), rhs_batched.unsqueeze(1), **kwargs)
                 return _from_uniform_batched_output(rhs, out.reshape(len(rhs), *lhs.shape[:-1], extents[1]))
         if isinstance(lhs, Tensor) and lhs.dim() <= 2 and _has_static_matrix_axes(rhs):
-            values = func(lhs, rhs.concat, **kwargs)
+            values = func(lhs, rhs.values(), **kwargs)
             if lhs.dim() == 1:
                 return _packed_without_dim(rhs, rhs._physical_shape.size(1) - 2, values)
             return _packed_with_tail_from_values(rhs, values)
@@ -6485,17 +6487,17 @@ def matrix_last2_to_scalar(func, args, kwargs):
         cols = source._physical_shape[:, 1].to(device=device, dtype=torch.long)
         max_rows, max_cols = source._max_physical_dims()
 
-        padded = source.concat.new_zeros((batch, max_rows, max_cols))
-        if source.concat.numel() > 0:
-            padded[source._packed_dense_index(device=device)] = source.concat
+        padded = source.values().new_zeros((batch, max_rows, max_cols))
+        if source.values().numel() > 0:
+            padded[source._packed_dense_index(device=device)] = source.values()
 
         row_coords = torch.arange(max_rows, device=device, dtype=torch.long).view(1, max_rows, 1)
         col_coords = torch.arange(max_cols, device=device, dtype=torch.long).view(1, 1, max_cols)
         inside = (row_coords < rows.view(batch, 1, 1)) & (col_coords < cols.view(batch, 1, 1))
-        eye = torch.eye(max_rows, max_cols, dtype=source.concat.dtype, device=device).expand(batch, -1, -1)
+        eye = torch.eye(max_rows, max_cols, dtype=source.values().dtype, device=device).expand(batch, -1, -1)
         values = func(torch.where(inside, padded, eye), *args[1:], **kwargs)
         return source._from_scalar_result_values(values)
-    out_values = func(source.concat, *args[1:], **kwargs)
+    out_values = func(source.values(), *args[1:], **kwargs)
     out_shape, packed_sizes, element_shapes = source._drop_trailing_physical_dims_meta(2)
     return _packed_with_shape(
         source,
@@ -6518,7 +6520,7 @@ def matrix_last2_unary(func, args, kwargs):
     source = _canonical_static_layout(args[0])
     if not _has_static_matrix_axes(source):
         return _apply_per_element_nested(source, lambda t: func(t, *args[1:], **kwargs))
-    return source._packed_like_unchecked(func(source.concat, *args[1:], **kwargs))
+    return source._packed_like_unchecked(func(source.values(), *args[1:], **kwargs))
 
 
 @NestedTensorAtenRegistry.implement(aten.matrix_power.default)
@@ -6528,7 +6530,7 @@ def matrix_power(func, args, kwargs):
     source = _canonical_static_layout(args[0])
     if not _has_static_matrix_axes(source):
         return _apply_per_element_nested(source, lambda t: func(t, *args[1:], **kwargs))
-    return source._packed_like_unchecked(func(source.concat, *args[1:], **kwargs))
+    return source._packed_like_unchecked(func(source.values(), *args[1:], **kwargs))
 
 
 # See also torch_functions.py::mm for the torch-level handler (mixed-type cases).
@@ -6541,24 +6543,24 @@ def mm(func, args, kwargs):
     if (
         isinstance(mat1, NestedTensor)
         and not isinstance(mat2, NestedTensor)
-        and mat1.concat.dim() == 2
+        and mat1.values().dim() == 2
         and _has_static_last_axis(mat1)
     ):
-        new_values = func(mat1.concat, mat2, **kwargs)
+        new_values = func(mat1.values(), mat2, **kwargs)
         return _packed_new_last_dim(mat1, new_values, mat2.shape[1])
     if (
         not isinstance(mat1, NestedTensor)
         and isinstance(mat2, NestedTensor)
         and isinstance(mat1, Tensor)
         and mat1.dim() == 2
-        and mat2.concat.dim() == 2
+        and mat2.values().dim() == 2
     ):
         if 0 not in mat2._varying_dims:
-            new_values = func(mat2.concat, mat1.transpose(0, 1), **kwargs)
+            new_values = func(mat2.values(), mat1.transpose(0, 1), **kwargs)
             return _packed_new_dim_size(mat2, new_values, 0, int(mat1.shape[0]))
         extents = _uniform_matrix_extents(mat2)
         if extents is not None:
-            rhs_batched = mat2.concat.view(len(mat2), *extents)
+            rhs_batched = mat2.values().view(len(mat2), *extents)
             return _from_uniform_batched_output(mat2, torch.matmul(mat1, rhs_batched))
     return per_element_fallback(func, args, kwargs)
 
@@ -6579,7 +6581,7 @@ def trace(func, args, kwargs):
 def native_layer_norm(func, args, kwargs):
     r"""Dispatch handler for layer norm on packed _values."""
     source = args[0]
-    output, mean, rstd = func(source.concat, *args[1:], **kwargs)
+    output, mean, rstd = func(source.values(), *args[1:], **kwargs)
     return source._packed_like_unchecked(output), mean, rstd
 
 
@@ -6595,8 +6597,8 @@ def native_layer_norm_backward(func, args, kwargs):
     if len(sources) == 2 and not sources[0]._has_same_layout(sources[1]):
         return per_element_fallback(func, args, kwargs)
     ref = sources[0]
-    g = grad_out.concat if isinstance(grad_out, NestedTensor) else grad_out
-    i = input_.concat if isinstance(input_, NestedTensor) else input_
+    g = grad_out.values() if isinstance(grad_out, NestedTensor) else grad_out
+    i = input_.values() if isinstance(input_, NestedTensor) else input_
     # args: grad_out, input, normalized_shape, mean, rstd, weight, bias, output_mask
     grad_input, grad_weight, grad_bias = func(g, i, *args[2:], **kwargs)
     return ref._packed_like_unchecked(grad_input), grad_weight, grad_bias
@@ -6611,9 +6613,9 @@ def native_layer_norm_backward(func, args, kwargs):
 def multinomial(func, args, kwargs):
     r"""Sample static categories independently for every packed probability row."""
     source = args[0]
-    if source._ragged_dims != (0,) or source.concat.dim() != 2:
+    if source._ragged_dims != (0,) or source.values().dim() != 2:
         return per_element_fallback(func, args, kwargs)
-    values = func(source.concat, *args[1:], **kwargs)
+    values = func(source.values(), *args[1:], **kwargs)
     return _packed_with_static_tail_from_values(source, values)
 
 
@@ -6674,7 +6676,7 @@ def _shape_ragged_offsets(shape: Tensor, ragged_dims: tuple[int, ...], parent_si
 
 def _flatten_batch_rows(source: NestedTensor):
     r"""Merge the batch and first element axis using packed coordinates."""
-    values = source.concat
+    values = source.values()
     static_position = next((axis for axis, dim in enumerate(source._static_dims) if dim == 0), None)
     levels = source._persistent_ragged_offsets() or source._hierarchical_offsets
     counts = source._physical_shape[:, 0]
@@ -6850,7 +6852,7 @@ def flatten(func, args, kwargs):
                 out_logical = source._logical_shape_from_physical_dims(physical_dims)
             result = _packed_with_shape(
                 source,
-                source.concat,
+                source.values(),
                 out_shape,
                 out_logical,
                 permutation=out_permutation,
@@ -6881,7 +6883,7 @@ def flatten(func, args, kwargs):
 
     values_start = 1 + first_packed_position
     values_end = values_start + len(flattened_dims) - 1
-    out_values = func(source.concat, values_start, values_end, **kwargs)
+    out_values = func(source.values(), values_start, values_end, **kwargs)
     merged = torch.prod(source._physical_shape[:, start_adj : end_adj + 1], dim=1, keepdim=True)
     out_shape = torch.cat(
         (source._physical_shape[:, :start_adj], merged, source._physical_shape[:, end_adj + 1 :]),
@@ -6939,7 +6941,7 @@ def _packed_metadata_permute(source: NestedTensor, tensor_dims: tuple[int, ...])
     )
     return _packed_with_shape(
         source,
-        source.concat,
+        source.values(),
         out_shape,
         out_logical,
         permutation=new_packed_order,
@@ -7036,7 +7038,7 @@ def _permute_nested(func, args, kwargs):
         # Ragged dim move stays per-element but should remain in the compile graph
         # when possible, so we avoid the dynamo-disabled generic fallback.
         return _apply_per_element_nested(source, lambda t: t.permute(*tensor_dims))
-    out_values = func(source.concat, list(tensor_dims), **kwargs)
+    out_values = func(source.values(), list(tensor_dims), **kwargs)
     out_shape = source._physical_shape[:, tensor_dims]
     out_logical = source._logical_shape_from_physical_dims(
         tuple(source._max_physical_dims()[dim] for dim in tensor_dims)
@@ -7100,13 +7102,13 @@ def _squeeze_nested(source: NestedTensor, dim: int | None = None) -> NestedTenso
         dim_adj = _translate_dim(result, logical_dim)
         values_dim = _physical_to_values_dim(result, dim_adj)
         if values_dim is not None:
-            if result.concat.shape[values_dim] == 1:
-                result = _packed_without_dim(result, dim_adj, result.concat.squeeze(values_dim))
+            if result.values().shape[values_dim] == 1:
+                result = _packed_without_dim(result, dim_adj, result.values().squeeze(values_dim))
         else:
             if _is_compiling() or _is_fake_tensor(result._physical_shape):
                 _compile_unsupported("aten.squeeze.dim", "ragged singleton analysis requires concrete extents")
             if result._max_physical_dims()[dim_adj] == 1 and bool(result._physical_shape[:, dim_adj].eq(1).all()):
-                result = _packed_without_dim(result, dim_adj, result.concat)
+                result = _packed_without_dim(result, dim_adj, result.values())
     return result
 
 
@@ -7162,7 +7164,7 @@ def narrow_nested(source: NestedTensor, dim: int, start, length: int) -> NestedT
     dim_adj = _translate_dim(source, dim)
     values_dim = _packed_static_dim(source, dim_adj)
     if values_dim is not None:
-        extent = int(source.concat.shape[values_dim])
+        extent = int(source.values().shape[values_dim])
         resolved = start + extent if start < 0 else start
         if resolved < 0 or resolved + length > extent:
             raise RuntimeError(f"start ({start}) + length ({length}) exceeds dimension size ({extent}).")
@@ -7221,13 +7223,13 @@ def _select_nested(source: NestedTensor, dim: int, index: int):
     dim_adj = _translate_dim(source, dim)
     values_dim = _physical_to_values_dim(source, dim_adj)
     if values_dim is not None:
-        result = _packed_without_dim(source, dim_adj, source.concat.select(values_dim, index))
+        result = _packed_without_dim(source, dim_adj, source.values().select(values_dim, index))
     else:
         extents = source._physical_shape[:, dim_adj]
         if bool(((index < -extents) | (index >= extents)).any()):
             raise IndexError(f"select(): index {index} is out of range for a NestedTensor element at dimension {dim}")
         selected = narrow_nested(source, dim, index, 1)
-        result = _packed_without_dim(selected, dim_adj, selected.concat)
+        result = _packed_without_dim(selected, dim_adj, selected.values())
     return result
 
 
@@ -7297,10 +7299,10 @@ def slice_tensor(func, args, kwargs):
     dim_adj = _translate_dim(source, dim)
     values_dim = _physical_to_values_dim(source, dim_adj)
     if values_dim is not None:
-        begin, end, stride = slice(start, stop, step).indices(source.concat.size(values_dim))
+        begin, end, stride = slice(start, stop, step).indices(source.values().size(values_dim))
         if stride == 1:
             return _packed_static_slice(source, dim_adj, begin, builtins.max(end - begin, 0))
-        values = func(source.concat, values_dim, start, stop, step)
+        values = func(source.values(), values_dim, start, stop, step)
         return _packed_with_static_tail_from_values(source, values)
     if _has_single_packed_ragged_dim(source, dim_adj) and step == 1:
         from .nested_tensor import _transform_metadata
@@ -7356,9 +7358,9 @@ def slice_backward(func, args, kwargs):
     values_dim = _physical_to_values_dim(source, physical_dim)
     if values_dim is None:
         raise NotImplementedError("NestedTensor native slice backward needs the original ragged layout")
-    packed_shape = list(source.concat.shape)
+    packed_shape = list(source.values().shape)
     packed_shape[values_dim] = input_sizes[dim]
-    values = func(source.concat, packed_shape, values_dim, start, end, step)
+    values = func(source.values(), packed_shape, values_dim, start, end, step)
     replacements = {physical_dim: input_sizes[dim]}
     shape, packed_sizes, element_shapes = source._shape_meta_from_components(replace_dims=replacements)
     return _packed_with_shape(
@@ -7389,7 +7391,7 @@ def select_backward(func, args, kwargs):
     size = input_sizes[dim]
     # Any static-axis order describes the same tangent. Append this packed
     # axis and let the receiving packed bridge align the physical axis order.
-    values = func(source.concat, (*source.concat.shape, size), source.concat.dim(), index)
+    values = func(source.values(), (*source.values().shape, size), source.values().dim(), index)
     shape = torch.cat(
         (
             source._physical_shape[:, :physical_dim],
@@ -7440,7 +7442,7 @@ def stack(func, args, kwargs):
         for tensor in tensors:
             if isinstance(tensor, NestedTensor):
                 order = (0, *(1 + tensor._static_dims.index(dim) for dim in range(tensor._physical_shape.size(1))))
-                value = tensor.concat.permute(order)
+                value = tensor.values().permute(order)
                 if not tensor.batch_first and tensor.dim() > 1:
                     value = value.movedim(0, 1)
                 values.append(value)
@@ -7467,7 +7469,7 @@ def transpose(func, args, kwargs):
     source = args[0]
     rank = source.dim()
     if rank >= 2 and {_normalize_dim(args[1], rank), _normalize_dim(args[2], rank)} == {0, 1}:
-        values = source.concat
+        values = source.values()
         with torch.inference_mode(source.is_inference()):
             return _transpose_batch_layout(source, values, cpp_values=values.detach())
     return _native_view_result(source, _transpose_nested(func, args, kwargs))
@@ -7514,7 +7516,7 @@ def _transpose_nested(func, args, kwargs):
         seq_dim = 1 if source.batch_first else 0
         if other != seq_dim:
             raise ValueError("Cannot transpose the batch dimension with a non-sequence dimension for NestedTensor.")
-        return _transpose_batch_layout(source, source.concat)
+        return _transpose_batch_layout(source, source.values())
 
     elem_dim0 = _translate_dim(source, dim0)
     elem_dim1 = _translate_dim(source, dim1)
@@ -7530,7 +7532,7 @@ def _transpose_nested(func, args, kwargs):
 
     packed_dim0 = 1 + source._static_dims.index(elem_dim0)
     packed_dim1 = 1 + source._static_dims.index(elem_dim1)
-    out_values = func(source.concat, packed_dim0, packed_dim1, **kwargs)
+    out_values = func(source.values(), packed_dim0, packed_dim1, **kwargs)
     out_shape = source._physical_shape.clone()
     out_shape[:, [elem_dim0, elem_dim1]] = out_shape[:, [elem_dim1, elem_dim0]]
     physical_dims = list(source._max_physical_dims())
@@ -7577,8 +7579,8 @@ def unflatten(func, args, kwargs):
         return per_element_fallback(func, (source, dim_adj, sizes), kwargs)
 
     values_dim = 1 + source._static_dims.index(dim_adj)
-    out_values = func(source.concat, values_dim, sizes, **kwargs)
-    inserted_rank = out_values.dim() - source.concat.dim() + 1
+    out_values = func(source.values(), values_dim, sizes, **kwargs)
+    inserted_rank = out_values.dim() - source.values().dim() + 1
     resolved_sizes = out_values.shape[values_dim : values_dim + inserted_rank]
     inserted = source._physical_shape.new_tensor(resolved_sizes).unsqueeze(0).expand(source._physical_shape.size(0), -1)
     out_shape = torch.cat(
@@ -7640,7 +7642,7 @@ def _unflatten_packed_batch(source: NestedTensor, sizes) -> NestedTensor:
     inserted = base_shape.new_tensor(member_shape).expand(groups, -1)
     shape = torch.cat((base_shape[:, :batch_dim], inserted, base_shape[:, batch_dim:]), dim=1)
     offsets = torch.cat((source._offsets.new_zeros(1), lengths.cumsum(0)))
-    values = source.concat
+    values = source.values()
     total = (
         values.shape[0] // members
         if members
@@ -7700,7 +7702,7 @@ def expand(func, args, kwargs):
     source = args[0]
     sizes = tuple(args[1] if len(args) > 1 else kwargs["size"])
     if sizes == tuple(source.shape):
-        values = source.concat
+        values = source.values()
         return source._packed_like_unchecked(func(values, values.shape, implicit=kwargs.get("implicit", False)))
     if len(sizes) == source.dim():
         sizes = list(sizes)
@@ -7777,7 +7779,7 @@ def _unsqueeze_nested(func, args, kwargs):
     packed_static.insert(packed_position, dim_adj)
     new_static = tuple(packed_static)
     packed_dim = 1 + packed_position
-    out_values = func(source.concat, packed_dim, **kwargs)
+    out_values = func(source.values(), packed_dim, **kwargs)
     out_element_shapes = None
     if source._element_shapes is not None:
         out_element_shapes = tuple(shape[:dim_adj] + (1,) + shape[dim_adj:] for shape in source._element_shapes)
@@ -7842,7 +7844,7 @@ def _view_target_columns(element_target: Sequence[int], max_sizes: Sequence[int]
 
 def _packed_view_shapes(source, shapes, *, ragged_dims=None, batch_first=None, empty_shape=None):
     r"""Create a true packed view after checking each logical sample's strides."""
-    values = source.concat
+    values = source.values()
     shapes = tuple(tuple(shape) for shape in shapes)
     if len(shapes) != len(source):
         raise RuntimeError("view_as requires matching batch sizes")
@@ -7975,12 +7977,12 @@ def _packed_reshape_shapes(source, shapes, ragged_dims, batch_first, *, view_onl
         result = _packed_view_shapes(
             source, shapes, ragged_dims=ragged_dims, batch_first=batch_first, empty_shape=empty_shape
         )
-        return result._packed_like_unchecked(result.concat.clone()) if copy else result
+        return result._packed_like_unchecked(result.values().clone()) if copy else result
     if any(math.prod(old) != math.prod(new) for old, new in zip(source._original_shapes(), shapes)):
         raise RuntimeError("reshape requires the same number of elements in each sample")
     try:
         result = _packed_view_shapes(source, shapes, ragged_dims=ragged_dims, batch_first=batch_first)
-        return result._packed_like_unchecked(result.concat.clone()) if copy else result
+        return result._packed_like_unchecked(result.values().clone()) if copy else result
     except RuntimeError:
         if view_only:
             raise
@@ -7993,7 +7995,7 @@ def _packed_reshape_shapes(source, shapes, ragged_dims, batch_first, *, view_onl
     counts = shape[:, list(ragged_dims)].prod(1)
     offsets = _offsets_from_packed_lengths(counts)
     packed_shape = (int(offsets[-1]), *(shapes[0][axis] for axis in static_dims))
-    values = source.concat
+    values = source.values()
     flat = values.reshape(-1) if _is_packed_identity(source) else _packed_flatten_elements(source)[0]
     maxima = [max(s[axis] for s in shapes) for axis in range(rank)]
     logical = [len(source), *maxima]
@@ -8089,7 +8091,7 @@ def _tensor_backed_view_like(func, source: NestedTensor, target: tuple[int, ...]
         max_length = element_target[0]
 
     out_physical_shape = torch.cat((lengths, *(ones * size for size in element_target[1:])), dim=1)
-    out_values = func(source.concat, [-1, *element_target[1:]], **kwargs)
+    out_values = func(source.values(), [-1, *element_target[1:]], **kwargs)
     if keeps_rows:
         out_offsets = source._offsets
     else:
@@ -8122,7 +8124,7 @@ def view_like(func, args, kwargs):
         raise ValueError(f"NestedTensor: {func} missing target shape")
 
     if target == tuple(source.shape):
-        return source._packed_like_unchecked(func(source.concat, source.concat.shape, **kwargs))
+        return source._packed_like_unchecked(func(source.values(), source.values().shape, **kwargs))
     if not source.batch_first and source.size(0) == 1 and target == tuple(source.shape[1:]):
         return _squeeze_nested(source, 0)
 
@@ -8201,7 +8203,7 @@ def view_like(func, args, kwargs):
     if not tails_uniform:
         return rebuild_per_element()
 
-    values = source.concat
+    values = source.values()
     if not _is_packed_identity(source):
         from .torch_functions import _packed_flatten_elements
 
@@ -8280,8 +8282,8 @@ def _binary_unwrap_handler(func, args, kwargs):
     if len(sources) == 2 and not sources[0]._has_same_layout(sources[1]):
         return per_element_fallback(func, args, kwargs)
     ref = sources[0]
-    va = a.concat if isinstance(a, NestedTensor) else a
-    vb = b.concat if isinstance(b, NestedTensor) else b
+    va = a.values() if isinstance(a, NestedTensor) else a
+    vb = b.values() if isinstance(b, NestedTensor) else b
     return ref._packed_like_unchecked(func(va, vb, *args[2:], **kwargs))
 
 
@@ -8311,7 +8313,7 @@ def _packed_varying_softmax_group_indices(
             return group_idx, source._ragged_level_offsets(-1).numel() - 1
         # The group total is data dependent for any other level; the packed row count bounds it, so the
         # segment buffers keep a symbolic extent instead of binding an unbacked one under compile.
-        group_count = source.concat.shape[0] if _is_compiling() else int(counts.sum())
+        group_count = source.values().shape[0] if _is_compiling() else int(counts.sum())
         return group_idx, group_count
 
     batch_idx, local_idx = source._packed_batch_local_indices(device=device, dtype=torch.long)
@@ -8354,7 +8356,7 @@ def _packed_varying_softmax(
     if target_dim not in varying_dims:
         return None
 
-    source_values = source.concat
+    source_values = source.values()
     values = (
         source_values.float()
         if half_to_float or source_values.dtype in (torch.float16, torch.bfloat16)
@@ -8407,7 +8409,7 @@ def _softmax_handler(func, args, kwargs):
         if varying is not None:
             return varying
         return _apply_per_element_nested(source, lambda t: func(t, dim_adj, *args[2:], **kwargs))
-    return source._packed_like_unchecked(func(source.concat, values_dim, *args[2:], **kwargs))
+    return source._packed_like_unchecked(func(source.values(), values_dim, *args[2:], **kwargs))
 
 
 # ---------------------------------------------------------------------------
@@ -8491,7 +8493,7 @@ def _segmented_cumsum_values(source: NestedTensor, *extra_args, **kwargs) -> Ten
     r"""Compute native sample-local cumsums without cancellation between samples."""
     from .segmented import segmented_cumsum
 
-    values = source.concat
+    values = source.values()
     dtype = aten.cumsum.default(values[:0], 0, *extra_args, **kwargs).dtype
     return segmented_cumsum(values.to(dtype=dtype), source._offsets.to(dtype=torch.long))
 
@@ -8524,7 +8526,7 @@ def _flip_compile_safe(args: tuple, kwargs: dict[str, object]) -> bool:
         return False
     varying_dims = tuple(dim for dim in dims_adj if dim in source._varying_dims)
     if not varying_dims:
-        return source.concat.dim() > 1 and all(dim in source._static_dims for dim in dims_adj)
+        return source.values().dim() > 1 and all(dim in source._static_dims for dim in dims_adj)
     # A single packed ragged dim flips through tensor-only index arithmetic on the offsets.
     return (
         len(set(varying_dims)) == 1
@@ -8600,13 +8602,13 @@ def argsort(func, args, kwargs):
     dim_adj = _translate_dim(source, dim)
     values_dim = _packed_static_dim(source, dim_adj)
     if values_dim is not None:
-        return source._packed_like_unchecked(_call_argsort(source.concat, values_dim))
+        return source._packed_like_unchecked(_call_argsort(source.values(), values_dim))
     if _has_single_packed_ragged_dim(source, dim_adj):
         # Sort the packed values in place of a padded rectangle; see ``sort`` below for detail.
         from .segmented import segmented_sort_perm
 
         _, local = segmented_sort_perm(
-            source.concat,
+            source.values(),
             source._offsets,
             source.packed_batch_indices(),
             descending=descending,
@@ -8652,7 +8654,7 @@ def cumulative(func, args, kwargs):
     extra_args = args[2:] if len(args) > 2 else ()
     values_dim = _packed_static_dim(source, dim_adj)
     if values_dim is not None:
-        return source._packed_like_unchecked(func(source.concat, values_dim, *extra_args, **kwargs))
+        return source._packed_like_unchecked(func(source.values(), values_dim, *extra_args, **kwargs))
     if _has_single_packed_ragged_dim(source, dim_adj):
         if func is aten.cumsum.default:
             return source._packed_like_unchecked(_segmented_cumsum_values(source, *extra_args, **kwargs))
@@ -8669,10 +8671,10 @@ def cumulative(func, args, kwargs):
         if func is aten.cumprod.default:
             from .segmented import segmented_cumprod
 
-            result_dtype = _cumprod_result_dtype(source.concat.dtype, dtype)
+            result_dtype = _cumprod_result_dtype(source.values().dtype, dtype)
             # Cast before accumulating, not after: that is the dense op's contract, and the two
             # orders are not numerically equivalent.
-            values = source.concat.to(result_dtype)
+            values = source.values().to(result_dtype)
             return source._packed_like_unchecked(segmented_cumprod(values, source._offsets))
         if _is_compiling():
             _compile_unsupported(
@@ -8681,8 +8683,8 @@ def cumulative(func, args, kwargs):
             )
         from .segmented import segmented_scan
 
-        result_dtype = source.concat.dtype if dtype is None else dtype
-        scanned = segmented_scan(source.concat.to(result_dtype), source.packed_batch_indices(), torch.logaddexp)
+        result_dtype = source.values().dtype if dtype is None else dtype
+        scanned = segmented_scan(source.values().to(result_dtype), source.packed_batch_indices(), torch.logaddexp)
         return source._packed_like_unchecked(scanned)
     return per_element_fallback(func, (source, dim_adj, *extra_args), kwargs)
 
@@ -8695,7 +8697,7 @@ def dropout(func, args, kwargs):
     train = args[2] if len(args) > 2 else kwargs.get("train", True)
     if (not bool(train)) or float(p) == 0:
         return source
-    return source._packed_like_unchecked(func(source.concat, *args[1:], **kwargs))
+    return source._packed_like_unchecked(func(source.values(), *args[1:], **kwargs))
 
 
 @NestedTensorAtenRegistry.implement(
@@ -8721,13 +8723,13 @@ def cumulative_pair(func, args, kwargs):
             raise TypeError(f"{func._schema.name.split('::')[-1]}() missing required argument 'dim'")
         dim = kw_dim
     dim_adj = _translate_dim(source, dim)
-    if source.concat.numel() == 0 and source.concat.dtype.is_complex:
-        return source._packed_like_unchecked(source.concat.clone()), source._packed_like_unchecked(
-            torch.empty_like(source.concat, dtype=torch.long)
+    if source.values().numel() == 0 and source.values().dtype.is_complex:
+        return source._packed_like_unchecked(source.values().clone()), source._packed_like_unchecked(
+            torch.empty_like(source.values(), dtype=torch.long)
         )
     values_dim = _packed_static_dim(source, dim_adj)
     if values_dim is not None:
-        vals, idxs = func(source.concat, values_dim, **kwargs)
+        vals, idxs = func(source.values(), values_dim, **kwargs)
         return source._packed_like_unchecked(vals), source._packed_like_unchecked(idxs)
     if _has_single_packed_ragged_dim(source, dim_adj):
         if _is_compiling():
@@ -8743,9 +8745,9 @@ def cumulative_pair(func, args, kwargs):
             raise TypeError(f"{func._schema.name.split('::')[-1]}() got unexpected arguments {kwargs!r}")
         largest = func is aten.cummax.default
         values, indices = segmented_arg_scan(
-            source.concat,
+            source.values(),
             source.packed_batch_indices(),
-            source.packed_local_indices(device=source.concat.device),
+            source.packed_local_indices(device=source.values().device),
             largest=largest,
         )
         return source._packed_like_unchecked(values), source._packed_like_unchecked(indices)
@@ -8774,9 +8776,9 @@ def flip(func, args, kwargs):
     static_dims = tuple(dim for dim in dims_adj if dim in source._static_dims)
     if len(varying_dims) == 0 and all(dim in source._static_dims for dim in dims_adj):
         packed_dims = tuple(source._static_dims.index(dim) + 1 for dim in static_dims)
-        return source._packed_like_unchecked(func(source.concat, packed_dims, **kwargs))
+        return source._packed_like_unchecked(func(source.values(), packed_dims, **kwargs))
     if len(set(varying_dims)) == 1 and _has_single_packed_ragged_dim(source, varying_dims[0]):
-        values = source.concat
+        values = source.values()
         offsets = source.ragged_level_offsets(0, device=values.device, dtype=torch.long)
         lengths = offsets[1:] - offsets[:-1]
         batch_idx = source.packed_batch_indices(device=values.device)
@@ -8878,8 +8880,8 @@ def searchsorted_tensor(func, args, kwargs):
                 f"sorted_sequence={len(sorted_sequence)}, values={len(values)}"
             )
         offsets_match = (
-            sorted_sequence.concat.dim() >= 2
-            and values.concat.dim() >= 2
+            sorted_sequence.values().dim() >= 2
+            and values.values().dim() >= 2
             and _offsets_match_identity_if_fake(sorted_sequence._offsets, values._offsets)
         )
 
@@ -8894,7 +8896,7 @@ def searchsorted_tensor(func, args, kwargs):
                     )
                 sorter_ok = _offsets_match_identity_if_fake(sorted_sequence._offsets, sorter._offsets)
                 if sorter_ok:
-                    sorter_values = sorter.concat
+                    sorter_values = sorter.values()
             elif isinstance(sorter, Tensor):
                 sorter_ok = True
                 sorter_values = sorter
@@ -8902,8 +8904,8 @@ def searchsorted_tensor(func, args, kwargs):
                 sorter_ok = False
             if sorter_ok:
                 out_values = func(
-                    sorted_sequence.concat,
-                    values.concat,
+                    sorted_sequence.values(),
+                    values.values(),
                     out_int32=out_int32,
                     right=right,
                     side=side,
@@ -8949,7 +8951,7 @@ def searchsorted_tensor(func, args, kwargs):
         ):
             out_values = func(
                 sorted_sequence,
-                values.concat,
+                values.values(),
                 out_int32=out_int32,
                 right=right,
                 side=side,
@@ -9050,7 +9052,7 @@ def sort(func, args, kwargs):
     dim_adj = _translate_dim(source, dim)
     values_dim = _packed_static_dim(source, dim_adj)
     if values_dim is not None:
-        vals, idxs = _call_sort(source.concat, values_dim)
+        vals, idxs = _call_sort(source.values(), values_dim)
         return source._packed_like_unchecked(vals), source._packed_like_unchecked(idxs)
     if _has_single_packed_ragged_dim(source, dim_adj):
         # Sort the packed values in place of a padded rectangle. The segmented permutation is
@@ -9058,12 +9060,14 @@ def sort(func, args, kwargs):
         from .segmented import segmented_sort_perm
 
         perm, local = segmented_sort_perm(
-            source.concat,
+            source.values(),
             source._offsets,
             source.packed_batch_indices(),
             descending=descending,
         )
-        return source._packed_like_unchecked(torch.gather(source.concat, 0, perm)), source._packed_like_unchecked(local)
+        return source._packed_like_unchecked(torch.gather(source.values(), 0, perm)), source._packed_like_unchecked(
+            local
+        )
     if stable_overload or stable is not None:
         return per_element_fallback(
             torch.ops.aten.sort.stable,
@@ -9117,7 +9121,7 @@ def topk(func, args, kwargs):
         return per_element_fallback(func, (source, k, dim_adj, largest, sorted_output), kwargs)
     values_dim = _packed_static_dim(source, dim_adj)
     if values_dim is not None:
-        vals, idxs = func(source.concat, k, values_dim, largest, sorted_output, **kwargs)
+        vals, idxs = func(source.values(), k, values_dim, largest, sorted_output, **kwargs)
         return (
             _packed_new_dim_size(source, vals, dim_adj, k),
             _packed_new_dim_size(source, idxs, dim_adj, k),
@@ -9129,16 +9133,16 @@ def topk(func, args, kwargs):
         # that check is data-dependent.
         from .segmented import segmented_sort_perm
 
-        offsets = source._offsets.to(device=source.concat.device, dtype=torch.long)
+        offsets = source._offsets.to(device=source.values().device, dtype=torch.long)
         lengths = offsets[1:] - offsets[:-1]
         k_value = int(k)
-        if lengths.numel() > 0 and not (_is_compiling() or _is_fake_tensor(source.concat)):
+        if lengths.numel() > 0 and not (_is_compiling() or _is_fake_tensor(source.values())):
             shortest = int(lengths.min())
             if k_value > shortest:
                 raise RuntimeError(f"selected index k out of range: k={k_value} exceeds shortest segment {shortest}")
 
         perm, local = segmented_sort_perm(
-            source.concat, source._offsets, source.packed_batch_indices(), descending=largest
+            source.values(), source._offsets, source.packed_batch_indices(), descending=largest
         )
         # Every output segment now has the uniform width k. Selecting the survivors by their
         # offsets keeps the output shape a function of k alone; a boolean mask over the sorted
@@ -9146,7 +9150,7 @@ def topk(func, args, kwargs):
         keep = (offsets[:-1].view(-1, 1) + torch.arange(k_value, device=perm.device)).reshape(-1)
         return (
             _packed_new_ragged_size(
-                source, torch.gather(source.concat, 0, perm).index_select(0, keep), dim_adj, k_value
+                source, torch.gather(source.values(), 0, perm).index_select(0, keep), dim_adj, k_value
             ),
             _packed_new_ragged_size(source, local.index_select(0, keep), dim_adj, k_value),
         )
@@ -9252,7 +9256,7 @@ def clone(func, args, kwargs):
     source = args[0]
     ragged_offsets = source._persistent_ragged_offsets()
     return type(source)._from_packed_raw(
-        source.concat.clone(),
+        source.values().clone(),
         source._offsets.clone(),
         source._physical_shape.clone(),
         batch_first=source.batch_first,
@@ -9286,10 +9290,10 @@ def constant_pad_nd(func, args, kwargs):
 
     padded_dims = len(pad) // 2
     # Packed fast path is valid only when padding targets trailing static dims.
-    if source.concat.dim() <= 1 or padded_dims >= source.concat.dim():
+    if source.values().dim() <= 1 or padded_dims >= source.values().dim():
         return per_element_fallback(func, args, kwargs)
 
-    out_values = func(source.concat, *args[1:], **kwargs)
+    out_values = func(source.values(), *args[1:], **kwargs)
     out_physical_shape = source._physical_shape.clone()
     for i in range(padded_dims):
         out_physical_shape[:, -(i + 1)] += pad[2 * i] + pad[2 * i + 1]
@@ -9328,13 +9332,13 @@ def _constant_pad_packed_variable_last_dim(source: NestedTensor, pad: tuple[int,
     batch_steps = torch.arange(len(source) + 1, dtype=source._offsets.dtype, device=source._offsets.device)
     new_offsets = source._offsets + batch_steps * pad_width
 
-    old_total = source.concat.size(0)
+    old_total = source.values().size(0)
     new_total = old_total + len(source) * pad_width
-    output_values = source.concat.new_full((new_total, *source.concat.shape[1:]), value)
-    batch_indices = source.packed_batch_indices(device=source.concat.device)
-    source_indices = torch.arange(old_total, device=source.concat.device)
+    output_values = source.values().new_full((new_total, *source.values().shape[1:]), value)
+    batch_indices = source.packed_batch_indices(device=source.values().device)
+    source_indices = torch.arange(old_total, device=source.values().device)
     destination_indices = source_indices + batch_indices * pad_width + left
-    output_values.index_copy_(0, destination_indices, source.concat)
+    output_values.index_copy_(0, destination_indices, source.values())
 
     shape_tensor = source._physical_shape.clone()
     shape_tensor[:, target_dim] += pad_width
@@ -9449,9 +9453,9 @@ def to(func, args, kwargs):
     from .nested_tensor import NestedTensor
 
     source = args[0]
-    values = source.concat if isinstance(source, NestedTensor) else source
-    others = tuple(value.concat if isinstance(value, NestedTensor) else value for value in args[1:])
-    options = {key: value.concat if isinstance(value, NestedTensor) else value for key, value in kwargs.items()}
+    values = source.values() if isinstance(source, NestedTensor) else source
+    others = tuple(value.values() if isinstance(value, NestedTensor) else value for value in args[1:])
+    options = {key: value.values() if isinstance(value, NestedTensor) else value for key, value in kwargs.items()}
     converted = func(values, *others, **options)
     if not isinstance(source, NestedTensor):
         return converted
@@ -9472,7 +9476,7 @@ def to_copy(func, args, kwargs):
 
     source = args[0]
     # Offsets and _physical_shape stay on CPU — they are metadata, not compute tensors.
-    values = func(source.concat, **kwargs)
+    values = func(source.values(), **kwargs)
     # A CUDA copy preserves packed geometry. The existing layout can therefore
     # be reused without rebuilding it through the validating public factory.
     # Keep pinned-memory and compiled paths on the general implementation.
@@ -9523,7 +9527,7 @@ def new_empty_strided(func, args, kwargs):
 def _creation_like_handler(func, args, kwargs):
     r"""Create packed values while deriving layout and pinning from the actual result."""
     source = args[0]
-    return source.packed_like(func(source.concat, *args[1:], **kwargs))
+    return source.packed_like(func(source.values(), *args[1:], **kwargs))
 
 
 # ---------------------------------------------------------------------------
@@ -9612,9 +9616,9 @@ def _ternary_handler(func, args, kwargs):
         return _ternary_per_element(func, args, kwargs, ref)
     va, vb, vc = resolved
     out_values = func(va, vb, vc, **kwargs)
-    if tuple(out_values.shape[1:]) == tuple(ref.concat.shape[1:]):
+    if tuple(out_values.shape[1:]) == tuple(ref.values().shape[1:]):
         return ref._packed_like_unchecked(out_values)
-    if out_values.dim() == ref.concat.dim():
+    if out_values.dim() == ref.values().dim():
         return _packed_with_static_tail_from_values(ref, out_values)
     return _packed_with_tail_from_values(ref, out_values)
 
@@ -9647,7 +9651,7 @@ def _make_dim_reduction_handler(ragged_fill, default_dim, keepdim_kw):
         source, dims, keepdim = _extract_dim_keepdim(args, kwargs, default_dim)
         fill = ragged_fill
         if fill is ...:
-            fill = _topk_fill_value(source.concat.dtype, largest=(func is aten.amax.default))
+            fill = _topk_fill_value(source.values().dtype, largest=(func is aten.amax.default))
         return _dim_reduction_dispatch(
             func, source, dims, keepdim, kwargs, ragged_fill=fill, keepdim_kw=keepdim_kw, none_dim=none_dim
         )

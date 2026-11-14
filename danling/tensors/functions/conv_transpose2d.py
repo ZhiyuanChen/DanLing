@@ -1398,7 +1398,7 @@ def _spatial_tile_conv_transpose2d(
     kernel_size = (int(weight.shape[2]), int(weight.shape[3]))
     if any(size <= 0 for size in kernel_size):
         return None
-    if not _valid_conv_bias(bias, out_channels=out_channels, device=input.concat.device, dtype=input.concat.dtype):
+    if not _valid_conv_bias(bias, out_channels=out_channels, device=input.values().device, dtype=input.values().dtype):
         return None
 
     output_meta = _conv_transpose2d_output_meta(
@@ -1416,7 +1416,7 @@ def _spatial_tile_conv_transpose2d(
     output_offsets = type(input)._offsets_from_sizes(output_packed_sizes, dtype=torch.long)
     total_out = int(output_offsets[-1].item())
     if total_out == 0:
-        output_values = input.concat.new_empty((total_out, out_channels))
+        output_values = input.values().new_empty((total_out, out_channels))
         return type(input)._from_packed_raw(
             output_values,
             output_offsets,
@@ -1432,7 +1432,7 @@ def _spatial_tile_conv_transpose2d(
         )
 
     input_shapes = tuple(_resolve_element_shapes(input))
-    input_values, weight, bias = _autocast_convolution_tensors(input.concat, weight, bias)
+    input_values, weight, bias = _autocast_convolution_tensors(input.values(), weight, bias)
     requires_grad = torch.is_grad_enabled() and (
         input_values.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
     )

@@ -47,7 +47,7 @@ class TestSegmentedSortPerm:
         offsets = nested.packed_offsets()
 
         permutation, local_indices = segmented_sort_perm(
-            nested.concat,
+            nested.values(),
             offsets,
             nested.packed_batch_indices(),
             descending=descending,
@@ -58,12 +58,12 @@ class TestSegmentedSortPerm:
             [torch.sort(element, stable=True, descending=descending).values for element in nested]
         )
         assert torch.equal(local_indices, expected_indices)
-        torch.testing.assert_close(nested.concat[permutation], expected_values)
+        torch.testing.assert_close(nested.values()[permutation], expected_values)
 
     def test_sorts_each_static_tail_column(self):
         nested = lengths_case(lambda length: (length, 4))
         _, local_indices = segmented_sort_perm(
-            nested.concat,
+            nested.values(),
             nested.packed_offsets(),
             nested.packed_batch_indices(),
         )
@@ -73,7 +73,7 @@ class TestSegmentedSortPerm:
     def test_is_stable_on_ties(self):
         nested = NestedTensor([torch.zeros(3), torch.zeros(4)])
         _, local_indices = segmented_sort_perm(
-            nested.concat,
+            nested.values(),
             nested.packed_offsets(),
             nested.packed_batch_indices(),
         )
@@ -104,7 +104,7 @@ class TestSegmentedScan:
     def test_matches_per_element_scan(self, combine, reference):
         nested = lengths_case(lambda length: (length, 3))
 
-        output = segmented_scan(nested.concat, nested.packed_batch_indices(), combine)
+        output = segmented_scan(nested.values(), nested.packed_batch_indices(), combine)
 
         torch.testing.assert_close(output, torch.cat([reference(element) for element in nested]))
 
@@ -113,7 +113,7 @@ class TestSegmentedScan:
         nested = lengths_case(lambda length: (length, 4))
 
         values, indices = segmented_arg_scan(
-            nested.concat,
+            nested.values(),
             nested.packed_batch_indices(),
             nested.packed_local_indices(),
             largest=largest,
@@ -133,7 +133,7 @@ class TestSegmentedScan:
         )
 
         values, indices = segmented_arg_scan(
-            nested.concat,
+            nested.values(),
             nested.packed_batch_indices(),
             nested.packed_local_indices(),
             largest=largest,
@@ -206,7 +206,7 @@ class TestSegmentedCumprodComplex:
         source = values.conj() if conjugate else values
         parts = source.split((3, 0, 2))
         nested = NestedTensor(parts, ragged_dims=(0,))
-        compiled = torch.compile(lambda data: data.cumprod(dim=1).concat, backend="aot_eager", fullgraph=True)
+        compiled = torch.compile(lambda data: data.cumprod(dim=1).values(), backend="aot_eager", fullgraph=True)
         actual = compiled(nested)
         expected = torch.cat([part.cumprod(0) for part in parts])
         cotangent = torch.randn_like(actual)

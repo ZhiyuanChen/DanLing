@@ -95,7 +95,7 @@ class TestConvolution:
         expected = [F.conv2d(part, reference_weight, **kwargs) for part in references]
         torch.testing.assert_close(actual.unbind(), expected)
         torch.testing.assert_close(
-            torch.autograd.grad(actual.concat.sum(), (*parts, weight)),
+            torch.autograd.grad(actual.values().sum(), (*parts, weight)),
             torch.autograd.grad(sum(part.sum() for part in expected), (*references, reference_weight)),
         )
 
@@ -211,5 +211,5 @@ class TestConvolution:
         expected_gradients = torch.autograd.grad(sum(part.square().sum() for part in expected), (*parts, weight, bias))
         actual = torch.compile(F.conv2d, backend=backend, fullgraph=True)(NT(parts), weight, bias)
         torch.testing.assert_close(actual.unbind(), expected)
-        actual_gradients = torch.autograd.grad(actual.concat.square().sum(), (*parts, weight, bias))
+        actual_gradients = torch.autograd.grad(actual.values().square().sum(), (*parts, weight, bias))
         torch.testing.assert_close(actual_gradients, expected_gradients)
