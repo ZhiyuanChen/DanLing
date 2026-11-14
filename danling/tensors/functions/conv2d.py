@@ -227,6 +227,18 @@ def _packed_spatial_conv2d(input, weight, bias, stride, padding, dilation, group
         element_shapes = None
         packed_sizes = None
     values = input.values()
+    native_autograd = (
+        not _is_compiling()
+        and (torch._C._are_functorch_transforms_active() or torch.autograd.forward_ad._current_level >= 0)
+    ) or (
+        values.is_complex()
+        and torch.is_grad_enabled()
+        and (values.requires_grad or weight.requires_grad or bias is not None and bias.requires_grad)
+    )
+    if native_autograd:
+        # A single real output per tile retains native complex/forward-AD
+        # derivatives without ever differentiating discarded output windows.
+        tile_size = (1, 1)
     if not preserves_spatial and not _is_compiling() and input._element_shapes is not None:
         # Standalone FakeTensor retains concrete layout schema but cannot read tensor data.
         element_shapes = tuple(
@@ -337,6 +349,20 @@ def _packed_spatial_conv2d(input, weight, bias, stride, padding, dilation, group
         # A prior ragged operation can make the exact packed count data-dependent.
         # Its logical spatial maxima still provide a backed bound for the same tiles.
         capacity = grid_bound
+    if not native_autograd and torch.is_grad_enabled() and (values.requires_grad or weight.requires_grad):
+        tile_ids_cpu = torch.arange(capacity, device=spatial.device)
+        raw_owner_cpu = torch.bucketize(tile_ids_cpu, tile_offsets[1:], right=True)
+        owner_cpu = raw_owner_cpu.clamp(max=batch_size - 1)
+        local_cpu = tile_ids_cpu - tile_offsets.index_select(0, owner_cpu)
+        columns_cpu = tile_grid[:, 1].index_select(0, owner_cpu)
+        row_cpu = torch.div(local_cpu, columns_cpu, rounding_mode="floor")
+        output_y_cpu = row_cpu * tile_h
+        output_x_cpu = (local_cpu - row_cpu * columns_cpu) * tile_w
+        remaining = output_spatial.index_select(0, owner_cpu) - torch.stack((output_y_cpu, output_x_cpu), dim=1)
+        output_tile_shapes = torch.minimum(remaining.clamp(min=0), tile_shape)
+        output_tile_shapes = torch.where((raw_owner_cpu < batch_size)[:, None], output_tile_shapes, 0)
+    else:
+        output_tile_shapes = spatial.new_empty((0, 2))
     from . import _conv2d_copy
 
     input_h = (tile_h - 1) * stride[0] + effective_h + 1
@@ -426,7 +452,11 @@ def _packed_spatial_conv2d(input, weight, bias, stride, padding, dilation, group
         tiles = tiles.reshape(capacity, input_h, input_w, values.shape[1]).permute(0, 3, 1, 2)
         if not values.is_cuda:
             tiles = tiles.contiguous()
-    convolved = F.conv2d(tiles, weight, bias, stride=stride, dilation=dilation, groups=groups)
+    from ._convolution import _tile_convolution
+
+    convolved = _tile_convolution(
+        tiles, weight, bias, output_tile_shapes, stride, dilation, groups, native_autograd=native_autograd
+    )
     if use_copy:
         output_values = _conv2d_copy.unpack(convolved, copy_out_offsets, copy_shapes, copy_tiles, total_output)
     else:
