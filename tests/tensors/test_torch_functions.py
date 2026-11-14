@@ -20,6 +20,7 @@
 import itertools
 import math
 import operator
+import warnings
 from functools import partial
 from itertools import accumulate
 
@@ -3785,6 +3786,592 @@ class TestMatrixMultiplication:
             sum(part.square().sum() for part in expected), (*reference_parts, reference_right, reference_bias)
         )
         torch.testing.assert_close(gradients, references)
+
+    @pytest.mark.parametrize("dtype", [torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64])
+    def test_baddbmm_integer_coefficients(self, device, dtype):
+        parts = [torch.arange(1, n * 3 + 1, dtype=dtype, device=device).reshape(n, 3) for n in (2, 4)]
+        right = torch.ones(2, 3, 2, dtype=dtype, device=device)
+        bias = torch.full((2, 1, 2), 2, dtype=dtype, device=device)
+        nested = NT(parts, ragged_dims=(0,))
+        try:
+            torch.baddbmm(bias[0], parts[0].unsqueeze(0), right[:1])
+        except NotImplementedError as error:
+            pytest.skip(f"Native baddbmm does not support {device}/{dtype}: {error}")
+        for alpha, beta in (
+            (1.5, 1.5),
+            (0.5, 0.5),
+            (-1, 1),
+            (-1.5, -0.5),
+            (1 + 0j, 1 + 0j),
+            (float(torch.iinfo(dtype).max) + 0.9, 0),
+            (torch.iinfo(dtype).max + 1, 1),
+            (1, float("nan")),
+        ):
+            try:
+                expected = [
+                    torch.baddbmm(
+                        bias[index], part.unsqueeze(0), right[index : index + 1], alpha=alpha, beta=beta
+                    ).squeeze(0)
+                    for index, part in enumerate(parts)
+                ]
+            except RuntimeError:
+                with pytest.raises(RuntimeError, match="overflow"):
+                    torch.baddbmm(bias, nested, right, alpha=alpha, beta=beta)
+            else:
+                output = torch.baddbmm(bias, nested, right, alpha=alpha, beta=beta)
+                assert output.dtype == dtype
+                torch.testing.assert_close(output.unbind(), expected)
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    def test_baddbmm_integer_coefficients_compile(self, device, backend):
+        torch.compiler.reset()
+        dtype = torch.int64
+        dense = torch.ones(2, 2, 2, device=device, dtype=dtype)
+        bias = 2 * dense
+        try:
+            expected = torch.baddbmm(bias, dense, dense, alpha=1.5, beta=1.5)
+        except NotImplementedError as error:
+            pytest.skip(f"Native baddbmm does not support {device}/{dtype}: {error}")
+        operation = torch.compile(
+            lambda input, lhs, rhs: torch.baddbmm(input, lhs, rhs, alpha=1.5, beta=1.5),
+            backend=backend,
+            fullgraph=True,
+        )
+        actual = operation(bias, NT(dense.unbind(), ragged_dims=(0,)), dense)
+        torch.testing.assert_close(actual.tensor, expected)
+        assert actual.dtype == dtype
+
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.float64, torch.complex64, torch.complex128])
+    def test_baddbmm_inexact_coefficients(self, device, dtype):
+        parts = [torch.randn(n, 3, device=device, dtype=dtype, requires_grad=True) for n in (2, 4)]
+        right = torch.randn(2, 3, 2, device=device, dtype=dtype, requires_grad=True)
+        bias = torch.randn(2, 1, 2, device=device, dtype=dtype, requires_grad=True)
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        reference_right = right.detach().clone().requires_grad_()
+        reference_bias = bias.detach().clone().requires_grad_()
+        alpha, beta = (1.5 + 0.25j, 0.5 - 0.75j) if dtype.is_complex else (1.5, 0.5)
+        actual = torch.baddbmm(bias, NT(parts, ragged_dims=(0,)), right, alpha=alpha, beta=beta)
+        expected = [
+            torch.baddbmm(
+                reference_bias[index], part.unsqueeze(0), reference_right[index : index + 1], alpha=alpha, beta=beta
+            ).squeeze(0)
+            for index, part in enumerate(references)
+        ]
+        torch.testing.assert_close(actual.unbind(), expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(actual.values().abs().square().sum(), (*parts, right, bias)),
+            torch.autograd.grad(
+                sum(part.abs().square().sum() for part in expected), (*references, reference_right, reference_bias)
+            ),
+        )
+
+    @staticmethod
+    def _baddbmm_nested_matrix(value):
+        # A zero batch still carries its physical matrix shape and source edge.
+        if value.shape[0]:
+            return NT(value.unbind(), ragged_dims=(0,))
+        batch, rows, columns = value.shape
+        return NT.from_packed(
+            value.reshape(batch * rows, columns),
+            torch.zeros(1, dtype=torch.long, device="cpu"),
+            torch.empty(0, 2, dtype=torch.long, device="cpu"),
+            ragged_dims=(0,),
+            outer_size=tuple(value.shape),
+        )
+
+    @pytest.mark.parametrize("argument", ["alpha", "beta"])
+    def test_baddbmm_scalars(self, device, argument):
+        dtype = torch.float32
+        left = torch.ones(2, 2, 3, device=device, dtype=dtype)
+        right = torch.ones(2, 3, 2, device=device, dtype=dtype)
+        bias = torch.ones(2, 2, 2, device=device, dtype=dtype)
+        nested = self._baddbmm_nested_matrix(left)
+        for coefficient in (1 + 1j, 1e40):
+            kwargs = {argument: coefficient}
+            try:
+                expected = torch.baddbmm(bias, left, right, **kwargs)
+            except RuntimeError:
+                with pytest.raises(RuntimeError, match="overflow"):
+                    torch.baddbmm(bias, nested, right, **kwargs)
+            else:
+                actual = torch.baddbmm(bias, nested, right, **kwargs)
+                assert actual.dtype == dtype
+                torch.testing.assert_close(actual.tensor, expected, equal_nan=True)
+
+    @pytest.mark.parametrize(
+        "dtype,rows,inner,alpha,beta",
+        [
+            (torch.uint8, 2, 0, 256, 0),
+            (torch.uint8, 0, 2, 256, 0),
+            (torch.int64, 0, 2, float("inf"), 1),
+            (torch.float32, 2, 0, float("inf"), 0.5),
+            (torch.float32, 2, 0, float("nan"), 0),
+            (torch.float32, 2, 0, 1e40, 1),
+            (torch.float32, 2, 0, 1, 1e40),
+            (torch.float32, 2, 0, 1, 1 + 1j),
+        ],
+    )
+    def test_baddbmm_empty(self, device, dtype, rows, inner, alpha, beta):
+        left = torch.empty(1, rows, inner, device=device, dtype=dtype)
+        right = torch.ones(1, inner, 2, device=device, dtype=dtype)
+        bias = torch.full((1, rows, 2), 2, device=device, dtype=dtype)
+        nested = self._baddbmm_nested_matrix(left)
+        try:
+            expected = torch.baddbmm(bias, left, right, alpha=alpha, beta=beta)
+        except RuntimeError:
+            with pytest.raises(RuntimeError):
+                torch.baddbmm(bias, nested, right, alpha=alpha, beta=beta)
+        else:
+            actual = torch.baddbmm(bias, nested, right, alpha=alpha, beta=beta)
+            assert actual.dtype == dtype
+            torch.testing.assert_close(actual.tensor, expected, equal_nan=True)
+
+    @pytest.mark.parametrize(
+        "shape,bias_kind,nested_side",
+        [
+            ((1, 0, 2, 3), "scalar", "left"),
+            ((1, 2, 2, 0), "dense", "right"),
+            ((0, 2, 2, 3), "nested", "left"),
+            ((1, 0, 2, 3), "nested", "bias"),
+        ],
+    )
+    def test_baddbmm_empty_grad(self, device, shape, bias_kind, nested_side):
+        alpha = beta = float("inf")
+        batch, rows, inner, columns = shape
+        left = torch.ones(batch, rows, inner, device=device, requires_grad=True)
+        right = torch.ones(batch, inner, columns, device=device, requires_grad=True)
+        bias = torch.ones(() if bias_kind == "scalar" else (batch, 1, columns), device=device, requires_grad=True)
+        references = tuple(value.detach().clone().requires_grad_() for value in (bias, left, right))
+        operands = [bias, left, right]
+        if nested_side != "bias":
+            index = 1 if nested_side == "left" else 2
+            operands[index] = self._baddbmm_nested_matrix(operands[index])
+        if bias_kind == "nested":
+            operands[0] = self._baddbmm_nested_matrix(bias)
+        actual = torch.baddbmm(*operands, alpha=alpha, beta=beta)
+        expected = torch.baddbmm(*references, alpha=alpha, beta=beta)
+        torch.testing.assert_close(actual.tensor, expected, equal_nan=True)
+        torch.testing.assert_close(
+            torch.autograd.grad(actual.values().sum(), (bias, left, right)),
+            torch.autograd.grad(expected.sum(), references),
+            equal_nan=True,
+        )
+
+    @pytest.mark.parametrize("mapped,batch,alpha", [("right", 3, 0.5), ("right", 0, 1e40), ("bias", 0, 1e40)])
+    def test_baddbmm_vmap_scalars(self, device, mapped, batch, alpha):
+        left = torch.ones(2, 2, 3, device=device)
+        right = torch.ones(2, 3, 2, device=device)
+        bias = torch.zeros(2, 2, 2, device=device)
+        nested = self._baddbmm_nested_matrix(left)
+        mapped_value = (right if mapped == "right" else bias).unsqueeze(0).expand(batch, -1, -1, -1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            if mapped == "right":
+                actual = torch.vmap(lambda value: torch.baddbmm(bias, nested, value, alpha=alpha).values())(
+                    mapped_value
+                )
+                expected = torch.vmap(lambda value: torch.baddbmm(bias, left, value, alpha=alpha))(mapped_value)
+            else:
+                actual = torch.vmap(lambda value: torch.baddbmm(value, nested, right, alpha=alpha).values())(
+                    mapped_value
+                )
+                expected = torch.vmap(lambda value: torch.baddbmm(value, left, right, alpha=alpha))(mapped_value)
+        torch.testing.assert_close(actual.reshape_as(expected), expected)
+
+    @pytest.mark.parametrize("side", ["left", "right"])
+    def test_baddbmm_partial_grad(self, device, side):
+        deterministic = torch.are_deterministic_algorithms_enabled()
+        warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+        fill = torch.utils.deterministic.fill_uninitialized_memory
+        try:
+            torch.use_deterministic_algorithms(True)
+            torch.utils.deterministic.fill_uninitialized_memory = True
+            left = torch.ones(1, 2, 3, device=device, requires_grad=side == "left")
+            right = torch.ones(1, 3, 2, device=device, requires_grad=side == "right")
+            bias = torch.ones(1, 2, 2, device=device)
+            references = tuple(value.detach().clone().requires_grad_(value.requires_grad) for value in (left, right))
+            target = left if side == "left" else right
+            reference_target = references[0] if side == "left" else references[1]
+            with torch.autograd.set_detect_anomaly(True):
+                actual = torch.baddbmm(bias, self._baddbmm_nested_matrix(left), right, alpha=1.5)
+                expected = torch.baddbmm(bias, *references, alpha=1.5)
+                torch.testing.assert_close(
+                    torch.autograd.grad(actual.values().sum(), target),
+                    torch.autograd.grad(expected.sum(), reference_target),
+                )
+        finally:
+            torch.use_deterministic_algorithms(deterministic, warn_only=warn_only)
+            torch.utils.deterministic.fill_uninitialized_memory = fill
+
+    def test_baddbmm_partial_target(self, device):
+        # Both matrices require gradients, but the unrequested right VJP
+        # overflows before multiplying by zero. Native never evaluates it.
+        left = torch.full(
+            (1, 2, 1), torch.finfo(torch.float64).max, device=device, dtype=torch.float64, requires_grad=True
+        )
+        right = torch.zeros(1, 1, 1, device=device, dtype=torch.float64, requires_grad=True)
+        bias = torch.zeros_like(left)
+        references = tuple(value.detach().clone().requires_grad_() for value in (left, right))
+        with torch.autograd.set_detect_anomaly(True):
+            actual = torch.baddbmm(bias, self._baddbmm_nested_matrix(left), right, alpha=0)
+            expected = torch.baddbmm(bias, *references, alpha=0)
+            torch.testing.assert_close(
+                torch.autograd.grad(actual.values(), left, torch.full_like(actual.values(), 2)),
+                torch.autograd.grad(expected, references[0], torch.full_like(expected, 2)),
+            )
+
+    @pytest.mark.parametrize("batch,columns,bias_shape", [(1, 2, (2, 2)), (2, 4, (4,))])
+    def test_baddbmm_column_bias(self, device, batch, columns, bias_shape):
+        left = torch.ones(batch, 2, 3, device=device, requires_grad=True)
+        right = torch.ones(batch, 3, columns, device=device, requires_grad=True)
+        bias = (
+            torch.arange(math.prod(bias_shape), device=device, dtype=torch.float32).reshape(bias_shape) - 1
+        ).requires_grad_()
+        references = tuple(value.detach().clone().requires_grad_() for value in (bias, left, right))
+        actual = torch.baddbmm(bias, left, NT(right.unbind(), ragged_dims=(1,)))
+        expected = torch.baddbmm(*references)
+        torch.testing.assert_close(actual.tensor, expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(actual.values().square().sum(), (bias, left, right)),
+            torch.autograd.grad(expected.square().sum(), references),
+        )
+
+    @pytest.mark.parametrize("axis", [0, 1])
+    @pytest.mark.parametrize("broadcast", [False, True])
+    def test_baddbmm_nested_bias(self, device, axis, broadcast):
+        shapes = [(length, 3) if axis == 0 else (3, length) for length in ((0, 4) if broadcast else (2, 2))]
+        left = [torch.randn(rows, 2, device=device, dtype=torch.float64, requires_grad=True) for rows, _ in shapes]
+        right = [
+            torch.randn(2, columns, device=device, dtype=torch.float64, requires_grad=True) for _, columns in shapes
+        ]
+        bias = [
+            torch.randn(
+                *((1 if broadcast and dim == axis else size) for dim, size in enumerate(shape)),
+                device=device,
+                dtype=torch.float64,
+                requires_grad=True,
+            )
+            for shape in shapes
+        ]
+        references = [
+            tuple(value.detach().clone().requires_grad_() for value in group) for group in (bias, left, right)
+        ]
+        lhs = NT(left, ragged_dims=(0,)) if axis == 0 else torch.stack(left)
+        rhs = NT(right, ragged_dims=(1,)) if axis == 1 else torch.stack(right)
+        actual = torch.baddbmm(NT(bias, ragged_dims=(1 - axis,)), lhs, rhs, alpha=0.5, beta=0.7)
+        expected = [
+            torch.baddbmm(b, l.unsqueeze(0), r.unsqueeze(0), alpha=0.5, beta=0.7).squeeze(0)
+            for b, l, r in zip(*references)
+        ]
+        torch.testing.assert_close(actual.unbind(), expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(actual.values().square().sum(), (*bias, *left, *right)),
+            torch.autograd.grad(sum(value.square().sum() for value in expected), sum(references, ())),
+        )
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("axis", [0, 1])
+    def test_baddbmm_jvp_order(self, device, dtype, axis):
+        values = tuple(torch.ones(1, 1, 1, device=device, dtype=dtype) for _ in range(3))
+        large = 4 / torch.finfo(dtype).eps
+        directions = (torch.full_like(values[0], large), torch.full_like(values[1], -large), torch.ones_like(values[2]))
+
+        def operation(bias, left, right):
+            if axis == 0:
+                left = NT(left.unbind(), ragged_dims=(0,))
+            else:
+                right = NT(right.unbind(), ragged_dims=(1,))
+            return torch.baddbmm(bias, left, right).tensor
+
+        torch.testing.assert_close(
+            torch.func.jvp(operation, values, directions),
+            torch.func.jvp(torch.baddbmm, values, directions),
+            rtol=0,
+            atol=0,
+        )
+
+    @pytest.mark.parametrize("axis", [0, 1])
+    @pytest.mark.parametrize("requires_grad", [False, True])
+    def test_baddbmm_captured(self, device, axis, requires_grad):
+        bias = torch.randn(2, 3, 4, device=device, dtype=torch.float64, requires_grad=True)
+        left = torch.randn(2, 3, 2, device=device, dtype=torch.float64, requires_grad=requires_grad)
+        right = torch.randn(2, 2, 4, device=device, dtype=torch.float64, requires_grad=requires_grad)
+        references = tuple(value.detach().clone().requires_grad_(value.requires_grad) for value in (bias, left, right))
+        captured = NT((left if axis == 0 else right).unbind(), ragged_dims=(axis,))
+
+        def operation(value):
+            return torch.baddbmm(
+                NT(value.unbind(), ragged_dims=(0,)), captured if axis == 0 else left, right if axis == 0 else captured
+            ).tensor
+
+        direction = torch.randn_like(bias)
+        actual = torch.func.jvp(operation, (bias,), (direction,))
+        expected = torch.func.jvp(lambda value: torch.baddbmm(value, *references[1:]), references[:1], (direction,))
+        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(sum(value.square().sum() for value in actual), bias),
+            torch.autograd.grad(sum(value.square().sum() for value in expected), references[0]),
+        )
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("autocast", [False, True])
+    def test_baddbmm_precision(self, device, dtype, autocast):
+        input_dtype = torch.float32 if autocast else dtype
+        left = torch.tensor([[[1.0, 0.001]]], device=device, dtype=input_dtype, requires_grad=True)
+        right = torch.ones(1, 2, 1, device=device, dtype=input_dtype, requires_grad=True)
+        bias = torch.full((1, 1, 1), -1, device=device, dtype=input_dtype, requires_grad=True)
+        references = tuple(value.detach().clone().requires_grad_() for value in (bias, left, right))
+        with torch.autocast(device.type, dtype=dtype, enabled=autocast):
+            actual = torch.baddbmm(bias, self._baddbmm_nested_matrix(left), right)
+            expected = torch.baddbmm(*references)
+        assert actual.dtype == expected.dtype == dtype
+        torch.testing.assert_close(actual.tensor, expected, rtol=0, atol=0)
+        torch.testing.assert_close(
+            torch.autograd.grad(actual.values().sum(), (bias, left, right)),
+            torch.autograd.grad(expected.sum(), references),
+        )
+
+        # Matrix derivatives round before alpha, even with FP32 autocast inputs.
+        denominator = 1024 if dtype == torch.float16 else 128
+        alpha = (denominator - 1) / denominator
+        unit = torch.ones((), device=device, dtype=dtype)
+        upstream = torch.nextafter(unit, torch.full_like(unit, float("inf")))
+        maximum = torch.full((), torch.finfo(dtype).max, device=device, dtype=dtype)
+        if dtype == torch.bfloat16:
+            maximum = torch.nextafter(maximum, torch.zeros_like(maximum))
+        left = torch.zeros(1, 1, 1, device=device, dtype=input_dtype, requires_grad=True)
+        right = maximum.to(input_dtype).reshape(1, 1, 1)
+        bias = torch.zeros_like(left)
+        reference = left.detach().clone().requires_grad_()
+        with torch.autocast(device.type, dtype=dtype, enabled=autocast):
+            actual = torch.baddbmm(bias, self._baddbmm_nested_matrix(left), right, alpha=alpha)
+            expected = torch.baddbmm(bias, reference, right, alpha=alpha)
+        torch.testing.assert_close(actual.tensor, expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(actual.values(), left, upstream.expand_as(actual.values())),
+            torch.autograd.grad(expected, reference, upstream.expand_as(expected)),
+        )
+        primal = left.detach()
+        direction = upstream.to(input_dtype).expand_as(primal)
+        with torch.autocast(device.type, dtype=dtype, enabled=autocast):
+            actual_tangent = torch.func.jvp(
+                lambda value: torch.baddbmm(bias, self._baddbmm_nested_matrix(value), right, alpha=alpha).values(),
+                (primal,),
+                (direction,),
+            )[1]
+            expected_tangent = torch.func.jvp(
+                lambda value: torch.baddbmm(bias, value, right, alpha=alpha),
+                (primal,),
+                (direction,),
+            )[1]
+        torch.testing.assert_close(actual_tangent.reshape_as(expected_tangent), expected_tangent)
+
+        # Bias scaling rounds before broadcast reduction: opposite overflows
+        # must remain NaN rather than canceling in a wider accumulator.
+        left = torch.zeros(1, 2, 1, device=device, dtype=input_dtype)
+        right = torch.ones(1, 1, 1, device=device, dtype=input_dtype)
+        bias = torch.zeros(1, 1, 1, device=device, dtype=input_dtype, requires_grad=True)
+        reference = bias.detach().clone().requires_grad_()
+        beta = (denominator + 1) / denominator
+        with torch.autocast(device.type, dtype=dtype, enabled=autocast):
+            actual = torch.baddbmm(bias, self._baddbmm_nested_matrix(left), right, beta=beta)
+            expected = torch.baddbmm(reference, left, right, beta=beta)
+        probe = torch.stack((maximum, -maximum)).reshape_as(expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(actual.values(), bias, probe.reshape_as(actual.values())),
+            torch.autograd.grad(expected, reference, probe),
+            equal_nan=True,
+        )
+
+    @pytest.mark.parametrize("alpha", [1.5, float("inf")])
+    def test_baddbmm_derivatives(self, device, alpha):
+        left = torch.tensor([[[0.0, 0.0], [1.0, 2.0]]], device=device, dtype=torch.float64, requires_grad=True)
+        right = torch.ones(1, 2, 1, device=device, dtype=torch.float64, requires_grad=True)
+        bias = torch.zeros(1, 2, 1, device=device, dtype=torch.float64)
+        references = tuple(value.detach().clone().requires_grad_() for value in (left, right))
+        nested = self._baddbmm_nested_matrix(left)
+        actual = torch.baddbmm(bias, nested, right, alpha=alpha).values()
+        expected = torch.baddbmm(bias, *references, alpha=alpha)
+        higher = alpha == 1.5
+        gradients = torch.autograd.grad(actual, (left, right), torch.ones_like(actual), create_graph=higher)
+        reference_gradients = torch.autograd.grad(expected, references, torch.ones_like(expected), create_graph=higher)
+        torch.testing.assert_close(gradients, reference_gradients, equal_nan=True)
+        if higher:
+            torch.testing.assert_close(
+                torch.autograd.grad(gradients[0].sum(), right),
+                torch.autograd.grad(reference_gradients[0].sum(), references[1]),
+            )
+        else:
+            # A bias-only dual still has both native zero matrix directions.
+            left, right = left.detach(), right.detach()
+            actual = torch.func.jvp(
+                lambda value: torch.baddbmm(value, self._baddbmm_nested_matrix(left), right, alpha=alpha).values(),
+                (bias,),
+                (torch.ones_like(bias),),
+            )
+            expected = torch.func.jvp(
+                lambda value: torch.baddbmm(value, left, right, alpha=alpha),
+                (bias,),
+                (torch.ones_like(bias),),
+            )
+            torch.testing.assert_close(actual[1].reshape_as(expected[1]), expected[1], equal_nan=True)
+
+    def test_baddbmm_unit_derivatives(self, device):
+        for coefficient in (1, 1 + 0j):
+            operands = tuple(
+                torch.ones(1, 1, 1, device=device, dtype=torch.complex128, requires_grad=True) for _ in range(3)
+            )
+            references = tuple(value.detach().clone().requires_grad_() for value in operands)
+
+            def operation(bias, left, right, coefficient=coefficient):
+                return torch.baddbmm(
+                    bias, self._baddbmm_nested_matrix(left), right, alpha=coefficient, beta=coefficient
+                ).values()
+
+            actual = operation(*operands)
+            expected = torch.baddbmm(*references, alpha=coefficient, beta=coefficient)
+            cotangent = torch.full_like(expected, complex(float("inf"), 0))
+            gradients = torch.autograd.grad(actual, operands, cotangent.reshape_as(actual))
+            reference_gradients = torch.autograd.grad(expected, references, cotangent)
+            torch.testing.assert_close(
+                tuple(torch.view_as_real(value) for value in gradients),
+                tuple(torch.view_as_real(value) for value in reference_gradients),
+                equal_nan=True,
+            )
+            for active in range(3):
+                values = tuple(value.detach() for value in operands)
+
+                def nested(value, active=active, values=values, operation=operation):
+                    args = list(values)
+                    args[active] = value
+                    return operation(*args)
+
+                def native(value, active=active, coefficient=coefficient, values=values):
+                    args = list(values)
+                    args[active] = value
+                    return torch.baddbmm(*args, alpha=coefficient, beta=coefficient)
+
+                primal = values[active]
+                tangent = torch.full_like(primal, complex(float("inf"), 0))
+                actual = torch.func.jvp(nested, (primal,), (tangent,))[1]
+                expected = torch.func.jvp(native, (primal,), (tangent,))[1]
+                torch.testing.assert_close(
+                    torch.view_as_real(actual.reshape_as(expected)),
+                    torch.view_as_real(expected),
+                    equal_nan=True,
+                )
+
+    @pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
+    def test_baddbmm_zero_beta(self, device, dtype):
+        left = torch.ones(1, 2, 2, device=device, dtype=dtype)
+        right = torch.ones_like(left)
+        bias = torch.full_like(left, float("nan"), requires_grad=True)
+        reference_bias = bias.detach().clone().requires_grad_()
+        nested = self._baddbmm_nested_matrix(left)
+        actual = torch.baddbmm(bias, nested, right, beta=0)
+        expected = torch.baddbmm(reference_bias, left, right, beta=0)
+        torch.testing.assert_close(actual.tensor, expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(actual.values(), bias, torch.full_like(actual.values(), float("inf")))[0],
+            torch.autograd.grad(expected, reference_bias, torch.full_like(expected, float("inf")))[0],
+            equal_nan=True,
+        )
+        with torch.autograd.forward_ad.dual_level():
+            dual_bias = torch.autograd.forward_ad.make_dual(bias, torch.full_like(bias, float("inf")))
+            actual = torch.baddbmm(dual_bias, nested, right, beta=0)
+            expected = torch.baddbmm(dual_bias, left, right, beta=0)
+            actual_tangent = torch.autograd.forward_ad.unpack_dual(actual.values()).tangent
+            expected_tangent = torch.autograd.forward_ad.unpack_dual(expected).tangent
+            torch.testing.assert_close(actual_tangent, expected_tangent.reshape_as(actual_tangent), equal_nan=True)
+
+    @pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
+    def test_baddbmm_scalars_compile(self, device, backend, run_isolated):
+        run_isolated(f"""
+            import torch
+            from danling.tensors import NestedTensor as NT
+            for coefficient in (1e40, 1 + 1j):
+                torch.compiler.reset()
+                value = torch.ones(1, 2, 2, device={str(device)!r})
+                source = NT(value.unbind(), ragged_dims=(0,))
+                def operation(bias, lhs, rhs):
+                    return torch.baddbmm(bias, lhs, rhs, alpha=coefficient)
+                run = torch.compile(operation, backend={backend!r}, fullgraph=True, dynamic=True)
+                try:
+                    run(value, source, value)
+                except RuntimeError as error:
+                    assert 'overflow' in str(error), str(error)
+                else:
+                    raise AssertionError('compiled baddbmm accepted an invalid Scalar')
+            """)
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("zero_contraction", [False, True])
+    def test_baddbmm_empty_compile(self, device, backend, zero_contraction, run_isolated):
+        rows, inner = (2, 0) if zero_contraction else (0, 3)
+        run_isolated(f"""
+            import torch
+            from danling.tensors import NestedTensor as NT
+            torch.compiler.reset()
+            bias = torch.ones((), device={str(device)!r}, requires_grad=True)
+            lhs = torch.ones(2, {rows}, {inner}, device={str(device)!r}, requires_grad=True)
+            rhs = torch.ones(2, {inner}, 2, device={str(device)!r}, requires_grad=True)
+            references = tuple(x.detach().clone().requires_grad_() for x in (bias, lhs, rhs))
+            def operation(input, left, right):
+                return torch.baddbmm(input, left, right, alpha=float('inf'), beta=0.5)
+            run = torch.compile(operation, backend={backend!r}, fullgraph=True, dynamic=True)
+            actual = run(bias, NT(lhs.unbind(), ragged_dims=(0,)), rhs)
+            expected = operation(*references)
+            torch.testing.assert_close(actual.tensor, expected, equal_nan=True)
+            torch.testing.assert_close(
+                torch.autograd.grad(actual.values().sum(), (bias, lhs, rhs)),
+                torch.autograd.grad(expected.sum(), references), equal_nan=True,
+            )
+            """)
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    def test_baddbmm_partition_compile(self, device, backend):
+        for alpha in (float("inf"), 1e40):
+            torch.compiler.reset()
+
+            def operation(value, matrix, bias, alpha=alpha):
+                return torch.baddbmm(bias, value[:, 1:], matrix, alpha=alpha, beta=0.5)
+
+            run = torch.compile(operation, backend=backend, fullgraph=True, dynamic=True)
+            for lengths in ((1, 1), (0, 2), (2, 4)):
+                parts = [torch.ones(n, 3, device=device) for n in lengths]
+                for part in parts:
+                    if part.shape[0] > 1:
+                        part[1].zero_()
+                    part.requires_grad_()
+                matrix = torch.ones(2, 3, 2, device=device, requires_grad=True)
+                bias = torch.ones(2, device=device, requires_grad=True)
+                references = [part.detach().clone().requires_grad_() for part in parts]
+                reference_matrix = matrix.detach().clone().requires_grad_()
+                reference_bias = bias.detach().clone().requires_grad_()
+                source = NT(parts, ragged_dims=(0,))
+                if alpha == 1e40 and any(n > 1 for n in lengths):
+                    with pytest.raises(RuntimeError, match="overflow"):
+                        run(source, matrix, bias)
+                    continue
+                actual = run(source, matrix, bias)
+                expected = [
+                    torch.baddbmm(
+                        reference_bias,
+                        part[1:].unsqueeze(0),
+                        reference_matrix[index : index + 1],
+                        alpha=alpha,
+                        beta=0.5,
+                    ).squeeze(0)
+                    for index, part in enumerate(references)
+                ]
+                torch.testing.assert_close(actual.unbind(), expected, equal_nan=True)
+                torch.testing.assert_close(
+                    torch.autograd.grad(actual.values().sum(), (*parts, matrix, bias)),
+                    torch.autograd.grad(
+                        sum(part.sum() for part in expected), (*references, reference_matrix, reference_bias)
+                    ),
+                    equal_nan=True,
+                )
 
     @pytest.mark.parametrize("operation", [torch.bmm, torch.baddbmm])
     def test_bmm_errors(self, device, operation):

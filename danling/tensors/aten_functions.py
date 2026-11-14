@@ -62,6 +62,7 @@ from .ops import (
     _dense_alignment,
     _dense_alignment_to_values,
     _dense_operand_for_element,
+    _DenseReading,
     _ExecutionGuardKind,
     _expand_nested_as_values,
     _get_batch_dim,
@@ -3967,7 +3968,7 @@ def _packed_jagged_outer_matmul(lhs: NestedTensor, rhs: NestedTensor) -> NestedT
     if pair_indices is None:
         return _packed_jagged_outer_matmul_from_offsets(lhs, rhs, prefix_rank)
     query, key, pair_sizes = pair_indices
-    values = (lhs.values()[query] * rhs.values()[key]).sum(-1)
+    values = _bmm_product_values(lhs.values(), rhs.values(), "outer", (query, key))
     keep_dims = (*range(prefix_rank), prefix_rank, prefix_rank)
     shape, _, element_shapes = lhs._shape_meta_from_components(keep_dims=keep_dims)
     return _packed_with_shape(
@@ -3989,7 +3990,7 @@ def _packed_jagged_outer_matmul_from_offsets(
 ) -> NestedTensor:
     r"""Contract matched packed rows into square elements when only row splits describe the sizes."""
     query, key, lengths = _packed_pair_indices_from_offsets(lhs)
-    values = (lhs.values()[query] * rhs.values()[key]).sum(-1)
+    values = _bmm_product_values(lhs.values(), rhs.values(), "outer", (query, key))
     result = _restore_complementary_square_prefix(lhs.packed_with_square_lengths(values, lengths), prefix_rank)
     if values.requires_grad:
         return result._packed_like_unchecked(values)
@@ -4005,9 +4006,7 @@ def _packed_jagged_contract_matmul(lhs: NestedTensor, rhs: NestedTensor) -> Nest
         query, key = _packed_pair_indices_for_square(rhs, lhs)
     else:
         query, key, _ = pair_indices
-    values = torch.zeros_like(rhs.values()).index_add(
-        0, query, lhs.values().unsqueeze(-1) * rhs.values().index_select(0, key)
-    )
+    values = _bmm_product_values(lhs.values(), rhs.values(), "contract", (query, key))
     return rhs._packed_like_unchecked(values)
 
 
@@ -6016,7 +6015,7 @@ def _bmm_bias_values(input, result):
             raise RuntimeError("baddbmm bias batch placement and size must match the matrix batch")
         if input._physical_shape.size(1) != 2:
             raise NotImplementedError("NestedTensor baddbmm bias requires per-sample matrices")
-        values = _broadcast_nested_to_values(result, input)
+        values = _expand_nested_as_values(result, input)
     else:
         if not isinstance(input, Tensor):
             raise TypeError("baddbmm input must be a Tensor")
@@ -6024,8 +6023,12 @@ def _bmm_bias_values(input, result):
         shape = (len(result), rows, columns)
         if torch.broadcast_shapes(input.shape, shape) != shape:
             raise RuntimeError("baddbmm input must be broadcastable to the output matrix batch")
-        bias = input.movedim(0, 1) if not result.batch_first and input.dim() == 3 else input
-        values = _resolve_dense_for_values(result, bias)
+        # baddbmm always reads a dense bias against canonical [B, M, N],
+        # even when its shape happens to match the packed numerical buffer.
+        # Preserve singleton axes rather than materializing a padded expansion.
+        aligned = (1,) * (3 - input.dim()) + tuple(input.shape)
+        logical = aligned if result.batch_first else (aligned[1], aligned[0], aligned[2])
+        values = _dense_alignment_to_values(result, input, _DenseReading(logical, batch_leads=True))
     if values is None:
         raise RuntimeError("baddbmm input must be broadcastable to every output matrix")
     if values.device != result.device:
@@ -6039,6 +6042,208 @@ def _bmm_bias_values(input, result):
     return values
 
 
+def _baddbmm_empty_samples(lhs, rhs):
+    from .nested_tensor import NestedTensor
+
+    if lhs.dim() != 3 or rhs.dim() != 3:
+        raise RuntimeError("bmm expects 3-D matrix operands")
+    batch = len(lhs) if isinstance(lhs, NestedTensor) else lhs.shape[0]
+    other_batch = len(rhs) if isinstance(rhs, NestedTensor) else rhs.shape[0]
+    torch._check(batch == other_batch, lambda: "bmm matrix batch sizes must match without broadcasting")
+    rows = (
+        lhs._physical_shape[:, 0]
+        if isinstance(lhs, NestedTensor)
+        else torch.full((batch,), lhs.shape[1], dtype=torch.long, device="cpu")
+    )
+    columns = (
+        rhs._physical_shape[:, 1]
+        if isinstance(rhs, NestedTensor)
+        else torch.full((batch,), rhs.shape[2], dtype=torch.long, device="cpu")
+    )
+    return (rows == 0) | (columns == 0)
+
+
+@torch.library.custom_op("danling::_baddbmm_scalars", mutates_args=())
+def _baddbmm_scalars(
+    like: Tensor, bias: Tensor, empty: Tensor, alpha: torch.types.Number, beta: torch.types.Number
+) -> tuple[Tensor, Tensor]:
+    r"""Perform native checked Scalar conversion only when an actual output exists."""
+    if bool(empty.all()):
+        return like.new_ones(()), like.new_ones(())
+    return like.new_full((), alpha), like.new_full((), beta)
+
+
+@_baddbmm_scalars.register_fake
+def _baddbmm_scalars_fake(like, bias, empty, alpha, beta):
+    return like.new_empty(()), like.new_empty(())
+
+
+@_baddbmm_scalars.register_vmap
+def _baddbmm_scalars_vmap(info, in_dims, like, bias, empty, alpha, beta):
+    # Coefficients depend on represented topology, never numerical values.
+    # Both matrix products and bias participate so an empty mapping over any
+    # operand can skip validation of unused Scalars, just as native baddbmm.
+    if info.batch_size == 0:
+        return (like.new_ones(()), like.new_ones(())), (None, None)
+    empty_dim = in_dims[2]
+    if empty_dim is None:
+        return _baddbmm_scalars(like, bias, empty, alpha, beta), (None, None)
+    outputs = [_baddbmm_scalars(like, bias, member, alpha, beta) for member in empty.movedim(empty_dim, 0).unbind()]
+    return tuple(torch.stack(values) for values in zip(*outputs)), (0, 0)
+
+
+def _bmm_product_values(left, right, kind, extra, shape=None, column_packed=False):
+    r"""Run the selected packed numerical kernel without rebuilding Tensor subclasses."""
+    if kind == "rows":
+        values = _bmm_weighted_rows(left, right, *extra)
+    elif kind == "columns":
+        values = _bmm_weighted_rows(right, left, *extra)
+    elif kind == "outer":
+        query, key = extra
+        values = (left[query] * right[key]).sum(-1)
+    elif kind == "contract":
+        query, key = extra
+        values = torch.zeros_like(right).index_add(0, query, left.unsqueeze(-1) * right.index_select(0, key))
+    else:
+        values = torch.bmm(left, right)
+        if shape is not None:
+            if column_packed:
+                values = values.transpose(1, 2)
+            values = values.reshape(shape)
+    return values
+
+
+def _baddbmm_multiply(values, coefficient):
+    r"""Match native derivative multiplication, including the real unit shortcut."""
+    return values if coefficient == 1 and not isinstance(coefficient, complex) else values * coefficient
+
+
+class _BaddbmmValues(torch.autograd.Function):
+    r"""Apply Scalar coefficients after the native matrix VJP has reduced its rows."""
+
+    generate_vmap_rule = True
+
+    @staticmethod
+    def forward(bias, left, right, product, alpha_value, beta_value, kind, extra, alpha, beta, column_packed, dtype):
+        values = product if alpha == 1 else product * alpha_value
+        if beta == 0:
+            return values.clone()
+        return values + (bias if beta == 1 else bias * beta_value)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        bias, left, right, product, _, _, ctx.kind, extra, ctx.alpha, ctx.beta, ctx.column_packed, ctx.dtype = inputs
+        ctx.compute_dtype = product.dtype
+        ctx.shape = product.shape
+        ctx.left_meta = (left.shape, left.dtype, left.device)
+        ctx.right_meta = (right.shape, right.dtype, right.device)
+        ctx.bias_shape = bias.shape
+        # A bilinear VJP needs only the opposite matrix. Do not reject legal
+        # changes to an operand whose value its requested derivative never reads.
+        ctx.save_for_backward(
+            left if ctx.needs_input_grad[2] else None, right if ctx.needs_input_grad[1] else None, *extra
+        )
+        ctx.save_for_forward(left, right, *extra)
+        ctx.set_materialize_grads(False)
+
+    @staticmethod
+    def backward(ctx, gradient):
+        if gradient is None:
+            return (None,) * 12
+        left, right, *extra = ctx.saved_tensors
+        # requires_grad controls saved primals; the current engine targets
+        # control which derivatives actually run, as for native baddbmm.
+        need_bias, need_left, need_right = (
+            required and torch._C._will_engine_execute_node(ctx.next_functions[index][0])
+            for index, required in enumerate(ctx.needs_input_grad[:3])
+        )
+        grad_left = grad_right = None
+
+        def product(lhs, rhs):
+            return _bmm_product_values(lhs, rhs, ctx.kind, extra, ctx.shape, ctx.column_packed)
+
+        if need_left and need_right:
+            _, pullback = torch.func.vjp(product, left, right)
+            grad_left, grad_right = pullback(gradient)
+        elif need_left:
+            shape, dtype, device = ctx.left_meta
+            # The requested derivative is linear in this operand. Only the
+            # opposite, saved matrix is read by its VJP; never differentiate
+            # the unused direction through an uninitialized primal.
+            _, pullback = torch.func.vjp(
+                lambda lhs: product(lhs, right), torch.empty(shape, dtype=dtype, device=device)
+            )
+            (grad_left,) = pullback(gradient)
+        elif need_right:
+            shape, dtype, device = ctx.right_meta
+            _, pullback = torch.func.vjp(lambda rhs: product(left, rhs), torch.empty(shape, dtype=dtype, device=device))
+            (grad_right,) = pullback(gradient)
+        alpha = ctx.alpha.conjugate() if isinstance(ctx.alpha, complex) else ctx.alpha
+        if grad_left is not None:
+            grad_left = _baddbmm_multiply(grad_left.to(ctx.dtype), alpha)
+            grad_left = grad_left.to(torch.promote_types(grad_left.dtype, ctx.compute_dtype))
+        if grad_right is not None:
+            grad_right = _baddbmm_multiply(grad_right.to(ctx.dtype), alpha)
+            grad_right = grad_right.to(torch.promote_types(grad_right.dtype, ctx.compute_dtype))
+        beta = ctx.beta.conjugate() if isinstance(ctx.beta, complex) else ctx.beta
+        grad_bias = None
+        if need_bias:
+            # Native low-precision derivatives round the matrix VJP before
+            # Scalar multiplication, and the bias product before reduction.
+            grad_bias = _baddbmm_multiply(gradient.to(ctx.dtype), beta).sum_to_size(ctx.bias_shape)
+            grad_bias = grad_bias.to(torch.promote_types(grad_bias.dtype, ctx.compute_dtype))
+        return grad_bias, grad_left, grad_right, None, None, None, None, None, None, None, None, None
+
+    @staticmethod
+    def jvp(ctx, bias_tangent, left_tangent, right_tangent, *unused):
+        left, right, *extra = ctx.saved_tensors
+        # Native baddbmm materializes both matrix directions, even when only
+        # the bias carries a dual. A missing bias direction remains absent.
+        if left_tangent is None:
+            left_tangent = torch.zeros_like(left)
+        if right_tangent is None:
+            right_tangent = torch.zeros_like(right)
+        first = _baddbmm_multiply(
+            _bmm_product_values(left_tangent, right, ctx.kind, extra, ctx.shape, ctx.column_packed).to(ctx.dtype),
+            ctx.alpha,
+        )
+        second = _baddbmm_multiply(
+            _bmm_product_values(left, right_tangent, ctx.kind, extra, ctx.shape, ctx.column_packed).to(ctx.dtype),
+            ctx.alpha,
+        )
+        if bias_tangent is None:
+            product = first + second
+            product = product.to(torch.result_type(product, ctx.beta))
+        else:
+            # Native JVP starts with the bias direction, then adds each matrix
+            # direction. Both low-precision rounding and complex nonfinite
+            # addition are sensitive to that order.
+            product = (_baddbmm_multiply(bias_tangent.to(ctx.dtype), ctx.beta) + first) + second
+        return product.to(torch.promote_types(product.dtype, ctx.compute_dtype))
+
+
+@torch.compiler.allow_in_graph
+def _baddbmm_values(
+    bias, left, right, product, alpha_value, beta_value, kind, extra, alpha, beta, column_packed, dtype
+):
+    # Independent native view edges let the engine identify a requested input
+    # even when it is a leaf or shared by several operator arguments.
+    return _BaddbmmValues.apply(
+        bias.view_as(bias),
+        left.view_as(left),
+        right.view_as(right),
+        product,
+        alpha_value,
+        beta_value,
+        kind,
+        extra,
+        alpha,
+        beta,
+        column_packed,
+        dtype,
+    )
+
+
 @NestedTensorAtenRegistry.implement(aten.baddbmm.default, compile_safe=True)
 def baddbmm(func, args, kwargs):
     r"""Batched matrix multiplication with a broadcast bias over the represented sample batch."""
@@ -6048,6 +6253,8 @@ def baddbmm(func, args, kwargs):
     beta, alpha = kwargs.get("beta", 1), kwargs.get("alpha", 1)
     if not all(isinstance(operand, Tensor) for operand in (input, lhs, rhs)):
         raise TypeError("baddbmm operands must be Tensors")
+    if lhs.dim() != 3 or rhs.dim() != 3:
+        raise RuntimeError("bmm expects 3-D matrix operands")
     device_type = lhs.device.type
     floating = (torch.float16, torch.bfloat16, torch.float32)
     autocast = device_type in ("cpu", "cuda") and torch.is_autocast_enabled(device_type)
@@ -6062,39 +6269,107 @@ def baddbmm(func, args, kwargs):
     # until the final output cast.
     compute_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
     with torch.autocast(device_type=device_type, enabled=False):
-        input = input.to(dtype).to(compute_dtype)
-        lhs, rhs = lhs.to(dtype).to(compute_dtype), rhs.to(dtype).to(compute_dtype)
-        result = bmm(aten.bmm.default, (lhs, rhs), {})
+
+        def convert(operand):
+            values = operand.values() if isinstance(operand, NestedTensor) else operand
+            values = values.to(dtype).to(compute_dtype)
+            return operand.packed_like(values) if isinstance(operand, NestedTensor) else values
+
+        input, lhs, rhs = (convert(operand) for operand in (input, lhs, rhs))
+        contracted = _bmm_static_extent(lhs, 1)
+        if contracted is None:
+            contracted = _bmm_static_extent(rhs, 0)
+        zero_contraction = contracted is not None and contracted == 0
+        # Build the plan with autograd enabled: values() may project a wrapper
+        # leaf whose raw child intentionally does not require gradients.
+        kind, left, right, extra, wrap = _bmm_product_plan(lhs, rhs)
+        with torch.no_grad():
+            product = _bmm_product_values(left, right, kind, extra)
+        result = wrap(product)
         if not isinstance(result, NestedTensor):
             if not isinstance(input, NestedTensor):
                 return func(*args, **kwargs)
             result = _bmm_uniform_result(input, result)
         bias = _bmm_bias_values(input, result)
         values = result.values()
-        if alpha != 1:
-            values = values * alpha
-        if beta == 0:
-            # An empty reduction connects a zero bias gradient without touching
-            # NaN/Inf values. Shape and dtype validation above still applies.
-            values = values + bias.unsqueeze(0)[:0].sum()
-        else:
-            values = values + bias * beta
+        if zero_contraction:
+            # Both genuine matrix inputs are empty. Reuse native zero-K
+            # baddbmm over packed output coordinates, retaining their source
+            # edges and native Scalar validation without padding or copies.
+            left_values = lhs.values() if isinstance(lhs, NestedTensor) else lhs
+            right_values = rhs.values() if isinstance(rhs, NestedTensor) else rhs
+            rows = values.shape[0]
+            columns = values.shape[1] if values.dim() == 2 else 1
+            packed_bias = torch.broadcast_to(bias, values.shape).to(dtype).reshape(1, rows, columns)
+            left = left_values.to(dtype).reshape(1, rows, 0)
+            right = right_values.to(dtype).reshape(1, 0, columns)
+            output = func(packed_bias, left, right, alpha=alpha, beta=beta)
+            return result._packed_like_unchecked(output.reshape(values.shape))
+        alpha_value, beta_value = 1, beta
+        if alpha != 1 or beta not in (0, 1):
+            empty = _baddbmm_empty_samples(lhs, rhs)
+            alpha_value, beta_value = _baddbmm_scalars(values.detach(), bias.detach(), empty, alpha, beta)
+        bias = torch.broadcast_to(bias, values.shape)
+        column_packed = kind == "dense" and result._ragged_dims == (1,)
+        values = _baddbmm_values(
+            bias, left, right, values, alpha_value, beta_value, kind, extra, alpha, beta, column_packed, dtype
+        )
         return result._packed_like_unchecked(values.to(dtype))
 
 
-@NestedTensorAtenRegistry.implement(aten.bmm.default, compile_safe=True)
-def bmm(func, args, kwargs):
-    r"""Multiply logical rank-three batches, pairing each sample's two-dimensional matrices."""
+def _bmm_jagged_plan(lhs, rhs):
+    meta = _jagged_outer_matmul_meta(lhs, rhs)
+    if meta is not None:
+        prefix_rank, _ = meta
+        pair_indices = _packed_pair_indices(lhs)
+        if pair_indices is None:
+            query, key, lengths = _packed_pair_indices_from_offsets(lhs)
+
+            def wrap(values):
+                result = _restore_complementary_square_prefix(
+                    lhs.packed_with_square_lengths(values, lengths), prefix_rank
+                )
+                return result._packed_like_unchecked(values) if values.requires_grad else result
+
+        else:
+            query, key, pair_sizes = pair_indices
+            keep_dims = (*range(prefix_rank), prefix_rank, prefix_rank)
+            shape, _, element_shapes = lhs._shape_meta_from_components(keep_dims=keep_dims)
+
+            def wrap(values):
+                return _packed_with_shape(
+                    lhs,
+                    values,
+                    shape,
+                    lhs._logical_shape_from_components(keep_dims=keep_dims),
+                    offsets=_offsets_from_packed_sizes(lhs, pair_sizes),
+                    permutation=(prefix_rank, prefix_rank + 1, *range(prefix_rank)),
+                    packed_sizes=pair_sizes,
+                    element_shapes=element_shapes,
+                )
+
+        return "outer", lhs.values(), rhs.values(), (query, key), wrap
+    if _jagged_contract_matmul_meta(lhs, rhs) is not None:
+        pair_indices = _packed_pair_indices(rhs)
+        if pair_indices is None:
+            query, key = _packed_pair_indices_for_square(rhs, lhs)
+        else:
+            query, key, _ = pair_indices
+        return "contract", lhs.values(), rhs.values(), (query, key), rhs._packed_like_unchecked
+    return None
+
+
+def _bmm_product_plan(lhs, rhs):
+    r"""Read differentiable packed operands and select their existing numerical kernel."""
     from .nested_tensor import NestedTensor
 
-    lhs, rhs = args[:2]
     if not isinstance(lhs, Tensor) or not isinstance(rhs, Tensor):
         raise TypeError("bmm matrix operands must be Tensors")
     if lhs.dim() != 3 or rhs.dim() != 3:
         raise RuntimeError("bmm expects 3-D matrix operands")
     nested = [operand for operand in (lhs, rhs) if isinstance(operand, NestedTensor)]
     if not nested:
-        return func(*args, **kwargs)
+        return "dense", lhs, rhs, (), lambda values: values
     if any(operand._physical_shape.size(1) != 2 for operand in nested):
         raise RuntimeError("bmm expects batches of two-dimensional matrices")
     batches = [len(operand) if isinstance(operand, NestedTensor) else operand.shape[0] for operand in (lhs, rhs)]
@@ -6112,9 +6387,9 @@ def bmm(func, args, kwargs):
     left_inner, right_inner = _bmm_static_extent(lhs, 1), _bmm_static_extent(rhs, 0)
     if left_inner is None and right_inner is None:
         if isinstance(lhs, NestedTensor) and isinstance(rhs, NestedTensor):
-            output = _packed_jagged_matmul(lhs, rhs)
-            if output is not None:
-                return output
+            plan = _bmm_jagged_plan(lhs, rhs)
+            if plan is not None:
+                return plan
         raise NotImplementedError("packed bmm requires a static contracted feature dimension")
     contracted = left_inner if left_inner is not None else right_inner
     for operand, dim in ((lhs, 1), (rhs, 0)):
@@ -6128,23 +6403,40 @@ def bmm(func, args, kwargs):
     if isinstance(lhs, NestedTensor) and lhs._ragged_dims == (0,) and columns is not None:
         matrices = _bmm_dense_batch(rhs, contracted, columns)
         batch = lhs.packed_batch_indices(device=lhs.device)
-        values = _bmm_weighted_rows(lhs.values(), matrices, batch, lhs._offsets)
-        return _packed_new_last_dim(lhs, values, columns)
+        return (
+            "rows",
+            lhs.values(),
+            matrices,
+            (batch, lhs._offsets),
+            lambda values: _packed_new_last_dim(lhs, values, columns),
+        )
     rows = _bmm_static_extent(lhs, 0)
     if isinstance(rhs, NestedTensor) and rhs._ragged_dims == (1,) and rows is not None:
         matrices = _bmm_dense_batch(lhs, rows, contracted).transpose(1, 2)
         batch = rhs.packed_batch_indices(device=rhs.device)
-        values = _bmm_weighted_rows(rhs.values(), matrices, batch, rhs._offsets)
-        return _packed_new_dim_size(rhs, values, 0, rows)
+        return (
+            "columns",
+            matrices,
+            rhs.values(),
+            (batch, rhs._offsets),
+            lambda values: _packed_new_dim_size(rhs, values, 0, rows),
+        )
     if rows is not None and columns is not None:
         left = _bmm_dense_batch(lhs, rows, contracted)
         right = _bmm_dense_batch(rhs, contracted, columns)
-        return _bmm_uniform_result(nested[0], torch.bmm(left, right))
+        return "dense", left, right, (), lambda values: _bmm_uniform_result(nested[0], values)
     if isinstance(lhs, NestedTensor) and isinstance(rhs, NestedTensor):
-        output = _packed_jagged_matmul(lhs, rhs)
-        if output is not None:
-            return output
+        plan = _bmm_jagged_plan(lhs, rhs)
+        if plan is not None:
+            return plan
     raise NotImplementedError("packed bmm requires a static output dimension on one operand")
+
+
+@NestedTensorAtenRegistry.implement(aten.bmm.default, compile_safe=True)
+def bmm(func, args, kwargs):
+    r"""Multiply logical rank-three batches, pairing each sample's two-dimensional matrices."""
+    kind, left, right, extra, wrap = _bmm_product_plan(*args[:2])
+    return wrap(_bmm_product_values(left, right, kind, extra))
 
 
 @NestedTensorAtenRegistry.implement(aten.diagonal.default)
