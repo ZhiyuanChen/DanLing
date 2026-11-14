@@ -136,6 +136,33 @@ def _transform_metadata(tensor: Tensor) -> Tensor:
     return tensor
 
 
+def _uses_custom_op_fallback(func, tensor_type: type[Tensor], args: tuple, kwargs: dict) -> bool:
+    r"""Select unregistered custom operators before entering their autograd kernel."""
+    if isinstance(func, torch._ops.OpOverloadPacket):
+        # Use the same schema matching as Torch's Python packet dispatcher.
+        for name in func.overloads():
+            op = getattr(func, name)
+            if op.namespace == "aten":
+                return False
+            try:
+                torch._C._check_schema_allow_fake_script_object(op._schema, *args, **kwargs)
+            except RuntimeError:
+                continue
+            func = op
+            break
+        else:
+            return False
+    if not isinstance(func, torch._ops.OpOverload):
+        return False
+    if func.namespace == "aten" or func in NestedTensorAtenRegistry:
+        return False
+
+    from torch._library import simple_registry
+
+    find_rule = getattr(simple_registry, "find_torch_dispatch_rule", None)
+    return find_rule is None or find_rule(func, tensor_type) is None
+
+
 def _transform_base(tensor: Tensor) -> Tensor:
     r"""Inspect a transform's underlying layout without discarding its numerical edge."""
     while torch._C._functorch.is_gradtrackingtensor(tensor) or torch._C._functorch.is_batchedtensor(tensor):
@@ -2698,6 +2725,10 @@ class NestedTensor(torch.Tensor):
             result = _transform_delegate(func, args, kwargs)
             if result is not NotImplemented:
                 return result
+            if _uses_custom_op_fallback(func, cls, args, kwargs):
+                # Each dense sample must enter the operator's native autograd
+                # kernel, so shared dense inputs accumulate dense gradients.
+                return per_element_fallback(func, args, kwargs)
 
         with torch._C.DisableTorchFunctionSubclass():
             return func(*args, **kwargs)

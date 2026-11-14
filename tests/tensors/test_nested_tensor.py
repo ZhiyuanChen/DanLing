@@ -4982,7 +4982,48 @@ class TestTensorMaskProperties:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(scope="module")
+def weighted_custom_op():
+    @torch.library.custom_op("danling_test::weighted", mutates_args=())
+    def weighted(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        return x * weight
+
+    @torch.library.custom_op("danling_test::weighted_back", mutates_args=())
+    def weighted_back(g: torch.Tensor, x: torch.Tensor, weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        return g * weight, (g * x).sum(0)
+
+    def setup_context(ctx, inputs, output):
+        ctx.save_for_backward(*inputs)
+
+    def backward(ctx, gradient):
+        return weighted_back(gradient, *ctx.saved_tensors)
+
+    weighted.register_autograd(backward, setup_context=setup_context)
+    return weighted
+
+
 class TestTorchFunctionDispatch:
+
+    @pytest.mark.parametrize("entry", ["custom_op", "overload", "packet"])
+    def test_custom_op_shared_gradient(self, device, weighted_custom_op, entry):
+        operation = {
+            "custom_op": weighted_custom_op,
+            "overload": torch.ops.danling_test.weighted.default,
+            "packet": torch.ops.danling_test.weighted,
+        }[entry]
+        parts = [torch.randn(n, 4, dtype=torch.double, device=device, requires_grad=True) for n in (2, 3)]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+        weight = torch.ones(4, dtype=torch.double, device=device, requires_grad=True)
+        reference_weight = weight.detach().clone().requires_grad_()
+        output = operation(NT(parts, ragged_dims=(0,)), weight).values()
+        expected = torch.cat([weighted_custom_op(part, reference_weight) for part in references])
+        torch.testing.assert_close(output, expected)
+        gradient = torch.randn_like(expected)
+        output.backward(gradient)
+        expected.backward(gradient)
+        assert type(weight.grad) is torch.Tensor
+        torch.testing.assert_close(weight.grad, reference_weight.grad)
+        torch.testing.assert_close([part.grad for part in parts], [part.grad for part in references])
 
     def test_torch_function_scalar_batch_fallback(self):
         nested_tensor = NestedTensor([torch.tensor(1.2), torch.tensor(2.3)])

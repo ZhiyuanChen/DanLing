@@ -40,6 +40,35 @@ def reference_options(source: NestedTensor) -> dict:
     }
 
 
+@pytest.fixture(scope="module")
+def increment_custom_op():
+    @torch.library.custom_op("danling_test::increment_", mutates_args=("input",))
+    def increment_(input: torch.Tensor) -> None:
+        input.add_(1)
+
+    return increment_
+
+
+class TestCustomOperators:
+
+    @pytest.mark.parametrize("entry", ["custom_op", "overload", "packet"])
+    @pytest.mark.parametrize("lengths", [(), (2, 3)])
+    def test_void_mutation(self, device, increment_custom_op, entry, lengths):
+        operation = {
+            "custom_op": increment_custom_op,
+            "overload": torch.ops.danling_test.increment_.default,
+            "packet": torch.ops.danling_test.increment_,
+        }[entry]
+        parts = [torch.randn(length, 4, device=device) for length in lengths]
+        references = [part.clone() for part in parts]
+        source = NT(parts, device=device)
+        for part in references:
+            assert increment_custom_op(part) is None
+
+        assert operation(source) is None
+        torch.testing.assert_close(source.unbind(), references)
+
+
 class TestClone:
 
     @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
