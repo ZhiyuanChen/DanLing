@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any, cast
 import torch
 from torch import Tensor
 from torch._C._functorch import is_functorch_wrapped_tensor as _is_functorch_wrapped_tensor
+from torch._prims_common import make_contiguous_strides_for
 from torch._subclasses.fake_tensor import is_fake as _torch_is_fake
 from torch.fx.experimental.symbolic_shapes import guard_or_false, statically_known_true
 from torch.utils._python_dispatch import _get_current_dispatch_mode
@@ -3258,6 +3259,7 @@ def _packed_with_shape(
     force_explicit_ragged_dims: tuple[int, ...] | None = None,
     batch_first: bool | None = None,
     raw_output: bool = False,
+    logical_strides: tuple[int, ...] | None = None,
 ) -> NestedTensor:
     r"""Rebuild a NestedTensor with explicit ``_physical_shape`` and logical shape."""
     if batch_first is None:
@@ -3305,6 +3307,7 @@ def _packed_with_shape(
             ragged_offsets=ragged_offsets,
             validate=False,
             mark_dynamic=False,
+            logical_strides=logical_strides,
         )
     source._inherit_tangent_metadata(result)
     binding = getattr(source, "_compile_ragged_extents", None)
@@ -5424,19 +5427,30 @@ def _sdpa_pack_native(nt: NestedTensor) -> tuple[Tensor, Tensor, int]:
 
 
 def _sdpa_restore_native(attention: Tensor, query: NestedTensor) -> NestedTensor:
-    r"""Restore fused-kernel output without unpacking per-element tensors."""
+    r"""Restore packed attention values with their native dense stride order."""
     if not _is_native_attention_layout(query):
         raise ValueError("Native SDPA restore requires elements shaped like (heads, seq, dim).")
 
-    output_shape, packed_sizes, element_shapes = query._replace_trailing_physical_dims_meta((attention.size(-1),))
+    tail_sizes = tuple(int(size) for size in attention.shape[2:])
+    output_shape, packed_sizes, element_shapes = query._drop_trailing_physical_dims_meta(1, suffix=tail_sizes)
+    logical_shape = query._logical_shape[:3] + tail_sizes
+    batch = logical_shape[0 if query.batch_first else 1]
+    max_sequence = query._max_physical_dims()[1]
+    strides = make_contiguous_strides_for((batch, max_sequence, attention.shape[1], *tail_sizes))
+    if query.batch_first:
+        logical_strides = (strides[0], strides[2], strides[1], *strides[3:])
+    else:
+        logical_strides = (strides[2], strides[0], strides[1], *strides[3:])
     return _packed_with_shape(
         query,
         attention.contiguous(),
         output_shape,
-        query._logical_shape[:-1] + (attention.size(-1),),
-        permutation=query._permutation_after_replacing_trailing_dims(1, 1),
+        logical_shape,
+        permutation=query._permutation_after_replacing_trailing_dims(1, len(tail_sizes)),
         packed_sizes=packed_sizes,
         element_shapes=element_shapes,
+        preserve_ragged_offsets=True,
+        logical_strides=logical_strides,
     )
 
 

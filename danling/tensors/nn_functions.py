@@ -46,6 +46,7 @@ from torch.nn import functional as F
 
 from .aten_functions import (
     _is_native_attention_layout,
+    _sdpa_restore_native,
     _sdpa_via_native_flash,
 )
 from .functions._convolution import _has_static_input_channels
@@ -728,25 +729,13 @@ def _as_flex_packed_dense(nt: NestedTensor) -> Tensor:
 
 def _restore_flex_dense_tensor(output: Tensor, query: NestedTensor) -> NestedTensor:
     r"""Restore dense packed FlexAttention outputs into DanLing NestedTensor storage."""
-    from .aten_functions import _packed_with_shape
-
     if output.dim() < 3 or output.size(0) != 1:
         raise ValueError(
             "DanLing FlexAttention dense restore expects output shaped like (1, heads, total_seq, ...), "
             f"got {tuple(output.shape)}"
         )
     values = output.squeeze(0).movedim(0, 1).contiguous()
-    tail_sizes = tuple(int(size) for size in values.shape[2:])
-    shape_tensor, packed_sizes, element_shapes = query._drop_trailing_physical_dims_meta(1, suffix=tail_sizes)
-    return _packed_with_shape(
-        query,
-        values,
-        shape_tensor,
-        query._logical_shape[:3] + tail_sizes,
-        permutation=query._permutation_after_replacing_trailing_dims(1, len(tail_sizes)),
-        packed_sizes=packed_sizes,
-        element_shapes=element_shapes,
-    )
+    return _sdpa_restore_native(values, query)
 
 
 def _restore_flex_output(output, query: NestedTensor):
@@ -945,6 +934,69 @@ def _cached_same_sequence_block_mask(
     )
 
 
+def _same_sequence_block_mask(
+    query: NestedTensor,
+    key: NestedTensor,
+    num_heads: int | None,
+    block_size: int | tuple[int, int],
+):
+    r"""Build same-sequence blocks from tensor metadata without a token-by-token mask."""
+    if isinstance(block_size, int):
+        q_block_size = kv_block_size = block_size
+    else:
+        q_block_size, kv_block_size = block_size
+    q_total = query._packed_values.shape[0]
+    k_total = key._packed_values.shape[0]
+    q_blocks = (q_total + q_block_size - 1) // q_block_size
+    k_blocks = (k_total + kv_block_size - 1) // kv_block_size
+    q_sequence = query.packed_batch_indices(device=query.device)
+    k_sequence = key.packed_batch_indices(device=key.device)
+    q_start = torch.arange(q_blocks, device=query.device) * q_block_size
+    k_start = torch.arange(k_blocks, device=key.device) * kv_block_size
+    q_first = q_sequence[q_start]
+    k_first = k_sequence[k_start]
+    q_last = q_sequence[torch.clamp(q_start + q_block_size, max=q_total) - 1]
+    k_last = k_sequence[torch.clamp(k_start + kv_block_size, max=k_total) - 1]
+    # Sequence IDs are monotonic. Overlapping intervals include every allowed
+    # token pair; empty sequences can only add partial blocks filtered by mask_mod.
+    partial = (q_first[:, None] <= k_last[None, :]) & (k_first[None, :] <= q_last[:, None])
+    # Full tiles must belong to one sequence and exclude the final padding tile.
+    full = (
+        (q_first[:, None] == k_first[None, :])
+        & (q_first[:, None] == q_last[:, None])
+        & (k_first[None, :] == k_last[None, :])
+        & (q_start[:, None] + q_block_size <= q_total)
+        & (k_start[None, :] + kv_block_size <= k_total)
+    )
+    partial = partial & ~full
+    head_count = 1 if num_heads is None else num_heads
+
+    def ordered(blocks):
+        sorted_blocks, indices = torch.sort(blocks.to(torch.int32), dim=-1, descending=True, stable=True)
+        counts = sorted_blocks.sum(dim=-1).to(torch.int32)
+        indices = indices.to(torch.int32)
+        return (
+            counts[None, None].expand(1, head_count, q_blocks).contiguous(),
+            indices[None, None].expand(1, head_count, q_blocks, k_blocks).contiguous(),
+        )
+
+    kv_num_blocks, kv_indices = ordered(partial)
+    full_kv_num_blocks, full_kv_indices = ordered(full)
+
+    def wrapped(_batch, _head, q_idx, kv_idx):
+        return q_sequence[q_idx] == k_sequence[kv_idx]
+
+    return _TorchBlockMask.from_kv_blocks(
+        kv_num_blocks,
+        kv_indices,
+        full_kv_num_blocks,
+        full_kv_indices,
+        BLOCK_SIZE=(q_block_size, kv_block_size),
+        mask_mod=wrapped,
+        seq_lengths=(q_total, k_total),
+    )
+
+
 def _packed_sizes_tuple(source: NestedTensor) -> tuple[int, ...]:
     r"""Return per-element packed sizes directly from canonical packed offsets."""
     if source._packed_sizes is not None:
@@ -977,13 +1029,13 @@ def create_flex_block_mask(
         raise ValueError(
             "NestedTensor batch length mismatch between query and key: " f"query={len(query)}, key={len(key)}"
         )
-    q_sizes = _packed_sizes_tuple(query)
-    k_sizes = _packed_sizes_tuple(key)
-    compile_requested = compile_mask or torch.compiler.is_compiling()
-    if mask_mod is _flex_allow_all and not compile_requested:
+    compiling = torch.compiler.is_compiling()
+    if mask_mod is _flex_allow_all and (compiling or not compile_mask):
+        if compiling:
+            return _same_sequence_block_mask(query, key, num_heads, block_size)
         return _cached_same_sequence_block_mask(
-            q_sizes,
-            k_sizes,
+            _packed_sizes_tuple(query),
+            _packed_sizes_tuple(key),
             num_heads,
             block_size,
             query.device.type,
@@ -994,12 +1046,57 @@ def create_flex_block_mask(
         wrapped_mask_mod,
         1,
         num_heads,
-        int(sum(q_sizes)),
-        int(sum(k_sizes)),
+        query._packed_values.shape[0],
+        key._packed_values.shape[0],
         device=query.device,
         BLOCK_SIZE=block_size,
-        _compile=compile_requested,
+        _compile=compile_mask and not compiling,
     )
+
+
+def _same_sequence_flex_mask(_batch, _head, q_idx, kv_idx, q_sequence, k_sequence):
+    return q_sequence[q_idx] == k_sequence[kv_idx]
+
+
+def _causal_sequence_flex_mask(_batch, _head, q_idx, kv_idx, q_sequence, k_sequence, q_local, k_local):
+    return (q_sequence[q_idx] == k_sequence[kv_idx]) & (q_local[q_idx] >= k_local[kv_idx])
+
+
+def _sdpa_via_compiled_flex(
+    query: NestedTensor, key: NestedTensor, value: NestedTensor, scale: float | None, is_causal: bool
+) -> NestedTensor:
+    r"""Keep symbolic scale and mask buffers in the current native Flex graph."""
+    from torch._higher_order_ops.flex_attention import flex_attention as flex_attention_hop
+
+    q_view = _as_flex_packed_dense(query)
+    k_view = _as_flex_packed_dense(key)
+    v_view = _as_flex_packed_dense(value)
+    module = _torch_flex_attention_module
+    module._validate_sdpa_input(q_view, k_view, v_view)
+    module._validate_embed_dim(q_view, k_view, v_view)
+    module._validate_device(q_view, k_view, v_view)
+    q_view, k_view, v_view = module._enforce_mem_layouts(q_view, k_view, v_view)
+    if q_view.size(1) != k_view.size(1):
+        raise ValueError("Flex SDPA query and key must have the same number of heads")
+    block_mask = create_flex_block_mask(_flex_causal if is_causal else _flex_allow_all, query, key)
+    buffers: tuple[Tensor, ...] = (
+        query.packed_batch_indices(device=query.device),
+        key.packed_batch_indices(device=key.device),
+    )
+    mask: Callable = _same_sequence_flex_mask
+    if is_causal:
+        buffers += (query.packed_local_indices(device=query.device), key.packed_local_indices(device=key.device))
+        mask = _causal_sequence_flex_mask
+    # Native functionalization unwraps explicit buffers before tracing the mask.
+    # Capturing them in a Python closure would retain another trace's wrappers.
+    block_metadata = block_mask.as_tuple()[:-1] + (mask,)
+    if scale is None:
+        scale = 1.0 / math.sqrt(q_view.size(-1))
+    options = module._apply_kernel_options(q_view, k_view, v_view, False, None)
+    output, _, _ = flex_attention_hop(
+        q_view, k_view, v_view, module._identity, block_metadata, scale, options, (), buffers
+    )
+    return _restore_flex_dense_tensor(output, query)
 
 
 if _flex_attention_available:
@@ -1073,48 +1170,21 @@ if _flex_attention_available:
         # so DanLing semantics match per-element dense attention.
         if block_mask is None:
             default_mask_mod = _flex_causal if is_causal else _flex_allow_all
-            if torch.compiler.is_compiling():
-                from torch._subclasses.fake_tensor import unset_fake_temporarily
-
-                with unset_fake_temporarily():
-                    block_mask = create_flex_block_mask(default_mask_mod, query, key, compile_mask=True)
-            else:
-                block_mask = create_flex_block_mask(default_mask_mod, query, key)
+            block_mask = create_flex_block_mask(default_mask_mod, query, key)
         wrapped_score_mod = _flex_wrap_score_mod(score_mod, query, key) if score_mod is not None else None
 
-        if torch.compiler.is_compiling():
-            from torch._subclasses.fake_tensor import fake_tensor_tls
-
-            old_allow_non_fake_inputs = fake_tensor_tls.allow_non_fake_inputs_override
-            fake_tensor_tls.allow_non_fake_inputs_override = True
-            try:
-                output = _torch_flex_attention(
-                    q_view,
-                    k_view,
-                    v_view,
-                    score_mod=wrapped_score_mod,
-                    block_mask=block_mask,
-                    scale=scale,
-                    enable_gqa=enable_gqa,
-                    return_lse=return_lse,
-                    kernel_options=kernel_options,
-                    return_aux=return_aux,
-                )
-            finally:
-                fake_tensor_tls.allow_non_fake_inputs_override = old_allow_non_fake_inputs
-        else:
-            output = _torch_flex_attention(
-                q_view,
-                k_view,
-                v_view,
-                score_mod=wrapped_score_mod,
-                block_mask=block_mask,
-                scale=scale,
-                enable_gqa=enable_gqa,
-                return_lse=return_lse,
-                kernel_options=kernel_options,
-                return_aux=return_aux,
-            )
+        output = _torch_flex_attention(
+            q_view,
+            k_view,
+            v_view,
+            score_mod=wrapped_score_mod,
+            block_mask=block_mask,
+            scale=scale,
+            enable_gqa=enable_gqa,
+            return_lse=return_lse,
+            kernel_options=kernel_options,
+            return_aux=return_aux,
+        )
         return _restore_flex_output(output, query)
 
     _danling_flex_attention = flex_attention
@@ -1651,6 +1721,8 @@ def scaled_dot_product_attention(
             and not statically_known_true(query.values().numel() == 0)
             and not statically_known_true(key.values().numel() == 0)
         ):
+            if _is_compiling():
+                return _sdpa_via_compiled_flex(query, key, value, scale, is_causal)
             return flex_attention(query, key, value, scale=scale, enable_gqa=enable_gqa, is_causal=is_causal)
 
     if _is_compiling():
