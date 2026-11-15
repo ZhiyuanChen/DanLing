@@ -250,23 +250,41 @@ def _metadata_tensors_equal_fake(lhs: Tensor, rhs: Tensor) -> Tensor:
 
 
 @torch.library.custom_op("danling::_packed_slice_size_bindings", mutates_args=())
-def _packed_slice_size_bindings(lengths: Tensor, total: int | None = None) -> tuple[Tensor, Tensor]:
-    r"""Bind the total and maximum, validating a caller's exact total when supplied."""
+def _packed_slice_size_bindings(
+    lengths: Tensor, total: int | None = None, maximum: int | None = None, capacity: int | None = None
+) -> tuple[Tensor, Tensor]:
+    r"""Bind packed rows and either their actual maximum or a retained capacity."""
+    if maximum is not None and capacity is not None:
+        raise ValueError("packed layout cannot supply both an exact maximum and a retained capacity")
     actual_total = int(lengths.sum().item())
     if total is not None and total != actual_total:
         raise RuntimeError("packed layout lengths must sum to the supplied total")
-    maximum = int(lengths.max().item()) if lengths.numel() else 0
-    return lengths.new_empty((actual_total, 0)), lengths.new_empty((maximum, 0))
+    actual_maximum = int(lengths.max().item()) if lengths.numel() else 0
+    if maximum is not None and maximum != actual_maximum:
+        raise RuntimeError("packed layout lengths must match the supplied maximum")
+    bound_maximum = actual_maximum if capacity is None else capacity
+    if bound_maximum < actual_maximum:
+        raise RuntimeError("packed layout lengths must not exceed the retained capacity")
+    return lengths.new_empty((actual_total, 0)), lengths.new_empty((bound_maximum, 0))
 
 
 @_packed_slice_size_bindings.register_fake
-def _packed_slice_size_bindings_fake(lengths: Tensor, total: int | None = None) -> tuple[Tensor, Tensor]:
+def _packed_slice_size_bindings_fake(
+    lengths: Tensor, total: int | None = None, maximum: int | None = None, capacity: int | None = None
+) -> tuple[Tensor, Tensor]:
+    if maximum is not None and capacity is not None:
+        raise ValueError("packed layout cannot supply both an exact maximum and a retained capacity")
     ctx = torch.library.get_ctx()
     if total is None:
         total = ctx.new_dynamic_size(min=0)
     else:
         torch._check(total >= 0)
-    maximum = ctx.new_dynamic_size(min=0)
+    if capacity is not None:
+        maximum = capacity
+    if maximum is None:
+        maximum = ctx.new_dynamic_size(min=0)
+    else:
+        torch._check(maximum >= 0)
     return lengths.new_empty((total, 0)), lengths.new_empty((maximum, 0))
 
 
@@ -514,9 +532,10 @@ class NestedTensor(torch.Tensor):
     _wrapper_grad_leaf: bool
     _is_aot_tangent: bool
     _view_ops: tuple[tuple[str, tuple], ...]
+    _ragged_maxima_proof: tuple[Tensor, int, bool] | None
     _VIEW_BINDING_PREFIX = "_view_binding_"
     _RAGGED_OFFSETS_PREFIX = "_ragged_offsets_"
-    _AOT_CACHE_HASH_VERSION = 14
+    _AOT_CACHE_HASH_VERSION = 18
 
     # Construction & Initialization
 
@@ -648,6 +667,7 @@ class NestedTensor(torch.Tensor):
                 materialize_python_metadata=False,
                 mark_dynamic=False,
             )
+            result._exact_ragged_maxima = True
             return result._packed_like_unchecked(values, reuse_wrapper=True)
 
         if ragged_dims is not None and _lenient_layout:
@@ -727,6 +747,7 @@ class NestedTensor(torch.Tensor):
             None,
             0,
         )
+        result._exact_ragged_maxima = True
         if _is_compiling():
             return result._packed_like_unchecked(values, reuse_wrapper=True)
         result._mark_tensor_backed_dynamic_dims()
@@ -1667,6 +1688,7 @@ class NestedTensor(torch.Tensor):
             None if tensor_backed_compile else self._packed_sizes,
             None if tensor_backed_compile else self._element_shapes,
             getattr(self, "_compile_ragged_extents", None),
+            (self._cache_version(self._physical_shape), True) if self._exact_ragged_maxima else False,
             logical_strides,
         )
 
@@ -1689,8 +1711,12 @@ class NestedTensor(torch.Tensor):
             packed_sizes,
             element_shapes,
             ragged_extents,
+            exact_ragged_maxima,
             logical_strides,
         ) = state
+        if exact_ragged_maxima is not False and exact_ragged_maxima is not True:
+            version, exact = exact_ragged_maxima
+            exact_ragged_maxima = exact and cls._cache_version(shape_tensor) == version
         if (
             packed_shape is None
             and cls is NestedTensor
@@ -1723,6 +1749,7 @@ class NestedTensor(torch.Tensor):
             )
             if ragged_extents is not None:
                 result._ragged_extents = ragged_extents
+            result._exact_ragged_maxima = exact_ragged_maxima
             return result
         result = cls._from_packed_raw(
             like if packed_shape is None else like.new_empty(()).expand(packed_shape),
@@ -1744,6 +1771,7 @@ class NestedTensor(torch.Tensor):
         )
         if ragged_extents is not None:
             result._ragged_extents = ragged_extents
+        result._exact_ragged_maxima = exact_ragged_maxima
         return result
 
     def _mark_tensor_backed_dynamic_dims(self, *, mark_values: bool = True) -> None:
@@ -1827,6 +1855,54 @@ class NestedTensor(torch.Tensor):
         if any(isinstance(tensor, FakeTensor) or tensor.is_inference() for tensor in metadata):
             return None
         return tuple(self._cache_version(tensor) for tensor in metadata)
+
+    @property
+    def _exact_ragged_maxima(self) -> bool:
+        r"""Whether retained ragged extents are proven current sample maxima."""
+        attrs = vars(self)
+        metadata = attrs.get("_physical_shape")
+        if metadata is None or metadata.is_inference():
+            return False
+        version = self._cache_version(metadata)
+        proof = attrs.get("_ragged_maxima_proof")
+        if proof is not None and proof[0] is metadata and proof[1] == version:
+            return proof[2]
+        if (
+            torch.compiler.is_dynamo_compiling()
+            or type(metadata) is not Tensor
+            or metadata.device.type != "cpu"
+            or metadata.dim() != 2
+            or metadata.dtype.is_floating_point
+            or metadata.dtype.is_complex
+            or metadata.dtype == torch.bool
+            or torch._is_functional_tensor(metadata)
+            or torch._C._functorch.is_functorch_wrapped_tensor(metadata)
+            or "_logical_shape" not in attrs
+            or "_ragged_dims" not in attrs
+        ):
+            return False
+        retained = self._max_physical_dims()
+        axes = self._ragged_dims
+        if any(axis >= len(retained) or not isinstance(retained[axis], int) for axis in axes):
+            return False
+        # Formal eager admission can read canonical CPU metadata directly,
+        # including while converting a real wrapper into FakeTensor. Cache
+        # both outcomes so construction and validation choices do not affect
+        # which native shape expressions compilation can retain.
+        shapes = metadata.tolist()
+        exact = all(retained[axis] == max((shape[axis] for shape in shapes), default=0) for axis in axes)
+        self._ragged_maxima_proof = (metadata, version, exact)
+        return exact
+
+    @_exact_ragged_maxima.setter
+    def _exact_ragged_maxima(self, exact: bool) -> None:
+        if not exact:
+            self._ragged_maxima_proof = None
+        else:
+            metadata = self._physical_shape
+            self._ragged_maxima_proof = (
+                (metadata, self._cache_version(metadata), True) if not metadata.is_inference() else None
+            )
 
     @staticmethod
     def _cache_version(tensor: Tensor) -> int:
@@ -2129,6 +2205,7 @@ class NestedTensor(torch.Tensor):
                 element_shapes=element_shapes,
                 ragged_offsets=resolved_ragged_offsets,
             )
+        result._exact_ragged_maxima = outer_size is None
         return result
 
     # ------------------------------------------------------------------
@@ -2297,6 +2374,7 @@ class NestedTensor(torch.Tensor):
             "view_offset_binding": vars(self).get("_view_offset_binding"),
             "view_output_geometry": vars(self).get("_view_output_geometry"),
             "has_ragged_extents": "_compile_ragged_extents" in instance_attrs,
+            "exact_ragged_maxima": self._exact_ragged_maxima,
             "batch_first": getattr(self, "batch_first", True),
             "padding_value": getattr(self, "padding_value", 0.0),
             "mask_value": getattr(self, "mask_value", False),
@@ -2351,6 +2429,7 @@ class NestedTensor(torch.Tensor):
                 _view_binding_value(view_bindings, offset_ref),
             )
         has_ragged_extents = ctx.pop("has_ragged_extents", False)
+        exact_ragged_maxima = ctx.pop("exact_ragged_maxima", False)
         if has_ragged_extents != ("_ragged_extents" in inner_tensors):
             raise RuntimeError("NestedTensor ragged-extent child must match its tensor metadata schema")
         logical_offset = (
@@ -2416,6 +2495,7 @@ class NestedTensor(torch.Tensor):
                     ctx["packed_sizes"],
                     ctx["element_shapes"],
                     inner_tensors.get("_ragged_extents"),
+                    exact_ragged_maxima,
                     strides,
                 )
                 result = NestedTensor._layout_from_state(state, metadata_values, logical_offset=logical_offset)
@@ -2434,6 +2514,7 @@ class NestedTensor(torch.Tensor):
                     **ctx,
                 )
             result._packed_values = values
+            result._exact_ragged_maxima = exact_ragged_maxima
             if not native_rebuild and torch.Tensor.requires_grad.__get__(result) != wrapper_requires_grad:
                 torch.Tensor.requires_grad.__set__(result, wrapper_requires_grad)
             if max_length_binding is not None:
@@ -2492,6 +2573,7 @@ class NestedTensor(torch.Tensor):
         if max_length_binding is not None:
             result._ragged_extents = max_length_binding
         result._invalidate_transient_caches()
+        result._exact_ragged_maxima = exact_ragged_maxima
         result._is_aot_tangent = is_aot_tangent
         result._unflattened_autograd = True
         if "_packed_shape" in inner_tensors:
@@ -2918,6 +3000,7 @@ class NestedTensor(torch.Tensor):
         self._mark_tensor_backed_dynamic_dims()
         self._validate_metadata()
         self._refresh_mutated_wrapper()
+        self._exact_ragged_maxima = True
 
     def _refresh_mutated_wrapper(self) -> None:
         r"""Align wrapper metadata and its edge with newly assigned packed storage."""
@@ -2981,6 +3064,7 @@ class NestedTensor(torch.Tensor):
         self._packed_sizes = result._packed_sizes
         type(self)._install_persistent_ragged_offsets(self, result._persistent_ragged_offsets())
         self._invalidate_transient_caches()
+        self._exact_ragged_maxima = result._exact_ragged_maxima
         _set_view_records(self, ())
         self.__dict__.pop("_compile_ragged_extents", None)
         binding = vars(result).get("_compile_ragged_extents")
@@ -4421,6 +4505,7 @@ class NestedTensor(torch.Tensor):
             binding = vars(self).get("_compile_ragged_extents")
             if binding is not None:
                 result._ragged_extents = binding
+            result._exact_ragged_maxima = self._exact_ragged_maxima
             return self._inherit_tangent_metadata(result)
         result = type(self)._from_packed_raw(
             packed_values,
@@ -4448,6 +4533,7 @@ class NestedTensor(torch.Tensor):
         binding = vars(self).get("_compile_ragged_extents")
         if binding is not None:
             result._ragged_extents = binding
+        result._exact_ragged_maxima = self._exact_ragged_maxima
         return self._inherit_tangent_metadata(result)
 
     @torch.compiler.allow_in_graph
@@ -4555,6 +4641,7 @@ class NestedTensor(torch.Tensor):
         binding = vars(self).get("_compile_ragged_extents")
         if binding is not None:
             result._ragged_extents = binding
+        result._exact_ragged_maxima = self._exact_ragged_maxima
         if _is_compiling() or _needs_packed_bridge(packed_values):
             result = result._packed_like_unchecked(packed_values)
             if not _is_compiling():
@@ -4731,6 +4818,7 @@ class NestedTensor(torch.Tensor):
             ragged_offsets=self._persistent_ragged_offsets(),
             validate=False,
         )
+        result._exact_ragged_maxima = self._exact_ragged_maxima
         if torch.is_grad_enabled() and packed_values.requires_grad:
             return _PackedLikeAutograd.apply(packed_values, _PackedStructureReference(result))
         return result
@@ -4862,6 +4950,7 @@ class NestedTensor(torch.Tensor):
             materialize_python_metadata=False,
         )
         # New lengths own new maxima in both real and symbolic output schemas.
+        result._exact_ragged_maxima = True
         result._ragged_extents = result._new_ragged_extents()
         if torch.is_grad_enabled() and packed_values.requires_grad:
             return _PackedLikeAutograd.apply(packed_values, _PackedStructureReference(result))
@@ -5017,6 +5106,7 @@ class NestedTensor(torch.Tensor):
             materialize_python_metadata=False,
             mark_values_dynamic=False,
         )
+        result._exact_ragged_maxima = True
         if symbolic_lengths:
             result._ragged_extents = result._new_ragged_extents()
         if torch.is_grad_enabled() and packed_values.requires_grad:
@@ -5163,6 +5253,7 @@ class NestedTensor(torch.Tensor):
             materialize_python_metadata=False,
         )
         # Both independent data-derived maxima belong to the current layout.
+        result._exact_ragged_maxima = True
         result._ragged_extents = result._new_ragged_extents()
         if torch.is_grad_enabled() and packed_values.requires_grad:
             return _PackedLikeAutograd.apply(packed_values, _PackedStructureReference(result))
@@ -6030,6 +6121,7 @@ class NestedTensor(torch.Tensor):
             type(self)._install_persistent_ragged_offsets(self, candidate._persistent_ragged_offsets())
             self._packed_shape = candidate._packed_shape
             self._refresh_mutated_wrapper()
+            self._exact_ragged_maxima = candidate._exact_ragged_maxima
         elif isinstance(index, (slice, list)):
             if isinstance(index, list) and index and all(isinstance(i, bool) for i in index):
                 if len(index) != len(self):
@@ -7989,6 +8081,7 @@ def _exact_layout(reference, storage, descriptor, *, source_layout=None, logical
         None,
         None,
         extents,
+        False,
         strides,
     )
 
@@ -8143,8 +8236,10 @@ def _view_geometry(context, target=False):
 
 
 def _view_reference(context, target=False, like=None):
+    from torch._prims_common import make_contiguous_strides_for
+
     _, _, cls, dtype, padding, mask = context
-    descriptor, sizes, strides, packed_sizes, _, _, _ = _view_geometry(context, target)
+    descriptor, sizes, _, packed_sizes, _, _, _ = _view_geometry(context, target)
     bf, permutation, ragged, offsets, shape, splits, extents, *_ = descriptor
     state = (
         cls,
@@ -8160,7 +8255,8 @@ def _view_reference(context, target=False, like=None):
         None,
         None,
         extents,
-        strides,
+        False,
+        make_contiguous_strides_for(sizes),
     )
     data = (
         torch.empty((), device="meta", dtype=dtype).expand(packed_sizes)
@@ -8175,6 +8271,8 @@ def _view_needs_flat_cotangent(context):
 
 
 def _flat_view_cotangent(context, target, values, *, attach_autograd):
+    from torch._prims_common import make_contiguous_strides_for
+
     from .aten_functions import _shape_ragged_offsets
 
     descriptor, sizes, _, packed_sizes, _, _, _ = _view_geometry(context, target)
@@ -8219,7 +8317,8 @@ def _flat_view_cotangent(context, target, values, *, attach_autograd):
         None,
         None,
         extents if tuple(ragged) == canonical_ragged else None,
-        None,
+        False,
+        make_contiguous_strides_for(sizes),
     )
     result = NestedTensor._layout_from_state(state, values.detach())
     result._packed_values = values
@@ -8230,7 +8329,8 @@ def _flat_view_cotangent(context, target, values, *, attach_autograd):
 
 
 def _normalize_view_cotangent(grad, context):
-    from torch._prims_common import check_contiguous_sizes_strides, is_contiguous_or_false
+    r"""Give native view replay contiguous packed values and explicit logical strides."""
+    from torch._prims_common import is_contiguous_or_false
 
     if grad is None:
         return None
@@ -8256,7 +8356,6 @@ def _normalize_view_cotangent(grad, context):
         values = reference._dense_to_packed_values(grad)
         if values is None:
             raise RuntimeError("cannot align a dense view cotangent with the forward geometry")
-        same_schema = False
     if _view_needs_flat_cotangent(context):
         from .torch_functions import _packed_flatten_elements
 
@@ -8272,20 +8371,10 @@ def _normalize_view_cotangent(grad, context):
         return _flat_view_cotangent(context, True, flat, attach_autograd=True)
     if tuple(values.shape) != tuple(packed_sizes):
         values = values.reshape(packed_sizes)
-        same_schema = False
     # Native contiguous checks can require knowing whether symbolic rows are
     # empty. Use Torch's conservative stride proof and native clone policy.
     if not is_contiguous_or_false(values):
         values = values.clone(memory_format=torch.contiguous_format)
-        same_schema = False
-    if same_schema:
-        with torch._C.DisableTorchFunctionSubclass():
-            contiguous = check_contiguous_sizes_strides(
-                torch.Tensor.size(grad), torch.Tensor.stride(grad), false_if_dde=True
-            )
-        if contiguous:
-            return grad
-        return grad.packed_like(values)
     if reference is None:
         reference = _view_reference(context, True, grad._packed_values if isinstance(grad, NestedTensor) else grad)
     return reference.__coerce_tangent_metadata__().packed_like(values)
@@ -8319,6 +8408,7 @@ def _native_view_pullback(grad, context, func, args, kwargs):
         None,
         None,
         extents,
+        False,
         strides,
     )
     result = NestedTensor._layout_from_state(state, data.detach())
@@ -8498,6 +8588,7 @@ def _native_rebase_dispatch(func, args, kwargs):
             None,
             None,
             extents,
+            False,
             tuple(args[2]),
         )
         result = NestedTensor._layout_from_state(state, data)
@@ -8625,6 +8716,7 @@ def _transform_rebuild(value, cls, packed_values=None):
     binding = vars(value).get("_compile_ragged_extents")
     if binding is not None:
         result._ragged_extents = binding
+    result._exact_ragged_maxima = value._exact_ragged_maxima
     return result
 
 

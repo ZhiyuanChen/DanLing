@@ -797,7 +797,7 @@ class TestAutogradViewLifetime:
         torch.compiler.reset()
         run = operation if backend is None else torch.compile(operation, backend=backend, fullgraph=True, dynamic=True)
         try:
-            for left, right in (((2, 4), (1, 4)), ((3, 5), (3, 5))):
+            for left, right in (((2, 4), (1, 4)), ((3, 5), (3, 5)), ((0, 1), (1, 0))):
                 parts = [
                     [torch.randn(n, 4, dtype=torch.float64, device=device, requires_grad=True) for n in lengths]
                     for lengths in (left, right)

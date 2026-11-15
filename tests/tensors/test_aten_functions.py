@@ -476,7 +476,7 @@ class TestElementwiseOps:
             source.values().mul_(2)
             torch.testing.assert_close(output.values(), (2 * (before + 1)).view(-1, 2, 3))
 
-    @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
+    @pytest.mark.parametrize("backend", [None, "eager", "aot_eager", "inductor"])
     @pytest.mark.parametrize("batch_first", [True, False])
     @pytest.mark.parametrize(
         "method,tail,target",
@@ -489,7 +489,7 @@ class TestElementwiseOps:
             if target[0] == -1:
                 batch = result.shape[0 if batch_first else 1]
                 shape = (batch, *target) if batch_first else (target[0], batch, *target[1:])
-            return getattr(result, method)(*shape).values()
+            return getattr(result, method)(*shape)
 
         torch.compiler.reset()
         run = operation if backend is None else torch.compile(operation, backend=backend, fullgraph=True, dynamic=True)
@@ -501,12 +501,15 @@ class TestElementwiseOps:
                 ]
                 output = run(*(NT(group, ragged_dims=(0,), batch_first=batch_first) for group in parts))
                 sample_target = target if target[0] == -1 else (-1, *target)
-                expected = torch.cat([getattr(a + b, method)(sample_target) for a, b in zip(*parts)])
-                torch.testing.assert_close(output, expected)
+                samples = [getattr(a + b, method)(sample_target) for a, b in zip(*parts)]
+                expected = torch.cat(samples)
+                shape = (len(samples), max(sample.shape[0] for sample in samples), *samples[0].shape[1:])
+                assert output.shape == (shape if batch_first else (shape[1], shape[0], *shape[2:]))
+                torch.testing.assert_close(output.values(), expected)
                 leaves = tuple(part for group in parts for part in group)
                 probe = torch.randn_like(expected)
                 torch.testing.assert_close(
-                    torch.autograd.grad(output, leaves, probe), torch.autograd.grad(expected, leaves, probe)
+                    torch.autograd.grad(output.values(), leaves, probe), torch.autograd.grad(expected, leaves, probe)
                 )
         finally:
             torch.compiler.reset()
@@ -536,19 +539,29 @@ class TestElementwiseOps:
     @pytest.mark.parametrize("backend", [None, "eager", "aot_eager", "inductor"])
     @pytest.mark.parametrize("method", ["view", "reshape"])
     @pytest.mark.parametrize("batch_first", [True, False])
-    def test_literal_view(self, device, backend, method, batch_first):
-        target = (2, 4, 1, 3) if batch_first else (4, 2, 1, 3)
+    @pytest.mark.parametrize("infer", [False, True])
+    def test_literal_view(self, device, backend, method, batch_first, infer):
+        feature = -1 if infer else 1
+        target = (2, 4, feature, 3) if batch_first else (4, 2, feature, 3)
 
         def operation(value):
-            return getattr(value, method)(target).values()
+            return getattr(value, method)(target)
 
         torch.compiler.reset()
         run = operation if backend is None else torch.compile(operation, backend=backend, fullgraph=True, dynamic=True)
         try:
-            for lengths in ((2, 4), (1, 4), (0, 4)):
+            for lengths in (((2, 4), (1, 4)) if infer else ((2, 4), (1, 4), (0, 4))):
                 parts = [torch.randn(n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in lengths]
-                actual = run(NT(parts, ragged_dims=(0,), batch_first=batch_first))
-                expected = torch.cat(parts).view(-1, 1, 3)
+                source = NT(parts, ragged_dims=(0,), batch_first=batch_first)
+                output = run(source)
+                assert output.shape == ((2, 4, 1, 3) if batch_first else (4, 2, 1, 3))
+                assert output.ragged_dims == (0,)
+                actual = output.values()
+                reference = torch.cat(parts)
+                expected = getattr(reference, method)(-1, 1, 3)
+                assert (actual.untyped_storage().data_ptr() == source.values().untyped_storage().data_ptr()) == (
+                    expected.untyped_storage().data_ptr() == reference.untyped_storage().data_ptr()
+                )
                 torch.testing.assert_close(actual, expected)
                 probe = torch.randn_like(expected)
                 torch.testing.assert_close(
@@ -559,6 +572,31 @@ class TestElementwiseOps:
                 parts[0].view(4, 1, 3)
             with pytest.raises(RuntimeError):
                 run(NT(parts, ragged_dims=(0,), batch_first=batch_first))
+        finally:
+            torch.compiler.reset()
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("lengths,capacity,target", [((0, 1), 1, 1), ((3, 3), 5, 5)])
+    def test_runtime_view(self, device, backend, lengths, capacity, target):
+        def operation(values, offsets, sizes, capacity):
+            maximum = capacity.item()
+            torch._check(maximum >= 0)
+            return NT.from_packed(
+                values, offsets, sizes, ragged_dims=(0,), outer_size=(2, maximum, 3), validate=False
+            ).view(2, target, 3)
+
+        values = torch.randn(sum(lengths), 3, device=device, dtype=torch.float64, requires_grad=True)
+        offsets = torch.tensor([0, lengths[0], sum(lengths)])
+        sizes = torch.tensor([[length, 3] for length in lengths])
+        torch.compiler.reset()
+        try:
+            output = torch.compile(operation, backend=backend, fullgraph=True, dynamic=True)(
+                values, offsets, sizes, torch.tensor(capacity)
+            )
+            assert output.shape == (2, target, 3)
+            torch.testing.assert_close(output.values(), values)
+            probe = torch.randn_like(values)
+            torch.testing.assert_close(torch.autograd.grad(output.values(), values, probe)[0], probe)
         finally:
             torch.compiler.reset()
 
@@ -609,6 +647,36 @@ class TestElementwiseOps:
                         torch.testing.assert_close(tangent.values(), torch.ones_like(expected))
             finally:
                 torch.compiler.reset()
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("method", ["view", "reshape"])
+    @pytest.mark.parametrize("batch_first", [False, True])
+    def test_view_graph_break(self, device, backend, method, batch_first):
+        def operation(lhs, rhs):
+            value = lhs + rhs
+            torch._dynamo.graph_break()
+            batch = value.shape[0 if batch_first else 1]
+            shape = (batch, -1, 2) if batch_first else (-1, batch, 2)
+            result = getattr(value, method)(*shape)
+            torch._dynamo.graph_break()
+            return result.sin().square().sum()
+
+        torch.compiler.reset()
+        run = torch.compile(operation, backend=backend, dynamic=True)
+        try:
+            for left, right in (((2, 4), (1, 4)), ((3, 5), (3, 5)), ((0, 1), (1, 0))):
+                parts = [
+                    [torch.randn(n, 4, device=device, dtype=torch.float64, requires_grad=True) for n in lengths]
+                    for lengths in (left, right)
+                ]
+                operands = [NT(group, ragged_dims=(0,), batch_first=batch_first) for group in parts]
+                expected = sum((a + b).view(-1, 2).sin().square().sum() for a, b in zip(*parts))
+                output = run(*operands)
+                torch.testing.assert_close(output, expected)
+                leaves = tuple(part for group in parts for part in group)
+                torch.testing.assert_close(torch.autograd.grad(output, leaves), torch.autograd.grad(expected, leaves))
+        finally:
+            torch.compiler.reset()
 
     def test_batch_view(self, device):
         parts = [torch.randn(length, 3, device=device, dtype=torch.float64, requires_grad=True) for length in (2, 5)]
