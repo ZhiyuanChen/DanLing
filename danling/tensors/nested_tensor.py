@@ -535,7 +535,6 @@ class NestedTensor(torch.Tensor):
     _ragged_maxima_proof: tuple[Tensor, int, bool] | None
     _VIEW_BINDING_PREFIX = "_view_binding_"
     _RAGGED_OFFSETS_PREFIX = "_ragged_offsets_"
-    _AOT_CACHE_HASH_VERSION = 20
 
     # Construction & Initialization
 
@@ -2259,7 +2258,6 @@ class NestedTensor(torch.Tensor):
         tensor_metadata = type(self)._tensor_metadata_for_caching
         payload = (
             "danling.NestedTensor.aot_autograd",
-            type(self)._AOT_CACHE_HASH_VERSION,
             type(self).__module__,
             type(self).__qualname__,
             tensor_metadata(self),
