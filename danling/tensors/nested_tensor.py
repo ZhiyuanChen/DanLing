@@ -535,7 +535,7 @@ class NestedTensor(torch.Tensor):
     _ragged_maxima_proof: tuple[Tensor, int, bool] | None
     _VIEW_BINDING_PREFIX = "_view_binding_"
     _RAGGED_OFFSETS_PREFIX = "_ragged_offsets_"
-    _AOT_CACHE_HASH_VERSION = 18
+    _AOT_CACHE_HASH_VERSION = 20
 
     # Construction & Initialization
 
