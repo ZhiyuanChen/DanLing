@@ -1139,6 +1139,32 @@ class TestNestedViewAlignment:
 
 class TestCompile:
 
+    @pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
+    def test_independent_partitions(self, device, backend):
+        def combine(lhs, rhs):
+            return (lhs + rhs).sin()
+
+        torch.compiler.reset()
+        compiled = torch.compile(combine, backend=backend, fullgraph=True, dynamic=True)
+        try:
+            for left, right in (((2, 4), (1, 4)), ((3, 5), (3, 5)), ((4, 2), (1, 2))):
+                parts = [
+                    [torch.randn(n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in lengths]
+                    for lengths in (left, right)
+                ]
+                output = compiled(*(NT(group, ragged_dims=(0,)) for group in parts))
+                expected = torch.cat([(lhs + rhs).sin() for lhs, rhs in zip(*parts)])
+                assert output.shape == (2, max(*left, *right), 3)
+                torch.testing.assert_close(output.values(), expected)
+                leaves = tuple(part for group in parts for part in group)
+                probe = torch.randn_like(expected)
+                torch.testing.assert_close(
+                    torch.autograd.grad(output.values(), leaves, probe),
+                    torch.autograd.grad(expected, leaves, probe),
+                )
+        finally:
+            torch.compiler.reset()
+
     @pytest.mark.parametrize("fullgraph", [False, True])
     @pytest.mark.parametrize("boolean", [False, True], ids=["values", "masks"])
     def test_joint_masks(self, device, fullgraph, boolean):
@@ -1338,7 +1364,8 @@ def test_additional_retained_axis_can_broadcast_in_only_one_sample(device, order
 
 
 @pytest.mark.parametrize("axis", [0, 1])
-def test_zero_volume_elements_and_empty_batch_retain_the_full_operand_shape(device, axis):
+@pytest.mark.parametrize("backend", [None, "eager"])
+def test_zero_volume_elements_and_empty_batch_retain_the_full_operand_shape(device, axis, backend):
     shapes = ((0, 3, 4), (2, 3, 4)) if axis == 0 else ((3, 0, 4), (3, 2, 4))
     masks = [tuple(1 if dim == axis else size for dim, size in enumerate(shape)) for shape in shapes]
     target = NestedTensor(_parts(shapes, device), ragged_dims=(0, 1))
@@ -1346,7 +1373,8 @@ def test_zero_volume_elements_and_empty_batch_retain_the_full_operand_shape(devi
     expected = NestedTensor([a * b for a, b in zip(target, source)], ragged_dims=(0, 1))
     empty_target, empty_source = target[:0], source[:0]
     output = target * source
-    empty_output = empty_source - empty_target
+    subtract = torch.sub if backend is None else torch.compile(torch.sub, backend=backend, fullgraph=True, dynamic=True)
+    empty_output = subtract(empty_source, empty_target)
     torch.testing.assert_close(output.values(), expected.values())
     torch.testing.assert_close(output.element_sizes(), expected.element_sizes())
     assert empty_output.shape == empty_target.shape
