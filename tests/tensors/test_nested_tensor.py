@@ -711,7 +711,7 @@ class TestFunctionTransforms:
             assert_close(tangent.values(), reference.tangent)
 
     @pytest.mark.parametrize("mode", ["native", "jvp", "vmap", "jvp_vmap"])
-    @pytest.mark.parametrize("cotangent", [True])
+    @pytest.mark.parametrize("cotangent", [False, True])
     def test_carrier_frame(self, device, mode, cotangent):
         payload = torch.randn(6, 2, 3, dtype=torch.double, device=device)
         source = (
@@ -878,7 +878,7 @@ class TestAutogradViewLifetime:
         torch.compiler.reset()
         run = operation if backend is None else torch.compile(operation, backend=backend, fullgraph=True, dynamic=True)
         try:
-            for left, right in (((2, 4), (1, 4)), ((3, 5), (3, 5))):
+            for left, right in (((2, 4), (1, 4)), ((3, 5), (3, 5)), ((0, 1), (1, 0))):
                 parts = [
                     [torch.randn(n, 4, dtype=torch.float64, device=device, requires_grad=True) for n in lengths]
                     for lengths in (left, right)

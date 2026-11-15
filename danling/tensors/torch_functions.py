@@ -62,6 +62,7 @@ from .aten_functions import (
     _uses_packed_view_autograd,
 )
 from .ops import (
+    ATEN_BINARY_ELEMENTWISE_OPS,
     TORCH_BINARY_ELEMENTWISE_OPS,
     TORCH_UNARY_ELEMENTWISE_OPS,
     NestedTensorAtenRegistry,
@@ -73,6 +74,7 @@ from .ops import (
     _compile_unsupported,
     _dense_operand_for_element,
     _ExecutionGuardKind,
+    _finalize_binary_result,
     _get_batch_dim,
     _is_compiling,
     _logical_dim_for_element_dim,
@@ -94,9 +96,41 @@ if TYPE_CHECKING:
     from .nested_tensor import NestedTensor
 
 
-# clamp and nan_to_num are NOT registered here.
-# They fall through to aten decomposition → __torch_dispatch__ where
-# _elementwise_unary_handler operates directly on concat (no per-element loop).
+# nan_to_num falls through to the packed aten unary handler.
+
+
+@NestedTensorFuncRegistry.implement(torch.clamp, compile_safe=True)
+def clamp(input, min=None, max=None, *, out=None):
+    r"""Clamp packed coordinates above autograd's per-input shape ownership."""
+    if out is not None:
+        with torch._C.DisableTorchFunctionSubclass():
+            return torch.clamp(input, min, max, out=out)
+    operation = (
+        torch.ops.aten.clamp.Tensor
+        if isinstance(min, Tensor) or isinstance(max, Tensor)
+        else torch.ops.aten.clamp.default
+    )
+    return NestedTensorAtenRegistry[operation](operation, (input, min, max), {})
+
+
+def _clamp_bound(input, bound, operation, out):
+    if out is not None:
+        with torch._C.DisableTorchFunctionSubclass():
+            return operation(input, bound, out=out)
+    overload = operation.Tensor if isinstance(bound, Tensor) else operation.default
+    return NestedTensorAtenRegistry[overload](overload, (input, bound), {})
+
+
+@NestedTensorFuncRegistry.implement(torch.clamp_min, compile_safe=True)
+def clamp_min(input, min, *, out=None):
+    r"""Preserve each input's gradient frame while applying native clamp_min."""
+    return _clamp_bound(input, min, torch.ops.aten.clamp_min, out)
+
+
+@NestedTensorFuncRegistry.implement(torch.clamp_max, compile_safe=True)
+def clamp_max(input, max, *, out=None):
+    r"""Preserve each input's gradient frame while applying native clamp_max."""
+    return _clamp_bound(input, max, torch.ops.aten.clamp_max, out)
 
 
 # Attention
@@ -7552,7 +7586,8 @@ def _elementwise_binary_handler(input, other, *args, _fn=None, **kwargs):
     r"""Apply a binary elementwise op handling NT+NT, NT+scalar, and NT+dense conversions."""
     if _needs_outer_autograd(input, other):
         with torch._C.DisableTorchFunctionSubclass():
-            return _fn(input, other, *args, **kwargs)
+            result = _fn(input, other, *args, **kwargs)
+        return _finalize_binary_result(input, other, result)
     return _binary_op_maybe_tensor(input, other, _fn, *args, **kwargs)
 
 
@@ -7585,7 +7620,8 @@ def _commutative_mul_handler(input, other, *args, **kwargs):
         input, other = other, input
     if _needs_outer_autograd(input, other):
         with torch._C.DisableTorchFunctionSubclass():
-            return torch.mul(input, other, *args, **kwargs)
+            result = torch.mul(input, other, *args, **kwargs)
+        return _finalize_binary_result(input, other, result)
     return _binary_op_maybe_tensor(input, other, torch.mul, *args, **kwargs)
 
 
@@ -7601,6 +7637,102 @@ for _mul_entrypoint in (
         compile_safe=True,
         compile_guard=_binary_op_compile_safe,
     )
+
+
+def _make_public_aten_binary_handler(operation):
+    r"""Bind the public overload before crossing its native autograd owner."""
+    names = tuple(argument.name for argument in operation._schema.arguments)
+    operand_names = names[:2]
+
+    def handler(*args, **kwargs):
+        supplied = builtins.min(len(args), 2)
+        if (
+            any(name in kwargs for name in operand_names[:supplied])
+            or any(name not in kwargs for name in operand_names[supplied:])
+            or any(name not in names for name in kwargs)
+        ):
+            # Schema binding remains the authority for malformed calls.
+            with torch._C.DisableTorchFunctionSubclass():
+                return operation(*args, **kwargs)
+        remaining = dict(kwargs)
+        operands = (*args[:2], *(remaining.pop(name) for name in operand_names[supplied:]))
+        return _elementwise_binary_handler(*operands, *args[2:], _fn=operation, **remaining)
+
+    return handler
+
+
+for _aten_binary_entrypoint in ATEN_BINARY_ELEMENTWISE_OPS:
+    NestedTensorFuncRegistry.register(
+        _aten_binary_entrypoint,
+        _make_public_aten_binary_handler(_aten_binary_entrypoint),
+        compile_safe=True,
+        compile_guard=_binary_op_compile_safe,
+    )
+
+
+def _make_public_packed_aten_handler(operation):
+    r"""Normalize a public overload with Torch's schema before packed dispatch."""
+    from torch.fx.operator_schemas import get_signature_for_torch_op
+
+    (signature,) = get_signature_for_torch_op(operation)
+    # FX exposes a Python-style ``input`` name for ATEN's ``self`` argument.
+    # Public OpOverload calls must retain the actual schema's keyword names.
+    signature = signature.replace(
+        parameters=[
+            parameter.replace(name=argument.name)
+            for parameter, argument in zip(signature.parameters.values(), operation._schema.arguments)
+        ]
+    )
+
+    @torch.compiler.allow_in_graph
+    def handler(*args, **kwargs):
+        try:
+            torch._C._check_schema_allow_fake_script_object(operation._schema, *args, **kwargs)
+            bound = signature.bind(*args, **kwargs)
+        except (RuntimeError, TypeError):
+            with torch._C.DisableTorchFunctionSubclass():
+                return operation(*args, **kwargs)
+        bound.apply_defaults()
+        return NestedTensorAtenRegistry[operation](operation, bound.args, bound.kwargs)
+
+    return handler
+
+
+_CLAMP_ATEN_OPS = tuple(
+    operation
+    for packet in (torch.ops.aten.clamp, torch.ops.aten.clamp_min, torch.ops.aten.clamp_max)
+    for operation in (packet.default, packet.Tensor)
+)
+_PUBLIC_ATEN_POINTWISE_OPS = (*ATEN_BINARY_ELEMENTWISE_OPS, *_CLAMP_ATEN_OPS)
+for _clamp_operation in _CLAMP_ATEN_OPS:
+    NestedTensorFuncRegistry.register(
+        _clamp_operation, _make_public_packed_aten_handler(_clamp_operation), compile_safe=True
+    )
+
+
+def _make_public_aten_packet_handler(packet):
+    r"""Use Torch's packet schema matching before crossing native autograd."""
+    operations = tuple(getattr(packet, name) for name in packet.overloads())
+
+    @torch.compiler.allow_in_graph
+    def handler(*args, **kwargs):
+        for operation in operations:
+            try:
+                torch._C._check_schema_allow_fake_script_object(operation._schema, *args, **kwargs)
+            except RuntimeError:
+                continue
+            if operation in _PUBLIC_ATEN_POINTWISE_OPS and not operation._schema.is_mutable:
+                return NestedTensorFuncRegistry[operation](*args, **kwargs)
+            with torch._C.DisableTorchFunctionSubclass():
+                return operation(*args, **kwargs)
+        with torch._C.DisableTorchFunctionSubclass():
+            return packet(*args, **kwargs)
+
+    return handler
+
+
+for _packet in dict.fromkeys(operation.overloadpacket for operation in _PUBLIC_ATEN_POINTWISE_OPS):
+    NestedTensorFuncRegistry.register(_packet, _make_public_aten_packet_handler(_packet), compile_safe=True)
 
 
 def _make_simple_reduce_handler(extra_kwargs):
@@ -7847,6 +7979,11 @@ for _method, _func in TORCH_DUNDER_WRAPPER_TO_FUNC.items():
         )
 # Tensor.method → torch.func aliases, plus torch.movedim → torch.moveaxis alias
 for _alias_method, _alias_func in (
+    (torch.clip, torch.clamp),
+    (torch.Tensor.clip, torch.clamp),
+    (torch.Tensor.clamp, torch.clamp),
+    (torch.Tensor.clamp_min, torch.clamp_min),
+    (torch.Tensor.clamp_max, torch.clamp_max),
     (torch.Tensor.addcdiv, torch.addcdiv),
     (torch.Tensor.addcmul, torch.addcmul),
     (torch.Tensor.split, torch.split),

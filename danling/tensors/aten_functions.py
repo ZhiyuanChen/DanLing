@@ -337,10 +337,16 @@ def _resolve_ternary_other(source, other):
     has more than one reading raises from ``_resolve_dense_for_values`` and is not swallowed.
     """
     from .nested_tensor import NestedTensor
+    from .ops import _has_retained_ragged_singleton_source
 
     device = source.values().device
     if isinstance(other, NestedTensor):
-        if source._has_same_structure(other):
+        # A known singleton broadcast is not a topology equality. Resolve it
+        # before the compiled structure check asserts equal row splits.
+        singleton = _has_retained_ragged_singleton_source(source, other)
+        if not singleton and _has_retained_ragged_singleton_source(other, source):
+            return _UNRESOLVED
+        if not singleton and source._has_same_structure(other):
             values = other.values()
             return values if values.device == device else values.to(device=device)
         values = _broadcast_nested_to_values(source, other)
@@ -371,7 +377,7 @@ def _resolve_ternary_other(source, other):
 def _elementwise_binary_handler(func, args, kwargs):
     r"""Dispatch handler for elementwise binary ops on packed _values."""
     if not _is_scalar_binary_overload(func):
-        return _binary_op_maybe_tensor(args[0], args[1], func, *args[2:], **kwargs)
+        return _binary_op_maybe_tensor(args[0], args[1], func, *args[2:], _native_owner=True, **kwargs)
 
     from .nested_tensor import NestedTensor
 
@@ -3313,6 +3319,13 @@ def _packed_with_shape(
             logical_strides=logical_strides,
         )
     source._inherit_tangent_metadata(result)
+    if preserve_ragged_offsets and source_offsets and source._exact_ragged_maxima:
+        source_maxima, output_maxima = source._max_physical_dims(), result._max_physical_dims()
+        if len(source._ragged_dims) == len(result._ragged_dims) and all(
+            statically_known_true(source_maxima[old] == output_maxima[new])
+            for old, new in zip(source._ragged_dims, result._ragged_dims)
+        ):
+            result._exact_ragged_maxima = True
     binding = getattr(source, "_compile_ragged_extents", None)
     if binding is not None:
         result._ragged_extents = binding if result._same_row_splits(source) else result._new_ragged_extents()
@@ -7343,6 +7356,7 @@ def _packed_metadata_permute(
             source._packed_sizes,
             out_element_shapes,
             vars(source).get("_compile_ragged_extents"),
+            source._exact_ragged_maxima,
             logical_strides,
         )
         with torch.inference_mode(source.is_inference()):
@@ -8528,9 +8542,14 @@ def _view_element_target(
             guard_or_false(target[batch_dim] == -1) or guard_or_false(target[batch_dim] == batch_size)
         ):
             non_batch = [dim for dim in range(len(target)) if dim != batch_dim]
+            inferred = any(guard_or_false(target[dim] == -1) for dim in non_batch)
+
+            def matches(index, size):
+                check = guard_or_false if inferred or index not in source._ragged_dims else statically_known_true
+                return check(size == max_sizes[index])
+
             include_batch = any(
-                index < len(max_sizes)
-                and (guard_or_false(target[dim] == -1) or guard_or_false(target[dim] == max_sizes[index]))
+                index < len(max_sizes) and (guard_or_false(target[dim] == -1) or matches(index, target[dim]))
                 for index, dim in enumerate(non_batch)
             )
     element_target = list(target)
@@ -8543,20 +8562,27 @@ def _view_element_target(
     return element_target
 
 
-def _view_target_columns(element_target: Sequence[int], max_sizes: Sequence[int]) -> list[int | None]:
+def _view_target_columns(
+    element_target: Sequence[int], max_sizes: Sequence[int], ragged_dims: Sequence[int]
+) -> list[int | None]:
     r"""Map each element-target entry to the source element dim it substitutes, or ``None`` for a constant."""
+    inferred_tail = -1 in element_target[1:]
     columns: list[int | None] = []
     available = list(range(len(max_sizes)))
     for index, size in enumerate(element_target):
         if index >= len(max_sizes) or size == -1:
             columns.append(None)
             continue
-        # Guard matches backed by input sizes, while unknown ragged maxima
-        # cannot establish an axis substitution from a fixed target size.
-        if guard_or_false(size == max_sizes[index]):
+        # A same-position ragged match can remain a runtime geometry choice.
+        # Inferring tails or relocating axes instead chooses a static topology.
+        matches = guard_or_false if inferred_tail or index not in ragged_dims else statically_known_true
+        if matches(size == max_sizes[index]):
             columns.append(index)
             if index in available:
                 available.remove(index)
+            continue
+        if index in ragged_dims and not inferred_tail and not statically_known_true(size != max_sizes[index]):
+            columns.append(None)
             continue
         candidates = [dim for dim in available if guard_or_false(max_sizes[dim] == size)]
         if len(candidates) == 1:
@@ -8912,7 +8938,7 @@ def _tensor_backed_view_like(
     columns = (
         [None] * len(element_target)
         if logical and -1 in element_target
-        else _view_target_columns(element_target, max_sizes)
+        else _view_target_columns(element_target, max_sizes, source._ragged_dims)
     )
     if (
         ragged_rank > 1
@@ -8944,7 +8970,7 @@ def _tensor_backed_view_like(
     columns = (
         [None] * len(element_target)
         if logical and -1 in element_target
-        else _view_target_columns(element_target, max_sizes)
+        else _view_target_columns(element_target, max_sizes, source._ragged_dims)
     )
     if any(column == ragged_dim for column in columns[1:]):
         return _tensor_backed_topology_view(func, source, element_target, kwargs, values=values, raw_output=raw_output)
@@ -8981,6 +9007,13 @@ def _tensor_backed_view_like(
         static_numel *= max_sizes[dim]
 
     ones = torch.ones_like(source._physical_shape[:, :1])
+    # An unknown match remains a runtime geometry choice: matching targets
+    # name the ragged axis; nonmatching targets fix every sample's length.
+    runtime_leading_match = (
+        columns[0] is None
+        and element_target[0] != -1
+        and not statically_known_true(element_target[0] != max_sizes[ragged_dim])
+    )
     keeps_rows = columns[0] == ragged_dim or (element_target[0] == -1 and tail_numel == static_numel)
     if keeps_rows:
         lengths = source._physical_shape[:, ragged_dim : ragged_dim + 1]
@@ -8990,6 +9023,14 @@ def _tensor_backed_view_like(
         lengths = source._physical_shape.prod(dim=1, keepdim=True) // tail_numel
     else:
         lengths = ones * element_target[0]
+        if runtime_leading_match:
+            matches = (
+                torch.scalar_tensor(
+                    max_sizes[ragged_dim], dtype=source._physical_shape.dtype, device=source._physical_shape.device
+                )
+                == element_target[0]
+            )
+            lengths = torch.where(matches, source._physical_shape[:, ragged_dim : ragged_dim + 1], lengths)
     if not keeps_rows:
         from .nested_tensor import _packed_slice_size_bindings
 
@@ -8997,9 +9038,19 @@ def _tensor_backed_view_like(
             torch.all(source._physical_shape.prod(dim=1, keepdim=True) == lengths * tail_numel),
             "view target requires the same number of elements in each sample",
         )
-        # A new row partition must expose its own total and maximum rather
-        # than leaking symbolic quotients from this opaque shape operation.
-        total, maximum = _packed_slice_size_bindings(lengths, total=values.numel() // tail_numel)
+        known_maximum: int | None
+        if source._exact_ragged_maxima:
+            # Every sample scales by the same static volume. Its certified
+            # maximum therefore follows the same native shape expression.
+            known_maximum = max_sizes[ragged_dim] * math.prod(values.shape[1:]) // tail_numel
+        elif element_target[0] != -1 and not runtime_leading_match:
+            known_maximum = element_target[0]
+        else:
+            known_maximum = None
+        capacity = element_target[0] if runtime_leading_match and not source._exact_ragged_maxima else None
+        total, maximum = _packed_slice_size_bindings(
+            lengths, total=values.numel() // tail_numel, maximum=known_maximum, capacity=capacity
+        )
         rows, max_length = total.shape[0], maximum.shape[0]
 
     out_physical_shape = torch.cat((lengths, *(ones * size for size in element_target[1:])), dim=1)
@@ -9012,7 +9063,7 @@ def _tensor_backed_view_like(
         packed_rows = lengths.reshape(-1).to(device=source._offsets.device, dtype=source._offsets.dtype)
         out_offsets = torch.cat((source._offsets.new_zeros((1,)), torch.cumsum(packed_rows, dim=0)))
 
-    return _packed_with_shape(
+    result = _packed_with_shape(
         source,
         out_values,
         out_physical_shape,
@@ -9021,6 +9072,10 @@ def _tensor_backed_view_like(
         permutation=tuple(range(rank)),
         raw_output=raw_output,
     )
+    result._exact_ragged_maxima = source._exact_ragged_maxima if keeps_rows or runtime_leading_match else True
+    if not keeps_rows:
+        result._ragged_extents = maximum.transpose(0, 1)
+    return result
 
 
 @torch.compiler.allow_in_graph
@@ -9171,7 +9226,7 @@ def _view_like_nested(func, args, kwargs, *, logical=False, values=None, raw_out
     else:
         raise ValueError(f"NestedTensor: {func} missing target shape")
 
-    if len(target) == source.dim() and all(guard_or_false(a == b) for a, b in zip(target, source.shape)):
+    if len(target) == source.dim() and all(statically_known_true(a == b) for a, b in zip(target, source.shape)):
         output = func(values, values.shape, **kwargs)
         if not raw_output:
             return source._packed_like_unchecked(output)
@@ -10364,6 +10419,7 @@ def clone(func, args, kwargs):
     binding = vars(source).get("_compile_ragged_extents")
     if binding is not None:
         result._ragged_extents = binding
+    result._exact_ragged_maxima = source._exact_ragged_maxima
     return source._inherit_tangent_metadata(result)
 
 
@@ -10643,12 +10699,20 @@ def _ternary_per_element(func, args, kwargs, ref):
 
 def _ternary_handler(func, args, kwargs):
     r"""Dispatch handler for ternary ops (where, addcmul, etc.) on packed _values."""
-    a, b, c = args[0], args[1], args[2]
+    # Tensor clamp permits either bound to be absent; native dispatch has
+    # already validated the arguments and only omits trailing None defaults.
+    a, b, c = (*args[:3], None, None)[:3]
     from .nested_tensor import NestedTensor
+    from .ops import _pointwise_tangent_frame
 
     sources = [x for x in (a, b, c) if isinstance(x, NestedTensor)]
     if not sources:
         return func(*args, **kwargs)
+    # A predicate supplies coordinates, not numerical values. In particular,
+    # native clamp backward must retain its data gradient's coordinate frame.
+    values = (b, c) if func.overloadpacket is aten.where else (a, b, c)
+    tangent_frame = _pointwise_tangent_frame(*values)
+    value_sources = [x for x in values if isinstance(x, NestedTensor)]
     first_ref = sources[0]
     for other in sources[1:]:
         if len(other) != len(first_ref):
@@ -10658,7 +10722,10 @@ def _ternary_handler(func, args, kwargs):
 
     resolved = None
     ref = first_ref
-    for candidate in sources:
+    candidates = [*value_sources, *sources]
+    if tangent_frame is not None:
+        candidates.insert(0, tangent_frame)
+    for candidate in candidates:
         candidate_values = tuple(_resolve_ternary_other(candidate, operand) for operand in (a, b, c))
         if all(value is not _UNRESOLVED for value in candidate_values):
             ref = candidate
@@ -10673,11 +10740,18 @@ def _ternary_handler(func, args, kwargs):
         return _ternary_per_element(func, args, kwargs, ref)
     va, vb, vc = resolved
     out_values = func(va, vb, vc, **kwargs)
+    if getattr(ref, "_is_aot_tangent", False) != (tangent_frame is not None):
+        # Classify a private layout before its autograd bridge publishes it.
+        # Never change a numerical input or inherit a predicate's role.
+        ref = ref._packed_like_unchecked_raw(ref._packed_values)
+        ref._is_aot_tangent = tangent_frame is not None
     if tuple(out_values.shape[1:]) == tuple(ref.values().shape[1:]):
-        return ref._packed_like_unchecked(out_values)
-    if out_values.dim() == ref.values().dim():
-        return _packed_with_static_tail_from_values(ref, out_values)
-    return _packed_with_tail_from_values(ref, out_values)
+        result = ref._packed_like_unchecked(out_values)
+    elif out_values.dim() == ref.values().dim():
+        result = _packed_with_static_tail_from_values(ref, out_values)
+    else:
+        result = _packed_with_tail_from_values(ref, out_values)
+    return result
 
 
 ATEN_TERNARY_OPS = [
@@ -10751,6 +10825,8 @@ _ATEN_HANDLER_TABLE: list[tuple] = [
     (aten.var.correction, _make_dim_reduction_handler(None, None, True)),
     # _elementwise_binary_handler
     *((op, _elementwise_binary_handler) for op in ATEN_BINARY_ELEMENTWISE_OPS),
+    (aten.clamp_min.Tensor, _elementwise_binary_handler),
+    (aten.clamp_max.Tensor, _elementwise_binary_handler),
     (torch.ops.prims.add.default, _elementwise_binary_handler),
     (torch.ops.prims.mul.default, _elementwise_binary_handler),
     # _elementwise_unary_handler
@@ -10781,6 +10857,7 @@ _ATEN_HANDLER_TABLE: list[tuple] = [
     *((op, _softmax_handler) for op in [aten._log_softmax.default, aten._softmax.default]),
     # _ternary_handler
     *((op, _ternary_handler) for op in ATEN_TERNARY_OPS),
+    (aten.clamp.Tensor, _ternary_handler),
 ]
 
 for _op, _handler in _ATEN_HANDLER_TABLE:

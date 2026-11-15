@@ -1139,22 +1139,172 @@ class TestNestedViewAlignment:
 
 class TestCompile:
 
-    @pytest.mark.parametrize("backend", ["eager", "aot_eager", "inductor"])
+    @pytest.mark.parametrize("backend", [None, "aot_eager"])
+    @pytest.mark.parametrize(
+        "kind,reverse,batch_first",
+        [
+            ("singleton", False, True),
+            ("matching", False, True),
+            ("matching", True, False),
+            ("shared", False, True),
+            ("shared", True, False),
+        ],
+    )
+    def test_retained_extent(self, device, backend, kind, reverse, batch_first):
+        def combine(lhs, rhs):
+            return lhs + rhs
+
+        parts = [torch.randn(3, 3, device=device, requires_grad=True) for _ in range(2)]
+        offsets, sizes = torch.tensor([0, 3, 6]), torch.tensor([[3, 3], [3, 3]])
+        outer = (2, 5, 3) if batch_first else (5, 2, 3)
+        source = NT.from_packed(
+            torch.cat(parts),
+            offsets,
+            sizes,
+            ragged_dims=(0,),
+            outer_size=outer,
+            batch_first=batch_first,
+        )
+        bias = torch.randn(1, 3, device=device, requires_grad=True)
+        if kind == "singleton":
+            other = NT([bias, bias], ragged_dims=(0,), batch_first=batch_first)
+        elif kind == "shared":
+            other = source.packed_like(bias.expand(6, 3))
+        else:
+            other = NT.from_packed(
+                bias.expand(6, 3),
+                offsets.clone(),
+                sizes.clone(),
+                ragged_dims=(0,),
+                outer_size=outer,
+                batch_first=batch_first,
+            )
+        torch.compiler.reset()
+        run = combine if backend is None else torch.compile(combine, backend=backend, fullgraph=True, dynamic=True)
+        try:
+            output = run(other, source) if reverse else run(source, other)
+            expected = torch.cat([part + bias for part in parts])
+            assert output.shape == ((2, 3, 3) if batch_first else (3, 2, 3))
+            assert output.batch_first == batch_first
+            torch.testing.assert_close(output.values(), expected)
+            probe = torch.randn_like(expected)
+            torch.testing.assert_close(
+                torch.autograd.grad(output.values(), (*parts, bias), probe),
+                torch.autograd.grad(expected, (*parts, bias), probe),
+            )
+        finally:
+            torch.compiler.reset()
+
+    @pytest.mark.parametrize(
+        "backend,inside", [(None, False), (None, True), ("eager", True), ("aot_eager", False), ("inductor", False)]
+    )
+    def test_metadata_mutation(self, device, backend, inside):
+        def mutate(source):
+            source.element_sizes()[:, 0].fill_(3)
+            source.packed_offsets().copy_(torch.tensor([0, 3, 6]))
+
+        def combine(lhs, rhs):
+            if inside:
+                mutate(lhs)
+            return lhs + rhs
+
+        source = NT([torch.arange(n * 3.0, device=device).reshape(n, 3) for n in (2, 4)], ragged_dims=(0,))
+        other = NT([torch.ones(1, 3, device=device) for _ in range(2)], ragged_dims=(0,))
+        torch.compiler.reset()
+        run = combine if backend is None else torch.compile(combine, backend=backend, fullgraph=True, dynamic=True)
+        try:
+            for maximum in ((3,) if inside else (4, 3)):
+                output = run(source, other)
+                assert output.shape == (2, maximum, 3)
+                torch.testing.assert_close(output.values(), source.values() + 1)
+                if not inside:
+                    mutate(source)
+            if not inside:
+                source.element_sizes()[:, 0].copy_(torch.tensor([2, 4]))
+                source.packed_offsets().copy_(torch.tensor([0, 2, 6]))
+
+                def restore(lhs, rhs):
+                    return (lhs + rhs).view(lhs.shape).values()
+
+                resumed = (
+                    restore
+                    if backend is None
+                    else torch.compile(restore, backend=backend, fullgraph=True, dynamic=True)
+                )
+                torch.testing.assert_close(resumed(source, other), source.values() + 1)
+        finally:
+            torch.compiler.reset()
+
+    @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+    @pytest.mark.parametrize("batch_first", [False, True])
+    @pytest.mark.parametrize("method", ["view", "reshape"])
+    def test_reference_shape(self, device, backend, batch_first, method):
+        def combine(lhs, rhs):
+            return getattr(lhs + rhs, method)(lhs.shape).values()
+
+        torch.compiler.reset()
+        run = torch.compile(combine, backend=backend, fullgraph=True, dynamic=True)
+        try:
+            for left, right in (
+                ((2, 4), (1, 4)),
+                ((3, 5), (3, 5)),
+                ((4, 2), (1, 2)),
+                ((0, 1), (1, 1)),
+                ((0, 1), (0, 1)),
+            ):
+                parts = [
+                    [torch.randn(n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in lengths]
+                    for lengths in (left, right)
+                ]
+                operands = [NT(group, ragged_dims=(0,), batch_first=batch_first) for group in parts]
+                operands = [
+                    NT.from_packed(
+                        source.values(),
+                        source.packed_offsets(),
+                        source.element_sizes(),
+                        ragged_dims=(0,),
+                        outer_size=source.shape,
+                        batch_first=batch_first,
+                        validate=False,
+                    )
+                    for source in operands
+                ]
+                expected = torch.cat([a + b for a, b in zip(*parts)])
+                torch.testing.assert_close(combine(*operands), expected)
+                output = run(*operands)
+                torch.testing.assert_close(output, expected)
+                leaves = tuple(part for group in parts for part in group)
+                probe = torch.randn_like(expected)
+                torch.testing.assert_close(
+                    torch.autograd.grad(output, leaves, probe), torch.autograd.grad(expected, leaves, probe)
+                )
+        finally:
+            torch.compiler.reset()
+
+    @pytest.mark.parametrize("backend", [None, "eager", "aot_eager", "inductor"])
     def test_independent_partitions(self, device, backend):
         def combine(lhs, rhs):
             return (lhs + rhs).sin()
 
         torch.compiler.reset()
-        compiled = torch.compile(combine, backend=backend, fullgraph=True, dynamic=True)
+        run = combine if backend is None else torch.compile(combine, backend=backend, fullgraph=True, dynamic=True)
         try:
-            for left, right in (((2, 4), (1, 4)), ((3, 5), (3, 5)), ((4, 2), (1, 2))):
+            for left, right in (
+                ((2, 4), (1, 4)),
+                ((3, 5), (3, 5)),
+                ((0, 1), (1, 0)),
+                ((0, 1), (1, 1)),
+                ((0, 1), (0, 1)),
+                ((4, 2), (1, 2)),
+            ):
                 parts = [
                     [torch.randn(n, 3, device=device, dtype=torch.float64, requires_grad=True) for n in lengths]
                     for lengths in (left, right)
                 ]
-                output = compiled(*(NT(group, ragged_dims=(0,)) for group in parts))
-                expected = torch.cat([(lhs + rhs).sin() for lhs, rhs in zip(*parts)])
-                assert output.shape == (2, max(*left, *right), 3)
+                output = run(*(NT(group, ragged_dims=(0,)) for group in parts))
+                expected = [(lhs + rhs).sin() for lhs, rhs in zip(*parts)]
+                assert output.shape == (2, max(part.shape[0] for part in expected), 3)
+                expected = torch.cat(expected)
                 torch.testing.assert_close(output.values(), expected)
                 leaves = tuple(part for group in parts for part in group)
                 probe = torch.randn_like(expected)
@@ -1162,6 +1312,30 @@ class TestCompile:
                     torch.autograd.grad(output.values(), leaves, probe),
                     torch.autograd.grad(expected, leaves, probe),
                 )
+        finally:
+            torch.compiler.reset()
+
+    @pytest.mark.parametrize("ragged_dims", [(0, 1), (1, 0)])
+    def test_empty_broadcast(self, device, ragged_dims):
+        def combine(lhs, rhs):
+            return (lhs + rhs).sin()
+
+        shapes = (((0, 2, 3), (1, 3, 3)), ((1, 2, 3), (1, 1, 3)))
+        parts = [
+            [torch.randn(shape, device=device, dtype=torch.double, requires_grad=True) for shape in side]
+            for side in shapes
+        ]
+        inputs = [NT(side, ragged_dims=ragged_dims) for side in parts]
+        torch.compiler.reset()
+        try:
+            output = torch.compile(combine, backend="inductor", fullgraph=True, dynamic=True)(*inputs).unbind()
+            expected = [(lhs + rhs).sin() for lhs, rhs in zip(*parts)]
+            torch.testing.assert_close(output, expected)
+            leaves = tuple(part for side in parts for part in side)
+            probes = [torch.randn_like(part) for part in expected]
+            torch.testing.assert_close(
+                torch.autograd.grad(output, leaves, probes), torch.autograd.grad(expected, leaves, probes)
+            )
         finally:
             torch.compiler.reset()
 
@@ -1267,8 +1441,89 @@ class TestCompile:
 
         assert_elements_close(output, [element + operand for element in elements])
 
+    @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("only_right", [True, False])
+    def test_partial_grad_frame(self, device, backend, batch_first, only_right):
+        def operation(left, right):
+            return (left + right).sin().view_as(left) + right + right
+
+        a = torch.randn(6, 3, device=device, dtype=torch.double, requires_grad=not only_right)
+        b = torch.randn(6, 3, device=device, dtype=torch.double, requires_grad=only_right)
+        outer = (2, 7, 3) if batch_first else (7, 2, 3)
+        x = NT.from_packed(
+            a,
+            torch.tensor([0, 2, 6]),
+            torch.tensor([[2, 3], [4, 3]]),
+            ragged_dims=(0,),
+            outer_size=outer,
+            batch_first=batch_first,
+        )
+        y = x.packed_like(b)
+        torch.compiler.reset()
+        try:
+            run = (
+                operation
+                if backend is None
+                else torch.compile(operation, backend=backend, fullgraph=True, dynamic=True)
+            )
+            output = run(x, y)
+            expected = (a + b).sin() + 2 * b
+            torch.testing.assert_close(output.values(), expected)
+            assert output.shape == ((2, 4, 3) if batch_first else (4, 2, 3))
+            nested, values = (y, b) if only_right else (x, a)
+            frame_grad, actual = torch.autograd.grad(output.values().square().sum(), (nested, values))
+            reference = torch.autograd.grad(expected.square().sum(), values)[0]
+            assert frame_grad.shape == outer
+            torch.testing.assert_close(frame_grad.values(), reference)
+            torch.testing.assert_close(actual, reference)
+            addition = (
+                torch.add
+                if backend is None
+                else torch.compile(torch.add, backend=backend, fullgraph=True, dynamic=True)
+            )
+            independent = addition(frame_grad, frame_grad.clone())
+            assert independent.shape == outer
+            torch.testing.assert_close(independent.values(), reference + reference)
+        finally:
+            torch.compiler.reset()
+
 
 class TestAutograd:
+
+    @pytest.mark.parametrize("operation", [torch.add, torch.mul])
+    @pytest.mark.parametrize("reverse", [False, True])
+    def test_pointwise_tangent_frame(self, device, operation, reverse):
+        values = torch.randn(6, 3, device=device, dtype=torch.double, requires_grad=True)
+        coefficient = torch.randn_like(values, requires_grad=True)
+        reference = values.detach().clone().requires_grad_()
+        reference_coefficient = coefficient.detach().clone().requires_grad_()
+        source = NT.from_packed(
+            values,
+            torch.tensor([0, 2, 6]),
+            torch.tensor([[2, 3], [4, 3]]),
+            ragged_dims=(0,),
+            outer_size=(2, 7, 3),
+        )
+        primal = source.packed_like(coefficient)
+        gradient = torch.autograd.grad(source.sin().sum(), source, create_graph=True)[0]
+        reference_gradient = torch.autograd.grad(reference.sin().sum(), reference, create_graph=True)[0]
+        output = operation(primal, gradient) if reverse else operation(gradient, primal)
+        expected = (
+            operation(reference_coefficient, reference_gradient)
+            if reverse
+            else operation(reference_gradient, reference_coefficient)
+        )
+        assert output.shape == source.shape
+        torch.testing.assert_close(output.values(), expected)
+        probe = torch.randn_like(expected)
+        torch.testing.assert_close(
+            torch.autograd.grad(output.values(), (values, coefficient), probe),
+            torch.autograd.grad(expected, (reference, reference_coefficient), probe),
+        )
+        ordinary = operation(primal, source) if reverse else operation(source, primal)
+        assert ordinary.shape == (2, 4, 3)
+        torch.testing.assert_close(ordinary.values(), operation(values, coefficient))
 
     def test_dense_operand_gradient_matches_per_element_reference(self):
         leaves = [torch.randn(3, length, 5, requires_grad=True) for length in (2, 4)]

@@ -1473,7 +1473,7 @@ def _binary_single_element_nested_broadcast(
     return _packed_with_static_tail_from_values(target, packed_result)
 
 
-def _needs_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor) -> bool:
+def _needs_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor, *, preserve_frame: bool = False) -> bool:
     r"""Choose joint coordinates before directional paths can assert equal offsets."""
     from .aten_functions import _is_fake_tensor
 
@@ -1485,7 +1485,7 @@ def _needs_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor) -> bool:
     ):
         return False
     # Keep the specialized Cartesian product for complementary singleton axes.
-    if (
+    if not preserve_frame and (
         _complementary_singleton_square_operands(lhs, rhs, allow_static_prefix=True, require_matching_lengths=False)
         is not None
     ):
@@ -1501,8 +1501,12 @@ def _needs_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor) -> bool:
     return not lhs._has_same_structure(rhs)
 
 
-def _binary_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor, op, extra_args, extra_kwargs):
+def _binary_joint_ragged_broadcast(
+    lhs: NestedTensor, rhs: NestedTensor, op, extra_args, extra_kwargs, *, logical_frame=None
+):
     r"""Broadcast both packed inputs over the union of their ragged coordinates."""
+    from torch.fx.experimental.symbolic_shapes import statically_known_true
+
     from .aten_functions import _tensor_backed_ragged_offsets
     from .nested_tensor import _layout_scalar
 
@@ -1557,10 +1561,15 @@ def _binary_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor, op, ext
     local = torch.arange(rows, device=device) - offsets.to(device=device)[batch]
     shape_device = physical_shape.to(device=device)
     coordinates: dict[int, Tensor] = {}
-    for dim in reversed(ragged_dims):
-        width = shape_device[:, dim].index_select(0, batch)
+    for dim in reversed(ragged_dims[1:]):
+        # Existing packed rows always have positive radices. Extend the
+        # empty coordinate domain with radix one, including inactive lanes
+        # of a native vectorized gather, before integer division.
+        width = shape_device[:, dim].index_select(0, batch).clamp_min(1)
         coordinates[dim] = local.remainder(width)
         local = torch.div(local, width, rounding_mode="floor")
+    # The leading coordinate is the remaining quotient, already in range.
+    coordinates[ragged_dims[0]] = local
 
     def aligned_values(source):
         source_shape = source._physical_shape.to(device=device)
@@ -1587,28 +1596,41 @@ def _binary_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor, op, ext
         return values.permute(order)
 
     values = op(aligned_values(lhs), aligned_values(rhs), *extra_args, **extra_kwargs)
-    # For nonzero extents the maximum wins; zero broadcast with one stays
-    # zero. The factor is bounded by one, avoiding an intermediate overflow.
-    logical_extents = tuple(
-        torch.sym_max(left, right) * torch.sym_min(torch.sym_min(left, right), 1)
-        for left, right in zip(lhs._max_physical_dims(), rhs._max_physical_dims())
-    )
-    # Bind derived ragged maxima once at their geometry-producing operation.
-    # Conditional consumers need scalar symbols rather than expressions whose
-    # free symbols may belong to a different generated subgraph's scope.
-    logical_extents = tuple(
-        (
-            _layout_scalar(torch.scalar_tensor(extent, dtype=torch.int64, device="cpu"))
-            if dim in ragged_dims and isinstance(extent, torch.SymInt)
-            else extent
-        )
-        for dim, extent in enumerate(logical_extents)
-    )
-    if len(lhs) == 0:
-        # There are no shape rows to validate retained extents for an empty batch.
-        for left, right in zip(lhs._max_physical_dims(), rhs._max_physical_dims()):
-            if not _broadcast_condition_matches((left == right) | (left == 1) | (right == 1), lhs, rhs):
-                raise ValueError("Empty NestedTensor operands have incompatible retained logical extents")
+    if logical_frame is not None:
+        # Native pointwise owners retain their input coordinate canvas.
+        # The packed sample domain can be smaller than that logical capacity.
+        logical_extents = logical_frame._max_physical_dims()
+    else:
+        # Static axes and empty batches retain their broadcast logical extents.
+        # The factor is bounded by one, avoiding an intermediate overflow.
+        lhs_extents, rhs_extents = lhs._max_physical_dims(), rhs._max_physical_dims()
+        logical_extents = [
+            torch.sym_max(left, right) * torch.sym_min(torch.sym_min(left, right), 1)
+            for left, right in zip(lhs_extents, rhs_extents)
+        ]
+        if len(lhs):
+            # Broadcasting operand maxima loses the sample pairing, e.g. lengths
+            # (0, 1) and (1, 0) produce two empty samples, not a maximum of one.
+            for dim in ragged_dims:
+                maximum = torch.sym_max(lhs_extents[dim], rhs_extents[dim])
+                # A non-singleton extent must survive every valid broadcast.
+                # Retaining its expression preserves known axis equalities.
+                if not (lhs._exact_ragged_maxima and rhs._exact_ragged_maxima and statically_known_true(maximum > 1)):
+                    if element_shapes is None:
+                        maximum = _layout_scalar(physical_shape[:, dim].amax())
+                        torch._check(maximum >= 0)
+                    else:
+                        maximum = max(shape[dim] for shape in element_shapes)
+                logical_extents[dim] = maximum
+        else:
+            # There are no shape rows to validate retained extents for an empty batch.
+            for left, right in zip(lhs_extents, rhs_extents):
+                if not _broadcast_condition_matches((left == right) | (left == 1) | (right == 1), lhs, rhs):
+                    raise ValueError("Empty NestedTensor operands have incompatible retained logical extents")
+            for dim in ragged_dims:
+                extent = logical_extents[dim]
+                if isinstance(extent, torch.SymInt):
+                    logical_extents[dim] = _layout_scalar(torch.scalar_tensor(extent, dtype=torch.int64, device="cpu"))
     ragged_offsets = known_ragged_offsets
     if ragged_offsets is None:
         ragged_offsets = (
@@ -1633,11 +1655,100 @@ def _binary_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor, op, ext
         materialize_python_metadata=False,
         validate=False,
     )
+    result._exact_ragged_maxima = logical_frame is None and bool(len(lhs))
+    if logical_frame is not None:
+        logical_frame._inherit_tangent_metadata(result)
     result._ragged_extents = result._new_ragged_extents()
     return result._packed_like_unchecked(values)
 
 
-def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
+def _pointwise_common_frame(*operands, tangent_only=False):
+    r"""Find the common NT canvas, preferring a marked operand when present."""
+    from torch.fx.experimental.symbolic_shapes import guard_or_false
+
+    from .nested_tensor import NestedTensor
+
+    frame = None
+    for operand in operands:
+        if isinstance(operand, NestedTensor):
+            if frame is None:
+                frame = operand
+            if getattr(operand, "_is_aot_tangent", False):
+                frame = operand
+                break
+    if frame is None or (tangent_only and not getattr(frame, "_is_aot_tangent", False)):
+        return None
+    for operand in operands:
+        if not isinstance(operand, NestedTensor):
+            continue
+        if (
+            operand.batch_first != frame.batch_first
+            or len(operand._logical_shape) != len(frame._logical_shape)
+            or not all(
+                guard_or_false(left == right) for left, right in zip(operand._logical_shape, frame._logical_shape)
+            )
+        ):
+            return None
+    return frame
+
+
+def _pointwise_tangent_frame(*operands):
+    r"""Find a marked NT's common canvas; callers resolve operand broadcasting."""
+    return _pointwise_common_frame(*operands, tangent_only=True)
+
+
+def _finalize_binary_result(input, other, result):
+    r"""Canonicalize public value geometry above the native autograd owner."""
+    from .nested_tensor import NestedTensor, _layout_scalar
+
+    if (
+        not isinstance(input, NestedTensor)
+        or not isinstance(other, NestedTensor)
+        or not isinstance(result, NestedTensor)
+        or _pointwise_tangent_frame(input, other) is not None
+        or not len(result)
+        or not result._ragged_dims
+        or result._exact_ragged_maxima
+    ):
+        return result
+    physical = list(result._max_physical_dims())
+    for axis in result._ragged_dims:
+        physical[axis] = _layout_scalar(result._physical_shape[:, axis].amax())
+        torch._check(physical[axis] >= 0)
+    values = result.values()
+    output = type(result)._from_packed_raw(
+        values,
+        result._offsets,
+        result._physical_shape,
+        permutation=result._permutation,
+        ragged_dims=result._ragged_dims,
+        ragged_offsets=result._persistent_ragged_offsets(),
+        batch_first=result.batch_first,
+        padding_value=result.padding_value,
+        mask_value=result.mask_value,
+        pin_memory=result._pin_memory,
+        outer_size=result._logical_shape_from_physical_dims(physical),
+        packed_sizes=result._packed_sizes,
+        element_shapes=result._element_shapes,
+        validate=False,
+    )
+    output._exact_ragged_maxima = True
+    output._ragged_extents = output._new_ragged_extents()
+    return output._packed_like_unchecked(values)
+
+
+def _binary_op_maybe_tensor(input, other, op, *extra_args, _native_owner=False, **extra_kwargs):
+    r"""Keep native owner coordinates, then finalize public packed results."""
+    from .nested_tensor import NestedTensor
+
+    logical_frame = _pointwise_common_frame(input, other) if _native_owner else _pointwise_tangent_frame(input, other)
+    result = _binary_op_maybe_tensor_impl(input, other, op, *extra_args, logical_frame=logical_frame, **extra_kwargs)
+    if isinstance(input, NestedTensor) and isinstance(other, NestedTensor) and isinstance(result, NestedTensor):
+        result._is_aot_tangent = logical_frame is not None and getattr(logical_frame, "_is_aot_tangent", False)
+    return result if _native_owner else _finalize_binary_result(input, other, result)
+
+
+def _binary_op_maybe_tensor_impl(input, other, op, *extra_args, logical_frame=None, **extra_kwargs):
     r"""
     Apply a binary op between a NestedTensor and a tensor/scalar/NestedTensor.
 
@@ -1739,9 +1850,9 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
             raise ValueError(
                 "NestedTensor batch length mismatch between input and other: " f"input={len(input)}, other={len(other)}"
             )
-        if _needs_joint_ragged_broadcast(input, other):
+        if _needs_joint_ragged_broadcast(input, other, preserve_frame=logical_frame is not None):
             lhs, rhs = (other, input) if reverse else (input, other)
-            return _binary_joint_ragged_broadcast(lhs, rhs, op, extra_args, extra_kwargs)
+            return _binary_joint_ragged_broadcast(lhs, rhs, op, extra_args, extra_kwargs, logical_frame=logical_frame)
         # Retained singleton ragged dimensions are compatible broadcasts, not
         # equal topologies. Route them before _has_same_structure can add an
         # equality assertion for tensor-backed offsets in a compiled graph.
@@ -1765,7 +1876,8 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
             # metadata is reused as-is -- a single ``torch.Size`` comparison, no rebuild. Only when the
             # trailing (non-ragged) dims actually broadcast -- e.g. (N,1,5,1,3) - (N,K,1,5,3) -> (N,K,5,5,3)
             # -- is the tail re-derived, rather than silently copying the left operand's element shape.
-            return _rebuild_from(input, new_values, input_values)
+            reference = input if logical_frame is None else logical_frame
+            return _rebuild_from(reference, new_values, reference._packed_values)
 
         # Independent partitions may coincide on this batch and differ on the
         # next. Do not install the square path's equality assertion just to

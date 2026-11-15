@@ -6747,6 +6747,43 @@ class TestSegmentedComposition:
 
 class TestUnaryBinaryMath:
 
+    @pytest.mark.parametrize(
+        "operation",
+        [
+            torch.add,
+            torch.mul,
+            lambda left, right: torch.ops.aten.mul.Tensor(self=left, other=right),
+            lambda left, right: torch.ops.aten.mul(self=left, other=right),
+        ],
+        ids=["add", "mul", "overload", "packet"],
+    )
+    def test_retained_leaf_gradients(self, device, operation):
+        payload = torch.randn(6, 3, dtype=torch.double, device=device)
+        source = NT.from_packed(
+            payload,
+            torch.tensor([0, 2, 6]),
+            torch.tensor([[2, 3], [4, 3]]),
+            ragged_dims=(0,),
+            outer_size=(2, 7, 3),
+        ).requires_grad_()
+        other = source.packed_like(torch.randn_like(payload)).detach().requires_grad_()
+        references = tuple(value.tensor.detach().requires_grad_() for value in (source, other))
+        output = operation(source, other)
+        expected = operation(*references)
+        assert output.shape == (2, 4, 3)
+        actual_grad = torch.autograd.grad(output.values().square().sum(), (source, other), create_graph=True)
+        expected_grad = torch.autograd.grad(expected.square().sum(), references, create_graph=True)
+        for actual, reference in zip(actual_grad, expected_grad):
+            assert actual.shape == source.shape
+            assert_close(actual.tensor, reference)
+        actual_second = torch.autograd.grad(
+            sum(value.values().square().sum() for value in actual_grad), (source, other)
+        )
+        expected_second = torch.autograd.grad(sum(value.square().sum() for value in expected_grad), references)
+        for actual, reference in zip(actual_second, expected_second):
+            assert actual.shape == source.shape
+            assert_close(actual.tensor, reference)
+
     def test_unary_tensor_method_values_and_vjp(self):
         template = NestedTensor(
             [torch.empty(2, 2, 4), torch.empty(3, 3, 4)],
@@ -6892,6 +6929,56 @@ class TestUnaryBinaryMath:
         output = torch.clamp_max(nt, 0.0)
         reference = NT([torch.clamp_max(t, 0.0) for t in nt], **reference_options(nt))
         assert_close(output, reference)
+
+    @pytest.mark.parametrize("backend", [None, "aot_eager"])
+    @pytest.mark.parametrize("rows", [(1, 1), (2, 4)])
+    @pytest.mark.parametrize(
+        "operation,limits",
+        [
+            (torch.clamp, (-0.5, 0.5)),
+            (torch.clamp, (-0.5, None)),
+            (torch.clamp, (None, 0.5)),
+            (torch.clamp_min, (-0.5,)),
+            (torch.clamp_max, (0.5,)),
+        ],
+    )
+    def test_clamp_nested_gradients(self, device, operation, limits, rows, backend):
+        torch.compiler.reset()
+
+        def wrap(data, lengths, capacity):
+            return NT.from_packed(
+                data,
+                torch.tensor([0, lengths[0], sum(lengths)]),
+                torch.tensor([[length, 6] for length in lengths]),
+                ragged_dims=(0,),
+                outer_size=(2, capacity, 6),
+            )
+
+        def apply(source, bound):
+            return operation(source, *(None if limit is None else bound + limit for limit in limits))
+
+        values = torch.linspace(-1, 2, 36, device=device, dtype=torch.double).reshape(6, 6).requires_grad_()
+        bounds = torch.full((sum(rows), 6), 0.25, device=device, dtype=torch.double, requires_grad=True)
+        reference = values.detach().clone().requires_grad_()
+        reference_bound = bounds.detach().clone().requires_grad_()
+        source, bound = wrap(values, (2, 4), 7), wrap(bounds, rows, max(rows))
+        run = apply if backend is None else torch.compile(apply, backend=backend, fullgraph=True, dynamic=True)
+        output = run(source, bound)
+        expected = torch.cat([apply(x, b) for x, b in zip(reference.split((2, 4)), reference_bound.split(rows))])
+        assert_close(output.values(), expected)
+        gradients = torch.autograd.grad(output.values().square().sum(), (source, bound), create_graph=backend is None)
+        expected_gradients = torch.autograd.grad(
+            expected.square().sum(), (reference, reference_bound), create_graph=backend is None
+        )
+        assert tuple(gradient.shape for gradient in gradients) == (source.shape, bound.shape)
+        assert_close(tuple(gradient.values() for gradient in gradients), expected_gradients)
+        if backend is None:
+            assert_close(
+                torch.autograd.grad(sum(gradient.values().square().sum() for gradient in gradients), (values, bounds)),
+                torch.autograd.grad(
+                    sum(gradient.square().sum() for gradient in expected_gradients), (reference, reference_bound)
+                ),
+            )
 
     def test_isfinite_isnan_nan_to_num(self, device, float_dtype):
         nt = NestedTensor(
