@@ -1588,10 +1588,21 @@ def _binary_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor, op, ext
 
     values = op(aligned_values(lhs), aligned_values(rhs), *extra_args, **extra_kwargs)
     # For nonzero extents the maximum wins; zero broadcast with one stays
-    # zero. This expression also handles unbacked sizes without a value guard.
+    # zero. The factor is bounded by one, avoiding an intermediate overflow.
     logical_extents = tuple(
-        torch.sym_min(torch.sym_max(left, right), left * right)
+        torch.sym_max(left, right) * torch.sym_min(torch.sym_min(left, right), 1)
         for left, right in zip(lhs._max_physical_dims(), rhs._max_physical_dims())
+    )
+    # Bind derived ragged maxima once at their geometry-producing operation.
+    # Conditional consumers need scalar symbols rather than expressions whose
+    # free symbols may belong to a different generated subgraph's scope.
+    logical_extents = tuple(
+        (
+            _layout_scalar(torch.scalar_tensor(extent, dtype=torch.int64, device="cpu"))
+            if dim in ragged_dims and isinstance(extent, torch.SymInt)
+            else extent
+        )
+        for dim, extent in enumerate(logical_extents)
     )
     if len(lhs) == 0:
         # There are no shape rows to validate retained extents for an empty batch.
@@ -1622,6 +1633,7 @@ def _binary_joint_ragged_broadcast(lhs: NestedTensor, rhs: NestedTensor, op, ext
         materialize_python_metadata=False,
         validate=False,
     )
+    result._ragged_extents = result._new_ragged_extents()
     return result._packed_like_unchecked(values)
 
 
@@ -1648,9 +1660,16 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
     def _rebuild_from(reference, values, reference_values):
         if values.shape[1:] != reference_values.shape[1:]:
             if values.dim() == reference_values.dim():
-                return _packed_with_static_tail_from_values(reference, values)
-            return _packed_with_tail_from_values(reference, values)
-        return reference._packed_like_unchecked(values)
+                result = _packed_with_static_tail_from_values(reference, values)
+            else:
+                result = _packed_with_tail_from_values(reference, values)
+        else:
+            result = reference._packed_like_unchecked(values)
+        if isinstance(other, NestedTensor) and input._ragged_dims and not input._same_row_splits(other):
+            # Eager replay may resolve independent partitions through a fast
+            # path after tracing a joint broadcast. Keep its geometry child.
+            result._ragged_extents = result._new_ragged_extents()
+        return result
 
     def _rebuild(values, reference_values):
         return _rebuild_from(input, values, reference_values)
@@ -1746,9 +1765,7 @@ def _binary_op_maybe_tensor(input, other, op, *extra_args, **extra_kwargs):
             # metadata is reused as-is -- a single ``torch.Size`` comparison, no rebuild. Only when the
             # trailing (non-ragged) dims actually broadcast -- e.g. (N,1,5,1,3) - (N,K,1,5,3) -> (N,K,5,5,3)
             # -- is the tail re-derived, rather than silently copying the left operand's element shape.
-            if new_values.shape[1:] == input_values.shape[1:]:
-                return input._packed_like_unchecked(new_values)
-            return _packed_with_static_tail_from_values(input, new_values)
+            return _rebuild_from(input, new_values, input_values)
 
         # Independent partitions may coincide on this batch and differ on the
         # next. Do not install the square path's equality assertion just to

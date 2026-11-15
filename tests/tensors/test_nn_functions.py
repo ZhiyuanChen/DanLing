@@ -2926,15 +2926,16 @@ class TestScaledDotProductAttention:
             pytest.skip("BF16 CUDA attention")
         torch.compiler.reset()
 
-        def attention(query, key, value):
-            output = F.scaled_dot_product_attention(query[:, :, 1:, :], key, value, dropout_p=0.25)
+        def attention(query, key, value, query_add, key_add):
+            query = (query + query_add)[:, :, 1:, :]
+            output = F.scaled_dot_product_attention(query, key + key_add, value, dropout_p=0.25)
             return F.scaled_dot_product_attention(output, output.detach(), output.detach(), dropout_p=0.25)
 
         run = torch.compile(attention, backend=backend, dynamic=True, fullgraph=True)
         for lengths in ((0, 1), (4, 6), (0, 1)):
             groups = [
                 [torch.randn(2, n, 64, device=device, dtype=torch.bfloat16, requires_grad=True) for n in lens]
-                for lens in (lengths, (3, 5), (3, 5))
+                for lens in (lengths, (3, 5), (3, 5), lengths, (3, 5))
             ]
             references = [[part.detach().clone().requires_grad_() for part in group] for group in groups]
             inputs = [NT(group, ragged_dims=(1,)) for group in groups]

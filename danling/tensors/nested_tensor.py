@@ -516,7 +516,7 @@ class NestedTensor(torch.Tensor):
     _view_ops: tuple[tuple[str, tuple], ...]
     _VIEW_BINDING_PREFIX = "_view_binding_"
     _RAGGED_OFFSETS_PREFIX = "_ragged_offsets_"
-    _AOT_CACHE_HASH_VERSION = 13
+    _AOT_CACHE_HASH_VERSION = 14
 
     # Construction & Initialization
 
