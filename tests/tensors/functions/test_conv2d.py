@@ -283,6 +283,32 @@ class TestConvolution:
             )
             torch.testing.assert_close(actual_gradients, reference_gradients, atol=atol, rtol=rtol)
 
+    def test_dynamic_reuse(self, device):
+        torch.compiler.reset()
+
+        def convolve(source, weight):
+            return F.conv2d(source, weight, stride=16)
+
+        operation = torch.compile(convolve, backend="aot_eager", fullgraph=True, dynamic=True)
+        with torch._dynamo.config.patch(error_on_recompile=True):
+            for height in (64, 80):
+                parts = [
+                    torch.randn(3, h, w, device=device, dtype=torch.float64, requires_grad=True)
+                    for h, w in ((height, 48), (32, 32))
+                ]
+                weight = torch.randn(8, 3, 16, 16, device=device, dtype=torch.float64, requires_grad=True)
+                references = [part.detach().clone().requires_grad_() for part in parts]
+                reference_weight = weight.detach().clone().requires_grad_()
+                actual = operation(NT(parts, ragged_dims=(1, 2)), weight).values()
+                expected = torch.cat(
+                    [convolve(part, reference_weight).movedim(0, -1).reshape(-1, 8) for part in references]
+                )
+                torch.testing.assert_close(actual, expected)
+                torch.testing.assert_close(
+                    torch.autograd.grad(actual.sum(), (*parts, weight)),
+                    torch.autograd.grad(expected.sum(), (*references, reference_weight)),
+                )
+
     @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
     def test_composed(self, device, tolerances, backend):
         torch.compiler.reset()

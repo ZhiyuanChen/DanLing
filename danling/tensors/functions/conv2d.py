@@ -312,7 +312,12 @@ def _packed_spatial_conv2d(input, weight, bias, stride, padding, dilation, group
     effective_w = dilation[1] * (kernel_w - 1)
     extra_h = max(before[0] + after[0] - effective_h + stride[0] - 1, 0)
     extra_w = max(before[1] + after[1] - effective_w + stride[1] - 1, 0)
-    tile_shape = spatial.new_tensor((tile_h, tile_w))
+    tile_shape = torch.stack(
+        (
+            torch.scalar_tensor(tile_h, dtype=spatial.dtype, device=spatial.device),
+            torch.scalar_tensor(tile_w, dtype=spatial.dtype, device=spatial.device),
+        )
+    )
     tile_grid = torch.div(output_spatial + tile_shape - 1, tile_shape, rounding_mode="floor")
     tile_counts = tile_grid.prod(1)
     tile_offsets = torch.cat((tile_counts.new_zeros(1), tile_counts.cumsum(0)))
