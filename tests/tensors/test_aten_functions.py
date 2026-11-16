@@ -1060,11 +1060,15 @@ class TestElementwiseOps:
         assert_close(output.values(), expected)
         inputs = (source, *(bound for bound in bounds if bound is not None))
         reference_inputs = (reference, *(bound for bound in reference_bounds if bound is not None))
-        gradients = torch.autograd.grad(output.values().square().sum(), inputs)
-        expected_gradients = torch.autograd.grad(expected.square().sum(), reference_inputs)
+        gradients = torch.autograd.grad(output.values().square().sum(), inputs, create_graph=True)
+        expected_gradients = torch.autograd.grad(expected.square().sum(), reference_inputs, create_graph=True)
         assert gradients[0].shape == source.shape
         actual_gradients = (gradients[0].values(), *gradients[1:])
         assert_close(actual_gradients, expected_gradients)
+        assert_close(
+            torch.autograd.grad(sum(gradient.square().sum() for gradient in actual_gradients), (values, *inputs[1:])),
+            torch.autograd.grad(sum(gradient.square().sum() for gradient in expected_gradients), reference_inputs),
+        )
 
     @pytest.mark.parametrize("batch_first", [True, False])
     @pytest.mark.parametrize("requires_grad", [False, True])

@@ -1378,7 +1378,11 @@ def _masked_fill_handler(func, args, kwargs):
 
     source, mask, value = args[0], args[1], args[2]
     if not isinstance(source, NestedTensor) and isinstance(mask, NestedTensor):
-        return _plain_filled_by_nested_mask(source, mask, value, func, kwargs)
+        # Exact dense inputs already share the mask's retained coordinate frame.
+        aligned = mask._maybe_exact_shape_nested_like(source)
+        if aligned is None:
+            return _plain_filled_by_nested_mask(source, mask, value, func, kwargs)
+        source = aligned
     if isinstance(mask, NestedTensor) and _packed_masked_fill_supported(source, mask):
         return source._packed_like_unchecked(func(source.values(), mask.values(), value, **kwargs))
     aligned = source._maybe_exact_shape_nested_like(mask)

@@ -3013,6 +3013,37 @@ class TestIndexingWriteOps:
         output = torch.masked_fill(nt, mask, tensor_value)
         assert_close(output, reference)
 
+    @pytest.mark.parametrize("entrypoint", ["namespace", "method", "aten", "packet"])
+    @pytest.mark.parametrize("tensor_value", [False, True])
+    def test_masked_fill_dense_gradient(self, device, entrypoint, tensor_value):
+        source = torch.ones(2, 7, 3, device=device, dtype=torch.double, requires_grad=True)
+        reference = source.detach().clone().requires_grad_()
+        mask = NT.from_packed(
+            torch.zeros(6, 3, device=device, dtype=torch.bool),
+            torch.tensor([0, 2, 6]),
+            torch.tensor([[2, 3], [4, 3]]),
+            ragged_dims=(0,),
+            outer_size=(2, 7, 3),
+            padding_value=False,
+        )
+        value = torch.tensor(-0.5, device=device, dtype=torch.double) if tensor_value else -0.5
+        if entrypoint == "namespace":
+            output = torch.masked_fill(source, mask, value)
+        elif entrypoint == "method":
+            output = source.masked_fill(mask, value)
+        elif entrypoint == "aten":
+            operation = torch.ops.aten.masked_fill.Tensor if tensor_value else torch.ops.aten.masked_fill.Scalar
+            output = operation(source, mask, value)
+        else:
+            output = torch.ops.aten.masked_fill(source, mask, value)
+        expected = torch.cat((reference[0, :2], reference[1, :4]))
+        assert_close(output.values(), expected)
+        gradient = torch.autograd.grad(output.values().sum(), source)[0]
+        expected_gradient = torch.autograd.grad(expected.sum(), reference)[0]
+        assert type(gradient) is torch.Tensor
+        assert_close(gradient, expected_gradient)
+        assert_close(gradient.mean(), expected_gradient.mean())
+
     def test_masked_fill_broadcast_mask(self, device, float_dtype):
         nt = NT(
             [

@@ -2982,6 +2982,13 @@ def masked_fill(input: NestedTensor, mask, value):
     return input.nested_like(torch.masked_fill(padded, mask.to(device=padded.device), value))
 
 
+@NestedTensorFuncRegistry.implement(torch.Tensor.masked_fill, compile_safe=True)
+def _packed_masked_fill(input, mask, value):
+    r"""Project each input before native autograd owns the packed masked fill."""
+    operation = torch.ops.aten.masked_fill.Tensor if isinstance(value, Tensor) else torch.ops.aten.masked_fill.Scalar
+    return NestedTensorAtenRegistry[operation](operation, (input, mask, value), {})
+
+
 @NestedTensorFuncRegistry.implement(torch.masked_scatter)
 def masked_scatter(input: NestedTensor, mask, source):
     r"""
@@ -7703,6 +7710,8 @@ _PACKED_ATEN_POINTWISE_OPS = tuple(
     for packet in (torch.ops.aten.clamp, torch.ops.aten.clamp_min, torch.ops.aten.clamp_max)
     for operation in (packet.default, packet.Tensor)
 ) + (
+    torch.ops.aten.masked_fill.Scalar,
+    torch.ops.aten.masked_fill.Tensor,
     torch.ops.aten.hardtanh_backward.default,
     torch.ops.aten.elu_backward.default,
 )
