@@ -900,6 +900,27 @@ class TestAutogradViewLifetime:
         (gradient,) = torch.autograd.grad(output, source, cotangent)
         torch.testing.assert_close(gradient.unbind(), [weight.view(shape) for weight, shape in zip(weights, shapes)])
 
+    @pytest.mark.parametrize("batch_first", [True, False])
+    def test_view_cotangent_derivatives(self, device, batch_first):
+        values = torch.randn(6, 6, device=device, dtype=torch.double, requires_grad=True)
+        probe = torch.randn(6, 2, 3, device=device, dtype=torch.double, requires_grad=True)
+        reference = values.detach().clone().requires_grad_()
+        reference_probe = probe.detach().clone().requires_grad_()
+        source = NT(values.split((2, 4)), ragged_dims=(0,), batch_first=batch_first)
+        cotangent = NT(probe.split((2, 4)), ragged_dims=(0,), batch_first=batch_first)
+        target = (2, -1, 2, 3) if batch_first else (-1, 2, 2, 3)
+
+        output = source.sin().view(target)
+        expected = reference.sin().view(6, 2, 3)
+        gradient = torch.autograd.grad(output, values, cotangent, create_graph=True)[0]
+        reference_gradient = torch.autograd.grad(expected, reference, reference_probe, create_graph=True)[0]
+        assert_close(output.values(), expected)
+        assert_close(gradient, reference_gradient)
+        assert_close(
+            torch.autograd.grad(gradient.square().sum(), (values, probe)),
+            torch.autograd.grad(reference_gradient.square().sum(), (reference, reference_probe)),
+        )
+
     @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
     @pytest.mark.parametrize("width", [1, 2])
     @pytest.mark.parametrize("batch_first", [True, False])

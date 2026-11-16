@@ -36,6 +36,7 @@ import math
 import operator
 import weakref
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -1028,21 +1029,22 @@ class NestedTensor(torch.Tensor):
 
     def _persistent_ragged_offsets(self) -> tuple[Tensor, ...] | None:
         r"""Return tensor-backed row splits when this instance owns a complete topology."""
-        if any(
-            getattr(self, name, None) is None
-            for name in ("_offsets", "_permutation", "_ragged_dims", "_ragged_dims_explicit")
-        ):
+        offsets = getattr(self, "_offsets", None)
+        permutation = getattr(self, "_permutation", None)
+        ragged_dims = getattr(self, "_ragged_dims", None)
+        explicit = getattr(self, "_ragged_dims_explicit", None)
+        if offsets is None or permutation is None or ragged_dims is None or explicit is None:
             return None
-        declared_ragged_dims = self._ragged_dims if self._ragged_dims_explicit else None
-        if not type(self)._is_tensor_backed_layout(self._permutation, declared_ragged_dims):
+        if not type(self)._is_tensor_backed_layout(permutation, ragged_dims if explicit else None):
             return None
-        if self._ragged_rank == 1:
+        ragged_rank = len(ragged_dims)
+        if ragged_rank == 1:
             # Every explicit single-ragged layout is already packed with that ragged
             # dimension first. Its row splits and physical-shape tensor completely
             # describe the topology, including the ordinary leading-ragged case. Do not
             # retain legacy per-element Python shape caches in the compile contract.
-            return (self._offsets,)
-        names = type(self)._ragged_offset_names(self._ragged_rank)
+            return (offsets,)
+        names = type(self)._ragged_offset_names(ragged_rank)
         offsets = tuple(getattr(self, name, None) for name in names)
         if any(offset is None for offset in offsets):
             return None
@@ -1850,7 +1852,10 @@ class NestedTensor(torch.Tensor):
         r"""Return a token only for real metadata with observable mutations."""
         from torch._subclasses.fake_tensor import FakeTensor
 
-        metadata = (self._offsets, self._physical_shape, *(self._persistent_ragged_offsets() or ()))
+        splits = self._persistent_ragged_offsets()
+        metadata = (self._offsets, self._physical_shape)
+        if splits is not None and not (len(splits) == 1 and splits[0] is self._offsets):
+            metadata += splits
         if any(isinstance(tensor, FakeTensor) or tensor.is_inference() for tensor in metadata):
             return None
         return tuple(self._cache_version(tensor) for tensor in metadata)
@@ -2297,9 +2302,11 @@ class NestedTensor(torch.Tensor):
             factory = torch._C._functorch.get_unwrapped(factory)
         if _detect_infra_mode(torch._C._TorchDispatchModeKey.FUNCTIONAL) is None:
             factory = mb_unwrap_functional_tensor(factory)
-        with torch.inference_mode(False):
+        with torch.inference_mode(False) if torch.is_inference_mode_enabled() else nullcontext():
             binding = factory.new_empty_strided((0, *values.shape), (0,) * (values.dim() + 1))
-            self._packed_shape = _PackedShape(binding)
+            # The native factory already constructs this exact geometry. Keep
+            # validation in the setter for externally supplied ABI children.
+            self._packed_shape_binding = _PackedShape(binding)
 
     @property
     def _packed_shape(self):
@@ -4642,7 +4649,7 @@ class NestedTensor(torch.Tensor):
         result._exact_ragged_maxima = self._exact_ragged_maxima
         self._inherit_tangent_metadata(result)
         if _is_compiling() or _needs_packed_bridge(packed_values):
-            result = result._packed_like_unchecked(packed_values)
+            result = result._packed_like_unchecked(packed_values, reuse_wrapper=True)
             if not _is_compiling():
                 result._mark_tensor_backed_dynamic_dims()
         return result
@@ -7154,7 +7161,7 @@ class _PackedLikeAutograd(torch.autograd.Function):
         result = reference if structure.reuse_wrapper else reference._packed_like_unchecked_raw(packed_values)
         if structure.logical_input:
             object.__setattr__(result, "_logical_input", True)
-        if max_length_binding is not None:
+        if max_length_binding is not None and vars(result).get("_compile_ragged_extents") is not max_length_binding:
             result._ragged_extents = max_length_binding
         if structure.mark_dynamic:
             result._mark_tensor_backed_dynamic_dims()
@@ -7420,7 +7427,10 @@ def _read_packed_values(self: NestedTensor) -> Tensor:
         return values
     # Attribute reads on the wrapper itself would each re-enter ``__torch_function__``.
     with torch._C.DisableTorchFunctionSubclass():
-        grad_fn = _native_view_grad_fn(self)
+        if vars(self).get("_view_ops") or vars(self).get("_pending_native_rebase") is not None:
+            grad_fn = _native_view_grad_fn(self)
+        else:
+            grad_fn = torch.Tensor.grad_fn.__get__(self)
         wrapper_requires_grad = torch.Tensor.requires_grad.__get__(self)
         wrapper_version = self._cache_version(self)
     if getattr(self, "_unflattened_autograd", False) or getattr(self, "_wrapper_grad_leaf", False):
@@ -7589,6 +7599,12 @@ class _PackedVersionCounterMode(torch.utils._python_dispatch.TorchDispatchMode):
         self.source = source
         self.result = result
 
+    @classmethod
+    def _should_skip_dynamo(cls):
+        # This mode is entered only for eager native version-counter sharing.
+        # Its callback does not need a per-detach Dynamo disable/enable scope.
+        return False
+
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         if func is torch.ops.aten.detach.default and args[0] is self.source:
             return self.result
@@ -7625,12 +7641,13 @@ def _share_packed_version_counter(wrapper: NestedTensor, values: Tensor) -> Nest
     input counter without installing ``_base`` or retaining its autograd graph.
     The output must be fresh: detach clears its existing autograd metadata.
     """
-    if not _can_share_packed_version_counter(wrapper, values):
-        return wrapper
     with torch._C.DisableTorchFunctionSubclass():
+        # Eligibility and ownership are native Tensor metadata. Inspecting the
+        # wrapper must not dispatch through the public NT operation registry.
+        if not _can_share_packed_version_counter(wrapper, values):
+            return wrapper
         requires_grad = torch.Tensor.requires_grad.__get__(wrapper)
-    result = _attach_packed_version_counter(values, wrapper)
-    with torch._C.DisableTorchFunctionSubclass():
+        result = _attach_packed_version_counter(values, wrapper)
         # Detach clears this flag; preserve the constructor/owner's contract,
         # including a differentiable factory called in no_grad.
         torch.Tensor.requires_grad.__set__(result, requires_grad)
@@ -8336,13 +8353,14 @@ def _flat_view_cotangent(context, target, values, *, attach_autograd):
 
 def _normalize_view_cotangent(grad, context):
     r"""Give native view replay contiguous packed values and explicit logical strides."""
-    from torch._prims_common import is_contiguous_or_false
+    from torch._prims_common import is_contiguous_or_false, make_contiguous_strides_for
 
     if grad is None:
         return None
-    descriptor, _, _, packed_sizes, _, _, _ = _view_geometry(context, True)
+    descriptor, sizes, _, packed_sizes, _, _, _ = _view_geometry(context, True)
     bf, permutation, declared, _, shape, *_ = descriptor
     ragged = tuple(permutation[: descriptor[-3] - descriptor[-2]]) if declared is None else declared
+    needs_flat = _view_needs_flat_cotangent(context)
     reference = None
     if isinstance(grad, NestedTensor):
         if not NestedTensor._meta_tensor_equal(
@@ -8352,7 +8370,28 @@ def _normalize_view_cotangent(grad, context):
         same_schema = grad.batch_first == bf and grad._permutation == permutation and grad._ragged_dims == ragged
         if same_schema:
             values = grad.values()
-        else:
+            # A normalized cotangent already has the native replay geometry.
+            # Keep its existing derivative edge instead of constructing the
+            # same layout and packed bridge again.
+            if (
+                type(grad) is context[2]
+                and not _is_compiling()
+                and type(values) is Tensor
+                and not torch._C._are_functorch_transforms_active()
+                and getattr(grad, "_is_aot_tangent", False)
+                and not needs_flat
+                and tuple(values.shape) == tuple(packed_sizes)
+                and is_contiguous_or_false(values)
+                and tuple(grad.shape) == tuple(sizes)
+                and grad.stride() == make_contiguous_strides_for(sizes)
+                and grad.storage_offset() == 0
+                and not vars(grad).get("_view_ops")
+                and not grad._view_bindings()
+                and vars(grad).get("_view_output_geometry") is None
+                and vars(grad).get("_view_offset_binding") is None
+            ):
+                return grad
+        elif not needs_flat:
             from .ops import _expand_nested_as_values
 
             reference = _view_reference(context, True, grad._packed_values)
@@ -8362,7 +8401,7 @@ def _normalize_view_cotangent(grad, context):
         values = reference._dense_to_packed_values(grad)
         if values is None:
             raise RuntimeError("cannot align a dense view cotangent with the forward geometry")
-    if _view_needs_flat_cotangent(context):
+    if needs_flat:
         from .torch_functions import _packed_flatten_elements
 
         if not isinstance(grad, NestedTensor):
