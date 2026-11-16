@@ -1605,6 +1605,60 @@ class TestModuleIntegration:
 
 class TestMultiHeadAttentionForward:
 
+    @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
+    @pytest.mark.parametrize("batch_first", [True, False])
+    @pytest.mark.parametrize("dropout", [0.0, 0.1])
+    def test_packed_projection_gradients(self, device, backend, batch_first, dropout):
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+
+        if device.type != "cuda" or not torch.cuda.is_bf16_supported():
+            pytest.skip("BF16 CUDA attention")
+        torch.compiler.reset()
+        model = nn.MultiheadAttention(
+            32, 4, dropout=dropout, batch_first=batch_first, device=device, dtype=torch.bfloat16
+        )
+        reference = deepcopy(model)
+        lengths = (3, 3) if dropout else (3, 5)
+        parts = [torch.randn(n, 32, device=device, dtype=torch.bfloat16, requires_grad=True) for n in lengths]
+        references = [part.detach().clone().requires_grad_() for part in parts]
+
+        def attention(source):
+            return model(source, source, source, need_weights=False, is_causal=True)[0]
+
+        run = attention if backend is None else torch.compile(attention, backend=backend, fullgraph=True)
+        try:
+            with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+                torch.cuda.manual_seed(12)
+                output = run(NT(parts, ragged_dims=(0,), batch_first=batch_first))
+                state = torch.cuda.get_rng_state()
+                torch.cuda.manual_seed(12)
+                if dropout:
+                    batch = torch.stack(references, dim=0 if batch_first else 1)
+                    mask = torch.ones(3, 3, dtype=torch.bool, device=device).triu(1)
+                    expected = reference(batch, batch, batch, need_weights=False, attn_mask=mask, is_causal=True)[0]
+                    expected_values = (expected if batch_first else expected.transpose(0, 1)).reshape(-1, 32)
+                    assert_close(torch.cuda.get_rng_state(), state)
+                else:
+                    expected = []
+                    for part in references:
+                        batch = part.unsqueeze(0 if batch_first else 1)
+                        mask = torch.ones(part.shape[0], part.shape[0], dtype=torch.bool, device=device).triu(1)
+                        expected.append(
+                            reference(batch, batch, batch, need_weights=False, attn_mask=mask, is_causal=True)[
+                                0
+                            ].squeeze(0 if batch_first else 1)
+                        )
+                    expected_values = torch.cat(expected)
+            assert_close(output.values(), expected_values, atol=0.03, rtol=0.03)
+            assert_close(
+                torch.autograd.grad(output.values().float().square().sum(), (*parts, *model.parameters())),
+                torch.autograd.grad(expected_values.float().square().sum(), (*references, *reference.parameters())),
+                atol=0.03,
+                rtol=0.03,
+            )
+        finally:
+            torch.compiler.reset()
+
     @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
     @pytest.mark.parametrize("empty_query", [False, True])
     def test_dynamic_empty(self, device, backend, empty_query):

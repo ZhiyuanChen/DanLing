@@ -2791,3 +2791,72 @@ class TestTernaryOps:
         where_out = torch.ops.aten.where.self(condition, nt, bias)
         where_ref = NT([torch.where(condition, t, bias) for t in nt], **reference_options(nt))
         assert_close(where_out, where_ref)
+
+
+class TestFlashAttention:
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("layout", ["projection", "feature", "offset", "row", "head", "odd"])
+    @pytest.mark.parametrize("backend", [None, "aot_eager", "inductor"])
+    def test_strided_projection(self, device, dtype, layout, backend):
+        if device.type != "cuda":
+            pytest.skip("Native Flash Attention requires CUDA")
+        torch.compiler.reset()
+        shape = {
+            "projection": (18, 3, 4, 64),
+            "feature": (18, 3, 4, 128),
+            "offset": (1 + 3 * 18 * 4 * 64,),
+            "row": (18, 3 * 4 * 64 + 1),
+            "head": (3, 18, 288),
+            "odd": (18, 3, 4, 65),
+        }[layout]
+        values = torch.randn(shape, device=device, dtype=dtype, requires_grad=True)
+        reference = values.detach().clone().requires_grad_()
+
+        def split(data):
+            if layout == "offset":
+                return tuple(data[1:].view(3, 18, 4, 64).unbind(0))
+            if layout == "head":
+                return tuple(data.as_strided((3, 18, 4, 64), (18 * 288, 288, 65, 1)).unbind(0))
+            if layout == "row":
+                data = data[:, : 3 * 4 * 64].view(18, 3, 4, 64)
+            elif layout == "odd":
+                data = data[..., 1:65]
+            elif layout == "feature":
+                data = data[..., ::2]
+            return tuple(data[:, index] for index in range(3))
+
+        query, key, value = (
+            NT.from_packed(
+                part,
+                torch.tensor([0, 5, 18]),
+                torch.tensor([[4, 5, 64], [4, 13, 64]]),
+                permutation=(1, 0, 2),
+                ragged_dims=(1,),
+            )
+            for part in split(values)
+        )
+
+        def attention(query, key, value):
+            return torch.nn.functional.scaled_dot_product_attention(query, key, value, is_causal=True)
+
+        run = attention if backend is None else torch.compile(attention, backend=backend, fullgraph=True)
+        output = run(query, key, value)
+        offsets = torch.tensor([0, 5, 18], device=device, dtype=torch.int32)
+        expected = torch.ops.aten._flash_attention_forward.default(
+            *(part.clone(memory_format=torch.contiguous_format) for part in split(reference)),
+            offsets,
+            offsets,
+            13,
+            13,
+            0.0,
+            True,
+            False,
+        )[0]
+        assert_close(output.values(), expected)
+        assert_close(
+            torch.autograd.grad(output.values().float().square().sum(), values),
+            torch.autograd.grad(expected.float().square().sum(), reference),
+            atol=2e-2,
+            rtol=2e-2,
+        )

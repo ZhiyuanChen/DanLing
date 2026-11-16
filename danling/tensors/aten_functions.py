@@ -5426,6 +5426,24 @@ def _is_native_attention_layout(nt: NestedTensor) -> bool:
     return nt._physical_shape.size(1) == 3 and nt._varying_dims == (1,) and nt._static_dims == (0, 2)
 
 
+def _sdpa_native_values(nt: NestedTensor) -> Tensor:
+    r"""Keep packed strides only when every Flash vector load is 16-byte aligned."""
+    values = nt.values()
+    alignment = 16 // values.element_size()
+    if (
+        statically_known_true(values.stride(-1) == 1)
+        and statically_known_true(values.storage_offset() % alignment == 0)
+        and all(statically_known_true(stride % alignment == 0) for stride in values.stride()[:-1])
+    ):
+        return values
+    # A contiguous slice can still start at an unaligned storage offset, and
+    # Inductor can remove a same-layout clone. Materialize an aligned physical
+    # row pitch while retaining the original feature extent.
+    width = values.shape[-1]
+    pitch = ((width + alignment - 1) // alignment + 1) * alignment
+    return torch.nn.functional.pad(values, (0, pitch - width))[..., :width]
+
+
 def _sdpa_pack_native(nt: NestedTensor) -> tuple[Tensor, Tensor, int]:
     r"""
     Return the native varlen layout for ``(heads, seq_i, dim)`` elements:
@@ -5444,7 +5462,7 @@ def _sdpa_pack_native(nt: NestedTensor) -> tuple[Tensor, Tensor, int]:
         # maximum is already part of the logical shape in both batch orders.
         # Preserve its SymInt instead of specializing a tensor-data reduction.
         max_seqlen = nt._logical_shape[-2]
-    return nt.values().contiguous(), cumulative, max_seqlen
+    return _sdpa_native_values(nt), cumulative, max_seqlen
 
 
 def _sdpa_restore_native(attention: Tensor, query: NestedTensor) -> NestedTensor:
@@ -5738,39 +5756,22 @@ class _EmptySafeFlashAttention(torch.autograd.Function):
         return dq, dk, dv, None, None, None, None, None, None, None
 
 
-def _sdpa_via_native_flash(
-    query: NestedTensor,
-    key: NestedTensor,
-    value: NestedTensor,
+def _sdpa_flash_values(
+    q_values: Tensor,
+    k_values: Tensor,
+    v_values: Tensor,
+    q_cumulative: Tensor,
+    k_cumulative: Tensor,
+    q_max: int,
+    k_max: int,
     *,
     dropout_p: float,
     is_causal: bool,
     scale: float | None,
-) -> NestedTensor:
-    r"""Run SDPA directly on DanLing storage via varlen Flash Attention kernels."""
-    if query.dtype != key.dtype or query.dtype != value.dtype:
+) -> Tensor:
+    r"""Run native packed attention without introducing intermediate NT owners."""
+    if q_values.dtype != k_values.dtype or q_values.dtype != v_values.dtype:
         raise RuntimeError("SDPA query, key and value must have the same dtype")
-    type(key)._meta_tensor_equal(
-        key._physical_shape[:, 1],
-        value._physical_shape[:, 1],
-        "Flash attention key and value sequence lengths must match for every sample",
-        runtime_assert=True,
-    )
-    q_values, q_cumulative, q_max = _sdpa_pack_native(query)
-    if query is key:
-        k_values, k_cumulative, k_max = q_values, q_cumulative, q_max
-    elif _same_ragged_offsets(query, key):
-        k_values = key.values().contiguous()
-        k_cumulative = q_cumulative
-        k_max = q_max
-    else:
-        k_values, k_cumulative, k_max = _sdpa_pack_native(key)
-    if value is query:
-        v_values = q_values
-    elif value is key:
-        v_values = k_values
-    else:
-        v_values = value.values().contiguous()
     if q_values.shape[-1] != k_values.shape[-1]:
         raise ValueError("SDPA query and key feature widths must match")
     dropout_p = float(dropout_p)
@@ -5812,6 +5813,54 @@ def _sdpa_via_native_flash(
             is_causal,
             factor,
         )[0][..., : v_values.shape[-1]]
+    return attention
+
+
+def _sdpa_via_native_flash(
+    query: NestedTensor,
+    key: NestedTensor,
+    value: NestedTensor,
+    *,
+    dropout_p: float,
+    is_causal: bool,
+    scale: float | None,
+) -> NestedTensor:
+    r"""Run SDPA directly on DanLing storage via varlen Flash Attention kernels."""
+    if query.dtype != key.dtype or query.dtype != value.dtype:
+        raise RuntimeError("SDPA query, key and value must have the same dtype")
+    type(key)._meta_tensor_equal(
+        key._physical_shape[:, 1],
+        value._physical_shape[:, 1],
+        "Flash attention key and value sequence lengths must match for every sample",
+        runtime_assert=True,
+    )
+    q_values, q_cumulative, q_max = _sdpa_pack_native(query)
+    if query is key:
+        k_values, k_cumulative, k_max = q_values, q_cumulative, q_max
+    elif _same_ragged_offsets(query, key):
+        k_values = _sdpa_native_values(key)
+        k_cumulative = q_cumulative
+        k_max = q_max
+    else:
+        k_values, k_cumulative, k_max = _sdpa_pack_native(key)
+    if value is query:
+        v_values = q_values
+    elif value is key:
+        v_values = k_values
+    else:
+        v_values = _sdpa_native_values(value)
+    attention = _sdpa_flash_values(
+        q_values,
+        k_values,
+        v_values,
+        q_cumulative,
+        k_cumulative,
+        q_max,
+        k_max,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+        scale=scale,
+    )
     return _sdpa_restore_native(attention, query)
 
 
@@ -5887,7 +5936,7 @@ def flash_attention_forward(_func, args, kwargs):
     )
     q_values, q_cumulative, q_max = _sdpa_pack_native(query)
     if _same_ragged_offsets(query, key):
-        k_values = key.values().contiguous()
+        k_values = _sdpa_native_values(key)
         k_cumulative = q_cumulative
         k_max = q_max
     else:
@@ -5895,7 +5944,7 @@ def flash_attention_forward(_func, args, kwargs):
     output, logsumexp, rng_state, unused, debug_mask = _flash_attention_forward_raw(
         q_values,
         k_values,
-        value.values().contiguous(),
+        _sdpa_native_values(value),
         q_cumulative,
         k_cumulative,
         q_max,

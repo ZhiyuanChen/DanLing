@@ -46,6 +46,7 @@ from torch.nn import functional as F
 
 from .aten_functions import (
     _is_native_attention_layout,
+    _sdpa_flash_values,
     _sdpa_restore_native,
     _sdpa_via_native_flash,
 )
@@ -1465,6 +1466,47 @@ def multi_head_attention_forward(
         q_heads = q_values.unflatten(-1, (num_heads, head_dim)).contiguous()
         k_heads = k_values.unflatten(-1, (num_heads, head_dim)).contiguous()
         v_heads = v_values.unflatten(-1, (num_heads, head_dim)).contiguous()
+
+        # Projection and head views are private to this composite operator.
+        # Keep their native dense autograd edges until the final NT output.
+        if (
+            q_heads.device.type == "cuda"
+            and q_heads.dtype in _LOW_PRECISION_CUDA_DTYPES
+            and torch.backends.cuda.flash_sdp_enabled()
+            and 0 < head_dim <= 256
+            and num_heads > 0
+            and _sdpa_causal_alignment_is_safe(query, key, is_causal)
+        ):
+            if is_causal and query._offsets is not key._offsets:
+                type(query)._meta_tensor_equal(
+                    query._offsets,
+                    key._offsets,
+                    "Compiled causal SDPA requires matching query and key partitions",
+                    runtime_assert=True,
+                )
+            q_cumulative = query.ragged_level_offsets(0, device=q_heads.device, dtype=torch.int32)
+            k_cumulative = (
+                q_cumulative
+                if query._same_row_splits(key)
+                else key.ragged_level_offsets(0, device=k_heads.device, dtype=torch.int32)
+            )
+            sequence_axis = 1 if query.batch_first else 0
+            attention = _sdpa_flash_values(
+                q_heads,
+                k_heads,
+                v_heads,
+                q_cumulative,
+                k_cumulative,
+                query._logical_shape[sequence_axis],
+                key._logical_shape[sequence_axis],
+                dropout_p=effective_dropout_p,
+                is_causal=is_causal,
+                scale=None,
+            )
+            out_values = F.linear(
+                attention.reshape(attention.shape[0], embed_dim_to_check), out_proj_weight, out_proj_bias
+            )
+            return finish(query._packed_like_unchecked(out_values), None)
 
         q_attn = _project_attention_values(query, q_heads, num_heads, head_dim)
         if key is query:
