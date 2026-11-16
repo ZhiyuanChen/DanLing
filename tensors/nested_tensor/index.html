@@ -14954,7 +14954,7 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
                 <span class="n">element_shapes</span><span class="o">=</span><span class="n">element_shapes</span><span class="p">,</span>
                 <span class="n">ragged_offsets</span><span class="o">=</span><span class="p">(</span><span class="n">offsets</span><span class="p">,),</span>
             <span class="p">)</span>
-            <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">is_grad_enabled</span><span class="p">()</span> <span class="ow">and</span> <span class="n">values</span><span class="o">.</span><span class="n">requires_grad</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">_needs_packed_bridge</span><span class="p">(</span><span class="n">values</span><span class="p">):</span>
                 <span class="k">return</span> <span class="n">_PackedLikeAutograd</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span><span class="n">values</span><span class="p">,</span> <span class="n">_PackedStructureReference</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">mark_dynamic</span><span class="o">=</span><span class="kc">True</span><span class="p">))</span>
             <span class="k">return</span> <span class="n">result</span>
 
@@ -15487,8 +15487,8 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
         <span class="p">)</span>
         <span class="n">result</span><span class="o">.</span><span class="n">_exact_ragged_maxima</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_exact_ragged_maxima</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_inherit_tangent_metadata</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">is_grad_enabled</span><span class="p">()</span> <span class="ow">and</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">requires_grad</span><span class="p">:</span>
-            <span class="k">return</span> <span class="n">_PackedLikeAutograd</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span><span class="n">packed_values</span><span class="p">,</span> <span class="n">_PackedStructureReference</span><span class="p">(</span><span class="n">result</span><span class="p">))</span>
+        <span class="k">if</span> <span class="n">_is_compiling</span><span class="p">()</span> <span class="ow">or</span> <span class="n">_needs_packed_bridge</span><span class="p">(</span><span class="n">packed_values</span><span class="p">):</span>
+            <span class="k">return</span> <span class="n">result</span><span class="o">.</span><span class="n">_packed_like_unchecked</span><span class="p">(</span><span class="n">packed_values</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">result</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">packed_with_lengths</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">packed_values</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">lengths</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
@@ -15620,8 +15620,8 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
         <span class="c1"># New lengths own new maxima in both real and symbolic output schemas.</span>
         <span class="n">result</span><span class="o">.</span><span class="n">_exact_ragged_maxima</span> <span class="o">=</span> <span class="kc">True</span>
         <span class="n">result</span><span class="o">.</span><span class="n">_ragged_extents</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">_new_ragged_extents</span><span class="p">()</span>
-        <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">is_grad_enabled</span><span class="p">()</span> <span class="ow">and</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">requires_grad</span><span class="p">:</span>
-            <span class="k">return</span> <span class="n">_PackedLikeAutograd</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span><span class="n">packed_values</span><span class="p">,</span> <span class="n">_PackedStructureReference</span><span class="p">(</span><span class="n">result</span><span class="p">))</span>
+        <span class="k">if</span> <span class="n">_is_compiling</span><span class="p">()</span> <span class="ow">or</span> <span class="n">_needs_packed_bridge</span><span class="p">(</span><span class="n">packed_values</span><span class="p">):</span>
+            <span class="k">return</span> <span class="n">result</span><span class="o">.</span><span class="n">_packed_like_unchecked</span><span class="p">(</span><span class="n">packed_values</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">result</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">packed_with_square_lengths</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">packed_values</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">lengths</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
@@ -15777,8 +15777,8 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
         <span class="n">result</span><span class="o">.</span><span class="n">_exact_ragged_maxima</span> <span class="o">=</span> <span class="kc">True</span>
         <span class="k">if</span> <span class="n">symbolic_lengths</span><span class="p">:</span>
             <span class="n">result</span><span class="o">.</span><span class="n">_ragged_extents</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">_new_ragged_extents</span><span class="p">()</span>
-        <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">is_grad_enabled</span><span class="p">()</span> <span class="ow">and</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">requires_grad</span><span class="p">:</span>
-            <span class="k">return</span> <span class="n">_PackedLikeAutograd</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span><span class="n">packed_values</span><span class="p">,</span> <span class="n">_PackedStructureReference</span><span class="p">(</span><span class="n">result</span><span class="p">))</span>
+        <span class="k">if</span> <span class="n">_is_compiling</span><span class="p">()</span> <span class="ow">or</span> <span class="n">_needs_packed_bridge</span><span class="p">(</span><span class="n">packed_values</span><span class="p">):</span>
+            <span class="k">return</span> <span class="n">result</span><span class="o">.</span><span class="n">_packed_like_unchecked</span><span class="p">(</span><span class="n">packed_values</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">result</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">packed_with_rectangular_lengths</span><span class="p">(</span>
@@ -15923,8 +15923,8 @@ If <code>False</code>, the first dimension is the sequence dimension (N, B, *)</
         <span class="c1"># Both independent data-derived maxima belong to the current layout.</span>
         <span class="n">result</span><span class="o">.</span><span class="n">_exact_ragged_maxima</span> <span class="o">=</span> <span class="kc">True</span>
         <span class="n">result</span><span class="o">.</span><span class="n">_ragged_extents</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">_new_ragged_extents</span><span class="p">()</span>
-        <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">is_grad_enabled</span><span class="p">()</span> <span class="ow">and</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">requires_grad</span><span class="p">:</span>
-            <span class="k">return</span> <span class="n">_PackedLikeAutograd</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span><span class="n">packed_values</span><span class="p">,</span> <span class="n">_PackedStructureReference</span><span class="p">(</span><span class="n">result</span><span class="p">))</span>
+        <span class="k">if</span> <span class="n">_is_compiling</span><span class="p">()</span> <span class="ow">or</span> <span class="n">_needs_packed_bridge</span><span class="p">(</span><span class="n">packed_values</span><span class="p">):</span>
+            <span class="k">return</span> <span class="n">result</span><span class="o">.</span><span class="n">_packed_like_unchecked</span><span class="p">(</span><span class="n">packed_values</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">result</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">nested_like</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tensor</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">strict</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">NestedTensor</span><span class="p">:</span>
@@ -20547,7 +20547,7 @@ including dtype, device, gradient, pinning, ragged-dimension and padding options
             <span class="n">element_shapes</span><span class="o">=</span><span class="n">element_shapes</span><span class="p">,</span>
             <span class="n">ragged_offsets</span><span class="o">=</span><span class="p">(</span><span class="n">offsets</span><span class="p">,),</span>
         <span class="p">)</span>
-        <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">is_grad_enabled</span><span class="p">()</span> <span class="ow">and</span> <span class="n">values</span><span class="o">.</span><span class="n">requires_grad</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">_needs_packed_bridge</span><span class="p">(</span><span class="n">values</span><span class="p">):</span>
             <span class="k">return</span> <span class="n">_PackedLikeAutograd</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span><span class="n">values</span><span class="p">,</span> <span class="n">_PackedStructureReference</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">mark_dynamic</span><span class="o">=</span><span class="kc">True</span><span class="p">))</span>
         <span class="k">return</span> <span class="n">result</span>
 
@@ -21699,8 +21699,8 @@ mismatched packed leading dimension.</p>
     <span class="p">)</span>
     <span class="n">result</span><span class="o">.</span><span class="n">_exact_ragged_maxima</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_exact_ragged_maxima</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_inherit_tangent_metadata</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">is_grad_enabled</span><span class="p">()</span> <span class="ow">and</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">requires_grad</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">_PackedLikeAutograd</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span><span class="n">packed_values</span><span class="p">,</span> <span class="n">_PackedStructureReference</span><span class="p">(</span><span class="n">result</span><span class="p">))</span>
+    <span class="k">if</span> <span class="n">_is_compiling</span><span class="p">()</span> <span class="ow">or</span> <span class="n">_needs_packed_bridge</span><span class="p">(</span><span class="n">packed_values</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">result</span><span class="o">.</span><span class="n">_packed_like_unchecked</span><span class="p">(</span><span class="n">packed_values</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">result</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -22130,8 +22130,8 @@ or does not sum to the packed leading dimension.</p>
     <span class="c1"># New lengths own new maxima in both real and symbolic output schemas.</span>
     <span class="n">result</span><span class="o">.</span><span class="n">_exact_ragged_maxima</span> <span class="o">=</span> <span class="kc">True</span>
     <span class="n">result</span><span class="o">.</span><span class="n">_ragged_extents</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">_new_ragged_extents</span><span class="p">()</span>
-    <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">is_grad_enabled</span><span class="p">()</span> <span class="ow">and</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">requires_grad</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">_PackedLikeAutograd</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span><span class="n">packed_values</span><span class="p">,</span> <span class="n">_PackedStructureReference</span><span class="p">(</span><span class="n">result</span><span class="p">))</span>
+    <span class="k">if</span> <span class="n">_is_compiling</span><span class="p">()</span> <span class="ow">or</span> <span class="n">_needs_packed_bridge</span><span class="p">(</span><span class="n">packed_values</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">result</span><span class="o">.</span><span class="n">_packed_like_unchecked</span><span class="p">(</span><span class="n">packed_values</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">result</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -22610,8 +22610,8 @@ dimension.</p>
     <span class="n">result</span><span class="o">.</span><span class="n">_exact_ragged_maxima</span> <span class="o">=</span> <span class="kc">True</span>
     <span class="k">if</span> <span class="n">symbolic_lengths</span><span class="p">:</span>
         <span class="n">result</span><span class="o">.</span><span class="n">_ragged_extents</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">_new_ragged_extents</span><span class="p">()</span>
-    <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">is_grad_enabled</span><span class="p">()</span> <span class="ow">and</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">requires_grad</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">_PackedLikeAutograd</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span><span class="n">packed_values</span><span class="p">,</span> <span class="n">_PackedStructureReference</span><span class="p">(</span><span class="n">result</span><span class="p">))</span>
+    <span class="k">if</span> <span class="n">_is_compiling</span><span class="p">()</span> <span class="ow">or</span> <span class="n">_needs_packed_bridge</span><span class="p">(</span><span class="n">packed_values</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">result</span><span class="o">.</span><span class="n">_packed_like_unchecked</span><span class="p">(</span><span class="n">packed_values</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">result</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -23035,8 +23035,8 @@ its autograd history directly.</p>
     <span class="c1"># Both independent data-derived maxima belong to the current layout.</span>
     <span class="n">result</span><span class="o">.</span><span class="n">_exact_ragged_maxima</span> <span class="o">=</span> <span class="kc">True</span>
     <span class="n">result</span><span class="o">.</span><span class="n">_ragged_extents</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">_new_ragged_extents</span><span class="p">()</span>
-    <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">is_grad_enabled</span><span class="p">()</span> <span class="ow">and</span> <span class="n">packed_values</span><span class="o">.</span><span class="n">requires_grad</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">_PackedLikeAutograd</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span><span class="n">packed_values</span><span class="p">,</span> <span class="n">_PackedStructureReference</span><span class="p">(</span><span class="n">result</span><span class="p">))</span>
+    <span class="k">if</span> <span class="n">_is_compiling</span><span class="p">()</span> <span class="ow">or</span> <span class="n">_needs_packed_bridge</span><span class="p">(</span><span class="n">packed_values</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">result</span><span class="o">.</span><span class="n">_packed_like_unchecked</span><span class="p">(</span><span class="n">packed_values</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">result</span>
 </code></pre></div></td></tr></table></div>
             </details>
